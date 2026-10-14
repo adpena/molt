@@ -46,8 +46,6 @@ class SemaStateMixin(GeneratorMixinBase):
                                             (sema/funcmeta.collect_module_func_kinds)
           self.module_declared_classes    ← sema.function_meta.declared_classes
                                             (sema/funcmeta.collect_module_class_names)
-          sema.class_graph                → read by sema-owned class facts
-                                            and class/call lowering queries
           sema.class_facts                → read directly by class/call lowering
                                             (no god-object dict shim)
           sema.import_names               → read directly by the call-form rule

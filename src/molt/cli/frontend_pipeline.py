@@ -6,7 +6,15 @@ import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Collection, Mapping, MutableMapping, Sequence
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Mapping,
+    MutableMapping,
+    Sequence,
+    TYPE_CHECKING,
+)
 
 from molt.type_facts import TypeFacts, load_type_facts
 
@@ -80,6 +88,9 @@ from molt.cli.models import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.target_python import TargetPythonVersion
+
+if TYPE_CHECKING:
+    from molt.frontend import ClassId, ClassInfo
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,7 +396,7 @@ def _prepare_frontend_lowering_config(
                 command="build",
             )
 
-    known_classes: dict[str, Any] = {}
+    known_classes: dict[ClassId, ClassInfo] = {}
     scoped_lowering_inputs = _build_scoped_lowering_inputs(
         module_graph,
         module_deps=module_deps,

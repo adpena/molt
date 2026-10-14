@@ -5,7 +5,13 @@ import ast
 import pytest
 
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
-from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend import (
+    BoundMethodHint,
+    MoltOp,
+    MoltValue,
+    SimpleTIRGenerator,
+    compile_to_tir,
+)
 from molt.frontend.diagnostics import FrontendRejection
 
 
@@ -240,7 +246,7 @@ def test_stale_receiver_hints_cannot_authorize_any_builtin_method_family(
     reference.python_binding_index = analyze_python_source_bindings(f"value.{method}")
     reference.locals["value"] = MoltValue("value", type_hint=hint)
     result = reference.visit(ast.parse(f"value.{method}", mode="eval").body)
-    assert not result.type_hint.startswith("BoundMethod:")
+    assert not isinstance(result.type_hint, BoundMethodHint)
 
 
 @pytest.mark.parametrize("policy", ["ignore", "check"])

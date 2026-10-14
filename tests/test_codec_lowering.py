@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from molt.frontend import MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend import (
+    BoundMethodHint,
+    BuiltinClass,
+    MoltValue,
+    SimpleTIRGenerator,
+    compile_to_tir,
+)
 
 
 def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
@@ -175,7 +181,9 @@ def test_len_lowering():
     assert "const_bytes" not in kinds
 
 
-@pytest.mark.parametrize("hint", ["Any", "BoundMethod:unknown"])
+@pytest.mark.parametrize(
+    "hint", ["Any", BoundMethodHint(BuiltinClass("list"), "append")]
+)
 def test_positional_dynamic_call_uses_live_callable_without_argument_builder(hint):
     generator = SimpleTIRGenerator()
     callee = MoltValue("live_callable", type_hint=hint)

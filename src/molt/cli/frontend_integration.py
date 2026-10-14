@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend import ClassId, ClassInfo
 from molt.cli.models import _FrontendIntegrationState, _MidendDiagnosticsState
 
 
@@ -87,8 +88,7 @@ def _integrate_module_frontend_result_with_state(
     *,
     ir_functions: list[dict[str, Any]],
     func_code_ids: dict[str, int],
-    local_class_names: list[str],
-    local_classes: dict[str, Any],
+    local_classes: dict[ClassId, ClassInfo],
 ) -> str | None:
     init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
     try:
@@ -104,8 +104,7 @@ def _integrate_module_frontend_result_with_state(
         if func["name"] == "molt_main":
             func["name"] = init_symbol
     integration_state.functions.extend(ir_functions)
-    for class_name in local_class_names:
-        class_info = local_classes.get(class_name)
-        if class_info is not None:
-            integration_state.known_classes[class_name] = class_info
+    # ClassIds are program-wide identities: one module's classes never
+    # replace another module's same-named classes.
+    integration_state.known_classes.update(local_classes)
     return None

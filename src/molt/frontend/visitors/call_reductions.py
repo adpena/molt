@@ -15,7 +15,11 @@ from typing import (
     cast,
 )
 
-from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend._types import (
+    MoltOp,
+    MoltValue,
+    TypeHint,
+)
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -302,7 +306,7 @@ class CallReductionMixin(GeneratorMixinBase):
         acc_slot: str,
         user_target_names: list[str],
         saved_boxed: dict[str, MoltValue | None],
-        saved_boxed_hints: dict[str, str | None],
+        saved_boxed_hints: dict[str, TypeHint | None],
         outer_comp_shadow_locals: set[str],
     ) -> MoltValue:
         """Seed the accumulator, splice the buffered loop, and yield the result.
@@ -386,7 +390,7 @@ class CallReductionMixin(GeneratorMixinBase):
         counted_range: tuple[MoltValue, MoltValue, MoltValue, int | None],
         saved_locals: dict[str, MoltValue | None],
         saved_boxed: dict[str, MoltValue | None],
-        saved_boxed_hints: dict[str, str | None],
+        saved_boxed_hints: dict[str, TypeHint | None],
         outer_comp_shadow_locals: set[str],
     ) -> MoltValue:
         """Lower `sum(<elt> for x in range(...))` through a counted-index loop.

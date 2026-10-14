@@ -198,7 +198,7 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 #### 3b. MRO/super
 
-**UPSTREAM.** Runtime class metadata still uses `_class_mro_names` in the class-resolution mixin. Static class facts used by the fold live in `frontend.sema.classgraph`: `ClassFacts`, `c3_merge`, `static_class_bases`, `static_mro_names`, `reachable_base_names`, `static_method_owner_after`, `super_fold_is_sound`, and `class_facts_with_super_fold_sound_methods`. Static C3 linearization and member-owner resolution are computed once for fold eligibility and fail closed on opaque, ambiguous, cyclic, unknown bases, non-method class-attribute interposition, or dynamic/decorated class-member surfaces; the runtime remains authoritative for dynamic class construction.
+**UPSTREAM.** Each class statement records its C3 MRO as `ClassRef` entries (`ClassId` or builtin class) when it lowers; the class-resolution mixin reads it through `_class_mro`, and `frontend.sema.classgraph.c3_merge` computes it. An unresolved, ambiguous or rebuilt base makes the class build dynamically; the runtime remains authoritative for dynamic class construction.
 
 **Score.** IMPORTANCE=3, GAP=1. Static MRO is conservatively correct (runtime is authoritative). Super fold is correctly guarded.
 

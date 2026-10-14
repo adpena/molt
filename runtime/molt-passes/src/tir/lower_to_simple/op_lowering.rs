@@ -206,9 +206,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
                 value: attr_int(&op.attrs, "value"),
                 out: out_var,
-                // Preserve the typed-slot class identity across the roundtrip so
-                // the alias oracle's class+offset region is stable (S5-1.5).
-                class_name: attr_str(&op.attrs, "_class"),
                 ..OpIR::default()
             })
         }
@@ -222,7 +219,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
                 value: attr_int(&op.attrs, "value"),
                 out,
-                class_name: attr_str(&op.attrs, "_class"),
                 ..OpIR::default()
             })
         }

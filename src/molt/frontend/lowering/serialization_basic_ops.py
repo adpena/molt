@@ -9,6 +9,7 @@ from typing import Any
 from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
+    BoundMethodHint,
     MoltOp,
     MoltValue,
 )
@@ -576,7 +577,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             # float.  Without this, `total += obj.method(i)` where
             # the Phase 1 fold rewrote the call to a direct CALL
             # op silently dropped the int return type.
-            result_hint = op.result.type_hint
+            result_hint = self._wire_type_hint(op.result.type_hint)
             if result_hint and result_hint != "Any":
                 entry["type_hint"] = result_hint
             metadata = op.metadata or {}
@@ -641,7 +642,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             # NaN-boxed accumulator and silently coerces to float.
             # Only producer-proven result hints may select this lane; Python
             # return annotations are not result proofs.
-            result_hint = op.result.type_hint
+            result_hint = self._wire_type_hint(op.result.type_hint)
             if result_hint and result_hint != "Any":
                 entry["type_hint"] = result_hint
             metadata = op.metadata or {}
@@ -670,14 +671,12 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             # specialise known receiver+method pairs (e.g.
             # list.append, str.join, dict.get) into direct calls.
             callee_hint = getattr(op.args[0], "type_hint", None)
-            if (
-                callee_hint
-                and isinstance(callee_hint, str)
-                and callee_hint.startswith("BoundMethod:")
-            ):
-                entry["s_value"] = callee_hint
+            if isinstance(callee_hint, BoundMethodHint):
+                bound_method = self._bound_method_wire(callee_hint)
+                if bound_method is not None:
+                    entry["s_value"] = bound_method
             # Same lane-classification fix as CALL_BIND above.
-            result_hint = op.result.type_hint
+            result_hint = self._wire_type_hint(op.result.type_hint)
             if result_hint and result_hint != "Any":
                 entry["type_hint"] = result_hint
             custody = self._call_argument_custody(op, "call_method", None, len(op.args))

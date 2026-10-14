@@ -24,6 +24,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     ScratchCell,
+    TypeHint,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -132,7 +133,6 @@ class ComprehensionMixin(GeneratorMixinBase):
             type_facts_name=func_symbol,
             needs_return_slot=False,
         )
-        self.current_class = None
         self.current_method_first_param = None
         self.global_decls = set(module_namedexpr_targets)
         self.del_targets = del_targets
@@ -942,7 +942,7 @@ class ComprehensionMixin(GeneratorMixinBase):
         index: int,
         iterator: MoltValue,
         emit_leaf: Callable[[], None],
-        item_hint: str,
+        item_hint: TypeHint,
     ) -> None:
         """Lower one clause, recursively retaining each iterator across awaits."""
         comp = generators[index]

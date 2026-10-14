@@ -39,6 +39,8 @@ import json
 from pathlib import Path
 import sys
 
+from molt.frontend import ClassId
+
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
 
@@ -66,7 +68,7 @@ def _payload_with_ast(node: ast.AST) -> dict[str, object]:
     return {
         "module_name": "pkg.mod",
         "known_classes": {
-            "C": {
+            ClassId("pkg.mod", "C"): {
                 "methods": {
                     "__init__": {
                         "inline_init_assigns": [["attr", node]],
@@ -285,7 +287,8 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         result = _module_frontend_payload(
             generator, ir, visit_s=0.0, lower_s=0.0, total_s=0.0
         )
-        assert "__dict__" in result["local_classes"]
+        tag_named_class = ClassId("__main__", "__dict__")
+        assert tag_named_class in result["local_classes"]
         assert any(
             integer_literal_value(bytes(op["bytes"])) == 1 << 2400
             for function in result["functions"]
@@ -319,15 +322,21 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
             path_stat=source.stat(),
         )
         assert lowering_result is not None
-        assert lowering_result["local_class_names"] == ["__dict__"]
-        assert "__dict__" in lowering_result["local_classes"]
+        assert list(lowering_result["local_classes"]) == [tag_named_class]
         assert lowering_result["functions"] == result["functions"]
         assert CK._backend_ir_bytes({"functions": lowering_result["functions"]}) == (
             CK._backend_ir_bytes({"functions": result["functions"]})
         )
         assert _digest(result) == _digest(lowering_result)
         assert _digest(result) is not None
-        changed = dict(lowering_result, local_class_names=["__integer_bytes__"])
+        changed = dict(
+            lowering_result,
+            local_classes={
+                ClassId("__main__", "__integer_bytes__"): lowering_result[
+                    "local_classes"
+                ][tag_named_class]
+            },
+        )
         assert _digest(result) != _digest(changed)
         for original, reordered in ((ordered, reversed_order), (named, reversed_named)):
             other = SimpleTIRGenerator()

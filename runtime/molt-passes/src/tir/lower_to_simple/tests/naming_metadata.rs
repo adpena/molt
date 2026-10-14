@@ -1332,95 +1332,6 @@ fn tir_round_trip_preserves_call_async_metadata() {
 }
 
 #[test]
-fn tir_round_trip_preserves_typed_field_class_identity() {
-    // Preserve class metadata for guarded receiver dispatch on both load and
-    // store spellings. Physical alias identity is independent of this hint.
-    use crate::ir::{FunctionIR, OpIR};
-    use crate::tir::lower_from_simple::lower_to_tir;
-
-    let func_ir = FunctionIR {
-        return_abi: molt_ir::FunctionReturnAbi::Void,
-        name: "field_class".into(),
-        params: vec![
-            "obj".into(),
-            "class_bits".into(),
-            "expected".into(),
-            "value".into(),
-        ],
-        ops: vec![
-            OpIR {
-                kind: "guarded_field_get".into(),
-                args: Some(vec!["obj".into(), "class_bits".into(), "expected".into()]),
-                s_value: Some("x".into()),
-                value: Some(24),
-                out: Some("loaded".into()),
-                class_name: Some("Point".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "guarded_field_set".into(),
-                args: Some(vec![
-                    "obj".into(),
-                    "class_bits".into(),
-                    "expected".into(),
-                    "value".into(),
-                ]),
-                s_value: Some("x".into()),
-                value: Some(24),
-                class_name: Some("Point".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "load".into(),
-                args: Some(vec!["obj".into()]),
-                value: Some(8),
-                out: Some("plain".into()),
-                class_name: Some("Line".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "store".into(),
-                args: Some(vec!["obj".into(), "value".into()]),
-                value: Some(8),
-                class_name: Some("Line".into()),
-                ..OpIR::default()
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    };
-
-    let tir_func = lower_to_tir(&func_ir);
-    let round_tripped = lower_to_simple_ir(&tir_func);
-    for kind in ["guarded_field_get", "guarded_field_set"] {
-        let op = round_tripped
-            .iter()
-            .find(|op| op.kind == kind)
-            .unwrap_or_else(|| panic!("{kind} missing after roundtrip"));
-        assert_eq!(
-            op.class_name.as_deref(),
-            Some("Point"),
-            "{kind} must preserve its `class` identity"
-        );
-    }
-    for kind in ["load", "store"] {
-        let op = round_tripped
-            .iter()
-            .find(|op| op.kind == kind)
-            .unwrap_or_else(|| panic!("{kind} missing after roundtrip"));
-        assert_eq!(
-            op.class_name.as_deref(),
-            Some("Line"),
-            "{kind} must preserve its `class` identity"
-        );
-    }
-}
-
-#[test]
 fn tir_round_trip_preserves_fused_iter_next_output_names() {
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::lower_from_simple::lower_to_tir;
@@ -1815,7 +1726,6 @@ fn guarded_load_uses_field_custody_and_preserves_its_offset() {
             args: Some(vec!["obj".into()]),
             value: Some(24),
             out: Some("field".into()),
-            class_name: Some("C".into()),
             ..OpIR::default()
         }],
         param_types: None,

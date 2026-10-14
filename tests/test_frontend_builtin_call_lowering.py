@@ -14,7 +14,13 @@ from molt.compiler_analysis.python_binding_flow import analyze_python_source_bin
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
+    OBJECT_CLASS,
+    BoundMethodHint,
+    BuiltinClass,
+    ClassId,
+    ClassInfo,
     CodeSlotDeclaration,
+    TypeHint,
     _builtin_func_abi_arity,
 )
 
@@ -672,14 +678,20 @@ def test_dynamic_function_hint_uses_shared_guarded_context_dispatch(
 
 @pytest.mark.parametrize(
     "hint, expected_kind",
-    [("Func:target", "CALL_GUARDED"), ("BoundMethod:Owner:method", "CALL_FUNC")],
+    [
+        ("Func:target", "CALL_GUARDED"),
+        (BoundMethodHint(ClassId("__main__", "Owner"), "method"), "CALL_FUNC"),
+    ],
 )
 def test_dynamic_callable_result_does_not_inherit_lexical_return_hint(
-    hint: str, expected_kind: str
+    hint: TypeHint, expected_kind: str
 ) -> None:
     generator = SimpleTIRGenerator()
     generator.funcs_map["target"] = {"return_hint": "int"}
-    generator.classes["Owner"] = {"methods": {"method": {"return_hint": "int"}}}
+    generator.classes[ClassId("__main__", "Owner")] = {
+        "binding_name": "Owner",
+        "methods": {},
+    }
     callee = MoltValue("actual_callable", type_hint=hint)
     result = generator._emit_dynamic_call(
         ast.parse("callee()", mode="eval").body, callee
@@ -2805,8 +2817,10 @@ def test_closure_tuple_and_code_metadata_share_one_name_order(
 def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> None:
     # Model the collision lane explicitly: compiler metadata says "Path" points
     # at zipfile._path.Path.__init__, while source imports Path from pathlib.
+    zip_path = ClassId("zipfile._path", "Path")
     known_classes = {
-        "Path": {
+        zip_path: {
+            "binding_name": "Path",
             "fields": {},
             "size": 24,
             "dynamic": False,
@@ -2818,7 +2832,6 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
                     ),
                     "attr": MoltValue("__init__", type_hint="str"),
                     "descriptor": "function",
-                    "return_hint": None,
                     "param_count": 2,
                     "defaults": [],
                     "posonly_count": 0,
@@ -2830,7 +2843,7 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
                     "property_update": None,
                 }
             },
-            "mro": ["Path", "object"],
+            "mro": (zip_path, OBJECT_CLASS),
         }
     }
     gen = SimpleTIRGenerator(known_classes=known_classes)
@@ -2887,16 +2900,22 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
 
 
 def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
+    axis_error = ClassId("numpy.exceptions", "AxisError")
     known_classes = {
-        "AxisError": {
+        axis_error: {
+            "binding_name": "AxisError",
             "fields": {},
             "size": 0,
             "dynamic": False,
             "static": True,
             "methods": {},
-            "mro": ["AxisError", "ValueError", "Exception", "BaseException", "object"],
-            "module": "numpy.exceptions",
-            "exception_subclass": True,
+            "mro": (
+                axis_error,
+                BuiltinClass("ValueError"),
+                BuiltinClass("Exception"),
+                BuiltinClass("BaseException"),
+                OBJECT_CLASS,
+            ),
         }
     }
     gen = SimpleTIRGenerator(
@@ -3078,12 +3097,14 @@ def test_keyword_merge_consumers_share_argument_assembly(source: str) -> None:
     assert all(op.kind != "DICT_UPDATE_KWSTAR" for op in ops)
 
 
-def _counter_known_classes() -> dict[str, dict[str, object]]:
+def _counter_known_classes() -> dict[ClassId, ClassInfo]:
+    counter = ClassId("collections", "Counter")
     return {
-        "Counter": {
+        counter: {
+            "binding_name": "Counter",
             "methods": {},
             "fields": {"_handle": 0},
-            "mro": ["Counter", "object"],
+            "mro": (counter, OBJECT_CLASS),
             "static": True,
             "size": 8,
         }

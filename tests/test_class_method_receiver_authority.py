@@ -4,26 +4,29 @@ import ast
 
 import pytest
 
-from molt.frontend import SimpleTIRGenerator
+from molt.frontend import ClassId, DeclaredClass, ReceiverKind, SimpleTIRGenerator
 from molt.frontend.visitors.class_method_compilation import ClassMethodCompilationMixin
 from tools.check_ir_structure import verify_frontend_tir
+
+SUBJECT = ClassId("__main__", "Subject")
 
 
 @pytest.mark.parametrize(
     ("descriptor", "expected"),
     [
-        ("function", "Subject"),
-        ("classmethod", "Subject"),
-        ("property", "Subject"),
-        ("property_update", "Subject"),
+        ("function", DeclaredClass(SUBJECT, ReceiverKind.INSTANCE)),
+        # A classmethod's receiver is the class object, never an instance.
+        ("classmethod", DeclaredClass(SUBJECT, ReceiverKind.CLASS_OBJECT)),
+        ("property", DeclaredClass(SUBJECT, ReceiverKind.INSTANCE)),
+        ("property_update", DeclaredClass(SUBJECT, ReceiverKind.INSTANCE)),
         ("staticmethod", None),
         ("decorated", None),
     ],
 )
 def test_receiver_hint_requires_a_proved_binding_rule(descriptor, expected):
     authority = ClassMethodCompilationMixin()
-    assert authority._class_method_receiver_hint("Subject", descriptor, 0) == expected
-    assert authority._class_method_receiver_hint("Subject", descriptor, 1) is None
+    assert authority._class_method_receiver_hint(SUBJECT, descriptor, 0) == expected
+    assert authority._class_method_receiver_hint(SUBJECT, descriptor, 1) is None
 
 
 @pytest.mark.parametrize("decorator", ["staticmethod", "alias"])
@@ -42,9 +45,9 @@ def test_every_method_execution_kind_consumes_receiver_authority(
     observed = []
     original = ClassMethodCompilationMixin._class_method_receiver_hint
 
-    def recording_authority(self, class_name, descriptor, parameter_index):
-        hint = original(self, class_name, descriptor, parameter_index)
-        if class_name == "Subject" and parameter_index == 0:
+    def recording_authority(self, class_id, descriptor, parameter_index):
+        hint = original(self, class_id, descriptor, parameter_index)
+        if class_id == SUBJECT and parameter_index == 0:
             observed.append((descriptor, hint))
         return hint
 

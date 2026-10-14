@@ -35,6 +35,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.frontend import ClassId, ClassInfo
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.runtime_build_python import BuildPythonAdmission
@@ -584,7 +585,7 @@ class _ModuleLoweringMetadataView:
 class _ModuleLoweringExecutionView:
     metadata: _ModuleLoweringMetadataView
     scoped_inputs: _ScopedLoweringInputView
-    scoped_known_classes: dict[str, Any]
+    scoped_known_classes: dict[ClassId, ClassInfo]
 
 
 @dataclass(frozen=True)
@@ -716,7 +717,7 @@ class _FrontendLayerExecutionContext:
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
     frontend_module_costs: Mapping[str, float]
     stdlib_like_by_module: Mapping[str, bool]
-    known_classes: Mapping[str, Any]
+    known_classes: Mapping[ClassId, ClassInfo]
     target_python: TargetPythonVersion
     target_sys_platform: str | None
     frontend_phase_timeout: float | None
@@ -776,7 +777,7 @@ class _SerialFrontendLoweringContext:
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
     module_graph_metadata: "_ModuleGraphMetadata"
     module_path_stats: Mapping[str, os.stat_result | None] | None
-    known_classes: Mapping[str, Any]
+    known_classes: Mapping[ClassId, ClassInfo]
     frontend_phase_timeout: float | None
     target_python: TargetPythonVersion
     target_sys_platform: str | None
@@ -792,7 +793,7 @@ class _SerialFrontendLoweringHooks:
 @dataclass
 class _FrontendIntegrationState:
     functions: list[dict[str, Any]]
-    known_classes: dict[str, Any]
+    known_classes: dict[ClassId, ClassInfo]
     global_code_ids: dict[str, int] = field(default_factory=dict)
 
 
@@ -813,7 +814,7 @@ class _EntryFrontendLoweringContext:
     enable_phi: bool
     known_modules: Collection[str]
     direct_call_modules: Collection[str]
-    known_classes: Mapping[str, Any]
+    known_classes: Mapping[ClassId, ClassInfo]
     stdlib_allowlist: Collection[str]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     known_func_kinds: dict[str, dict[str, str]]
@@ -2195,7 +2196,7 @@ class _PreparedFrontendAnalysis:
 @dataclass(frozen=True)
 class _PreparedFrontendLoweringConfig:
     type_facts: TypeFacts | None
-    known_classes: dict[str, Any]
+    known_classes: dict[ClassId, ClassInfo]
     scoped_lowering_inputs: _ScopedLoweringInputs
     module_graph_metadata: _ModuleGraphMetadata
     frontend_module_costs: Mapping[str, float]

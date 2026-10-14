@@ -11,6 +11,7 @@ from molt.compiler_analysis.python_call_arguments import (
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
+    TypeHint,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -29,7 +30,7 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         return hint or "Any"
 
     def _record_container_elem_hint(
-        self, target: MoltValue, elem_hint: str | None
+        self, target: MoltValue, elem_hint: TypeHint | None
     ) -> None:
         elem_map = (
             self.global_elem_hints
@@ -420,8 +421,9 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         args = self._emit_call_args(node.args)
         if callee_cell is not None:
             callee = self._consume_scratch_cell(callee_cell)
-        if callee.type_hint.startswith("Func:"):
-            func_symbol = callee.type_hint.split(":", 1)[1]
+        callee_hint = callee.type_hint
+        if isinstance(callee_hint, str) and callee_hint.startswith("Func:"):
+            func_symbol = callee_hint.split(":", 1)[1]
             res = MoltValue(self.next_var(), type_hint=res_hint)
             # A code-symbol hint is not a namespace or callable-identity proof.
             # Reuse guarded object dispatch so its fast path also transports the

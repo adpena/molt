@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from molt.frontend._types import (
+    ClassId,
+    DeclaredClass,
     MoltOp,
     MoltValue,
 )
@@ -142,20 +144,23 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
             }
-            _onb_class = op.result.type_hint
-            if _onb_class and _onb_class != "Any":
-                _onb_op["type_hint"] = _onb_class
+            # The allocating constructor bound the class at emission.
             _onb_md = op.metadata or {}
+            _onb_class = _onb_md["class_id"]
+            if not isinstance(_onb_class, ClassId):
+                raise TypeError("OBJECT_NEW_BOUND requires its ClassId")
+            _onb_hint = self._wire_type_hint(DeclaredClass(_onb_class))
+            if _onb_hint is not None:
+                _onb_op["type_hint"] = _onb_hint
             _onb_size = _onb_md.get("class_size_bytes")
             if isinstance(_onb_size, int) and _onb_size > 0:
                 _onb_op["value"] = _onb_size
             # Positive finalizer metadata constrains lifetime transformations.
             # Its absence does not prove finalizer freedom: a mutable class
             # can acquire __del__ later. Owned allocation always retains RC.
-            if _onb_class and _onb_class != "Any":
-                _del_info, _del_owner = self._resolve_method_info(_onb_class, "__del__")
-                if _del_info is not None and _del_owner != "object":
-                    _onb_op["defines_del"] = True
+            _del_info, _ = self._resolve_method_info(_onb_class, "__del__")
+            if _del_info is not None:
+                _onb_op["defines_del"] = True
             ctx.json_ops.append(_onb_op)
         elif op.kind == "CLASSMETHOD_NEW":
             ctx.json_ops.append(

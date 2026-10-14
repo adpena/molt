@@ -22,6 +22,11 @@ from typing import (
 # source also covers the compat / cfg_analysis / type_facts names the assembly
 # class uses (they are re-exported from _types).
 from molt.frontend._types import (
+    BoundMethodHint,
+    BuiltinClass,
+    ClassId,
+    DeclaredClass,
+    ReceiverKind,
     MoltValue,
     MoltOp,
     SCCPResult,
@@ -140,6 +145,11 @@ from molt.frontend.visitors.statement_control_flow import (
 from molt.frontend.visitors.statement_scope import StatementScopeVisitorMixin
 
 __all__ = [
+    "BoundMethodHint",
+    "BuiltinClass",
+    "ClassId",
+    "DeclaredClass",
+    "ReceiverKind",
     "MoltValue",
     "MoltOp",
     "SCCPResult",

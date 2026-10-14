@@ -258,7 +258,6 @@ fn default_plan_keeps_plain_and_guarded_loads_may_dispatch() {
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
         8,
-        Some("Point"),
     );
     assert_eq!(
         plan.load_purity_at((BlockId(0), 0), &load),
@@ -278,7 +277,6 @@ fn default_plan_keeps_plain_and_guarded_loads_may_dispatch() {
             "guarded_field_get",
         ),
         8,
-        Some("Point"),
     );
     assert_eq!(
         plan.load_purity_at((BlockId(0), 1), &guarded),
@@ -911,7 +909,6 @@ fn raw_allocation_writes_share_proven_local_storage_without_erasing_effects() {
         let field = with_field_attrs(
             op_kind(OpCode::StoreAttr, vec![root, ValueId(1)], vec![], "store"),
             0,
-            None,
         );
         assert_eq!(res.region_of(&field), MemRegion::GenericHeap);
 
@@ -950,12 +947,9 @@ fn fresh_result_identity_does_not_disprove_constructor_or_poll_callbacks() {
 
 // ── region_of: direct physical field regions ─────────────────────
 
-/// Set the physical offset and optional frontend class metadata on a field op.
-fn with_field_attrs(mut o: TirOp, offset: i64, class: Option<&str>) -> TirOp {
+/// Set the physical offset on a field op.
+fn with_field_attrs(mut o: TirOp, offset: i64) -> TirOp {
     o.attrs.insert("value".into(), AttrValue::Int(offset));
-    if let Some(c) = class {
-        o.attrs.insert("_class".into(), AttrValue::Str(c.into()));
-    }
     o
 }
 
@@ -971,12 +965,9 @@ fn empty_res() -> AliasAnalysisResult {
 #[test]
 fn plain_load_has_physical_projection_but_context_free_accesses_are_generic() {
     let res = empty_res();
-    // `_class` documents frontend provenance but does not admit or identify the
-    // physical field region.
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
         8,
-        Some("Point"),
     );
     assert_eq!(
         res.typed_slot_region(&load),
@@ -994,7 +985,6 @@ fn plain_load_has_physical_projection_but_context_free_accesses_are_generic() {
             "store",
         ),
         16,
-        Some("Line"),
     );
     // Store release behavior is site-contextual, so only the retained typed
     // store plan may refine it beyond GenericHeap.
@@ -1002,17 +992,15 @@ fn plain_load_has_physical_projection_but_context_free_accesses_are_generic() {
 }
 
 #[test]
-fn base_and_derived_metadata_cannot_disambiguate_one_physical_field() {
+fn loads_of_one_offset_share_one_physical_field() {
     let res = empty_res();
     let base_load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
         24,
-        Some("Base"),
     );
     let derived_load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(2)], "load"),
         24,
-        Some("Derived"),
     );
     let base_region = res.typed_slot_region(&base_load);
     let derived_region = res.typed_slot_region(&derived_load);
@@ -1026,7 +1014,7 @@ fn base_and_derived_metadata_cannot_disambiguate_one_physical_field() {
     assert_eq!(base_region, derived_region);
     assert!(
         base_region.may_alias(&derived_region),
-        "inherited Base/Derived views can name the same boxed word"
+        "two loads of one offset name the same boxed word"
     );
     assert_eq!(res.region_of(&base_load), MemRegion::GenericHeap);
     assert_eq!(res.region_of(&derived_load), MemRegion::GenericHeap);
@@ -1115,7 +1103,6 @@ fn guarded_field_get_3operand_abi_falls_back_to_generic_heap() {
             "guarded_field_get",
         ),
         24,
-        Some("Account"),
     );
     assert_eq!(res.region_of(&get), MemRegion::GenericHeap);
     assert_eq!(
@@ -1138,7 +1125,6 @@ fn guarded_field_set_4operand_abi_falls_back_to_generic_heap() {
             "guarded_field_set",
         ),
         32,
-        Some("Account"),
     );
     assert_eq!(res.region_of(&set), MemRegion::GenericHeap);
 
@@ -1150,7 +1136,6 @@ fn guarded_field_set_4operand_abi_falls_back_to_generic_heap() {
             "guarded_field_set_init",
         ),
         32,
-        Some("Account"),
     );
     assert_eq!(
         res.region_of(&rejected),
@@ -1168,7 +1153,6 @@ fn direct_field_without_class_attr_uses_unknown_allocation_identity() {
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
         8,
-        None,
     );
     assert_eq!(
         res.typed_slot_region(&load),
@@ -1186,7 +1170,6 @@ fn direct_field_without_class_attr_uses_unknown_allocation_identity() {
             "store",
         ),
         8,
-        None,
     );
     assert_eq!(res.region_of(&store), MemRegion::GenericHeap);
 }
@@ -1206,7 +1189,6 @@ fn opaque_attr_spelling_is_generic_heap_even_with_class_attr() {
             "get_attr",
         ),
         8,
-        Some("Point"),
     );
     assert_eq!(res.region_of(&ga), MemRegion::GenericHeap);
     let sa = with_field_attrs(
@@ -1217,7 +1199,6 @@ fn opaque_attr_spelling_is_generic_heap_even_with_class_attr() {
             "set_attr_generic_ptr",
         ),
         8,
-        Some("Point"),
     );
     assert_eq!(res.region_of(&sa), MemRegion::GenericHeap);
 }
@@ -1238,7 +1219,6 @@ fn exact_allocation_field_keeps_identity_independent_of_class_and_escape() {
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
         8,
-        None,
     );
     assert_eq!(
         res.typed_slot_region(&load),
@@ -1252,7 +1232,6 @@ fn exact_allocation_field_keeps_identity_independent_of_class_and_escape() {
     let load_c = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
         8,
-        Some("Point"),
     );
     assert_eq!(
         res.typed_slot_region(&load_c),
@@ -1301,7 +1280,6 @@ fn cfg_parameter_that_may_select_external_does_not_mint_allocation_identity() {
             ops: vec![with_field_attrs(
                 op_kind(OpCode::LoadAttr, vec![parameter], vec![loaded], "load"),
                 0,
-                None,
             )],
             terminator: Terminator::Return {
                 values: vec![loaded],

@@ -12,6 +12,7 @@ from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
 from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
@@ -47,6 +48,7 @@ from molt.cli.module_source import (
     _read_module_source,
 )
 from molt.cli.module_cache import (
+    _known_classes_from_payload,
     _build_scoped_known_classes_snapshot,
     _write_persisted_module_lowering,
 )
@@ -168,7 +170,6 @@ def _lower_entry_module_as_main(
             "__main__",
             ir_functions=main_ir["functions"],
             func_code_ids=main_gen.func_code_ids,
-            local_class_names=[],
             local_classes={},
         )
     )
@@ -217,7 +218,7 @@ def _prepare_frontend_execution(
     scoped_lowering_inputs: _ScopedLoweringInputs,
     frontend_module_costs: Mapping[str, float],
     stdlib_like_by_module: Mapping[str, bool],
-    known_classes: dict[str, Any],
+    known_classes: dict[ClassId, ClassInfo],
     module_trees: dict[str, ast.AST],
     generated_module_source_paths: Mapping[str, str],
     frontend_phase_timeout: float | None,
@@ -507,7 +508,7 @@ def _run_frontend_parallel_layer_batches(
     *,
     layer_workers: int,
     executor: Any,
-    known_classes_snapshot_source: Mapping[str, Any],
+    known_classes_snapshot_source: Mapping[ClassId, ClassInfo],
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
@@ -725,8 +726,7 @@ def _consume_frontend_module_result(
         module_name,
         ir_functions=cast(list[dict[str, Any]], result["functions"]),
         func_code_ids=cast(dict[str, int], result["func_code_ids"]),
-        local_class_names=cast(list[str], result["local_class_names"]),
-        local_classes=cast(dict[str, Any], result["local_classes"]),
+        local_classes=_known_classes_from_payload(result["local_classes"]),
     )
     if integration_error is not None:
         return fail(integration_error, json_output, command="build")

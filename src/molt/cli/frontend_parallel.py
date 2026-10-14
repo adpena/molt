@@ -4,7 +4,7 @@ import os
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Mapping, MutableMapping, Sequence, cast
+from typing import Any, Callable, Mapping, MutableMapping, Sequence, TYPE_CHECKING, cast
 
 from molt.cli.build_diagnostics import _duration_ms_from_ns
 from molt.cli.models import (
@@ -21,6 +21,9 @@ from molt.cli.module_source import _ModuleSourceCatalog
 from molt.cli.module_stdlib_policy import _looks_like_stdlib_module_name
 from molt.dx import _memory_bounded_worker_count_from_samples, _system_memory_bytes
 
+if TYPE_CHECKING:
+    from molt.frontend import ClassId, ClassInfo
+
 
 _FRONTEND_WORKER_MEMORY_BYTES = 768 * 1024 * 1024
 _FRONTEND_WORKER_MEMORY_HEADROOM_BYTES = 2 * 1024 * 1024 * 1024
@@ -30,7 +33,9 @@ def _fresh_frontend_parallel_layer_state() -> _FrontendParallelLayerState:
     return _FrontendParallelLayerState()
 
 
-def _known_classes_snapshot_copy(known_classes: Mapping[str, Any]) -> dict[str, Any]:
+def _known_classes_snapshot_copy(
+    known_classes: Mapping[ClassId, ClassInfo],
+) -> dict[ClassId, ClassInfo]:
     if not known_classes:
         return {}
     return dict(known_classes)

@@ -21,12 +21,8 @@ import ast
 from molt.compiler_analysis.python_call_arguments import collect_module_import_names
 from molt.frontend.sema.classgraph import (
     build_class_facts,
-    build_class_graph,
     c3_merge,
     class_body_needs_block_exec,
-    reachable_base_names,
-    static_class_bases,
-    static_mro_names,
 )
 from molt.frontend.sema.constenv import collect_module_const_dicts
 from molt.frontend.sema.funcmeta import (
@@ -53,13 +49,11 @@ from molt.frontend.sema.funcmeta import (
 )
 from molt.frontend.sema.result import (
     ClassFacts,
-    ClassGraph,
     FunctionMeta,
     SemaResult,
 )
 
 __all__ = [
-    "ClassGraph",
     "ClassFacts",
     "FUNCTION_KIND_VALUES",
     "FunctionMeta",
@@ -75,7 +69,6 @@ __all__ = [
     "async_generator_contains_return_value",
     "async_generator_contains_yield_from",
     "build_class_facts",
-    "build_class_graph",
     "c3_merge",
     "class_body_needs_block_exec",
     "collect_module_class_names",
@@ -84,14 +77,11 @@ __all__ = [
     "collect_module_func_kinds",
     "normalize_function_kind",
     "parse_stateful_function_type_hint",
-    "reachable_base_names",
     "signature_contains_yield",
     "stateful_function_frame_plan",
     "stateful_function_result_type_hint",
     "stateful_function_tag",
     "stateful_function_task_kind",
-    "static_class_bases",
-    "static_mro_names",
 ]
 
 
@@ -103,7 +93,6 @@ def analyze_module(node: ast.Module) -> SemaResult:
     AST fact) is applied downstream by the populate-shim, not here.
     """
     return SemaResult(
-        class_graph=build_class_graph(node),
         class_facts=build_class_facts(node),
         const_dicts=collect_module_const_dicts(node),
         function_meta=FunctionMeta(

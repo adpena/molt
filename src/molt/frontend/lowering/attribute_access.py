@@ -14,9 +14,13 @@ import ast
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _BUILTIN_FAST_METHODS,
-    BUILTIN_TYPE_TAGS,
+    BoundMethodHint,
+    BuiltinClass,
+    ClassId,
     MoltOp,
     MoltValue,
+    ReceiverKind,
+    TypeHint,
 )
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS,
@@ -30,7 +34,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         obj: MoltValue,
         obj_name: str | None,
         attr: str,
-    ) -> tuple[str, int] | None:
+    ) -> tuple[ClassId, int] | None:
         class_id = self._exact_class_for_value(obj, obj_name)
         if class_id is None:
             return None
@@ -63,13 +67,13 @@ class AttributeAccessMixin(GeneratorMixinBase):
                     return False
         return True
 
-    def _record_instance_attr_mutation(self, class_name: str, attr: str) -> None:
-        if class_name not in self.classes:
+    def _record_instance_attr_mutation(self, class_id: ClassId, attr: str) -> None:
+        if class_id not in self.classes:
             return
-        self.instance_attr_mutations.setdefault(class_name, set()).add(attr)
+        self.instance_attr_mutations.setdefault(class_id, set()).add(attr)
 
-    def _instance_attr_mutated(self, class_name: str, attr: str) -> bool:
-        return attr in self.instance_attr_mutations.get(class_name, set())
+    def _instance_attr_mutated(self, class_id: ClassId, attr: str) -> bool:
+        return attr in self.instance_attr_mutations.get(class_id, set())
 
     def _flush_deferred_module_attrs(self, names: set[str] | None = None) -> None:
         if not self.deferred_module_attrs or self.module_obj is None:
@@ -96,26 +100,37 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.deferred_module_attrs.discard(name)
 
     def _expr_is_data_descriptor(self, expr: ast.expr) -> bool:
-        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name):
-            if expr.func.id == "property":
-                return True
-            class_info = self.classes.get(expr.func.id)
-            if class_info:
-                methods = class_info.get("methods", {})
-                return "__set__" in methods or "__delete__" in methods
-        return False
-
-    def _class_attr_is_data_descriptor(self, class_name: str, attr: str) -> bool:
-        class_info = self.classes.get(class_name)
-        if not class_info:
+        """A class-body value the defining module proves is a data descriptor."""
+        if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
             return False
-        for mro_name in class_info.get("mro", [class_name]):
-            mro_info = self.classes.get(mro_name)
+        descriptor_class = self._class_reference(expr.func)
+        if descriptor_class is None:
+            return expr.func.id == "property" and not self._name_has_source_binding(
+                expr.func
+            )
+        class_info = self.classes.get(descriptor_class)
+        if class_info is None:
+            return False
+        methods = class_info.get("methods", {})
+        return "__set__" in methods or "__delete__" in methods
+
+    def _data_descriptor_attrs(
+        self, class_attrs: dict[str, ast.expr]
+    ) -> frozenset[str]:
+        return frozenset(
+            attr
+            for attr, expr in class_attrs.items()
+            if self._expr_is_data_descriptor(expr)
+        )
+
+    def _class_attr_is_data_descriptor(self, class_id: ClassId, attr: str) -> bool:
+        if class_id not in self.classes:
+            return False
+        for owner in self._class_mro(class_id):
+            mro_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
             if not mro_info:
                 continue
-            class_attrs = mro_info.get("class_attrs", {})
-            expr = class_attrs.get(attr)
-            if expr is not None and self._expr_is_data_descriptor(expr):
+            if attr in mro_info.get("data_descriptor_attrs", frozenset()):
                 return True
             method_info = mro_info.get("methods", {}).get(attr)
             if method_info and method_info["descriptor"] == "property":
@@ -179,7 +194,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         # When a module-scope variable was assigned from a typed expression
         # (e.g., count = 0 → int), the MODULE_GET_ATTR result inherits
         # that type so downstream _should_fast_int checks can fire.
-        attr_hint = self._module_attr_type_hints.get(name, "Any")
+        attr_hint: TypeHint = self._module_attr_type_hints.get(name, "Any")
         res = MoltValue(self.next_var(), type_hint=attr_hint)
         self.emit(
             MoltOp(
@@ -279,10 +294,12 @@ class AttributeAccessMixin(GeneratorMixinBase):
         obj: MoltValue,
         attr: str | None,
         *,
-        exact_class: str | None,
+        exact_class: ClassId | None,
         qualified_module_name: str | None = None,
     ) -> int:
-        if exact_class is not None or obj.type_hint.startswith("super"):
+        if exact_class is not None or (
+            isinstance(obj.type_hint, str) and obj.type_hint.startswith("super")
+        ):
             return 0
         if qualified_module_name is not None and attr is not None:
             _, gateway_bits = self._runtime_qualified_callable_requirement(
@@ -302,7 +319,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         result: MoltValue,
         *,
         literal_name: str | None,
-        exact_class: str | None = None,
+        exact_class: ClassId | None = None,
         qualified_module_name: str | None = None,
     ) -> None:
         requirement_bits = self._runtime_protected_attribute_requirement_bits(
@@ -329,13 +346,13 @@ class AttributeAccessMixin(GeneratorMixinBase):
         obj: MoltValue,
         attr: str,
         value: MoltValue,
-        expected_class: str,
+        expected_class: ClassId,
         *,
         obj_name: str | None = None,
     ) -> None:
         name = obj_name or obj.name
         class_info = self.classes.get(expected_class)
-        if class_info and self._class_is_exception_subclass(expected_class, class_info):
+        if class_info and self._class_is_exception_subclass(expected_class):
             self.emit(
                 MoltOp(
                     kind="SETATTR_GENERIC_OBJ",
@@ -346,7 +363,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return
         # Metaclass __init__ receives `cls` which is a TYPE object, not an
         # instance. Field offsets don't apply — always use generic setattr.
-        if class_info and "type" in class_info.get("bases", []):
+        if class_info and BuiltinClass("type") in class_info.get("bases", ()):
             self.emit(
                 MoltOp(
                     kind="SETATTR_GENERIC_PTR",
@@ -442,13 +459,13 @@ class AttributeAccessMixin(GeneratorMixinBase):
         self,
         obj: MoltValue,
         attr: str,
-        expected_class: str,
+        expected_class: ClassId,
         *,
         obj_name: str | None = None,
     ) -> MoltValue:
         name = obj_name or obj.name
         class_info = self.classes.get(expected_class)
-        if class_info and self._class_is_exception_subclass(expected_class, class_info):
+        if class_info and self._class_is_exception_subclass(expected_class):
             res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
@@ -459,7 +476,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
             return res
         # Metaclass methods operate on TYPE objects — field offsets don't apply.
-        if class_info and "type" in class_info.get("bases", []):
+        if class_info and BuiltinClass("type") in class_info.get("bases", ()):
             res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
@@ -544,7 +561,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         obj: MoltValue,
         fast_attr: str,
         fallback_attr: str,
-        expected_class: str,
+        expected_class: ClassId,
         guard: MoltValue,
     ) -> MoltValue:
         use_phi = self.enable_phi and not self.is_async()
@@ -669,7 +686,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         obj: MoltValue,
         attr: str,
         getter_symbol: str,
-        expected_class: str,
+        expected_class: ClassId,
         *,
         obj_name: str | None = None,
     ) -> MoltValue:
@@ -773,7 +790,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         node: ast.Attribute,
         obj: MoltValue,
         obj_name: str | None,
-        exact_class: str | None,
+        exact_class: ClassId | None,
         *,
         generic: bool = False,
     ) -> MoltValue:
@@ -797,7 +814,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         node: ast.Attribute,
         obj: MoltValue,
         obj_name: str | None,
-        exact_class: str | None,
+        exact_class: ClassId | None,
         *,
         generic: bool = False,
     ) -> MoltValue:
@@ -849,10 +866,23 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return result
-        class_info = self.classes.get(obj.type_hint)
-        if class_info:
+        declared = self._declared_class(obj)
+        declared_class = (
+            declared.class_id
+            if declared is not None and declared.class_id in self.classes
+            else None
+        )
+        # A classmethod's ``cls`` is the class object: instance layout,
+        # instance methods and instance properties do not describe it.
+        receiver_is_class_object = (
+            declared is not None and declared.kind is ReceiverKind.CLASS_OBJECT
+        )
+        class_info = (
+            self.classes[declared_class] if declared_class is not None else None
+        )
+        if declared_class is not None:
             getattribute_info, _ = self._resolve_method_info(
-                obj.type_hint, "__getattribute__"
+                declared_class, "__getattribute__"
             )
             if getattribute_info:
                 res = MoltValue(self.next_var())
@@ -869,7 +899,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             exact_dataclass, field_offset = exact_dataclass_field
             idx_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[field_offset], result=idx_val))
-            hint = None
+            hint: TypeHint | None = None
             if self._hints_enabled():
                 hint = (
                     self.classes[exact_dataclass].get("field_hints", {}).get(node.attr)
@@ -888,44 +918,44 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
             return res
         method_info = None
-        method_class = None
-        if class_info:
+        method_class: ClassId | None = None
+        if declared_class is not None:
             method_info, method_class = self._resolve_method_info(
-                obj.type_hint, node.attr
+                declared_class, node.attr
             )
-        is_class_obj = (
-            obj_name is not None
-            and obj.type_hint == "type"
-            and (obj_name in self.classes or obj_name in BUILTIN_TYPE_TAGS)
-        )
-        if method_info and method_info["descriptor"] == "function" and not is_class_obj:
-            if method_class:
-                method_owner_info = self.classes.get(method_class)
-                if (
-                    method_owner_info
-                    and method_owner_info.get("module") == self.module_name
-                ):
-                    method_info = None
-            # Avoid binding to same-module class methods directly; class method
-            # objects are not guaranteed to be in scope for direct reuse.
-        if method_info and method_info["descriptor"] == "function" and not is_class_obj:
-            fields = class_info.get("fields", {}) if class_info else {}
+        if (
+            method_info
+            and method_info["descriptor"] == "function"
+            and not receiver_is_class_object
+        ):
+            if method_class and method_class.module == self.module_name:
+                # Avoid binding to same-module class methods directly; class
+                # method objects are not guaranteed to be in scope for reuse.
+                method_info = None
+        if (
+            declared_class is not None
+            and class_info is not None
+            and method_info
+            and method_info["descriptor"] == "function"
+            and not receiver_is_class_object
+        ):
+            fields = class_info.get("fields", {})
             if (
-                class_info
-                and not class_info.get("dynamic")
-                and class_info.get("module") == self.module_name
+                not class_info.get("dynamic")
+                and declared_class.module == self.module_name
                 and node.attr not in fields
-                and not self._instance_attr_mutated(obj.type_hint, node.attr)
+                and not self._instance_attr_mutated(declared_class, node.attr)
             ):
                 func_val = method_info["func"]
                 if self.current_func_name != "molt_main":
                     class_ref = MoltValue(self.next_var(), type_hint="type")
                     self.emit(MoltOp(kind="TYPE_OF", args=[obj], result=class_ref))
                     func_val = self._emit_class_method_func(class_ref, node.attr)
-                class_name = method_class or obj.type_hint
                 res = MoltValue(
                     self.next_var(),
-                    type_hint=f"BoundMethod:{class_name}:{node.attr}",
+                    type_hint=BoundMethodHint(
+                        method_class or declared_class, node.attr
+                    ),
                 )
                 self.emit(
                     MoltOp(
@@ -936,10 +966,12 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
                 return res
         if (
-            method_info
+            declared_class is not None
+            and class_info is not None
+            and method_info
             and method_info["descriptor"] == "property"
-            and class_info
             and not class_info.get("dynamic")
+            and not receiver_is_class_object
         ):
             property_field = method_info.get("property_field")
             if property_field:
@@ -947,28 +979,30 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 if (
                     property_field in field_map
                     and not self._class_attr_is_data_descriptor(
-                        obj.type_hint, property_field
+                        declared_class, property_field
                     )
                 ):
-                    guard = self._loop_guard_for(obj, obj.type_hint, obj_name=obj_name)
+                    guard = self._loop_guard_for(obj, declared_class, obj_name=obj_name)
                     if guard is None:
-                        guard = self._emit_layout_guard(obj, obj.type_hint)
+                        guard = self._emit_layout_guard(obj, declared_class)
                     return self._emit_guarded_field_get_with_guard(
                         obj,
                         fast_attr=property_field,
                         fallback_attr=node.attr,
-                        expected_class=obj.type_hint,
+                        expected_class=declared_class,
                         guard=guard,
                     )
-            getter_symbol = method_info["func"].type_hint.split(":", 1)[1]
+            getter_hint = method_info["func"].type_hint
+            assert isinstance(getter_hint, str), "property getter carries a Func hint"
+            getter_symbol = getter_hint.split(":", 1)[1]
             return self._emit_guarded_property_get(
                 obj,
                 node.attr,
                 getter_symbol,
-                obj.type_hint,
+                declared_class,
                 obj_name=obj_name,
             )
-        if obj.type_hint.startswith("module"):
+        if isinstance(obj.type_hint, str) and obj.type_hint.startswith("module"):
             attr_name = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[node.attr], result=attr_name))
             res = MoltValue(self.next_var(), type_hint="Any")
@@ -994,22 +1028,27 @@ class AttributeAccessMixin(GeneratorMixinBase):
         # Acquired method values use the same exact source-point result as
         # immediate method calls, never an annotation/transport hint.
         receiver_kind = self._builtin_exact_type_from_expr(node.value)
-        _fast_methods = _BUILTIN_FAST_METHODS.get(receiver_kind)
-        if _fast_methods is not None and node.attr in _fast_methods:
-            res = MoltValue(
-                self.next_var(),
-                type_hint=f"BoundMethod:{receiver_kind}:{node.attr}",
-            )
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_OBJ",
-                    args=[obj, node.attr],
-                    result=res,
+        _fast_methods = (
+            _BUILTIN_FAST_METHODS.get(receiver_kind)
+            if receiver_kind is not None
+            else None
+        )
+        if receiver_kind is not None and _fast_methods is not None:
+            if node.attr in _fast_methods:
+                res = MoltValue(
+                    self.next_var(),
+                    type_hint=BoundMethodHint(BuiltinClass(receiver_kind), node.attr),
                 )
-            )
-            return res
-        expected_class = obj.type_hint if obj.type_hint in self.classes else None
-        if expected_class is None:
+                self.emit(
+                    MoltOp(
+                        kind="GETATTR_GENERIC_OBJ",
+                        args=[obj, node.attr],
+                        result=res,
+                    )
+                )
+                return res
+        expected_class = declared_class
+        if expected_class is None or class_info is None:
             res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
@@ -1019,7 +1058,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return res
-        if self.classes[expected_class].get("dynamic"):
+        if class_info.get("dynamic"):
             res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
@@ -1029,8 +1068,12 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return res
-        field_map = self.classes[expected_class].get("fields", {})
-        if node.attr not in field_map:
+        field_map = class_info.get("fields", {})
+        if (
+            receiver_is_class_object
+            or node.attr not in field_map
+            or self._class_attr_is_data_descriptor(expected_class, node.attr)
+        ):
             res = MoltValue(self.next_var())
             self.emit(
                 MoltOp(
@@ -1040,27 +1083,17 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return res
-        if self._class_attr_is_data_descriptor(expected_class, node.attr):
-            res = MoltValue(self.next_var())
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_PTR",
-                    args=[obj, node.attr],
-                    result=res,
-                )
-            )
-            return res
-        hint = None
+        field_hint: TypeHint | None = None
         if self._hints_enabled():
-            hint = self.classes[expected_class].get("field_hints", {}).get(node.attr)
+            field_hint = class_info.get("field_hints", {}).get(node.attr)
         res = self._emit_guarded_getattr(
             obj,
             node.attr,
             expected_class,
             obj_name=obj_name,
         )
-        if hint is not None:
-            res.type_hint = hint
+        if field_hint is not None:
+            res.type_hint = field_hint
         return res
 
     def _emit_attribute_store(
@@ -1075,21 +1108,27 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self._record_imported_module_attr_mutation(
                 ast.Attribute(value=obj_expr, attr=attr, ctx=ast.Store())
             )
-        if obj_expr is not None and isinstance(obj_expr, ast.Name):
-            class_name = obj_expr.id
-            if class_name in self.classes:
-                self._invalidate_loop_guards_for_class(class_name)
+        if obj_expr is not None:
+            stored_class = self._class_reference(obj_expr)
+            if stored_class is not None:
+                self._invalidate_loop_guards_for_class(stored_class)
         # Callers may have evaluated callback-capable operands since first
         # loading the receiver (notably augmented assignment). Re-resolve at
-        # the consuming store; a captured class string is never authority.
+        # the consuming store; a captured class identity is never authority.
         exact_class = self._exact_class_for_value(obj, obj_name)
-        class_info = None
-        if obj is not None:
-            class_info = self.classes.get(obj.type_hint)
+        declared = self._declared_class(obj)
+        declared_class = (
+            declared.class_id
+            if declared is not None and declared.class_id in self.classes
+            else None
+        )
+        class_info = (
+            self.classes[declared_class] if declared_class is not None else None
+        )
         if exact_class is not None:
             self._record_instance_attr_mutation(exact_class, attr)
-        elif obj is not None and obj.type_hint in self.classes:
-            self._record_instance_attr_mutation(obj.type_hint, attr)
+        elif declared_class is not None:
+            self._record_instance_attr_mutation(declared_class, attr)
         if exact_class is not None and obj is not None:
             exact_info = self.classes.get(exact_class)
             if (
@@ -1135,9 +1174,14 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 )
             )
             return
-        field_map = class_info.get("fields", {}) if class_info else {}
-        if obj is not None and obj.type_hint in self.classes:
-            if class_info and class_info.get("dynamic"):
+        if obj is not None and declared_class is not None and class_info is not None:
+            if (
+                class_info.get("dynamic")
+                or attr not in class_info.get("fields", {})
+                or declared is not None
+                and declared.kind is ReceiverKind.CLASS_OBJECT
+                or self._class_attr_is_data_descriptor(declared_class, attr)
+            ):
                 self.emit(
                     MoltOp(
                         kind="SETATTR_GENERIC_PTR",
@@ -1145,30 +1189,13 @@ class AttributeAccessMixin(GeneratorMixinBase):
                         result=MoltValue("none"),
                     )
                 )
-            elif attr in field_map:
-                if self._class_attr_is_data_descriptor(obj.type_hint, attr):
-                    self.emit(
-                        MoltOp(
-                            kind="SETATTR_GENERIC_PTR",
-                            args=[obj, attr, value_node],
-                            result=MoltValue("none"),
-                        )
-                    )
-                else:
-                    self._emit_guarded_setattr(
-                        obj,
-                        attr,
-                        value_node,
-                        obj.type_hint,
-                        obj_name=obj_name,
-                    )
             else:
-                self.emit(
-                    MoltOp(
-                        kind="SETATTR_GENERIC_PTR",
-                        args=[obj, attr, value_node],
-                        result=MoltValue("none"),
-                    )
+                self._emit_guarded_setattr(
+                    obj,
+                    attr,
+                    value_node,
+                    declared_class,
+                    obj_name=obj_name,
                 )
         else:
             self.emit(

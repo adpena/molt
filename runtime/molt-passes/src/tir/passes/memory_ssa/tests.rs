@@ -37,24 +37,8 @@ fn const_str(value: &str, result: ValueId) -> TirOp {
     result_op
 }
 
-/// An ordinary typed-slot store `obj.<offset> = val` of class `Point`.
+/// An ordinary typed-slot store `obj.<offset> = val`.
 fn store(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
-    store_of(obj, val, offset, "Point")
-}
-
-/// An ordinary typed-slot store with an explicit class name.
-fn store_of(obj: ValueId, val: ValueId, offset: i64, class: &str) -> TirOp {
-    let mut o = op(OpCode::StoreAttr, vec![obj, val], vec![]);
-    o.attrs.insert("value".into(), AttrValue::Int(offset));
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
-    o.attrs
-        .insert("_class".into(), AttrValue::Str(class.into()));
-    o
-}
-
-/// A typed-slot store with no class metadata; old-value facts are independent.
-fn store_no_class(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
     let mut o = op(OpCode::StoreAttr, vec![obj, val], vec![]);
     o.attrs.insert("value".into(), AttrValue::Int(offset));
     o.attrs
@@ -62,25 +46,9 @@ fn store_no_class(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
     o
 }
 
-/// A direct typed-slot load `r = obj.<offset>` of class `Point`. The exact-site
-/// slot plan decides whether it is callback-free and becomes a MemoryUse.
+/// A direct typed-slot load `r = obj.<offset>`. The exact-site slot plan
+/// decides whether it is callback-free and becomes a MemoryUse.
 fn load(obj: ValueId, offset: i64, r: ValueId) -> TirOp {
-    load_of(obj, offset, r, "Point")
-}
-
-/// A typed-slot load with an explicit class name.
-fn load_of(obj: ValueId, offset: i64, r: ValueId, class: &str) -> TirOp {
-    let mut o = op(OpCode::LoadAttr, vec![obj], vec![r]);
-    o.attrs.insert("value".into(), AttrValue::Int(offset));
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("load".into()));
-    o.attrs
-        .insert("_class".into(), AttrValue::Str(class.into()));
-    o
-}
-
-/// A direct typed-slot load with no class metadata.
-fn load_no_class(obj: ValueId, offset: i64, r: ValueId) -> TirOp {
     let mut o = op(OpCode::LoadAttr, vec![obj], vec![r]);
     o.attrs.insert("value".into(), AttrValue::Int(offset));
     o.attrs
@@ -328,9 +296,9 @@ fn distinct_offsets_have_independent_reaching_defs() {
 }
 
 #[test]
-fn unproved_replacing_store_clobbers_a_distinct_class() {
-    // Byte/class disjointness is not callback disjointness: replacement can
-    // invoke an old value's destructor that mutates the other class instance.
+fn unproved_replacing_store_clobbers_another_object() {
+    // Byte disjointness is not callback disjointness: replacement can invoke an
+    // old value's destructor that mutates the other object.
     let mut func = TirFunction::new(
         "f".into(),
         vec![
@@ -353,9 +321,9 @@ fn unproved_replacing_store_clobbers_a_distinct_class() {
         construct.attrs.insert("value".into(), AttrValue::Int(16));
         entry.ops.push(construct);
         entry.ops.push(const_str("present", v2));
-        entry.ops.push(store_of(l, v2, 0, "Line"));
-        entry.ops.push(store_of(p, v1, 0, "Point"));
-        entry.ops.push(load_of(l, 0, r, "Line"));
+        entry.ops.push(store(l, v2, 0));
+        entry.ops.push(store(p, v1, 0));
+        entry.ops.push(load(l, 0, r));
         entry.terminator = Terminator::Return { values: vec![r] };
     }
     let mem = run(&func);
@@ -364,7 +332,7 @@ fn unproved_replacing_store_clobbers_a_distinct_class() {
     assert_eq!(
         mem.def_version_of(fallback_load),
         Some(replacing),
-        "an unrelated replacing Point store can run a finalizer that rewrites Line"
+        "an unrelated replacing store can run a finalizer that rewrites the other object"
     );
     assert!(mem.reaching_def_for_use(func.entry_block, 4).is_none());
 }
@@ -387,10 +355,10 @@ fn distinct_fresh_roots_at_same_offset_do_not_clobber() {
         allocation(p, 8),
         allocation(q, 8),
         const_str("p", pv),
-        store_no_class(p, pv, 0),
+        store(p, pv, 0),
         const_str("q", qv),
-        store_no_class(q, qv, 0),
-        load_no_class(p, 0, r),
+        store(q, qv, 0),
+        load(p, 0, r),
     ];
     entry.terminator = Terminator::Return { values: vec![r] };
     let mem = run(&func);
@@ -433,9 +401,9 @@ fn distinct_offset_replacement_keeps_its_finalizer_clobber() {
 }
 
 #[test]
-fn same_class_offset_store_still_clobbers() {
-    // A same-class same-offset store BETWEEN a store and a load IS a clobber:
-    // object identity is untracked, so two `Point.x@0` accesses may-alias.
+fn same_offset_store_on_possibly_aliased_object_clobbers() {
+    // A same-offset store BETWEEN a store and a load IS a clobber: object
+    // identity is untracked, so two `x@0` accesses may-alias.
     let mut func = TirFunction::new(
         "f".into(),
         vec![
@@ -454,9 +422,9 @@ fn same_class_offset_store_still_clobbers() {
     let r = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(store_of(a, v1, 0, "Point")); // op 0
-        entry.ops.push(store_of(b, v2, 0, "Point")); // op 1 — same class+offset
-        entry.ops.push(load_of(a, 0, r, "Point")); // op 2
+        entry.ops.push(store(a, v1, 0)); // op 0
+        entry.ops.push(store(b, v2, 0)); // op 1 — same offset
+        entry.ops.push(load(a, 0, r)); // op 2
         entry.terminator = Terminator::Return { values: vec![r] };
     }
     let mem = run(&func);
@@ -465,15 +433,15 @@ fn same_class_offset_store_still_clobbers() {
     assert_eq!(
         mem.def_version_of(fallback_load),
         Some(store_b),
-        "a same-class+offset store on a possibly-different object still clobbers"
+        "a same-offset store on a possibly-different object still clobbers"
     );
     assert!(mem.reaching_def_for_use(func.entry_block, 2).is_none());
 }
 
 #[test]
-fn classless_replacing_store_remains_a_generic_heap_clobber() {
-    // Old-value release, not missing class metadata, makes the offset8 store
-    // clobber an offset0 load. The receiver is an unproved argument.
+fn replacing_store_remains_a_generic_heap_clobber() {
+    // Old-value release makes the offset8 store clobber an offset0 load. The
+    // receiver is an unproved argument.
     let mut func = TirFunction::new(
         "f".into(),
         vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
@@ -486,9 +454,9 @@ fn classless_replacing_store_remains_a_generic_heap_clobber() {
     let r0 = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(store_no_class(obj, v1, 0)); // op 0 — GenericHeap
-        entry.ops.push(store_no_class(obj, v2, 8)); // op 1 — GenericHeap
-        entry.ops.push(load_no_class(obj, 0, r0)); // op 2 — physical Field
+        entry.ops.push(store(obj, v1, 0)); // op 0 — GenericHeap
+        entry.ops.push(store(obj, v2, 8)); // op 1 — GenericHeap
+        entry.ops.push(load(obj, 0, r0)); // op 2 — physical Field
         entry.terminator = Terminator::Return { values: vec![r0] };
     }
     let mem = run(&func);
@@ -497,7 +465,7 @@ fn classless_replacing_store_remains_a_generic_heap_clobber() {
     assert_eq!(
         mem.def_version_of(fallback_load),
         Some(store8),
-        "fail-closed: a class-less typed-slot load reaches the most-recent GenericHeap store"
+        "fail-closed: a typed-slot load reaches the most-recent GenericHeap store"
     );
     assert!(mem.reaching_def_for_use(func.entry_block, 2).is_none());
 }
@@ -518,8 +486,8 @@ fn unknown_value_store_does_not_prove_inline_load_presence() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops = vec![
         allocation(object, 8),
-        store_no_class(object, unknown, 0),
-        load_no_class(object, 0, loaded),
+        store(object, unknown, 0),
+        load(object, 0, loaded),
     ];
     entry.terminator = Terminator::Return {
         values: vec![loaded],

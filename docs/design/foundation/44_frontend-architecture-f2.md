@@ -555,9 +555,8 @@ ast.Module
    ▼  BIND / SEMA      frontend/sema/                       ── ANNOTATES, never emits
    │     • ScopeTable        : per-scope symbol kind (local/cell/free/global), the
    │                           closure-cell index map, comp-scope isolation set
-   │     • ClassGraph        : static bases, C3 linearization, reachability
-   │     • ClassFacts        : class-body block-exec ids, class-member
-   │                           methods, descriptor/slot facts
+   │     • ClassFacts        : class-body block-exec ids (class identity is a
+   │                           ClassId per class statement, assigned in lowering)
    │     • ConstEnv          : statically-known module dicts, const-int facts
    │     • Legality          : compile-time warnings (~bool, finally-flow), the
    │                           refuse-to-fold-a-raising-const decision

@@ -22,10 +22,13 @@ from molt.compiler_analysis.python_inlining import (
 )
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
+    ClassId,
+    DeclaredClass,
     MethodInfo,
     MethodDescriptor,
     MoltOp,
     MoltValue,
+    ReceiverKind,
     _ClassNsScope,
     _MOLT_CLOSURE_PARAM,
 )
@@ -203,16 +206,19 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         return assigns
 
     def _class_method_receiver_hint(
-        self, class_name: str, descriptor: MethodDescriptor, parameter_index: int
-    ) -> str | None:
-        """Infer a receiver only when the descriptor proves its binding rule."""
-        if parameter_index == 0 and descriptor in {
-            "function",
-            "classmethod",
-            "property",
-            "property_update",
-        }:
-            return class_name
+        self, class_id: ClassId, descriptor: MethodDescriptor, parameter_index: int
+    ) -> DeclaredClass | None:
+        """Infer a receiver only when the descriptor proves its binding rule.
+
+        ``self`` is declared an instance; a classmethod's ``cls`` is declared
+        the class object. Neither excludes subclasses.
+        """
+        if parameter_index != 0:
+            return None
+        if descriptor in {"function", "property", "property_update"}:
+            return DeclaredClass(class_id, ReceiverKind.INSTANCE)
+        if descriptor == "classmethod":
+            return DeclaredClass(class_id, ReceiverKind.CLASS_OBJECT)
         return None
 
     def _class_method_descriptor(
@@ -229,9 +235,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             if item.name == "__new__":
                 return "staticmethod", None
             return "function", None
-        if len(item.decorator_list) != 1 or self.classes[class_node.name].get(
-            "dynamic"
-        ):
+        if len(item.decorator_list) != 1 or self.classes[
+            self._class_id_for_definition(class_node)
+        ].get("dynamic"):
             return "decorated", None
         decorator = item.decorator_list[0]
         if isinstance(decorator, ast.Name) and decorator.id in {
@@ -253,7 +259,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             and decorator.value.id == item.name
             and decorator.attr in {"setter", "deleter"}
         ):
-            previous = self.classes[class_node.name]["methods"].get(item.name)
+            previous = self.classes[self._class_id_for_definition(class_node)][
+                "methods"
+            ].get(item.name)
             if previous is not None and previous["descriptor"] == "property":
                 return "property_update", decorator.attr
         return "decorated", None
@@ -267,15 +275,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         property_field = None
         if descriptor == "property":
             property_field = self._property_field_from_method(item)
-        return_hint = self._annotation_to_hint(item.returns)
-        if (
-            return_hint
-            and return_hint[:1] in {"'", '"'}
-            and return_hint[-1:] == return_hint[:1]
-        ):
-            return_hint = return_hint[1:-1]
-        if return_hint == "Self":
-            return_hint = class_node.name
         method_symbol = self._function_symbol(
             f"{class_node.name}_{method_name}", kind=FunctionKind.GENERATOR
         )
@@ -370,9 +369,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
-        prev_class = self.current_class
         prev_first_param = self.current_method_first_param
-        self.current_class = class_node.name
         self.current_method_first_param = params[0] if params else None
         self.start_function(
             poll_symbol,
@@ -380,7 +377,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             python_first_arg=self._python_first_positional_arg(item.args),
             params=["self"],
             compiler_params={"self"},
-            type_facts_name=f"{class_node.name}.{method_name}",
+            type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
             needs_return_slot=has_return,
         )
         self.global_decls = self._collect_global_decls(item.body)
@@ -397,7 +394,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self.free_var_hints = free_var_hints
         for i, arg in enumerate(arg_nodes):
             self._async_local_offset(arg.arg)
-            hint = self._class_method_receiver_hint(class_node.name, descriptor, i)
+            hint = self._class_method_receiver_hint(
+                self._class_id_for_definition(class_node), descriptor, i
+            )
             if self._hints_enabled():
                 explicit = self.explicit_type_hints.get(arg.arg)
                 if explicit is None:
@@ -456,7 +455,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         )
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
-        self.current_class = prev_class
         self.current_method_first_param = prev_first_param
         # Publish the final spilled-frame extent on the defining op.
         function_def.metadata = {
@@ -470,7 +468,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             "func": func_val,
             "attr": method_attr,
             "descriptor": descriptor,
-            "return_hint": return_hint,
             "param_count": len(params),
             "defaults": default_specs,
             "posonly_count": len(posonly),
@@ -491,15 +488,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         property_field = None
         if descriptor == "property":
             property_field = self._property_field_from_method(item)
-        return_hint = self._annotation_to_hint(item.returns)
-        if (
-            return_hint
-            and return_hint[:1] in {"'", '"'}
-            and return_hint[-1:] == return_hint[:1]
-        ):
-            return_hint = return_hint[1:-1]
-        if return_hint == "Self":
-            return_hint = class_node.name
         method_symbol = self._function_symbol(f"{class_node.name}_{method_name}")
         self._record_func_default_specs(method_symbol, item.args)
         posonly, pos_or_kw, kwonly, vararg, varkw = self._split_function_args(item.args)
@@ -575,9 +563,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
-        prev_class = self.current_class
         prev_first_param = self.current_method_first_param
-        self.current_class = class_node.name
         self.current_method_first_param = params[0] if params else None
         method_params, parameter_bindings = self._function_transport_params(
             params,
@@ -587,7 +573,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             method_symbol,
             python_first_arg=self._python_first_positional_arg(item.args),
             params=method_params,
-            type_facts_name=f"{class_node.name}.{method_name}",
+            type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
             needs_return_slot=False,
             has_exception_handlers=self._body_has_exception_handlers(item.body),
             code_slots=code_slots,
@@ -612,7 +598,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
         self.unbound_check_names = set(self.scope_assigned)
         for idx, arg in enumerate(arg_nodes):
-            hint = self._class_method_receiver_hint(class_node.name, descriptor, idx)
+            hint = self._class_method_receiver_hint(
+                self._class_id_for_definition(class_node), descriptor, idx
+            )
             if self._hints_enabled():
                 explicit = self.explicit_type_hints.get(arg.arg)
                 if explicit is None:
@@ -666,7 +654,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self._emit_return_value(res)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
-        self.current_class = prev_class
         self.current_method_first_param = prev_first_param
         method_attr = func_val
         # Elide only frames whose entire inline expression is proven unobservable.
@@ -694,7 +681,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             "func": func_val,
             "attr": method_attr,
             "descriptor": descriptor,
-            "return_hint": return_hint,
             "param_count": len(params),
             "defaults": default_specs,
             "posonly_count": len(posonly),
@@ -728,15 +714,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             method_name = item.name
             method_qualname = self._definition_qualname(item)
             property_field = None
-            return_hint = self._annotation_to_hint(item.returns)
-            if (
-                return_hint
-                and return_hint[:1] in {"'", '"'}
-                and return_hint[-1:] == return_hint[:1]
-            ):
-                return_hint = return_hint[1:-1]
-            if return_hint == "Self":
-                return_hint = class_node.name
             method_symbol = self._function_symbol(
                 f"{class_node.name}_{method_name}", kind=FunctionKind.ASYNC_GENERATOR
             )
@@ -772,9 +749,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
 
             prev_func = self.current_func_name
             prev_state = self._capture_function_state()
-            prev_class = self.current_class
             prev_first_param = self.current_method_first_param
-            self.current_class = class_node.name
             self.current_method_first_param = params[0] if params else None
             self.start_function(
                 poll_symbol,
@@ -782,7 +757,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 python_first_arg=self._python_first_positional_arg(item.args),
                 params=["self"],
                 compiler_params={"self"},
-                type_facts_name=f"{class_node.name}.{method_name}",
+                type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
                 needs_return_slot=has_return,
             )
             self.global_decls = self._collect_global_decls(item.body)
@@ -799,7 +774,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 self.free_var_hints = free_var_hints
             for i, arg in enumerate(arg_nodes):
                 self._async_local_offset(arg.arg)
-                hint = self._class_method_receiver_hint(class_node.name, descriptor, i)
+                hint = self._class_method_receiver_hint(
+                    self._class_id_for_definition(class_node), descriptor, i
+                )
                 if self._hints_enabled():
                     explicit = self.explicit_type_hints.get(arg.arg)
                     if explicit is None:
@@ -860,7 +837,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             )
             self.resume_function(prev_func)
             self._restore_function_state(prev_state)
-            self.current_class = prev_class
             self.current_method_first_param = prev_first_param
 
             func_hint = frame_plan.function_type_hint(closure_size)
@@ -926,7 +902,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 "func": func_val,
                 "attr": method_attr,
                 "descriptor": descriptor,
-                "return_hint": return_hint,
                 "param_count": len(params),
                 "defaults": default_specs,
                 "posonly_count": len(posonly),
@@ -940,15 +915,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         method_name = item.name
         method_qualname = self._definition_qualname(item)
         property_field = None
-        return_hint = self._annotation_to_hint(item.returns)
-        if (
-            return_hint
-            and return_hint[:1] in {"'", '"'}
-            and return_hint[-1:] == return_hint[:1]
-        ):
-            return_hint = return_hint[1:-1]
-        if return_hint == "Self":
-            return_hint = class_node.name
         method_symbol = self._function_symbol(
             f"{class_node.name}_{method_name}", kind=FunctionKind.ASYNC
         )
@@ -982,9 +948,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
 
         prev_func = self.current_func_name
         prev_state = self._capture_function_state()
-        prev_class = self.current_class
         prev_first_param = self.current_method_first_param
-        self.current_class = class_node.name
         self.current_method_first_param = params[0] if params else None
         self.start_function(
             poll_symbol,
@@ -992,7 +956,7 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             python_first_arg=self._python_first_positional_arg(item.args),
             params=["self"],
             compiler_params={"self"},
-            type_facts_name=f"{class_node.name}.{method_name}",
+            type_facts_name=f"{self._class_id_for_definition(class_node).qualname}.{method_name}",
             needs_return_slot=has_return,
         )
         self.global_decls = self._collect_global_decls(item.body)
@@ -1008,7 +972,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self.free_var_hints = free_var_hints
         for i, arg in enumerate(arg_nodes):
             self._async_local_offset(arg.arg)
-            hint = self._class_method_receiver_hint(class_node.name, descriptor, i)
+            hint = self._class_method_receiver_hint(
+                self._class_id_for_definition(class_node), descriptor, i
+            )
             if self._hints_enabled():
                 explicit = self.explicit_type_hints.get(arg.arg)
                 if explicit is None:
@@ -1057,7 +1023,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         )
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
-        self.current_class = prev_class
         self.current_method_first_param = prev_first_param
 
         func_hint = frame_plan.function_type_hint(closure_size)
@@ -1123,7 +1088,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             "func": func_val,
             "attr": method_attr,
             "descriptor": descriptor,
-            "return_hint": return_hint,
             "param_count": len(params),
             "defaults": default_specs,
             "posonly_count": len(posonly),

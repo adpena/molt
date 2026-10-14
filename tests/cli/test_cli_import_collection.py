@@ -15910,7 +15910,6 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     result = {
         "functions": [],
         "func_code_ids": {},
-        "local_class_names": [],
         "local_classes": {},
         "midend_policy_outcomes_by_function": {},
         "midend_pass_stats_by_function": {},
@@ -15998,7 +15997,6 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
             }
         ],
         "func_code_ids": {},
-        "local_class_names": [],
         "local_classes": {},
         "midend_policy_outcomes_by_function": {},
         "midend_pass_stats_by_function": {},
@@ -16144,7 +16142,6 @@ def test_persisted_module_lowering_tracks_source_content(
         result={
             "functions": [],
             "func_code_ids": {},
-            "local_class_names": [],
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
             "midend_pass_stats_by_function": {},
@@ -16183,7 +16180,6 @@ def test_persisted_module_lowering_reuses_process_cache(
         result={
             "functions": [],
             "func_code_ids": {},
-            "local_class_names": [],
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
             "midend_pass_stats_by_function": {},
@@ -16244,7 +16240,6 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
                 }
             ],
             "func_code_ids": {"molt_main": 0},
-            "local_class_names": [],
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
             "midend_pass_stats_by_function": {},
@@ -16320,7 +16315,6 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
                 }
             ],
             "func_code_ids": {},
-            "local_class_names": [],
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
             "midend_pass_stats_by_function": {},
@@ -16577,7 +16571,6 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
         result={
             "functions": [],
             "func_code_ids": {},
-            "local_class_names": [],
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
             "midend_pass_stats_by_function": {},
@@ -17723,7 +17716,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         result={
             "functions": [],
             "func_code_ids": {},
-            "local_class_names": [],
             "local_classes": {},
             "midend_policy_outcomes_by_function": {},
             "midend_pass_stats_by_function": {},

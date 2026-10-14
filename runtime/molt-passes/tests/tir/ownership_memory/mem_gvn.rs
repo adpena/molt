@@ -61,13 +61,6 @@ fn load(obj: ValueId, offset: i64, r: ValueId) -> TirOp {
     o
 }
 
-fn with_class_view(mut operation: TirOp, class: &str) -> TirOp {
-    operation
-        .attrs
-        .insert("_class".into(), AttrValue::Str(class.into()));
-    operation
-}
-
 /// An opaque call that clobbers `GenericHeap`.
 fn call(args: Vec<ValueId>, r: ValueId) -> TirOp {
     op(OpCode::Call, args, vec![r])
@@ -856,65 +849,23 @@ fn forward_through_transparent_alias() {
 }
 
 #[test]
-fn same_allocation_base_and_derived_views_forward_one_physical_store() {
+fn unknown_receiver_field_loads_remain_callback_capable() {
     let mut func = TirFunction::new(
-        "base_derived_view".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let object = func.fresh_value();
-    let base_value = func.fresh_value();
-    let loaded = func.fresh_value();
-    {
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.extend([
-            fixed_boxed_alloc(object),
-            const_str("owned", base_value),
-            with_class_view(store(object, base_value, 0), "Base"),
-            with_class_view(load(object, 0, loaded), "Derived"),
-        ]);
-        entry.terminator = Terminator::Return {
-            values: vec![loaded],
-        };
-    }
-
-    let aliases = AliasAnalysisResult::compute(&func);
-    assert_eq!(
-        aliases.region_of(&func.blocks[&func.entry_block].ops[3]),
-        molt_passes::tir::passes::alias_analysis::MemRegion::GenericHeap,
-        "context-free load classification retains its fallback floor"
-    );
-    let stats = run_fresh(&mut func);
-    assert_eq!(
-        stats.values_changed, 1,
-        "class metadata does not split one admitted physical word"
-    );
-    let ops = &func.blocks[&func.entry_block].ops;
-    assert!(is_owned_alias(&ops[3]));
-    assert_eq!(ops[3].operands, vec![base_value]);
-    assert_eq!(ops[3].results, vec![loaded]);
-}
-
-#[test]
-fn unknown_receiver_field_views_remain_callback_capable() {
-    let mut func = TirFunction::new(
-        "unknown_base_derived_view".into(),
+        "unknown_receiver_loads".into(),
         vec![TirType::DynBox],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
     let object = ValueId(0);
-    let base_load = func.fresh_value();
-    let derived_load = func.fresh_value();
+    let first_load = func.fresh_value();
+    let second_load = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.extend([
-            with_class_view(load(object, 0, base_load), "Base"),
-            with_class_view(load(object, 0, derived_load), "Derived"),
-        ]);
+        entry
+            .ops
+            .extend([load(object, 0, first_load), load(object, 0, second_load)]);
         entry.terminator = Terminator::Return {
-            values: vec![derived_load],
+            values: vec![second_load],
         };
     }
 
@@ -935,7 +886,7 @@ fn unknown_receiver_field_views_remain_callback_capable() {
 // ── Production op-shape coverage ───────────────────────────────────────
 
 /// Guarded field reads can fall back to generic attribute lookup and are not
-/// precise typed-slot loads, even when they carry an offset/class hint.
+/// precise typed-slot loads, even when they carry an offset.
 #[test]
 fn guarded_field_get_three_operand_form_is_not_a_typed_slot_load() {
     let mut o = op(
@@ -962,10 +913,6 @@ fn guarded_field_get_fallback_blocks_forwarding() {
             "_original_kind".into(),
             AttrValue::Str("guarded_field_get".into()),
         );
-        // Preserve the production frontend hint while proving it is metadata,
-        // not alias authority: guarded fallback remains whole-heap observable.
-        o.attrs
-            .insert("_class".into(), AttrValue::Str("Point".into()));
         o
     }
     let mut func = TirFunction::new(

@@ -12,6 +12,7 @@ from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
     CFGGraph,
+    ClassId,
     CanonicalizationState,
     LoopBoundFact,
     MoltOp,
@@ -347,6 +348,9 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
     ) -> tuple[str, Any] | None:
         if isinstance(value, MoltValue):
             return self._normalize_value_operand_key(value, const_int_values)
+        if isinstance(value, ClassId):
+            # The expected class of a field op is part of its read identity.
+            return ("class", value)
         identity = literal_identity_key(value)
         return ("const", identity) if identity is not None else None
 

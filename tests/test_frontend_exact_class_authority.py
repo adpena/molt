@@ -5,8 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.frontend import (
+    ClassId,
+    DeclaredClass,
+    MoltOp,
+    MoltValue,
+    SimpleTIRGenerator,
+    compile_to_tir,
+)
 from molt.frontend.lowering.serialization_context import SerializationContext
+
+POINT = ClassId("exact_class_authority", "Point")
+RECORD = ClassId("exact_class_authority", "Record")
+ELSEWHERE_POINT = ClassId("elsewhere", "Point")
 
 
 @pytest.mark.parametrize("kind", ["GETATTR", "GUARDED_GETATTR", "GETATTR_GENERIC_PTR"])
@@ -15,13 +26,13 @@ def test_attribute_serialization_is_independent_of_global_cache_allocation(
 ) -> None:
     owner = MoltValue("owner")
     args = {
-        "GETATTR": [owner, "x", "Point"],
+        "GETATTR": [owner, "x", POINT],
         "GUARDED_GETATTR": [
             owner,
             MoltValue("class"),
             MoltValue("version"),
             "x",
-            "Point",
+            POINT,
         ],
         "GETATTR_GENERIC_PTR": [owner, "x"],
     }[kind]
@@ -42,8 +53,10 @@ def test_attribute_serialization_is_independent_of_global_cache_allocation(
 
 
 def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
+    # The op carries the ClassId bound at emission; serialization reads that
+    # class's offsets and emits no class field on the SimpleIR wire.
     generator = SimpleTIRGenerator()
-    generator.classes["Point"] = {"fields": {"x": 8}}
+    generator.classes[POINT] = {"binding_name": "Point", "fields": {"x": 8}}
     context = SerializationContext([], set(), None)
     assert generator._serialize_object_attr_op(
         MoltOp(
@@ -53,7 +66,7 @@ def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
                 MoltValue("class"),
                 MoltValue("version"),
                 "x",
-                "Point",
+                POINT,
             ],
             MoltValue("result"),
         ),
@@ -66,7 +79,6 @@ def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
             "s_value": "x",
             "value": 8,
             "out": "result",
-            "class": "Point",
         }
     ]
 
@@ -213,28 +225,29 @@ def test_runtime_selected_constructor_shapes_never_authorize_fixed_layout(
 def test_exact_binding_alias_and_lowered_value_drive_direct_field_consumers() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     first_field_op = len(generator.current_ops)
-    generator.classes["Point"] = {
+    generator.classes[POINT] = {
+        "binding_name": "Point",
         "fields": {"x": 24},
         "layout_version": 7,
         "static": True,
     }
     allocated = generator._stamp_exact_class(
-        MoltValue("allocated_point", type_hint="Point"), "Point"
+        MoltValue("allocated_point", type_hint=DeclaredClass(POINT)), POINT
     )
     generator._update_exact_local("point", None, allocated)
     alias = generator._stamp_exact_class(
-        MoltValue("alias_value", type_hint="Point"), "Point"
+        MoltValue("alias_value", type_hint=DeclaredClass(POINT)), POINT
     )
     generator._update_exact_local("alias", ast.Name(id="point", ctx=ast.Load()), alias)
-    generator._emit_guarded_getattr(alias, "x", "Point", obj_name="alias")
+    generator._emit_guarded_getattr(alias, "x", POINT, obj_name="alias")
     exact_alias = generator._stamp_exact_class(
-        MoltValue("exact_alias", type_hint="Point"), "Point"
+        MoltValue("exact_alias", type_hint=DeclaredClass(POINT)), POINT
     )
     generator._emit_guarded_setattr(
         exact_alias,
         "x",
         MoltValue("one", type_hint="int"),
-        "Point",
+        POINT,
     )
 
     assert [op.kind for op in generator.current_ops[first_field_op:]] == [
@@ -322,7 +335,7 @@ def test_method_self_is_not_an_exact_receiver_identity() -> None:
 def test_lowered_exact_result_is_the_binding_publication_authority() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     lowered = generator._stamp_exact_class(
-        MoltValue("lowered_record", type_hint="Record"), "Record"
+        MoltValue("lowered_record", type_hint=DeclaredClass(RECORD)), RECORD
     )
     generator._update_exact_local(
         "record",
@@ -330,18 +343,18 @@ def test_lowered_exact_result_is_the_binding_publication_authority() -> None:
         lowered,
     )
 
-    assert generator.exact_locals["record"].class_id == "Record"
-    assert generator._exact_class_for_value(lowered) == "Record"
+    assert generator.exact_locals["record"].class_id == RECORD
+    assert generator._exact_class_for_value(lowered) == RECORD
     loaded_record = generator._stamp_exact_class(
-        MoltValue("loaded_record", type_hint="Record"), "Record"
+        MoltValue("loaded_record", type_hint=DeclaredClass(RECORD)), RECORD
     )
-    assert generator._exact_class_for_value(loaded_record, "record") == "Record"
+    assert generator._exact_class_for_value(loaded_record, "record") == RECORD
 
 
 def test_expired_named_and_temporary_facts_cannot_resurrect() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     lowered = generator._stamp_exact_class(
-        MoltValue("lowered_point", type_hint="Point"), "Point"
+        MoltValue("lowered_point", type_hint=DeclaredClass(POINT)), POINT
     )
     generator._update_exact_local("point", None, lowered)
 
@@ -354,23 +367,23 @@ def test_expired_named_and_temporary_facts_cannot_resurrect() -> None:
 def test_old_receiver_cannot_borrow_same_name_republished_fact() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     old_receiver = generator._stamp_exact_class(
-        MoltValue("old_point", type_hint="Point"), "Point"
+        MoltValue("old_point", type_hint=DeclaredClass(POINT)), POINT
     )
     generator._update_exact_local("point", None, old_receiver)
 
     generator._expire_exact_class_facts()
     fresh_receiver = generator._stamp_exact_class(
-        MoltValue("fresh_point", type_hint="Point"), "Point"
+        MoltValue("fresh_point", type_hint=DeclaredClass(POINT)), POINT
     )
     generator._update_exact_local("point", None, fresh_receiver)
 
-    assert generator._exact_class_for_value(fresh_receiver, "point") == "Point"
+    assert generator._exact_class_for_value(fresh_receiver, "point") == POINT
     assert generator._exact_class_for_value(old_receiver, "point") is None
 
 
 def test_comprehension_scope_does_not_restore_fact_across_callback_epoch() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
-    generator._publish_exact_local("point", "Point")
+    generator._publish_exact_local("point", POINT)
     restore = generator._mask_exact_binding_projection({"point"})
 
     generator._expire_exact_class_facts()
@@ -381,15 +394,15 @@ def test_comprehension_scope_does_not_restore_fact_across_callback_epoch() -> No
 
 def test_hoisted_layout_assumption_expires_with_its_exact_fact() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
-    generator._publish_exact_local("point", "Point")
+    generator._publish_exact_local("point", POINT)
     generator.loop_guard_assumptions.append(
-        {"point": ("Point", True, generator.exact_class_token)}
+        {"point": (POINT, True, generator.exact_class_token)}
     )
-    assert generator._loop_guard_assumption("point", "Point") is True
+    assert generator._loop_guard_assumption("point", POINT) is True
 
     generator._expire_exact_class_facts()
 
-    assert generator._loop_guard_assumption("point", "Point") is None
+    assert generator._loop_guard_assumption("point", POINT) is None
 
 
 def test_loop_callback_cannot_reuse_pre_callback_access_on_next_iteration() -> None:
@@ -430,11 +443,11 @@ def test_loop_callback_cannot_reuse_pre_callback_access_on_next_iteration() -> N
 
 def test_matching_branch_facts_publish_one_live_join_authority() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
-    generator._publish_exact_local("point", "Point")
+    generator._publish_exact_local("point", POINT)
     left = generator._snapshot_live_exact_bindings()
     left_token = generator.exact_class_token
     generator._advance_exact_class_token()
-    generator._publish_exact_local("point", "Point")
+    generator._publish_exact_local("point", POINT)
     right = generator._snapshot_live_exact_bindings()
     right_token = generator.exact_class_token
 
@@ -442,18 +455,19 @@ def test_matching_branch_facts_publish_one_live_join_authority() -> None:
         left, left_token, right, right_token
     )
 
-    assert generator._exact_class_for_name("point") == "Point"
+    assert generator._exact_class_for_name("point") == POINT
 
 
 def test_proven_exact_dataclass_value_authorizes_dataclass_field_access() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
-    generator.classes["Record"] = {
+    generator.classes[RECORD] = {
+        "binding_name": "Record",
         "dataclass": True,
         "fields": {"value": 0},
         "field_hints": {"value": "int"},
     }
     record = generator._stamp_exact_class(
-        MoltValue("record", type_hint="Record"), "Record"
+        MoltValue("record", type_hint=DeclaredClass(RECORD)), RECORD
     )
     node = ast.Attribute(
         value=ast.Name(id="record", ctx=ast.Load()),
@@ -461,7 +475,7 @@ def test_proven_exact_dataclass_value_authorizes_dataclass_field_access() -> Non
         ctx=ast.Load(),
     )
 
-    generator._emit_attribute_load(node, record, None, "Record")
+    generator._emit_attribute_load(node, record, None, RECORD)
 
     assert any(op.kind == "DATACLASS_GET" for op in generator.current_ops)
 
@@ -536,7 +550,7 @@ def test_native_base_layout_never_publishes_inferred_prefix_offsets(
 ) -> None:
     generator = SimpleTIRGenerator(module_name="native_base_layout")
     generator.visit(ast.parse(declaration))
-    assert generator.classes["Native"]["dynamic"]
+    assert generator.classes[ClassId("native_base_layout", "Native")]["dynamic"]
     ops = [
         op
         for function in generator.funcs_map.values()
@@ -551,19 +565,19 @@ def test_native_base_layout_never_publishes_inferred_prefix_offsets(
 def test_synthesized_layout_guards_use_optional_class_identity(operation: str) -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
-    generator.classes["Point"] = {
-        "module": "exact_class_authority",
+    generator.classes[POINT] = {
+        "binding_name": "Point",
         "static": True,
         "fields": {"x": 8},
     }
     first_op = len(generator.current_ops)
-    owner = MoltValue("owner", type_hint="Point")
+    owner = MoltValue("owner", type_hint=DeclaredClass(POINT))
     if operation == "read":
-        generator._emit_guarded_getattr(owner, "x", "Point")
+        generator._emit_guarded_getattr(owner, "x", POINT)
     elif operation == "write":
-        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), "Point")
+        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), POINT)
     else:
-        generator._emit_layout_guard(owner, "Point")
+        generator._emit_layout_guard(owner, POINT)
     ops = generator.current_ops[first_op:]
     guards = [
         op
@@ -592,9 +606,9 @@ def test_optional_layout_identity_does_not_change_explicit_source_name() -> None
 def test_unavailable_external_layout_identity_does_not_import_or_read_module() -> None:
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
-    generator.classes["Point"] = {"module": "elsewhere", "static": True}
+    generator.classes[ELSEWHERE_POINT] = {"binding_name": "Point", "static": True}
     first_op = len(generator.current_ops)
-    result = generator._emit_class_ref("Point")
+    result = generator._emit_class_ref(ELSEWHERE_POINT)
     ops = generator.current_ops[first_op:]
     assert len(ops) == 1
     assert ops[0].kind == "CONST_NONE"
@@ -625,7 +639,7 @@ def test_external_layout_identity_reuses_matching_imported_alias(local: bool) ->
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
-    generator.classes["Point"] = {"module": "elsewhere", "static": True}
+    generator.classes[ELSEWHERE_POINT] = {"binding_name": "Point", "static": True}
     generator.global_imported_names["Point"] = "unrelated"
     if local:
         generator.imported_names["Alias"] = "elsewhere"
@@ -636,7 +650,7 @@ def test_external_layout_identity_reuses_matching_imported_alias(local: bool) ->
         generator.global_imported_names["Alias"] = "elsewhere"
         generator.global_imported_attr_names["Alias"] = "Point"
     first_op = len(generator.current_ops)
-    result = generator._emit_class_ref("Point")
+    result = generator._emit_class_ref(ELSEWHERE_POINT)
     ops = generator.current_ops[first_op:]
     if local:
         assert result.name == "imported_alias"
@@ -657,8 +671,8 @@ def test_local_class_guard_reads_optional_storage(operation: str, storage: str) 
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
-    generator.classes["Point"] = {
-        "module": "exact_class_authority",
+    generator.classes[POINT] = {
+        "binding_name": "Point",
         "static": False,
         "fields": {"x": 8},
     }
@@ -671,13 +685,13 @@ def test_local_class_guard_reads_optional_storage(operation: str, storage: str) 
         generator.locals["Point"] = MoltValue("point_binding", type_hint="type")
         generator.scope_assigned.add("Point")
     first_op = len(generator.current_ops)
-    owner = MoltValue("owner", type_hint="Point")
+    owner = MoltValue("owner", type_hint=DeclaredClass(POINT))
     if operation == "read":
-        generator._emit_guarded_getattr(owner, "x", "Point")
+        generator._emit_guarded_getattr(owner, "x", POINT)
     elif operation == "write":
-        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), "Point")
+        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), POINT)
     else:
-        generator._emit_layout_guard(owner, "Point")
+        generator._emit_layout_guard(owner, POINT)
     ops = generator.current_ops[first_op:]
     assert not any(op.kind in {"RAISE", "MODULE_GET_GLOBAL"} for op in ops)
     guard = next(

@@ -60,7 +60,6 @@ def test_serial_layer_result_records_cache_hits_as_cache_hits(tmp_path: Path) ->
         result={
             "functions": [],
             "func_code_ids": {},
-            "local_class_names": [],
             "local_classes": {},
         },
         result_timings=_FrontendModuleResultTimings(

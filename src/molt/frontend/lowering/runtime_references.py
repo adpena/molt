@@ -25,6 +25,7 @@ from molt.frontend._types import (
     MoltValue,
     _canonical_intrinsic_runtime_name,
     _intrinsic_arity_exact,
+    TypeHint,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -151,7 +152,7 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         runtime_name: str,
         args: Sequence[MoltValue],
         *,
-        type_hint: str = "Any",
+        type_hint: TypeHint = "Any",
     ) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint=type_hint)
         self.emit(MoltOp(kind="CALL", args=[runtime_name, *args], result=res))
