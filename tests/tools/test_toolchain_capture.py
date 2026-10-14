@@ -3792,9 +3792,9 @@ def test_documenter_has_independent_linker_witness_and_target_filters_avoid_it(
     assert [row["unit"] for row in selection["units"]] == expected
     assert (drivers["documenter"].name in calls) is documenter
     if documenter:
-        assert selection["units"][2]["process_resolution"][0][
-            "path"
-        ] == custody_spelling(drivers["documenter"])
+        assert selection["units"][2]["process_resolution"][0]["path"] == str(
+            drivers["documenter"]
+        )
     identity = {"process_images": images, "link_selection": selection}
     toolchain_capture.validate_rust_link_selection(identity, command_argv=command)
     _, ref, _ = toolchain_capture.publish_capture(tmp_path / "cas", {"rustc": identity})
@@ -4230,7 +4230,9 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
     for omitted in ("llvm-config", *names, *selection["selectors"]):
         broken = copy.deepcopy(identity)
         path = {**selection["tools"], **selection["selectors"]}[omitted]
-        broken["process_images"] = [row for row in images if row["path"] != path]
+        broken["process_images"] = [
+            row for row in images if row["path"] != custody_spelling(Path(path))
+        ]
         with pytest.raises(ValueError, match="missing|substituted"):
             command_identity._validate_toolchain_identity(plan, "llvm-sdk", broken)
     for receiver in (
@@ -4257,7 +4259,7 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
         broken = copy.deepcopy(identity)
         if corruption == "helper":
             broken["process_images"] = [
-                row for row in images if row["path"] != str(default_linker)
+                row for row in images if row["path"] != custody_spelling(default_linker)
             ]
         elif corruption == "transcript":
             broken["llvm_sdk"]["probes"][1]["stderr"] = '"/other/ld" "phase"'
@@ -4269,7 +4271,7 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
             if not aliases:
                 continue
             broken["process_images"] = [
-                row for row in images if row["path"] != str(physical_lld)
+                row for row in images if row["path"] != custody_spelling(physical_lld)
             ]
         elif corruption == "foreign-image":
             foreign = tmp_path / "unrelated-executable"
