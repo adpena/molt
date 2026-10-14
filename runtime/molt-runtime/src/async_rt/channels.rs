@@ -115,14 +115,13 @@ pub(crate) use capabilities::{
     capability_fix_hint, has_capability, is_trusted, operation_allowed, raise_capability_denied,
     require_named_operation, require_operation, require_operation_with_capabilities,
 };
-#[cfg(any(target_arch = "wasm32", molt_has_net_io))]
 pub use channel::molt_chan_recv_blocking;
 pub use channel::{
     MoltChannel, molt_chan_drop, molt_chan_new, molt_chan_recv, molt_chan_send,
     molt_chan_send_blocking, molt_chan_try_recv, molt_chan_try_send,
 };
 pub use db::{molt_db_exec, molt_db_exec_obj, molt_db_query, molt_db_query_obj};
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 pub use db::{molt_db_set_exec_hook, molt_db_set_query_hook};
 pub(crate) use molt_runtime_core::host_capabilities_generated::OperationId;
 pub use stream::*;

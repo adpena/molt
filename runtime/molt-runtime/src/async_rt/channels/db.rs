@@ -1,9 +1,8 @@
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use super::super::cancel_tokens;
 use super::super::sockets::{SendData, send_data_from_bits};
-#[cfg(any(target_arch = "wasm32", molt_has_net_io))]
 use super::super::{current_token_id, token_id_from_bits};
 use super::has_capability;
 use crate::audit::{AuditArgs, audit_capability_decision};
@@ -11,15 +10,15 @@ use crate::{PyToken, raise_exception, usize_from_bits};
 #[cfg(target_arch = "wasm32")]
 use crate::{molt_db_exec_host, molt_db_query_host};
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 type DbHostHook = extern "C" fn(*const u8, usize, *mut u64, u64) -> i32;
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
     crate::with_gil_entry_nopanic!(_py, {
@@ -27,7 +26,7 @@ pub extern "C" fn molt_db_set_query_hook(ptr: usize) {
     })
 }
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_db_set_exec_hook(ptr: usize) {
     crate::with_gil_entry_nopanic!(_py, {
@@ -85,19 +84,16 @@ fn db_query_impl(
         return 6;
     }
     cancel_tokens(_py);
-    #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
     let token_id = match token_id_from_bits(token_bits) {
         Some(0) => current_token_id(),
         Some(id) => id,
         None => return 1,
     };
-    #[cfg(not(any(target_arch = "wasm32", molt_has_net_io)))]
-    let _ = token_bits;
     #[cfg(target_arch = "wasm32")]
     {
         unsafe { molt_db_query_host(req_ptr as u64, len_bits, out as u64, token_id) }
     }
-    #[cfg(molt_has_net_io)]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let hook_ptr = DB_QUERY_HOOK.load(AtomicOrdering::Acquire);
         if hook_ptr == 0 {
@@ -110,10 +106,6 @@ fn db_query_impl(
         // A stale or mistyped pointer causes UB on the subsequent call.
         let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
         hook(req_ptr, len, out, token_id)
-    }
-    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    {
-        7
     }
 }
 
@@ -139,19 +131,16 @@ fn db_exec_impl(
         return 6;
     }
     cancel_tokens(_py);
-    #[cfg(any(target_arch = "wasm32", molt_has_net_io))]
     let token_id = match token_id_from_bits(token_bits) {
         Some(0) => current_token_id(),
         Some(id) => id,
         None => return 1,
     };
-    #[cfg(not(any(target_arch = "wasm32", molt_has_net_io)))]
-    let _ = token_bits;
     #[cfg(target_arch = "wasm32")]
     {
         unsafe { molt_db_exec_host(req_ptr as u64, len_bits, out as u64, token_id) }
     }
-    #[cfg(molt_has_net_io)]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let hook_ptr = DB_EXEC_HOOK.load(AtomicOrdering::Acquire);
         if hook_ptr == 0 {
@@ -164,10 +153,6 @@ fn db_exec_impl(
         // A stale or mistyped pointer causes UB on the subsequent call.
         let hook: DbHostHook = unsafe { std::mem::transmute(hook_ptr) };
         hook(req_ptr, len, out, token_id)
-    }
-    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    {
-        7
     }
 }
 

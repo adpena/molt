@@ -77,7 +77,8 @@ fn chan_send_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel, val: i64) -> i
     }
 }
 
-#[cfg(molt_has_net_io)]
+// A blocking receive needs no networking: every native target has it.
+#[cfg(not(target_arch = "wasm32"))]
 fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
     match chan.receiver.try_recv() {
         Ok(val) => val,
@@ -214,7 +215,7 @@ pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64
     })
 }
 
-#[cfg(molt_has_net_io)]
+#[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
