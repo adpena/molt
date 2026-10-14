@@ -5,6 +5,10 @@
 a fresh checkout gives every workspace source a new mtime, so Cargo rebuilds
 those crates on every run, and caching them only costs transfer and quota.
 Dependency artifacts are keyed by content and stay reusable across commits.
+``retain`` deletes main's superseded Cargo cache entries. Every save gets a
+new immutable key ending in its run ID and attempt, and restores take the
+newest entry for the same namespace, OS, architecture and toolchain token, so
+the older entries only push useful caches out of the 10 GB quota.
 """
 
 from __future__ import annotations
@@ -22,6 +26,13 @@ from pathlib import Path
 # across runs, because actions/cache folds its paths into the cache version.
 DEFAULT_TARGET_NAME = "molt-cargo-target"
 TARGET_ENV = "MOLT_CARGO_CACHE_TARGET"
+
+# setup-project saves ``cargo-<namespace>-<os>-<arch>-<toolchain token>-
+# <sha256 of the dependency inputs>-<run id>-<run attempt>``.
+_CACHE_KEY = re.compile(
+    r"cargo-(?P<group>.+)-[0-9a-f]{64}-(?P<run>[0-9]+)-(?P<attempt>[0-9]+)"
+)
+MAIN_REF = "refs/heads/main"
 
 # Cargo names unit artifacts ``<crate>-<16 hex metadata hash>[.<ext>...]``.
 _UNIT_ARTIFACT = re.compile(r"(?P<stem>.+)-[0-9a-f]{16}(?:\..*)?")
@@ -130,12 +141,64 @@ def _cargo_metadata(workspace: Path) -> Mapping[str, object]:
     return json.loads(completed.stdout)
 
 
+def superseded_cache_ids(entries: list[Mapping[str, object]]) -> list[int]:
+    """IDs of main Cargo cache entries that a newer entry in their group replaces."""
+    newest: dict[str, tuple[str, int]] = {}
+    grouped: list[tuple[str, int]] = []
+    for entry in entries:
+        match = _CACHE_KEY.fullmatch(str(entry["key"]))
+        if match is None or entry.get("ref") != MAIN_REF:
+            continue
+        group = match.group("group")
+        cache_id = int(str(entry["id"]))
+        rank = (str(entry["createdAt"]), cache_id)
+        grouped.append((group, cache_id))
+        if group not in newest or rank > newest[group]:
+            newest[group] = rank
+    return sorted(
+        cache_id for group, cache_id in grouped if cache_id != newest[group][1]
+    )
+
+
+def _gh_json(*args: str) -> list[Mapping[str, object]]:
+    completed = subprocess.run(
+        ["gh", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+        check=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def retain_newest_cargo_caches() -> list[int]:
+    entries = _gh_json(
+        "cache", "list", "--limit", "1000", "--json", "id,key,ref,createdAt"
+    )
+    superseded = superseded_cache_ids(entries)
+    for cache_id in superseded:
+        subprocess.run(
+            ["gh", "cache", "delete", str(cache_id)],
+            timeout=300,
+            check=True,
+        )
+    return superseded
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", nargs="?", choices=("configure", "prune"), default="configure"
+        "action",
+        nargs="?",
+        choices=("configure", "prune", "retain"),
+        default="configure",
     )
     args = parser.parse_args(argv)
+    if args.action == "retain":
+        deleted = retain_newest_cargo_caches()
+        print(f"Deleted {len(deleted)} superseded Cargo cache entries")
+        return 0
     if args.action == "configure":
         target = configure_cargo_cache(os.environ)
         print(f"Cargo cache target: {target}; incremental compilation disabled")

@@ -1,0 +1,42 @@
+name: Cache retention
+
+# Every main save writes a new immutable Cargo cache key, so superseded
+# entries fill the 10 GB quota and evict the caches restores need (HF-190).
+# This workflow alone holds the cache-deleting grant: it keeps the newest main
+# entry per namespace, OS, architecture and toolchain token. It follows each
+# CI run on main and sweeps daily for the other workflows' saves.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cache-retention
+  cancel-in-progress: false
+
+jobs:
+  retain:
+    name: Delete superseded Cargo caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/ci_cargo_cache.py
+          sparse-checkout-cone-mode: false
+
+      - name: Keep the newest main entry per cache group
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 tools/ci_cargo_cache.py retain

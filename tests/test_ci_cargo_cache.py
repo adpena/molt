@@ -7,6 +7,7 @@ import pytest
 from tools.ci_cargo_cache import (
     configure_cargo_cache,
     prune_workspace_artifacts,
+    superseded_cache_ids,
     workspace_crate_names,
 )
 
@@ -125,3 +126,43 @@ def test_prune_keeps_dependency_units_and_drops_workspace_units(tmp_path: Path):
 def test_workspace_names_require_cargo_package_metadata():
     with pytest.raises(ValueError, match="no package list"):
         workspace_crate_names({})
+
+
+def test_retention_keeps_the_newest_main_entry_per_cache_group():
+    old_inputs, new_inputs = "a" * 64, "b" * 64
+
+    def entry(cache_id, key, created, ref="refs/heads/main"):
+        return {"id": cache_id, "key": key, "createdAt": created, "ref": ref}
+
+    entries = [
+        entry(
+            1, f"cargo-rust-Linux-X64-1.99.0-{old_inputs}-100-1", "2026-10-10T00:00:00Z"
+        ),
+        entry(
+            2, f"cargo-rust-Linux-X64-1.99.0-{new_inputs}-101-1", "2026-10-11T00:00:00Z"
+        ),
+        # A retried run is newer still; restores fall back across input hashes.
+        entry(
+            3, f"cargo-rust-Linux-X64-1.99.0-{new_inputs}-101-2", "2026-10-11T01:00:00Z"
+        ),
+        # Sole entry of its namespace, and another platform: both stay.
+        entry(
+            4,
+            f"cargo-wasm-ci-Linux-X64-1.99.0-{old_inputs}-90-1",
+            "2026-10-09T00:00:00Z",
+        ),
+        entry(
+            5,
+            f"cargo-rust-macOS-ARM64-1.99.0-{old_inputs}-100-1",
+            "2026-10-10T00:00:00Z",
+        ),
+        # Only main saves count; other refs and cache families are untouched.
+        entry(
+            6,
+            f"cargo-rust-Linux-X64-1.99.0-{old_inputs}-102-1",
+            "2026-10-12T00:00:00Z",
+            ref="refs/pull/5/merge",
+        ),
+        entry(7, "wasi-sdk-34-Linux", "2026-10-01T00:00:00Z"),
+    ]
+    assert superseded_cache_ids(entries) == [1, 2]
