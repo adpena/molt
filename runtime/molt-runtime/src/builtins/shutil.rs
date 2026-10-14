@@ -1064,14 +1064,7 @@ pub extern "C" fn molt_shutil_chown(_path_bits: u64, _user_bits: u64, _group_bit
 mod capability_tests {
     use super::*;
     use crate::test_support::RuntimeTestTransaction;
-
-    #[allow(dead_code)]
-    mod cargo_test_artifacts {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../test_support/cargo_test_artifacts.rs"
-        ));
-    }
+    use crate::test_support::cargo_test_artifacts;
 
     fn take_error(py: &PyToken<'_>) -> (String, String) {
         assert!(exception_pending(py), "operation must raise");

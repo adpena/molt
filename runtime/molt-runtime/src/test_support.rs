@@ -20,7 +20,7 @@ use molt_runtime_core::host_capabilities_generated::MAXIMUM_BUILTIN_CAPABILITY_T
 include!(concat!(env!("OUT_DIR"), "/molt_wasi_test_startup.rs"));
 
 #[allow(dead_code)]
-mod cargo_test_artifacts {
+pub(crate) mod cargo_test_artifacts {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../test_support/cargo_test_artifacts.rs"
