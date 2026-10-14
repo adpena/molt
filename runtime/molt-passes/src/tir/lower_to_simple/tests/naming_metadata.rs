@@ -1704,12 +1704,32 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
         .expect("exception_stack_exit must keep its operand");
     let set_depth_arg_op = producer_by_out
         .get(set_depth_arg)
-        .expect("exception_stack_set_depth operand must come from a load_var");
+        .expect("exception_stack_set_depth must retain its saved depth producer");
     let exit_arg_op = producer_by_out
         .get(exit_arg)
-        .expect("exception_stack_exit operand must come from a load_var");
-    assert_eq!(set_depth_arg_op.kind, "load_var");
-    assert_eq!(exit_arg_op.kind, "load_var");
+        .expect("exception_stack_exit must retain its entry token producer");
+    // These entry values dominate the handler. Canonical SSA keeps their
+    // identities directly instead of requiring store/load transport. Check
+    // the saved state actually restored, including the cleanup order.
+    assert_eq!(set_depth_arg_op.kind, "exception_stack_depth");
+    assert_eq!(exit_arg_op.kind, "exception_stack_enter");
+    let enter_idx = round_tripped
+        .iter()
+        .position(|op| op.kind == "exception_stack_enter")
+        .unwrap();
+    let depth_idx = round_tripped
+        .iter()
+        .position(|op| op.kind == "exception_stack_depth")
+        .unwrap();
+    assert_eq!(exit_arg, round_tripped[enter_idx].out.as_ref().unwrap());
+    assert_eq!(
+        set_depth_arg,
+        round_tripped[depth_idx].out.as_ref().unwrap()
+    );
+    assert!(enter_idx < depth_idx);
+    assert!(depth_idx < field_set_idx);
+    assert!(field_set_idx < set_depth_idx);
+    assert!(set_depth_idx < exit_idx);
 }
 
 #[test]

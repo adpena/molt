@@ -706,6 +706,7 @@ mod tests {
     fn direct_raise_split_cfg_preserves_payload_observations_and_projection() {
         use crate::tir::blocks::Terminator;
         use crate::tir::ops::{Dialect, OpCode, TirOp};
+        use crate::tir::{TirBlock, TirType, TirValue};
         for (case, expected_checks) in [
             ("equivalent", 0),
             ("different_pre_payload", 1),
@@ -741,8 +742,6 @@ mod tests {
             jump.value = Some(9);
             let mut handler = operation("label", &[], None);
             handler.value = Some(9);
-            let mut other_handler = handler.clone();
-            other_handler.value = Some(10);
             let source = FunctionIR {
                 name: format!("split_raise_{case}"),
                 params: vec!["payload".into(), "other".into(), "condition".into()],
@@ -756,15 +755,67 @@ mod tests {
                     jump,
                     handler,
                     operation("ret", &["payload"], None),
-                    other_handler,
-                    operation("ret", &["other"], None),
                 ],
                 ..Default::default()
             };
             let mut typed = crate::tir::lower_from_simple::lower_to_tir(&source);
             let entry = typed.entry_block;
+            let payload = typed.blocks[&entry].args[0].id;
             let other = typed.blocks[&entry].args[1].id;
             let condition = typed.blocks[&entry].args[2].id;
+            // Strict dominance lets the lift use entry values directly in
+            // these handlers. Give the payload comparison a real explicit SSA
+            // transport contract instead of depending on redundant phi args
+            // surviving that lift. The alternate target has the same payload
+            // arity, so changing only a check's target remains valid TIR too.
+            let alternate = typed.fresh_block();
+            typed.label_id_map.insert(alternate.0, 10);
+            typed.blocks.insert(
+                alternate,
+                TirBlock {
+                    id: alternate,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let labels = crate::tir::dominators::exception_label_to_block(&typed);
+            for (label, incoming) in [(9, payload), (10, other)] {
+                let handler = labels[&label];
+                let parameter = typed.fresh_value();
+                typed.value_types.insert(parameter, TirType::DynBox);
+                let block = typed.blocks.get_mut(&handler).unwrap();
+                assert!(block.args.is_empty());
+                if label == 9 {
+                    assert!(matches!(
+                        &block.terminator,
+                        Terminator::Return { values } if values == &[incoming]
+                    ));
+                }
+                block.args.push(TirValue {
+                    id: parameter,
+                    ty: TirType::DynBox,
+                });
+                block.terminator = Terminator::Return {
+                    values: vec![parameter],
+                };
+                for block in typed.blocks.values_mut() {
+                    block.terminator.for_each_edge_mut(|target, args| {
+                        if *target == handler {
+                            assert!(args.is_empty());
+                            args.push(incoming);
+                        }
+                    });
+                    for operation in &mut block.ops {
+                        if operation.opcode == OpCode::CheckException
+                            && operation.attrs.get("value") == Some(&AttrValue::Int(label))
+                        {
+                            assert!(operation.operands.is_empty());
+                            operation.operands.push(incoming);
+                        }
+                    }
+                }
+            }
             let raise_block = typed
                 .blocks
                 .values()

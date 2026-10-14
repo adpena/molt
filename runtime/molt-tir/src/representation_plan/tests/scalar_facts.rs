@@ -2278,71 +2278,95 @@ fn runtime_guard_alias_keeps_source_carrier_despite_mismatching_tag() {
 
 #[test]
 fn final_projection_uses_emitted_ssa_identity_and_never_authored_name_collisions() {
-    let mut source = function(
-        "final_names",
-        &["_v0"],
-        None,
-        vec![
-            const_int("integer", 7),
-            const_bool("boolean", true),
-            op("ret", None, None, &["boolean"]),
-        ],
-    );
-    let target = crate::tir::TargetInfo::native_release_fast();
-    let mut typed = lower_to_tir_for_target(&source, &target);
-    for block in typed.blocks.values_mut() {
-        for operation in &mut block.ops {
-            if !operation.results.is_empty() {
-                operation
-                    .attrs
-                    .insert("_simple_out".into(), AttrValue::Str("_v0".into()));
-                operation
-                    .attrs
-                    .insert("_simple_result_0".into(), AttrValue::Str("_v0".into()));
+    for returned in [false, true] {
+        let mut source = function(
+            "final_names",
+            &["_v0"],
+            None,
+            vec![
+                const_int("integer", 7),
+                const_bool("boolean", true),
+                op(
+                    "ret",
+                    None,
+                    None,
+                    &[if returned { "boolean" } else { "integer" }],
+                ),
+            ],
+        );
+        let target = crate::tir::TargetInfo::native_release_fast();
+        let mut typed = lower_to_tir_for_target(&source, &target);
+        for block in typed.blocks.values_mut() {
+            for operation in &mut block.ops {
+                if !operation.results.is_empty() {
+                    operation
+                        .attrs
+                        .insert("_simple_out".into(), AttrValue::Str("_v0".into()));
+                    operation
+                        .attrs
+                        .insert("_simple_result_0".into(), AttrValue::Str("_v0".into()));
+                }
             }
         }
+        refine_types(&mut typed);
+        let before = serde_json::to_vec(&typed).unwrap();
+        source.ops = vec![op("ret", None, None, &["poisoned_old_source"])];
+        let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
+        assert_eq!(
+            serde_json::to_vec(&typed).unwrap(),
+            before,
+            "fact extraction must not mutate or optimize final SSA"
+        );
+        assert!(!source.ops.iter().any(|operation| {
+            operation
+                .args
+                .as_ref()
+                .is_some_and(|args| args.iter().any(|arg| arg == "poisoned_old_source"))
+        }));
+        assert_eq!(
+            plan.name_scalar_kind("_v0"),
+            None,
+            "an unproven ABI parameter cannot inherit a colliding scalar producer"
+        );
+        let integer = source
+            .ops
+            .iter()
+            .find(|operation| operation.kind == "const")
+            .unwrap()
+            .out
+            .as_deref()
+            .unwrap();
+        let boolean = source
+            .ops
+            .iter()
+            .find(|operation| operation.kind == "const_bool")
+            .unwrap()
+            .out
+            .as_deref()
+            .unwrap();
+        assert_ne!(integer, boolean);
+        assert_ne!(integer, "_v0");
+        assert_ne!(boolean, "_v0");
+        assert!(plan.is_inline_safe_int_name(integer));
+        assert_eq!(
+            plan.name_scalar_kind(boolean),
+            Some(ScalarKind::Bool),
+            "the emitted producer must retain its semantic Bool identity"
+        );
+        assert_eq!(
+            plan.is_bool_unboxed(boolean),
+            !returned,
+            "final identity must preserve the existing Boolean escape-storage policy"
+        );
+        let returned_name = source
+            .ops
+            .iter()
+            .find(|operation| operation.kind == "ret")
+            .and_then(|operation| operation.args.as_ref())
+            .unwrap();
+        assert_eq!(returned_name.len(), 1);
+        assert_eq!(returned_name[0], if returned { boolean } else { integer });
     }
-    refine_types(&mut typed);
-    let before = serde_json::to_vec(&typed).unwrap();
-    source.ops = vec![op("ret", None, None, &["poisoned_old_source"])];
-    let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
-    assert_eq!(
-        serde_json::to_vec(&typed).unwrap(),
-        before,
-        "fact extraction must not mutate or optimize final SSA"
-    );
-    assert!(!source.ops.iter().any(|operation| {
-        operation
-            .args
-            .as_ref()
-            .is_some_and(|args| args.iter().any(|arg| arg == "poisoned_old_source"))
-    }));
-    assert_eq!(
-        plan.name_scalar_kind("_v0"),
-        None,
-        "an unproven ABI parameter cannot inherit a colliding scalar producer"
-    );
-    let integer = source
-        .ops
-        .iter()
-        .find(|operation| operation.kind == "const")
-        .unwrap()
-        .out
-        .as_deref()
-        .unwrap();
-    let boolean = source
-        .ops
-        .iter()
-        .find(|operation| operation.kind == "const_bool")
-        .unwrap()
-        .out
-        .as_deref()
-        .unwrap();
-    assert_ne!(integer, boolean);
-    assert_ne!(integer, "_v0");
-    assert_ne!(boolean, "_v0");
-    assert!(plan.is_inline_safe_int_name(integer));
-    assert!(plan.is_bool_unboxed(boolean));
 }
 
 #[test]
@@ -2351,7 +2375,9 @@ fn final_projection_preserves_inline_integer_boundary_and_float_bool_carriers() 
         (0, true),
         ((1_i64 << 46) - 1, true),
         (-(1_i64 << 46), true),
+        (-(1_i64 << 46) - 1, false),
         (1_i64 << 46, false),
+        (i64::MIN, false),
         (i64::MAX, false),
     ] {
         let mut source = function(
@@ -2370,10 +2396,12 @@ fn final_projection_preserves_inline_integer_boundary_and_float_bool_carriers() 
         refine_types(&mut typed);
         let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
         assert_eq!(plan.is_inline_safe_int_name("integer"), inline, "{value}");
-        assert!(
-            !plan.is_full_deopt_int_name("integer"),
-            "a full-width literal is not a checked-overflow continuation"
+        assert_eq!(
+            plan.is_full_deopt_int_name("integer"),
+            !inline,
+            "{value}: exact wide literals require overflow-safe boxing"
         );
+        assert!(plan.is_raw_int_carrier_name("integer"), "{value}");
         assert!(plan.is_bool_unboxed("boolean"));
         assert!(plan.is_float_unboxed("float"));
         let relifted_oracle = native_representation_plan(&source);
