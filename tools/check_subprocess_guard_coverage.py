@@ -173,6 +173,20 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "under the runner's bare python3 outside the project environment",
     ),
     AllowedRawSubprocessUse(
+        "tools/ci_cargo_cache.py",
+        "_gh_json",
+        "run",
+        "bounded GitHub cache listing in the cache-retention workflow, which "
+        "runs under the runner's bare python3 outside the project environment",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/ci_cargo_cache.py",
+        "retain_newest_cargo_caches",
+        "run",
+        "bounded GitHub cache deletion, one API call per superseded entry, in "
+        "the cache-retention workflow's bare python3",
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_backend_daemon_suite_custody.py",
         "test_fork_child_does_not_keep_suite_eof_alive",
         "os.kill",
