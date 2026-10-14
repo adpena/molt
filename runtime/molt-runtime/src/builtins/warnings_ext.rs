@@ -674,8 +674,11 @@ pub extern "C" fn molt_warnings_filters_get() -> u64 {
                 return MoltObject::none().bits();
             }
             let tuple = ExceptionValue::adopt(_py, MoltObject::from_ptr(tuple_ptr).bits());
-            if !crate::object::ops_list::molt_list_append_with_projection(list.bits(), tuple.bits(), std::ptr::null_mut())
-            {
+            if !crate::object::ops_list::molt_list_append_with_projection(
+                list.bits(),
+                tuple.bits(),
+                std::ptr::null_mut(),
+            ) {
                 return MoltObject::none().bits();
             }
         }

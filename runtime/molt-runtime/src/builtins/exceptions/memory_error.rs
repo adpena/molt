@@ -154,8 +154,9 @@ pub(super) fn prepare_constructed(py: &PyToken<'_>, pointer: *mut u8, class: u64
     }
     let bits = MoltObject::from_ptr(pointer).bits();
     let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
-    let already_projected =
-        unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW) };
+    let already_projected = unsafe {
+        (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+    };
     let projected = unsafe { bridge.handle_to_borrowed_pyobj(bits) };
     !projected.is_null() && (!already_projected || bridge.refresh_exception_view(bits))
 }
@@ -168,13 +169,14 @@ fn detach_and_reset(
     Option<molt_cpython_abi::bridge::RetiredOwnedCFields>,
 ) {
     let detached = unsafe { exception_detach_owned_edges(pointer) };
-    let projection =
-        if unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW) } {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .clear_owned_c_fields(MoltObject::from_ptr(pointer).bits())
-        } else {
-            None
-        };
+    let projection = if unsafe {
+        (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+    } {
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .clear_owned_c_fields(MoltObject::from_ptr(pointer).bits())
+    } else {
+        None
+    };
     let args = reserve(py).empty_args.load(AtomicOrdering::Acquire);
     inc_ref_bits(py, args);
     unsafe {
@@ -354,11 +356,9 @@ pub(crate) fn clear_shutdown_fields(py: &PyToken<'_>) -> bool {
     let Some(pointer) = obj_from_bits(bits).as_ptr() else {
         return false;
     };
-    let changed = !is_reset(
-        reserve,
-        pointer,
-        unsafe { (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW) },
-    );
+    let changed = !is_reset(reserve, pointer, unsafe {
+        (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+    });
     let (detached, projection) = detach_and_reset(py, pointer);
     release_detached(py, detached, projection);
     changed
