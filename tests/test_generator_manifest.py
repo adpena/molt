@@ -21,6 +21,7 @@ CI : python3 tools/check_generator_manifest.py --check  (the same gate)
 from __future__ import annotations
 from tests.process_guard_common import (
     check_output_guarded_test_process,
+    install_module_view,
     run_guarded_test_process,
 )
 
@@ -1113,8 +1114,16 @@ python_versions = "supported-targets"
             return subprocess.CompletedProcess(argv, 0, "uv 0.13.1\n", "")
         return original_run(command, **kwargs)
 
-    monkeypatch.setattr(proof_plan.subprocess, "run", run)
-    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: str(fixture.uv))
+    install_module_view(
+        monkeypatch, "subprocess", proof_plan.subprocess, proof_plan, run=run
+    )
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        proof_plan.shutil,
+        proof_plan,
+        which=lambda _requested: str(fixture.uv),
+    )
     monkeypatch.setattr(generators, "ROOT", tmp_path)
     rows = [
         generators.Generator("first-generator", (), True, ()),

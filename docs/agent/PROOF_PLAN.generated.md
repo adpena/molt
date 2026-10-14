@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
-| Hashed executable authority inputs | 1 | 359 |
+| Hashed executable authority inputs | 1 | 360 |
 | Local path rules | 35 | 45 |
 | Unique local commands | 73 | 111 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -56,7 +56,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 119 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 120 |
 
 ## Scheduled families
 
@@ -346,7 +346,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `stringprep-leaf` | 2 | 1 | no |
 | `stringprep-tables` | 3 | 2 | no |
 | `llvm-runtime-abi` | 8 | 2 | no |
-| `source-extension-package-sets` | 53 | 3 | no |
+| `source-extension-package-sets` | 54 | 3 | no |
 | `suite-honesty` | 4 | 2 | no |
 | `ecosystem-compat` | 2 | 1 | no |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |
@@ -357,7 +357,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 12 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 59 | 2 | no |
+| `ci-wiring` | 60 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 12 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |

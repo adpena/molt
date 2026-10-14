@@ -14,13 +14,8 @@ if TYPE_CHECKING:
     from tools.proof_plan import ToolchainPolicy
 
 from molt.artifact_publication import atomic_write_json
-
-
-class ProofCommand(Protocol):
-    id: str
-    family: str
-    data: dict[str, Any]
-    dependencies: tuple[str, ...]
+from tools import proof_receipts
+from tools.proof_receipts import ReceiptCommand
 
 
 class ProofPlan(Protocol):
@@ -32,7 +27,7 @@ class ProofPlan(Protocol):
 
 def execute_commands(
     plan: ProofPlan,
-    commands: Iterable[ProofCommand],
+    commands: Iterable[ReceiptCommand],
     receipt_path: Path,
     *,
     _source_tree_changes: Callable[[], tuple[str, ...]],
@@ -43,12 +38,11 @@ def execute_commands(
     _source_identity: Callable[[], dict[str, str]],
     _normalized_os: Callable[[], str],
     _normalized_arch: Callable[[], str],
-    _required_toolchains: Callable[[ProofCommand], tuple[str, ...]],
+    _required_toolchains: Callable[[ReceiptCommand], tuple[str, ...]],
     _run_command: Callable[
-        [ProofPlan, ProofCommand, threading.Event | None], dict[str, Any]
+        [ProofPlan, ReceiptCommand, threading.Event | None], dict[str, Any]
     ],
-    _cache_disposition: Callable[[ProofCommand], str],
-    _base_command_record: Callable[[ProofCommand], dict[str, Any]],
+    _cache_disposition: Callable[[ReceiptCommand], str],
 ) -> int:
     command_list = tuple(commands)
     if not command_list:
@@ -108,24 +102,20 @@ def execute_commands(
         "source_observation_boundaries": "before-scheduling-and-after-partition",
     }
     receipt_errors: list[str] = []
-    receipt: dict[str, Any] = {
-        "schema": plan.receipt_schema,
-        "authority_sha256": _authority_sha256(plan),
-        "source_commit": source_identity["commit"],
-        "source_tree": source_identity["tree"],
-        "source_tree_state": "clean",
-        "family": command_list[0].family,
-        "environment": {
+    receipt = proof_receipts.new_receipt(
+        schema=plan.receipt_schema,
+        authority_sha256=_authority_sha256(plan),
+        source_identity=source_identity,
+        family=command_list[0].family,
+        environment={
             "os": _normalized_os(),
             "arch": _normalized_arch(),
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         },
-        "toolchains": toolchains,
-        "commands": [],
-        "executed_partitions": [],
-        "status": "failure" if toolchain_error else "running",
-        "execution": execution,
-    }
+        toolchains=toolchains,
+        execution=execution,
+        status="failure" if toolchain_error else "running",
+    )
     if toolchain_error:
         receipt_errors.append(toolchain_error)
         receipt["errors"] = receipt_errors
@@ -160,7 +150,7 @@ def execute_commands(
                 ready_by_resource[resource], (command_index[command.id], command.id)
             )
     active_by_resource = {name: 0 for name in resource_limits}
-    active: dict[Future[dict[str, Any]], ProofCommand] = {}
+    active: dict[Future[dict[str, Any]], ReceiptCommand] = {}
     cancel_event = threading.Event()
     custody_errors: list[Exception] = []
     failed = False
@@ -192,9 +182,9 @@ def execute_commands(
             return f"candidate source identity unavailable: {exc}"
         return None
 
-    def skipped_record(command: ProofCommand, reason: str) -> dict[str, Any]:
+    def skipped_record(command: ReceiptCommand, reason: str) -> dict[str, Any]:
         return {
-            **_base_command_record(command),
+            **proof_receipts.command_record(command),
             "started_at": None,
             "duration_seconds": 0.0,
             "peak_rss_bytes": None,
@@ -310,7 +300,7 @@ def execute_commands(
                         record = future.result()
                     except Exception as exc:
                         record = {
-                            **_base_command_record(command),
+                            **proof_receipts.command_record(command),
                             "started_at": dt.datetime.now(dt.UTC).isoformat(),
                             "duration_seconds": None,
                             "peak_rss_bytes": None,
@@ -375,7 +365,7 @@ def execute_commands(
                     record = future.result()
                 except BaseException as exc:
                     record = {
-                        **_base_command_record(command),
+                        **proof_receipts.command_record(command),
                         "started_at": None,
                         "duration_seconds": None,
                         "peak_rss_bytes": None,
