@@ -318,9 +318,14 @@ class GeneratorStateMixin(GeneratorMixinBase):
         optimization_profile: MidendProfile = "release",
         pgo_hot_functions: set[str] | None = None,
     ) -> None:
-        from molt.target_python import require_frontend_python
+        from molt.target_python import (
+            TargetPythonVersion,
+            require_frontend_python,
+            require_supported_target_python,
+        )
 
         require_frontend_python()
+        require_supported_target_python(TargetPythonVersion(*target_python, micro=0))
         self._module_pressure_function_count = 0
         self._module_pressure_total_ops = 0
         self.funcs_map: dict[str, FuncInfo] = {
@@ -389,11 +394,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # ``@<alias>.overload`` is recognised as a typing overload stub.
         self._typing_import_aliases: set[str] = set()
         self._reset_async_scope_state()
-        if target_python not in {(3, 12), (3, 13), (3, 14)}:
-            raise ValueError(
-                "target_python must be one of the supported feature versions: "
-                "(3, 12), (3, 13), or (3, 14)"
-            )
         self.target_python: tuple[int, int] = target_python
         # Python 3.14 owns deferred evaluation through __annotate__; 3.12/3.13
         # retain eager evaluation unless future annotations applies.

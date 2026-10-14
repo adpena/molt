@@ -122,6 +122,11 @@ block-sealing correction, its adversarial review, and current-main consumer
 qualification. The retained locale batch still exceeds a three-minute
 `dev-fast` observation window before native function code generation; no speedup
 or completed batch is claimed. V1-07 retains that performance obligation.
+Numeric-policy generation and frontend target admission now derive from the
+existing supported-target catalog. Twenty generator checks and 73 affected
+Python consumer checks pass; all three numeric Rust projections are unchanged.
+This removes copied version lists without adding a supported coordinate.
+Python 3.15 implementation and target qualification remain open under V1-35.
 
 ### Qualified boundaries
 
