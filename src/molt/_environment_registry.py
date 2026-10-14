@@ -5604,7 +5604,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_STDLIB_CACHE_ENTRY",
-      "owner": "runtime/molt-backend/src/backend_process/shared_stdlib_cache/prepare/request.rs",
+      "owner": "runtime/molt-backend/src/backend_process/native_artifact.rs",
       "summary": "Optional canonical shared-stdlib/<key>/stdlib.a cache entry; required MOLT_STDLIB_OBJ must be outside that cache root or inside its durable canonical home subtree; CLI preparation hydrates the required output before app-cache admission, backend requests use this entry for constituent reuse and cache publication, and per-request environment reset prevents daemon state leakage.",
       "values": []
     },
@@ -5784,15 +5784,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD",
       "owner": "runtime/molt-runtime/src/wasm_abi_exports.rs",
       "summary": "A cargo unit test in wasm_abi_exports.rs sets it to 1 when it re-executes its own test binary, and the child reads its presence (any value) to run the cold resource-denial scratch allocation path; a person never sets it.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_TEST_PID_FILE",
-      "owner": "runtime/molt-runtime/src/async_rt/process.rs",
-      "summary": "A cargo unit test in process.rs sets it to a temp path for the sh child it spawns, and the shell command writes its background sleep pid there so the test can check process-group teardown; a person never sets it.",
       "values": []
     },
     {
@@ -6380,7 +6371,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_TRACE_INIT_SUBCLASS",
-      "owner": "runtime/molt-runtime/src/builtins/attr.rs",
+      "owner": "runtime/molt-runtime/src/builtins/attributes/class_lookup.rs",
       "summary": "Set to 1 to print molt init_subclass lines on stderr that describe each lookup of the __init_subclass__ attribute (found value, allow_missing result, class and builtin status); read on every lookup, and unset or any other value prints nothing.",
       "values": []
     },
@@ -6663,15 +6654,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TRACE_RUNTIME_INIT",
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
       "summary": "Set to 1 to print [molt runtime_init] +<total>us (d<delta>us) <stage> on stderr for every runtime initialization stage (enter, state_allocated, intrinsics_registered, capabilities, ok and the others); tools/cold_start_decompose.py and tools/startup_bench.py set it to 1 to collect per-stage medians, it is read on every stage, and unset or any other value prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_TRACE_SET_ATTR",
-      "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Set to 1 to print module_set_attr: mod=<bits> attr=<bits> val=<bits> on stderr for every module attribute store; read on every store before the GIL is entered, and unset or any other value prints nothing.",
       "values": []
     },
     {
