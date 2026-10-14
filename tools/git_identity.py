@@ -73,6 +73,7 @@ def changed_paths(
     )
     tokens = output.split("\0")
     paths: list[str] = []
+    seen: set[str] = set()
     index = 0
     while index < len(tokens):
         status = tokens[index]
@@ -83,7 +84,8 @@ def changed_paths(
         if index + path_count > len(tokens):
             raise RuntimeError(f"malformed git diff record for status {status!r}")
         for path in tokens[index : index + path_count]:
-            if path and path not in paths:
+            if path and path not in seen:
+                seen.add(path)
                 paths.append(path)
         index += path_count
     return paths
