@@ -1667,6 +1667,7 @@ tests/differential/stdlib/signal_keyboardinterrupt_subclass_exit.py
 tests/differential/stdlib/signal_strsignal_valid.py
 tests/differential/stdlib/smtplib_basic.py
 tests/differential/stdlib/smtplib_sendmail_basic.py
+tests/differential/stdlib/socket_accept_timeout_follows_default.py
 tests/differential/stdlib/socket_backpressure_large_send.py
 tests/differential/stdlib/socket_basic.py
 tests/differential/stdlib/socket_byteorder_and__socket_surface.py
