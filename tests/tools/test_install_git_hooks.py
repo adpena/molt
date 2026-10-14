@@ -474,7 +474,9 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
         run_guarded_test_process(
             ["git", "-C", str(repo), "config", key, value], check=True
         )
-    (repo / "payload.txt").write_text("independently complete commit\n")
+    (repo / "payload.txt").write_text(
+        "independently complete commit\n", encoding="utf-8"
+    )
     run_guarded_test_process(["git", "-C", str(repo), "add", "payload.txt"], check=True)
     run_guarded_test_process(
         ["git", "-C", str(repo), "commit", "-qm", "payload"], check=True
@@ -488,18 +490,20 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
     landed = run_guarded_test_process(
         ["git", "--git-dir", str(remote), "rev-parse", "refs/heads/main"],
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
     assert landed == head
     if foreign:
-        assert (
-            f" {head} refs/heads/main " in (repo / "foreign-hook-input.txt").read_text()
-        )
+        assert f" {head} refs/heads/main " in (
+            repo / "foreign-hook-input.txt"
+        ).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("active_foreign", [False, True])
