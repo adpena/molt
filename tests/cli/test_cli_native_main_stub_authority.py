@@ -173,7 +173,7 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
             entrypoint = entrypoint.replace(
                 "molt_exception_last_pending()", "molt_exception_last()"
             )
-        source.write_text(entrypoint + runtime)
+        source.write_text(entrypoint + runtime, encoding="utf-8")
         compiled = _COMMANDS.run(
             [
                 tools.clang,
@@ -185,6 +185,7 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
         assert compiled.returncode == 0, compiled.stdout + compiled.stderr
@@ -202,6 +203,7 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
                 [str(binary), str(mode)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=10,
             )
             assert result.returncode == exit_code, result.stdout + result.stderr

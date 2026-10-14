@@ -1221,7 +1221,9 @@ def test_delegated_cargo_target_is_the_rust_linker_selection_authority(
 def test_cargo_configured_target_reaches_identity_authority(tmp_path, source):
     target = "x86_64-pc-windows-msvc"
     (tmp_path / ".cargo").mkdir()
-    (tmp_path / ".cargo/config.toml").write_text('[build]\ntarget="wasm32-wasip1"\n')
+    (tmp_path / ".cargo/config.toml").write_text(
+        '[build]\ntarget="wasm32-wasip1"\n', encoding="utf-8"
+    )
     command = ["cargo", "check"]
     env = {}
     if source == "config":
@@ -3734,7 +3736,7 @@ def test_guarded_retention_reuses_closed_payload_controller(
     cache = tmp_path / "cache"
     (cache / "module_lowering").mkdir(parents=True)
     entry = cache / "module_lowering/entry.json"
-    entry.write_text("immutable cache payload")
+    entry.write_text("immutable cache payload", encoding="utf-8")
     marker = tmp_path / "payload-finished"
     for name, value in {
         "MOLT_CACHE": str(cache),
@@ -3763,7 +3765,7 @@ def test_guarded_retention_reuses_closed_payload_controller(
 
     def sweep(root, **kwargs):
         assert events[-1] == "payload-closed"
-        assert marker.read_text() == "done"
+        assert marker.read_text(encoding="utf-8") == "done"
         assert root == cache
         assert kwargs["automatic"] is True
         events.append("prune")
@@ -9395,7 +9397,9 @@ def test_proof_queue_named_lane_can_detach_runner(
     )
     prepared_python.parent.mkdir(parents=True)
     prepared_python.write_bytes(b"prepared fixture image")
-    (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}")
+    (environment_root / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+        "{}", encoding="utf-8"
+    )
     monkeypatch.setattr(
         environment_authority,
         "_source_build_custody_root",
@@ -18159,7 +18163,7 @@ def test_clippy_configured_selectors_require_bound_cargo_context(
     value = (
         f'env.{key} = {{ value = "external-selection", force = {str(forced).lower()} }}'
     )
-    config.write_text(value)
+    config.write_text(value, encoding="utf-8")
     command = ["cargo", "--config", value if inline else str(config), "clippy"]
     envelope = command_admission.envelope_for_command(command)
     kwargs = dict(

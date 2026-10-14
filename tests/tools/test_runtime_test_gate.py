@@ -950,7 +950,9 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
     monkeypatch.setattr(gate, "COMMANDS", Commands())
     root = tmp_path / "receipts"
     code = gate.main(["--policy", "allocation-observer", "--receipt-root", str(root)])
-    receipt = json.loads(next(root.glob("*/aggregate.json")).read_text())
+    receipt = json.loads(
+        next(root.glob("*/aggregate.json")).read_text(encoding="utf-8")
+    )
     assert len(builds) == 1
     command = builds[0]
     assert "--lib" in command and "--no-run" in command
@@ -1299,7 +1301,9 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
             str(root),
         ]
     )
-    aggregate = json.loads(next(root.glob("*/aggregate.json")).read_text())
+    aggregate = json.loads(
+        next(root.glob("*/aggregate.json")).read_text(encoding="utf-8")
+    )
     assert len(resolved) == 1
     assert "--lib" in builds[0][0] and "--no-default-features" in builds[0][0]
     assert builds[0][0][builds[0][0].index("--features") + 1] == "stdlib_micro"

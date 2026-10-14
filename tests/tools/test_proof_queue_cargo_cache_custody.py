@@ -2324,7 +2324,9 @@ def test_workspace_reuses_after_edits_but_old_receipt_cannot_delete_new_owner(tm
     (first.target / "compiler-artifact").write_bytes(b"built")
     projection = _finish_workspace(first, inputs)
     inputs.update(run_id="unit-two", execution_nonce_sha256="d" * 64)
-    (inputs["source_root"] / "main.rs").write_text('fn main() {println!("edited");}\n')
+    (inputs["source_root"] / "main.rs").write_text(
+        'fn main() {println!("edited");}\n', encoding="utf-8"
+    )
     _capture(inputs)
     inputs["command"] = ["cargo", "test", "different-filter"]
     second = cache.acquire(**inputs)
@@ -2409,7 +2411,8 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
     ]
     (source / "Cargo.toml").write_text(
         '[package]\nname="queue-workspace-oracle"\nversion="0.1.0"\nedition="2021"\n'
-        '[lib]\npath="main.rs"\n[workspace]\n'
+        '[lib]\npath="main.rs"\n[workspace]\n',
+        encoding="utf-8",
     )
     script = """fn main() {
         println!("cargo:rerun-if-changed=input.txt");
@@ -2419,12 +2422,12 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
         println!("cargo:rustc-env=WITNESS_ABI={}", std::fs::read_to_string("abi.txt").unwrap());
         println!("cargo:rustc-env=WITNESS_ENV={}", std::env::var("WITNESS_ENV").unwrap());
     }"""
-    (source / "build.rs").write_text(script)
-    (source / "input.txt").write_text("one")
-    (source / "abi.txt").write_text("abi1")
-    (source / "driver.py").write_text("# first Python driver\n")
+    (source / "build.rs").write_text(script, encoding="utf-8")
+    (source / "input.txt").write_text("one", encoding="utf-8")
+    (source / "abi.txt").write_text("abi1", encoding="utf-8")
+    (source / "driver.py").write_text("# first Python driver\n", encoding="utf-8")
     program = '#[test] fn witness() { println!("WITNESS={}:{}:{}:A", env!("WITNESS_INPUT"), env!("WITNESS_ABI"), env!("WITNESS_ENV")); }\n'
-    (source / "main.rs").write_text(program)
+    (source / "main.rs").write_text(program, encoding="utf-8")
     ambient = {
         key: value
         for key, value in os.environ.items()
@@ -2466,14 +2469,20 @@ def test_workspace_real_cargo_warm_and_declared_edits(tmp_path):
         ]
     ):
         if step == "python-edit":
-            (source / "driver.py").write_text("# changed Python driver\n")
-            (editable.imports / "module.py").write_text("VALUE = 200\n")
+            (source / "driver.py").write_text(
+                "# changed Python driver\n", encoding="utf-8"
+            )
+            (editable.imports / "module.py").write_text(
+                "VALUE = 200\n", encoding="utf-8"
+            )
         elif step == "rust-edit":
-            (source / "main.rs").write_text(program.replace(":A", ":B"))
+            (source / "main.rs").write_text(
+                program.replace(":A", ":B"), encoding="utf-8"
+            )
         elif step == "declared-file-edit":
-            (source / "input.txt").write_text("two")
+            (source / "input.txt").write_text("two", encoding="utf-8")
         elif step == "abi-edit":
-            (source / "abi.txt").write_text("abi2")
+            (source / "abi.txt").write_text("abi2", encoding="utf-8")
         elif step == "declared-env-edit":
             inputs["env"]["WITNESS_ENV"] = "beta"
         inputs.update(
@@ -2598,9 +2607,9 @@ def test_workspace_refuses_foreign_terminal_pointer(tmp_path, field, value):
     first = cache.acquire(**inputs)
     _finish_workspace(first, inputs)
     pointer = first.owner_path.parent.parent / "state.json"
-    record = json.loads(pointer.read_text())
+    record = json.loads(pointer.read_text(encoding="utf-8"))
     record[field] = value
-    pointer.write_text(json.dumps(record))
+    pointer.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises(ValueError, match="(escaped|mismatch)"):
         cache.acquire(**inputs)
     assert first.target.is_dir()
@@ -2975,7 +2984,7 @@ def test_archival_reclaim_preserves_target_on_custody_or_publication_failure(
 
         monkeypatch.setattr(cache, "_verify_archival_process_closure", refusal)
     elif failure == "owner":
-        owner = json.loads(lease.owner_path.read_text())
+        owner = json.loads(lease.owner_path.read_text(encoding="utf-8"))
         owner["execution_nonce_sha256"] = "b" * 64
         cache._write_owner(lease.owner_path, owner)
         with pytest.raises(ValueError, match="binding mismatch"):
@@ -3012,7 +3021,7 @@ def test_archival_reclaim_preserves_target_on_custody_or_publication_failure(
     result = cache.reclaim_terminal_unsealed(**kwargs)
     assert result["state"] == "reclaim-blocked" and lease.target.exists()
     if failure == "delete":
-        owner = json.loads(lease.owner_path.read_text())
+        owner = json.loads(lease.owner_path.read_text(encoding="utf-8"))
         preserved = custody_cas.read_ref(
             owner["reclaim"]["evidence"],
             expected_root=inputs["result_root"] / "custody-cas",
@@ -3042,10 +3051,11 @@ def test_archival_native_closure_is_bound_to_original_image_and_receipt(
                     {"role": "build-output", "path": str(tmp_path / "target")}
                 ]
             }
-        )
+        ),
+        encoding="utf-8",
     )
     recorded = result_root / "original-receipt.json"
-    recorded.write_text(json.dumps(native))
+    recorded.write_text(json.dumps(native), encoding="utf-8")
     process = dict(
         binary={k: artifact[k] for k in ("path", "sha256", "size_bytes")},
         binary_artifact=artifact,
@@ -3068,13 +3078,13 @@ def test_archival_native_closure_is_bound_to_original_image_and_receipt(
             raise ValueError(
                 "native proof supervisor has not established physical closure"
             )
-        return json.loads(recorded.read_text())
+        return json.loads(recorded.read_text(encoding="utf-8"))
 
     monkeypatch.setattr(supervisor_custody, "_validated_supervisor_receipt", verify)
     if changed == "binary":
         process["binary"] = {**process["binary"], "sha256": "b" * 64}
     if changed == "policy":
-        policy.write_text('{"changed":"policy"}')
+        policy.write_text('{"changed":"policy"}', encoding="utf-8")
     if changed == "policy-target":
         policy.write_text(
             json.dumps(
@@ -3083,11 +3093,12 @@ def test_archival_native_closure_is_bound_to_original_image_and_receipt(
                         {"role": "build-output", "path": str(tmp_path / "other-target")}
                     ]
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         process["policy"] = command_identity._file_identity(policy)
     if changed == "receipt":
-        recorded.write_text('{"complete":true}')
+        recorded.write_text('{"complete":true}', encoding="utf-8")
     if changed == "nonce":
         terminal["execution_nonce_sha256"] = "b" * 64
     if changed is None:
@@ -3145,7 +3156,10 @@ def test_archival_reclaim_fences_custody_after_owner_publication(
     else:
         assert cache.reclaim_terminal_unsealed(**kwargs)["state"] == "reclaim-blocked"
     assert lease.target.exists()
-    assert json.loads(lease.owner_path.read_text())["lifecycle"] == "reclaim-blocked"
+    assert (
+        json.loads(lease.owner_path.read_text(encoding="utf-8"))["lifecycle"]
+        == "reclaim-blocked"
+    )
 
 
 def test_archive_directory_metadata_is_opt_in_to_existing_inventory(tmp_path):

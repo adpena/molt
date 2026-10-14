@@ -852,7 +852,9 @@ def test_differential_file_and_list_selection_freezes_exact_case_closure(
 ):
     root, first, second = selected_diff_sources
     selected_list = root / "selected.txt"
-    selected_list.write_text("# subset\n\n" + first.relative_to(root).as_posix() + "\n")
+    selected_list.write_text(
+        "# subset\n\n" + first.relative_to(root).as_posix() + "\n", encoding="utf-8"
+    )
     lane = PLAN.named_lane(lane_id)
     spec = pact._named_lane_spec(
         lane_id,
@@ -875,7 +877,7 @@ def test_differential_file_and_list_selection_freezes_exact_case_closure(
         files[1]: hashlib.sha256(b"print('b')\n").hexdigest(),
     }
     # The persisted file closure, not this mutable submission list, is replayed.
-    selected_list.write_text("outside.py\n")
+    selected_list.write_text("outside.py\n", encoding="utf-8")
     command_admission.validate_envelope(envelope, spec["command"])
     first.write_bytes(b"print('z')\n")
     with pytest.raises(ValueError, match="envelope"):
@@ -898,7 +900,8 @@ def test_differential_host_tools_follow_selected_cases_and_platform(
     root, first, second = selected_diff_sources
     first.write_text(
         "# MOLT_META: host_toolchains=macos:posix-file,posix:posix-sh,posix:posix-uname\n"
-        "print('a')\n"
+        "print('a')\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(test_policy, "current_platform_name", lambda: platform)
     lane = PLAN.named_lane("runtime.public-consumers.native")
@@ -924,7 +927,8 @@ def test_differential_host_tools_reject_all_unknown_policies(
     root, first, second = selected_diff_sources
     first.write_text(
         "# MOLT_META: host_toolchains=posix:missing-posix,windows:missing-windows\n"
-        "print('a')\n"
+        "print('a')\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(test_policy, "current_platform_name", lambda: "linux")
     command = command_admission.selected_differential_lane_command(
@@ -945,7 +949,7 @@ def test_differential_suite_expansion_is_frozen_before_queueing(selected_diff_so
         "tests/differential/stdlib/b.py",
     ]
     envelope = command_admission.envelope_for_command(command)
-    (first.parent / "c.py").write_text("print('new member')\n")
+    (first.parent / "c.py").write_text("print('new member')\n", encoding="utf-8")
     command_admission.validate_envelope(envelope, command)
     assert len(command_admission.differential_source_bindings(envelope)) == 2
 
@@ -961,7 +965,7 @@ def test_differential_selection_rejects_unowned_or_ambiguous_inputs(
     lists = []
     if mutation == "foreign":
         outside = root.parent / (root.name + "-foreign.py")
-        outside.write_text("print('foreign')\n")
+        outside.write_text("print('foreign')\n", encoding="utf-8")
         cases = [str(outside)]
     elif mutation == "link":
         link = root / "alias.py"
@@ -976,10 +980,10 @@ def test_differential_selection_rejects_unowned_or_ambiguous_inputs(
         cases = ["--unknown"]
     elif mutation == "empty-case":
         # Path("") would otherwise expand this real root-level program.
-        (root / "accidental.py").write_text("print('wrong case')\n")
+        (root / "accidental.py").write_text("print('wrong case')\n", encoding="utf-8")
         cases = [""]
     else:
-        (root / "empty.txt").write_text("# no cases\n")
+        (root / "empty.txt").write_text("# no cases\n", encoding="utf-8")
         cases, lists = [], ["empty.txt"]
     with pytest.raises(ValueError):
         command_admission.selected_differential_lane_command(
@@ -1021,7 +1025,7 @@ def test_differential_list_must_be_owned_and_cli_rejects_unknown_options(
 
     root, first, second = selected_diff_sources
     outside = root.parent / (root.name + "-list.txt")
-    outside.write_text(first.relative_to(root).as_posix() + "\n")
+    outside.write_text(first.relative_to(root).as_posix() + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="escapes"):
         command_admission.selected_differential_lane_command(
             "runtime.public-consumers.native", cases=[], case_lists=[str(outside)]
@@ -1054,13 +1058,15 @@ def test_prepared_differential_lane_keeps_selected_files(
     )
 
     root, first, second = selected_diff_sources
-    first.write_text("# MOLT_META: host_toolchains=posix:posix-sh\nprint('a')\n")
+    first.write_text(
+        "# MOLT_META: host_toolchains=posix:posix-sh\nprint('a')\n", encoding="utf-8"
+    )
     custody = root / "environments"
     environment = custody / ("a" * 64)
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     python.parent.mkdir(parents=True)
     python.write_bytes(b"prepared-interpreter")
-    (environment / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}")
+    (environment / SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         environment_authority, "_source_build_custody_root", lambda _root: custody
     )

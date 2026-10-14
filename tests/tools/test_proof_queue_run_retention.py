@@ -740,7 +740,7 @@ def test_superseded_workspace_refuses_uncertain_authority(queue, workspace_runs,
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     inputs, (old, current), projections = workspace_runs
-    owner = json.loads(current.owner_path.read_text())
+    owner = json.loads(current.owner_path.read_text(encoding="utf-8"))
     lock = None
     if fault == "busy":
         lock = _try_acquire_file_lock(
@@ -751,7 +751,7 @@ def test_superseded_workspace_refuses_uncertain_authority(queue, workspace_runs,
         current.owner_path.unlink()
     elif fault == "pointer":
         pointer = current.owner_path.parent.parent / "state.json"
-        payload = json.loads(pointer.read_text())
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
         payload["run_id"] = "foreign"
         write_exact(pointer, payload)
     elif fault in {"leased", "blocked", "wrong-owner", "same-nonce", "wrong-nonce"}:

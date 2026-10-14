@@ -284,7 +284,7 @@ def test_changed_suite_scratch_never_acquires_launch_or_deletion_authority(
     payload.write_bytes(b"original")
     if replacement == "receipt":
         (scratch / ".molt-scratch-target.json").write_text(
-            '{"schema":"molt.guard-scratch.v1","nonce":"replacement"}'
+            '{"schema":"molt.guard-scratch.v1","nonce":"replacement"}', encoding="utf-8"
         )
     else:
         scratch.rename(path.parent / "original")
@@ -309,7 +309,7 @@ def test_changed_suite_scratch_never_acquires_launch_or_deletion_authority(
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: lease_samples(record))
     assert not suite.drain_lease(path)
     assert payload.read_bytes() == expected
-    receipt = json.loads((path.parent / "drain.json").read_text())
+    receipt = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert receipt["closed"] is True
     assert receipt["scratch"]["state"] == "blocked"
 
@@ -332,7 +332,7 @@ def test_verified_daemon_closure_does_not_hide_scratch_reclamation_failure(
     monkeypatch.setattr(suite, "delete_path", partial_delete)
     assert not suite.drain_lease(path)
     assert (path.parent / "scratch").is_dir()
-    receipt = json.loads((path.parent / "drain.json").read_text())
+    receipt = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert receipt["closed"] is True
     assert receipt["scratch"] == {"state": "blocked", "error": "OSError: denied"}
     assert not suite.drain_lease(path)

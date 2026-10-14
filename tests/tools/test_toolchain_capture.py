@@ -3553,26 +3553,33 @@ def test_cargo_check_uses_source_bound_effective_flags_before_any_probe(
         env["CARGO_ENCODED_RUSTFLAGS"] = "--emit=link"
     elif setting in {"active-cfg", "inactive-cfg"}:
         predicate = "windows" if setting == "active-cfg" else "unix"
-        config.write_text(f"[target.'cfg({predicate})']\nrustflags=[\"--emit=link\"]\n")
+        config.write_text(
+            f"[target.'cfg({predicate})']\nrustflags=[\"--emit=link\"]\n",
+            encoding="utf-8",
+        )
     elif setting == "output-destinations":
         env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(expected_flags)
-        config.write_text("[target.'cfg(windows)']\nrustflags=[]\n")
+        config.write_text("[target.'cfg(windows)']\nrustflags=[]\n", encoding="utf-8")
     elif setting == "custom-profile":
         (tmp_path / "Cargo.toml").write_text(
-            '[profile.small]\ninherits="dev"\nopt-level="s"\n[profile.small.package.some_package]\nopt-level=3\n'
+            '[profile.small]\ninherits="dev"\nopt-level="s"\n[profile.small.package.some_package]\nopt-level=3\n',
+            encoding="utf-8",
         )
         command.extend(("--profile", "small"))
     elif setting == "documenter-tests":
         env["RUSTDOCFLAGS"] = "--test"
     elif setting == "documenter-cfg":
-        config.write_text("[target.'cfg(windows)']\nrustdocflags=[\"--test\"]\n")
+        config.write_text(
+            "[target.'cfg(windows)']\nrustdocflags=[\"--test\"]\n", encoding="utf-8"
+        )
     elif setting == "documenter-rendering":
         env["RUSTDOCFLAGS"] = (
             "--test --html-in-header --test --emit=html-static-files,dep-info"
         )
     elif setting == "forced-environment":
         config.write_text(
-            '[env.CARGO_ENCODED_RUSTFLAGS]\nvalue="--emit=metadata=/user/metadata"\nforce=true\n'
+            '[env.CARGO_ENCODED_RUSTFLAGS]\nvalue="--emit=metadata=/user/metadata"\nforce=true\n',
+            encoding="utf-8",
         )
     linker = tmp_path / "selected-linker"
     linker.write_bytes(b"linker")
@@ -3638,7 +3645,10 @@ def test_cargo_check_uses_source_bound_effective_flags_before_any_probe(
     with pytest.raises(ValueError, match="selected flags differ"):
         toolchain_capture.validate_rust_link_selection(forged, command_argv=command)
     if config.exists():
-        config.write_text(config.read_text() + "# changed after capture\n")
+        config.write_text(
+            config.read_text(encoding="utf-8") + "# changed after capture\n",
+            encoding="utf-8",
+        )
         with pytest.raises(ValueError, match="Cargo flag source changed"):
             toolchain_capture.revalidate_rust_link_process_images(
                 identity, target=target, command_argv=command
@@ -3661,7 +3671,9 @@ def test_unresolved_rust_flags_fail_before_flag_bearing_probe(
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
     (tmp_path / ".cargo").mkdir()
-    (tmp_path / ".cargo/config.toml").write_text("[target.'cfg(unix)']\nrustflags=[]\n")
+    (tmp_path / ".cargo/config.toml").write_text(
+        "[target.'cfg(unix)']\nrustflags=[]\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="response files|unstable Rust"):
         toolchain_capture.capture_rust_link_process_images(
             rustc=tmp_path / "rustc",
@@ -3805,7 +3817,8 @@ def test_external_unstable_manifest_is_rejected_before_capability_compile(
     external = tmp_path / "external-workspace"
     external.mkdir()
     (external / "Cargo.toml").write_text(
-        'cargo-features=["profile-rustflags"]\n[profile.dev]\nrustflags=["--emit=link"]\n'
+        'cargo-features=["profile-rustflags"]\n[profile.dev]\nrustflags=["--emit=link"]\n',
+        encoding="utf-8",
     )
     calls = []
     env = {"PATH": ""}
@@ -4287,11 +4300,11 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
     assert len(version_calls) == 1 and len(calls) == 4
     # An omitted role cannot be laundered by resealing the stored JSON identity.
     location = Path(telemetry[-1]["record"])
-    stored = json.loads(location.read_text())
+    stored = json.loads(location.read_text(encoding="utf-8"))
     del stored["identity"]["llvm_sdk"]
     stored["identity"].pop("identity_sha256")
     stored["identity"]["identity_sha256"] = canonical_json_sha256(stored["identity"])
-    location.write_text(json.dumps(stored))
+    location.write_text(json.dumps(stored), encoding="utf-8")
     recaptured = capture()
     command_identity._validate_toolchain_identity(plan, "llvm-sdk", recaptured)
     assert recaptured["process_images"] == captured["process_images"]
