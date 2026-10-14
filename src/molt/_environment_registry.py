@@ -5613,7 +5613,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_KEY",
-      "owner": "runtime/molt-backend/src/backend_process/daemon/cache/job/policy.rs",
+      "owner": "runtime/molt-backend/src/backend_process/daemon/compile/target.rs",
       "summary": "Expected cache key of the shared stdlib archive named by MOLT_STDLIB_OBJ; src/molt/cli/backend_compile.py sets it for the backend child, which admits the cached archive only when the sidecar key and MOLT_STDLIB_CACHE_MANIFEST both match; a person never sets it.",
       "values": []
     },
@@ -5622,7 +5622,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_MANIFEST",
-      "owner": "runtime/molt-backend/src/backend_process/daemon/cache/job/policy.rs",
+      "owner": "runtime/molt-backend/src/backend_process/daemon/compile/target.rs",
       "summary": "Expected manifest text (cache variant, target triple and compiler fingerprint) of the shared stdlib archive; src/molt/cli/backend_compile.py sets it for the backend child beside MOLT_STDLIB_CACHE_KEY, and a mismatch with the archive sidecar is a cache miss; a person never sets it.",
       "values": []
     },
