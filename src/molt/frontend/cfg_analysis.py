@@ -244,7 +244,6 @@ def _build_basic_blocks(
         "LOOP_BREAK",
         "LOOP_BREAK_IF_TRUE",
         "LOOP_BREAK_IF_FALSE",
-        "LOOP_BREAK_IF_EXCEPTION",
         "LOOP_CONTINUE",
         "TRY_START",
         "TRY_END",
@@ -252,8 +251,6 @@ def _build_basic_blocks(
         "ret",
         "ret_void",
         "RAISE",
-        "RAISE_CAUSE",
-        "RERAISE",
         "LABEL",
         "STATE_LABEL",
         "STATE_SWITCH",
@@ -389,7 +386,6 @@ def _compute_successors(
         if kind in {
             "LOOP_BREAK_IF_TRUE",
             "LOOP_BREAK_IF_FALSE",
-            "LOOP_BREAK_IF_EXCEPTION",
         }:
             add_succ(block_id, next_block)
             owner = control.loop_owner.get(op_idx)
@@ -420,7 +416,7 @@ def _compute_successors(
             continue
         if kind in {"ret", "ret_void"}:
             continue
-        if kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
+        if kind == "RAISE":
             # molt's exception model lowers `raise` to "set the pending
             # exception flag and CONTINUE" (the native/WASM/LLVM `raise` op calls
             # `molt_raise` and falls through — it does NOT branch). The frontend

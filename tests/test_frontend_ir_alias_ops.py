@@ -44,65 +44,9 @@ def test_call_bind_lowers_finalizer_fact() -> None:
     }
 
 
-def test_invoke_ffi_lowers_to_invoke_ffi_lane() -> None:
-    op = MoltOp(
-        kind="INVOKE_FFI",
-        args=[MoltValue("callee"), MoltValue("arg0"), MoltValue("arg1")],
-        result=MoltValue("out"),
-    )
-    lowered = _map_single(op)
-    assert lowered == {
-        "kind": "invoke_ffi",
-        "args": ["callee", "arg0", "arg1"],
-        "out": "out",
-    }
-
-
-def test_invoke_ffi_bridge_lane_marker_lowers_to_s_value() -> None:
-    op = MoltOp(
-        kind="INVOKE_FFI",
-        args=[MoltValue("callee"), MoltValue("arg0")],
-        result=MoltValue("out"),
-        metadata={"ffi_lane": "bridge"},
-    )
-    lowered = _map_single(op)
-    assert lowered == {
-        "kind": "invoke_ffi",
-        "args": ["callee", "arg0"],
-        "out": "out",
-        "s_value": "bridge",
-    }
-
-
-def test_invoke_ffi_native_callable_metadata_lowers_to_schema_fields() -> None:
-    op = MoltOp(
-        kind="INVOKE_FFI",
-        args=[MoltValue("arg0")],
-        result=MoltValue("out"),
-        metadata={
-            "native_callable_export": "scipy.ndimage.distance_transform_edt",
-            "native_callable_binding": "direct_symbol",
-            "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt",
-            "native_callable_abi": "molt.forward_f32_v1",
-        },
-    )
-    lowered = _map_single(op)
-    assert lowered == {
-        "kind": "invoke_ffi",
-        "args": ["arg0"],
-        "out": "out",
-        "native_callable_export": "scipy.ndimage.distance_transform_edt",
-        "native_callable_binding": "direct_symbol",
-        "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt",
-        "native_callable_abi": "molt.forward_f32_v1",
-    }
-
-
-@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
 @pytest.mark.parametrize("result", ["none", "checked"])
-def test_runtime_guard_preserves_value_and_expected_tag_operands(
-    kind: str, result: str
-) -> None:
+def test_runtime_guard_preserves_value_and_expected_tag_operands(result: str) -> None:
+    kind = "GUARD_TAG"
     op = MoltOp(
         kind=kind,
         args=[MoltValue("value"), MoltValue("tag")],
@@ -538,7 +482,6 @@ def test_raw_module_call_uses_the_captured_callable_object() -> None:
     assert len(calls) == 1
     assert calls[0].args == [loads[0].result]
     assert ops.index(loads[0]) < ops.index(calls[0])
-    assert not any(op.kind == "INVOKE_FFI" for op in ops)
 
 
 def test_lowered_module_call_preserves_the_captured_callable_operand() -> None:
@@ -604,7 +547,6 @@ def test_module_call_captures_before_argument_effects_and_preserves_binding(
         assert ops.index(effects[0]) < ops.index(pushes[0]) < ops.index(call)
     else:
         assert call.args[1].name == effects[0].result.name
-    assert not any(op.kind == "INVOKE_FFI" for op in ops)
 
 
 def test_native_callable_export_calls_the_live_callable_object() -> None:

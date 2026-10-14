@@ -5123,10 +5123,6 @@ kind = "BOX"
 opcode = "BoxVal"
 
 [[frontend_raising_kind]]
-kind = "BOX_FROM_RAW_INT"
-opcode = "BoxVal"
-
-[[frontend_raising_kind]]
 kind = "CONST_STR"
 opcode = "ConstStr"
 
@@ -5161,10 +5157,6 @@ opcode = "Shl"
 [[frontend_raising_kind]]
 kind = "RSHIFT"
 opcode = "Shr"
-
-[[frontend_raising_kind]]
-kind = "GET_ATTR"
-opcode = "LoadAttr"
 
 [[frontend_raising_kind]]
 kind = "SET_ATTR"
@@ -5205,10 +5197,6 @@ reason = "isinstance can invoke metaclass __instancecheck__ and raise"
 [[frontend_raising_kind]]
 kind = "LEN"
 reason = "dynamic len dispatch invokes __len__, whose callback and index conversion can raise"
-
-[[frontend_raising_kind]]
-kind = "LOAD_ATTR"
-opcode = "LoadAttr"
 
 [[frontend_raising_kind]]
 kind = "STORE_INDEX"
@@ -5460,10 +5448,6 @@ reason = "frontend-internal: serializes to wire `get_attr_generic_obj` (LoadAttr
 [[frontend_raising_kind]]
 kind = "GETATTR_GENERIC_PTR"
 reason = "frontend-internal: serializes to wire `get_attr_generic_ptr` (LoadAttr alias, may_throw); raises AttributeError"
-
-[[frontend_raising_kind]]
-kind = "GETATTR_NAME"
-reason = "frontend-internal: serializes to wire `get_attr_name` (LoadAttr alias, may_throw); raises AttributeError"
 
 [[frontend_raising_kind]]
 kind = "GETATTR_NAME_DEFAULT"
@@ -5725,11 +5709,6 @@ reason = "generic object lookup may invoke __getattribute__, descriptors, or __g
 kind = "GETATTR_GENERIC_PTR"
 effect = "writes_heap"
 reason = "generic pointer lookup may invoke __getattribute__, descriptors, or __getattr__ callbacks"
-
-[[frontend_effect_kind]]
-kind = "GETATTR_NAME"
-effect = "writes_heap"
-reason = "named lookup may invoke __getattribute__, descriptors, or __getattr__ callbacks"
 
 [[frontend_effect_kind]]
 kind = "GETATTR_NAME_DEFAULT"

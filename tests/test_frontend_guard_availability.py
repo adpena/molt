@@ -13,7 +13,7 @@ def op(kind: str, *args: object, result: str = "none") -> MoltOp:
 
 
 def guard(value: str = "value") -> MoltOp:
-    return op("GUARD_TYPE", MoltValue(value), MoltValue("expected"))
+    return op("GUARD_TAG", MoltValue(value), MoltValue("expected"))
 
 
 def elide(ops: list[MoltOp]) -> list[MoltOp]:
@@ -35,12 +35,12 @@ def test_guard_backedge_cannot_borrow_preloop_fact(backedge: str) -> None:
         ops.append(op("JUMP", "header"))
     ops.append(op("LOOP_END"))
     result = elide(ops)
-    assert sum(item.kind == "GUARD_TYPE" for item in result) == 2
+    assert sum(item.kind == "GUARD_TAG" for item in result) == 2
 
 
 def test_runtime_guard_repetition_preserves_each_profile_event() -> None:
     ops = [guard(), op("LOOP_START"), guard(), op("LOOP_END"), guard()]
-    assert sum(item.kind == "GUARD_TYPE" for item in elide(ops)) == 3
+    assert sum(item.kind == "GUARD_TAG" for item in elide(ops)) == 3
 
 
 def test_loop_break_uses_exit_path_not_textual_suffix() -> None:
@@ -86,7 +86,7 @@ def test_guard_success_does_not_flow_to_exception_or_resume_entry(route: str) ->
 @pytest.mark.parametrize("name", ["value", "expected"])
 def test_result_rebinding_invalidates_guard_operands(name: str) -> None:
     ops = [guard(), op("COPY", MoltValue("replacement"), result=name), guard()]
-    assert sum(item.kind == "GUARD_TYPE" for item in elide(ops)) == 2
+    assert sum(item.kind == "GUARD_TAG" for item in elide(ops)) == 2
 
 
 def test_exception_edge_coalesced_with_fallthrough_has_no_success_fact() -> None:
@@ -94,7 +94,7 @@ def test_exception_edge_coalesced_with_fallthrough_has_no_success_fact() -> None
     cfg = build_cfg(ops)
     edge = (cfg.index_to_block[1], cfg.index_to_block[2])
     assert cfg.edge_kinds[edge] == CFGEdgeKind.NORMAL | CFGEdgeKind.EXCEPTION
-    assert sum(item.kind == "GUARD_TYPE" for item in elide(ops)) == 2
+    assert sum(item.kind == "GUARD_TAG" for item in elide(ops)) == 2
 
 
 def test_cfg_records_complete_edge_modes_at_the_edge_authority() -> None:
@@ -135,7 +135,7 @@ def test_guard_callback_admission_does_not_borrow_emitter_constant() -> None:
         guard(),
     ]
     rewritten, _, _, _ = gen._eliminate_redundant_guards_cfg(ops)
-    assert sum(item.kind == "GUARD_TYPE" for item in rewritten) == 2
+    assert sum(item.kind == "GUARD_TAG" for item in rewritten) == 2
 
 
 def rewrite_branches(
@@ -166,8 +166,8 @@ def test_common_entry_guard_hoists_without_erasing_later_callback_guards() -> No
         [guard(), op("CALL", MoltValue("left")), guard(), op("CONST", 1, result="a")],
         [guard(), op("CALL", MoltValue("right")), guard(), op("CONST", 2, result="b")],
     )
-    assert result[0].kind == "GUARD_TYPE"
-    assert sum(item.kind == "GUARD_TYPE" for item in result) == 3
+    assert result[0].kind == "GUARD_TAG"
+    assert sum(item.kind == "GUARD_TAG" for item in result) == 3
 
 
 def test_guard_after_callback_is_not_hoisted() -> None:
@@ -225,7 +225,7 @@ def test_guard_failure_order_is_not_sorted_across_branches() -> None:
         [guard("b"), guard("a"), op("CONST", 2, result="right")],
     )
     assert result[0].kind == "IF"
-    assert sum(item.kind == "GUARD_TYPE" for item in result) == 4
+    assert sum(item.kind == "GUARD_TAG" for item in result) == 4
 
 
 @pytest.mark.parametrize("body", [[], [op("LINE", 1)]])

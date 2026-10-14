@@ -4,7 +4,10 @@ The registry (``op_kinds.toml``) declares which kinds exist. It cannot see
 whether anything still builds them. When a producer is deleted, its kind stays
 registered and every string-matched consumer still compiles (HF-197). This
 census reads the frontend source and proves the set of ``MoltOp`` kinds that a
-production path can build, and the set of kinds that frontend code tests for.
+production path can build. It also records every identifier-like string literal
+in the compiler's Python (``MENTION_ROOTS``): a literal that spells a registered
+kind is a consumer of that kind, whether it sits in a comparison, a set, a dict
+key or a registry override.
 
 Every ``MoltOp`` kind argument must resolve to a finite set of string literals:
 
@@ -32,6 +35,14 @@ from pathlib import Path
 from .paths import ROOT
 
 FRONTEND = Path("src/molt/frontend")
+# Compiler Python that may spell frontend op kinds. The stdlib is user-level
+# Python compiled by Molt; its strings are not op kinds.
+MENTION_ROOTS = (
+    Path("src/molt/frontend"),
+    Path("src/molt/debug"),
+    Path("tools/op_kinds"),
+)
+MENTION_EXCLUDED = (Path("src/molt/stdlib"),)
 GENERATED_MODULE = "molt.frontend.lowering.op_kinds_generated"
 _MAX_DEPTH = 24
 
@@ -52,8 +63,8 @@ class Site:
 class FrontendCensus:
     # kind -> sites that can build it
     produced: dict[str, list[Site]] = field(default_factory=dict)
-    # kind -> sites that test an operation's kind against it
-    consumed: dict[str, list[Site]] = field(default_factory=dict)
+    # identifier-like string literal -> sites that spell it
+    mentioned: dict[str, list[Site]] = field(default_factory=dict)
     unresolved_producers: list[Site] = field(default_factory=list)
 
 
@@ -462,63 +473,15 @@ def _binding_values(
     return []
 
 
-def _comparison_literals(
-    test: ast.Compare, resolver: _Resolver
-) -> frozenset[str] | None:
-    """Kinds that a ``<x>.kind`` comparison tests for; None if not one."""
-    sides = [test.left, *test.comparators]
-    if len(sides) != 2 or not any(
-        isinstance(side, ast.Attribute) and side.attr == "kind" for side in sides
-    ):
-        return None
-    other = (
-        sides[1]
-        if isinstance(sides[0], ast.Attribute) and sides[0].attr == "kind"
-        else sides[0]
-    )
-    op = test.ops[0]
-    if isinstance(op, (ast.Eq, ast.NotEq)):
-        if isinstance(other, ast.Constant) and isinstance(other.value, str):
-            return frozenset({other.value})
-        return None
-    if isinstance(op, (ast.In, ast.NotIn)):
-        if isinstance(other, (ast.Tuple, ast.List, ast.Set)):
-            return frozenset(
-                elt.value
-                for elt in other.elts
-                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-            )
-        # A hand-written table in the frontend; generated registry tables live
-        # outside the index and follow the registry by construction.
-        name = _referenced_name(other)
-        if name is None:
-            return None
-        out: frozenset[str] = frozenset()
-        for value in (
-            *resolver.index.module_constants.get(name, ()),
-            *resolver.index.class_attrs.get(name, ()),
-        ):
-            out |= _collection_strings(value)
-        return out or None
-    return None
-
-
-def _collection_strings(expr: ast.expr) -> frozenset[str]:
-    if isinstance(expr, ast.Call) and expr.args:
-        return _collection_strings(expr.args[0])  # frozenset({...}), set((...))
-    if isinstance(expr, ast.Dict):
-        return frozenset(
-            key.value
-            for key in expr.keys
-            if isinstance(key, ast.Constant) and isinstance(key.value, str)
-        )
-    if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
-        return frozenset(
-            elt.value
-            for elt in expr.elts
-            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-        )
-    return frozenset()
+def _mention_files(root: Path) -> Iterator[Path]:
+    excluded = [root / path for path in MENTION_EXCLUDED]
+    for base in MENTION_ROOTS:
+        for path in sorted((root / base).rglob("*.py")):
+            if path.name.endswith("_generated.py") or any(
+                path.is_relative_to(prefix) for prefix in excluded
+            ):
+                continue
+            yield path
 
 
 def frontend_census(root: Path = ROOT) -> FrontendCensus:
@@ -527,24 +490,30 @@ def frontend_census(root: Path = ROOT) -> FrontendCensus:
     census = FrontendCensus()
     for module in index.modules:
         for node in ast.walk(module.tree):
-            if _is_molt_op_call(node):
-                assert isinstance(node, ast.Call)
-                for argument in _kind_arguments(node):
-                    site = Site(module.rel, node.lineno, ast.unparse(argument))
-                    try:
-                        kinds = resolver.strings(argument)
-                    except _Unresolved as error:
-                        census.unresolved_producers.append(
-                            Site(site.path, site.line, site.text, str(error))
-                        )
-                        continue
-                    for kind in kinds:
-                        census.produced.setdefault(kind, []).append(site)
-            elif isinstance(node, ast.Compare):
-                kinds = _comparison_literals(node, resolver)
-                if kinds is None:
+            if not _is_molt_op_call(node):
+                continue
+            assert isinstance(node, ast.Call)
+            for argument in _kind_arguments(node):
+                site = Site(module.rel, node.lineno, ast.unparse(argument))
+                try:
+                    kinds = resolver.strings(argument)
+                except _Unresolved as error:
+                    census.unresolved_producers.append(
+                        Site(site.path, site.line, site.text, str(error))
+                    )
                     continue
-                site = Site(module.rel, node.lineno, ast.unparse(node)[:80])
                 for kind in kinds:
-                    census.consumed.setdefault(kind, []).append(site)
+                    census.produced.setdefault(kind, []).append(site)
+    for path in _mention_files(root):
+        rel = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value.isidentifier()
+            ):
+                census.mentioned.setdefault(node.value, []).append(
+                    Site(rel, node.lineno, repr(node.value))
+                )
     return census

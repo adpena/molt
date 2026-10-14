@@ -43,7 +43,6 @@ _SCCP_PROVEN_NOTHROW_CURATED: frozenset[str] = frozenset(
         "LOOP_BREAK",
         "LOOP_BREAK_IF_TRUE",
         "LOOP_BREAK_IF_FALSE",
-        "LOOP_BREAK_IF_EXCEPTION",
         "LOOP_CONTINUE",
         "TRY_START",
         "TRY_END",
@@ -70,7 +69,6 @@ _SCCP_PROVEN_NOTHROW_CURATED: frozenset[str] = frozenset(
         "EXCEPTION_NEW_BUILTIN_ONE",
         "EXCEPTION_MATCH_BUILTIN",
         "STORE_VAR",
-        "DELETE_VAR",
         "LOAD_VAR",
     }
 )
@@ -303,8 +301,6 @@ class MidendDataflowMixin(GeneratorMixinBase):
             "GETATTR_NAME_DEFAULT",
             "CALL",
             "CALL_INDIRECT",
-            "CALL_INTERNAL",
-            "DICT_UPDATE_MISSING",
         }
 
         for block in cfg.blocks:
