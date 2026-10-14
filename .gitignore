@@ -141,8 +141,3 @@ collab/pact/pact_witness_kernel/*.npz
 # provenance ledger (like pact's canonical-equations registry), seeded with real
 # keystones -- re-included here so it IS tracked at origin/main.
 !.molt/state/findings_registry.jsonl
-
-# Local runtime WASM build receipts a source build writes into wasm/
-# (CI routes these to MOLT_WASM_RUNTIME_DIR).
-/wasm/*.generation.json
-/wasm/*.runtime-wasm-member

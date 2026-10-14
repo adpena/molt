@@ -15156,19 +15156,15 @@ def test_default_molt_bin_is_cached(
     assert info.currsize >= 1
 
 
-def test_wasm_runtime_root_is_cached(
+def test_wasm_runtime_root_explicit_directory_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli_build_output_layout._wasm_runtime_root_cached.cache_clear()
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(tmp_path / "wasm-root"))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
-    first = cli_build_output_layout._wasm_runtime_root(tmp_path)
-    second = cli_build_output_layout._wasm_runtime_root(tmp_path)
-
-    info = cli_build_output_layout._wasm_runtime_root_cached.cache_info()
-    assert first == second == (tmp_path / "wasm-root")
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    assert cli_build_output_layout._wasm_runtime_root(tmp_path) == (
+        tmp_path / "wasm-root"
+    )
 
 
 def test_safe_output_base_is_cached() -> None:
@@ -15280,25 +15276,55 @@ def test_runtime_lib_path_includes_target_triple(
     )
 
 
-def test_runtime_wasm_artifact_path_is_cached(
+def test_runtime_wasm_artifact_path_follows_the_artifact_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli_build_output_layout._wasm_runtime_root_cached.cache_clear()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    project = tmp_path / "project"
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
 
-    first = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
-    second = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    assert RUNTIME_PATHS._runtime_wasm_artifact_path(project, "molt_runtime.wasm") == (
+        tmp_path / "artifacts" / "wasm" / "molt_runtime.wasm"
+    )
 
-    info = cli_build_output_layout._wasm_runtime_root_cached.cache_info()
-    assert first == second == (tmp_path / "wasm" / "molt_runtime.wasm")
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    # A relative artifact root is anchored at the project, never the cwd, and
+    # the root need not exist yet: the build creates it.
+    monkeypatch.setenv("MOLT_EXT_ROOT", "artifacts")
+    assert RUNTIME_PATHS._runtime_wasm_artifact_path(project, "molt_runtime.wasm") == (
+        project / "artifacts" / "wasm" / "molt_runtime.wasm"
+    )
+
+
+@pytest.mark.usefixtures("developer_host_context")
+def test_runtime_wasm_default_sits_in_the_native_runtime_cargo_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.chdir(elsewhere)
+
+    runtime_wasm = RUNTIME_PATHS._runtime_wasm_artifact_path(
+        project, "molt_runtime.wasm"
+    )
+    native_lib = cli._runtime_lib_path(project, "release", None)
+
+    # Cargo's own target of the project holds both runtimes, so neither a
+    # build from another directory nor one in the checkout writes into a
+    # source tree.
+    assert (
+        runtime_wasm == project / "target" / "molt-runtime-wasm" / "molt_runtime.wasm"
+    )
+    assert native_lib.parent.parent == runtime_wasm.parent.parent
+    assert not runtime_wasm.is_relative_to(elsewhere)
 
 
 def test_runtime_wasm_artifact_path_uses_explicit_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli_build_output_layout._wasm_runtime_root_cached.cache_clear()
     override = tmp_path / "custom-wasm"
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(override))
 
