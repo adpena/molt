@@ -4027,7 +4027,7 @@ def test_clippy_capture_owns_selected_plugin_and_sibling_driver(
     captured = {(row["role"], row["path"]) for row in identity["process_images"]}
     assert ("cargo-clippy", custody_spelling(tools["cargo-clippy"])) in captured
     assert ("clippy-driver", custody_spelling(tools["clippy-driver"])) in captured
-    assert paths["clippy-launcher"] == str(
+    assert paths["clippy-launcher"] == custody_spelling(
         tools["cargo-clippy"]
         if not proxy
         else tmp_path / "cargo-home" / "bin" / tools["cargo-clippy"].name
