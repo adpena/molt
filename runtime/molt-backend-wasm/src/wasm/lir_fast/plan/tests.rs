@@ -127,14 +127,27 @@ fn checked_mul_i64_consts_func() -> TirFunction {
 }
 
 #[test]
-fn wasm_lir_fast_plan_accepts_proven_i64_body() {
-    let plan = prepare_lir_wasm_fast_plan(&const_i64_return_func(42));
+fn wasm_lir_fast_plan_respects_proven_value_and_authored_void_returns() {
+    let proven = const_i64_return_func(42);
+    let plan = prepare_lir_wasm_fast_plan(&proven);
     let body = plan
         .lir_fast_body()
         .expect("proven i64 const return must keep the LIR fast plan");
-
     assert_eq!(plan.generic_reason(), None);
     assert_eq!(body.bail_to_generic_reason(), None);
+    assert_eq!(body.result_types, vec![wasm_encoder::ValType::I64]);
+
+    let mut void = proven;
+    void.return_abi = molt_ir::FunctionReturnAbi::Void;
+    void.return_type = TirType::None;
+    void.blocks.get_mut(&void.entry_block).unwrap().terminator =
+        Terminator::Return { values: vec![] };
+    let plan = prepare_lir_wasm_fast_plan(&void);
+    assert!(plan.lir_fast_body().is_none());
+    assert_eq!(
+        plan.generic_reason(),
+        Some(WasmLirFallbackReason::BoxedI64AbiUnsupported)
+    );
 }
 
 #[test]

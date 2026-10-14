@@ -2,13 +2,13 @@
 
 use molt_backend::tir::blocks::{BlockId, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
-use molt_backend::tir::lir::LirRepr;
+use molt_backend::tir::lir::{LirFunction, LirRepr, LirTerminator};
 use molt_backend::tir::lower_to_lir::lower_function_to_lir_for_repr_fact_extraction;
-use molt_backend::tir::ops::AttrDict;
+use molt_backend::tir::ops::{AttrDict, AttrValue, OpCode};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::{TirValue, ValueId};
-use molt_backend_wasm::test_util::lower_lir_to_wasm;
-use wasm_encoder::{Instruction, ValType};
+use molt_backend_wasm::test_util::{WasmBodyTestView, lower_lir_to_wasm};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 fn empty_tir_function(
     name: &str,
@@ -37,6 +37,71 @@ fn empty_tir_function(
         loop_break_kinds: std::collections::HashMap::new(),
         loop_cond_blocks: std::collections::HashMap::new(),
     }
+}
+
+fn assert_structured_truthiness_selection(
+    lir: &LirFunction,
+    output: &WasmBodyTestView,
+    source: ValueId,
+) {
+    let entry = &lir.blocks[&lir.entry_block];
+    assert_eq!(entry.ops.len(), 1, "one explicit truthiness producer");
+    let operation = &entry.ops[0];
+    assert_eq!(operation.tir_op.opcode, OpCode::Bool);
+    assert_eq!(operation.tir_op.operands, vec![source]);
+    assert_eq!(
+        operation.tir_op.attrs.get("lir.truthy_cond"),
+        Some(&AttrValue::Bool(true))
+    );
+    assert_eq!(operation.result_values.len(), 1);
+    let boolean = &operation.result_values[0];
+    assert_eq!(boolean.ty, TirType::Bool);
+    assert_eq!(boolean.repr, LirRepr::Bool1);
+    assert_eq!(operation.tir_op.results, vec![boolean.id]);
+    let LirTerminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = &entry.terminator
+    else {
+        panic!("truthiness must feed the actual conditional edge");
+    };
+    assert_eq!(*cond, boolean.id);
+    assert_ne!(then_block, else_block);
+    assert_eq!(output.param_types, vec![ValType::I64]);
+    let selections: Vec<_> = output
+        .instructions
+        .windows(6)
+        .filter_map(|window| {
+            // The canonical final peephole fuses this Bool's adjacent store/load.
+            // The inner tag check instead uses If(Result(I32)) and cannot match.
+            if let [
+                Instruction::LocalTee(local),
+                Instruction::If(BlockType::Empty),
+                Instruction::Br(then_depth),
+                Instruction::Else,
+                Instruction::Br(else_depth),
+                Instruction::End,
+            ] = window
+            {
+                assert_ne!(then_depth, else_depth, "distinct semantic edge targets");
+                Some(*local)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        selections.len(),
+        1,
+        "one CFG selection fed by the materialized Bool"
+    );
+    let local = usize::try_from(selections[0])
+        .unwrap()
+        .checked_sub(output.param_types.len())
+        .expect("truthiness result must not overwrite the object parameter");
+    assert_eq!(output.locals.get(local), Some(&ValType::I32));
 }
 
 #[test]
@@ -134,17 +199,11 @@ fn wasm_lir_ref64_condition_uses_runtime_truthiness() {
         "Ref64 condition lowering must call is_truthy instead of treating the reference word as integer nonzero; got {:?}",
         output.runtime_calls
     );
-    assert!(
-        output
-            .instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::BrIf(_))),
-        "expected br_if after Ref64 truthiness materialization"
-    );
+    assert_structured_truthiness_selection(&lir, &output, obj);
 }
 
 #[test]
-fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
+fn wasm_lir_truthiness_materialization_uses_bool_local_and_structured_selection() {
     let entry_id = BlockId(0);
     let then_id = BlockId(1);
     let else_id = BlockId(2);
@@ -219,13 +278,7 @@ fn wasm_lir_truthiness_materialization_uses_bool_local_and_br_if() {
         "DynBox truthiness must call is_truthy; got {:?}",
         output.runtime_calls
     );
-    assert!(
-        output
-            .instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::BrIf(_))),
-        "expected br_if from Bool1 condition"
-    );
+    assert_structured_truthiness_selection(&lir, &output, ValueId(0));
 }
 
 #[test]

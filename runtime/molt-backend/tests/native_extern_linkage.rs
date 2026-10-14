@@ -242,15 +242,17 @@ fn native_object_retains_exact_generated_object_abi_import() {
         "link admission costs exactly one retained relocation"
     );
 
-    #[cfg(windows)]
-    {
+    if file.format() == object::BinaryFormat::Coff {
         let directives = file
             .section_by_name(".drectve")
             .and_then(|section| section.data().ok())
             .expect("COFF object must carry linker retention directives");
         let directives = String::from_utf8_lossy(directives);
         assert!(
-            directives.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL),
+            directives.contains(&format!(
+                "/INCLUDE:{}",
+                molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+            )),
             "COFF /OPT:REF root must name exact ABI symbol: {directives}"
         );
     }
@@ -267,7 +269,11 @@ fn object_symbol_matches<'data, S: ObjectSymbol<'data>>(symbol: &S, logical_name
 fn cross_format_objects_retain_generated_object_abi_anchor() {
     for (target, expected_format) in [
         ("x86_64-unknown-linux-gnu", object::BinaryFormat::Elf),
+        ("aarch64-unknown-linux-gnu", object::BinaryFormat::Elf),
         ("aarch64-apple-darwin", object::BinaryFormat::MachO),
+        ("x86_64-apple-darwin", object::BinaryFormat::MachO),
+        ("x86_64-pc-windows-msvc", object::BinaryFormat::Coff),
+        ("aarch64-pc-windows-msvc", object::BinaryFormat::Coff),
     ] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -304,11 +310,18 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
             "{target}: ABI anchor pointer offset must remain aligned"
         );
         match (expected_format, section.flags()) {
-            (object::BinaryFormat::Elf, object::SectionFlags::Elf { sh_flags }) => assert_ne!(
-                sh_flags & u64::from(object::elf::SHF_GNU_RETAIN),
-                0,
-                "ELF anchor must survive --gc-sections"
-            ),
+            (object::BinaryFormat::Elf, object::SectionFlags::Elf { sh_flags }) => {
+                assert!(
+                    matches!(file.flags(), object::FileFlags::Elf { os_abi, .. }
+                    if os_abi == object::elf::ELFOSABI_GNU),
+                    "{target}: SHF_GNU_RETAIN requires its ELF extension namespace"
+                );
+                assert_ne!(
+                    sh_flags & u64::from(object::elf::SHF_GNU_RETAIN),
+                    0,
+                    "ELF anchor must survive --gc-sections"
+                );
+            }
             (object::BinaryFormat::MachO, object::SectionFlags::MachO { .. }) => assert_ne!(
                 match anchor.flags() {
                     object::SymbolFlags::MachO { n_desc } => {
@@ -319,6 +332,22 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
                 0,
                 "Mach-O anchor must survive -dead_strip"
             ),
+            (object::BinaryFormat::Coff, object::SectionFlags::Coff { .. }) => {
+                let directives = file
+                    .section_by_name(".drectve")
+                    .expect("COFF retention directives")
+                    .data()
+                    .unwrap();
+                assert_eq!(
+                    directives,
+                    format!(
+                        " /INCLUDE:{}",
+                        molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+                    )
+                    .as_bytes(),
+                    "{target}: /OPT:REF must retain the exact selected ABI symbol"
+                );
+            }
             (_, flags) => panic!("unexpected {target} anchor flags: {flags:?}"),
         }
     }

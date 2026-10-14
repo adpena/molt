@@ -654,42 +654,7 @@ impl SimpleBackend {
 
         let emit_start = std::time::Instant::now();
         let SimpleBackend { module, .. } = self;
-        #[cfg(any(target_os = "macos", windows))]
-        let mut product = module.finish();
-        #[cfg(not(any(target_os = "macos", windows)))]
-        let product = module.finish();
-        // Set MachO platform load command so ld doesn't emit
-        // "no platform load command found" warnings on macOS.
-        #[cfg(target_os = "macos")]
-        {
-            use cranelift_object::object::write::MachOBuildVersion;
-            // Encode macOS 11.0.0 as minimum deployment target.
-            // Version encoding: xxxx.yy.zz nibbles => 0x000B0000 = 11.0.0
-            let mut bv = MachOBuildVersion::default();
-            bv.platform = cranelift_object::object::macho::PLATFORM_MACOS;
-            bv.minos = 0x000B_0000; // macOS 11.0.0
-            bv.sdk = 0; // no SDK constraint
-            product.object.set_macho_build_version(bv);
-        }
-        // `DataDescription::set_used` maps to ELF SHF_GNU_RETAIN and Mach-O
-        // N_NO_DEAD_STRIP, but COFF has no corresponding section bit. Emit the
-        // native linker directive so /OPT:REF still roots the exact runtime ABI
-        // witness and a crossed cached-object/runtime pair fails before startup.
-        #[cfg(windows)]
-        {
-            let directives = format!(
-                " /INCLUDE:{}",
-                molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
-            );
-            let section = product.object.add_section(
-                Vec::new(),
-                b".drectve".to_vec(),
-                cranelift_object::object::SectionKind::Linker,
-            );
-            product
-                .object
-                .append_section_data(section, directives.as_bytes(), 1);
-        }
+        let product = finalize_native_object(module.finish());
         let bytes = product.emit().unwrap();
         if timing {
             let emit_elapsed = emit_start.elapsed();

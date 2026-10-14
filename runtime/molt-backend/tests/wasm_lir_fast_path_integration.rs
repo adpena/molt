@@ -2,137 +2,99 @@
 
 use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
-use wasmparser::{Operator, Parser, Payload, TypeRef};
+use wasmparser::{
+    CompositeInnerType, ExternalKind, FuncType, Parser, Payload, TypeRef, ValType, Validator,
+};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
-}
-
-fn compile_ir(ir: SimpleIR) -> Vec<u8> {
-    WasmBackend::new().compile(ir)
-}
-
-fn function_has_i64_add(wasm: &[u8], export_name: &str) -> bool {
-    let mut imported_funcs = 0u32;
-    let mut export_func_index: Option<u32> = None;
-    let mut function_type_count = 0u32;
-    let mut code_bodies: Vec<bool> = Vec::new();
-
+fn exported_function_type(wasm: &[u8], name: &str) -> FuncType {
+    Validator::new()
+        .validate_all(wasm)
+        .expect("valid emitted WASM module");
+    let mut types = Vec::new();
+    let mut functions = Vec::new();
+    let mut imported = 0;
+    let mut exported = None;
     for payload in Parser::new(0).parse_all(wasm) {
-        match payload.expect("valid wasm payload") {
-            Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import.expect("valid import");
-                    if matches!(import.ty, TypeRef::Func(_)) {
-                        imported_funcs += 1;
+        match payload.expect("valid WASM payload") {
+            Payload::TypeSection(section) => {
+                for group in section {
+                    for subtype in group.unwrap().into_types() {
+                        types.push(match subtype.composite_type.inner {
+                            CompositeInnerType::Func(function) => Some(function),
+                            _ => None,
+                        });
                     }
                 }
             }
-            Payload::ExportSection(section) => {
-                for export in section.into_iter() {
-                    let export = export.expect("valid export");
-                    if export.name == export_name
-                        && let wasmparser::ExternalKind::Func = export.kind
-                    {
-                        export_func_index = Some(export.index);
+            Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    if let TypeRef::Func(index) = import.unwrap().ty {
+                        functions.push(index);
+                        imported += 1;
                     }
                 }
             }
             Payload::FunctionSection(section) => {
-                function_type_count = section.count();
+                functions.extend(section.map(|index| index.unwrap()));
             }
-            Payload::CodeSectionEntry(body) => {
-                let mut reader = body.get_operators_reader().expect("operators reader");
-                let mut has_i64_add = false;
-                while !reader.eof() {
-                    if reader.read().expect("valid operator") == Operator::I64Add {
-                        has_i64_add = true
+            Payload::ExportSection(section) => {
+                for export in section {
+                    let export = export.unwrap();
+                    if export.name == name {
+                        assert_eq!(export.kind, ExternalKind::Func);
+                        assert!(exported.replace(export.index).is_none());
                     }
                 }
-                code_bodies.push(has_i64_add);
             }
             _ => {}
         }
     }
-
-    let export_func_index = export_func_index.expect("exported function should exist");
-    let internal_index = export_func_index
-        .checked_sub(imported_funcs)
-        .expect("exported function should be internally defined");
-    assert!(
-        internal_index < function_type_count,
-        "internal function index must refer to a code body"
-    );
-    code_bodies[internal_index as usize]
+    let index = exported.expect("exact fixture export") as usize;
+    assert!(index >= imported, "fixture export must be locally defined");
+    types[functions[index] as usize]
+        .clone()
+        .expect("function export type")
 }
 
+// Path admission is tested against the canonical plan in molt-backend-wasm;
+// I64Add is also emitted by generic arithmetic and frame address calculations.
+// This boundary checks the real exported ABI and module validity. The existing
+// execution_context_split authority executes value and authored-Void returns.
 #[test]
-fn wasm_backend_uses_lir_fast_path_for_simple_scalar_function() {
-    let mut add = op("add");
-    add.args = Some(vec!["a".to_string(), "b".to_string()]);
-    add.out = Some("sum".to_string());
-    add.fast_int = Some(true);
-
-    let mut ret = op("ret");
-    ret.args = Some(vec!["sum".to_string()]);
-
-    let wasm = compile_ir(SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            name: "molt_test_wasm_lir_fast_path____molt_globals_builtin__".to_string(),
-            params: vec!["a".to_string(), "b".to_string()],
-            ops: vec![add, ret],
-            param_types: Some(vec!["int".to_string(), "int".to_string()]),
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    });
-
-    let has_i64_add = function_has_i64_add(
-        &wasm,
-        "molt_test_wasm_lir_fast_path____molt_globals_builtin__",
-    );
-
-    assert!(has_i64_add, "fast path should emit native i64.add");
-}
-
-#[test]
-fn wasm_backend_skips_lir_fast_path_for_void_return_function() {
-    let mut add = op("add");
-    add.args = Some(vec!["a".to_string(), "b".to_string()]);
-    add.out = Some("sum".to_string());
-    add.fast_int = Some(true);
-
-    let wasm = compile_ir(SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "molt_test_wasm_lir_fast_path_void____molt_globals_builtin__".to_string(),
-            params: vec!["a".to_string(), "b".to_string()],
-            ops: vec![add, op("ret_void")],
-            param_types: Some(vec!["int".to_string(), "int".to_string()]),
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    });
-
-    let has_i64_add = function_has_i64_add(
-        &wasm,
-        "molt_test_wasm_lir_fast_path_void____molt_globals_builtin__",
-    );
-
-    assert!(
-        !has_i64_add,
-        "void-return functions should stay off the boxed-i64 fast path"
-    );
+fn wasm_backend_exports_value_and_authored_void_under_boxed_user_abi() {
+    for return_abi in [
+        molt_ir::FunctionReturnAbi::Value,
+        molt_ir::FunctionReturnAbi::Void,
+    ] {
+        let name = "molt_test_return_abi____molt_globals_builtin__";
+        let returns_value = return_abi == molt_ir::FunctionReturnAbi::Value;
+        let wasm = WasmBackend::new().compile(SimpleIR {
+            functions: vec![FunctionIR {
+                name: name.into(),
+                return_abi,
+                ops: vec![
+                    OpIR {
+                        kind: "const".into(),
+                        value: Some(42),
+                        out: Some("result".into()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: if returns_value { "ret" } else { "ret_void" }.into(),
+                        args: returns_value.then(|| vec!["result".into()]),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            profile: None,
+        });
+        let signature = exported_function_type(&wasm, name);
+        assert!(signature.params().is_empty(), "{return_abi:?}");
+        assert_eq!(
+            signature.results(),
+            &[ValType::I64],
+            "{return_abi:?}: local Void returns boxed None; only void externs have zero results"
+        );
+    }
 }
