@@ -327,7 +327,9 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // Apple file systems refuse a name that is not UTF-8 (EILSEQ), so no Apple
+    // target can hold the opaque directory this test creates.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     #[test]
     fn creation_normalizes_opaque_byte_paths() {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
