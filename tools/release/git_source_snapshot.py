@@ -10,6 +10,7 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
+import sys
 import tempfile
 from typing import Callable, Iterator, Mapping, Sequence, TypeVar
 
@@ -32,6 +33,72 @@ _OBJECT_FORMAT_LENGTHS = {"sha1": 40, "sha256": 64}
 _CAPTURE_TIMEOUT_SECONDS = 120
 _BlobResult = TypeVar("_BlobResult")
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+
+# The source interpreter has no site imports or ambient import roots. Project
+# modules compile only their captured source, even if a staged cache or native
+# extension could otherwise take precedence over the matching .py file.
+_SOURCE_PYTHON_BOOTSTRAP = """
+import importlib.machinery
+from pathlib import Path
+import sys
+_staged_root = Path(sys.argv[1]).resolve(strict=True)
+class _StagedSourceLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self, fullname):
+        filename = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(filename), filename)
+def _staged_source_hook(path):
+    try:
+        Path(path).resolve(strict=True).relative_to(_staged_root)
+    except (OSError, ValueError):
+        raise ImportError
+    return importlib.machinery.FileFinder(
+        path, (_StagedSourceLoader, importlib.machinery.SOURCE_SUFFIXES)
+    )
+sys.path_hooks.insert(0, _staged_source_hook)
+sys.path[:0] = [str(_staged_root / 'tools'), str(_staged_root / 'src'), str(_staged_root)]
+_staged_script = _staged_root / sys.argv[2]
+sys.argv = [str(_staged_script), *sys.argv[3:]]
+__file__ = str(_staged_script)
+__spec__ = None
+exec(compile(_staged_script.read_bytes(), __file__, 'exec', dont_inherit=True), globals())
+"""
+
+
+def run_git_source_python(
+    root: Path,
+    script: str,
+    arguments: Sequence[str],
+    *,
+    environment: Mapping[str, str],
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Execute captured Python source without ambient imports or bytecode caches.
+
+    Callers own snapshot capture, materialization and post-execution verification.
+    This isolates imports; it is not a sandbox for the captured program.
+    """
+    relative = portable_relative_path(script).as_posix()
+    return _COMMANDS.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            _SOURCE_PYTHON_BOOTSTRAP,
+            str(root),
+            relative,
+            *arguments,
+        ],
+        cwd=root,
+        env=dict(environment),
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout,
+    )
 
 
 def immutable_git_environment(environment: Mapping[str, str]) -> dict[str, str]:

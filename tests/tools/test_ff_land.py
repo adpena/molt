@@ -3,6 +3,8 @@
 from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -18,9 +20,16 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(repo: Path, *args: str, tool: Path = TOOL) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    if tool != TOOL:
+        environment["PYTHONPATH"] = os.pathsep.join((str(repo), str(repo / "src")))
     return run_guarded_test_process(
-        [sys.executable, str(TOOL), *args], cwd=repo, capture_output=True, text=True
+        [sys.executable, "-B", str(tool), *args],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -96,6 +105,7 @@ def test_stale_proof_plan_projection_is_refused_before_push(work: Path) -> None:
         "import sys\nprint('proof-plan projection stale: generated.json')\nsys.exit(1)\n",
         encoding="utf-8",
     )
+    generator.with_name("proof_plan.toml").write_text("fixture = true\n")
     _init_commit(work, "b.txt")
     before = _git(work, "rev-parse", "origin/main")
 
@@ -116,3 +126,131 @@ def test_dry_run_does_not_push(work: Path) -> None:
     assert "dry-run" in res.stdout
     _git(work, "fetch", "origin", "--quiet")
     assert _git(work, "rev-parse", "origin/main") == before
+
+
+def _projection_fixture(work: Path, *, stale: bool = False, after: str = "") -> Path:
+    """A real committed generator with an independent input/output oracle."""
+    tools = work / "tools"
+    tools.mkdir(exist_ok=True)
+    generator = tools / "gen_proof_plan.py"
+    generator.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "root = Path(__file__).resolve().parents[1]\n"
+        "assert '--check' in sys.argv\n"
+        "if (root/'authority.txt').read_bytes() != (root/'projection.txt').read_bytes():\n"
+        "    print('committed projection is stale')\n"
+        "    sys.exit(1)\n" + after,
+        encoding="utf-8",
+    )
+    generator.with_name("proof_plan.toml").write_text("fixture = true\n")
+    (work / "authority.txt").write_text("committed\n")
+    (work / "projection.txt").write_text("stale\n" if stale else "committed\n")
+    _init_commit(work, "b.txt")
+    return generator
+
+
+@pytest.mark.parametrize(
+    "change", ["working", "staged", "deleted-generator", "poisoned-generator"]
+)
+def test_allow_dirty_validates_commit_and_preserves_unlanded_inputs(
+    work: Path, change: str
+) -> None:
+    generator = _projection_fixture(work)
+    committed = _git(work, "rev-parse", "HEAD")
+    if change in {"working", "staged"}:
+        (work / "authority.txt").write_text("unlanded input\n")
+        if change == "staged":
+            _git(work, "add", "authority.txt")
+    elif change == "deleted-generator":
+        generator.unlink()
+    else:
+        generator.write_text("raise AssertionError('unlanded generator executed')\n")
+    before = _git(work, "status", "--porcelain")
+    result = _run(work, "--allow-dirty")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(work, "rev-parse", "origin/main") == committed
+    assert _git(work, "status", "--porcelain") == before
+
+
+def test_unlanded_repair_cannot_hide_stale_committed_projection(work: Path) -> None:
+    generator = _projection_fixture(work, stale=True)
+    before = _git(work, "rev-parse", "origin/main")
+    (work / "projection.txt").write_text("committed\n")
+    generator.write_text("# unlanded permissive generator\n")
+    _git(work, "add", "projection.txt", "tools/gen_proof_plan.py")
+    dirty = _git(work, "status", "--porcelain")
+    result = _run(work, "--allow-dirty")
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "committed projection is stale" in result.stdout
+    assert _git(work, "rev-parse", "origin/main") == before
+    assert _git(work, "status", "--porcelain") == dirty
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_same_checkout_landing_never_executes_unlanded_generator(
+    work: Path, stale: bool
+) -> None:
+    generator = _projection_fixture(work, stale=stale)
+    local_tool = generator.with_name("ff_land.py")
+    # Exercise the real source-bound tool/import/guard closure in this checkout.
+    # Keep the independent generator oracle already installed above.
+    source = TOOL.parents[1]
+    for relative in _git(
+        source, "ls-files", "--", "tools", "src/molt", "pyproject.toml"
+    ).splitlines():
+        if relative == "tools/gen_proof_plan.py":
+            continue
+        destination = work / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / relative, destination)
+    _git(work, "add", "tools/ff_land.py")
+    _git(work, "commit", "-q", "-m", "install landing tool")
+    committed = _git(work, "rev-parse", "HEAD")
+    before = _git(work, "rev-parse", "origin/main")
+    generator.write_text("# unlanded successful no-op\n")
+    dirty = _git(work, "status", "--porcelain")
+
+    result = _run(work, "--allow-dirty", tool=local_tool)
+
+    assert result.returncode == (4 if stale else 0), result.stdout + result.stderr
+    assert _git(work, "rev-parse", "origin/main") == (before if stale else committed)
+    assert _git(work, "status", "--porcelain") == dirty
+
+
+def test_replace_ref_cannot_hide_committed_generator(work: Path) -> None:
+    generator = _projection_fixture(work, stale=True)
+    committed = _git(work, "rev-parse", "HEAD")
+    before = _git(work, "rev-parse", "origin/main")
+    generator.unlink()
+    _git(work, "add", "tools/gen_proof_plan.py")
+    _git(work, "commit", "-q", "-m", "replacement omits generator")
+    replacement = _git(work, "rev-parse", "HEAD")
+    _git(work, "switch", "--detach", committed)
+    _git(work, "replace", committed, replacement)
+
+    result = _run(work)
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "committed projection is stale" in result.stdout
+    assert _git(work, "rev-parse", "origin/main") == before
+
+
+def test_push_uses_validated_commit_when_local_head_advances_during_check(
+    work: Path,
+) -> None:
+    _projection_fixture(
+        work,
+        after=(
+            "import subprocess\n"
+            f"subprocess.run(['git', '-C', {str(work)!r}, 'switch', '--quiet', 'main'], check=True)\n"
+        ),
+    )
+    validated = _git(work, "rev-parse", "HEAD")
+    _init_commit(work, "unreviewed.txt")
+    advanced = _git(work, "rev-parse", "HEAD")
+    _git(work, "switch", "--detach", validated)
+    result = _run(work)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(work, "rev-parse", "HEAD") == advanced
+    assert _git(work, "rev-parse", "origin/main") == validated

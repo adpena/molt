@@ -4,9 +4,11 @@
 
 ## Generation and partial commits
 
-`uv run python tools/gen_proof_plan.py` projects the working source. For a partial commit, stage the complete changed authority family, run `uv run python tools/gen_proof_plan.py --from-index`, then stage both generated outputs. The pre-commit freshness hook uses `--check --from-index`.
+`uv run python tools/gen_proof_plan.py --write` projects the working source. For a partial commit, stage the complete changed authority family, run `uv run python tools/gen_proof_plan.py --from-index --write`, then stage both generated outputs. The pre-commit freshness hook uses `--check --from-index`.
 
 Index mode executes the captured staged generator with its staged manifest, policy and source imports. It preserves unstaged work and the caller's index; private Git plumbing disables repository hooks and filesystem monitors. Generated outputs publish as one recoverable family after the captured source is verified and the selected Git index is revalidated under its exclusive lock. A competing index writer, indirect output, source mutation or undeclared output rejects publication. The lock excludes cooperative Git writers; it does not establish kernel-level byte-use or process execution identity.
+
+Landing checks execute the generator and authority inputs captured from the exact commit selected for push. Uncommitted source and index changes cannot invalidate or repair that commit's projections. The landing guard pushes the validated commit identity even if the local branch advances during validation.
 
 ## Authority compression
 
