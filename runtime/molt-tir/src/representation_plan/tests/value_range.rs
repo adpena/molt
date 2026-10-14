@@ -48,6 +48,20 @@ fn tir_cint(result: ValueId, value: i64) -> TirOp {
     o
 }
 
+#[test]
+fn canonical_value_range_matches_standalone_scev_composition() {
+    for (start, stop) in [(0, 10), (-3, 7), (10, 0), (i64::MAX - 3, i64::MAX)] {
+        let (function, _, _) = range_loop_tir(start, stop);
+        let scev = crate::tir::passes::scev::compute_scev(&function);
+        let standalone = crate::tir::passes::value_range::compute_value_range(&function, &scev);
+        assert_eq!(
+            value_range_for(&function),
+            standalone,
+            "range {start}..{stop}",
+        );
+    }
+}
+
 /// Build the canonical post-range_devirt `for i in range(stop): i + 1`
 /// loop in TIR: a header block-arg IV with a `no_signed_wrap` increment,
 /// the shape SCEV recognises as an `AddRec` and value-range turns into a

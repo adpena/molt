@@ -180,8 +180,11 @@ pub fn native_projectable_scalar_reprs_for(
 }
 
 pub fn value_range_for(tir_func: &TirFunction) -> crate::tir::ValueRangeResult {
-    let scev = crate::tir::passes::scev::compute_scev(tir_func);
-    crate::tir::passes::value_range::compute_value_range(tir_func, &scev)
+    // The registered analysis shares one loop forest with SCEV and ranges.
+    // Calling their standalone entries would discover the same loops twice.
+    <crate::tir::passes::value_range::ValueRange as crate::tir::analysis::Analysis>::compute(
+        tir_func,
+    )
 }
 
 /// The set of `ValueId`s the backend may carry as a **bare i64** (`RawI64Safe`):
