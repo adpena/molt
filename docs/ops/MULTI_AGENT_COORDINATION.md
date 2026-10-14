@@ -295,6 +295,25 @@ after lower rungs pass or when the change directly requires the wider lane.
 Do not run a broader rung just to produce activity. State the hypothesis, run
 the smallest falsifying command, and preserve the artifact.
 
+Group compatible repairs before Rust compilation. A build group must retain its
+source and lockfile, Rust/SDK inputs, target, profile, feature set, flags and
+build-script inputs; test count and finding count do not define build groups.
+For compatible development features, compile the required test targets together
+with `cargo test --no-run --message-format=json-render-diagnostics`, then run
+focused selectors on the exact Cargo-reported executables under existing guards
+and libtest accounting. Do not repeat `cargo check` as a warming ritual. A
+development feature union does not qualify mutually exclusive features or the
+shipped feature/profile matrix.
+
+Use source checks and generator oracles before compilation. A generator-only
+repair whose Rust outputs remain byte-identical needs no new Rust build unless
+another compiled input changed. Reuse completed evidence for unchanged inputs;
+rebuild affected artifacts after actual input changes. Target-Python versions
+may share a Rust image only where version selection is dynamic; syntax oracles,
+version-specific ABI layouts and actual matrix execution still need their own
+evidence. Release/performance builds prove their distinct profile contracts and
+must not be repeated for each fixture. These are development-side policies.
+
 ## Differential And Conformance Protocol
 
 Differential and conformance lanes are shared resources.
