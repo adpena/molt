@@ -40,6 +40,7 @@ from molt.cli.native_link_manifest import (
 from molt.cli.native_link_custody import observe_native_link_custody
 from molt.target_python import TargetPythonVersion
 from molt.toolchain_identity import stable_regular_file_identity
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
     native_codegen_binding,
     write_test_native_link_manifest,
@@ -313,7 +314,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
-        native_arch_perf_enabled=False,
+        rust_cpu=RustCpuPolicy.BASELINE,
         resolved_diagnostics_verbosity="quiet",
     )
     config = _PreparedBuildConfig(

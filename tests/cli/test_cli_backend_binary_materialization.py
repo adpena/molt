@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 import molt.cli as cli
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_execution as cli_backend_execution
 from molt.backend_executable_names import backend_executable_name
@@ -106,6 +107,7 @@ def test_target_switch_preserves_admitted_native_and_wasm_compilers(
             cargo_profile="dev-fast",
             project_root=tmp_path,
             backend_features=features,
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert result, result.message
         assert selected.read_bytes() == ("compiled:" + ",".join(features)).encode()
@@ -173,6 +175,7 @@ def test_rebuild_disabled_still_admits_backend_identity_and_features(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=features,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert not result and result.phase == "rebuild-policy"
     assert "MOLT_SKIP_RUNTIME_REBUILD=1" in result.message
@@ -357,6 +360,7 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_only_from_admitted
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("wasm-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert backend_bin.read_bytes() == (
         old_bytes if mutation in {"unattested", "wrong-source"} else new_bytes
@@ -418,6 +422,7 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
             cargo_profile="dev-fast",
             project_root=tmp_path,
             backend_features=("native-backend",),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert before_result
     assert probe_calls == 1
@@ -460,6 +465,7 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert after_result
     assert probe_calls == 2
@@ -516,6 +522,7 @@ def test_ensure_backend_binary_returns_cargo_failure_detail(
         cargo_profile="release-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert not result
@@ -594,6 +601,7 @@ def test_backend_probe_cannot_publish_receipt_for_binary_changed_during_probe(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert probe_calls
     assert not result
@@ -643,6 +651,7 @@ def test_backend_probe_publication_failure_is_typed_without_rebuild(
         project_root=tmp_path,
         backend_features=("native-backend",),
         stage_timings_ms=stages,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert not result
     assert result.phase == "backend_probe_publication"
@@ -724,6 +733,7 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
             cargo_profile="dev-fast",
             project_root=tmp_path,
             backend_features=("native-backend",),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert bool(result) == (probe_outcome == "pass")
         if not result:
@@ -815,6 +825,7 @@ def test_backend_alias_replacement_during_publication_cannot_acquire_provenance(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert not result
     assert result.phase == (
@@ -887,6 +898,7 @@ def test_warm_feature_alias_is_exact_cargo_bytes_and_skips_rematerialization(
             cargo_profile="dev-fast",
             project_root=tmp_path,
             backend_features=features,
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert result, result.message
         return result.cache_compiler_fingerprint

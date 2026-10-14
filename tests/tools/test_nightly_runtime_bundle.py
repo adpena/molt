@@ -20,6 +20,7 @@ from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
 from molt.cli import runtime_native_build
 from molt.exact_json import encode_exact
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_toolchain_test_support import (
     BACKEND_FEATURES,
     BACKEND_PROFILE,
@@ -135,6 +136,7 @@ def test_round_trip_delivers_what_the_consumer_build_admits_without_cargo(
         cargo_profile=BACKEND_PROFILE,
         project_root=consumer.root,
         backend_features=BACKEND_FEATURES,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
 

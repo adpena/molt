@@ -51,6 +51,7 @@ from molt.cli.models import (
     _ModuleGraphMetadata,
 )
 from molt.cli.runtime_paths import _build_state_root, _normalize_runtime_stdlib_profile
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.target_python import TargetPythonVersion
 from molt.cli.runtime_native_codegen import (
     NativeRuntimeCodegenBinding,
@@ -305,6 +306,7 @@ def _prepare_backend_cache_setup(
     runtime_wasm_codegen_digest: str = "",
     backend_compiler_fingerprint: str | None = None,
     codegen: CodegenSelection,
+    rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendCacheSetup:
     # Cache identities and archive manifests must use the same admitted target
@@ -358,6 +360,7 @@ def _prepare_backend_cache_setup(
                     # fingerprint; backend object code keys on IR + runtime ABI surface.
                     include_runtime_sources=False,
                     cargo_profile=backend_cargo_profile,
+                    rust_cpu=rust_cpu,
                 )
             tooling_fingerprint = _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT
             stdlib_compiler_fingerprint = _shared_stdlib_compiler_fingerprint(

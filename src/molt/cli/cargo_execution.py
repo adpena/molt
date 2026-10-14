@@ -264,14 +264,6 @@ def _maybe_enable_lld_link(env: dict[str, str]) -> None:
         env[key] = str(candidates[0])
 
 
-def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
-    if env.get("MOLT_NATIVE_CPU", "").strip().lower() in ("1", "true", "yes"):
-        existing = env.get("CARGO_BUILD_RUSTFLAGS", env.get("RUSTFLAGS", ""))
-        if "target-cpu" not in existing:
-            flags = f"{existing} -C target-cpu=native".strip()
-            env["CARGO_BUILD_RUSTFLAGS"] = flags
-
-
 _SCCACHE_DIAG_EMITTED = False
 
 

@@ -57,6 +57,7 @@ from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
 from molt.cli.runtime_native_build import (  # noqa: E402
     current_native_runtime_build_identity,
 )
+from molt.cli.rust_cpu_policy import RustCpuPolicy  # noqa: E402
 from molt.cli.native_link_tool_identity import native_link_tool_facts  # noqa: E402
 from molt.cli.source_extension_link_requirements import (  # noqa: E402
     SourceExtensionLinkRequirements,
@@ -267,6 +268,7 @@ def benchmark_runtime_build_identity(
     cargo_profile: str,
     stdlib_profile: str,
     extra_runtime_features: Sequence[str],
+    rust_cpu: RustCpuPolicy,
 ) -> RuntimeBuildIdentity:
     """Resolve the benchmark expectation from the current runtime build plan."""
 
@@ -278,6 +280,7 @@ def benchmark_runtime_build_identity(
             cargo_profile=cargo_profile,
             stdlib_profile=stdlib_profile,
             extra_runtime_features=extra_runtime_features,
+            rust_cpu=rust_cpu,
         )
     except (OSError, ValueError) as exc:
         raise LinkBenchmarkError(
@@ -1032,6 +1035,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkReport:
         cargo_profile=args.runtime_cargo_profile,
         stdlib_profile=args.runtime_stdlib_profile,
         extra_runtime_features=tuple(args.runtime_feature),
+        rust_cpu=RustCpuPolicy(args.runtime_target_cpu),
     )
 
     def factory() -> NativeLinkPlan:
@@ -1323,6 +1327,15 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="additional runtime Cargo feature used by the selected build (repeatable)",
+    )
+    parser.add_argument(
+        "--runtime-target-cpu",
+        choices=tuple(policy.value for policy in RustCpuPolicy),
+        default=RustCpuPolicy.BASELINE.value,
+        help=(
+            "Rust CPU policy used to build the selected runtime archive; "
+            "native for a MOLT_PERF_PROFILE=native-arch build"
+        ),
     )
     parser.add_argument("--warm-runs", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=300.0)

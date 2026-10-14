@@ -18,6 +18,7 @@ from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 
 if TYPE_CHECKING:
     from molt.cli.runtime_cargo_plan import CargoResourceCustody, RuntimeCargoPlan
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.compiler_distribution import InstalledCompiler
     from molt.llvm_toolchain import LlvmPrefixVerification
     from molt.toolchain_identity import StableRegularFileVersion
@@ -190,9 +191,16 @@ def backend_build_admission(
     features: tuple[str, ...],
     cargo_profile: str,
     env: Mapping[str, str],
+    *,
+    rust_cpu: RustCpuPolicy,
 ) -> BackendBuildAdmission:
+    """Admit the backend compiler build of ``root`` for one feature lane.
+
+    ``rust_cpu`` is the build's Rust CPU policy. The Cargo plan applies it to
+    the Rust flags Cargo selects, and the fingerprint binds those flags.
+    """
     from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
-    from molt.cli.cargo_execution import _cargo_build_env, _maybe_enable_native_cpu
+    from molt.cli.cargo_execution import _cargo_build_env
     from molt.cli.runtime_build_identity import (
         _runtime_build_environment_identity,
     )
@@ -210,6 +218,7 @@ def backend_build_admission(
         os.fspath(root.resolve()),
         cargo_profile,
         ",".join(sorted(features)),
+        rust_cpu.value,
         canonical_json_sha256(dict(env)),
     )
     if transaction is not None and key in transaction.compiler_plans:
@@ -224,7 +233,6 @@ def backend_build_admission(
         def compiler_environment(environment: Mapping[str, str]) -> Mapping[str, str]:
             nonlocal llvm_inputs
             effective = dict(environment)
-            _maybe_enable_native_cpu(effective)
             if "llvm" not in features:
                 return effective
             llvm_inputs = admit_llvm_compiler_inputs(root, effective)
@@ -249,6 +257,7 @@ def backend_build_admission(
             cargo_command=command,
             requested_target=None,
             environment_transform=compiler_environment,
+            rustflags_transform=rust_cpu.rustflags,
         )
         # llvm-sys consumes both selectors and prefix contents. Its build script
         # can link archives, query llvm-config and consume headers under this root.

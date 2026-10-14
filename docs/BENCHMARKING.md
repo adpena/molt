@@ -852,7 +852,14 @@ MOLT_PERF_PROFILE=native-arch \
 uv run --python 3.14 python3 tools/bench.py --compare codon
 ```
 
-When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFLAGS`.
+For a `--target native` build, Molt compiles the native runtime and the backend
+compiler with `-C target-cpu=native`. Each Cargo plan appends the flag to the
+Rust flags Cargo selects; Molt never writes `RUSTFLAGS`. The compiler
+fingerprint and the runtime build identity bind the flag, so native-arch and
+baseline outputs never share a cache entry. Another target keeps the baseline
+CPU and warns. Any value other than `native-arch` is an error. Installed Molt
+ships baseline binaries and rejects the profile. The output runs only on CPUs
+like the build host.
 
 ## Compile Throughput Tuning
 
