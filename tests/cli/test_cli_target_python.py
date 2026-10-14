@@ -9,6 +9,7 @@ from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_ir as cli_backend_ir
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import wrapper_build as cli_wrapper_build
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 
 def test_newer_target_diagnostic_uses_installed_commands(monkeypatch) -> None:
@@ -260,9 +261,10 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
         dependency_fingerprints,
     )
 
-    def runtime_fingerprint(*, env, backend_features):
+    def runtime_fingerprint(*, env, backend_features, rust_cpu):
         assert env == {}
         assert backend_features == ("native-backend",)
+        assert rust_cpu is RustCpuPolicy.BASELINE
         return "runtime"
 
     monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", runtime_fingerprint)
@@ -317,6 +319,69 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
     assert payload314["target_python"] == "py314"
     assert captured_targets == ["py312", "py314"]
     assert key312 != key314
+
+
+def test_wrapper_cache_key_binds_the_child_build_rust_cpu_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "main.py"
+    source_path.write_text("print('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        cli_wrapper_build,
+        "_wrapper_build_dependency_fingerprints",
+        lambda **_kwargs: ([], {"image": {}}),
+    )
+    policies: list[RustCpuPolicy] = []
+
+    def runtime_fingerprint(*, env, backend_features, rust_cpu):
+        policies.append(rust_cpu)
+        return f"runtime-{rust_cpu.value}"
+
+    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", runtime_fingerprint)
+    monkeypatch.setattr(
+        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "frontend"
+    )
+    monkeypatch.setattr(
+        cli_build_inputs,
+        "_parse_source_for_target",
+        lambda source, *, filename, target_python: ast.parse(source, filename=filename),
+    )
+
+    def key(env: dict[str, str], build_args: list[str]) -> str | None:
+        entry, error = cli_build_inputs._resolve_wrapper_build_entry(
+            file_path=str(source_path),
+            module=None,
+            project_root=tmp_path,
+            json_output=True,
+            command="run",
+            build_args=build_args,
+        )
+        assert error is None and entry is not None
+        cache_input = cli._wrapper_build_cache_input(
+            resolved_build_entry=entry,
+            build_args=build_args,
+            env=env,
+            project_root=tmp_path,
+        )
+        return None if cache_input is None else cache_input[1]
+
+    native_arch = {"MOLT_PERF_PROFILE": "native-arch"}
+    baseline = key({}, [])
+    native = key(native_arch, [])
+    llvm = key(native_arch, ["--target", "llvm"])
+
+    # The child build compiles a host-CPU runtime under native-arch, so its
+    # cached binary must never answer a baseline request (HF-60).
+    assert policies == [
+        RustCpuPolicy.BASELINE,
+        RustCpuPolicy.NATIVE,
+        RustCpuPolicy.NATIVE,
+    ]
+    assert baseline is not None and native is not None and baseline != native
+    assert llvm is not None
+    # The child rejects an unknown value before it builds; nothing is cached.
+    assert key({"MOLT_PERF_PROFILE": "native"}, []) is None
 
 
 def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) -> None:

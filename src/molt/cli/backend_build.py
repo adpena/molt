@@ -20,10 +20,7 @@ from molt.backend_executable_names import CodegenBackend
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_compile as _backend_compile
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.cli.build_inputs import (
-    _apply_native_arch_perf_policy,
-    _resolve_backend_compiler_profile,
-)
+from molt.cli.build_inputs import _resolve_backend_compiler_profile
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.output import emit_json, fail, json_payload
 from molt.cli.project_roots import (
@@ -34,6 +31,7 @@ from molt.cli.runtime_fingerprints import (
     _runtime_artifact_fingerprint_matches,
 )
 from molt.cli.compiler_identity import installed_compiler_admission
+from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
 from molt.exact_json import read_exact
 from molt.source_root import compiler_source_root
 from molt.toolchain_identity import executable_content_identity
@@ -194,8 +192,14 @@ def _prebuild_backend_binary(
     if profile_error:
         return _fail_prebuild(profile_error, json_output)
     warnings: list[str] = []
-    # RUSTFLAGS are a backend fingerprint input: apply the build's policy.
-    _apply_native_arch_perf_policy(target, warnings)
+    # The Rust CPU policy is a compiler identity input: resolve it from the
+    # same request that `molt build` resolves it from.
+    try:
+        rust_cpu, rust_cpu_warning = resolve_rust_cpu_policy(target, os.environ)
+    except ValueError as exc:
+        return _fail_prebuild(str(exc), json_output)
+    if rust_cpu_warning is not None:
+        warnings.append(rust_cpu_warning)
     selection = _backend_compile._select_backend_binary(
         molt_root=molt_root,
         backend_cargo_profile=backend_cargo_profile,
@@ -203,6 +207,7 @@ def _prebuild_backend_binary(
         is_luau_transpile=is_luau_transpile,
         is_rust_transpile=is_rust_transpile,
         codegen_backend=codegen_backend,
+        rust_cpu=rust_cpu,
     )
     compiler: dict[str, Any] = {
         "path": os.fspath(selection.binary),

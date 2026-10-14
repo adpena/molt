@@ -4,7 +4,7 @@ The build side of each comparison runs `molt build`'s own stages (dispatch,
 preamble, roots, config, output layout, backend setup) and the prewarm runs the
 hidden command; both are observed at the admission boundary they share
 (`_ensure_backend_binary`), so any divergence in host profile, Cargo profile,
-feature lane, binary path, Cargo timeout, or RUSTFLAGS policy fails here.
+feature lane, binary path, Cargo timeout, or Rust CPU policy fails here.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.models import _BackendCacheSetup
 from molt.cli.project_roots import _find_project_root
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
 from molt.source_root import compiler_source_root
 from tests.compiler_identity_helper import compiler_build_admission, write_compiler_lock
@@ -56,7 +57,6 @@ _AMBIENT_ENV = (
     "MOLT_RELEASE_BACKEND_CARGO_PROFILE",
     "MOLT_CARGO_TIMEOUT",
     "MOLT_PERF_PROFILE",
-    "MOLT_NATIVE_CPU",
     "MOLT_SKIP_RUNTIME_REBUILD",
     "MOLT_SYSROOT",
     "MOLT_MODULE_CHUNK_OPS",
@@ -164,7 +164,8 @@ def _record_backend_admission(
                 "features": kwargs["backend_features"],
                 "project_root": kwargs["project_root"],
                 "cargo_timeout": kwargs["cargo_timeout"],
-                # Admission fingerprints the ambient RUSTFLAGS at call time.
+                "rust_cpu": kwargs["rust_cpu"],
+                # Ambient Rust flags are the caller's; neither command writes them.
                 "rustflags": os.environ.get("RUSTFLAGS"),
             }
         )
@@ -255,6 +256,7 @@ def _build_backend_setup(
         module_graph_metadata=object(),  # type: ignore[arg-type]
         target_python=config.target_python,
         codegen=config.codegen,
+        rust_cpu=preamble.rust_cpu,
     )
 
 
@@ -267,12 +269,14 @@ def _fake_backend_toolchain(
     cargo_calls: list[list[str]] = []
     probe_calls: list[list[str]] = []
 
-    def admission(root, features, profile, environment):
+    def admission(root, features, profile, environment, *, rust_cpu):
         selected_environment = {
             **environment,
             "CARGO_TARGET_DIR": os.fspath(_cargo_target_root(root)),
         }
-        admitted = compiler_build_admission(features, profile, selected_environment)
+        admitted = compiler_build_admission(
+            features, profile, selected_environment, rust_cpu
+        )
         admitted.plan.project_root = root
         return admitted
 
@@ -401,12 +405,9 @@ def test_prewarm_admits_the_backend_the_build_selects(
         assert build_error is not None
     build_admissions = list(admissions)
     admissions.clear()
-    # Undo the build side's ambient RUSTFLAGS mutation (the native-arch perf
-    # policy still writes it; HF-60 records it); the prewarm makes its own.
-    if "RUSTFLAGS" in env:
-        monkeypatch.setenv("RUSTFLAGS", env["RUSTFLAGS"])
-    else:
-        monkeypatch.delenv("RUSTFLAGS", raising=False)
+    # The build resolves its Rust CPU policy as a value (HF-60): the process
+    # environment keeps the caller's Rust flags for the prewarm that follows.
+    assert os.environ.get("RUSTFLAGS") == env.get("RUSTFLAGS")
 
     prewarm_argv = ["internal-backend-build", "--target", target, "--backend", backend]
     prewarm_rc = _dispatch([*prewarm_argv, "--json"])
@@ -421,6 +422,15 @@ def test_prewarm_admits_the_backend_the_build_selects(
     assert prewarm_rc == 2
     assert len(build_admissions) == 1
     assert admissions == build_admissions
+    # Only a native build compiles its Rust for the host CPU; `llvm` is the
+    # native target with the LLVM backend.
+    host_cpu = env.get("MOLT_PERF_PROFILE") == "native-arch" and target in {
+        "native",
+        "llvm",
+    }
+    assert admissions[0]["rust_cpu"] is (
+        RustCpuPolicy.NATIVE if host_cpu else RustCpuPolicy.BASELINE
+    )
 
 
 @pytest.mark.parametrize(
@@ -454,6 +464,7 @@ def test_prewarm_selects_the_release_host_compiler_in_the_session_target(
             "features": features,
             "project_root": root,
             "cargo_timeout": None,
+            "rust_cpu": RustCpuPolicy.BASELINE,
             "rustflags": None,
         }
     ]

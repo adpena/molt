@@ -27,6 +27,7 @@ from molt.cli.cache_fingerprints import (
     _source_tree_fingerprint_transaction,
 )
 from molt.cli.compiler_identity import CompilerIdentityError
+from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
 from molt.backend_executable_names import CodegenBackend, backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
@@ -341,6 +342,12 @@ def _wrapper_build_cache_input(
     capability_config_digest = (
         resolve_runtime_policy_from_env(env).digest().removeprefix("sha256:")
     )
+    target = _wrapper_build_target(build_args)
+    try:
+        # The child build resolves the same policy from the same request.
+        rust_cpu, _rust_cpu_warning = resolve_rust_cpu_policy(target, env)
+    except ValueError:
+        return None  # The child build rejects the knob before it builds.
     closure_fingerprints = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,
         build_args=build_args,
@@ -365,11 +372,12 @@ def _wrapper_build_cache_input(
         "runtime_backend_fingerprint": _cache_fingerprint(
             env=env,
             backend_features=backend_features_for_target(
-                is_wasm=_wrapper_build_target(build_args).startswith("wasm"),
-                is_luau_transpile=_wrapper_build_target(build_args) == "luau",
-                is_rust_transpile=_wrapper_build_target(build_args) == "rust",
+                is_wasm=target.startswith("wasm"),
+                is_luau_transpile=target == "luau",
+                is_rust_transpile=target == "rust",
                 codegen_backend=_wrapper_codegen_backend(build_args),
             ),
+            rust_cpu=rust_cpu,
         ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,

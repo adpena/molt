@@ -30,6 +30,7 @@ from molt.cli.native_link_manifest import (
 )
 from molt.cli.runtime_artifact_selection import RuntimeCrateType
 from molt.cli.static_archive_identity import artifact_content_identity
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
@@ -772,6 +773,7 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         cargo_profile="dev-fast",
         project_root=project_root,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert isolated_backend.read_text(encoding="utf-8") == canonical_backend.read_text(
         encoding="utf-8"
@@ -853,6 +855,7 @@ def test_canonical_native_generation_keeps_portable_dependency_custody(
         project_root,
         1.0,
         runtime_state=state,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert state.runtime_lib == generation.runtime_lib
     assert not isolated_runtime.exists()

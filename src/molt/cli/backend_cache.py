@@ -42,6 +42,7 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactValidationError,
 )
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
 from molt.cli.models import (
     _ModuleGraphMetadata,
@@ -1878,7 +1879,8 @@ def _shared_stdlib_compiler_fingerprint(
     cache_tooling_fingerprint: str | None = None,
 ) -> str:
     if cache_compiler_fingerprint is None:
-        cache_compiler_fingerprint = _cache_fingerprint()
+        # No admitted compiler means no build request: the baseline compiler.
+        cache_compiler_fingerprint = _cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE)
     if cache_tooling_fingerprint is None:
         cache_tooling_fingerprint = _cache_tooling_fingerprint()
     payload = {

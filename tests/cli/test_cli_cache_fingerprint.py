@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.compiler_identity_helper import (
     compiler_build_admission,
     stub_compiler_admission,
@@ -174,6 +175,7 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
     fingerprint = CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend",),
         runtime_features=("stdlib_micro", "no-default-features"),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert fingerprint
@@ -207,6 +209,7 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
     assert CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend",),
         include_runtime_sources=False,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
 
@@ -229,10 +232,12 @@ def test_cache_fingerprint_custodies_backend_concurrency_feature(
     default = CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend",),
         include_runtime_sources=False,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     free_threaded = CACHE_FINGERPRINTS._cache_fingerprint(
         backend_features=("native-backend", "free-threaded"),
         include_runtime_sources=False,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert default != free_threaded
 
@@ -1102,7 +1107,9 @@ def test_backend_lock_identity_tracks_only_reachable_dependency_content(
 
     def object_key():
         return CACHE_FINGERPRINTS._cache_fingerprint(
-            backend_features=(feature,), include_runtime_sources=False
+            backend_features=(feature,),
+            include_runtime_sources=False,
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
 
     cold = receipt()

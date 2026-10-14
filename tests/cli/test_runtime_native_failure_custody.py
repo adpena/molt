@@ -10,6 +10,7 @@ import pytest
 from molt.cli import runtime_native_build as runtime
 from molt.cli.cargo_execution import CargoExecutionResult
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
@@ -175,6 +176,7 @@ def test_native_build_lock_failure_retains_structured_evidence_and_timing(
         1.0,
         stage_timings_ms=timings,
         runtime_state=plan.runtime_state,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert plan.runtime_state.native_runtime_build_failure.stage == "build-lock"
     assert timings["runtime_lib_build_lock"] >= 0
@@ -198,6 +200,7 @@ def test_native_locked_work_runtime_error_is_not_mislabeled(plan, monkeypatch):
             plan.project_root,
             1.0,
             runtime_state=plan.runtime_state,
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     assert plan.runtime_state.native_runtime_build_failure is None
 

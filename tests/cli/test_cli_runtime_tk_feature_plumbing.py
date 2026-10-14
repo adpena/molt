@@ -48,6 +48,7 @@ from tests.cli.native_link_test_support import (
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
 )
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -764,6 +765,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         stdlib_profile="full",
         resolved_modules={"molt_msgpack"},
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert err is None
@@ -859,6 +861,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
         resolved_modules={"molt_msgpack"},
         stage_timings_ms=stage_timings_ms,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert err is None
@@ -975,6 +978,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         native_artifact_plan=native_plan,
         resolved_modules={"nativepkg"},
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert err is None

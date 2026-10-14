@@ -24,6 +24,7 @@ from typing import (
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.backend_environment import CodegenSelection
 from molt.cli.output import CliFailure as _CliFailure
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.native_callable_exports import (
     NativeCallableExport as _ExternalNativeCallableExport,
     NativeCallableExportError,
@@ -894,6 +895,9 @@ class _RuntimeArtifactState:
     runtime_wasm_expected_identity: Path | None = None
     runtime_wasm_codegen_binding: RuntimeWasmCodegenBinding | None = None
     extra_runtime_features: tuple[str, ...] = ()
+    # The build's Rust CPU policy for the native runtime Cargo plan. WASM
+    # runtimes always compile for their fixed baseline.
+    rust_cpu: RustCpuPolicy = RustCpuPolicy.BASELINE
     native_runtime_build_identity: RuntimeBuildIdentity | None = None
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None
     # One build operation's installed-cell admission; codegen and final link
@@ -2158,7 +2162,7 @@ class _PreparedBuildPreamble:
     module_reasons: dict[str, set[str]]
     stdlib_root: Path
     warnings: list[str]
-    native_arch_perf_enabled: bool
+    rust_cpu: RustCpuPolicy
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ import pytest
 from molt import compiler_distribution as distribution
 from molt.cli import backend_binary, backend_execution, cargo_profiles
 from molt.verified_subset import current_host_coordinate
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 
 @pytest.fixture
@@ -119,10 +120,36 @@ def test_all_installed_backends_share_one_admitted_compiler(installation, monkey
             cargo_profile="release",
             project_root=installation,
             backend_features=(feature,),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert result.ok, result.message
         identities.add(result.cache_compiler_fingerprint)
     assert len(identities) == 1
+
+
+def test_installed_compiler_rejects_the_native_cpu_policy(installation, monkeypatch):
+    monkeypatch.setattr(
+        backend_binary,
+        "_backend_fingerprint",
+        lambda *a, **k: pytest.fail("installed compiler entered source rebuild"),
+    )
+    installed = distribution.installed_compiler(installation)
+    assert installed is not None
+
+    # The shipped compiler was built for the baseline CPU; claiming native-arch
+    # for it would report a host-tuned build that never happened.
+    result = backend_binary._ensure_backend_binary(
+        installed.binary,
+        cargo_timeout=1,
+        json_output=True,
+        cargo_profile="release",
+        project_root=installation,
+        backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.NATIVE,
+    )
+
+    assert not result.ok and result.phase == "installed_compiler"
+    assert "MOLT_PERF_PROFILE=native-arch" in result.message
 
 
 def test_installation_rejects_damage_even_when_rebuild_is_skipped(
@@ -139,6 +166,7 @@ def test_installation_rejects_damage_even_when_rebuild_is_skipped(
         cargo_profile="release",
         project_root=installation,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert not result.ok and result.phase == "installed_compiler"
     assert "differs" in result.message
