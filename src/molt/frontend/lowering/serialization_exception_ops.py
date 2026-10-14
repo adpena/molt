@@ -47,8 +47,6 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "EXCEPTION_LAST":
-            ctx.json_ops.append({"kind": "exception_last", "out": op.result.name})
         elif op.kind == "EXCEPTION_LAST_PENDING":
             ctx.json_ops.append(
                 {"kind": "exception_last_pending", "out": op.result.name}
@@ -143,26 +141,10 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
             )
         elif op.kind == "EXCEPTION_CLEAR":
             ctx.json_ops.append({"kind": "exception_clear", "out": op.result.name})
-        elif op.kind == "EXCEPTION_KIND":
-            ctx.json_ops.append(
-                {
-                    "kind": "exception_kind",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "EXCEPTION_CLASS":
             ctx.json_ops.append(
                 {
                     "kind": "exception_class",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "EXCEPTION_MESSAGE":
-            ctx.json_ops.append(
-                {
-                    "kind": "exception_message",
                     "args": [op.args[0].name],
                     "out": op.result.name,
                 }
@@ -207,46 +189,6 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "value": self._serialization_control_value(op),
                 }
             )
-        elif op.kind == "FILE_OPEN":
-            ctx.json_ops.append(
-                {
-                    "kind": "file_open",
-                    "args": [op.args[0].name, op.args[1].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "FILE_READ":
-            ctx.json_ops.append(
-                {
-                    "kind": "file_read",
-                    "args": [op.args[0].name, op.args[1].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "FILE_WRITE":
-            ctx.json_ops.append(
-                {
-                    "kind": "file_write",
-                    "args": [op.args[0].name, op.args[1].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "FILE_CLOSE":
-            ctx.json_ops.append(
-                {
-                    "kind": "file_close",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "FILE_FLUSH":
-            ctx.json_ops.append(
-                {
-                    "kind": "file_flush",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "ENV_GET":
             ctx.json_ops.append(
                 {
@@ -255,18 +197,6 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "PRINT":
-            ctx.json_ops.append(
-                {
-                    "kind": "print",
-                    "args": [
-                        arg.name if hasattr(arg, "name") else str(arg)
-                        for arg in op.args
-                    ],
-                }
-            )
-        elif op.kind == "PRINT_NEWLINE":
-            ctx.json_ops.append({"kind": "print_newline"})
         elif op.kind == "WARN_STDERR":
             if os.environ.get("MOLT_DEBUG_WARN"):
                 import sys as _sys

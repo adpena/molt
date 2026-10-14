@@ -419,10 +419,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 return "list"
             return "indexable"
         if op.kind in {
-            "GET_ATTR",
             "GETATTR",
-            "LOAD_ATTR",
-            "GETATTR_NAME",
             "HASATTR_NAME",
             "GETATTR_SPECIAL_OBJ",
             "GETATTR_GENERIC_OBJ",
@@ -1337,7 +1334,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                         continue
 
             if (
-                canonical_op.kind in {"GUARD_TAG", "GUARD_TYPE"}
+                canonical_op.kind == "GUARD_TAG"
                 and len(canonical_op.args) == 2
                 and canonical_op.result.name == "none"
             ):

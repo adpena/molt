@@ -26,6 +26,16 @@ from molt.frontend.visitors.call_dispatch_builtin_scalar import (
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 from molt.frontend._mixin_base import GeneratorMixinBase
 
+_EMPTY_CONTAINER_OPS = {
+    "list": "LIST_NEW",
+    "tuple": "TUPLE_NEW",
+    "dict": "DICT_NEW",
+    "set": "SET_NEW",
+    "frozenset": "FROZENSET_NEW",
+}
+_BYTES_FROM_STR_OPS = {"bytes": "BYTES_FROM_STR", "bytearray": "BYTEARRAY_FROM_STR"}
+_BYTES_FROM_OBJ_OPS = {"bytes": "BYTES_FROM_OBJ", "bytearray": "BYTEARRAY_FROM_OBJ"}
+
 
 class CallNamedBuiltinDispatchMixin(
     CallNamedBuiltinScalarDispatchMixin,
@@ -123,8 +133,8 @@ class CallNamedBuiltinDispatchMixin(
             [str_source] if str_source is not None else node.args
         )
         result = MoltValue(self.next_var(), type_hint=name if name != "len" else "int")
-        if name in {"list", "tuple", "dict", "set", "frozenset"}:
-            opcode = f"{name.upper()}_NEW" if not args else "DICT_FROM_OBJ"
+        if name in _EMPTY_CONTAINER_OPS:
+            opcode = _EMPTY_CONTAINER_OPS[name] if not args else "DICT_FROM_OBJ"
         elif name == "len":
             opcode = "LEN"
         elif name == "bool":
@@ -163,9 +173,9 @@ class CallNamedBuiltinDispatchMixin(
             if len(args) > 1:
                 if len(args) == 2:
                     args.append(self._emit_const_value(None))
-                opcode = f"{name.upper()}_FROM_STR"
+                opcode = _BYTES_FROM_STR_OPS[name]
             else:
-                opcode = f"{name.upper()}_FROM_OBJ"
+                opcode = _BYTES_FROM_OBJ_OPS[name]
             if name == "bytearray":
                 self._remember_bytearray_len_hint(
                     result, self.const_ints.get(args[0].name)

@@ -21,30 +21,6 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "value": int(op.args[0]),
                 }
             )
-        elif op.kind == "CLASS_NEW":
-            ctx.json_ops.append(
-                {
-                    "kind": "class_new",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "CLASS_SET_BASE":
-            ctx.json_ops.append(
-                {
-                    "kind": "class_set_base",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "CLASS_APPLY_SET_NAME":
-            ctx.json_ops.append(
-                {
-                    "kind": "class_apply_set_name",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "CLASS_DEF":
             ctx.json_ops.append(
                 {
@@ -54,14 +30,6 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                         for arg in op.args
                     ],
                     "s_value": op.metadata["s_value"] if op.metadata else "",
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "SUPER_NEW":
-            ctx.json_ops.append(
-                {
-                    "kind": "super_new",
-                    "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )
@@ -77,14 +45,6 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 {
                     "kind": "copy",
                     "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "FUNCTION_CLOSURE_BITS":
-            ctx.json_ops.append(
-                {
-                    "kind": "function_closure_bits",
-                    "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )

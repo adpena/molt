@@ -14,33 +14,7 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
     def _serialize_object_attr_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
-        if op.kind == "ALLOC":
-            ctx.json_ops.append(
-                {
-                    "kind": "alloc",
-                    "value": self.classes[op.args[0]]["size"],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "ALLOC_CLASS":
-            class_ref, class_id = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "alloc_class",
-                    "args": [class_ref.name],
-                    "value": self.classes[class_id]["size"],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "OBJECT_SET_CLASS":
-            ctx.json_ops.append(
-                {
-                    "kind": "object_set_class",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "DATACLASS_NEW":
+        if op.kind == "DATACLASS_NEW":
             ctx.json_ops.append(
                 {
                     "kind": "dataclass_new",
@@ -323,31 +297,12 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind == "FUNCTION_DEFAULTS_VERSION":
-            # Read a function object's __defaults__/__kwdefaults__ mutation
-            # version stamp (one MoltValue operand: the function object).
-            # Non-foldable; consumed by the defaults-devirt deopt guard.
-            ctx.json_ops.append(
-                {
-                    "kind": "function_defaults_version",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "GETATTR_SPECIAL_OBJ":
             ctx.json_ops.append(
                 {
                     "kind": "get_attr_special_obj",
                     "args": [op.args[0].name],
                     "s_value": op.args[1],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "GETATTR_NAME":
-            ctx.json_ops.append(
-                {
-                    "kind": "get_attr_name",
-                    "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )
@@ -373,14 +328,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "IS_NATIVE_AWAITABLE":
-            ctx.json_ops.append(
-                {
-                    "kind": "is_native_awaitable",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "SETATTR_NAME":
             ctx.json_ops.append(
                 {
@@ -397,7 +344,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind in {"GUARD_TAG", "GUARD_TYPE"}:
+        elif op.kind == "GUARD_TAG":
             guard = {
                 "kind": op.kind.lower(),
                 "args": [arg.name for arg in op.args],
@@ -495,39 +442,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "out": op.result.name,
                     }
                 )
-        elif op.kind == "JSON_PARSE":
-            ctx.json_ops.append(
-                {
-                    "kind": "json_parse",
-                    "args": [
-                        arg.name if hasattr(arg, "name") else str(arg)
-                        for arg in op.args
-                    ],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "MSGPACK_PARSE":
-            ctx.json_ops.append(
-                {
-                    "kind": "msgpack_parse",
-                    "args": [
-                        arg.name if hasattr(arg, "name") else str(arg)
-                        for arg in op.args
-                    ],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "CBOR_PARSE":
-            ctx.json_ops.append(
-                {
-                    "kind": "cbor_parse",
-                    "args": [
-                        arg.name if hasattr(arg, "name") else str(arg)
-                        for arg in op.args
-                    ],
-                    "out": op.result.name,
-                }
-            )
         else:
             return False
         return True

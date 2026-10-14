@@ -104,12 +104,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             }:
                 _lbif_entry["type_hint"] = _lbif_cond.type_hint
             ctx.json_ops.append(_lbif_entry)
-        elif op.kind == "LOOP_BREAK_IF_EXCEPTION":
-            # Control op (no value arg) that breaks the loop when a runtime
-            # exception is pending.  Lowers to the sacrosanct
-            # `molt_exception_pending_fast` flag read in every backend, so
-            # it can never be folded/copy-propagated away like a value op.
-            ctx.json_ops.append({"kind": "loop_break_if_exception"})
         elif op.kind == "LOOP_BREAK":
             ctx.json_ops.append({"kind": "loop_break"})
         elif op.kind == "LOOP_CONTINUE":
@@ -350,38 +344,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BUFFER2D_NEW":
-            ctx.json_ops.append(
-                {
-                    "kind": "buffer2d_new",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "BUFFER2D_GET":
-            ctx.json_ops.append(
-                {
-                    "kind": "buffer2d_get",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "BUFFER2D_SET":
-            ctx.json_ops.append(
-                {
-                    "kind": "buffer2d_set",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "BUFFER2D_MATMUL":
-            ctx.json_ops.append(
-                {
-                    "kind": "buffer2d_matmul",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "STRING_STARTSWITH":
             ctx.json_ops.append(
                 {
@@ -591,15 +553,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "args": [op.args[0].name],
                 }
             )
-        elif op.kind == "DELETE_VAR":
-            var_name = op.metadata["var"] if op.metadata else ""
-            ctx.json_ops.append(
-                {
-                    "kind": "delete_var",
-                    "var": var_name,
-                    "args": [arg.name for arg in op.args],
-                }
-            )
         elif op.kind == "LOAD_VAR":
             var_name = op.metadata["var"] if op.metadata else ""
             ctx.json_ops.append(
@@ -618,33 +571,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append({"kind": "ret", "args": [op.args[0].name]})
         elif op.kind == "ret_void":
             ctx.json_ops.append({"kind": "ret_void"})
-        elif op.kind == "ALLOC_TASK":
-            poll_func = self._require_async_poll_target("ALLOC_TASK", op.args[0])
-            size = op.args[1]
-            args = op.args[2:]
-            task_kind = op.metadata.get("task_kind") if op.metadata else None
-            if task_kind not in {"future", "generator", "coroutine"}:
-                raise ValueError(
-                    f"ALLOC_TASK missing task_kind metadata: {task_kind!r}"
-                )
-            ctx.json_ops.append(
-                {
-                    "kind": "alloc_task",
-                    "s_value": poll_func,
-                    "value": size,
-                    "task_kind": task_kind,
-                    "args": [arg.name for arg in args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "ASYNCGEN_NEW":
-            ctx.json_ops.append(
-                {
-                    "kind": "asyncgen_new",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "STATE_SWITCH":
             ctx.json_ops.append({"kind": "state_switch"})
         elif op.kind == "STATE_TRANSITION":
@@ -675,31 +601,11 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CALL_ASYNC":
-            poll_name = self._require_async_poll_target("CALL_ASYNC", op.args[0])
-            payload_args = op.args[1:] if len(op.args) > 1 else []
-            ctx.json_ops.append(
-                {
-                    "kind": "call_async",
-                    "s_value": poll_name,
-                    "args": [arg.name for arg in payload_args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "GEN_SEND":
             gen, val = op.args
             ctx.json_ops.append(
                 {
                     "kind": "gen_send",
-                    "args": [gen.name, val.name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "GEN_THROW":
-            gen, val = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": "gen_throw",
                     "args": [gen.name, val.name],
                     "out": op.result.name,
                 }
@@ -716,14 +622,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             ctx.json_ops.append(
                 {
                     "kind": "is_generator",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "IS_BOUND_METHOD":
-            ctx.json_ops.append(
-                {
-                    "kind": "is_bound_method",
                     "args": [op.args[0].name],
                     "out": op.result.name,
                 }
@@ -756,14 +654,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                 }
             )
         # ── GPU intrinsic ops ──
-        elif op.kind in (
-            "gpu_thread_id",
-            "gpu_block_id",
-            "gpu_block_dim",
-            "gpu_grid_dim",
-            "gpu_barrier",
-        ):
-            ctx.json_ops.append({"kind": op.kind, "out": op.result.name})
         else:
             return False
         return True
