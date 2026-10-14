@@ -107,6 +107,10 @@
     "tests/tools/test_perf_profile_selection.py",
     "tests/tools/test_perf_schema.py",
     "tests/tools/test_perf_scoreboard.py",
+    "tests/tools/test_opt_explorer.py",
+    "tests/tools/test_sample_profile.py",
+    "tools/opt_explorer.py",
+    "tools/sample_profile.py",
     "tests/tools/test_release_matrix_acceptance.py",
     "tools/batch_compile_client.py",
     "tools/bench.py",
@@ -352,7 +356,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1f5e11efb57ef4cbd76a8567ff1e0422f460b9b4926f6fad69b44b7fd5b4c2d6",
+  "authority_sha256": "7ef7f16916d6e6feaa111289b4287f9d5ebee51d572bc6674dafb03abf84fe43",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2646,6 +2650,8 @@
         "tests/tools/test_perf_authority.py",
         "tests/tools/test_perf_profile_selection.py",
         "tests/tools/test_perf_scoreboard.py",
+        "tests/tools/test_opt_explorer.py",
+        "tests/tools/test_sample_profile.py",
         "tests/tools/test_perf_schema.py",
         "tests/tools/test_check_perf_gate_wiring.py",
         "tests/tools/test_analysis_capsule.py",

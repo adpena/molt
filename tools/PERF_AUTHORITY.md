@@ -72,6 +72,25 @@ edits with original mtimes rebuilt only owning local crates and dependents;
 registry artifacts stayed fresh. These are development bootstrap observations,
 not installed-user compile latency or E2 performance acceptance.
 
+## Finding the limiter
+
+`tools/opt_explorer.py` explains a number before anyone optimizes it. It never
+publishes a performance result.
+
+- `anatomy prog.py` builds `prog.py` with symbols and reports, for every
+  compiled function and every natural loop, the instruction count, the branches
+  and the calls by callee. Calls through a register resolve when the function
+  materialized the address (`adrp` + `add`, or a GOT slot).
+- `profile prog.py --callers SYMBOL` samples one run with macOS
+  `/usr/bin/sample` and splits self time into cost buckets: compiled code,
+  runtime entry, reference counting, allocation, attribute access, call
+  dispatch, exceptions, other runtime and system libraries. It lists the
+  hottest symbols, demangled, and the direct callers of a symbol.
+
+`tools/sample_profile.py` is the one parser of `sample` reports; the scoreboard
+and the explorer both read through it. A claimed optimization names its limiter
+from these outputs, then shows the change in the canonical gate above.
+
 ## v1.0 Acceptance Scope
 
 The existing core gate is necessary, not sufficient, for v1.0. A native/LLVM
