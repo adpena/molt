@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "df6bfa54dab545531a3d70f3da9b11fd3523b0524d1f82f95c23894644008a46",
+  "authority_sha256": "7c7b5959f54ec76432a99cb23752048582ebd3637a5d1f1e8c30bf8539e999e0",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2793,6 +2793,7 @@
         "tests/tools/test_output_startup_size_audit.py",
         "tests/tools/test_process_sentinel.py",
         "tests/tools/test_orphan_reaper.py",
+        "tests/tools/test_artifact_cleanup.py",
         "tests/tools/test_proof_command_semantics.py",
         "tests/tools/test_proof_queue_cargo_reclamation.py",
         "tests/tools/test_proof_queue_lane_maturity.py",
