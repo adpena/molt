@@ -3989,12 +3989,38 @@ def _compact_python(identity: Mapping[str, object]) -> dict[str, object]:
 
 
 def compact_toolchains(toolchains: Mapping[str, object]) -> dict[str, object]:
+    from tools import proof_plan
+
+    policies = {p.name: p for p in proof_plan.ProofPlan.load().toolchain_policies}
     summaries: dict[str, object] = {}
     for name, raw in toolchains.items():
         if not isinstance(raw, Mapping):
             raise ValueError(f"toolchain {name!r} has malformed identity")
-        if name == "python":
+        policy = policies.get(name)
+        role = policy.python_identity_role if policy is not None else None
+        if role == "environment":
             summaries[name] = _compact_python(cast(Mapping[str, object], raw))
+        elif role == "runtime":
+            selected = raw.get("python_runtime")
+            if not isinstance(selected, Mapping):
+                raise ValueError(f"{name}: incomplete selected Python runtime custody")
+            proof_plan.validate_selected_python_runtime(policy, selected)
+            summary = {
+                key: value
+                for key, value in raw.items()
+                if not isinstance(value, (dict, list))
+            }
+            summary["python_runtime"] = {
+                "launch_argv": selected["launch_argv"],
+                "runtime_closure_sha256": selected["runtime"]["runtime_closure_sha256"],
+                "file_count": len(selected["file_custody"]),
+                "node_count": len(selected["node_custody"]),
+                "startup_selection_sha256": canonical_json_sha256(
+                    selected["startup_selection"]
+                ),
+            }
+            summary.update(_compact_process_inventory(raw))
+            summaries[name] = summary
         else:
             summary = {
                 key: value
@@ -4011,13 +4037,18 @@ def _validate_captured_toolchains(toolchains: Mapping[str, object]) -> None:
     from molt.exact_json import canonical_json_sha256
     from tools import proof_plan
 
-    policies = {
-        policy.name: policy for policy in proof_plan.ProofPlan.load().toolchain_policies
-    }
+    plan = proof_plan.ProofPlan.load()
+    policies = {policy.name: policy for policy in plan.toolchain_policies}
     for name, raw in toolchains.items():
         if not isinstance(raw, Mapping):
             raise ValueError("captured toolchain identity is malformed")
         policy = policies.get(name)
+        if policy is not None and policy.python_identity_role == "runtime":
+            from tools.proof_queue_pkg.command_identity import (
+                _validate_toolchain_identity,
+            )
+
+            _validate_toolchain_identity(plan, name, raw, full_capture=True)
         validate_llvm_sdk_selection(
             raw,
             required=policy is not None

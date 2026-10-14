@@ -1710,7 +1710,7 @@ class _CaptureSession:
 
 @pytest.fixture
 def python_session(tmp_path, monkeypatch, runtime_receipt):
-    from molt.cli import runtime_build_python as admission
+    from molt import python_runtime_admission as admission
 
     selected = tmp_path / "selected-python.exe"
     write_mock_executable(selected, b"selected-interpreter-launcher")
@@ -1907,9 +1907,11 @@ def test_build_python_scope_borrows_only_live_operation_owner(python_session):
     admission, selected, session, calls = python_session
     state = SimpleNamespace(build_python_admission=None)
     environment = {"MOLT_BUILD_PYTHON": str(selected)}
-    with admission.build_python_scope(state) as owner:
+    from molt.cli.runtime_build_python import build_python_scope
+
+    with build_python_scope(state) as owner:
         first = owner.capture(environment)
-        with admission.build_python_scope(state) as borrowed:
+        with build_python_scope(state) as borrowed:
             assert borrowed is owner
             assert borrowed.capture(environment) == first
         assert not session.closed
@@ -1928,12 +1930,13 @@ def test_python_identity_unresolved_interpreter_never_spawns_probe(
 
 
 @pytest.mark.slow
-def test_python_identity_live_content_probe() -> None:
+@pytest.mark.parametrize("with_custody", [False, True])
+def test_python_identity_live_content_probe(with_custody) -> None:
     """The real guarded child retains its context through two phase boundaries."""
-    from molt.cli.runtime_build_python import BuildPythonAdmission
+    from molt.python_runtime_admission import BuildPythonAdmission
 
     environment = {**os.environ, "MOLT_BUILD_PYTHON": sys.executable}
-    with BuildPythonAdmission() as owner:
+    with BuildPythonAdmission(with_custody=with_custody) as owner:
         first = owner.capture(environment)
         assert owner.capture(environment) == first
     runtime = validate_python_runtime_identity(first["runtime"])
@@ -1944,6 +1947,19 @@ def test_python_identity_live_content_probe() -> None:
     ] == toolchain_identity.stable_file_sha256(
         Path(sys.executable), label="test Python executable"
     )
+
+    if with_custody:
+        from molt.python_environment_identity import validate_python_capture
+
+        capture = validate_python_capture(first["capture"])
+        assert capture["identity"] == runtime
+        assert capture["file_custody"] and capture["node_custody"]
+        assert (
+            first["startup_selection"]["selected_executable"]["lexical"]
+            == sys.executable
+        )
+    else:
+        assert "capture" not in first and "startup_selection" not in first
 
 
 @pytest.mark.parametrize("change", ["launcher-environment", "new-native-provider"])

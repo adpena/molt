@@ -938,3 +938,259 @@ def test_generator_scans_use_selected_root_and_refresh_manifest(tmp_path):
     assert any(v.kind == "orphan" and v.location == relative for v in orphans)
     manifest_path.write_text(original, encoding="utf-8")
     assert not any(v.location == relative for v in CGM.detect_orphans(left, before, sa))
+
+
+@pytest.mark.parametrize("action", ["check", "write"])
+def test_generator_selected_preflight_reports_all_before_any_render(
+    tmp_path, monkeypatch, capsys, action
+):
+    from tools import generators, proof_plan
+
+    source = tmp_path / "src/molt/target_python.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.13', '3.14')\n")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/proof_plan.toml").write_text("""
+[[toolchain_policy]]
+name = "uv"
+executable = "uv"
+version_pattern = '^ok$'
+[[toolchain_policy]]
+name = "target-pythons"
+python_versions = "supported-targets"
+[[toolchain_policy]]
+name = "node"
+executable = "node"
+version_pattern = '^ok$'
+[[toolchain_policy]]
+name = "acorn"
+executable = "node"
+version_pattern = '^ok$'
+dependencies = ["node"]
+""")
+    rows = [
+        generators.Generator("unicode", (), True, ("target-pythons",)),
+        generators.Generator("browser", (), True, ("acorn",)),
+    ]
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    monkeypatch.setattr(generators, "manifest_generators", lambda: rows)
+
+    def probe(policy, **kwargs):
+        if policy.name == "uv":
+            return {
+                "version": "ok",
+                "launcher_sha256": "a" * 64,
+                "executable_sha256": "b" * 64,
+            }
+        if policy.name == "target-pythons.3.13":
+            raise OSError("CPython probe unavailable")
+        if policy.name == "target-pythons.3.14":
+            return {
+                "version": "wrong",
+                "launcher_sha256": "a" * 64,
+                "executable_sha256": "b" * 64,
+            }
+        if policy.name == "node":
+            return None
+        pytest.fail("blocked Acorn probe ran")
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    monkeypatch.setattr(
+        generators,
+        "load_generator",
+        lambda _: pytest.fail("render/import began before admission"),
+    )
+    assert generators.main([action]) == 1
+    message = capsys.readouterr().err
+    for expected in (
+        "3.13",
+        "3.14",
+        "node",
+        "acorn",
+        "blocked",
+        "OSError",
+        "unicode",
+        "browser",
+    ):
+        assert expected in message
+    assert not list(tmp_path.rglob("*.generated*"))
+
+
+def test_generator_only_avoids_unrelated_tools_and_policy_materialization(
+    tmp_path, monkeypatch
+):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from tools import generators, proof_plan
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/proof_plan.toml").write_text("""
+[[toolchain_policy]]
+name = "unrelated"
+node_package = "missing"
+package_lock = "missing/lock"
+""")
+    rows = [
+        generators.Generator("simple", (), True, ()),
+        generators.Generator("browser", (), True, ("unrelated",)),
+    ]
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    monkeypatch.setattr(generators, "manifest_generators", lambda: rows)
+    monkeypatch.setattr(
+        proof_plan,
+        "_version_fingerprint",
+        lambda _: pytest.fail("unselected tool probed"),
+    )
+    rendered = []
+    monkeypatch.setattr(
+        generators,
+        "load_generator",
+        lambda tool: SimpleNamespace(
+            generated_outputs=lambda: rendered.append(tool) or {}
+        ),
+    )
+    monkeypatch.setattr(
+        generators.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: nullcontext(),
+    )
+    assert generators.main(["check", "--only", "simple"]) == 0
+    assert rendered == ["simple"]
+
+
+def test_generator_manifest_refuses_undeclared_prerequisites(tmp_path):
+    (tmp_path / "tools").mkdir()
+    source = (ROOT / "tools/generator_manifest.toml").read_text()
+    import re
+
+    source, count = re.subn(r"(?m)^toolchains = .*\n", "", source, count=1)
+    assert count == 1
+    (tmp_path / "tools/generator_manifest.toml").write_text(source)
+    with pytest.raises(CGM.ManifestError, match="missing explicit toolchains"):
+        CGM.load_manifest(tmp_path)
+
+
+@pytest.mark.parametrize("action", ["check", "write"])
+def test_all_missing_selected_unicode_providers_refuse_before_any_generator_import(
+    tmp_path, monkeypatch, capsys, action
+):
+    import subprocess
+    from tools import generators, proof_plan
+    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
+
+    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(generators, "BuildPythonAdmission", fixture.admission_class)
+    current = fixture.minor
+    other = f"3.{int(current.split('.')[1]) + 1}"
+    source = tmp_path / "src/molt/target_python.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        f"SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ({current!r}, {other!r})\n"
+    )
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/proof_plan.toml").write_text("""
+[[toolchain_policy]]
+name = "uv"
+executable = "uv"
+version_args = ["--version"]
+version_pattern = '^uv 0.13.1$'
+[[toolchain_policy]]
+name = "target-pythons"
+python_versions = "supported-targets"
+""")
+    installed = list(fixture.installations)
+    for _library, unicode_file in fixture.installations.values():
+        unicode_file.unlink()
+    original_run = proof_plan.subprocess.run
+
+    def run(command, **kwargs):
+        argv = list(command)
+        if argv[0] == "uv":
+            version = argv[argv.index("--python") + 1]
+            output = installed[0 if version == current else 1]
+            return subprocess.CompletedProcess(argv, 0, output + "\n", "")
+        if argv == [str(fixture.uv), "--version"]:
+            return subprocess.CompletedProcess(argv, 0, "uv 0.13.1\n", "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(proof_plan.subprocess, "run", run)
+    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: str(fixture.uv))
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    rows = [
+        generators.Generator("first-generator", (), True, ()),
+        generators.Generator("unicode", (), True, ("target-pythons",)),
+    ]
+    monkeypatch.setattr(generators, "manifest_generators", lambda: rows)
+    monkeypatch.setattr(
+        generators,
+        "load_generator",
+        lambda _: pytest.fail("generator imported before Unicode admission"),
+    )
+    assert generators.main([action]) == 1
+    error = capsys.readouterr().err
+    assert current in error and other in error and "unicode" in error
+    assert error.count("FileNotFoundError") == 2
+
+
+def test_unicode_query_consumes_new_admitted_selection_while_old_python_exists(
+    tmp_path, monkeypatch
+):
+    import os
+    from tools import gen_unicode_width, proof_plan
+    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
+
+    from tools.proof_queue_pkg import command_identity
+
+    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
+
+    def identify():
+        return command_identity._tool_identity(
+            fixture.plan,
+            fixture.policy.name,
+            {"python": None},
+            [sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            env=os.environ,
+            reuse_root=tmp_path / "reuse",
+        )
+
+    previous = identify()
+    first = fixture.selected[0]
+    second = Path(list(fixture.installations)[1])
+    fixture.selected[0] = second
+    current = identify()
+    assert previous["content_path"] == str(first)
+    assert current["content_path"] == str(second)
+    monkeypatch.setattr(
+        gen_unicode_width, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", (fixture.minor,)
+    )
+    calls = []
+    original = gen_unicode_width.harness_memory_guard.guarded_completed_process
+
+    def query(command, **kwargs):
+        calls.append(list(command))
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(
+        gen_unicode_width.harness_memory_guard, "guarded_completed_process", query
+    )
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    with BuildPythonAdmission(with_custody=True) as admission:
+        selected = proof_plan.capture_selected_python_runtime(
+            fixture.policy,
+            second,
+            environment=os.environ,
+            admission=admission,
+        )
+        assert proof_plan.selected_python_runtime_material(
+            selected
+        ) == proof_plan.selected_python_runtime_material(current["python_runtime"])
+        text = gen_unicode_width.render(
+            python_runtimes={fixture.minor: (selected, admission)}
+        )
+    assert first.is_file() and second.is_file()
+    assert calls[0][:4] == [str(second), "-B", "-I", "-S"]
+    assert "uv" not in calls[0]
+    assert f"WIDTH_{fixture.minor.replace('.', '_')}" in text
+    assert "Some((" in text

@@ -25,12 +25,12 @@ from molt.exact_json import (
 )
 from molt.python_identity_common import PythonEnvironmentIdentityError, _valid_sha256
 from molt.python_runtime_identity import validate_python_runtime_identity
+from molt.python_runtime_admission import _BUILD_PYTHON_SCHEMA
 
 _SCHEMA = "molt.runtime-build-member-identity.v3"
 RUNTIME_ARTIFACT_METADATA_MAX_BYTES = 16 * 1024 * 1024
 _FAMILY_SCHEMA = "molt.runtime-build-family.v3"
 _TOOLCHAIN_MANIFEST_SCHEMA = "molt.runtime-toolchain-content.v3"
-_BUILD_PYTHON_SCHEMA = "molt.runtime-build-python.v1"
 _RUNTIME_BUILD_OUTER_FIELDS = {
     "schema",
     "digest",

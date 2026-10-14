@@ -1707,3 +1707,174 @@ def test_integrate_cli_starts_without_ambient_pythonpath(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "--expected-upstream" in result.stdout
+
+
+def test_integrate_admission_aggregates_failures_before_any_gate(
+    drv, origin_and_clone, monkeypatch
+):
+    from tools import proof_plan
+
+    _origin, work = origin_and_clone
+    policy = """
+always = ["echo must-not-run"]
+always_toolchains = ["one", "two"]
+[[toolchain_policy]]
+name = "one"
+executable = "one"
+version_pattern = '^ok$'
+[[toolchain_policy]]
+name = "two"
+executable = "two"
+version_pattern = '^ok$'
+"""
+    _commit_file(work, "tools/proof_plan.toml", policy, "selected prerequisites")
+
+    def probe(policy):
+        if policy.name == "one":
+            raise OSError("first probe raised")
+        return None
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    monkeypatch.setattr(
+        drv, "run_gate", lambda *args: pytest.fail("gate ran before admission")
+    )
+    with pytest.raises(drv.DriverError) as caught:
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    message = str(caught.value)
+    for expected in ("one", "two", "OSError", "local.always.0", "executed=0"):
+        assert expected in message
+
+
+def test_selected_local_gate_does_not_materialize_unrelated_policy(
+    drv, tmp_path, monkeypatch
+):
+    from tools import proof_plan
+
+    cfg = drv.GateConfig.parse(
+        """
+always = []
+[[toolchain_policy]]
+name = "unrelated"
+node_package = "missing"
+package_lock = "missing/lock"
+[[rule]]
+name = "simple"
+globs = ["src/**"]
+gates = ["echo selected"]
+toolchains = []
+[[rule]]
+name = "browser"
+globs = ["wasm/**"]
+gates = ["echo unrelated"]
+toolchains = ["unrelated"]
+""",
+        "selected fixture",
+        root=tmp_path,
+    )
+    commands, matched = cfg.select(["src/one.py"])
+    assert commands == ["echo selected"]
+    monkeypatch.setattr(
+        proof_plan, "_version_fingerprint", lambda _: pytest.fail("unrelated probe ran")
+    )
+    cfg.admit(["src/one.py"], matched, [])
+    with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
+        cfg.admit(["src/one.py"], matched, ["unknown executable"])
+
+
+def test_integrate_missing_committer_refuses_before_rebase(
+    drv, origin_and_clone, monkeypatch
+):
+    origin, work = origin_and_clone
+    local = _commit_file(work, "feature.py", "value = 1\n", "local")
+    other = work.parent / "upstream"
+    _git(work.parent, "clone", "-q", str(origin), str(other))
+    _git(other, "config", "user.email", "upstream@example.test")
+    _git(other, "config", "user.name", "Upstream")
+    _commit_file(other, "other.py", "other = 1\n", "upstream")
+    _git(other, "push", "origin", "main")
+    _git(work, "config", "--unset", "user.name")
+    _git(work, "config", "--unset", "user.email")
+    _git(work, "config", "user.useConfigOnly", "true")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(work.parent / "absent-global-config"))
+    monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+    calls = []
+    real_run = drv.Git._run
+
+    def run(self, args, **kwargs):
+        calls.append(args)
+        return real_run(self, args, **kwargs)
+
+    monkeypatch.setattr(drv.Git, "_run", run)
+    with pytest.raises(drv.DriverError, match="configured Git committer"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    assert ["var", "GIT_COMMITTER_IDENT"] in calls
+    assert not any(args and args[0] == "rebase" for args in calls)
+    assert drv.Git(work).head_sha() == local
+
+
+def test_integrate_uses_selected_committed_target_catalog_without_import_rebinding(
+    drv, origin_and_clone, monkeypatch
+):
+    from molt import target_python
+    from tools import proof_plan
+
+    _, work = origin_and_clone
+    _commit_file(work, "src/molt/__init__.py", "", "selected package")
+    _commit_file(
+        work,
+        "src/molt/_selected_test_catalog.py",
+        "VERSIONS = ('3.12', '3.15')\n",
+        "selected catalog dependency",
+    )
+    _commit_file(
+        work,
+        "src/molt/target_python.py",
+        "from molt._selected_test_catalog import VERSIONS\nSUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = VERSIONS\n",
+        "selected target catalog",
+    )
+    _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        """
+always = ["echo must-not-run"]
+always_toolchains = ["target-pythons"]
+[[toolchain_policy]]
+name = "uv"
+executable = "uv"
+version_pattern = '^ok$'
+[[toolchain_policy]]
+name = "target-pythons"
+python_versions = "supported-targets"
+""",
+        "selected target prerequisites",
+    )
+    before_path = list(sys.path)
+    before_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    observed = []
+
+    def probe(policy):
+        observed.append(policy.name)
+        if policy.name == "uv":
+            return {
+                "version": "ok",
+                "launcher_sha256": "a" * 64,
+                "executable_sha256": "b" * 64,
+            }
+        return None
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    monkeypatch.setattr(
+        drv,
+        "run_gate",
+        lambda *args: pytest.fail("gate began before selected catalog admission"),
+    )
+    with pytest.raises(drv.DriverError) as caught:
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    assert set(observed) == {"uv", "target-pythons.3.12", "target-pythons.3.15"}
+    assert "local.always.0" in str(caught.value)
+    assert "3.15" in str(caught.value) and "executed=0" in str(caught.value)
+    assert sys.path == before_path
+    assert sys.modules["molt.target_python"] is target_python
+    assert target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is before_catalog

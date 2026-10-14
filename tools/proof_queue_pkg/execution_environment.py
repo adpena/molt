@@ -583,12 +583,42 @@ def _capture_toolchains(
     sdk_resources: dict[str, dict[str, object]] = {}
     sdk_verified_files = {}
     for name in requested:
-        if name == "python":
+        if policies[name].python_identity_role == "environment":
             continue
         located = located_toolchains.get(name)
         if not isinstance(located, Mapping):
             raise ValueError(f"located {name} toolchain identity is unavailable")
         located = dict(located)
+        selected_runtime = located.get("python_runtime")
+        if policies[name].python_identity_role == "runtime":
+            if not isinstance(selected_runtime, Mapping):
+                raise ValueError(
+                    f"{name}: selected Python runtime capture is unavailable"
+                )
+            proof_plan.validate_selected_python_runtime(
+                policies[name], selected_runtime
+            )
+            fresh = command_identity._parse_json_output(
+                command_identity._run_captured(
+                    [
+                        selected_runtime["launch_argv"][0],
+                        *command_identity.python_identity_probe_arguments(
+                            ("--runtime-selection",), no_site=True
+                        ),
+                    ],
+                    cwd=cwd,
+                    env=env,
+                ),
+                purpose=f"{name} fresh isolated startup selection",
+            )
+            from molt.python_runtime_identity import startup_selection_difference
+
+            if startup_selection_difference(
+                selected_runtime["startup_selection"], fresh, admit_new_images=False
+            ):
+                raise ValueError(
+                    f"{name}: selected Python startup changed while live custody armed"
+                )
         verified_sdk_files = frozenset()
         verified_resource_files = frozenset()
         if toolchain_capture.sdk_required(policies[name].data, located):
@@ -701,7 +731,15 @@ def _capture_toolchains(
                 )
         material = dict(located)
         material.pop("identity_sha256", None)
+        if policies[name].python_identity_role == "runtime":
+            material["python_runtime"] = proof_plan.selected_python_runtime_material(
+                selected_runtime
+            )
         located["identity_sha256"] = canonical_json_sha256(material)
+        if policies[name].python_identity_role == "runtime":
+            command_identity._validate_toolchain_identity(
+                plan, name, located, full_capture=True, envelope=envelope
+            )
         toolchains[name] = dict(located)
     if set(toolchains) != set(requested):
         raise ValueError(
@@ -815,7 +853,7 @@ def _locate_toolchain_watch_roots(
                         assert isinstance(external, list)
                         external.append(str(resolved))
     for name in requested:
-        if name == "python":
+        if policies[name].python_identity_role == "environment":
             continue
         identity = command_identity._tool_identity(
             plan,
@@ -1144,6 +1182,27 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
     for identity in toolchains.values():
         if not isinstance(identity, Mapping):
             continue
+        selected_runtime = identity.get("python_runtime")
+        if isinstance(selected_runtime, Mapping):
+            startup = selected_runtime["startup_selection"]
+            locations = [
+                *startup["base_paths"].values(),
+                *startup["import_paths"],
+                *startup["startup_configuration"],
+                startup["selected_executable"],
+                startup["base_executable"],
+            ]
+            if startup["runtime_library"] is not None:
+                locations.append(startup["runtime_library"])
+            for location in locations:
+                lexical = Path(location["lexical"])
+                # Include parents of absent startup selectors and archives too.
+                roots.append(lexical if lexical.is_dir() else lexical.parent)
+                resolved = Path(location["resolved"])
+                roots.append(resolved if resolved.is_dir() else resolved.parent)
+            roots.extend(
+                Path(row["path"]).parent for row in selected_runtime["file_custody"]
+            )
         sdk = identity.get("wasi_sdk")
         if isinstance(sdk, Mapping):
             from molt.wasi_sdk_identity import SDK_RESOURCE_ROOTS

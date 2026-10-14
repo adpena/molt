@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
-from molt.cli.runtime_build_python import BuildPythonAdmission
+from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
@@ -80,6 +80,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/runtime_artifact_selection.py",
     "src/molt/cli/runtime_build_identity.py",
     "src/molt/cli/runtime_build_python.py",
+    "src/molt/python_runtime_admission.py",
     "src/molt/process_guard.py",
     "src/molt/rust_toolchain.py",
     "tools/command_execution.py",

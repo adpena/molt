@@ -173,7 +173,9 @@ def load_manifest(root: Path) -> Manifest:
                 f"{tool}: declare exactly one of a non-empty outputs list or an "
                 "output_family"
             )
-        toolchains = row.get("toolchains", [])
+        if "toolchains" not in row:
+            raise ManifestError(f"{tool}: missing explicit toolchains declaration")
+        toolchains = row["toolchains"]
         if not isinstance(toolchains, list) or not all(
             isinstance(name, str) and name for name in toolchains
         ):
@@ -437,6 +439,10 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
             )
         )
     runner_toolchains = set(runners[0].get("toolchains", [])) if runners else set()
+    if "generators" in runner_toolchains:
+        from tools.proof_plan import generator_toolchains
+
+        runner_toolchains.update(generator_toolchains(manifest.generators))
 
     for g in manifest.generators:
         tool = g["tool"]

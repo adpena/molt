@@ -1246,7 +1246,8 @@ def test_cargo_configured_target_reaches_identity_authority(tmp_path, source):
 
 
 @pytest.mark.parametrize(
-    ("executable", "toolchain"), [("node", "node"), ("wasm-tools", "wasm-tools")]
+    ("executable", "toolchain"),
+    [("node", "node"), ("wasm-tools", "wasm-tools")],
 )
 def test_registered_direct_toolchain_commands_cannot_fall_back_to_an_empty_kind(
     executable: str, toolchain: str
@@ -1279,6 +1280,152 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
         "llvm-sdk"
         in command_admission.envelope_for_command(list(verifier.argv))["toolchains"]
     )
+
+
+def test_generator_envelope_preserves_explicit_selected_images_and_launchers():
+    command_admission._proof_command_registry.cache_clear()
+    plan = proof_plan.ProofPlan.load()
+    command = next(c for c in plan.commands if c.id == "repository.generators")
+    envelope = command_admission.envelope_for_command(list(command.argv))
+    assert envelope["proof_plan_command_ids"] == [command.id]
+    assert {"uv", "node", "browser-acorn"} <= set(envelope["toolchains"])
+    members = next(
+        p for p in plan.toolchain_policies if p.name == "target-pythons"
+    ).data["members"]
+    assert set(members) <= set(envelope["toolchains"])
+    assert (
+        command_admission._proof_command_registry()["policy_executables"]["uv"] == "uv"
+    )
+    with pytest.raises(ValueError, match="only models `uv run`"):
+        command_admission.envelope_for_command(["uv", "--version"])
+    assert command_admission.envelope_for_command(["node", "--version"])[
+        "toolchains"
+    ] == ["node"]
+
+
+def test_locked_esm_package_admission_and_existing_full_capture_receiver(
+    tmp_path, monkeypatch, capsys
+):
+    from tools import generators
+    from tools.proof_queue_pkg import custody_cas
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("actual ESM package oracle requires Node")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    package = tools / "parser/node_modules/acorn"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "acorn",
+                "version": "1.0.0",
+                "main": "require.cjs",
+                "exports": {"import": "./import.mjs", "require": "./require.cjs"},
+            }
+        )
+    )
+    (package / "require.cjs").write_text("module.exports = {};\n")
+    (tools / "parser/package-lock.json").write_text(
+        json.dumps({"packages": {"node_modules/acorn": {"version": "1.0.0"}}})
+    )
+    policy_source = """
+[[toolchain_policy]]
+name = "node"
+executable = "node"
+version_args = ["--version"]
+version_pattern = '^v[0-9]+\\.'
+[[toolchain_policy]]
+name = "browser-acorn"
+node_package = "acorn"
+node_package_mode = "import"
+package_lock = "tools/parser/package-lock.json"
+dependencies = ["node"]
+"""
+    (tools / "proof_plan.toml").write_text(policy_source)
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        generators,
+        "manifest_generators",
+        lambda: [
+            generators.Generator("first", (), True, ()),
+            generators.Generator("browser", (), True, ("browser-acorn",)),
+        ],
+    )
+    monkeypatch.setattr(
+        generators,
+        "load_generator",
+        lambda *_: pytest.fail("render/publish began with missing ESM entry"),
+    )
+    assert generators.main(["write"]) == 1
+    assert "browser-acorn" in capsys.readouterr().err
+
+    entry = package / "import.mjs"
+    entry.write_text("export const parse = () => {};\n")
+    policies = proof_plan.load_toolchain_policies(
+        tomllib.loads(policy_source), root=tmp_path
+    )
+    plan = replace(proof_plan.ProofPlan.load(), toolchain_policies=policies)
+    env = dict(os.environ)
+    before = command_identity._tool_identity(
+        plan,
+        "browser-acorn",
+        {"python": None},
+        [node, "--version"],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert before["node_package"]["entry"] == str(entry)
+    assert before["node_package"]["mode"] == "import"
+    assert before["content_path"] == str(entry)
+    command_identity._validate_toolchain_identity(plan, "browser-acorn", before)
+    monkeypatch.setattr(proof_plan.ProofPlan, "load", classmethod(lambda cls: plan))
+    monkeypatch.setattr(
+        command_identity, "_python_identity", lambda *args, **kwargs: None
+    )
+
+    def full_capture(located):
+        return execution_environment._capture_toolchains(
+            {"toolchains": ["browser-acorn"]},
+            [node, "--version"],
+            cwd=tmp_path,
+            env=env,
+            source_root=tmp_path,
+            hash_workers=1,
+            located_toolchains={"browser-acorn": located},
+        )[1]["browser-acorn"]
+
+    cas = tmp_path / "package-cas"
+    with pytest.raises(ValueError, match="armed content inventory"):
+        toolchain_capture.publish_capture(cas, {"browser-acorn": before})
+    full = full_capture(before)
+    assert full["node_package"]["package"]["file_count"] == 3
+    compact, ref, _ = toolchain_capture.publish_capture(cas, {"browser-acorn": full})
+    loaded = toolchain_capture.load_capture(ref, cas_root=cas)
+    assert loaded["toolchains"]["browser-acorn"]["node_package"] == full["node_package"]
+    assert toolchain_capture.compact_toolchains(loaded["toolchains"]) == compact
+    raw = custody_cas.read_ref(ref, expected_root=cas)
+    raw["toolchains"]["browser-acorn"].pop("node_package")
+    reduced = custody_cas.put_json(cas, raw).as_dict()
+    with pytest.raises(ValueError, match="node package closure is incomplete"):
+        toolchain_capture.load_capture(reduced, cas_root=cas)
+    wrong_mode = copy.deepcopy(full)
+    wrong_mode["node_package"]["mode"] = "require"
+    with pytest.raises(ValueError, match="node package closure is incomplete"):
+        command_identity._validate_toolchain_identity(
+            plan, "browser-acorn", wrong_mode, full_capture=True
+        )
+    original = entry.read_bytes()
+    entry.write_text("export const changed = 1;\n")
+    with pytest.raises(
+        ValueError, match="process image changed while live custody armed"
+    ):
+        full_capture(before)
+    entry.write_bytes(original)
+    (package / "new-member.mjs").write_text("export const extra = 1;\n")
+    with pytest.raises(ValueError, match="membership or content changed"):
+        full_capture(full)
 
 
 def test_ordinary_duplicate_executable_policy_still_rejects(monkeypatch) -> None:
@@ -18192,3 +18339,70 @@ def test_clippy_configured_selectors_require_bound_cargo_context(
     execution_environment._require_cargo_build_tool_environment_context(
         ordinary, **kwargs
     )
+
+
+def test_selected_runtime_watch_capture_compact_and_cas_receivers(
+    tmp_path, monkeypatch
+):
+    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
+
+    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(proof_plan.ProofPlan, "load", lambda *a, **kw: fixture.plan)
+    envelope = {"python": None, "toolchains": [fixture.policy.name]}
+    exact = [sys.executable, "-c", "pass"]
+    roots, located, _, _ = execution_environment._locate_toolchain_watch_roots(
+        envelope,
+        exact,
+        cwd=tmp_path,
+        env=os.environ,
+        supervisor_binary=tmp_path / "unused-supervisor",
+        reuse_root=tmp_path / "reuse",
+    )
+    library, unicode_file = fixture.installations[str(fixture.selected[0])]
+    assert library in roots
+    assert any(unicode_file.is_relative_to(root) for root in roots)
+    assert any(
+        Path(row["lexical"]).parent in roots
+        for row in located[fixture.policy.name]["python_runtime"]["startup_selection"][
+            "startup_configuration"
+        ]
+    )
+
+    def capture(value):
+        return execution_environment._capture_toolchains(
+            envelope,
+            exact,
+            cwd=tmp_path,
+            env=os.environ,
+            source_root=tmp_path,
+            hash_workers=1,
+            located_toolchains=value,
+        )[1]
+
+    full = capture(located)
+    cas = tmp_path / "cas"
+    compact, reference, _ = toolchain_capture.publish_capture(cas, full)
+    loaded = toolchain_capture.load_capture(reference, cas_root=cas)
+    assert loaded["toolchains"] == full
+    assert compact[fixture.policy.name]["python_runtime"]["file_count"] == len(
+        full[fixture.policy.name]["python_runtime"]["file_custody"]
+    )
+    assert any(row["path"] == str(unicode_file) for row in loaded["files"])
+    assert toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)[
+        "stable"
+    ]
+    for missing in ("python_runtime", "file_custody", "node_custody"):
+        broken = copy.deepcopy(full)
+        if missing == "python_runtime":
+            broken[fixture.policy.name].pop(missing)
+        else:
+            broken[fixture.policy.name]["python_runtime"].pop(missing)
+        with pytest.raises(ValueError, match="selected Python|Python capture"):
+            toolchain_capture.publish_capture(cas, broken)
+    with unicode_file.open("ab") as stream:
+        stream.write(b"changed Unicode runtime input")
+    with pytest.raises(ValueError, match="changed|startup"):
+        capture(located)
+    assert not toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)[
+        "stable"
+    ]

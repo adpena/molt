@@ -8,9 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from packaging.specifiers import InvalidSpecifier, SpecifierSet
-from packaging.version import InvalidVersion, Version
-
 
 @dataclass(frozen=True, slots=True)
 class TargetPythonVersion:
@@ -131,6 +128,8 @@ def _parse_target_python_version(value: str | None) -> TargetPythonVersion:
     raw = value.strip().lower()
     if raw.startswith("py") and len(raw) == 5 and raw[2:].isdigit():
         raw = f"{raw[2]}.{raw[3:]}"
+    from packaging.version import InvalidVersion, Version
+
     try:
         parsed = Version(raw)
     except InvalidVersion as exc:
@@ -206,6 +205,9 @@ def _target_python_from_requires_python(
 ) -> TargetPythonVersion:
     if not requires_python:
         return _DEFAULT_TARGET_PYTHON_VERSION
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import Version
+
     try:
         specifier = SpecifierSet(requires_python)
     except InvalidSpecifier as exc:

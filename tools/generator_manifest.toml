@@ -80,6 +80,7 @@ outputs = [
 ]
 source = "tools/proof_plan.toml + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_proof_plan.py --check"
 idempotent = true
 sync_test = "tests/test_proof_plan.py"
@@ -92,6 +93,7 @@ outputs = ["docs/spec/STATUS.md"]
 # is hand-written and passes through unchanged.
 source = "docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md + docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/update_status_blocks.py --check"
 idempotent = true
 sync_test = "tests/test_update_status_blocks.py"
@@ -103,6 +105,7 @@ tool = "tools/gen_release_matrix.py"
 outputs = ["src/molt/release_matrix.py"]
 source = "config/release_targets.toml + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_release_matrix.py --check"
 idempotent = true
 sync_test = "tests/tools/test_release_supply_chain.py"
@@ -116,7 +119,7 @@ source = "src/molt/target_python.py + installed matching CPython unicodedata dat
 check_mode = true
 check_command = "tools/gen_unicode_width.py --check"
 idempotent = true
-toolchains = ["uv"]
+toolchains = ["target-pythons"]
 sync_test = "tests/test_runtime_build_python.py"
 discovery_only = false
 
@@ -129,6 +132,7 @@ outputs = [
 ]
 source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots scanned recursively) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_cpython_coverage.py --check"
 idempotent = true
 sync_test = "tests/tools/test_gen_cpython_coverage.py"
@@ -141,6 +145,7 @@ outputs = [
 ]
 source = "runtime/molt-cpython-abi/src/type_slots.rs + config/cpython_stable_abi_3_12.toml + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_cpython_type_slots.py --check"
 idempotent = true
 sync_test = "tests/tools/test_gen_cpython_type_slots.py"
@@ -265,6 +270,7 @@ tool = "tools/gen_frontend_diagnostics.py"
 outputs = ["src/molt/frontend/frontend_diagnostics_generated.py"]
 source = "src/molt/frontend/frontend_diagnostics.toml + src/molt/frontend/**/*.py + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_frontend_diagnostics.py --check"
 idempotent = true
 sync_test = "tests/test_frontend_diagnostics.py"
@@ -323,6 +329,7 @@ upstream_generators = [
   "tools/gen_native_callable_abi.py",
 ]
 check_mode = true
+toolchains = ["browser-acorn"]
 check_command = "tools/gen_browser_asset_graph.py --check"
 idempotent = true
 sync_test = "tests/test_browser_asset_closure.py"
@@ -338,6 +345,7 @@ outputs = [
 ]
 source = "src/molt/target_feature_manifest.toml + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_target_feature_manifest.py --check"
 idempotent = true
 sync_test = "tests/test_gen_target_feature_manifest.py"
@@ -385,6 +393,7 @@ tool = "tools/gen_gpu_op_contract.py"
 outputs = ["runtime/molt-gpu/op_contract.toml"]
 source = "runtime/molt-gpu/src/ops.rs + pinned tinygrad 0.13.0 AST + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_gpu_op_contract.py --check"
 # Reconciles against a PINNED off-the-shelf tinygrad checkout under
 # bench/friends/repos/tinygrad_off_the_shelf/ which is untracked/absent in a
@@ -418,6 +427,7 @@ outputs = [
 ]
 source = "src/molt/frontend (assembled SimpleTIRGenerator surface) + tools/python_source_index.py (invocation-scoped source AST) + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_protocol.py --check"
 idempotent = true
 # gen_protocol renders an import-only Protocol shim; byte-identity is NOT the
@@ -433,6 +443,7 @@ tool = "tools/gen_luau_support_matrix.py"
 outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
 source = "runtime/molt-backend-luau/src/luau + runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds/runtime_requirements.py + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_luau_support_matrix.py --check"
 idempotent = true
 # Freshness is gated by the CI --check step (the rendered doc must match the live
@@ -448,6 +459,7 @@ outputs = [
 ]
 source = "docs/python_documentation (CPython library reference text) + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_compat_platform_availability.py --check"
 # The input corpus (docs/python_documentation/) is a large, gitignored external
 # CPython documentation tree absent from a vanilla checkout; a CI --check there
@@ -470,6 +482,7 @@ outputs = [
 ]
 source = "tests/differential/COVERAGE_INDEX.yaml + tests/differential/{basic,stdlib,pyperformance}/*.py + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_diff_lanes.py --check"
 idempotent = true
 sync_test = "tests/test_gen_diff_lanes.py"
@@ -483,6 +496,7 @@ outputs = [
 ]
 source = "runtime/molt-runtime-core/src/lib.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/check_runtime_bridge_test_stubs.py --check"
 idempotent = true
 sync_test = "tests/tools/test_runtime_bridge_test_stubs.py"
@@ -499,6 +513,7 @@ outputs = [
 ]
 source = "config/cpython_stdlib_snapshot.json (Python/stdlib_module_names.h and the Lib tree at the CPython revisions pinned in config/cpython_regrtest_sources.toml, with receipts) + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_stdlib_module_union.py --check"
 # --check reads only the committed snapshot; --refresh-sources is the one
 # network mode and fails closed on a receipt mismatch.
@@ -516,6 +531,7 @@ output_family = "src/molt/stdlib stub files (every module whose __getattr__ rais
 source = "tools/stdlib_module_union.py + tools/generator_io.py + src/molt/stdlib_intrinsic_policy.py"
 upstream_generators = ["tools/gen_stdlib_module_union.py"]
 check_mode = true
+toolchains = []
 check_command = "tools/gen_stdlib_stubs.py --check"
 idempotent = true
 sync_test = "tests/test_stdlib_stubs.py"
@@ -529,6 +545,7 @@ outputs = [
 ]
 source = "runtime/molt-cpython-abi/src/abi_types.rs + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_cpython_abi_layout.py --check"
 idempotent = true
 sync_test = "tests/test_gen_cpython_abi_layout.py"
@@ -584,6 +601,7 @@ outputs = [
 ]
 source = "config/python_numeric_errors.toml + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_python_numeric_errors.py --check"
 idempotent = true
 sync_test = "tests/tools/test_gen_python_numeric_errors.py"
@@ -607,6 +625,7 @@ outputs = [
 ]
 source = "tools/compatibility_error_protocol.py + config/python_compatibility_error_sources.json + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/compatibility_error_protocol.py --check"
 idempotent = true
 sync_test = "tests/test_structural_audit.py"
@@ -621,6 +640,7 @@ outputs = [
 ]
 source = "src/molt/environment_registry.toml + src/molt/environment_registry.py + tools/generator_io.py"
 check_mode = true
+toolchains = []
 check_command = "tools/gen_environment_registry.py --check"
 idempotent = true
 sync_test = "tests/test_environment_registry.py"

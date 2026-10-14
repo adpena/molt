@@ -1755,7 +1755,9 @@ def test_source_extension_toolchain_requires_target_context_capture() -> None:
     with pytest.raises(ValueError, match="requires target-context capture"):
         proof_plan._version_fingerprint(policy)
     with pytest.raises(ValueError, match="requires target-context capture"):
-        proof_plan.toolchain_fingerprints(PLAN, ("source-extension",))
+        proof_plan.toolchain_fingerprints(
+            PLAN.toolchain_policies, ("source-extension",)
+        )
 
 
 def test_toolchain_documentation_projects_provider_and_executable_contracts() -> None:
@@ -1763,6 +1765,11 @@ def test_toolchain_documentation_projects_provider_and_executable_contracts() ->
     for policy in PLAN.toolchain_policies:
         data = policy.data
         prefix = f"| `{policy.name}` | `{policy.identity_kind}` | "
+        if policy.identity_kind == "group":
+            assert prefix in markdown
+            for member in data["members"]:
+                assert f"`{member}`" in markdown
+            continue
         if policy.identity_kind == "target-derived":
             row = (
                 prefix
@@ -1832,6 +1839,46 @@ def test_executable_toolchain_requires_non_empty_version_probe() -> None:
 
     assert (
         "uv: executable identity requires non-empty version_args"
+        in replace(PLAN, toolchain_policies=policies).validate()
+    )
+
+
+@pytest.mark.parametrize("selector", [True, "yes", 1])
+def test_selected_version_requires_typed_resolver_contract(selector):
+    policies = tuple(
+        replace(p, data={**p.data, "version_from_content_path": selector})
+        if p.name == "uv"
+        else p
+        for p in PLAN.toolchain_policies
+    )
+    assert (
+        "uv: selected version requires a typed content resolver"
+        in replace(PLAN, toolchain_policies=policies).validate()
+    )
+
+
+def test_explicit_selection_is_independent_of_version_image_choice():
+    canonical = proof_plan.ToolchainPolicy(
+        "canonical",
+        {
+            "executable": "launcher",
+            "version_from_content_path": True,
+            "content_path_command": ["selector", "current"],
+        },
+    )
+    assert canonical.inferred_executable == "launcher"
+    selected = replace(canonical, data={**canonical.data, "selection_only": True})
+    assert selected.inferred_executable is None
+
+
+@pytest.mark.parametrize("selector", [True, "yes", 1])
+def test_explicit_selection_requires_typed_resolver_contract(selector):
+    policies = tuple(
+        replace(p, data={**p.data, "selection_only": selector}) if p.name == "uv" else p
+        for p in PLAN.toolchain_policies
+    )
+    assert (
+        "uv: explicit prerequisite requires a typed content resolver"
         in replace(PLAN, toolchain_policies=policies).validate()
     )
 
@@ -2111,7 +2158,7 @@ def test_missing_sdk_role_is_a_toolchain_preflight_error(
     with pytest.raises(
         ValueError, match="wasm-ld toolchain selection failed.*provision SDK explicitly"
     ):
-        proof_plan.toolchain_fingerprints(PLAN, ("wasm-ld",))
+        proof_plan.toolchain_fingerprints(PLAN.toolchain_policies, ("wasm-ld",))
 
 
 def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) -> None:
@@ -2935,7 +2982,7 @@ def test_executor_rejects_toolchain_version_outside_contract(monkeypatch) -> Non
         },
     )
     with pytest.raises(ValueError, match="toolchain contract violation"):
-        proof_plan.toolchain_fingerprints(PLAN, ("python", "uv"))
+        proof_plan.toolchain_fingerprints(PLAN.toolchain_policies, ("python", "uv"))
 
 
 def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
@@ -2961,7 +3008,12 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
             "launcher_path": f"/toolchain/{policy.name}",
             "launcher_sha256": "0" * 64,
             "content_path": f"/toolchain/{policy.name}",
-            "version": f"{policy.name} {policy.data['setup_value']}",
+            "version": (
+                "git version 2.50.0"
+                if policy.name == "git"
+                else f"{policy.name} {policy.data['setup_value']}"
+                + ("-stable" if policy.name == "rustfmt" else "")
+            ),
             "version_pattern": str(policy.data["version_pattern"]),
             "probe_cwd": str(policy.data.get("probe_cwd", ".")),
             "executable_sha256": "0" * 64,
@@ -2969,9 +3021,13 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
         }
 
     monkeypatch.setattr(proof_plan, "_version_fingerprint", fake_fingerprint)
-    fingerprints = proof_plan.toolchain_fingerprints(PLAN, ("rustc", "cargo"))
-    assert set(fingerprints) == {"rustc", "cargo"}
-    assert calls == ["rustc", "cargo"]
+    fingerprints = proof_plan.toolchain_fingerprints(
+        PLAN.toolchain_policies, ("rustc", "cargo", "rustfmt")
+    )
+    assert set(fingerprints) == {"rustc", "cargo", "git", "rustfmt"}
+    assert set(calls[:3]) == {"rustc", "git", "rustfmt"}
+    assert calls.index("rustc") < calls.index("rustfmt")
+    assert calls[3:] == ["cargo"]
     assert overlap_detected is False
 
 
@@ -5032,7 +5088,9 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
                 argv, 0, "clang version 23.1.0", ""
             ),
         )
-        sdk = proof_plan.toolchain_fingerprints(PLAN, ("wasi-clang",))["wasi-clang"]
+        sdk = proof_plan.toolchain_fingerprints(
+            PLAN.toolchain_policies, ("wasi-clang",)
+        )["wasi-clang"]
     command = next(item for item in PLAN.commands if item.id == "python.static.ty")
     receipt_root = tmp_path / "receipts"
     receipt_root.mkdir()
@@ -5320,7 +5378,7 @@ def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
     with pytest.raises(
         ValueError, match="helper differs from its provisioned generation"
     ):
-        proof_plan.toolchain_fingerprints(PLAN, ("wasi-clang",))
+        proof_plan.toolchain_fingerprints(PLAN.toolchain_policies, ("wasi-clang",))
 
 
 @pytest.mark.parametrize(
@@ -5605,3 +5663,370 @@ def test_shard_jobs_enforce_their_declared_budget() -> None:
     )
     assert budget_error in with_budget(shard_overhead_seconds=180 * 60)
     assert budget_error in with_budget(shard_overhead_seconds=0)
+
+
+# Selected developer admission shares the real dependency/probe authority.
+def _admission_fingerprint(version="ok"):
+    return {
+        "version": version,
+        "launcher_sha256": "a" * 64,
+        "executable_sha256": "b" * 64,
+    }
+
+
+def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
+    monkeypatch,
+):
+    policies = tuple(
+        proof_plan.ToolchainPolicy(
+            name,
+            {
+                "executable": name,
+                "version_pattern": "^ok$",
+                "dependencies": ["missing"] if name == "dependent" else [],
+                "setup_command": "prepare-" + name,
+            },
+        )
+        for name in ("raises", "missing", "wrong", "dependent")
+    )
+    calls = []
+
+    def probe(policy):
+        calls.append(policy.name)
+        if policy.name == "raises":
+            raise OSError("independent injected probe failure")
+        if policy.name == "missing":
+            return None
+        if policy.name == "dependent":
+            pytest.fail("blocked dependent must not execute its probe")
+        return _admission_fingerprint("old")
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    with pytest.raises(ValueError) as caught:
+        proof_plan.toolchain_fingerprints(
+            policies,
+            tuple(p.name for p in policies),
+            owners={p.name: ("local.example.0",) for p in policies},
+        )
+    message = str(caught.value)
+    for expected in (
+        "raises",
+        "OSError",
+        "independent injected",
+        "missing",
+        "wrong",
+        "old",
+        "dependent",
+        "blocked",
+        "local.example.0",
+    ):
+        assert expected in message
+    for policy in policies:
+        assert "prepare-" + policy.name in message
+    assert set(calls) == {"raises", "missing", "wrong"}
+
+
+def test_canonical_target_python_catalog_is_stdlib_only():
+    # Staged-source projection has neither site packages nor ambient imports.
+    # Exercise the real authority; a constant-only catalog fixture hides eager
+    # dependencies that break generation from the index.
+    source = proof_plan.ROOT / "src/molt/target_python.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            "import json,runpy,sys; "
+            "catalog=runpy.run_path(sys.argv[1]); "
+            "assert not any(n=='packaging' or n.startswith('packaging.') for n in sys.modules); "
+            "print(json.dumps(catalog['SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS']))",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+
+    assert tuple(json.loads(result.stdout)) == SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+
+
+def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_path):
+    from molt import target_python
+
+    source = tmp_path / "src/molt/target_python.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.12', '3.15')\n")
+    driver_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    driver_path = list(sys.path)
+    policies = proof_plan.load_toolchain_policies(
+        {
+            "toolchain_policy": [
+                {"name": "uv", "executable": "uv"},
+                {"name": "target-pythons", "python_versions": "supported-targets"},
+                {
+                    "name": "unrelated",
+                    "node_package": "missing",
+                    "package_lock": "missing/lock",
+                },
+            ]
+        },
+        root=tmp_path,
+        names=("target-pythons",),
+    )
+    assert set(proof_plan.toolchain_closure(policies, ("target-pythons",))) == {
+        "uv",
+        "target-pythons.3.12",
+        "target-pythons.3.15",
+    }
+    for policy in policies:
+        if policy.name.startswith("target-pythons."):
+            minor = policy.name.removeprefix("target-pythons.")
+            assert policy.data["content_path_command"][5] == minor
+            assert policy.python_identity_role == "runtime"
+            assert policy.data["python_version"] == minor
+            assert policy.data["content_path_command"][7:11] == ["-B", "-I", "-S", "-c"]
+            assert "--no-python-downloads" in policy.data["content_path_command"]
+            assert policy.data["setup_command"] == "uv python install " + minor
+            assert policy.root == tmp_path
+    assert target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS is driver_catalog
+    assert sys.modules["molt.target_python"] is target_python
+    assert sys.path == driver_path
+
+
+def test_selected_dependency_chain_has_linear_fact_traversal(monkeypatch):
+    # Count visits to declared edges, rather than timing threads or assuming a
+    # particular traversal implementation. Transitive expansion per image fails
+    # this bound while all downstream failures must still remain visible.
+    edge_visits = 0
+
+    class Edges(list):
+        def __iter__(self):
+            nonlocal edge_visits
+            edge_visits += len(self)
+            return super().__iter__()
+
+    size = 128
+    policies = tuple(
+        proof_plan.ToolchainPolicy(
+            f"image-{index}",
+            {
+                "executable": f"image-{index}",
+                "version_pattern": "^ok$",
+                "dependencies": Edges([f"image-{index - 1}"] if index else []),
+            },
+        )
+        for index in range(size)
+    )
+    probed = []
+
+    def probe(policy):
+        probed.append(policy.name)
+        return None
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    with pytest.raises(ValueError) as caught:
+        proof_plan.toolchain_fingerprints(policies, (f"image-{size - 1}",))
+    assert probed == ["image-0"]
+    message = str(caught.value)
+    assert all(f"image-{index}: blocked" in message for index in range(1, size))
+    assert "image-0: executable" in message
+    assert edge_visits <= 8 * size
+
+
+def test_selected_executable_group_dependencies_admit_before_consumers(monkeypatch):
+    policies = tuple(
+        proof_plan.ToolchainPolicy(name, data)
+        for name, data in (
+            ("root", {"executable": "root", "version_pattern": "^ok$"}),
+            ("group", {"members": ["root", "nested"]}),
+            ("nested", {"members": ["second"]}),
+            ("second", {"executable": "second", "version_pattern": "^ok$"}),
+            (
+                "consumer",
+                {
+                    "executable": "consumer",
+                    "version_pattern": "^ok$",
+                    "dependencies": ["group"],
+                },
+            ),
+        )
+    )
+    probed = []
+
+    def probe(policy):
+        if policy.name == "consumer":
+            assert set(probed) == {"root", "second"}
+        probed.append(policy.name)
+        return _admission_fingerprint()
+
+    monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
+    assert set(proof_plan.toolchain_fingerprints(policies, ("consumer",))) == {
+        "root",
+        "second",
+        "consumer",
+    }
+
+
+def test_selected_node_package_version_is_derived_from_lock(tmp_path):
+    import json
+
+    lock = tmp_path / "parser/package-lock.json"
+    lock.parent.mkdir()
+    lock.write_text(
+        json.dumps({"packages": {"node_modules/parser": {"version": "9.7.1"}}})
+    )
+    policies = proof_plan.load_toolchain_policies(
+        {
+            "toolchain_policy": [
+                {"name": "node", "executable": "node"},
+                {
+                    "name": "parser",
+                    "node_package": "parser",
+                    "package_lock": "parser/package-lock.json",
+                    "dependencies": ["node"],
+                },
+            ]
+        },
+        root=tmp_path,
+        names=("parser",),
+    )
+    parser = next(p for p in policies if p.name == "parser")
+    assert parser.data["version_pattern"] == r"^9\.7\.1$"
+    assert parser.data["setup_value"] == "9.7.1"
+    assert parser.root == tmp_path
+    assert set(proof_plan.toolchain_closure(policies, ("parser",))) == {
+        "parser",
+        "node",
+    }
+
+
+def test_locked_node_package_admission_reports_real_node_missing_and_version_mismatch(
+    tmp_path,
+):
+    if shutil.which("node") is None:
+        pytest.skip("actual Node package admission requires a local Node interpreter")
+    root = tmp_path / "parser"
+    root.mkdir()
+    lock = root / "package-lock.json"
+    lock.write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/missing": {"version": "1.0.0"},
+                    "node_modules/mismatch": {"version": "1.0.0"},
+                }
+            }
+        )
+    )
+
+    def install(name, version):
+        package = root / "node_modules" / name
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "package.json").write_text(
+            json.dumps({"name": name, "version": version, "main": "index.js"})
+        )
+        (package / "index.js").write_text("module.exports = {};\n")
+
+    install("mismatch", "2.0.0")
+    policies = proof_plan.load_toolchain_policies(
+        {
+            "toolchain_policy": [
+                {
+                    "name": "node",
+                    "executable": "node",
+                    "version_args": ["--version"],
+                    "version_pattern": r"^v[0-9]+\.",
+                },
+                *(
+                    {
+                        "name": name,
+                        "node_package": name,
+                        "package_lock": "parser/package-lock.json",
+                        "dependencies": ["node"],
+                        "setup_command": "prepare-" + name,
+                    }
+                    for name in ("missing", "mismatch")
+                ),
+            ]
+        },
+        root=tmp_path,
+        names=("missing", "mismatch"),
+    )
+    with pytest.raises(ValueError) as first:
+        proof_plan.toolchain_fingerprints(policies, ("missing", "mismatch"))
+    assert "missing:" in str(first.value)
+    assert "mismatch:" in str(first.value)
+    assert "2.0.0" in str(first.value)
+    install("missing", "1.0.0")
+    with pytest.raises(ValueError) as second:
+        proof_plan.toolchain_fingerprints(policies, ("missing", "mismatch"))
+    assert "missing:" not in str(second.value)
+    assert "mismatch:" in str(second.value)
+    install("mismatch", "1.0.0")
+    identities = proof_plan.toolchain_fingerprints(policies, ("missing", "mismatch"))
+    assert set(identities) == {"node", "missing", "mismatch"}
+    assert (
+        identities["missing"]["version"] == identities["mismatch"]["version"] == "1.0.0"
+    )
+    assert Path(identities["missing"]["content_path"]).is_relative_to(root)
+
+
+def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
+    tmp_path, monkeypatch
+):
+    import copy
+    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
+
+    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
+    original_run = proof_plan.subprocess.run
+
+    def run(command, **kwargs):
+        if list(command) == fixture.policy.data["content_path_command"]:
+            return subprocess.CompletedProcess(
+                command, 0, str(fixture.selected[0]) + "\n", ""
+            )
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(proof_plan.subprocess, "run", run)
+    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: str(fixture.uv))
+    before = proof_plan._version_fingerprint(fixture.policy)
+    proof_plan.validate_selected_python_fingerprint(fixture.policy, before)
+    library, unicode_file = fixture.installations[str(fixture.selected[0])]
+    with unicode_file.open("ab") as stream:
+        stream.write(b"changed database provider with unchanged process images")
+    after = proof_plan._version_fingerprint(fixture.policy)
+    assert after["version"] == before["version"]
+    assert after["launcher_sha256"] == before["launcher_sha256"]
+    assert after["executable_sha256"] == before["executable_sha256"]
+    assert after["python_runtime_sha256"] != before["python_runtime_sha256"]
+    assert after["identity_sha256"] != before["identity_sha256"]
+
+    command = next(item for item in PLAN.commands if item.id == "python.static.ty")
+    receipt_root = tmp_path / "receipts"
+    receipt_root.mkdir()
+    for sibling in PLAN.commands:
+        if sibling.family == command.family and sibling.id != command.id:
+            (receipt_root / f"{sibling.id}.json").write_text(
+                json.dumps(_receipt_for(sibling, receipt_root))
+            )
+    receipt = _receipt_for(command, receipt_root)
+    receipt["toolchains"][fixture.policy.name] = after
+    path = receipt_root / "selected-python.json"
+    path.write_text(json.dumps(receipt))
+    assert proof_plan.verify_receipts(PLAN, [command.family], receipt_root) == []
+    for missing in ("python_runtime", "python_runtime_sha256"):
+        broken = copy.deepcopy(receipt)
+        identity = broken["toolchains"][fixture.policy.name]
+        identity.pop(missing)
+        identity["identity_sha256"] = proof_plan._toolchain_fingerprint_digest(identity)
+        path.write_text(json.dumps(broken))
+        assert any(
+            "runtime fingerprint is invalid" in error
+            for error in proof_plan.verify_receipts(
+                PLAN, [command.family], receipt_root
+            )
+        )

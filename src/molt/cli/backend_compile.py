@@ -75,7 +75,7 @@ from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
-from molt.cli.runtime_build_python import BuildPythonAdmission
+from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )

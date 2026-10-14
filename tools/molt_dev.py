@@ -66,7 +66,7 @@ The hazard inventory -> countermeasure map (the spec this file implements)
  10. Gate selection by change-class
        -> `integrate` reads tools/proof_plan.toml (touched-path glob ->
           required gate commands) and runs exactly the gates the change-class
-          demands; --extra-gate adds arc-specific gates.
+          demands; --extra-gate selects another manifest-declared gate.
  11. Backgrounded long-runs die silently (observed 2026-06-06, twice in one
      session: the harness reaps run_in_background process groups at detach
      [exit 144], and sandboxed tool calls reap even setsid daemons at
@@ -394,6 +394,9 @@ class GateRule:
 class GateConfig:
     rules: list[GateRule] = field(default_factory=list)
     always: list[str] = field(default_factory=list)
+    prerequisites: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    prerequisite_policy: dict = field(default_factory=dict)
+    root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1])
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -403,10 +406,14 @@ class GateConfig:
                 "is required for `integrate`.",
                 code=EXIT_USAGE,
             )
-        return GateConfig.parse(path.read_text(encoding="utf-8"), str(path))
+        return GateConfig.parse(
+            path.read_text(encoding="utf-8"), str(path), root=path.parent.parent
+        )
 
     @staticmethod
-    def parse(source: str, label: str) -> "GateConfig":
+    def parse(source: str, label: str, *, root: Path | None = None) -> "GateConfig":
+        from tools.proof_plan import local_gate_commands
+
         try:
             data = tomllib.loads(source)
         except tomllib.TOMLDecodeError as exc:
@@ -440,7 +447,56 @@ class GateConfig:
         always = data.get("always", [])
         if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
             raise DriverError("gate manifest `always` must be a list of str")
-        return GateConfig(rules=rules, always=list(always))
+        commands = local_gate_commands(data)
+        return GateConfig(
+            rules=rules,
+            always=list(always),
+            prerequisites=commands,
+            prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
+            root=root or Path(__file__).resolve().parents[1],
+        )
+
+    def admit(
+        self, touched: list[str], matched: list[GateRule], extra: list[str]
+    ) -> None:
+        from tools.proof_plan import (
+            load_toolchain_policies,
+            toolchain_closure,
+            toolchain_fingerprints,
+        )
+
+        selected_owners = {f"local.{rule.name}" for rule in matched}
+        if touched:
+            selected_owners.add("local.always")
+        unknown = sorted(
+            set(extra) - {command for command, _ in self.prerequisites.values()}
+        )
+        if unknown:
+            raise DriverError(
+                "extra gates lack declared prerequisite custody; declare them in "
+                "proof_plan.toml before selection: " + ", ".join(unknown)
+            )
+        selected = {
+            identifier: tools
+            for identifier, (command, tools) in self.prerequisites.items()
+            if identifier.rsplit(".", 1)[0] in selected_owners or command in extra
+        }
+        try:
+            names = tuple(
+                dict.fromkeys(name for tools in selected.values() for name in tools)
+            )
+            policies = load_toolchain_policies(
+                self.prerequisite_policy, root=self.root, names=names
+            )
+            owners: dict[str, list[str]] = {}
+            for identifier, tools in selected.items():
+                for name in toolchain_closure(policies, tools):
+                    owners.setdefault(name, []).append(identifier)
+            toolchain_fingerprints(policies, tuple(owners), owners=owners)
+        except (ValueError, OSError, KeyError) as exc:
+            raise DriverError(
+                f"selected gate prerequisites failed; executed=0: {exc}"
+            ) from exc
 
     def select(self, touched: list[str]) -> tuple[list[str], list[GateRule]]:
         """Return (ordered unique gate commands, matched rules) for touched paths.
@@ -780,7 +836,7 @@ def _resolve_repo_venv(repo: Path) -> Path | None:
 def run_gate(cmd: str, repo: Path, env: dict[str, str]) -> int:
     """Run one gate command string in the repo with the given env.
 
-    The command is a shell string from the manifest/--extra-gate (so it can use
+    The command is a shell string from the manifest (so it can use
     pipes/&&); it runs with shell=True and cwd=repo. Output streams live to the
     caller's stdout/stderr (no capture) so a long gate is observable.
 
@@ -951,6 +1007,13 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         # patch-ids against the current state as a best-effort preview.
         new_range = source_range
     else:
+        identity = git._run(["var", "GIT_COMMITTER_IDENT"], check=False)
+        if identity.returncode:
+            raise DriverError(
+                "rebase requires a configured Git committer; executed=0. "
+                "Set git config user.name and user.email (or GIT_COMMITTER_NAME/EMAIL).\n"
+                + identity.stderr.strip()
+            )
         proc = git._run(["rebase", upstream_before], check=False)
         if proc.returncode != 0:
             # Abort a half-applied rebase so the tree is never left mid-conflict.
@@ -1007,7 +1070,9 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     require_fresh = False
     # Policy comes from the same immutable commit whose clean source executes it.
     policy = git._run(["show", f"{selected_commit}:tools/{GATES_CONFIG_NAME}"]).stdout
-    config = GateConfig.parse(policy, f"{selected_commit}:tools/{GATES_CONFIG_NAME}")
+    config = GateConfig.parse(
+        policy, f"{selected_commit}:tools/{GATES_CONFIG_NAME}", root=repo
+    )
     touched = changed_paths(
         upstream_before,
         selected_commit,
@@ -1023,6 +1088,10 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     env = immutable_git_environment(os.environ)
     env["MOLT_SESSION_ID"] = args.session_id
     env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
+    if not dry:
+        _assert_integration_source(git, selected_commit)
+        config.admit(touched, matched_rules, list(args.extra_gate or []))
+        _assert_integration_source(git, selected_commit)
     for cmd in gate_cmds:
         _assert_integration_source(git, selected_commit)
         if dry:
@@ -1857,7 +1926,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_int.add_argument(
         "--extra-gate",
         action="append",
-        help="additional gate command to run (repeatable)",
+        help="additional manifest-declared gate command to run (repeatable)",
     )
     p_int.add_argument(
         "--cleanup-worktree",

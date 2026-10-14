@@ -226,6 +226,8 @@ authority_inputs = [
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
+  "tools/generators.py",
+  "tools/browser_asset_graph/package-lock.json",
   "tools/release/git_source_snapshot.py",
   "src/molt/compiler_distribution.py",
   "src/molt/verified_subset.py",
@@ -265,6 +267,7 @@ authority_inputs = [
   "src/molt/python_environment_custody.py",
   "src/molt/python_external_custody.py",
   "src/molt/python_runtime_identity.py",
+  "src/molt/python_runtime_admission.py",
   "src/molt/python_file_node_custody.py",
   "src/molt/python_native_dependency_custody.py",
   "src/molt/native_artifact_header.py",
@@ -376,6 +379,7 @@ authority_inputs = [
 # Gates that run for any non-empty local integration change: whole-repository
 # checks of about 30 s in all, so `tools/molt_dev.py integrate` lands nothing
 # CI's repository-policy family would reject.
+always_toolchains = ["python", "git", "generators"]
 always = [
   "python3 tools/venv_exec.py python -m ruff check .",
   "python3 tools/venv_exec.py python -m ruff format --check .",
@@ -550,6 +554,7 @@ setup_evidence = [
 
 [[toolchain_policy]]
 name = "node"
+setup_command = "python -m molt.tool_releases provision node"
 executable = "node"
 version_args = ["--version"]
 version_pattern = '^v26\.11\.1$'
@@ -559,6 +564,24 @@ setup_evidence = [
   ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
   ".github/workflows/formal.yml::node-version: pinned",
 ]
+
+# Selection groups derive every member from its owning source, never a copied
+# Python minor, generator requirement, Node pin or package version list.
+[[toolchain_policy]]
+name = "target-pythons"
+python_versions = "supported-targets"
+
+[[toolchain_policy]]
+name = "generators"
+generator_manifest = "tools/generator_manifest.toml"
+
+[[toolchain_policy]]
+name = "browser-acorn"
+node_package = "acorn"
+node_package_mode = "import"
+package_lock = "tools/browser_asset_graph/package-lock.json"
+dependencies = ["node"]
+setup_command = "python tools/bootstrap_browser_asset_graph.py (requires existing npm; Node provisioner installs only node)"
 
 [[toolchain_policy]]
 name = "rustc"
@@ -2046,7 +2069,7 @@ timeout_seconds = 600
 cache_domain = "uv"
 dependencies = []
 argv = ["uv", "run", "python3", "tools/generators.py", "check"]
-toolchains = ["python", "uv", "rustfmt", "node"]
+toolchains = ["python", "uv", "generators"]
 
 [[command]]
 id = "repository.op-kinds.drift"
@@ -3446,6 +3469,7 @@ toolchains = ["python"]
 # --- Native (Cranelift) backend Rust -------------------------------------
 [[rule]]
 name = "backend-native"
+toolchains = ["python", "rustc", "cargo"]
 description = "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary."
 require_fresh_toolchain = true
 globs = [
@@ -3466,6 +3490,7 @@ gates = [
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
 [[rule]]
 name = "backend-llvm"
+toolchains = ["python", "rustc", "cargo", "llvm-sdk"]
 description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
 require_fresh_toolchain = true
 globs = [
@@ -3479,6 +3504,7 @@ gates = [
 # --- TIR midend Rust ------------------------------------------------------
 [[rule]]
 name = "tir-midend"
+toolchains = ["python", "rustc", "cargo"]
 description = "TIR midend Rust: all-target clippy + feature-complete tests."
 require_fresh_toolchain = true
 globs = [
@@ -3502,6 +3528,7 @@ gates = [
 # --- WASM host Rust -------------------------------------------------------
 [[rule]]
 name = "wasm-host"
+toolchains = ["python", "rustc", "cargo"]
 description = "Wasmtime host Rust: warning-free clippy + release-fast link build."
 require_fresh_toolchain = true
 globs = [
@@ -3519,6 +3546,7 @@ gates = [
 # --- GPU compute/render primitive ----------------------------------------
 [[rule]]
 name = "gpu-core"
+toolchains = ["python", "rustc", "cargo"]
 description = "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling."
 globs = [
   "runtime/molt-gpu/**/*.rs",
@@ -3532,6 +3560,7 @@ gates = [
 # --- GPU object-runtime integration --------------------------------------
 [[rule]]
 name = "gpu-runtime"
+toolchains = ["python", "rustc", "cargo"]
 description = "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests."
 globs = [
   "runtime/molt-gpu-runtime/**/*.rs",
@@ -3546,6 +3575,7 @@ gates = [
 # --- Runtime crate Rust (object model / runtime library) -----------------
 [[rule]]
 name = "runtime-vfs"
+toolchains = ["python", "rustc", "cargo"]
 description = "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke."
 require_fresh_toolchain = true
 globs = [
@@ -3562,6 +3592,7 @@ gates = [
 
 [[rule]]
 name = "runtime-lib"
+toolchains = ["python", "rustc", "cargo"]
 description = "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary."
 require_fresh_toolchain = true
 globs = [
@@ -3583,6 +3614,7 @@ gates = [
 # --- Frontend / stdlib Python (bootstrap-critical) -----------------------
 [[rule]]
 name = "frontend-python"
+toolchains = ["python", "uv"]
 description = "Frontend lowering / stdlib Python: type check + verified-subset + dynamic policy."
 globs = [
   "src/molt/**/*.py",
@@ -3599,6 +3631,7 @@ gates = [
 # --- Bootstrap-critical stdlib modules (extra intrinsic audits) ----------
 [[rule]]
 name = "bootstrap-stdlib"
+toolchains = ["python"]
 description = "builtins/sys/importlib/_intrinsics: stdlib-intrinsic audits (Bootstrap Authority)."
 globs = [
   "src/molt/stdlib/builtins.py",
@@ -3614,6 +3647,7 @@ gates = [
 # --- Op-kind registry (generated files + emitter/registry drift) ---------
 [[rule]]
 name = "heap-kind-lifetime-authority"
+toolchains = ["python", "rustfmt"]
 description = "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and audit consumers."
 globs = [
   "tools/gen_heap_kinds.py",
@@ -3631,6 +3665,7 @@ gates = [
 
 [[rule]]
 name = "python-effect-capability-authority"
+toolchains = ["python", "rustc", "cargo", "rustfmt"]
 description = "Python and Rust analyses share one dense generated effect lattice and fail-closed capability projections."
 globs = [
   "runtime/python_effects.toml",
@@ -3648,6 +3683,7 @@ gates = [
 
 [[rule]]
 name = "builtin-binding-guard-authority"
+toolchains = ["python", "rustc", "cargo", "rustfmt"]
 description = "The compiler's guarded builtin specializations and the runtime's namespace guard bits share one generated name table (HF-79)."
 globs = [
   "runtime/builtin_binding_guards.toml",
@@ -3668,6 +3704,7 @@ gates = [
 
 [[rule]]
 name = "host-capability-authority"
+toolchains = ["python", "uv", "rustfmt"]
 description = "CLI profiles plus native, CPython fallback, and WASM runtime tiers share one generated host-permission authority."
 globs = [
   "runtime/host_capabilities.toml",
@@ -3685,6 +3722,7 @@ gates = [
 
 [[rule]]
 name = "runtime-profile-schema-authority"
+toolchains = ["python", "rustfmt"]
 description = "Runtime process and epoch telemetry share one generated schema across Rust production and Python validation."
 globs = [
   "runtime/runtime_profile_schema.toml",
@@ -3702,6 +3740,7 @@ gates = [
 # --- Native-callable ABI authority --------------------------------------
 [[rule]]
 name = "native-callable-abi"
+toolchains = ["python", "rustc", "cargo", "rustfmt"]
 description = "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification."
 globs = [
   "runtime/native_callable_abi.toml",
@@ -3735,6 +3774,7 @@ gates = [
 # --- Op-kind registry (generated files + emitter/registry drift) ---------
 [[rule]]
 name = "op-kind-registry"
+toolchains = ["python", "rustfmt"]
 description = "Op-kind registry: generated-file sync, fail-closed frontend admission, and emitter/registry drift."
 globs = [
   "tools/gen_op_kinds.py",
@@ -3765,6 +3805,7 @@ gates = [
 # --- Frontend diagnostic authority --------------------------------------
 [[rule]]
 name = "frontend-diagnostics"
+toolchains = ["python"]
 description = "Typed frontend rejection codes, generated metadata, and structural no-stub invariant."
 globs = [
   "tools/gen_frontend_diagnostics.py",
@@ -3782,6 +3823,7 @@ gates = [
 # --- WASM ABI registry (generated import/export surface authority) -------
 [[rule]]
 name = "wasm-abi-registry"
+toolchains = ["python", "rustfmt"]
 description = "WASM ABI registry: manifest-owned imports, export policy, runtime-surface matchers, and generated sync."
 globs = [
   "tools/gen_wasm_abi.py",
@@ -3806,6 +3848,7 @@ gates = [
 # --- tinygrad GPU op-contract fact (pin + generated op_contract.toml) -----
 [[rule]]
 name = "tinygrad-op-contract"
+toolchains = ["python"]
 description = "tinygrad ML op-contract FACT: pin freshness + generated op_contract.toml sync (doc 67 Phase 0/1)."
 globs = [
   "tools/check_tinygrad_pin.py",
@@ -3829,6 +3872,7 @@ gates = [
 # --- Intrinsic registry (manifest/category/generated resolver sync) -------
 [[rule]]
 name = "intrinsic-registry"
+toolchains = ["python", "rustfmt"]
 description = "Intrinsic registry: manifest/category sync + generated resolver ownership."
 globs = [
   "tools/gen_intrinsics.py",
@@ -3849,6 +3893,7 @@ gates = [
 # --- Codec generated tables ----------------------------------------------
 [[rule]]
 name = "codec-tables"
+toolchains = ["python", "uv", "rustfmt"]
 description = "Text codec registry and generated single-byte charmap tables."
 globs = [
   "tools/gen_codecs.py",
@@ -3867,6 +3912,7 @@ gates = [
 # --- StringPrep runtime leaf crate ---------------------------------------
 [[rule]]
 name = "stringprep-leaf"
+toolchains = ["python", "rustc", "cargo"]
 description = "StringPrep Rust leaf crate: build health for extracted runtime code."
 globs = [
   "runtime/molt-runtime-stringprep/**/*.rs",
@@ -3879,6 +3925,7 @@ gates = [
 # --- StringPrep generated tables -----------------------------------------
 [[rule]]
 name = "stringprep-tables"
+toolchains = ["python", "rustfmt"]
 description = "StringPrep generated Rust tables: generated-file sync."
 globs = [
   "tools/gen_stringprep_tables.py",
@@ -3893,6 +3940,7 @@ gates = [
 # --- LLVM runtime ABI authority ------------------------------------------
 [[rule]]
 name = "llvm-runtime-abi"
+toolchains = ["python"]
 description = "LLVM preserved runtime calls: availability is not ABI authority."
 globs = [
   "tools/llvm_runtime_abi_audit.py",
@@ -3912,6 +3960,7 @@ gates = [
 # --- Source-extension package-set authority -------------------------------
 [[rule]]
 name = "source-extension-package-sets"
+toolchains = ["python", "uv"]
 description = "Versioned source-extension package sets: one typed registry owns variant identity, manifests, toolchain custody, link requirements, seal validation, profiling, and Pact roots; shared codecs and retained-input custody bind eager-import facts across publication and admission."
 globs = [
   "config/source_extension_package_sets.toml",
@@ -3977,6 +4026,7 @@ gates = [
 # --- Differential / suite-honesty surface --------------------------------
 [[rule]]
 name = "suite-honesty"
+toolchains = ["python"]
 description = "Differential tests or the honesty manifest: suite-layout hygiene + the down-only suite-honesty ratchet."
 globs = [
   "tests/differential/**/*.py",
@@ -3994,6 +4044,7 @@ gates = [
 # --- Ecosystem-compat ratchet --------------------------------------------
 [[rule]]
 name = "ecosystem-compat"
+toolchains = ["python"]
 description = "Dynamism-feature taxonomy or package triage: the down-only ecosystem ratchet."
 globs = [
   "tools/ecosystem/**",
@@ -4006,6 +4057,7 @@ gates = [
 # --- tinygrad static exec registry ---------------------------------------
 [[rule]]
 name = "tinygrad-upat-static-exec-registry"
+toolchains = ["python", "uv"]
 description = "tinygrad UPat matcher static exec registry: fail-closed generated factory contract."
 globs = [
   "tools/tinygrad_upat_static_exec_registry.py",
@@ -4018,6 +4070,7 @@ gates = [
 # --- Docs architecture / generated status blocks -------------------------
 [[rule]]
 name = "docs-architecture"
+toolchains = ["python"]
 description = "Docs/spec or status-block generators: the docs-architecture contract."
 globs = [
   "docs/**/*.md",
@@ -4033,6 +4086,7 @@ gates = [
 # --- The dev tooling itself (self-gate: its own failure-mode tests) ------
 [[rule]]
 name = "dev-tooling"
+toolchains = ["python", "uv"]
 description = "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests."
 globs = [
   ".github/actions/setup-project/**",
@@ -4059,6 +4113,7 @@ gates = [
 # --- Rust 2024 FFI declaration authority ---------------------------------
 [[rule]]
 name = "rust-ffi-blocks"
+toolchains = ["python"]
 description = "Rust 2024 FFI declaration blocks must be explicitly unsafe before Cargo spends a compile slot."
 globs = [
   "runtime/**/*.rs",
@@ -4076,6 +4131,7 @@ gates = [
 # --- Rust toolchain authority -------------------------------------------
 [[rule]]
 name = "rust-toolchain"
+toolchains = ["python"]
 description = "Rust version/edition authority: manifests, root toolchain, CI pins, and local installed tools."
 globs = [
   "rust-toolchain.toml",
@@ -4097,6 +4153,7 @@ gates = [
 # --- Cross-language duplicate-authority tables ---------------------------
 [[rule]]
 name = "table-drift"
+toolchains = ["python"]
 description = "Cross-language tables (type tags, exception ordinals/names, target-Python versions, C-API module slots): bind actual declarative owners."
 globs = [
   # #1 builtin-type numeric tags + #2/#3 exception ordinals & names.
@@ -4124,6 +4181,7 @@ gates = [
 # --- APPARATUS A4 findings registry + memo lint --------------------------
 [[rule]]
 name = "findings-registry"
+toolchains = ["python"]
 description = "Findings registry / memo lint / seeded ledger (A4): run the teeth tests."
 globs = [
   "tools/findings_registry.py",
@@ -4138,6 +4196,7 @@ gates = [
 # --- APPARATUS A10 memory graph + integrity + recall consumers -----------
 [[rule]]
 name = "memory-graph"
+toolchains = ["python"]
 description = "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the session_digest / memo-lint recall consumers: run the teeth + the warn-only integrity canary."
 globs = [
   "tools/memory_graph.py",
@@ -4154,6 +4213,7 @@ gates = [
 # --- CI workflow / pyproject lint wiring ---------------------------------
 [[rule]]
 name = "ci-wiring"
+toolchains = ["python"]
 description = "CI workflows or pyproject: the CI-topology contract test."
 globs = [
   ".github/actions/**",
@@ -4224,6 +4284,7 @@ gates = [
 # --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------
 [[rule]]
 name = "apparatus-hooks"
+toolchains = ["python"]
 description = "Claude Code hook spine + landing gate + waiver grammar: pure-decision teeth + fail-open + gate-liveness canary."
 globs = [
   ".claude/settings.json",
@@ -4246,6 +4307,7 @@ gates = [
 
 [[rule]]
 name = "apparatus-learning-protection"
+toolchains = ["python"]
 description = "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence."
 globs = [
   ".claude/settings.json",
@@ -4270,6 +4332,7 @@ gates = [
 # --- APPARATUS Wave 4 A11 claims custody + preflight + commit serializer ---
 [[rule]]
 name = "apparatus-a11"
+toolchains = ["python"]
 description = "Claims self-retirement terminal vocabulary + premise-verification preflight + serialized-commit primitive (M11/M20/M22/M24): teeth + falsifiable self-tests + gate-liveness canary."
 globs = [
   "tools/claims_status.py",
@@ -4294,6 +4357,7 @@ gates = [
 # --- APPARATUS A8/A12 + event-driven disk reclaim -----------------------
 [[rule]]
 name = "apparatus-a8-a12-disk-reclaim"
+toolchains = ["python"]
 description = "Lane maturity, Variant-II perf acceptance, and completed-lane target reclaim: teeth plus liveness."
 globs = [
   "tools/lane_maturity.py",
@@ -4317,6 +4381,7 @@ gates = [
 # --- Static first-party from-import symbol resolution ---------------------
 [[rule]]
 name = "import-symbol-gate"
+toolchains = ["python"]
 description = "Every first-party `from molt.x import name` / `from tools.x import name` resolves statically; authority extractions that miss a consumer import fail here, not in a proof lane. The property itself runs in the repository docs-tests command; this rule covers edits to the gate."
 globs = [
   "tools/import_symbol_gate.py",
@@ -4330,6 +4395,7 @@ gates = [
 # --- Century-plan phase exits + legacy inventory ---------------------------
 [[rule]]
 name = "phase-exit-manifest"
+toolchains = ["python"]
 description = "Fixed CENTURY_SYSTEMS_PLAN §5 phase predicate (tools/phase_exit_manifest.py) and the registry-driven legacy_count authority (tools/legacy_inventory.py): teeth plus the live-registry checks."
 globs = [
   "tools/phase_exit_manifest.py",
@@ -4348,6 +4414,7 @@ gates = [
 # --- v1 public stable contract ------------------------------------------------
 [[rule]]
 name = "public-contract"
+toolchains = ["python"]
 description = "Every CLI command carries a declared stability tier, public schema declarations match executable producers, and the generated public surface snapshot has not drifted without an explicit --update."
 globs = [
   "config/public_contract_v1.toml",
