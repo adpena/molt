@@ -2994,6 +2994,10 @@ _SCRATCH_AUTHORITY_OWNER = "src/molt/dx.py"
 _ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
 _ARTIFACT_ROOT_CONSTANT = "ARTIFACT_ROOT_ENV"
 _TMP_SEGMENT_RE = re.compile(r"tmp(?:[/\\\\]|$)")
+# A str literal whose value starts with "tmp" puts a quote, after at most one
+# str prefix, directly before it. Escapes and implicit concatenation can hide
+# it, as they already hide it from a plain "tmp" substring test.
+_PY_TMP_LITERAL_RE = re.compile(r"""(?<![\w])[rRuU]?["']tmp""")
 # Rust cannot import molt.dx. The backend takes the one directory the CLI
 # passes (MOLT_DEBUG_ARTIFACT_DIR, HF-111), so Rust that names the artifact
 # root or joins "tmp" onto a base derives a root itself.
@@ -3258,9 +3262,13 @@ def probe_scratch_authority_bypasses(root: Path) -> list[Finding]:
         except OSError:
             continue
         if (
-            "tmp" not in text
-            and _ARTIFACT_ROOT_ENV not in text
-            and (_ARTIFACT_ROOT_CONSTANT not in text)
+            _ARTIFACT_ROOT_ENV not in text
+            and _ARTIFACT_ROOT_CONSTANT not in text
+            and (
+                "tmp" not in text
+                if path.suffix == ".rs"
+                else _PY_TMP_LITERAL_RE.search(text) is None
+            )
         ):
             continue
         if path.suffix == ".rs":
