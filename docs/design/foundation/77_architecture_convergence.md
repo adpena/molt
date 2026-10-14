@@ -107,8 +107,10 @@ guard (HF-204).
 
 ### B. One typed IR as the backend input
 
-TIR, lowered to LIR, becomes the only input of every backend. Facts live on
-`ValueId`s and are computed once by cached analyses. `lower_to_simple`, the
+Final typed SSA becomes the input of every backend. Materialize a target LIR
+only when its lowering consumer needs that representation; shared semantic
+authority does not require every backend to allocate the same intermediate
+graph. Facts live on `ValueId`s and are computed once by cached analyses. `lower_to_simple`, the
 re-lift sites, the name-keyed fact maps and the `Copy`/`_original_kind` carrier
 are deleted as each backend moves. Each doc-76 SimpleIR pass is deleted when its
 fact family is covered in TIR (SCCP, DCE, exception-check elimination first);
@@ -176,8 +178,15 @@ Each step is a complete migration of one contract, measured before and after.
    op-kind producer census; every subsequent deletion migrates its real family.
 2. **Final typed native facts (B).** Move post-TIR semantic rewrites under the
    typed final owner, migrate all codegen entry paths, and delete native plan
-   reconstruction. Preserve LLVM's direct typed custody. Then migrate WASM's
-   operation-reachability boundary and the genuine source backends.
+   reconstruction. Qualify this bounded deletion cut, then stop extending its
+   source bridge. The next native cut carries typed CFG, ownership, module
+   roots, callable metadata and partition ABI into actual codegen and deletes
+   source projection and name-based plans together. Reuse LLVM's direct typed
+   custody and the existing analysis owners. WASM's operation-reachability
+   boundary and the genuine source backends retain their complete migrations.
+   Completing the generated enum vocabulary need not block typed transport:
+   preserved registered operations retain their generated effects and identity
+   until the complete schema migration retires their spelling.
 3. **Measured runtime entry (C).** Profile one actual current-image consumer.
    Migrate its complete admitted-service/context family while preserving
    callbacks, isolate changes, shutdown, error and ownership contracts. Choose
@@ -195,6 +204,23 @@ Independent complete families can land concurrently; these dependencies do not
 hold one proven repair behind an unrelated open finding. Checks validate the
 exact committed inputs and reuse qualified unchanged evidence. Build each
 necessary compatible graph once, then execute its affected consumer images.
+
+Freeze each complete contract before its owning execution. Direct-codegen
+fixtures preserve authored codegen input; pipeline fixtures exercise
+finalization. Establish their SSA, effect, representation and ownership oracles
+before building. Reuse unchanged qualified evidence and stop adding unrelated
+improvements to the candidate. No additional optimizer, representation cache or
+proof coordinator is needed to enforce this delivery unit.
+
+Native still constructs AnalysisFloor LIR for fact extraction, cloning and
+refining final TIR. Its initial cache pipeline also requests LIR verification
+on hits and misses, constructing that representation before final extraction.
+These are user compilation costs, not emitted-program work. Attribute them on
+the actual compiler image before claiming an improvement or removing checks;
+replace verification with the actual typed/carrier/codegen invariant when the
+unused representation retires. A material unexplained regression blocks the
+deletion cut. A neutral measurement does not justify restoring duplicate
+semantic authorities or indefinitely optimizing the bridge being retired.
 
 The live finding rows in `docs/agent/V1_HANDOFF_FINDINGS.md` own the status of
 each step. This document owns the design and changes only when the design does.
