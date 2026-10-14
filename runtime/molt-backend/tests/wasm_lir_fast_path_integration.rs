@@ -35,7 +35,7 @@ fn exported_function_type(wasm: &[u8], name: &str) -> FuncType {
                 }
             }
             Payload::FunctionSection(section) => {
-                functions.extend(section.map(|index| index.unwrap()));
+                functions.extend(section.into_iter().map(|index| index.unwrap()));
             }
             Payload::ExportSection(section) => {
                 for export in section {
