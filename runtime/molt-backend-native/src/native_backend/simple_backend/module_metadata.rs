@@ -734,9 +734,7 @@ fn shared_stdlib_external_symbol_plan(
     ir: &SimpleIR,
     partition_sources: &BTreeMap<String, String>,
 ) -> Option<BTreeSet<String>> {
-    let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
-        return None;
-    };
+    let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok()?;
     let Ok(entry_module) = std::env::var("MOLT_ENTRY_MODULE") else {
         return None;
     };
