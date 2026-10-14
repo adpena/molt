@@ -167,10 +167,6 @@ pub extern "C" fn molt_socket_getpeername(_: u64) -> u64 {
     net_error!()
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_chan_recv_blocking(_: u64) -> i64 {
-    net_error!() as i64
-}
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_ws_connect(_: *const u8, _: u64, _: *mut u64) -> u64 {
     net_error!()
 }
@@ -352,11 +348,8 @@ mod tests {
     fn unavailable_poll_providers_return_boxed_errors() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let providers: [extern "C" fn(u64) -> i64; 3] = [
-                super::molt_chan_recv_blocking,
-                super::molt_ws_wait,
-                super::molt_io_wait,
-            ];
+            let providers: [extern "C" fn(u64) -> i64; 2] =
+                [super::molt_ws_wait, super::molt_io_wait];
             for provider in providers {
                 let result = provider(crate::MoltObject::none().bits()) as u64;
                 assert_eq!(result, crate::MoltObject::none().bits());
