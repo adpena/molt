@@ -63,7 +63,7 @@ def test_find_molt_prefers_repo_checkout_cli(monkeypatch, tmp_path: Path):
     cli_path.parent.mkdir(parents=True)
     cli_path.write_text("print('ok')\n", encoding="utf-8")
 
-    monkeypatch.delenv("MOLT_BIN", raising=False)
+    monkeypatch.delenv("MOLT_CONFORMANCE_MOLT_CMD", raising=False)
     monkeypatch.setattr(run_molt_conformance, "SRC_ROOT", repo_root / "src")
     install_module_view(
         monkeypatch,
@@ -76,8 +76,8 @@ def test_find_molt_prefers_repo_checkout_cli(monkeypatch, tmp_path: Path):
     assert run_molt_conformance.find_molt() == [sys.executable, "-m", "molt.cli"]
 
 
-def test_find_molt_parses_molt_bin_override(monkeypatch):
-    monkeypatch.setenv("MOLT_BIN", "custom-molt --flag")
+def test_find_molt_parses_the_conformance_command_override(monkeypatch):
+    monkeypatch.setenv("MOLT_CONFORMANCE_MOLT_CMD", "custom-molt --flag")
 
     assert run_molt_conformance.find_molt() == ["custom-molt", "--flag"]
 

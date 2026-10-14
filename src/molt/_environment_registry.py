@@ -1252,7 +1252,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_BIN",
       "owner": "src/molt/default_paths.py",
-      "summary": "Directory for Molt-installed binaries; a relative path resolves against the current directory and unset means <MOLT_HOME>/bin, while the conformance harness (tests/harness/run_molt_conformance.py, fed by src/molt/harness_layers.py) reads it as the shell command that invokes the Molt CLI.",
+      "summary": "Directory for Molt-installed binaries; a relative path resolves against the current directory and unset means <MOLT_HOME>/bin.",
       "values": []
     },
     {
@@ -1719,6 +1719,15 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_COMPILE_GUARD_WAIT_SEC",
       "owner": "tools/compile_governor.py",
       "summary": "Seconds the compile governor waits for a free slot before it gives up; negative values clamp to 0 and non-numeric values fall back to 180.",
+      "values": []
+    },
+    {
+      "audience": "developer",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_CONFORMANCE_MOLT_CMD",
+      "owner": "src/molt/harness_layers.py",
+      "summary": "Shell-like command tests/harness/run_molt_conformance.py uses to invoke the Molt CLI; the conformance layer of src/molt/harness_layers.py sets it from its configured CLI command; unset means the checkout's `python -m molt.cli`, else a molt on PATH.",
       "values": []
     },
     {
