@@ -1652,6 +1652,7 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
         "--locked",
         "--workspace",
         "--all-targets",
+        "--keep-going",
         "--",
         "-D",
         "warnings",

@@ -1233,5 +1233,4 @@ def test_operator_signal_closes_real_child_before_returning_typed_outcome(
     assert len(completed) == 1 and completed[0].descendants_closed
     assert signal.getsignal(getattr(signal, signal_name)) is previous
     child_pid = int(result.stdout.strip())
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    assert not module._pid_alive(child_pid)
