@@ -42,6 +42,125 @@ fn const_float(out: &str, value: f64) -> OpIR {
 }
 
 #[test]
+fn canonical_block_arg_names_have_bounded_table_comparisons() {
+    use std::cell::Cell;
+    use std::hash::{Hash, Hasher};
+    use std::rc::Rc;
+
+    use crate::tir::blocks::BlockId;
+
+    struct CountedName {
+        name: String,
+        comparisons: Rc<Cell<usize>>,
+    }
+
+    impl Hash for CountedName {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.name.hash(state);
+        }
+    }
+
+    impl PartialEq for CountedName {
+        fn eq(&self, other: &Self) -> bool {
+            self.comparisons.set(self.comparisons.get() + 1);
+            self.name == other.name
+        }
+    }
+
+    impl Eq for CountedName {}
+
+    const COUNT: usize = 4096;
+    let comparisons = Rc::new(Cell::new(0));
+    let plan = ScalarRepresentationPlan::default();
+    // Exercise the actual production name-table hash policy, counting key
+    // comparisons instead of relying on clocks or a particular hash output.
+    let mut names = HashSet::with_capacity_and_hasher(
+        COUNT,
+        plan.container_storage_conflicted_names.hasher().clone(),
+    );
+    let name = |block| CountedName {
+        name: SimpleValueNames::canonical_block_arg_slot(BlockId(block), 0),
+        comparisons: Rc::clone(&comparisons),
+    };
+    for block in 1000..1000 + COUNT as u32 {
+        assert!(names.insert(name(block)));
+    }
+    for block in 1000..1000 + COUNT as u32 {
+        assert!(names.contains(&name(block)));
+    }
+    assert_eq!(names.len(), COUNT);
+    assert!(
+        comparisons.get() < 8 * COUNT,
+        "canonical names caused {} key comparisons for {COUNT} inserts and lookups",
+        comparisons.get(),
+    );
+}
+
+#[test]
+fn fresh_hash_seeds_preserve_plan_facts_and_consumer_views() {
+    let func = function(
+        "hash_seed_invariance",
+        &[],
+        None,
+        vec![
+            const_int("_bb1000_arg0", 3),
+            const_int("_bb1001_arg0", 7),
+            const_int("index", 0),
+            const_bool("flag", true),
+            const_float("float", 1.25),
+            op(
+                "list_int_new",
+                Some("items"),
+                None,
+                &["_bb1000_arg0", "_bb1001_arg0"],
+            ),
+            op("copy", Some("alias"), None, &["items"]),
+            op("index", Some("read"), None, &["alias", "index"]),
+            op("store_var", None, Some("saved"), &["_bb1001_arg0"]),
+            op("load_var", Some("restored"), Some("saved"), &[]),
+            op("store_var", None, Some("mixed"), &["_bb1001_arg0"]),
+            op("store_var", None, Some("mixed"), &["flag"]),
+        ],
+    );
+    let list_read = op("index", None, None, &["alias", "index"]);
+    for target in [
+        crate::tir::TargetInfo::native_release_fast(),
+        crate::tir::TargetInfo::wasm_release_fast(),
+        crate::tir::TargetInfo::llvm_release_fast(),
+        crate::tir::TargetInfo::luau_release_fast(),
+        crate::tir::TargetInfo::rust_release_fast(),
+        crate::tir::TargetInfo::mlir_release_fast(),
+    ] {
+        let baseline = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
+        assert_eq!(baseline.name_scalar_kind("restored"), Some(ScalarKind::Int));
+        assert_eq!(baseline.name_scalar_kind("mixed"), None);
+        assert_eq!(
+            baseline.name_container_storage_kind("alias"),
+            Some(ContainerStorageKind::FlatListInt),
+        );
+        assert!(baseline.op_has_exact_builtin_list(&list_read));
+        for _ in 0..2 {
+            let fresh = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
+            assert_eq!(fresh, baseline, "{}", target.target.as_str());
+            assert_eq!(fresh.scalar_name_sets(), baseline.scalar_name_sets());
+            assert_eq!(fresh.primary_name_sets(), baseline.primary_name_sets());
+            assert_eq!(
+                fresh.scalar_store_targets(ScalarKind::Int),
+                baseline.scalar_store_targets(ScalarKind::Int)
+            );
+            assert_eq!(
+                fresh.typed_slot_store_modes(),
+                baseline.typed_slot_store_modes()
+            );
+            assert_eq!(
+                fresh.op_has_exact_builtin_list(&list_read),
+                baseline.op_has_exact_builtin_list(&list_read)
+            );
+        }
+    }
+}
+
+#[test]
 fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
     for kind in ["store_var", "store_fast"] {
         let func = function(

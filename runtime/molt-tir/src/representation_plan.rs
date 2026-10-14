@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
@@ -62,8 +62,7 @@ mod indexed_facts;
 pub(crate) use indexed_facts::tir_container_storage_facts;
 
 use indexed_facts::{
-    FunctionFactIndex, IndexedFunctionFactIndex, PlanHashMap, PlanHashSet, alias_source_name,
-    is_cold_module_chunk_function, plan_hash_map, plan_hash_set,
+    FunctionFactIndex, IndexedFunctionFactIndex, alias_source_name, is_cold_module_chunk_function,
     simple_op_produces_non_scalar_value, store_var_targets_all_sources_where,
     tir_container_storage_needs_repr,
 };
@@ -110,19 +109,19 @@ impl ScalarRepresentationFact {
 /// `fast_float`, or `type_hint`) as representation authority.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScalarRepresentationPlan {
-    facts_by_name: PlanHashMap<String, ScalarRepresentationFact>,
-    conflicted_names: PlanHashSet<String>,
+    facts_by_name: HashMap<String, ScalarRepresentationFact>,
+    conflicted_names: HashSet<String>,
     /// Names whose current fact came from a SYNTHETIC (canonical fallback)
     /// name — `_v{N}` / `_bb{N}_arg{I}` from the internal re-lift. Weak facts
     /// yield to explicit-stream-name facts instead of conflicting them out
     /// (see [`Self::insert_lir_value_weak`]).
-    weak_fact_names: PlanHashSet<String>,
-    non_scalar_names: PlanHashSet<String>,
-    integer_family_names: PlanHashSet<String>,
-    container_storage_by_name: PlanHashMap<String, ContainerStorageFact>,
-    container_storage_conflicted_names: PlanHashSet<String>,
-    container_storage_ops: PlanHashMap<usize, ContainerStorageFact>,
-    exact_builtin_list_names: PlanHashSet<String>,
+    weak_fact_names: HashSet<String>,
+    non_scalar_names: HashSet<String>,
+    integer_family_names: HashSet<String>,
+    container_storage_by_name: HashMap<String, ContainerStorageFact>,
+    container_storage_conflicted_names: HashSet<String>,
+    container_storage_ops: HashMap<usize, ContainerStorageFact>,
+    exact_builtin_list_names: HashSet<String>,
     /// The representation lattice element per SimpleIR name — the single source
     /// of truth for native scalar-carrier classification. Integer names floor to
     /// [`Repr::MaybeBigInt`] and can be raised to [`Repr::RawI64Safe`] or
@@ -131,11 +130,11 @@ pub struct ScalarRepresentationPlan {
     /// [`Repr::Bool`] / [`Repr::FloatUnboxed`] only by the explicit raw-carrier
     /// eligibility filters. The `primary_names.*` sets are views over this map;
     /// see [`Self::primary_name_sets`].
-    repr_by_name: PlanHashMap<String, Repr>,
-    direct_numeric_op_reprs: PlanHashMap<usize, Repr>,
+    repr_by_name: HashMap<String, Repr>,
+    direct_numeric_op_reprs: HashMap<usize, Repr>,
     /// Current-stream indices projected only from unique matching store origins.
     typed_slot_store_modes: BTreeMap<usize, TypedSlotStoreMode>,
-    scalar_slot_exclusion_unsafe: PlanHashSet<String>,
+    scalar_slot_exclusion_unsafe: HashSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
 
@@ -236,7 +235,7 @@ impl LlvmReprFacts {
 impl ScalarRepresentationPlan {
     fn with_capacity(value_count: usize) -> Self {
         Self {
-            facts_by_name: plan_hash_map(value_count),
+            facts_by_name: HashMap::with_capacity(value_count),
             // Other fact categories allocate only when an actual producer or
             // conflict is observed. Operation count includes labels/releases
             // and is not a bound on the number of facts a category needs.
@@ -465,7 +464,7 @@ impl ScalarRepresentationPlan {
     ) {
         let primary = self.compute_primary_name_sets(func_ir, fact_index, tir_value_views);
         let mut repr_by_name =
-            plan_hash_map(self.facts_by_name.len().saturating_add(primary.int.len()));
+            HashMap::with_capacity(self.facts_by_name.len().saturating_add(primary.int.len()));
         for (name, fact) in &self.facts_by_name {
             repr_by_name.insert(name.clone(), Repr::default_for(&fact.ty));
         }
@@ -770,7 +769,7 @@ impl ScalarRepresentationPlan {
 
     fn seed_exact_builtin_lists(&mut self, func: &TirFunction, names: &SimpleValueNames) {
         let exact = indexed_facts::tir_exact_builtin_list_values(func);
-        let mut named: PlanHashMap<String, bool> = plan_hash_map(exact.len());
+        let mut named: HashMap<String, bool> = HashMap::with_capacity(exact.len());
         let mut observe = |name: String, value: ValueId| {
             let proven = exact.contains(&value);
             named
@@ -940,8 +939,8 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn non_scalar_simple_outputs(&self, func_ir: &FunctionIR) -> PlanHashSet<String> {
-        let mut names = plan_hash_set(func_ir.ops.len() / 4 + 1);
+    fn non_scalar_simple_outputs(&self, func_ir: &FunctionIR) -> HashSet<String> {
+        let mut names = HashSet::with_capacity(func_ir.ops.len() / 4 + 1);
         for op in &func_ir.ops {
             if let Some(out) = op.out.as_deref()
                 && simple_op_produces_non_scalar_value(op.kind.as_str())
@@ -953,8 +952,8 @@ impl ScalarRepresentationPlan {
     }
 
     fn propagate_integer_store_targets(&mut self, fact_index: &FunctionFactIndex<'_>) -> bool {
-        let mut targets: PlanHashMap<&str, bool> =
-            plan_hash_map(fact_index.store_count().saturating_add(1));
+        let mut targets: HashMap<&str, bool> =
+            HashMap::with_capacity(fact_index.store_count().saturating_add(1));
         for (target, source) in fact_index.store_edges() {
             let source_is_integer =
                 source.is_some_and(|source| self.integer_family_names.contains(source));
@@ -1265,8 +1264,8 @@ impl ScalarRepresentationPlan {
         func_ir: &FunctionIR,
         tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
     ) {
-        let mut blocked = plan_hash_set(func_ir.ops.len() / 8 + 1);
-        let mut current_ops_by_output = plan_hash_map(func_ir.ops.len() / 2 + 1);
+        let mut blocked = HashSet::with_capacity(func_ir.ops.len() / 8 + 1);
+        let mut current_ops_by_output = HashMap::with_capacity(func_ir.ops.len() / 2 + 1);
         for (op_index, op) in func_ir.ops.iter().enumerate() {
             let Some(output) = op.out.as_deref() else {
                 continue;
@@ -1366,8 +1365,8 @@ impl ScalarRepresentationPlan {
     }
 
     fn insert_direct_numeric_op_repr(
-        op_reprs: &mut PlanHashMap<usize, Repr>,
-        blocked: &mut PlanHashSet<usize>,
+        op_reprs: &mut HashMap<usize, Repr>,
+        blocked: &mut HashSet<usize>,
         op_index: usize,
         repr: Repr,
     ) -> bool {
@@ -1481,8 +1480,8 @@ impl ScalarRepresentationPlan {
         fact_index: &FunctionFactIndex<'_>,
         projected: &BTreeMap<String, Repr>,
     ) -> Vec<(String, Option<Repr>)> {
-        let mut target_reprs: PlanHashMap<&str, Option<Repr>> =
-            plan_hash_map(fact_index.store_count().saturating_add(1));
+        let mut target_reprs: HashMap<&str, Option<Repr>> =
+            HashMap::with_capacity(fact_index.store_count().saturating_add(1));
         for (target, source) in fact_index.store_edges() {
             let source_repr =
                 source.and_then(|source| Self::projected_scalar_repr_for_name(source, projected));
@@ -1535,8 +1534,8 @@ impl ScalarRepresentationPlan {
             }
         }
     }
-    fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> PlanHashSet<String> {
-        let mut unsafe_set = plan_hash_set(func_ir.ops.len() / 4 + 1);
+    fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> HashSet<String> {
+        let mut unsafe_set = HashSet::with_capacity(func_ir.ops.len() / 4 + 1);
         for (op_index, op) in func_ir.ops.iter().enumerate() {
             match op.kind.as_str() {
                 "call"
@@ -1599,7 +1598,7 @@ impl ScalarRepresentationPlan {
         unsafe_set
     }
 
-    fn collect_scalar_args(&self, op: &OpIR, into: &mut PlanHashSet<String>) {
+    fn collect_scalar_args(&self, op: &OpIR, into: &mut HashSet<String>) {
         if let Some(args) = &op.args {
             for arg in args {
                 if self.name_is_slot_scalar(arg) {
