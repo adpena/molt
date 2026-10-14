@@ -855,10 +855,26 @@ mod tests {
             .iter()
             .find_map(|(block, label)| (*label == 93).then_some(BlockId(*block)))
             .expect("outer handler block");
+        assert!(
+            preview.blocks[&handler].args.is_empty(),
+            "unchanged entry parameters already dominate the handler"
+        );
+        let entry_values: Vec<_> = preview.blocks[&preview.entry_block]
+            .args
+            .iter()
+            .map(|arg| arg.id)
+            .collect();
+        assert_eq!(entry_values.len(), 4, "all four ABI parameters remain");
+        let payload = preview.blocks[&handler]
+            .ops
+            .iter()
+            .find(|op| {
+                matches!(op.attrs.get("_simple_out"), Some(AttrValue::Str(name)) if name == "payload")
+            })
+            .expect("the handler must still observe its four-value payload");
         assert_eq!(
-            preview.blocks[&handler].args.len(),
-            4,
-            "SSA must remain the sole authority for the four-value handler payload"
+            payload.operands, entry_values,
+            "poll materialization preserves the actual parameter identities and order"
         );
 
         let round_trip = crate::tir::lower_to_simple::lower_to_simple_ir(&preview);
@@ -1056,13 +1072,31 @@ mod tests {
             .flat_map(|block| block.ops.iter())
             .find(|op| op.is_async_work_poll())
             .expect("marked latch transfer");
-        assert_eq!(poll.operands.len(), 1);
+        assert!(
+            poll.operands.is_empty(),
+            "entry payload needs no redundant handler copy"
+        );
         let handler = lowered
             .label_id_map
             .iter()
             .find_map(|(block, label)| (*label == 40).then_some(BlockId(*block)))
             .expect("payload handler");
-        assert_eq!(lowered.blocks[&handler].args.len(), 1);
+        assert!(lowered.blocks[&handler].args.is_empty());
+        let entry = &lowered.blocks[&lowered.entry_block];
+        assert_eq!(entry.args.len(), 1);
+        let value = entry.args[0].id;
+        let observed = lowered.blocks[&handler]
+            .ops
+            .iter()
+            .find(|op| {
+                matches!(op.attrs.get("_simple_out"), Some(AttrValue::Str(name)) if name == "handler_value")
+            })
+            .expect("handler payload observer remains");
+        assert_eq!(
+            observed.operands,
+            vec![value],
+            "the inserted poll must preserve the exact entry payload in its handler"
+        );
         run_verified(&mut lowered);
     }
 

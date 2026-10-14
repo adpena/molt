@@ -163,6 +163,15 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   Ancestor definitions remain active through each dominated subtree, and each
   definition push has one matching cleanup pop, enumerated from the same
   immutable block arguments and source definitions without a separate log.
+  Handler and resume placement keeps a live binding direct when its sole
+  authored defining block strictly dominates the target in that augmented
+  graph. Multiple writes in that block select its final binding; transfer
+  splitting prevents later definitions from supplying an earlier edge.
+  Remaining implicit arguments extend the same definition-site census before
+  iterated dominance-frontier placement. Mutable multi-block definitions,
+  self-edges and disconnected roots retain their required transport. This
+  avoids recreating dominating values at every cleanup suffix; dense liveness
+  storage and live-in scans still have their own complexity costs.
   Missing reaching definitions
   remain construction placeholders until actual uses materialize them locally;
   construction does not retain full variable environments at every block exit.

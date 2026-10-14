@@ -696,6 +696,140 @@ fn low_level_ssa_uses_cfg_duplicate_label_resolution_for_handler_arguments() {
         .results[0];
     let transfer = entry.ops.last().unwrap();
     assert_eq!(transfer.opcode, OpCode::CheckException);
-    assert_eq!(transfer.operands, vec![y]);
+    assert!(
+        transfer.operands.is_empty(),
+        "dominating y needs no handler copy"
+    );
+    let handler = cfg.exception_target(cfg.entry).unwrap();
+    assert!(
+        matches!(&output.blocks[handler].terminator,
+        Terminator::Return { values } if values == &[y]),
+        "the CFG-selected duplicate label must still return y, never x"
+    );
+    assert_no_placeholder(&output);
+}
+
+#[test]
+fn dominating_handler_bindings_keep_the_final_value_before_the_transfer() {
+    for kind in ["check_exception", "async_work_poll", "try_start"] {
+        for redefine in [false, true] {
+            let mut ops = vec![op_val_out("const", 11, "x")];
+            if redefine {
+                ops.push(op_val_out("const", 22, "x"));
+            }
+            ops.extend([
+                op_val(kind, 70),
+                op("ret_void"),
+                op_val("label", 70),
+                op_args("print", &["x"]),
+                op_val(kind, 80),
+                op("ret_void"),
+                op_val("label", 80),
+                op_args("ret", &["x"]),
+            ]);
+            let cfg = CFG::build(&ops);
+            let output = convert_to_ssa(&cfg, &ops);
+            let entry = &output.blocks[cfg.entry];
+            let expected = entry
+                .ops
+                .iter()
+                .rev()
+                .find(|op| op.opcode == OpCode::ConstInt)
+                .unwrap()
+                .results[0];
+            assert_eq!(entry.ops.last().unwrap().operands, Vec::<ValueId>::new());
+            assert!(
+                output.blocks.iter().all(|block| block.args.is_empty()),
+                "{kind}: the handler chain must retain its dominating binding"
+            );
+            let print = output
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .find(|op| {
+                    op.source_op_index()
+                        .is_some_and(|index| ops[index].kind == "print")
+                })
+                .unwrap();
+            assert_eq!(print.operands, vec![expected]);
+            assert!(output.blocks.iter().any(|block| matches!(&block.terminator,
+                Terminator::Return { values } if values == &[expected])));
+            assert_no_placeholder(&output);
+        }
+    }
+}
+
+#[test]
+fn definition_after_transfer_cannot_supply_the_earlier_handler() {
+    for kind in ["check_exception", "async_work_poll", "try_start"] {
+        let ops = vec![
+            op_val(kind, 70),
+            op_val_out("const", 42, "later"),
+            op_args("ret", &["later"]),
+            op_val("label", 70),
+            op_args("ret", &["later"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+        let entry = &output.blocks[cfg.entry];
+        let missing = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::ConstNone)
+            .expect("the early edge needs a local undefined value")
+            .results[0];
+        assert_eq!(entry.ops.last().unwrap().operands, vec![missing]);
+        let handler = cfg.exception_target(cfg.entry).unwrap();
+        assert_eq!(output.blocks[handler].args.len(), 1);
+        assert_no_placeholder(&output);
+    }
+}
+
+#[test]
+fn resume_keeps_entry_parameter_direct_but_not_first_entry_only_definition() {
+    let ops = vec![
+        OpIR {
+            state_targets: Some(vec![(1, 70)]),
+            ..op("state_switch")
+        },
+        op_val_out("const", 42, "first_entry"),
+        op("ret_void"),
+        op_val("state_label", 70),
+        op_args("print", &["frame", "first_entry"]),
+        op_args("ret", &["frame"]),
+    ];
+    let cfg = CFG::build(&ops);
+    let output = convert_to_ssa_with_params(&cfg, &ops, &["frame".into()]);
+    let entry = &output.blocks[cfg.entry];
+    assert_eq!(entry.args.len(), 1);
+    let frame = entry.args[0].id;
+    let Terminator::StateDispatch { cases, .. } = &entry.terminator else {
+        panic!("canonical saved-state dispatch");
+    };
+    assert_eq!(cases.len(), 1);
+    let (_, target, incoming) = &cases[0];
+    let resume = &output.blocks[target.0 as usize];
+    assert_eq!(
+        resume.args.len(),
+        1,
+        "only first-entry-only value needs transport"
+    );
+    let missing = entry
+        .ops
+        .iter()
+        .find(|op| op.opcode == OpCode::ConstNone)
+        .expect("dispatch bypasses first-entry definition")
+        .results[0];
+    assert_eq!(incoming.as_slice(), &[missing]);
+    let print = resume
+        .ops
+        .iter()
+        .find(|op| {
+            op.source_op_index()
+                .is_some_and(|index| ops[index].kind == "print")
+        })
+        .unwrap();
+    assert_eq!(print.operands, vec![frame, resume.args[0].id]);
+    assert!(matches!(&resume.terminator, Terminator::Return { values } if values == &[frame]));
     assert_no_placeholder(&output);
 }
