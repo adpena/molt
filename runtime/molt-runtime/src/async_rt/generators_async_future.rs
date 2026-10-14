@@ -151,6 +151,11 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
                     "cannot reuse already awaited coroutine",
                 );
             }
+            if crate::async_rt::generators::is_asyncgen_awaitable_bits(future_bits) {
+                let message =
+                    crate::async_rt::generators::asyncgen_awaitable_reuse_message(_py, ptr);
+                return raise_exception::<i64>(_py, "RuntimeError", message);
+            }
             if let Some(result_bits) = task_result_get(_py, ptr) {
                 return result_bits as i64;
             }
