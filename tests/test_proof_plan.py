@@ -365,7 +365,12 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         argv = command.argv
         return {argv[index + 1] for index, arg in enumerate(argv[:-1]) if arg == "-p"}
 
-    assert test_packages(core) == {"molt-passes", "molt-backend-wasm", "molt-runtime"}
+    assert test_packages(core) == {
+        "molt-passes",
+        "molt-backend-wasm",
+        "molt-runtime",
+        "molt-gpu-runtime",
+    }
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
@@ -388,6 +393,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "ir_contract_validation",
         "generated_object_abi_link",
         "native_artifact_facts",
+        "native_batch_worker_spawn",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
@@ -445,6 +451,8 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
         "molt-runtime/stdlib_micro",
         "molt-runtime/builtin_complex",
         "molt-runtime/builtin_set",
+        "molt-runtime/molt_gpu_primitives",
+        "molt-runtime/molt_gpu_webgpu",
     ]
     assert "test_builtins" in [
         cargo[index + 1] for index, arg in enumerate(cargo[:-1]) if arg == "--test"
