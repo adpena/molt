@@ -241,33 +241,19 @@ pub fn analyze_simple_cfg_liveness_facts_with_cfg(
         block_defs.push(defs);
     }
 
-    let mut live_in_by_block = vec![empty.clone(); block_count];
-    let mut live_out_by_block = vec![empty.clone(); block_count];
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for block_id in (0..block_count).rev() {
-            let mut live_out = empty.clone();
-            for &successor in &successors[block_id] {
-                live_out.union_with(&live_in_by_block[successor]);
-            }
-            let mut live_in = live_out.clone();
-            for &id in &block_defs[block_id] {
-                live_in.remove(id);
-            }
-            for &id in &block_uses[block_id] {
-                live_in.insert(id);
-            }
-            if live_out != live_out_by_block[block_id] {
-                live_out_by_block[block_id] = live_out;
-                changed = true;
-            }
-            if live_in != live_in_by_block[block_id] {
-                live_in_by_block[block_id] = live_in;
-                changed = true;
-            }
+    let mut predecessors = vec![Vec::new(); block_count];
+    for (block, targets) in successors.iter().enumerate() {
+        for &target in targets {
+            predecessors[target].push(block);
         }
     }
+    let (live_in_by_block, live_out_by_block) = solve_name_liveness(
+        names.len(),
+        &successors,
+        &predecessors,
+        &block_uses,
+        &block_defs,
+    );
 
     SimpleCfgLivenessFacts {
         names,
@@ -276,6 +262,71 @@ pub fn analyze_simple_cfg_liveness_facts_with_cfg(
         live_in_by_block,
         live_out_by_block,
     }
+}
+
+/// One backward dataflow owner for SimpleIR consumers and SSA construction.
+/// Callers supply their exact execution graph and upward-exposed use/def facts;
+/// sharing the solver does not replace either caller's semantic fact census.
+pub(crate) fn solve_name_liveness(
+    names: usize,
+    successors: &[Vec<usize>],
+    predecessors: &[Vec<usize>],
+    uses: &[Vec<u32>],
+    defs: &[Vec<u32>],
+) -> (Vec<SimpleNameSet>, Vec<SimpleNameSet>) {
+    let blocks = successors.len();
+    assert_eq!(predecessors.len(), blocks);
+    assert_eq!(uses.len(), blocks);
+    assert_eq!(defs.len(), blocks);
+    let empty = SimpleNameSet::empty(names);
+    let mut live_in = vec![empty.clone(); blocks];
+    let mut live_out = vec![empty.clone(); blocks];
+    let mut visited = vec![false; blocks];
+    // Successors precede their predecessors on an acyclic graph. Include every
+    // component: unreachable blocks still have independently meaningful facts.
+    let mut order = super::traversal::reverse_postorder_by(0..blocks, blocks, |block, targets| {
+        if std::mem::replace(&mut visited[block], true) {
+            return false;
+        }
+        targets.extend(
+            successors[block]
+                .iter()
+                .copied()
+                .filter(|&target| !visited[target]),
+        );
+        true
+    });
+    order.reverse();
+    let mut pending = std::collections::VecDeque::from(order);
+    let mut queued = visited;
+    let mut next_in = empty.clone();
+    let mut next_out = empty;
+    while let Some(block) = pending.pop_front() {
+        queued[block] = false;
+        next_out.words.fill(0);
+        for &successor in &successors[block] {
+            next_out.union_with(&live_in[successor]);
+        }
+        next_in.words.copy_from_slice(&next_out.words);
+        for &definition in &defs[block] {
+            next_in.remove(definition);
+        }
+        for &read in &uses[block] {
+            next_in.insert(read);
+        }
+        std::mem::swap(&mut live_out[block], &mut next_out);
+        if next_in != live_in[block] {
+            std::mem::swap(&mut live_in[block], &mut next_in);
+            // Only live-in is consumed by predecessors. Killed live-out changes
+            // need no propagation and cannot trigger repeated whole-graph scans.
+            for &predecessor in &predecessors[block] {
+                if !std::mem::replace(&mut queued[predecessor], true) {
+                    pending.push_back(predecessor);
+                }
+            }
+        }
+    }
+    (live_in, live_out)
 }
 
 #[cfg(test)]
@@ -437,6 +488,89 @@ mod tests {
             "the transfer re-enters the block that reads the value"
         );
         assert!(live_after(&plan, &ops, 2).contains(&plan.names.id("carried").unwrap()));
+    }
+
+    #[test]
+    fn shared_solver_matches_paths_to_uses_before_definitions() {
+        // Independent oracle: existence of a forward path to an exposed read
+        // without an intervening definition, not another fixed-point solver.
+        fn reaches_read(
+            start: usize,
+            name: u32,
+            edges: &[Vec<usize>],
+            uses: &[Vec<u32>],
+            defs: &[Vec<u32>],
+        ) -> bool {
+            let mut seen = vec![false; edges.len()];
+            let mut pending = vec![start];
+            while let Some(block) = pending.pop() {
+                if std::mem::replace(&mut seen[block], true) {
+                    continue;
+                }
+                if uses[block].contains(&name) {
+                    return true;
+                }
+                if !defs[block].contains(&name) {
+                    pending.extend(&edges[block]);
+                }
+            }
+            false
+        }
+        let blocks = 8;
+        let names = 70;
+        let mut seed = 0x5a17_u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 32
+        };
+        for case in 0..48 {
+            let mut edges = vec![Vec::new(); blocks];
+            let mut reverse = vec![Vec::new(); blocks];
+            let mut uses = vec![Vec::new(); blocks];
+            let mut defs = vec![Vec::new(); blocks];
+            for source in 0..blocks {
+                for target in 0..blocks {
+                    let selected = match case {
+                        0 => false,
+                        1 => target == (source + 1) % blocks,
+                        2 => source > 0 && target == source - 1,
+                        _ => next() % 8 == 0,
+                    };
+                    if selected {
+                        edges[source].push(target);
+                        reverse[target].push(source);
+                    }
+                }
+                for name in 0..names as u32 {
+                    let choice = next();
+                    if choice % 16 == 0 {
+                        uses[source].push(name);
+                    }
+                    if (choice >> 4) % 16 == 0 {
+                        defs[source].push(name);
+                    }
+                }
+            }
+            let (live_in, live_out) = solve_name_liveness(names, &edges, &reverse, &uses, &defs);
+            for block in 0..blocks {
+                for name in 0..names as u32 {
+                    assert_eq!(
+                        live_in[block].contains(name),
+                        reaches_read(block, name, &edges, &uses, &defs),
+                        "case {case}, block {block}, name {name}"
+                    );
+                    assert_eq!(
+                        live_out[block].contains(name),
+                        edges[block]
+                            .iter()
+                            .any(|&next| reaches_read(next, name, &edges, &uses, &defs)),
+                        "live-out case {case}, block {block}, name {name}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

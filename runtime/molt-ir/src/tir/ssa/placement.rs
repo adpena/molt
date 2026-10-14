@@ -873,7 +873,11 @@ impl<'a> SsaContext<'a> {
 
     // -- Phase 3: insert block arguments (phi placement) ---------------------
 
-    pub(super) fn insert_block_arguments(&mut self, live_in: &[HashSet<String>]) {
+    pub(super) fn insert_block_arguments(
+        &mut self,
+        names: &SimpleNameTable,
+        live_in: &[SimpleNameSet],
+    ) {
         // For each variable, compute the iterated dominance frontier of all
         // blocks that define it, then insert a block argument at those blocks.
         // This is pruned SSA: only insert a block argument when the variable is
@@ -898,54 +902,54 @@ impl<'a> SsaContext<'a> {
         // Which blocks define which variables.
         let n = self.cfg.blocks.len();
 
-        let mut all_vars: Vec<_> = self.all_vars.iter().cloned().collect();
-        all_vars.sort();
-        for var in all_vars {
-            let mut def_blocks: HashSet<usize> = HashSet::new();
-            for bid in 0..n {
-                // A block is a definition site for `var` when its ops define
-                // it — OR when it is a handler block that already carries
-                // `var` as a block argument (established by
-                // `insert_implicit_edge_block_arguments`): along the exception
-                // edge the handler introduces a fresh SSA value for the
-                // variable. It must seed the iterated dominance frontier so
-                // that every block where the handler's normal exit rejoins the
-                // protected region's control flow receives a phi merging the
-                // handler's version with the protected-region version. Without
-                // this, a value defined in the protected region and used past
-                // such a rejoin is dominated only on the normal path, not on
-                // the handler path — a genuine SSA-dominance violation that
-                // LLVM's verifier rejects once the handler blocks are lowered.
-                if self.block_info[bid].defs.contains(&var)
-                    || self.block_arg_vars[bid].contains(&var)
-                {
-                    def_blocks.insert(bid);
+        // Build definition sites once, after implicit arguments introduce their
+        // fresh definitions. Do not scan every block again for every variable.
+        let mut def_sites = vec![Vec::new(); names.len()];
+        for bid in 0..n {
+            for variable in self.block_info[bid]
+                .defs
+                .iter()
+                .chain(&self.block_arg_vars[bid])
+            {
+                let sites =
+                    &mut def_sites[names.id(variable).expect("interned SSA definition") as usize];
+                if sites.last() != Some(&bid) {
+                    sites.push(bid);
                 }
             }
-
-            // Iterated dominance frontier.
-            let mut phi_blocks: HashSet<usize> = HashSet::new();
-            let mut ordered_def_blocks: Vec<_> = def_blocks.iter().copied().collect();
-            ordered_def_blocks.sort_unstable();
-            let mut worklist: VecDeque<usize> = ordered_def_blocks.into();
-            let mut ever_on_worklist: HashSet<usize> = def_blocks.clone();
-
+        }
+        let mut all_vars: Vec<_> = self.all_vars.iter().cloned().collect();
+        all_vars.sort();
+        let mut phi_seen = vec![0usize; n];
+        let mut work_seen = vec![0usize; n];
+        let mut worklist = VecDeque::new();
+        let mut phi_blocks = Vec::new();
+        for (index, var) in all_vars.into_iter().enumerate() {
+            let generation = index + 1;
+            let id = names.id(&var).expect("interned SSA variable");
+            worklist.clear();
+            phi_blocks.clear();
+            for &bid in &def_sites[id as usize] {
+                work_seen[bid] = generation;
+                worklist.push_back(bid);
+            }
+            // Keep the former full IDF traversal and final liveness pruning:
+            // handler/resume definitions and their later rejoins are unchanged.
             while let Some(bid) = worklist.pop_front() {
                 for &df_block in &self.dom_frontier[bid] {
-                    if phi_blocks.insert(df_block) {
-                        // Also add df_block to worklist if not already processed.
-                        if ever_on_worklist.insert(df_block) {
+                    if phi_seen[df_block] != generation {
+                        phi_seen[df_block] = generation;
+                        phi_blocks.push(df_block);
+                        if work_seen[df_block] != generation {
+                            work_seen[df_block] = generation;
                             worklist.push_back(df_block);
                         }
                     }
                 }
             }
-
-            // Record that these blocks need a block argument for this variable.
-            let mut ordered_phi_blocks: Vec<_> = phi_blocks.into_iter().collect();
-            ordered_phi_blocks.sort_unstable();
-            for bid in ordered_phi_blocks {
-                if live_in[bid].contains(&var) && !self.block_arg_vars[bid].contains(&var) {
+            phi_blocks.sort_unstable();
+            for &bid in &phi_blocks {
+                if live_in[bid].contains(id) && !self.block_arg_vars[bid].contains(&var) {
                     self.block_arg_vars[bid].push(var.clone());
                 }
             }
@@ -975,7 +979,11 @@ impl<'a> SsaContext<'a> {
     /// the resume block and are NOT live-in there, so they are not seeded — only
     /// the values genuinely threaded across the suspend (the frame `self`
     /// pointer, exception-stack bookkeeping values) are.
-    pub(super) fn insert_implicit_edge_block_arguments(&mut self, live_in: &[HashSet<String>]) {
+    pub(super) fn insert_implicit_edge_block_arguments(
+        &mut self,
+        names: &SimpleNameTable,
+        live_in: &[SimpleNameSet],
+    ) {
         let mut targets: Vec<usize> = self
             .cfg
             .exception_edges
@@ -991,7 +999,10 @@ impl<'a> SsaContext<'a> {
         targets.sort_unstable();
         targets.dedup();
         for bid in targets {
-            let mut vars: Vec<String> = live_in[bid].iter().cloned().collect();
+            let mut vars: Vec<String> = live_in[bid]
+                .iter()
+                .map(|id| names.name(id).to_owned())
+                .collect();
             vars.sort();
             for var in &vars {
                 if !self.block_arg_vars[bid].contains(var) {
@@ -1001,39 +1012,46 @@ impl<'a> SsaContext<'a> {
         }
     }
 
-    pub(super) fn compute_live_in_vars(&self) -> Vec<HashSet<String>> {
-        let n = self.cfg.blocks.len();
-        // Dominance, handler/resume arguments, pruned phi placement and
-        // iterator validity all consume the same executable graph. Rebuilding
-        // a separate exception/resume projection here can make liveness and
-        // definition dominance disagree about which program points can meet.
-        let mut live_in: Vec<HashSet<String>> = vec![HashSet::new(); n];
-        let mut live_out: Vec<HashSet<String>> = vec![HashSet::new(); n];
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for bid in (0..n).rev() {
-                let mut new_live_out: HashSet<String> = HashSet::new();
-                for succ_bid in &self.aug_successors[bid] {
-                    new_live_out.extend(live_in[*succ_bid].iter().cloned());
-                }
-
-                let mut new_live_in = self.block_info[bid].uses.clone();
-                for var in &new_live_out {
-                    if !self.block_info[bid].defs.contains(var) {
-                        new_live_in.insert(var.clone());
-                    }
-                }
-
-                if new_live_out != live_out[bid] || new_live_in != live_in[bid] {
-                    live_out[bid] = new_live_out;
-                    live_in[bid] = new_live_in;
-                    changed = true;
-                }
-            }
+    pub(super) fn compute_live_in_vars(&self) -> (SimpleNameTable, Vec<SimpleNameSet>) {
+        // Use the actual SSA census, including unresolved reads. Parameters are
+        // entry definitions here, unlike the native operation-only projection.
+        let mut variables: Vec<&str> = self
+            .block_info
+            .iter()
+            .flat_map(|block| block.uses.iter().chain(&block.defs))
+            .map(String::as_str)
+            .collect();
+        variables.sort_unstable();
+        variables.dedup();
+        let mut names = SimpleNameTable::default();
+        for variable in variables {
+            names.intern(variable);
         }
-
-        live_in
+        let ids = |set: &HashSet<String>| {
+            set.iter()
+                .map(|name| names.id(name).expect("interned SSA fact"))
+                .collect::<Vec<_>>()
+        };
+        let uses: Vec<_> = self
+            .block_info
+            .iter()
+            .map(|block| ids(&block.uses))
+            .collect();
+        let defs: Vec<_> = self
+            .block_info
+            .iter()
+            .map(|block| ids(&block.defs))
+            .collect();
+        // Preserve the same augmented exception/resume graph used by dominance
+        // and argument placement. Only storage and fixed-point scheduling change.
+        let (live_in, _) = solve_name_liveness(
+            names.len(),
+            &self.aug_successors,
+            &self.aug_predecessors,
+            &uses,
+            &defs,
+        );
+        (names, live_in)
     }
 }
 
