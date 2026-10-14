@@ -481,13 +481,9 @@ def _proof_command_registry() -> dict[str, object]:
     for policy in plan.toolchain_policies:
         # Selected SDK policies are declared by their owning command. A bare
         # executable spelling carries no SDK selection and infers only native policy.
-        if (
-            policy.identity_kind != "executable"
-            or policy.data.get("wasi_sdk_tool") is not None
-            or policy.data.get("compiler_tool_selector") == "llvm-sdk"
-        ):
+        executable = policy.inferred_executable
+        if executable is None:
             continue
-        executable = str(policy.data.get("executable") or policy.name)
         if executable == "{python}":
             continue
         for basename in sorted(_executable_registry_names(executable)):

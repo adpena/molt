@@ -1363,7 +1363,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BUILD_PYTHON",
-      "owner": "src/molt/cli/runtime_build_python.py",
+      "owner": "src/molt/python_runtime_admission.py",
       "summary": "Python interpreter for the runtime build identity probe and Cargo's stdlib table generators; unset falls back to PYTHON, then python3 (python on Windows), and molt sets it to its own interpreter for nested Cargo builds.",
       "values": []
     },

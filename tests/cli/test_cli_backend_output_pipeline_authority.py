@@ -20,7 +20,7 @@ from molt.cli import (
 )
 from molt.cli.models import _BackendCacheSetup, _BuildDiagnosticsContext
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.cli.runtime_build_python import BuildPythonAdmission
+from molt.python_runtime_admission import BuildPythonAdmission
 
 import molt.cli as cli
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline

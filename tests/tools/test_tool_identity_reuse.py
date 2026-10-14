@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -19,6 +20,86 @@ from tools.proof_queue_pkg import (
 )
 
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
+
+def test_selected_content_capture_versions_content_and_rechecks_resolver_before_reuse(
+    tmp_path, monkeypatch
+):
+    uv = tmp_path / "uv"
+    uv.write_bytes(b"unchanged resolver launcher")
+    first_python = tmp_path / "python-first"
+    first_python.write_bytes(b"first unchanged interpreter")
+    second_python = tmp_path / "python-second"
+    second_python.write_bytes(b"second interpreter")
+    selected = first_python
+    policy = proof_plan.ToolchainPolicy(
+        "selected-content",
+        {
+            "name": "selected-content",
+            "executable": "uv",
+            "version_args": ["--version"],
+            "version_from_content_path": True,
+            "version_pattern": r"^Python 3\.15\.[0-9]+$",
+            "content_path_command": [
+                "uv",
+                "python",
+                "find",
+                "--no-python-downloads",
+                "3.15",
+            ],
+        },
+        tmp_path,
+    )
+    plan = replace(proof_plan.ProofPlan.load(), toolchain_policies=(policy,))
+    calls = []
+
+    def run(command, *, cwd, env, timeout=30):
+        argv = list(command)
+        calls.append(argv)
+        if "find" in argv:
+            output = str(selected) + "\n"
+        elif argv[0] == str(first_python):
+            output = "Python 3.15.1\n"
+        elif argv[0] == str(second_python):
+            output = "Python 3.15.2\n"
+        else:
+            output = "uv 0.13.1\n"
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    monkeypatch.setattr(
+        command_identity, "_which_in_command_environment", lambda *args, **kwargs: uv
+    )
+    monkeypatch.setattr(command_identity, "_run_captured", run)
+    telemetry = []
+
+    def capture():
+        identity = command_identity._tool_identity(
+            plan,
+            policy.name,
+            {"python": None},
+            [sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            env={},
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        command_identity._validate_toolchain_identity(plan, policy.name, identity)
+        return identity
+
+    first = capture()
+    assert first["version"] == "Python 3.15.1"
+    assert first["path"] == str(uv) and first["content_path"] == str(first_python)
+    assert capture() == first
+    assert [t["state"] for t in telemetry] == ["miss", "hit"]
+    selected = second_python
+    second = capture()
+    assert second["version"] == "Python 3.15.2"
+    assert second["content_path"] == str(second_python)
+    assert telemetry[-1]["state"] == "miss"
+    assert len([argv for argv in calls if "find" in argv]) == 3
+    assert [
+        argv for argv in calls if argv[0] in {str(first_python), str(second_python)}
+    ] == [[str(first_python), "--version"], [str(second_python), "--version"]]
 
 
 def _git_probe(tmp_path: Path) -> tuple[dict[str, object], list[str], dict[str, str]]:
@@ -341,6 +422,7 @@ def test_cargo_capture_reuse_and_rust_link_probe_share_bound_payload(
         exact,
         path=rustc,
         selected_content_path=rustc,
+        content_resolver_identity=None,
         probe_cwd=proof_plan.ROOT,
         policy_sha256=command_identity.canonical_json_sha256(policy.data),
         cwd=proof_plan.ROOT,
@@ -1170,3 +1252,214 @@ def test_compiler_strip_capture_binds_lexical_role_and_physical_image(
     record_path.write_text(json.dumps(record), encoding="utf-8")
     assert capture() == identity and len(calls) == 2
     assert telemetry[-1]["state"] == "miss"
+
+
+def selected_runtime_fixture(tmp_path, monkeypatch):
+    """Finite installation providers drive the real runtime/file/native authority.
+
+    Selection and root locations are fixture boundaries. No identity, inventory,
+    digest, file fence or native-dependency result is mocked.
+    """
+    import copy
+    import types
+    import threading
+    import unicodedata
+    import venv
+
+    from molt import python_runtime_identity as runtime
+    from molt import python_runtime_admission
+    from molt.python_file_node_custody import PythonFileCaptureContext
+
+    minor = f"{sys.version_info.major}.{sys.version_info.minor}"
+    policy = next(
+        p
+        for p in proof_plan.ProofPlan.load().toolchain_policies
+        if p.python_identity_role == "runtime" and p.data["python_version"] == minor
+    )
+    uv = tmp_path / ("uv.exe" if os.name == "nt" else "uv")
+    uv.write_bytes(b"unchanged fixture selector image")
+    installations = {}
+    for name in ("first", "second"):
+        root = tmp_path / name
+        venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(root)
+        executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        library = root / "fixture-stdlib"
+        library.mkdir()
+        (library / "input.py").write_text("answer = 42\n")
+        # Standalone CPython may build Unicode into its executable. The finite
+        # provider cell uses a real native image in either host configuration;
+        # it declares that file through the actual dynamic-provider boundary.
+        native_source = Path(
+            getattr(unicodedata, "__file__", sys._base_executable)
+        ).resolve()
+        unicode_file = library / ("unicodedata-provider" + native_source.suffix)
+        shutil.copyfile(native_source, unicode_file)
+        installations[str(executable)] = (library, unicode_file)
+    selected = [Path(next(iter(installations)))]
+    real_sys = runtime.sys
+    real_library = runtime._runtime_library()
+    owners = []
+    runtime_capture_lock = threading.RLock()
+
+    class FiniteAdmission:
+        def __init__(self, *, with_custody=False):
+            assert with_custody is True
+            self.context = PythonFileCaptureContext()
+            self.captured = None
+            self.selected = None
+            owners.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.context.close()
+
+        def capture(self, env):
+            executable = env["MOLT_BUILD_PYTHON"]
+            library, unicode_file = installations[executable]
+            proxy = types.SimpleNamespace(**vars(real_sys))
+            proxy.executable = executable
+            proxy._base_executable = str(Path(executable).resolve())
+            proxy.base_prefix = str(Path(executable).parent.parent)
+            proxy.prefix = proxy.base_prefix
+            proxy.path = [str(library)]
+            # A fresh process would import this selected Unicode provider. Its
+            # missing file must fail even though interpreter/banner are intact.
+            with runtime_capture_lock, monkeypatch.context() as scope:
+                scope.setattr(runtime, "sys", proxy)
+                scope.setattr(
+                    runtime,
+                    "unicodedata",
+                    types.SimpleNamespace(__file__=str(unicode_file)),
+                )
+                scope.setattr(runtime, "_runtime_library", lambda: real_library)
+                roles = (
+                    "stdlib",
+                    "platstdlib",
+                    "base-dlls" if os.name == "nt" else "base-lib-dynload",
+                )
+                scope.setattr(
+                    runtime,
+                    "_base_runtime_paths",
+                    lambda: dict.fromkeys(roles, library),
+                )
+                scope.setattr(
+                    runtime,
+                    "_runtime_import_candidates",
+                    lambda _base: ([("import-directory-0", library, 0)], []),
+                )
+                if self.captured is None:
+                    capture = runtime.capture_current_python_runtime(
+                        capture_context=self.context, with_custody=True
+                    )
+                    self.selected = runtime.current_python_runtime_selection()
+                    self.captured = {
+                        "runtime": capture["identity"],
+                        "capture": capture,
+                        "startup_selection": self.selected,
+                    }
+                else:
+                    assert not runtime.startup_selection_difference(
+                        self.selected,
+                        runtime.current_python_runtime_selection(),
+                        admit_new_images=False,
+                    )
+                    self.context.verify()
+                return copy.deepcopy(self.captured)
+
+    monkeypatch.setattr(
+        python_runtime_admission, "BuildPythonAdmission", FiniteAdmission
+    )
+    monkeypatch.setattr(
+        command_identity, "_which_in_command_environment", lambda *a, **kw: uv
+    )
+    original_run = command_identity._run_captured
+
+    def run(command, **kwargs):
+        argv = list(command)
+        if argv[0] == str(uv):
+            return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
+        if argv[-1:] == ["--runtime-selection"]:
+            with FiniteAdmission(with_custody=True) as owner:
+                data = owner.capture({"MOLT_BUILD_PYTHON": argv[0]})[
+                    "startup_selection"
+                ]
+            return subprocess.CompletedProcess(argv, 0, json.dumps(data), "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(command_identity, "_run_captured", run)
+    plan = replace(proof_plan.ProofPlan.load(), toolchain_policies=(policy,))
+    return types.SimpleNamespace(
+        plan=plan,
+        policy=policy,
+        uv=uv,
+        selected=selected,
+        installations=installations,
+        admission_class=FiniteAdmission,
+        owners=owners,
+        minor=minor,
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["unicode-bytes", "runtime-bytes", "missing-unicode"]
+)
+def test_selected_runtime_reuse_binds_unicode_and_runtime_inputs(
+    tmp_path, monkeypatch, change
+):
+    runtime_root = tmp_path / "runtime-é"
+    runtime_root.mkdir()
+    fixture = selected_runtime_fixture(runtime_root, monkeypatch)
+    telemetry = []
+
+    def capture():
+        result = command_identity._tool_identity(
+            fixture.plan,
+            fixture.policy.name,
+            {"python": None},
+            [sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            env=os.environ,
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        command_identity._validate_toolchain_identity(
+            fixture.plan, fixture.policy.name, result
+        )
+        return result
+
+    before = capture()
+    assert capture() == before
+    assert [row["state"] for row in telemetry] == ["miss", "hit"]
+    uv_bytes = fixture.uv.read_bytes()
+    interpreter_bytes = fixture.selected[0].read_bytes()
+    library, unicode_file = fixture.installations[str(fixture.selected[0])]
+    retained = fixture.admission_class(with_custody=True)
+    environment = {"MOLT_BUILD_PYTHON": str(fixture.selected[0])}
+    admitted = retained.capture(environment)
+    profile = retained.context.inventory_profile()
+    assert retained.capture(environment) == admitted
+    assert retained.context.inventory_profile() == profile
+    changed = unicode_file if "unicode" in change else library / "input.py"
+    if change == "missing-unicode":
+        changed.unlink()
+        with pytest.raises((OSError, ValueError)):
+            retained.capture(environment)
+        retained.__exit__(None, None, None)
+        with pytest.raises((OSError, ValueError)):
+            capture()
+    else:
+        # Keep the native header/declarations valid, change an input byte whose
+        # independent content oracle is the complete file SHA, not its banner.
+        with changed.open("ab") as stream:
+            stream.write(b"\nchanged runtime input\n")
+        with pytest.raises((OSError, ValueError)):
+            retained.capture(environment)
+        retained.__exit__(None, None, None)
+        after = capture()
+        assert after["identity_sha256"] != before["identity_sha256"]
+        assert after["version"] == before["version"]
+        assert telemetry[-1]["state"] == "miss"
+    assert fixture.uv.read_bytes() == uv_bytes
+    assert fixture.selected[0].read_bytes() == interpreter_bytes

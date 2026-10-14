@@ -217,6 +217,8 @@
     "tools/proof_plan.toml",
     "tools/gen_proof_plan.py",
     "tools/generator_io.py",
+    "tools/generators.py",
+    "tools/browser_asset_graph/package-lock.json",
     "tools/release/git_source_snapshot.py",
     "src/molt/compiler_distribution.py",
     "src/molt/verified_subset.py",
@@ -256,6 +258,7 @@
     "src/molt/python_environment_custody.py",
     "src/molt/python_external_custody.py",
     "src/molt/python_runtime_identity.py",
+    "src/molt/python_runtime_admission.py",
     "src/molt/python_file_node_custody.py",
     "src/molt/python_native_dependency_custody.py",
     "src/molt/native_artifact_header.py",
@@ -2345,8 +2348,7 @@
       "toolchains": [
         "python",
         "uv",
-        "rustfmt",
-        "node"
+        "generators"
       ]
     },
     {
@@ -8013,7 +8015,12 @@
           "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "backend-native",
-        "require_fresh_toolchain": true
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8028,7 +8035,13 @@
           "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
         ],
         "name": "backend-llvm",
-        "require_fresh_toolchain": true
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "llvm-sdk"
+        ]
       },
       {
         "command_ids": [
@@ -8052,7 +8065,12 @@
           "runtime/molt-tir/Cargo.toml"
         ],
         "name": "tir-midend",
-        "require_fresh_toolchain": true
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8072,7 +8090,12 @@
           "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "wasm-host",
-        "require_fresh_toolchain": true
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8087,7 +8110,12 @@
           "runtime/molt-gpu/**/*.toml",
           "runtime/molt-gpu/Cargo.toml"
         ],
-        "name": "gpu-core"
+        "name": "gpu-core",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8104,7 +8132,12 @@
           "runtime/molt-gpu-runtime/**/*.toml",
           "runtime/molt-gpu-runtime/Cargo.toml"
         ],
-        "name": "gpu-runtime"
+        "name": "gpu-runtime",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8125,7 +8158,12 @@
           "wasm/molt_vfs_browser.js"
         ],
         "name": "runtime-vfs",
-        "require_fresh_toolchain": true
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8143,7 +8181,12 @@
           "runtime/**/Cargo.toml"
         ],
         "name": "runtime-lib",
-        "require_fresh_toolchain": true
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8160,7 +8203,11 @@
         "globs": [
           "src/molt/**/*.py"
         ],
-        "name": "frontend-python"
+        "name": "frontend-python",
+        "toolchains": [
+          "python",
+          "uv"
+        ]
       },
       {
         "command_ids": [
@@ -8178,7 +8225,10 @@
           "src/molt/stdlib/importlib/**/*.py",
           "src/molt/stdlib/_intrinsics.py"
         ],
-        "name": "bootstrap-stdlib"
+        "name": "bootstrap-stdlib",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8199,7 +8249,11 @@
           "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
           "tests/test_gen_heap_kinds.py"
         ],
-        "name": "heap-kind-lifetime-authority"
+        "name": "heap-kind-lifetime-authority",
+        "toolchains": [
+          "python",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8221,7 +8275,13 @@
           "runtime/molt-ir/src/lib.rs",
           "tests/test_gen_python_effects.py"
         ],
-        "name": "python-effect-capability-authority"
+        "name": "python-effect-capability-authority",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8246,7 +8306,13 @@
           "tests/test_gen_builtin_binding_guards.py",
           "tests/test_frontend_builtin_binding_guards.py"
         ],
-        "name": "builtin-binding-guard-authority"
+        "name": "builtin-binding-guard-authority",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8267,7 +8333,12 @@
           "docs/spec/areas/security/host_capabilities.generated.md",
           "tests/test_gen_host_capabilities.py"
         ],
-        "name": "host-capability-authority"
+        "name": "host-capability-authority",
+        "toolchains": [
+          "python",
+          "uv",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8287,7 +8358,11 @@
           "src/molt/_runtime_profile_schema.py",
           "tests/test_gen_runtime_profile_schema.py"
         ],
-        "name": "runtime-profile-schema-authority"
+        "name": "runtime-profile-schema-authority",
+        "toolchains": [
+          "python",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8326,7 +8401,13 @@
           "wasm/native_callable_abi_generated.js",
           "tests/test_gen_native_callable_abi.py"
         ],
-        "name": "native-callable-abi"
+        "name": "native-callable-abi",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8360,7 +8441,11 @@
           "runtime/molt-backend-native/src/llvm_backend/lowering/**/*.rs",
           "runtime/molt-backend-wasm/src/**/*.rs"
         ],
-        "name": "op-kind-registry"
+        "name": "op-kind-registry",
+        "toolchains": [
+          "python",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8380,7 +8465,10 @@
           "src/molt/frontend/**/*.py",
           "tests/test_frontend_diagnostics.py"
         ],
-        "name": "frontend-diagnostics"
+        "name": "frontend-diagnostics",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8407,7 +8495,11 @@
           "runtime/molt-runtime/src/intrinsics/manifest.pyi",
           "tests/test_gen_wasm_abi.py"
         ],
-        "name": "wasm-abi-registry"
+        "name": "wasm-abi-registry",
+        "toolchains": [
+          "python",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8432,7 +8524,10 @@
           "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/uop/__init__.py",
           "bench/friends/repos/tinygrad_off_the_shelf/tinygrad/renderer/cstyle.py"
         ],
-        "name": "tinygrad-op-contract"
+        "name": "tinygrad-op-contract",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8455,7 +8550,11 @@
           "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
           "tests/test_gen_intrinsics.py"
         ],
-        "name": "intrinsic-registry"
+        "name": "intrinsic-registry",
+        "toolchains": [
+          "python",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8476,7 +8575,12 @@
           "src/molt/stdlib/encodings/*.py",
           "tests/test_gen_codecs.py"
         ],
-        "name": "codec-tables"
+        "name": "codec-tables",
+        "toolchains": [
+          "python",
+          "uv",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8490,7 +8594,12 @@
           "runtime/molt-runtime-stringprep/**/*.rs",
           "runtime/molt-runtime-stringprep/Cargo.toml"
         ],
-        "name": "stringprep-leaf"
+        "name": "stringprep-leaf",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
       },
       {
         "command_ids": [
@@ -8507,7 +8616,11 @@
           "runtime/molt-runtime-stringprep/src/tables.rs",
           "tests/test_gen_stringprep_tables.py"
         ],
-        "name": "stringprep-tables"
+        "name": "stringprep-tables",
+        "toolchains": [
+          "python",
+          "rustfmt"
+        ]
       },
       {
         "command_ids": [
@@ -8529,7 +8642,10 @@
           "runtime/molt-backend-native/src/llvm_backend/runtime_imports/*.rs",
           "runtime/molt-runtime/src/**/*.rs"
         ],
-        "name": "llvm-runtime-abi"
+        "name": "llvm-runtime-abi",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8598,7 +8714,11 @@
           "tests/tools/test_native_link_benchmark.py",
           "tests/tools/test_scientific_stack_versions.py"
         ],
-        "name": "source-extension-package-sets"
+        "name": "source-extension-package-sets",
+        "toolchains": [
+          "python",
+          "uv"
+        ]
       },
       {
         "command_ids": [
@@ -8616,7 +8736,10 @@
           "tools/check_suite_honesty.py",
           "tools/check_differential_suite_layout.py"
         ],
-        "name": "suite-honesty"
+        "name": "suite-honesty",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8630,7 +8753,10 @@
           "tools/ecosystem/**",
           "tools/check_ecosystem_compat.py"
         ],
-        "name": "ecosystem-compat"
+        "name": "ecosystem-compat",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8644,7 +8770,11 @@
           "tools/tinygrad_upat_static_exec_registry.py",
           "tests/tools/test_tinygrad_upat_static_exec_registry.py"
         ],
-        "name": "tinygrad-upat-static-exec-registry"
+        "name": "tinygrad-upat-static-exec-registry",
+        "toolchains": [
+          "python",
+          "uv"
+        ]
       },
       {
         "command_ids": [
@@ -8662,7 +8792,10 @@
           "tools/check_docs_architecture.py",
           "tools/finding_status.py"
         ],
-        "name": "docs-architecture"
+        "name": "docs-architecture",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8694,7 +8827,11 @@
           "tests/tools/test_check_rustfmt.py",
           "tests/test_molt_dev.py"
         ],
-        "name": "dev-tooling"
+        "name": "dev-tooling",
+        "toolchains": [
+          "python",
+          "uv"
+        ]
       },
       {
         "command_ids": [
@@ -8714,7 +8851,10 @@
           "tools/check_rust_ffi_blocks.py",
           "tests/tools/test_check_rust_ffi_blocks.py"
         ],
-        "name": "rust-ffi-blocks"
+        "name": "rust-ffi-blocks",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8738,7 +8878,10 @@
           "tools/check_rust_toolchain.py",
           "tests/tools/test_rust_toolchain_contract.py"
         ],
-        "name": "rust-toolchain"
+        "name": "rust-toolchain",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8764,7 +8907,10 @@
           "tools/check_table_drift.py",
           "tests/test_table_drift_gate.py"
         ],
-        "name": "table-drift"
+        "name": "table-drift",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8780,7 +8926,10 @@
           "tests/tools/test_findings_registry.py",
           ".molt/state/findings_registry.jsonl"
         ],
-        "name": "findings-registry"
+        "name": "findings-registry",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8799,7 +8948,10 @@
           "tools/hooks/session_digest.py",
           "tests/tools/test_memory_graph.py"
         ],
-        "name": "memory-graph"
+        "name": "memory-graph",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8872,7 +9024,10 @@
           "tests/tools/test_reproducible_build_truth.py",
           "tests/tools/test_ci_resource_env.py"
         ],
-        "name": "ci-wiring"
+        "name": "ci-wiring",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8899,7 +9054,10 @@
           "tests/tools/test_check_gate_flips.py",
           "tests/tools/test_check_gate_liveness.py"
         ],
-        "name": "apparatus-hooks"
+        "name": "apparatus-hooks",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8927,7 +9085,10 @@
           "tests/tools/test_hooks_session_learning.py",
           "tests/tools/test_memory_graph.py"
         ],
-        "name": "apparatus-learning-protection"
+        "name": "apparatus-learning-protection",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8957,7 +9118,10 @@
           "tests/tools/test_check_sister_landed.py",
           "tests/tools/test_commit_serializer.py"
         ],
-        "name": "apparatus-a11"
+        "name": "apparatus-a11",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -8984,7 +9148,10 @@
           "tests/tools/test_proof_queue_lane_maturity.py",
           "tests/tools/test_disk_guard.py"
         ],
-        "name": "apparatus-a8-a12-disk-reclaim"
+        "name": "apparatus-a8-a12-disk-reclaim",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -9000,7 +9167,10 @@
           "tools/import_symbol_gate.py",
           "tests/tools/test_import_symbol_gate.py"
         ],
-        "name": "import-symbol-gate"
+        "name": "import-symbol-gate",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -9021,7 +9191,10 @@
           "tests/tools/test_phase_exit_manifest.py",
           "tests/tools/test_legacy_inventory.py"
         ],
-        "name": "phase-exit-manifest"
+        "name": "phase-exit-manifest",
+        "toolchains": [
+          "python"
+        ]
       },
       {
         "command_ids": [
@@ -9054,9 +9227,619 @@
           "tools/public_contract_gate.py",
           "tests/tools/test_public_contract_gate.py"
         ],
-        "name": "public-contract"
+        "name": "public-contract",
+        "toolchains": [
+          "python"
+        ]
       }
-    ]
+    ],
+    "toolchains": {
+      "local.always.0": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.1": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.10": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.11": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.12": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.13": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.14": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.15": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.2": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.3": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.4": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.5": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.6": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.7": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.8": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.9": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.apparatus-a11.0": [
+        "python"
+      ],
+      "local.apparatus-a11.1": [
+        "python"
+      ],
+      "local.apparatus-a11.2": [
+        "python"
+      ],
+      "local.apparatus-a11.3": [
+        "python"
+      ],
+      "local.apparatus-a11.4": [
+        "python"
+      ],
+      "local.apparatus-a8-a12-disk-reclaim.0": [
+        "python"
+      ],
+      "local.apparatus-a8-a12-disk-reclaim.1": [
+        "python"
+      ],
+      "local.apparatus-a8-a12-disk-reclaim.2": [
+        "python"
+      ],
+      "local.apparatus-hooks.0": [
+        "python"
+      ],
+      "local.apparatus-hooks.1": [
+        "python"
+      ],
+      "local.apparatus-hooks.2": [
+        "python"
+      ],
+      "local.apparatus-learning-protection.0": [
+        "python"
+      ],
+      "local.apparatus-learning-protection.1": [
+        "python"
+      ],
+      "local.apparatus-learning-protection.2": [
+        "python"
+      ],
+      "local.backend-llvm.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "llvm-sdk"
+      ],
+      "local.backend-native.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.backend-native.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.bootstrap-stdlib.0": [
+        "python"
+      ],
+      "local.bootstrap-stdlib.1": [
+        "python"
+      ],
+      "local.builtin-binding-guard-authority.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.builtin-binding-guard-authority.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.builtin-binding-guard-authority.2": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.ci-wiring.0": [
+        "python"
+      ],
+      "local.ci-wiring.1": [
+        "python"
+      ],
+      "local.codec-tables.0": [
+        "python",
+        "uv",
+        "rustfmt"
+      ],
+      "local.codec-tables.1": [
+        "python",
+        "uv",
+        "rustfmt"
+      ],
+      "local.dev-tooling.0": [
+        "python",
+        "uv"
+      ],
+      "local.dev-tooling.1": [
+        "python",
+        "uv"
+      ],
+      "local.dev-tooling.2": [
+        "python",
+        "uv"
+      ],
+      "local.dev-tooling.3": [
+        "python",
+        "uv"
+      ],
+      "local.dev-tooling.4": [
+        "python",
+        "uv"
+      ],
+      "local.docs-architecture.0": [
+        "python"
+      ],
+      "local.docs-architecture.1": [
+        "python"
+      ],
+      "local.ecosystem-compat.0": [
+        "python"
+      ],
+      "local.findings-registry.0": [
+        "python"
+      ],
+      "local.frontend-diagnostics.0": [
+        "python"
+      ],
+      "local.frontend-diagnostics.1": [
+        "python"
+      ],
+      "local.frontend-python.0": [
+        "python",
+        "uv"
+      ],
+      "local.frontend-python.1": [
+        "python",
+        "uv"
+      ],
+      "local.frontend-python.2": [
+        "python",
+        "uv"
+      ],
+      "local.gpu-core.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.gpu-runtime.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.gpu-runtime.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.heap-kind-lifetime-authority.0": [
+        "python",
+        "rustfmt"
+      ],
+      "local.heap-kind-lifetime-authority.1": [
+        "python",
+        "rustfmt"
+      ],
+      "local.host-capability-authority.0": [
+        "python",
+        "uv",
+        "rustfmt"
+      ],
+      "local.host-capability-authority.1": [
+        "python",
+        "uv",
+        "rustfmt"
+      ],
+      "local.import-symbol-gate.0": [
+        "python"
+      ],
+      "local.import-symbol-gate.1": [
+        "python"
+      ],
+      "local.intrinsic-registry.0": [
+        "python",
+        "rustfmt"
+      ],
+      "local.intrinsic-registry.1": [
+        "python",
+        "rustfmt"
+      ],
+      "local.llvm-runtime-abi.0": [
+        "python"
+      ],
+      "local.llvm-runtime-abi.1": [
+        "python"
+      ],
+      "local.memory-graph.0": [
+        "python"
+      ],
+      "local.memory-graph.1": [
+        "python"
+      ],
+      "local.native-callable-abi.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.native-callable-abi.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.native-callable-abi.2": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.native-callable-abi.3": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.native-callable-abi.4": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.op-kind-registry.0": [
+        "python",
+        "rustfmt"
+      ],
+      "local.op-kind-registry.1": [
+        "python",
+        "rustfmt"
+      ],
+      "local.op-kind-registry.2": [
+        "python",
+        "rustfmt"
+      ],
+      "local.phase-exit-manifest.0": [
+        "python"
+      ],
+      "local.phase-exit-manifest.1": [
+        "python"
+      ],
+      "local.public-contract.0": [
+        "python"
+      ],
+      "local.public-contract.1": [
+        "python"
+      ],
+      "local.python-effect-capability-authority.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.python-effect-capability-authority.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.python-effect-capability-authority.2": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt"
+      ],
+      "local.runtime-lib.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.runtime-lib.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.runtime-profile-schema-authority.0": [
+        "python",
+        "rustfmt"
+      ],
+      "local.runtime-profile-schema-authority.1": [
+        "python",
+        "rustfmt"
+      ],
+      "local.runtime-vfs.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.runtime-vfs.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.runtime-vfs.2": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.rust-ffi-blocks.0": [
+        "python"
+      ],
+      "local.rust-ffi-blocks.1": [
+        "python"
+      ],
+      "local.rust-toolchain.0": [
+        "python"
+      ],
+      "local.rust-toolchain.1": [
+        "python"
+      ],
+      "local.source-extension-package-sets.0": [
+        "python",
+        "uv"
+      ],
+      "local.source-extension-package-sets.1": [
+        "python",
+        "uv"
+      ],
+      "local.source-extension-package-sets.2": [
+        "python",
+        "uv"
+      ],
+      "local.stringprep-leaf.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.stringprep-tables.0": [
+        "python",
+        "rustfmt"
+      ],
+      "local.stringprep-tables.1": [
+        "python",
+        "rustfmt"
+      ],
+      "local.suite-honesty.0": [
+        "python"
+      ],
+      "local.suite-honesty.1": [
+        "python"
+      ],
+      "local.table-drift.0": [
+        "python"
+      ],
+      "local.table-drift.1": [
+        "python"
+      ],
+      "local.tinygrad-op-contract.0": [
+        "python"
+      ],
+      "local.tinygrad-op-contract.1": [
+        "python"
+      ],
+      "local.tinygrad-op-contract.2": [
+        "python"
+      ],
+      "local.tinygrad-upat-static-exec-registry.0": [
+        "python",
+        "uv"
+      ],
+      "local.tir-midend.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.tir-midend.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.wasm-abi-registry.0": [
+        "python",
+        "rustfmt"
+      ],
+      "local.wasm-abi-registry.1": [
+        "python",
+        "rustfmt"
+      ],
+      "local.wasm-host.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ],
+      "local.wasm-host.1": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
+      ]
+    }
   },
   "matrix_cells": [
     {
@@ -9412,6 +10195,7 @@
     {
       "executable": "{python}",
       "name": "python",
+      "python_identity_role": "environment",
       "setup_evidence": [
         ".python-version::3.12.15",
         ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"
@@ -9545,6 +10329,7 @@
     {
       "executable": "node",
       "name": "node",
+      "setup_command": "python -m molt.tool_releases provision node",
       "setup_evidence": [
         "config/tool_releases.toml::version = \"26.11.1\"",
         ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
@@ -9555,6 +10340,154 @@
         "--version"
       ],
       "version_pattern": "^v26\\.11\\.1$"
+    },
+    {
+      "content_path_command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--no-python-downloads",
+        "--python",
+        "3.12",
+        "python",
+        "-B",
+        "-I",
+        "-S",
+        "-c",
+        "import sys;print(sys.executable)"
+      ],
+      "dependencies": [
+        "uv"
+      ],
+      "executable": "uv",
+      "name": "target-pythons.3.12",
+      "python_identity_role": "runtime",
+      "python_version": "3.12",
+      "selection_only": true,
+      "setup_command": "uv python install 3.12",
+      "setup_evidence": [
+        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+      ],
+      "setup_value": "3.12",
+      "version_args": [
+        "--version"
+      ],
+      "version_from_content_path": true,
+      "version_pattern": "^Python 3\\.12\\.[0-9]+$"
+    },
+    {
+      "content_path_command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--no-python-downloads",
+        "--python",
+        "3.13",
+        "python",
+        "-B",
+        "-I",
+        "-S",
+        "-c",
+        "import sys;print(sys.executable)"
+      ],
+      "dependencies": [
+        "uv"
+      ],
+      "executable": "uv",
+      "name": "target-pythons.3.13",
+      "python_identity_role": "runtime",
+      "python_version": "3.13",
+      "selection_only": true,
+      "setup_command": "uv python install 3.13",
+      "setup_evidence": [
+        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+      ],
+      "setup_value": "3.13",
+      "version_args": [
+        "--version"
+      ],
+      "version_from_content_path": true,
+      "version_pattern": "^Python 3\\.13\\.[0-9]+$"
+    },
+    {
+      "content_path_command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--no-python-downloads",
+        "--python",
+        "3.14",
+        "python",
+        "-B",
+        "-I",
+        "-S",
+        "-c",
+        "import sys;print(sys.executable)"
+      ],
+      "dependencies": [
+        "uv"
+      ],
+      "executable": "uv",
+      "name": "target-pythons.3.14",
+      "python_identity_role": "runtime",
+      "python_version": "3.14",
+      "selection_only": true,
+      "setup_command": "uv python install 3.14",
+      "setup_evidence": [
+        "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+      ],
+      "setup_value": "3.14",
+      "version_args": [
+        "--version"
+      ],
+      "version_from_content_path": true,
+      "version_pattern": "^Python 3\\.14\\.[0-9]+$"
+    },
+    {
+      "members": [
+        "target-pythons.3.12",
+        "target-pythons.3.13",
+        "target-pythons.3.14"
+      ],
+      "name": "target-pythons",
+      "python_versions": "supported-targets"
+    },
+    {
+      "generator_manifest": "tools/generator_manifest.toml",
+      "members": [
+        "target-pythons",
+        "rustfmt",
+        "browser-acorn"
+      ],
+      "name": "generators"
+    },
+    {
+      "content_path_command": [
+        "node",
+        "--input-type=module",
+        "-e",
+        "import {fileURLToPath} from 'node:url';console.log(fileURLToPath(import.meta.resolve(\"acorn\")))"
+      ],
+      "dependencies": [
+        "node"
+      ],
+      "executable": "node",
+      "name": "browser-acorn",
+      "node_package": "acorn",
+      "node_package_mode": "import",
+      "package_lock": "tools/browser_asset_graph/package-lock.json",
+      "probe_cwd": "tools/browser_asset_graph",
+      "selection_only": true,
+      "setup_command": "python tools/bootstrap_browser_asset_graph.py (requires existing npm; Node provisioner installs only node)",
+      "setup_evidence": [
+        "tools/browser_asset_graph/package-lock.json::\"version\": \"8.19.0\""
+      ],
+      "setup_value": "8.19.0",
+      "version_args": [
+        "-p",
+        "require(\"./node_modules/acorn/package.json\").version"
+      ],
+      "version_pattern": "^8\\.19\\.0$"
     },
     {
       "content_path_command": [

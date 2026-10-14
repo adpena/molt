@@ -226,7 +226,7 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
 ):
     from molt.cli import runtime_native_build
 
-    from molt.cli.runtime_build_python import BuildPythonAdmission
+    from molt.python_runtime_admission import BuildPythonAdmission
 
     state = admitted_runtime
     state.build_python_admission = BuildPythonAdmission()
@@ -738,7 +738,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
         _PreparedBackendSetup,
         _PreparedBuildConfig,
     )
-    from molt.cli.runtime_build_python import BuildPythonAdmission
+    from molt.python_runtime_admission import BuildPythonAdmission
     from molt.target_python import TargetPythonVersion
 
     state = admitted_runtime

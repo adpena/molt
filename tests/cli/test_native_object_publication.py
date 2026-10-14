@@ -31,7 +31,7 @@ from molt.cli.models import (
     _RuntimeArtifactState,
 )
 from molt.cli.output import fail
-from molt.cli.runtime_build_python import BuildPythonAdmission
+from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.installed_runtime_contract import InstalledNativeAdmission
 from molt.cli.native_link_manifest import (
     native_link_dependency_manifest_path,

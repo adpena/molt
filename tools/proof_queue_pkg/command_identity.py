@@ -183,8 +183,17 @@ def _validate_node_package_identity(
     if (
         not isinstance(value, Mapping)
         or set(value)
-        != {"name", "entry", "manifest", "resolver", "selection_files", "package"}
+        != {
+            "name",
+            "mode",
+            "entry",
+            "manifest",
+            "resolver",
+            "selection_files",
+            "package",
+        }
         or value["name"] != expected
+        or value["mode"] != policy.data.get("node_package_mode", "require")
         or not isinstance(value["package"], Mapping)
         or not isinstance(value["package"].get("root"), str)
     ):
@@ -1195,6 +1204,7 @@ _REUSABLE_IDENTITY_FIELDS = frozenset(
         "clippy_selection",
         "llvm_sdk",
         "wasi_sdk",
+        "python_runtime",
         "identity_sha256",
     }
 )
@@ -1242,6 +1252,7 @@ def _tool_identity_reuse_key(
     probe_cwd: Path,
     launcher: Path,
     selected_content_path: Path | None,
+    content_resolver_identity: Mapping[str, object] | None,
     path_dependency_images: Sequence[Mapping[str, object]],
     env: Mapping[str, str],
 ) -> dict[str, object]:
@@ -1269,6 +1280,9 @@ def _tool_identity_reuse_key(
         "launcher": _executable_identity(launcher),
         "selected_content_path": str(selected_content_path)
         if selected_content_path is not None
+        else None,
+        "content_resolver": dict(content_resolver_identity)
+        if content_resolver_identity is not None
         else None,
         "path_dependency_images": list(path_dependency_images),
         "environment": _probe_environment_selection(env),
@@ -1340,6 +1354,7 @@ def _reused_identity_is_current(
     native_units: Mapping[str, Sequence[str]] | None = None,
     clippy_paths: Mapping[str, str] | None = None,
     llvm_sdk_selection: Mapping[str, object] | None = None,
+    selected_python_runtime: Mapping[str, object] | None = None,
 ) -> bool:
     """Re-prove a stored identity from file bytes before it is reused.
 
@@ -1351,12 +1366,29 @@ def _reused_identity_is_current(
         return False
     material = dict(identity)
     digest = material.pop("identity_sha256", None)
-    if (
-        digest
-        != hashlib.sha256(
+    if policy.python_identity_role == "runtime":
+        stored = material.get("python_runtime")
+        if not isinstance(stored, Mapping) or selected_python_runtime is None:
+            return False
+        try:
+            proof_plan.validate_selected_python_runtime(policy, stored)
+        except (KeyError, TypeError, ValueError):
+            return False
+        if proof_plan.selected_python_runtime_material(
+            stored
+        ) != proof_plan.selected_python_runtime_material(selected_python_runtime):
+            return False
+        material["python_runtime"] = proof_plan.selected_python_runtime_material(stored)
+    elif "python_runtime" in material:
+        return False
+    expected_digest = (
+        canonical_json_sha256(material)
+        if policy.python_identity_role == "runtime"
+        else hashlib.sha256(
             json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-    ):
+    )
+    if digest != expected_digest:
         return False
     images = identity.get("process_images")
     if not isinstance(images, list) or not images:
@@ -1458,7 +1490,7 @@ def _tool_identity(
         relative_probe_cwd = Path(configured_probe_cwd)
         if relative_probe_cwd.is_absolute():
             raise ValueError(f"{name} toolchain probe cwd must be repository-relative")
-        probe_cwd = (proof_plan.ROOT / relative_probe_cwd).resolve(strict=True)
+        probe_cwd = (policy.root / relative_probe_cwd).resolve(strict=True)
     bound_payload = _bound_tool_payload(envelope, exact, requested)
     compiler_path = (
         proof_plan.compiler_tool_path(policy, environment=env, cwd=probe_cwd)
@@ -1501,6 +1533,49 @@ def _tool_identity(
         selected_content_path = resolve_rustup_proxy(
             path, role=name, root=probe_cwd, env=env
         ).resolve(strict=True)
+    content_resolver_identity: dict[str, object] | None = None
+    content_command = policy.data.get("content_path_command")
+    if selected_content_path is None and content_command is not None:
+        if (
+            not isinstance(content_command, list)
+            or not content_command
+            or not all(isinstance(value, str) and value for value in content_command)
+        ):
+            raise ValueError(f"{name} content-path command is malformed")
+        resolver = _which_in_command_environment(
+            content_command[0], envelope, exact, cwd=probe_cwd, env=env
+        )
+        resolved = _run_captured(
+            _in_python_environment(
+                envelope, exact, (str(resolver), *content_command[1:])
+            ),
+            cwd=probe_cwd,
+            env=env,
+        )
+        if resolved.returncode != 0:
+            raise ValueError(
+                f"{name} content-path probe failed: "
+                + (resolved.stderr.strip() or resolved.stdout.strip())
+            )
+        try:
+            selected_content_path = resolve_single_file_path(
+                resolved.stdout, probe_cwd=probe_cwd
+            )
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{name} content-path probe is invalid: {exc}") from exc
+        if policy.python_identity_role == "runtime":
+            selected_content_path = process_image_capture.custody_path(
+                Path(resolved.stdout.strip()).absolute()
+            )
+        content_resolver_identity = _executable_identity(resolver)
+    selected_python_runtime = None
+    if policy.python_identity_role == "runtime":
+        if selected_content_path is None:
+            raise ValueError(f"{name}: selected Python has no admitted executable")
+        selected_python_runtime = proof_plan.capture_selected_python_runtime(
+            policy, selected_content_path, environment=env
+        )
+        proof_plan.validate_selected_python_runtime(policy, selected_python_runtime)
     path_dependency_images: list[dict[str, object]] = []
     delegated = envelope.get("delegated")
     owner = delegated if isinstance(delegated, Mapping) else envelope
@@ -1579,6 +1654,7 @@ def _tool_identity(
             probe_cwd=probe_cwd,
             launcher=path,
             selected_content_path=selected_content_path,
+            content_resolver_identity=content_resolver_identity,
             path_dependency_images=path_dependency_images,
             env=env,
         )
@@ -1605,6 +1681,7 @@ def _tool_identity(
                 native_units=envelope.get("cargo_native_units", {}),
                 clippy_paths=clippy_paths,
                 llvm_sdk_selection=llvm_sdk_selection,
+                selected_python_runtime=selected_python_runtime,
             ):
                 if reuse_telemetry is not None:
                     reuse_telemetry.append(
@@ -1638,6 +1715,8 @@ def _tool_identity(
         exact,
         path=path,
         selected_content_path=selected_content_path,
+        content_resolver_identity=content_resolver_identity,
+        selected_python_runtime=selected_python_runtime,
         probe_cwd=probe_cwd,
         policy_sha256=policy_sha256,
         cwd=cwd,
@@ -1680,10 +1759,12 @@ def _capture_tool_identity(
     *,
     path: Path,
     selected_content_path: Path | None,
+    content_resolver_identity: dict[str, object] | None,
     probe_cwd: Path,
     policy_sha256: str,
     cwd: Path,
     env: Mapping[str, str],
+    selected_python_runtime: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     raw_version_args = policy.data.get("version_args")
     if not isinstance(raw_version_args, list) or not all(
@@ -1698,6 +1779,7 @@ def _capture_tool_identity(
             (
                 str(selected_content_path or path)
                 if policy.data.get("fingerprint_domain") == "rustup"
+                or policy.data.get("version_from_content_path")
                 else str(path),
                 *version_args,
             ),
@@ -1708,36 +1790,6 @@ def _capture_tool_identity(
     if completed.returncode != 0:
         raise ValueError(f"{name} version probe failed: {completed.stderr.strip()}")
     content_path = selected_content_path or path
-    content_command = policy.data.get("content_path_command")
-    content_resolver_identity: dict[str, object] | None = None
-    if selected_content_path is None and content_command is not None:
-        if not isinstance(content_command, list) or not all(
-            isinstance(value, str) and value for value in content_command
-        ):
-            raise ValueError(f"{name} content-path command is malformed")
-        resolver = _which_in_command_environment(
-            content_command[0], envelope, exact, cwd=probe_cwd, env=env
-        )
-        resolved = _run_captured(
-            _in_python_environment(
-                envelope, exact, (str(resolver), *content_command[1:])
-            ),
-            cwd=probe_cwd,
-            env=env,
-        )
-        if resolved.returncode != 0:
-            raise ValueError(
-                f"{name} content-path probe failed: "
-                + (resolved.stderr.strip() or resolved.stdout.strip())
-            )
-        try:
-            content_path = resolve_single_file_path(
-                resolved.stdout,
-                probe_cwd=probe_cwd,
-            )
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"{name} content-path probe is invalid: {exc}") from exc
-        content_resolver_identity = _executable_identity(resolver)
     sdk_closure = None
     if policy.data.get("wasi_sdk_tool") is not None:
         sdk_closure = capture_wasi_sdk_selection(root=proof_plan.ROOT, env=env, cwd=cwd)
@@ -1811,6 +1863,26 @@ def _capture_tool_identity(
     if sdk_closure is not None:
         material["wasi_sdk"] = sdk_closure
     material["process_images"] = process_images
+    if policy.python_identity_role == "runtime":
+        if selected_python_runtime is None:
+            raise ValueError(f"{name}: selected Python runtime capture is required")
+        proof_plan.validate_selected_python_runtime(policy, selected_python_runtime)
+        material["python_runtime"] = dict(selected_python_runtime)
+        material["version"] = "Python " + str(
+            selected_python_runtime["runtime"]["version"]
+        )
+        base = Path(
+            selected_python_runtime["startup_selection"]["base_executable"]["resolved"]
+        )
+        material["process_images"] = process_image_capture.canonical_images(
+            [
+                *process_images,
+                process_image_capture.capture_image(
+                    f"{name}-selected-interpreter", content_path, preserve_path=True
+                ),
+                process_image_capture.capture_image(f"{name}-base-interpreter", base),
+            ]
+        )
     if name == "node":
         node_probe = (
             "const m=require('module');"
@@ -1838,9 +1910,19 @@ def _capture_tool_identity(
         node_path = _which_in_command_environment(
             "node", envelope, exact, cwd=probe_cwd, env=env
         )
+        mode = policy.data.get("node_package_mode", "require")
+        if mode not in {"require", "import"}:
+            raise ValueError(f"{name} node package resolution mode is malformed")
         package_probe = (
-            "const fs=require('fs'),p=require('path'),name=process.argv[1];"
-            "const entry=require.resolve(name);let root=p.dirname(entry);"
+            (
+                "import fs from 'node:fs';import p from 'node:path';"
+                "import {fileURLToPath} from 'node:url';const name=process.argv[1];"
+                "const entry=fileURLToPath(import.meta.resolve(name));"
+                if mode == "import"
+                else "const fs=require('fs'),p=require('path'),name=process.argv[1];"
+                "const entry=require.resolve(name);"
+            )
+            + "let root=p.dirname(entry);"
             "for(;;){const manifest=p.join(root,'package.json');"
             "if(fs.existsSync(manifest)){const data=JSON.parse(fs.readFileSync(manifest));"
             "if(data.name===name){console.log(JSON.stringify({entry,manifest,root}));break;}}"
@@ -1850,7 +1932,15 @@ def _capture_tool_identity(
         resolved_package = _parse_json_output(
             _run_captured(
                 _in_python_environment(
-                    envelope, exact, (str(node_path), "-e", package_probe, node_package)
+                    envelope,
+                    exact,
+                    (
+                        str(node_path),
+                        *(("--input-type=module",) if mode == "import" else ()),
+                        "-e",
+                        package_probe,
+                        node_package,
+                    ),
                 ),
                 cwd=probe_cwd,
                 env=env,
@@ -1877,6 +1967,7 @@ def _capture_tool_identity(
                 ) from exc
         material["node_package"] = {
             "name": node_package,
+            "mode": mode,
             "entry": str(entry),
             "manifest": str(manifest_path),
             "resolver": _executable_identity(node_path),
@@ -1884,8 +1975,26 @@ def _capture_tool_identity(
             "package": {"root": str(package_root)},
         }
     material["identity_sha256"] = hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            {
+                **material,
+                "python_runtime": proof_plan.selected_python_runtime_material(
+                    material["python_runtime"]
+                ),
+            }
+            if "python_runtime" in material
+            else material,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
+    if policy.python_identity_role == "runtime":
+        semantic = dict(material)
+        semantic.pop("identity_sha256", None)
+        semantic["python_runtime"] = proof_plan.selected_python_runtime_material(
+            semantic["python_runtime"]
+        )
+        material["identity_sha256"] = canonical_json_sha256(semantic)
     return material
 
 
@@ -1907,7 +2016,7 @@ def _validate_toolchain_identity(
 
         validate_identity(policy, identity, full_capture=full_capture)
         return
-    if name == "python":
+    if policy.python_identity_role == "environment":
         environment = identity.get("environment")
         location = identity.get("location")
         source_root_raw = identity.get("source_root")
@@ -1974,6 +2083,60 @@ def _validate_toolchain_identity(
             )
         process_image_capture.toolchain_images(name, identity)
         return
+    selected_runtime = identity.get("python_runtime")
+    if policy.python_identity_role == "runtime":
+        if not isinstance(selected_runtime, Mapping):
+            raise ValueError(f"{name}: incomplete selected Python runtime custody")
+        proof_plan.validate_selected_python_runtime(policy, selected_runtime)
+        if selected_runtime["launch_argv"][0] != identity.get("content_path"):
+            raise ValueError(
+                f"{name}: selected Python launch differs from captured content"
+            )
+        from molt.python_runtime_identity import runtime_explicit_file_content
+
+        base = runtime_explicit_file_content(
+            selected_runtime["runtime"], "base-executable"
+        )
+        images = process_image_capture.toolchain_images(name, identity)
+        base_images = [
+            row for row in images if row["role"] == f"{name}-base-interpreter"
+        ]
+        selected_images = [
+            row for row in images if row["role"] == f"{name}-selected-interpreter"
+        ]
+        if (
+            base is None
+            or len(base_images) != 1
+            or len(selected_images) != 1
+            or process_image_capture._image_path_key(Path(base_images[0]["path"]))
+            != process_image_capture._image_path_key(
+                process_image_capture.custody_path(
+                    Path(
+                        selected_runtime["startup_selection"]["base_executable"][
+                            "resolved"
+                        ]
+                    )
+                )
+            )
+            or base_images[0]["sha256"] != base["sha256"]
+            or base_images[0]["size_bytes"] != base["size"]
+            or selected_images[0]["path"] != selected_runtime["launch_argv"][0]
+            or selected_images[0]["sha256"] != identity.get("executable_sha256")
+        ):
+            raise ValueError(
+                f"{name}: selected/base Python images differ from runtime custody"
+            )
+        material = dict(identity)
+        digest = material.pop("identity_sha256", None)
+        material["python_runtime"] = proof_plan.selected_python_runtime_material(
+            selected_runtime
+        )
+        if digest != canonical_json_sha256(material):
+            raise ValueError(
+                f"{name}: selected Python runtime identity digest is invalid"
+            )
+    elif selected_runtime is not None:
+        raise ValueError(f"{name}: unexpected selected Python runtime custody")
     _validate_wasi_sdk_policy(policy, identity, full_capture=full_capture)
     toolchain_capture.validate_llvm_sdk_selection(
         identity, required=policy.data.get("compiler_tool_selector") == "llvm-sdk"

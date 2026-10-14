@@ -380,7 +380,20 @@ def generated_outputs() -> dict[Path, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    return generator_main(generated_outputs, argv, description=__doc__)
+    def admitted_outputs() -> dict[Path, str]:
+        from tools.generators import admit_generators, manifest_generators
+
+        admit_generators(
+            [
+                row
+                for row in manifest_generators(ROOT / "tools/generator_manifest.toml")
+                if row.tool == "tools/gen_browser_asset_graph.py"
+            ],
+            root=ROOT,
+        )
+        return generated_outputs()
+
+    return generator_main(admitted_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import importlib.util
 import os
 import sys
@@ -31,14 +32,22 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import Any
+
 
 ROOT = Path(__file__).resolve().parents[1]
 for _import_root in (ROOT, ROOT / "src", ROOT / "tools"):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
 
+from molt.python_runtime_admission import BuildPythonAdmission  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.generator_io import display_path, stale_outputs, write_outputs  # noqa: E402
+from tools.proof_plan import (  # noqa: E402
+    load_toolchain_policies,
+    toolchain_closure,
+    toolchain_fingerprints,
+)
 
 MANIFEST = ROOT / "tools" / "generator_manifest.toml"
 PROOF_PLAN = "tools/gen_proof_plan.py"
@@ -49,6 +58,7 @@ class Generator:
     tool: str
     upstream: tuple[str, ...]
     reproducible: bool
+    toolchains: tuple[str, ...]
 
 
 def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
@@ -60,6 +70,7 @@ def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
             tool=str(row["tool"]),
             upstream=tuple(str(item) for item in row.get("upstream_generators", ())),
             reproducible=bool(row.get("ci_checkable", True)),
+            toolchains=tuple(row["toolchains"]),
         )
         for row in rows
         if row.get("check_mode") and not row.get("discovery_only")
@@ -101,6 +112,47 @@ def load_generator(tool: str) -> ModuleType:
     return module
 
 
+def admit_generators(
+    selected: list[Generator], *, root: Path, runtime_stack: ExitStack | None = None
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]],
+]:
+    """Reject all prerequisites before import; retain demanded runtime owners."""
+    if runtime_stack is None:
+        with ExitStack() as stack:
+            fingerprints, _ = admit_generators(selected, root=root, runtime_stack=stack)
+            return fingerprints, {}
+    names = tuple(dict.fromkeys(name for row in selected for name in row.toolchains))
+    with (root / "tools/proof_plan.toml").open("rb") as handle:
+        policies = load_toolchain_policies(tomllib.load(handle), root=root, names=names)
+    owners: dict[str, list[str]] = {}
+    for row in selected:
+        for name in toolchain_closure(policies, row.toolchains):
+            owners.setdefault(name, []).append(row.tool)
+    admissions = {
+        policy.name: runtime_stack.enter_context(
+            BuildPythonAdmission(with_custody=True)
+        )
+        for policy in policies
+        if policy.python_identity_role == "runtime"
+    }
+    fingerprints = toolchain_fingerprints(
+        policies, names, owners=owners, python_admissions=admissions or None
+    )
+    bindings: dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]] = {
+        row.tool: {} for row in selected
+    }
+    for policy in policies:
+        if policy.python_identity_role == "runtime":
+            for tool in owners[policy.name]:
+                bindings[tool][policy.data["python_version"]] = (
+                    fingerprints[policy.name]["python_runtime"],
+                    admissions[policy.name],
+                )
+    return fingerprints, bindings
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -127,44 +179,59 @@ def main(argv: list[str] | None = None) -> int:
         if skipped:
             print("host-input generators skipped (use --only): " + ", ".join(skipped))
 
-    stale_count = 0
-    started = time.perf_counter()
-    # One repository sentinel watches the whole run. Every guarded child the
-    # generators start (rustfmt, mostly) would otherwise open and scan its own
-    # sentinel, which cost ~2.4 s per call against milliseconds of formatting.
-    with harness_memory_guard.repo_process_sentinel(
-        repo_root=ROOT,
-        # The same root the per-command automatic sentinel would use.
-        artifact_root=harness_memory_guard._artifact_root_from_env(os.environ),
-        label="generators",
-        limits=harness_memory_guard.limits_from_env("MOLT_GENERATOR", os.environ),
-        drain_on_exit=False,
-    ):
-        for generator in selected:
-            tick = time.perf_counter()
-            outputs = load_generator(generator.tool).generated_outputs()
-            if args.action == "check":
-                stale = stale_outputs(outputs)
-                for path in stale:
-                    print(
-                        f"stale: {display_path(path)} ({generator.tool})",
-                        file=sys.stderr,
-                    )
-                stale_count += len(stale)
-            else:
-                for path in write_outputs(outputs):
-                    print(f"wrote {display_path(path)} ({generator.tool})")
-            print(f"  {time.perf_counter() - tick:6.2f}s {generator.tool}")
-    elapsed = time.perf_counter() - started
-    if stale_count:
-        print(
-            f"{stale_count} stale output(s); run `python3 tools/generators.py write`",
-            file=sys.stderr,
-        )
-        return 1
-    verb = "current" if args.action == "check" else "written"
-    print(f"{len(selected)} generator(s) {verb} in {elapsed:.1f}s")
-    return 0
+    with ExitStack() as runtime_stack:
+        try:
+            _, runtime_bindings = admit_generators(
+                selected, root=ROOT, runtime_stack=runtime_stack
+            )
+        except (ValueError, OSError, KeyError) as exc:
+            print(f"generator prerequisite admission failed: {exc}", file=sys.stderr)
+            return 1
+
+        stale_count = 0
+        started = time.perf_counter()
+        # One repository sentinel watches the whole run. Every guarded child the
+        # generators start (rustfmt, mostly) would otherwise open and scan its own
+        # sentinel, which cost ~2.4 s per call against milliseconds of formatting.
+        with harness_memory_guard.repo_process_sentinel(
+            repo_root=ROOT,
+            # The same root the per-command automatic sentinel would use.
+            artifact_root=harness_memory_guard._artifact_root_from_env(os.environ),
+            label="generators",
+            limits=harness_memory_guard.limits_from_env("MOLT_GENERATOR", os.environ),
+            drain_on_exit=False,
+        ):
+            for generator in selected:
+                tick = time.perf_counter()
+                module = load_generator(generator.tool)
+                bindings = runtime_bindings[generator.tool]
+                outputs = (
+                    module.generated_outputs(python_runtimes=bindings)
+                    if bindings
+                    else module.generated_outputs()
+                )
+                if args.action == "check":
+                    stale = stale_outputs(outputs)
+                    for path in stale:
+                        print(
+                            f"stale: {display_path(path)} ({generator.tool})",
+                            file=sys.stderr,
+                        )
+                    stale_count += len(stale)
+                else:
+                    for path in write_outputs(outputs):
+                        print(f"wrote {display_path(path)} ({generator.tool})")
+                print(f"  {time.perf_counter() - tick:6.2f}s {generator.tool}")
+        elapsed = time.perf_counter() - started
+        if stale_count:
+            print(
+                f"{stale_count} stale output(s); run `python3 tools/generators.py write`",
+                file=sys.stderr,
+            )
+            return 1
+        verb = "current" if args.action == "check" else "written"
+        print(f"{len(selected)} generator(s) {verb} in {elapsed:.1f}s")
+        return 0
 
 
 if __name__ == "__main__":

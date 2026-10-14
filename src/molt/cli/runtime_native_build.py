@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from molt.cli import progress as _progress
-from molt.cli.runtime_build_python import BuildPythonAdmission, build_python_scope
+from molt.python_runtime_admission import BuildPythonAdmission
+from molt.cli.runtime_build_python import build_python_scope
 
 import json
 import os

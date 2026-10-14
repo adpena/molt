@@ -5,7 +5,7 @@ from molt.cli.native_symbol_inspection import (
 )
 
 import contextlib
-from molt.cli.runtime_build_python import BuildPythonAdmission
+from molt.python_runtime_admission import BuildPythonAdmission
 import time
 from dataclasses import replace
 from pathlib import Path

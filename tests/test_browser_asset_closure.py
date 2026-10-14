@@ -572,3 +572,37 @@ def test_wasm_run_matrix_stages_the_canonical_browser_host_closure(
         assert staged_path.read_bytes() == canonical_wasm_loader_asset_bytes(
             ROOT.joinpath("wasm", *Path(name).parts)
         )
+
+
+@pytest.mark.parametrize("mode", ["--check", "--write"])
+def test_browser_generator_admits_selected_prerequisites_before_render(
+    monkeypatch, mode
+):
+    from tools import generators
+
+    def reject(rows, *, root):
+        assert [row.tool for row in rows] == ["tools/gen_browser_asset_graph.py"]
+        assert rows[0].toolchains == ("browser-acorn",)
+        raise ValueError("node missing; browser-acorn blocked by node")
+
+    monkeypatch.setattr(generators, "admit_generators", reject)
+    monkeypatch.setattr(
+        asset_graph_tool,
+        "generated_outputs",
+        lambda: pytest.fail("browser scan/render began before admission"),
+    )
+    with pytest.raises(ValueError, match="browser-acorn blocked"):
+        asset_graph_tool.main([mode])
+
+
+def test_browser_generator_help_does_not_probe_prerequisites(monkeypatch):
+    from tools import generators
+
+    monkeypatch.setattr(
+        generators,
+        "admit_generators",
+        lambda *args, **kwargs: pytest.fail("help probed tool availability"),
+    )
+    with pytest.raises(SystemExit) as caught:
+        asset_graph_tool.main(["--help"])
+    assert caught.value.code == 0

@@ -24,7 +24,10 @@ import sys
 import threading
 import time
 import tomllib
-from typing import Any, Collection, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Literal, Mapping
+
+if TYPE_CHECKING:
+    from molt.python_runtime_admission import BuildPythonAdmission
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -233,12 +236,268 @@ class NamedLane:
 class ToolchainPolicy:
     name: str
     data: dict[str, Any]
+    root: Path = ROOT
 
     @property
     def identity_kind(self) -> str:
         """Classify policy identity from its single declared provider boundary."""
 
+        if "members" in self.data:
+            return "group"
         return "target-derived" if "identity_provider" in self.data else "executable"
+
+    @property
+    def python_identity_role(self) -> Literal["environment", "runtime"] | None:
+        role = self.data.get("python_identity_role")
+        if role not in {None, "environment", "runtime"}:
+            raise ValueError(f"{self.name}: invalid Python identity role {role!r}")
+        return role
+
+    @property
+    def inferred_executable(self) -> str | None:
+        """Bare launchers infer canonical images, never selected resolver views."""
+        if (
+            self.identity_kind != "executable"
+            or self.data.get("wasi_sdk_tool") is not None
+            or self.data.get("compiler_tool_selector") == "llvm-sdk"
+            or self.data.get("selection_only", False)
+        ):
+            return None
+        return str(self.data.get("executable") or self.name)
+
+
+def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
+    """Query the selected source authority without rebinding driver imports."""
+    source = root / "src/molt/target_python.py"
+    search_path = [str(root / "src"), str(root)] + [
+        entry
+        for entry in sys.path
+        if entry and not Path(entry).resolve().is_relative_to(ROOT)
+    ]
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-S",
+                "-P",
+                "-B",
+                "-c",
+                "import json,runpy,sys;print(json.dumps(runpy.run_path(sys.argv[1])"
+                "['SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS']))",
+                str(source),
+            ],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": os.pathsep.join(search_path)},
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"selected target-Python catalog probe failed: {exc}") from exc
+    if completed.returncode:
+        raise ValueError(
+            f"selected target-Python catalog failed: {completed.stderr.strip()}"
+        )
+    versions = json.loads(completed.stdout)
+    if (
+        not isinstance(versions, list)
+        or not versions
+        or any(
+            not isinstance(v, str) or re.fullmatch(r"3\.[0-9]+", v) is None
+            for v in versions
+        )
+        or len(versions) != len(set(versions))
+    ):
+        raise ValueError("selected target-Python catalog is malformed")
+    return tuple(versions)
+
+
+def load_toolchain_policies(
+    data: Mapping[str, Any], *, root: Path = ROOT, names: Iterable[str] | None = None
+) -> tuple[ToolchainPolicy, ...]:
+    """Resolve selected prerequisites from their existing declarative owners."""
+    entries = data.get("toolchain_policy", [])
+    if names is not None:
+        required = set(names)
+        pending = list(required)
+        by_name = {entry["name"]: entry for entry in entries}
+        while pending:
+            name = pending.pop()
+            if name not in by_name:
+                raise ValueError(f"unknown toolchain dependency {name!r}")
+            entry = by_name[name]
+            dependencies = list(entry.get("dependencies", [])) + list(
+                entry.get("members", [])
+            )
+            if entry.get("python_versions") == "supported-targets":
+                dependencies.append("uv")
+            if "generator_manifest" in entry:
+                with (root / entry["generator_manifest"]).open("rb") as handle:
+                    rows = tomllib.load(handle).get("generator", [])
+                dependencies.extend(generator_toolchains(rows))
+            for dependency in dependencies:
+                if dependency not in required:
+                    required.add(dependency)
+                    pending.append(dependency)
+        entries = [entry for entry in entries if entry["name"] in required]
+    policies: list[ToolchainPolicy] = []
+    for entry in entries:
+        row = dict(entry)
+        name = str(row.get("name", ""))
+        if row.get("executable") == "{python}":
+            row["python_identity_role"] = "environment"
+        if row.get("python_versions") == "supported-targets":
+            row["members"] = []
+            for version in _selected_target_python_versions(root):
+                child = f"{name}.{version}"
+                row["members"].append(child)
+                policies.append(
+                    ToolchainPolicy(
+                        child,
+                        {
+                            "name": child,
+                            "executable": "uv",
+                            "dependencies": ["uv"],
+                            "version_args": ["--version"],
+                            "version_from_content_path": True,
+                            "selection_only": True,
+                            "python_identity_role": "runtime",
+                            "python_version": version,
+                            "content_path_command": [
+                                "uv",
+                                "run",
+                                "--no-project",
+                                "--no-python-downloads",
+                                "--python",
+                                version,
+                                "python",
+                                "-B",
+                                "-I",
+                                "-S",
+                                "-c",
+                                "import sys;print(sys.executable)",
+                            ],
+                            "version_pattern": rf"^Python {re.escape(version)}\.[0-9]+$",
+                            "setup_value": version,
+                            "setup_evidence": [
+                                "src/molt/target_python.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+                            ],
+                            "setup_command": f"uv python install {version}",
+                        },
+                        root,
+                    )
+                )
+        if "generator_manifest" in row:
+            with (root / row["generator_manifest"]).open("rb") as handle:
+                generators = tomllib.load(handle).get("generator", [])
+            row["members"] = list(generator_toolchains(generators))
+        if "package_lock" in row:
+            if row.get("node_package_mode", "require") not in {"require", "import"}:
+                raise ValueError(f"{name}: invalid node package resolution mode")
+            package = Path("node_modules") / str(row["node_package"])
+            lock_path = Path(str(row["package_lock"]))
+            lock = json.loads((root / lock_path).read_text(encoding="utf-8"))
+            lock_key = package.as_posix()
+            version = str(lock["packages"][lock_key]["version"])
+            relative = "./" + lock_key
+            row.update(
+                executable="node",
+                selection_only=True,
+                probe_cwd=lock_path.parent.as_posix(),
+                version_args=[
+                    "-p",
+                    f"require({json.dumps(relative + '/package.json')}).version",
+                ],
+                content_path_command=[
+                    "node",
+                    "--input-type=module",
+                    "-e",
+                    "import {fileURLToPath} from 'node:url';"
+                    + (
+                        f"console.log(fileURLToPath(import.meta.resolve({json.dumps(row['node_package'])})))"
+                        if row.get("node_package_mode", "require") == "import"
+                        else f"import {{createRequire}} from 'node:module';console.log(createRequire(import.meta.url).resolve({json.dumps(row['node_package'])}))"
+                    ),
+                ],
+                version_pattern="^" + re.escape(version) + "$",
+                setup_value=version,
+                setup_evidence=[f'{lock_path.as_posix()}::"version": "{version}"'],
+            )
+        policies.append(ToolchainPolicy(name, row, root))
+    return tuple(policies)
+
+
+def generator_toolchains(rows: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
+    """Prerequisites of the manifest's default reproducible generator selection."""
+    return tuple(
+        dict.fromkeys(
+            toolchain
+            for row in rows
+            if row.get("check_mode")
+            and row.get("ci_checkable", True)
+            and not row.get("discovery_only", False)
+            for toolchain in row["toolchains"]
+        )
+    )
+
+
+def toolchain_closure(
+    policies: Iterable[ToolchainPolicy], names: Iterable[str]
+) -> tuple[str, ...]:
+    """Expand one selected dependency graph; groups are selection, not images."""
+    by_name = {policy.name: policy for policy in policies}
+    closed: list[str] = []
+    seen: set[str] = set()
+    visiting: set[str] = set()
+
+    def add(name: str) -> None:
+        if name in visiting:
+            raise ValueError(f"toolchain dependency cycle at {name!r}")
+        if name in seen:
+            return
+        try:
+            policy = by_name[name]
+        except KeyError as exc:
+            raise ValueError(f"unknown toolchain dependency {name!r}") from exc
+        visiting.add(name)
+        dependencies = policy.data.get("dependencies", [])
+        members = policy.data.get("members", [])
+        for field, values in (("dependencies", dependencies), ("members", members)):
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and value for value in values
+            ):
+                raise ValueError(f"{name}: malformed toolchain {field}")
+        if policy.identity_kind != "group":
+            closed.append(name)
+        for dependency in (*dependencies, *members):
+            add(dependency)
+        visiting.remove(name)
+        seen.add(name)
+
+    for name in names:
+        add(name)
+    return tuple(closed)
+
+
+def local_gate_commands(
+    data: Mapping[str, Any],
+) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """The existing generated local IDs and their declared prerequisites."""
+    commands = {
+        f"local.always.{index}": (command, tuple(data.get("always_toolchains", [])))
+        for index, command in enumerate(data.get("always", []))
+    }
+    for rule in data.get("rule", []):
+        commands.update(
+            {
+                f"local.{rule['name']}.{index}": (
+                    command,
+                    tuple(rule.get("toolchains", [])),
+                )
+                for index, command in enumerate(rule.get("gates", []))
+            }
+        )
+    return commands
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,37 +537,11 @@ class ProofPlan:
     resource_policies: tuple[ResourcePolicy, ...]
     local_rules: tuple[dict[str, Any], ...]
     always: tuple[str, ...]
+    always_toolchains: tuple[str, ...] = ()
 
     def toolchain_closure(self, names: Iterable[str]) -> tuple[str, ...]:
         """Expand declared toolchains through the canonical dependency graph."""
-
-        policies = {policy.name: policy for policy in self.toolchain_policies}
-        closed: list[str] = []
-        visiting: set[str] = set()
-
-        def add(name: str) -> None:
-            if name in visiting:
-                raise ValueError(f"toolchain dependency cycle at {name!r}")
-            try:
-                policy = policies[name]
-            except KeyError as exc:
-                raise ValueError(f"unknown toolchain dependency {name!r}") from exc
-            if name in closed:
-                return
-            closed.append(name)
-            visiting.add(name)
-            dependencies = policy.data.get("dependencies", [])
-            if not isinstance(dependencies, list):
-                raise ValueError(f"{name}: malformed toolchain dependencies")
-            for dependency in dependencies:
-                if not isinstance(dependency, str) or not dependency:
-                    raise ValueError(f"{name}: malformed toolchain dependency")
-                add(dependency)
-            visiting.remove(name)
-
-        for name in names:
-            add(name)
-        return tuple(closed)
+        return toolchain_closure(self.toolchain_policies, names)
 
     def required_toolchains(self, command: ProofCommand) -> tuple[str, ...]:
         """Return the complete process/tool identity closure for one command."""
@@ -490,10 +723,7 @@ class ProofPlan:
                 NamedLane(str(entry.get("id", "")), dict(entry))
                 for entry in data.get("named_lane", [])
             ),
-            toolchain_policies=tuple(
-                ToolchainPolicy(str(entry.get("name", "")), dict(entry))
-                for entry in data.get("toolchain_policy", [])
-            ),
+            toolchain_policies=load_toolchain_policies(data, root=path.parent.parent),
             executor_max_workers=int(data.get("executor_max_workers", 0)),
             inventory_hash_workers=int(data.get("inventory_hash_workers", 0)),
             resource_policies=tuple(
@@ -504,6 +734,7 @@ class ProofPlan:
             ),
             local_rules=tuple(dict(entry) for entry in data.get("rule", [])),
             always=tuple(data.get("always", [])),
+            always_toolchains=tuple(data.get("always_toolchains", [])),
         )
         errors = plan.validate()
         if errors:
@@ -663,6 +894,19 @@ class ProofPlan:
             errors.append("toolchain policy names must be unique")
         dependency_graph: dict[str, tuple[str, ...]] = {}
         for policy in self.toolchain_policies:
+            if policy.identity_kind == "group":
+                if any(
+                    field in policy.data
+                    for field in ("executable", "identity_provider", "version_args")
+                ):
+                    errors.append(
+                        f"{policy.name}: a selection group must not declare an image provider"
+                    )
+                try:
+                    toolchain_closure(self.toolchain_policies, (policy.name,))
+                except ValueError as exc:
+                    errors.append(str(exc))
+                continue
             if "identity_kind" in policy.data:
                 errors.append(
                     f"{policy.name}: toolchain policy must not declare identity_kind; "
@@ -755,7 +999,53 @@ class ProofPlan:
                                 f"{policy.name}: probe_cwd is not a directory: "
                                 f"{probe_cwd!r}"
                             )
+            try:
+                python_role = policy.python_identity_role
+            except ValueError as exc:
+                errors.append(str(exc))
+                python_role = None
+            if (
+                python_role == "environment"
+                and policy.data.get("executable") != "{python}"
+            ):
+                errors.append(
+                    f"{policy.name}: Python environment role requires the command interpreter"
+                )
+            if python_role == "runtime" and (
+                not policy.data.get("selection_only")
+                or not policy.data.get("version_from_content_path")
+                or not isinstance(policy.data.get("content_path_command"), list)
+                or not isinstance(policy.data.get("python_version"), str)
+                or re.fullmatch(r"3\.[0-9]+", policy.data["python_version"]) is None
+            ):
+                errors.append(
+                    f"{policy.name}: Python runtime role requires an explicit typed isolated selection"
+                )
             content_path_command = policy.data.get("content_path_command")
+            selected_version = policy.data.get("version_from_content_path", False)
+            if type(selected_version) is not bool or (
+                selected_version and content_path_command is None
+            ):
+                errors.append(
+                    f"{policy.name}: selected version requires a typed content resolver"
+                )
+            package = policy.data.get("node_package")
+            explicit_selection = policy.data.get("selection_only", False)
+            if type(explicit_selection) is not bool or (
+                explicit_selection and content_path_command is None
+            ):
+                errors.append(
+                    f"{policy.name}: explicit prerequisite requires a typed content resolver"
+                )
+            if package is not None and (
+                not isinstance(package, str)
+                or not package
+                or policy.data.get("node_package_mode", "require")
+                not in {"require", "import"}
+            ):
+                errors.append(f"{policy.name}: invalid node package selection")
+            elif package is None and "node_package_mode" in policy.data:
+                errors.append(f"{policy.name}: node package mode requires node_package")
             if content_path_command is not None and (
                 not isinstance(content_path_command, list)
                 or not content_path_command
@@ -1725,6 +2015,10 @@ class ProofPlan:
                             f"{sorted(expected_verdict_needs)!r}"
                         )
         local_names: set[str] = set()
+        try:
+            toolchain_closure(self.toolchain_policies, self.always_toolchains)
+        except ValueError as exc:
+            errors.append(f"local always: {exc}")
         for rule in self.local_rules:
             name = rule.get("name")
             if not isinstance(name, str) or not name:
@@ -1733,6 +2027,16 @@ class ProofPlan:
             if name in local_names:
                 errors.append(f"duplicate local rule {name!r}")
             local_names.add(name)
+            tools = rule.get("toolchains")
+            if not isinstance(tools, list) or not all(
+                isinstance(item, str) and item for item in tools
+            ):
+                errors.append(f"{name}: toolchains must be an explicit list of names")
+            else:
+                try:
+                    toolchain_closure(self.toolchain_policies, tools)
+                except ValueError as exc:
+                    errors.append(f"{name}: {exc}")
             for field in ("globs", "gates"):
                 value = rule.get(field)
                 if not isinstance(value, list) or not all(
@@ -1806,7 +2110,7 @@ def _normalize_path(path: str) -> str:
 
 def _toolchain_probe_cwd(policy: ToolchainPolicy) -> tuple[str, Path]:
     relative = str(policy.data.get("probe_cwd", "."))
-    return relative, (ROOT / relative).resolve(strict=True)
+    return relative, (policy.root / relative).resolve(strict=True)
 
 
 def _workflow_job_block(text: str, job: str) -> str | None:
@@ -2222,7 +2526,7 @@ def host_matrix_cell(plan: ProofPlan, family_name: str) -> str:
     )
 
 
-def _toolchain_fingerprint_digest(identity: Mapping[str, str]) -> str:
+def _toolchain_fingerprint_digest(identity: Mapping[str, Any]) -> str:
     material = "\0".join(
         identity[name]
         for name in (
@@ -2239,6 +2543,8 @@ def _toolchain_fingerprint_digest(identity: Mapping[str, str]) -> str:
         material += "\0" + identity["wasi_sdk_sha256"]
     if "llvm_sdk_sha256" in identity:
         material += "\0" + identity["llvm_sdk_sha256"]
+    if "python_runtime_sha256" in identity:
+        material += "\0" + identity["python_runtime_sha256"]
     return hashlib.sha256(material.encode()).hexdigest()
 
 
@@ -2274,7 +2580,161 @@ def compiler_tool_path(
     return Path(selected).absolute()
 
 
-def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
+def capture_selected_python_runtime(
+    policy: ToolchainPolicy,
+    executable: Path,
+    *,
+    environment: Mapping[str, str],
+    admission: BuildPythonAdmission | None = None,
+) -> dict[str, Any]:
+    """Use the existing isolated runtime owner for this selected prerequisite."""
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    if policy.python_identity_role != "runtime":
+        raise ValueError(f"{policy.name}: selected Python runtime role is required")
+    if admission is None:
+        with BuildPythonAdmission(with_custody=True) as owner:
+            return capture_selected_python_runtime(
+                policy, executable, environment=environment, admission=owner
+            )
+    captured = admission.capture({**environment, "MOLT_BUILD_PYTHON": str(executable)})
+    capture = captured["capture"]
+    return {
+        "launch_argv": [str(executable), "-B", "-I", "-S"],
+        "startup_selection": captured["startup_selection"],
+        "runtime": capture["identity"],
+        "file_custody": capture["file_custody"],
+        "node_custody": capture["node_custody"],
+        "inventory_profile": capture["inventory_profile"],
+    }
+
+
+def validate_selected_python_runtime(
+    policy: ToolchainPolicy, selected: Mapping[str, Any]
+) -> None:
+    """A runtime role always requires the canonical complete custody envelope."""
+    from molt.python_environment_identity import (
+        PYTHON_CAPTURE_SCHEMA,
+        validate_python_capture,
+    )
+    from molt.python_runtime_identity import PYTHON_RUNTIME_IDENTITY_SCHEMA
+
+    if set(selected) != {
+        "launch_argv",
+        "startup_selection",
+        "runtime",
+        "file_custody",
+        "node_custody",
+        "inventory_profile",
+    }:
+        raise ValueError(f"{policy.name}: incomplete selected Python runtime custody")
+    launch = selected["launch_argv"]
+    startup = selected["startup_selection"]
+    runtime = selected["runtime"]
+    if (
+        not isinstance(launch, list)
+        or len(launch) != 4
+        or not isinstance(launch[0], str)
+        or not Path(launch[0]).is_absolute()
+        or launch[1:] != ["-B", "-I", "-S"]
+        or not isinstance(startup, dict)
+        or set(startup)
+        != {
+            "schema",
+            "platform",
+            "selected_executable",
+            "base_executable",
+            "prefix",
+            "base_prefix",
+            "runtime_library",
+            "base_paths",
+            "import_paths",
+            "import_directories",
+            "import_archives",
+            "startup_configuration",
+            "native",
+        }
+        or startup.get("schema") != "molt-python-startup-selection-v1"
+        or not isinstance(startup.get("selected_executable"), dict)
+        or startup["selected_executable"].get("lexical") != launch[0]
+        or startup["selected_executable"].get("present") is not True
+        or not isinstance(runtime, dict)
+        or runtime.get("schema") != PYTHON_RUNTIME_IDENTITY_SCHEMA
+        or startup.get("platform")
+        != {
+            key: runtime.get(key)
+            for key in (
+                "implementation",
+                "version",
+                "cache_tag",
+                "soabi",
+                "abi_flags",
+                "multiarch",
+                "py_debug",
+                "gil_disabled",
+                "operating_system",
+                "architecture",
+                "pointer_bits",
+                "byteorder",
+            )
+        }
+    ):
+        raise ValueError(f"{policy.name}: selected Python isolated launch is invalid")
+    validate_python_capture(
+        {
+            "schema": PYTHON_CAPTURE_SCHEMA,
+            "identity": runtime,
+            **{
+                key: selected[key]
+                for key in ("file_custody", "node_custody", "inventory_profile")
+            },
+        }
+    )
+    if (
+        re.search(
+            str(policy.data["version_pattern"]), "Python " + str(runtime["version"])
+        )
+        is None
+    ):
+        raise ValueError(
+            f"{policy.name}: captured Python runtime violates version policy"
+        )
+
+
+def selected_python_runtime_material(selected: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture timings are observations, never semantic identity inputs."""
+    return {key: value for key, value in selected.items() if key != "inventory_profile"}
+
+
+def validate_selected_python_fingerprint(
+    policy: ToolchainPolicy, identity: Mapping[str, Any]
+) -> None:
+    if not isinstance(identity, Mapping):
+        raise ValueError(f"{policy.name}: selected Python fingerprint is not an object")
+    selected = identity.get("python_runtime")
+    if not isinstance(selected, Mapping):
+        raise ValueError(
+            f"{policy.name}: complete selected Python fingerprint is required"
+        )
+    validate_selected_python_runtime(policy, selected)
+    if selected["launch_argv"][0] != identity.get("content_path"):
+        raise ValueError(
+            f"{policy.name}: fingerprint launch differs from admitted runtime"
+        )
+    expected = hashlib.sha256(
+        json.dumps(
+            selected_python_runtime_material(selected),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    if identity.get("python_runtime_sha256") != expected:
+        raise ValueError(f"{policy.name}: Python runtime fingerprint digest is invalid")
+
+
+def _version_fingerprint(
+    policy: ToolchainPolicy, *, python_admission: BuildPythonAdmission | None = None
+) -> dict[str, Any] | None:
     if policy.identity_kind != "executable":
         raise ValueError(
             f"{policy.name}: {policy.identity_kind} toolchain identity "
@@ -2295,7 +2755,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         try:
             path = str(
                 resolve_wasi_sdk_tool(
-                    ROOT, sdk_role or "wasm-ld", environ=dict(os.environ)
+                    policy.root, sdk_role or "wasm-ld", environ=dict(os.environ)
                 )
             )
         except LlvmToolchainConfigError as exc:
@@ -2337,7 +2797,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         from molt.llvm_toolchain import capture_wasi_sdk_selection
         from molt.wasi_sdk_identity import capture_wasi_sdk_tool_files
 
-        sdk_closure = capture_wasi_sdk_selection(root=ROOT, env=os.environ)
+        sdk_closure = capture_wasi_sdk_selection(root=policy.root, env=os.environ)
         images = capture_wasi_sdk_tool_files(sdk_closure)
         launcher = next(
             (row for row in images if row["path"] == str(command_path)), None
@@ -2376,6 +2836,8 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
                 resolved.stdout,
                 probe_cwd=probe_directory,
             )
+            if policy.python_identity_role == "runtime":
+                content_path = Path(resolved.stdout.strip()).absolute()
         except (IndexError, OSError, ValueError, subprocess.TimeoutExpired):
             content_path = Path("unavailable")
     executable_sha256 = (
@@ -2383,7 +2845,10 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
     )
     try:
         version_argv = [
-            str(content_path) if policy.name in {"rustc", "cargo"} else path,
+            str(content_path)
+            if policy.name in {"rustc", "cargo"}
+            or policy.data.get("version_from_content_path")
+            else path,
             *policy.data["version_args"],
         ]
         completed = subprocess.run(
@@ -2425,7 +2890,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         from molt.llvm_toolchain import llvm_verification_selection
 
         selected = llvm_verification_selection(
-            root=ROOT, cwd=probe_directory, env=os.environ
+            root=policy.root, cwd=probe_directory, env=os.environ
         )
         images = [
             {
@@ -2443,80 +2908,179 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
                 separators=(",", ":"),
             ).encode()
         ).hexdigest()
-    identity["identity_sha256"] = _toolchain_fingerprint_digest(identity)
+    if policy.python_identity_role == "runtime":
+        selected = capture_selected_python_runtime(
+            policy, content_path, environment=os.environ, admission=python_admission
+        )
+        validate_selected_python_runtime(policy, selected)
+        identity["python_runtime"] = selected
+        identity["version"] = "Python " + str(selected["runtime"]["version"])
+        identity["python_runtime_sha256"] = hashlib.sha256(
+            json.dumps(
+                selected_python_runtime_material(selected),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    identity["identity_sha256"] = _toolchain_fingerprint_digest(
+        {key: value for key, value in identity.items() if key != "python_runtime"}
+    )
     return identity
 
 
 def toolchain_fingerprints(
-    plan: ProofPlan,
+    toolchain_policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
-) -> dict[str, dict[str, str]]:
-    policies = {policy.name: policy for policy in plan.toolchain_policies}
-    target_derived = [
-        name for name in names if policies[name].identity_kind != "executable"
-    ]
-    if target_derived:
-        raise ValueError(
-            "toolchain contract violation: "
-            + "; ".join(
-                f"{name}: {policies[name].identity_kind} toolchain identity "
-                "requires target-context capture"
-                for name in target_derived
+    *,
+    owners: Mapping[str, Iterable[str]] | None = None,
+    python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Admit all selected images before work, preserving every probe failure."""
+    policies = {policy.name: policy for policy in toolchain_policies}
+    names = toolchain_closure(policies.values(), names)
+    fingerprints: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    # Only groups expand here. Expanding each executable's transitive closure
+    # would repeatedly traverse long dependency chains and retain quadratic
+    # edge sets. The selected closure above has already validated the graph.
+    group_images: dict[str, tuple[str, ...]] = {}
+
+    def images(name: str) -> tuple[str, ...]:
+        policy = policies[name]
+        if policy.identity_kind != "group":
+            return (name,)
+        if name not in group_images:
+            group_images[name] = tuple(
+                dict.fromkeys(
+                    image
+                    for member in (
+                        *policy.data.get("dependencies", []),
+                        *policy.data["members"],
+                    )
+                    for image in images(member)
+                )
+            )
+        return group_images[name]
+
+    dependencies = {
+        name: tuple(
+            dict.fromkeys(
+                image
+                for dependency in policies[name].data.get("dependencies", [])
+                for image in images(dependency)
             )
         )
-    fingerprints: dict[str, dict[str, str]] = {}
-    errors: list[str] = []
-    domains: dict[str, list[str]] = {}
-    for name in names:
-        policy = policies[name]
-        domain = str(policy.data.get("fingerprint_domain", f"toolchain:{name}"))
-        domains.setdefault(domain, []).append(name)
-    worker_count = min(4, len(domains))
-    if worker_count == 0:
-        return fingerprints
+        for name in names
+    }
+    remaining = {name: len(dependencies[name]) for name in names}
+    dependents: dict[str, list[str]] = {name: [] for name in names}
+    for name, required in dependencies.items():
+        for dependency in required:
+            dependents[dependency].append(name)
+    ready = [name for name in names if not remaining[name]]
 
-    def fingerprint_domain(
-        domain_names: list[str],
-    ) -> dict[str, dict[str, str] | None]:
-        # Launchers in one provisioning domain can share mutable install state
-        # (notably rustup). Probe that domain serially while independent
-        # toolchains retain bounded parallelism.
-        return {name: _version_fingerprint(policies[name]) for name in domain_names}
+    def fingerprint_domain(domain_names: list[str]):
+        # Provisioning-domain launchers (notably rustup) remain serial. One
+        # failing probe must not suppress siblings or independent domains.
+        results = {}
+        for name in domain_names:
+            try:
+                results[name] = (
+                    _version_fingerprint(
+                        policies[name], python_admission=python_admissions[name]
+                    )
+                    if python_admissions is not None and name in python_admissions
+                    else _version_fingerprint(policies[name]),
+                    None,
+                )
+            except Exception as exc:
+                results[name] = (None, f"probe raised {type(exc).__name__}: {exc}")
+        return results
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            domain: executor.submit(fingerprint_domain, domain_names)
-            for domain, domain_names in domains.items()
-        }
-    domain_results = {domain: future.result() for domain, future in futures.items()}
-    for name in names:
-        policy = policies[name]
-        domain = str(policy.data.get("fingerprint_domain", f"toolchain:{name}"))
-        fingerprint = domain_results[domain][name]
-        if fingerprint is None:
-            errors.append(f"{name}: executable {policy.data['executable']!r} not found")
-            continue
-        if (
-            re.search(str(policy.data["version_pattern"]), fingerprint["version"])
-            is None
-        ):
-            errors.append(
-                f"{name}: version {fingerprint['version']!r} violates "
-                f"{policy.data['version_pattern']!r}"
-            )
-            continue
-        for hash_field in ("launcher_sha256", "executable_sha256"):
-            digest = fingerprint[hash_field]
-            if len(digest) != 64 or any(
-                character not in "0123456789abcdef" for character in digest.lower()
-            ):
-                errors.append(f"{name}: {hash_field} is unavailable")
-                break
-        else:
-            fingerprints[name] = fingerprint
-            continue
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(names)))) as executor:
+        while ready:
+            domains: dict[str, list[str]] = {}
+            for name in ready:
+                blocked = [
+                    dependency
+                    for dependency in dependencies[name]
+                    if dependency in errors
+                ]
+                if blocked:
+                    errors[name] = "blocked by failed prerequisites: " + ", ".join(
+                        blocked
+                    )
+                    continue
+                policy = policies[name]
+                domain = str(policy.data.get("fingerprint_domain", f"toolchain:{name}"))
+                domains.setdefault(domain, []).append(name)
+            results = {}
+            if domains:
+                futures = [
+                    executor.submit(fingerprint_domain, domain)
+                    for domain in domains.values()
+                ]
+                for future in futures:
+                    results.update(future.result())
+            for name in ready:
+                if name in errors:
+                    continue
+                policy = policies[name]
+                fingerprint, error = results[name]
+                if error is not None:
+                    errors[name] = error
+                elif fingerprint is None:
+                    errors[name] = f"executable {policy.data['executable']!r} not found"
+                elif (
+                    re.search(
+                        str(policy.data["version_pattern"]), fingerprint["version"]
+                    )
+                    is None
+                ):
+                    errors[name] = (
+                        f"version {fingerprint['version']!r} violates "
+                        f"{policy.data['version_pattern']!r}"
+                    )
+                else:
+                    for field in ("launcher_sha256", "executable_sha256"):
+                        digest = fingerprint[field]
+                        if len(digest) != 64 or any(
+                            c not in "0123456789abcdef" for c in digest.lower()
+                        ):
+                            errors[name] = f"{field} is unavailable"
+                            break
+                    else:
+                        if policy.python_identity_role == "runtime":
+                            try:
+                                validate_selected_python_fingerprint(
+                                    policy, fingerprint
+                                )
+                            except (KeyError, TypeError, ValueError) as exc:
+                                errors[name] = str(exc)
+                                continue
+                        fingerprints[name] = fingerprint
+            next_ready = []
+            for name in ready:
+                for dependent in dependents[name]:
+                    remaining[dependent] -= 1
+                    if not remaining[dependent]:
+                        next_ready.append(dependent)
+            ready = next_ready
     if errors:
-        raise ValueError("toolchain contract violation: " + "; ".join(errors))
+        diagnostics = []
+        for name in names:
+            if name not in errors:
+                continue
+            policy = policies[name]
+            owner = ", ".join(owners.get(name, ())) if owners else ""
+            setup = policy.data.get("setup_command")
+            suffix = f"; setup: {setup}" if setup else ""
+            diagnostics.append(
+                f"{name}"
+                + (f" [{owner}]" if owner else "")
+                + f": {errors[name]}{suffix}"
+            )
+        raise ValueError("toolchain contract violation: " + "; ".join(diagnostics))
     return fingerprints
 
 
@@ -3372,6 +3936,18 @@ def verify_receipts(
                         errors.append(
                             f"{command_id}: {name} toolchain identity hash is invalid"
                         )
+                    if (
+                        name in policies
+                        and policies[name].python_identity_role == "runtime"
+                    ):
+                        try:
+                            validate_selected_python_fingerprint(
+                                policies[name], identity
+                            )
+                        except (KeyError, TypeError, ValueError) as exc:
+                            errors.append(
+                                f"{command_id}: {name} runtime fingerprint is invalid: {exc}"
+                            )
             observed[command_id] = record
     for command_id in expected_commands:
         if command_id not in observed:

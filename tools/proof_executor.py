@@ -8,7 +8,10 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from tools.proof_plan import ToolchainPolicy
 
 from molt.artifact_publication import atomic_write_json
 
@@ -24,6 +27,7 @@ class ProofPlan(Protocol):
     receipt_schema: str
     executor_max_workers: int
     resource_policies: tuple[Any, ...]
+    toolchain_policies: tuple[ToolchainPolicy, ...]
 
 
 def execute_commands(
@@ -33,7 +37,7 @@ def execute_commands(
     *,
     _source_tree_changes: Callable[[], tuple[str, ...]],
     toolchain_fingerprints: Callable[
-        [ProofPlan, tuple[str, ...]], dict[str, dict[str, Any]]
+        [Iterable[ToolchainPolicy], tuple[str, ...]], dict[str, dict[str, Any]]
     ],
     _authority_sha256: Callable[[ProofPlan], str],
     _source_identity: Callable[[], dict[str, str]],
@@ -83,7 +87,9 @@ def execute_commands(
     )
     toolchain_error: str | None = None
     try:
-        toolchains = toolchain_fingerprints(plan, requested_toolchains)
+        toolchains = toolchain_fingerprints(
+            plan.toolchain_policies, requested_toolchains
+        )
     except ValueError as exc:
         toolchains = {}
         toolchain_error = str(exc)

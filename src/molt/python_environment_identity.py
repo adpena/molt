@@ -110,8 +110,8 @@ def _parse_arguments():
         parser.error("runtime selection accepts no capture or admission options")
     if args.capture_runtime and admissions:
         parser.error("runtime capture accepts no environment admission options")
-    if args.runtime_session and (not args.capture_runtime or args.with_custody):
-        parser.error("runtime session requires runtime capture without an envelope")
+    if args.runtime_session and not args.capture_runtime:
+        parser.error("runtime session requires runtime capture")
     return args
 
 
@@ -271,7 +271,12 @@ def _serve_runtime_session(payload, context, *, requests, responses) -> None:
             if request != "verify\n":
                 raise PythonEnvironmentIdentityError("invalid runtime session request")
             context.verify()
-            responses.write(str(payload["runtime_closure_sha256"]) + "\n")
+            identity = (
+                payload["identity"]
+                if payload.get("schema") == PYTHON_CAPTURE_SCHEMA
+                else payload
+            )
+            responses.write(str(identity["runtime_closure_sha256"]) + "\n")
             responses.flush()
     finally:
         context.close()

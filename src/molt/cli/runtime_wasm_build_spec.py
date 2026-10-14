@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.cli.runtime_build_python import BuildPythonAdmission
+from molt.python_runtime_admission import BuildPythonAdmission
 
 import os
 import shlex

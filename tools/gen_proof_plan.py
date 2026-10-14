@@ -10,7 +10,12 @@ import os
 import sys
 from pathlib import Path
 
-from proof_plan import DEFAULT_MANIFEST, ProofPlan, _authority_sha256
+from proof_plan import (
+    DEFAULT_MANIFEST,
+    ProofPlan,
+    _authority_sha256,
+    local_gate_commands,
+)
 from generator_io import generator_main, write_generated_texts
 from molt.cargo_execution_policy import (
     PROOF_COMMAND_TIMEOUT_ENV,
@@ -204,24 +209,23 @@ def _scheduled_timeout_envelope_projection(
 def _json_projection(plan: ProofPlan) -> str:
     shared_cargo_policy = load_ci_cargo_policy()
     cargo_policy = shared_cargo_policy.execution_budgets
+    local_rows = local_gate_commands(
+        {
+            "always": plan.always,
+            "always_toolchains": plan.always_toolchains,
+            "rule": plan.local_rules,
+        }
+    )
     local_commands = {
-        **{
-            f"local.always.{index}": command
-            for index, command in enumerate(plan.always)
-        },
-        **{
-            f"local.{rule['name']}.{index}": command
-            for rule in plan.local_rules
-            for index, command in enumerate(rule.get("gates", []))
-        },
+        identifier: command for identifier, (command, _) in local_rows.items()
     }
+    local_ids: dict[str, list[str]] = {}
+    for identifier in local_rows:
+        local_ids.setdefault(identifier.rsplit(".", 1)[0], []).append(identifier)
     local_rules = [
         {
             **rule,
-            "command_ids": [
-                f"local.{rule['name']}.{index}"
-                for index, _command in enumerate(rule.get("gates", []))
-            ],
+            "command_ids": local_ids.get(f"local.{rule['name']}", []),
         }
         for rule in plan.local_rules
     ]
@@ -276,10 +280,12 @@ def _json_projection(plan: ProofPlan) -> str:
         },
         "local": {
             "always": list(plan.always),
-            "always_command_ids": [
-                f"local.always.{index}" for index, _command in enumerate(plan.always)
-            ],
+            "always_command_ids": local_ids.get("local.always", []),
             "commands": local_commands,
+            "toolchains": {
+                identifier: list(plan.toolchain_closure(tools))
+                for identifier, (_, tools) in local_rows.items()
+            },
             "rules": local_rules,
         },
     }
@@ -480,7 +486,10 @@ def _markdown_projection(plan: ProofPlan) -> str:
     )
     for policy in plan.toolchain_policies:
         data = policy.data
-        if policy.identity_kind == "target-derived":
+        if policy.identity_kind == "group":
+            provider = ", ".join(f"`{member}`" for member in data["members"])
+            probe_cwd = setup_value = setup_evidence = "—"
+        elif policy.identity_kind == "target-derived":
             provider = f"`{data['identity_provider']}`"
             probe_cwd = setup_value = setup_evidence = "—"
         else:
@@ -494,7 +503,7 @@ def _markdown_projection(plan: ProofPlan) -> str:
             setup_evidence = str(len(data["setup_evidence"]))
         lines.append(
             f"| `{policy.name}` | `{policy.identity_kind}` | {provider} | "
-            f"`{data['version_pattern']}` | {probe_cwd} | {setup_value} | "
+            f"`{data.get('version_pattern', 'selection only')}` | {probe_cwd} | {setup_value} | "
             f"{setup_evidence} |"
         )
     lines.extend(

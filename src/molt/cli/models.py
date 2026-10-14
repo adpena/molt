@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from molt.frontend import ClassId, ClassInfo
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
-    from molt.cli.runtime_build_python import BuildPythonAdmission
+    from molt.python_runtime_admission import BuildPythonAdmission
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
