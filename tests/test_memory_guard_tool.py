@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import enum
 import signal
 import subprocess
 import sys
@@ -237,6 +238,21 @@ def _complete_sampling_telemetry() -> memory_guard.GuardSamplingTelemetry:
         successes=1,
         transient_failures=0,
     )
+
+
+def _posix_custody_signal(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
+    """Give process custody POSIX signal numbers and names on every host.
+
+    Windows has no SIGKILL, and its ``signal.Signals`` cannot name 9, so the
+    emulation carries its own enum for the names custody records (HF-49).
+    """
+    custody_signal = types.SimpleNamespace(**vars(signal))
+    custody_signal.SIGKILL = 9
+    custody_signal.Signals = enum.IntEnum(
+        "Signals", {"SIGTERM": int(signal.SIGTERM), "SIGKILL": 9}
+    )
+    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    return custody_signal
 
 
 def _guarded_child(
@@ -4424,9 +4440,7 @@ def test_reaped_root_cleanup_composes_with_scratch_closure(
             getsid=absent_pid,
         ),
     )
-    custody_signal = types.SimpleNamespace(**vars(signal))
-    custody_signal.SIGKILL = 9
-    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    _posix_custody_signal(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )
@@ -4591,9 +4605,7 @@ def test_escalation_reconciles_only_proven_terminal_exit(
         "os",
         types.SimpleNamespace(name="posix", getpid=lambda: 999, getpgrp=lambda: 999),
     )
-    custody_signal = types.SimpleNamespace(**vars(signal))
-    custody_signal.SIGKILL = 9
-    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    custody_signal = _posix_custody_signal(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )
@@ -5536,9 +5548,7 @@ def test_refused_group_signal_resolves_only_by_an_observed_exit(
             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
         ),
     )
-    custody_signal = types.SimpleNamespace(**vars(signal))
-    custody_signal.SIGKILL = 9
-    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    custody_signal = _posix_custody_signal(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )
@@ -8984,9 +8994,7 @@ def test_sigkilled_target_gets_time_to_leave_under_zero_grace(
         "os",
         types.SimpleNamespace(name="posix", getpid=lambda: 999, getpgrp=lambda: 999),
     )
-    custody_signal = types.SimpleNamespace(**vars(signal))
-    custody_signal.SIGKILL = 9
-    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    custody_signal = _posix_custody_signal(monkeypatch)
     root = process_custody.ProcessSample(
         101, 999, 10, "python root.py", pgid=101, started_at_ns=11
     )
