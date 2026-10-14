@@ -174,34 +174,24 @@ pub(crate) unsafe fn function_required_call_target_ptr(
     runtime_callable_target_ptr(fn_ptr)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[inline]
-unsafe fn function_runtime_call_target_ptr(func_ptr: *mut u8, fn_ptr: u64) -> Option<*const ()> {
-    let runtime_target = runtime_callable_target_ptr(fn_ptr)?;
-    let target = unsafe { function_call_target_ptr(func_ptr) };
-    if !target.is_null() {
-        return Some(target);
-    }
-    Some(runtime_target)
-}
-
 fn missing_function_call_target(_py: &PyToken<'_>, context: &str, fn_ptr: u64) -> u64 {
     let msg = format!("{context}: function call target 0x{fn_ptr:x} is not initialized");
     raise_exception::<_>(_py, "RuntimeError", &msg)
 }
 
+// Construction stores every native function's executable target in the
+// object, so a call reads one word and takes no registry lock. Runtime entries
+// and compiled code alike return one object word.
 #[cfg(not(target_arch = "wasm32"))]
 macro_rules! call_native_fixed_arity {
-    ($py:expr, $func_ptr:expr, $fn_ptr:expr, $runtime_ty:ty, $compiled_ty:ty, ($($arg:expr),* $(,)?)) => {{
-        if let Some(runtime_target) = function_runtime_call_target_ptr($func_ptr, $fn_ptr) {
-            let func: $runtime_ty = std::mem::transmute(runtime_target);
-            func($($arg),*) as u64
-        } else if let Some(call_target) = function_required_call_target_ptr($func_ptr, $fn_ptr) {
-            let func: $compiled_ty = std::mem::transmute(call_target);
-            func($($arg),*) as u64
-        } else {
-            return missing_function_call_target($py, "fixed arity call", $fn_ptr);
-        }
+    ($py:expr, $func_ptr:expr, $fn_ptr:expr, $fn_ty:ty, ($($arg:expr),* $(,)?)) => {{
+        let func: $fn_ty = std::mem::transmute(required_native_call_target!(
+            $py,
+            $func_ptr,
+            $fn_ptr,
+            "fixed arity call"
+        ));
+        func($($arg),*) as u64
     }};
 }
 
@@ -485,7 +475,6 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
                     _py,
                     func_ptr,
                     fn_ptr,
-                    extern "C" fn(u64, u64) -> u64,
                     extern "C" fn(u64, u64) -> i64,
                     (closure_bits, arg0_bits)
                 )
@@ -513,17 +502,10 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
                 // Arity == 1, no closure, so the 1-arg signature `fn(u64) -> i64` matches. The
                 // compiler must emit a valid non-null pointer for this function. UB if fn_ptr is
                 // null or points to a function with a different signature.
-                if let Some(runtime_target) = function_runtime_call_target_ptr(func_ptr, fn_ptr) {
-                    let func: extern "C" fn(u64) -> u64 = std::mem::transmute(runtime_target);
-                    func(arg0_bits)
-                } else if let Some(call_target) =
-                    function_required_call_target_ptr(func_ptr, fn_ptr)
-                {
-                    let func: extern "C" fn(u64) -> i64 = std::mem::transmute(call_target);
-                    func(arg0_bits) as u64
-                } else {
-                    return missing_function_call_target(_py, "call_function_obj1", fn_ptr);
-                }
+                let func: extern "C" fn(u64) -> i64 = std::mem::transmute(
+                    required_native_call_target!(_py, func_ptr, fn_ptr, "call_function_obj1"),
+                );
+                func(arg0_bits) as u64
             }
         };
 
@@ -736,7 +718,6 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
                     _py,
                     func_ptr,
                     fn_ptr,
-                    extern "C" fn(u64) -> u64,
                     extern "C" fn(u64) -> i64,
                     (closure_bits)
                 )
@@ -782,17 +763,10 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
                 // `function_fn_ptr`. Arity == 0, no closure, so the nullary signature
                 // `fn() -> i64` is correct. The compiler must emit a valid non-null pointer.
                 // UB if fn_ptr is null or points to a function expecting arguments.
-                if let Some(runtime_target) = function_runtime_call_target_ptr(func_ptr, fn_ptr) {
-                    let func: extern "C" fn() -> u64 = std::mem::transmute(runtime_target);
-                    func()
-                } else if let Some(call_target) =
-                    function_required_call_target_ptr(func_ptr, fn_ptr)
-                {
-                    let func: extern "C" fn() -> i64 = std::mem::transmute(call_target);
-                    func() as u64
-                } else {
-                    return missing_function_call_target(_py, "call_function_obj0", fn_ptr);
-                }
+                let func: extern "C" fn() -> i64 = std::mem::transmute(
+                    required_native_call_target!(_py, func_ptr, fn_ptr, "call_function_obj0"),
+                );
+                func() as u64
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj0");
@@ -884,7 +858,6 @@ unsafe fn call_function_obj_bound2(
                     _py,
                     func_ptr,
                     fn_ptr,
-                    extern "C" fn(u64, u64, u64) -> u64,
                     extern "C" fn(u64, u64, u64) -> i64,
                     (closure_bits, arg0_bits, arg1_bits)
                 )
@@ -914,17 +887,10 @@ unsafe fn call_function_obj_bound2(
                 // SAFETY: Same invariant as the wasm32 non-closure path — fn_ptr from
                 // `function_fn_ptr` targets a 2-arg extern "C" function. The compiler must
                 // emit a valid non-null pointer. UB if fn_ptr is null or has wrong arity.
-                if let Some(runtime_target) = function_runtime_call_target_ptr(func_ptr, fn_ptr) {
-                    let func: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(runtime_target);
-                    func(arg0_bits, arg1_bits)
-                } else if let Some(call_target) =
-                    function_required_call_target_ptr(func_ptr, fn_ptr)
-                {
-                    let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(call_target);
-                    func(arg0_bits, arg1_bits) as u64
-                } else {
-                    return missing_function_call_target(_py, "call_function_obj2", fn_ptr);
-                }
+                let func: extern "C" fn(u64, u64) -> i64 = std::mem::transmute(
+                    required_native_call_target!(_py, func_ptr, fn_ptr, "call_function_obj2"),
+                );
+                func(arg0_bits, arg1_bits) as u64
             }
         };
 
@@ -1000,7 +966,6 @@ unsafe fn call_function_obj_bound3(
                     func_ptr,
                     fn_ptr,
                     extern "C" fn(u64, u64, u64, u64) -> i64,
-                    extern "C" fn(u64, u64, u64, u64) -> i64,
                     (closure_bits, arg0_bits, arg1_bits, arg2_bits)
                 )
             }
@@ -1029,7 +994,6 @@ unsafe fn call_function_obj_bound3(
                     _py,
                     func_ptr,
                     fn_ptr,
-                    extern "C" fn(u64, u64, u64) -> i64,
                     extern "C" fn(u64, u64, u64) -> i64,
                     (arg0_bits, arg1_bits, arg2_bits)
                 )
@@ -1110,7 +1074,6 @@ unsafe fn call_function_obj_bound4(
                     func_ptr,
                     fn_ptr,
                     extern "C" fn(u64, u64, u64, u64, u64) -> i64,
-                    extern "C" fn(u64, u64, u64, u64, u64) -> i64,
                     (closure_bits, arg0_bits, arg1_bits, arg2_bits, arg3_bits)
                 )
             }
@@ -1140,7 +1103,6 @@ unsafe fn call_function_obj_bound4(
                     _py,
                     func_ptr,
                     fn_ptr,
-                    extern "C" fn(u64, u64, u64, u64) -> i64,
                     extern "C" fn(u64, u64, u64, u64) -> i64,
                     (arg0_bits, arg1_bits, arg2_bits, arg3_bits)
                 )
@@ -1234,7 +1196,6 @@ unsafe fn call_function_obj_bound5(
                     func_ptr,
                     fn_ptr,
                     extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64,
-                    extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64,
                     (
                         closure_bits,
                         arg0_bits,
@@ -1272,7 +1233,6 @@ unsafe fn call_function_obj_bound5(
                     _py,
                     func_ptr,
                     fn_ptr,
-                    extern "C" fn(u64, u64, u64, u64, u64) -> i64,
                     extern "C" fn(u64, u64, u64, u64, u64) -> i64,
                     (arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits)
                 )
