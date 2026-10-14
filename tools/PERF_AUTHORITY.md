@@ -324,7 +324,8 @@ See also:
 
 ## Witness Iteration Build Profile (2026-07-11)
 
-Canonical machine-checkable record: `tools/perf_witness_iteration_attestation.json`.
+Its attestation failed the Variant-II audit below and was withdrawn (HF-188); the
+measurements here are dated history, not a citable perf claim.
 The measured aperture is the real `pact-witness-acceptance` build through the
 current runtime frontier. The acceptance run currently fails after codegen in
 WASM import stripping, so replay is not measurable in this revision; build-path
@@ -335,8 +336,8 @@ numbers remain valid and queue-custodied.
 | 1 | Frontend graph + analysis + lowering | 390-604s across same-machine diagnostics; 0-24% lowering hits | 467.6s avoidable before this landing; unique output path changed all contexts | Reuse unchanged 145 module lowerings; lower only changed modules | 467.6s eliminated (61.3% wall, 2.59x) |
 | 2 | Backend prepare/codegen | 198-410s, including first population of thousands of functions | 295.0s total build to the current import-strip frontier; only 12 uncached TIR functions in the steady sample | Rebuild the changed runtime/compiler cone and changed functions | Next target: function/object cache misses plus import-strip frontier |
 | 3 | Runtime wasm cargo compile | 23.9-265.5s historical; 124.7s recent cold sample | Target/shared reuse is fingerprint-controlled; final patched sample did not rebuild runtime | One changed runtime crate compile | Audit configured vs effective runtime-wasm hydrate hit rate |
-| 4 | Runtime reloc link | 3.831193s median warm isolated relink for the 69.5MB runtime; target-staticlib reuse previously linked before cache lookup | 1.287784s exact-cache hydrate median after cache-first ordering | One relink on a true cache miss | 2.543410s eliminated (66.39%, 2.975x); `tools/perf_goal_r5_relink_attestation.json` |
-| 5 | Seal / validate | Isolated NumPy 2.5.1 seal validation was 1.441451s median across five fresh processes; 1.182s cumulative was repeated relocation-root discovery across 132 objects | 0.869927s median after one resolver precomputes manifest relocation roots once | Hash each source once; discover relocation roots once per manifest | 0.571524s eliminated (39.65%, 1.657x); `tools/perf_goal_r4_seal_validation_attestation.json` |
+| 4 | Runtime reloc link | 3.831193s median warm isolated relink for the 69.5MB runtime; target-staticlib reuse previously linked before cache lookup | 1.287784s exact-cache hydrate median after cache-first ordering | One relink on a true cache miss | 2.543410s eliminated (66.39%, 2.975x) |
+| 5 | Seal / validate | Isolated NumPy 2.5.1 seal validation was 1.441451s median across five fresh processes; 1.182s cumulative was repeated relocation-root discovery across 132 objects | 0.869927s median after one resolver precomputes manifest relocation roots once | Hash each source once; discover relocation roots once per manifest | 0.571524s eliminated (39.65%, 1.657x) |
 | 6 | Replay / parity | Not reached: current frontier is WASM import stripping | Not reached | One replay | Outside this build-time landing |
 
 Root cause: the synthetic `_molt_native_runtime_python_imports.py` entry lived
@@ -351,7 +352,8 @@ and rejects any `tmp.acceptance` module admission.
 
 ## WASM Publication Strip (2026-07-11)
 
-Canonical machine-checkable record: `tools/wasm_publication_strip_attestation.json`.
+Its attestation failed the Variant-II audit below and was withdrawn (HF-188); the
+measurements here are dated history, not a citable perf claim.
 This aperture removes publication-only custom sections without touching code or
 data reachability. Final artifacts run the export-contract rewrite first, then
 the canonical strip, then link validation.
@@ -431,17 +433,11 @@ reduced observed peak RSS from 64 MiB to 40 MiB.
 `tools/powerplay_acceptance.py` is the acceptance authority for perf landings.
 A citable landing requires a positive serial differential on the real authority,
 a release profile, at least three samples, held-bench never-regress evidence,
-and a recorded memory-ceiling run. Checked-in legacy attestations are parsed by
-the canonical perf workflow but remain advisory until all fields needed by
-`CorrectnessDemonstration` are present; this prevents historical shape drift
-from blocking unrelated work while refusing proxy evidence for a perf claim.
-
-The current checked-in attestations validate as follows:
-
-- `perf_goal_r3_runtime_cache_attestation.json`: parsed; dev-fast compatible-cache proxy, not Variant-II citable.
-- `perf_goal_r4_seal_validation_attestation.json`: parsed; real five-run seal differential, missing explicit release-profile and memory-ceiling evidence.
-- `perf_goal_r5_relink_attestation.json`: parsed; real three-run artifact differential, missing explicit release-profile and memory-ceiling evidence.
-- `perf_witness_iteration_attestation.json`: parsed; acceptance-shaped build evidence, not a complete correctness/memory attestation.
+and a recorded memory-ceiling run. An attestation is checked in only when it
+passes this audit. Five July 2026 attestations (perf goals r3, r4, r5, the
+witness iteration and the WASM publication strip) failed it on dev-profile,
+proxy or single-run evidence and were withdrawn (HF-188). The four
+`tools/opt_matrix_r*_attestation.json` records pass it.
 
 ### OPT-MATRIX-R7 WASM release memory floor
 
