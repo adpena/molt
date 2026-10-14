@@ -8768,11 +8768,30 @@ def test_launch_identity_survives_a_child_the_kernel_no_longer_reports(
 def test_child_clock_is_independent_of_guard_setup_and_sampler(
     monkeypatch, delayed_boundary
 ):
+    def run(sampler):
+        return memory_guard.run_guarded(
+            [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
+            max_rss_kb=1024 * 1024,
+            max_total_rss_kb=2 * 1024 * 1024,
+            capture_output=True,
+            text=True,
+            poll_interval=0.01,
+            sampler=sampler,
+            child_rlimit_kb=None,
+        )
+
+    # A sampler delay hides inside a child that outlives it, so no clock could
+    # tell them apart. Size the delay from this child's own lifetime under the
+    # current load (a loaded Windows runner takes 0.48 s to run `pass`).
+    baseline = run(memory_guard.sample_processes)
+    assert baseline.returncode == 0
+    assert baseline.child_elapsed_s is not None
+    delay_s = max(0.3, 5 * baseline.child_elapsed_s)
     if delayed_boundary == "scratch":
         original = memory_guard._temporary_artifacts.acquire_guard_scratch
 
         def delayed_scratch(*args, **kwargs):
-            time.sleep(0.3)
+            time.sleep(delay_s)
             return original(*args, **kwargs)
 
         monkeypatch.setattr(
@@ -8784,7 +8803,7 @@ def test_child_clock_is_independent_of_guard_setup_and_sampler(
         # first sample is still running, so any clock that included sampler
         # latency would report at least the delay. Later samples are fast.
         original = memory_guard.sample_processes
-        sampler_delays = [0.3]
+        sampler_delays = [delay_s]
 
         def sampler():
             if sampler_delays:
@@ -8795,7 +8814,7 @@ def test_child_clock_is_independent_of_guard_setup_and_sampler(
         # must not influence the process-handle clock either.
         if os.name == "nt":
             original_memory = memory_guard._win_job.process_memory
-            memory_delays = [0.3]
+            memory_delays = [delay_s]
 
             def slow_memory(*args, **kwargs):
                 if memory_delays:
@@ -8803,20 +8822,13 @@ def test_child_clock_is_independent_of_guard_setup_and_sampler(
                 return original_memory(*args, **kwargs)
 
             monkeypatch.setattr(memory_guard._win_job, "process_memory", slow_memory)
-    result = memory_guard.run_guarded(
-        [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
-        max_rss_kb=1024 * 1024,
-        max_total_rss_kb=2 * 1024 * 1024,
-        capture_output=True,
-        text=True,
-        poll_interval=0.01,
-        sampler=sampler,
-        child_rlimit_kb=None,
-    )
+    result = run(sampler)
     assert result.returncode == 0
     assert result.child_elapsed_s is not None
-    assert result.child_elapsed_s < 0.3
-    assert result.elapsed_s >= 0.3
+    # The child clock reports the child's own lifetime, well under the delay;
+    # the guard clock includes the delay.
+    assert result.child_elapsed_s < 0.6 * delay_s
+    assert result.elapsed_s >= delay_s
     assert result.elapsed_s == result.child_elapsed_s + result.cleanup_elapsed_s
 
 
