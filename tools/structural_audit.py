@@ -2627,7 +2627,7 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
     return findings
 
 
-# --- process-wide stdlib patches in tests (HF-43) -------------------------
+# --- process-wide stdlib patches in tests (HF-F181) -------------------------
 
 # Shared stdlib modules whose attributes every caller in a pytest process reads,
 # the suite-lease and sentinel threads among them.
