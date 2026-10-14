@@ -269,6 +269,15 @@ def test_module_getattr_demands_lazy_returned_class(tmp_path: Path) -> None:
             set(),
         ),
         ("import json\njson.JSONDecoder().raw_decode('1')\n", {"operator"}, set()),
+        # Bootstrap modules expose no namespace: types binds its runtime
+        # payload by name, the frozen importer passes no globals, and the
+        # ByteString hooks select one warnings member.
+        (
+            "import types\nimport _collections_abc\nimport importlib._bootstrap_external\n",
+            set(),
+            {"functools", "collections", "re", "reprlib", "math", "itertools"},
+        ),
+        ("import types\ntypes.coroutine(lambda: None)\n", {"functools"}, set()),
         (
             "from email.message import EmailMessage\nEmailMessage().as_string()\n",
             {"email.generator"},

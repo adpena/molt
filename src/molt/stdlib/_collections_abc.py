@@ -1138,23 +1138,13 @@ class _DeprecateByteStringMeta(ABCMeta):
         if name != "ByteString":
             import warnings
 
-            deprecated = getattr(warnings, "_deprecated", None)
-            if callable(deprecated):
-                deprecated(
-                    "collections.abc.ByteString",
-                    remove=(3, 17),
-                )
+            warnings._deprecated("collections.abc.ByteString", remove=(3, 17))
         return super().__new__(cls, name, bases, namespace, **kwargs)
 
     def __instancecheck__(cls, instance):
         import warnings
 
-        deprecated = getattr(warnings, "_deprecated", None)
-        if callable(deprecated):
-            deprecated(
-                "collections.abc.ByteString",
-                remove=(3, 17),
-            )
+        warnings._deprecated("collections.abc.ByteString", remove=(3, 17))
         return super().__instancecheck__(instance)
 
 
