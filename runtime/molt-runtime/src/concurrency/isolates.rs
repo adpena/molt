@@ -468,6 +468,18 @@ fn thread_main(payload: Vec<u8>, handle: Arc<MoltThreadHandle>, lifetime: Runtim
     );
 }
 
+/// Isolate teardowns that panicked in this test process. A failed teardown
+/// retains its isolate and keeps process shutdown closed, yet the test that
+/// launched it can still pass; the runtime test transaction reads this count
+/// so that test fails instead.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static ISOLATE_TEARDOWN_FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn isolate_teardown_failure_count() -> usize {
+    ISOLATE_TEARDOWN_FAILURES.load(AtomicOrdering::SeqCst)
+}
+
 /// Own the complete fresh-isolate lifecycle. The final-image export remains the
 /// sole application initializer; parameters make this lifecycle testable without
 /// installing a second global provider or invoking libtest's Unavailable export.
@@ -530,6 +542,8 @@ fn run_isolate_thread(
         gc_owner.retire();
     });
     if teardown.is_err() {
+        #[cfg(test)]
+        ISOLATE_TEARDOWN_FAILURES.fetch_add(1, AtomicOrdering::SeqCst);
         eprintln!(
             "MOLT_ISOLATE_TEARDOWN_PANIC: retaining failed isolate at {state_ptr:p}; process shutdown remains closed"
         );
