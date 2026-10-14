@@ -342,15 +342,8 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
                 ..Default::default()
             },
             OpIR {
-                kind: "tuple_new".into(),
-                args: Some(vec!["borrowed".into()]),
-                out: Some("pair".into()),
-                stack_eligible: Some(true),
-                ..Default::default()
-            },
-            OpIR {
                 kind: "ret".into(),
-                args: Some(vec!["pair".into()]),
+                args: Some(vec!["wide".into()]),
                 ..Default::default()
             },
         ],
@@ -369,8 +362,24 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
             ..Default::default()
         },
     );
+    // The preserved tuple constructor has conservative callback effects even
+    // with a stack-eligibility hint. Keep that metadata-custody control as an
+    // independent non-leaf, rather than treating the hint as an effect proof.
+    let mut allocation = pure.clone();
+    allocation.name = "direct_fixture_allocation".into();
+    allocation.ops.insert(
+        allocation.ops.len() - 1,
+        OpIR {
+            kind: "tuple_new".into(),
+            args: Some(vec!["borrowed".into()]),
+            out: Some("pair".into()),
+            stack_eligible: Some(true),
+            ..Default::default()
+        },
+    );
+    allocation.ops.last_mut().unwrap().args = Some(vec!["pair".into()]);
     let ir = SimpleIR {
-        functions: vec![pure, unfinalized, callback],
+        functions: vec![pure, unfinalized, callback, allocation],
         profile: None,
     };
     let expected = serde_json::to_vec(&ir).unwrap();
