@@ -28,6 +28,7 @@ import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+from molt.cli.build_output_layout import _wasm_runtime_root  # noqa: E402
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
@@ -72,17 +73,7 @@ def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
     )
 
 
-def _wasm_runtime_root() -> Path:
-    env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
-    if env_root:
-        return Path(env_root).expanduser()
-    external_root = configured_artifact_root(os.environ, relative_to=Path.cwd())
-    if external_root is not None and external_root.is_dir():
-        return external_root / "wasm"
-    return Path("wasm")
-
-
-_RUNTIME_ROOT = _wasm_runtime_root()
+_RUNTIME_ROOT = _wasm_runtime_root(REPO_ROOT)
 RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
 RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
 _LAST_BUILD_FAILURE_DETAIL: str | None = None

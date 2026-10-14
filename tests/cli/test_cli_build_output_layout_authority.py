@@ -26,6 +26,7 @@ _BUILD_OUTPUT_LAYOUT_NAMES = (
     "_safe_output_base",
     "_wasm_runtime_root",
     "_wasm_runtime_root_cached",
+    "_wasm_runtime_root_from_env",
 )
 
 _BUILD_OUTPUT_LAYOUT_DEFINITIONS = (
@@ -35,6 +36,7 @@ _BUILD_OUTPUT_LAYOUT_DEFINITIONS = (
     "def _safe_output_base(",
     "def _wasm_runtime_root_cached(",
     "def _wasm_runtime_root(",
+    "def _wasm_runtime_root_from_env(",
     "def _default_build_root_cached(",
     "def _default_build_root(",
     "def _resolve_cache_root_cached(",
