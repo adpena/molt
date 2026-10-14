@@ -2,11 +2,29 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 
 import pytest
 
 from tools.proof_queue_pkg import command_admission, command_identity, policy
+
+
+def _admit_exact_fixture_rows(monkeypatch, *commands):
+    """Register each argv as an exact proof-plan row.
+
+    Pytest is a registered spawning entrypoint, so the real registry refuses
+    an unregistered pytest argv as a near-match. Count obligations follow the
+    payload of an admitted row.
+    """
+    registry = copy.deepcopy(command_admission._proof_command_registry())
+    for index, command in enumerate(commands):
+        registry["exact"][tuple(str(value) for value in command)] = {
+            "ids": [f"fixture.pytest-{index}"],
+            "toolchains": ("python",),
+            "cargo_native_units": {},
+        }
+    monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
 
 
 @pytest.mark.parametrize(
@@ -150,8 +168,9 @@ def test_cargo_help_is_leaf_but_harness_queries_may_compile(arguments, descendan
     ],
 )
 def test_python_test_counts_follow_payload_not_argument_spelling(
-    command, requires_counts
+    monkeypatch, command, requires_counts
 ):
+    _admit_exact_fixture_rows(monkeypatch, command)
     envelope = command_admission.envelope_for_command(command)
     assert (
         command_identity._requires_structured_test_counts(envelope) is requires_counts
@@ -194,7 +213,9 @@ def test_cargo_contention_uses_only_cargo_package_operands():
     )
 
 
-def test_compile_only_transcript_is_valid_build_but_not_running_test_evidence(tmp_path):
+def test_compile_only_transcript_is_valid_build_but_not_running_test_evidence(
+    monkeypatch, tmp_path
+):
     stdout = tmp_path / "stdout.bin"
     stderr = tmp_path / "stderr.bin"
     stdout.write_bytes(b"")
@@ -210,6 +231,7 @@ def test_compile_only_transcript_is_valid_build_but_not_running_test_evidence(tm
         policy._canonical_cargo_proof_command(["test", "--no-run", "--lib"])
     )
     command_identity.validate_structured_test_counts(build, transcript, returncode=0)
+    _admit_exact_fixture_rows(monkeypatch, [sys.executable, "-m", "pytest"])
     for command in (
         ["cargo", "test", "--lib"],
         ["cargo", "test", "--", "--no-run"],
