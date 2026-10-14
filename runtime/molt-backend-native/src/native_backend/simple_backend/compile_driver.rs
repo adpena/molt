@@ -149,8 +149,26 @@ impl SimpleBackend {
                     .to_str()
                     .unwrap_or(""),
             );
+            // Source ABI metadata survives transport retirement unchanged.
+            let function_signatures: BTreeMap<_, _> = ir
+                .functions
+                .iter()
+                .map(|function| {
+                    (
+                        function.name.clone(),
+                        function.function_signature().unwrap_or_else(|error| {
+                            panic!("invalid LLVM linkage signature: {error}")
+                        }),
+                    )
+                })
+                .collect();
+            let parameter_custody: BTreeMap<_, _> = ir
+                .functions
+                .iter()
+                .map(|function| (function.name.clone(), function.parameter_custody.clone()))
+                .collect();
             let mut llvm_cached_tir = crate::tir::pipeline_cache::run_cached_tir_pipeline(
-                &mut ir.functions,
+                crate::tir::pipeline_cache::TirPipelineInput::TirOnly(&ir.functions),
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
                     target_info: llvm_tti.clone(),
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
@@ -167,9 +185,9 @@ impl SimpleBackend {
             .cached_tir;
 
             // Run the shared module transformations on the LLVM lane's owned
-            // TIR, then lower those bodies directly to LLVM. The per-function
-            // cache runner above still produces its SimpleIR projection; this
-            // module consumer does not back-convert the transformed bodies.
+            // TIR, then lower those bodies directly to LLVM. Source SimpleIR
+            // bodies retire during assembly; neither pipeline materializes a
+            // SimpleIR projection.
             // The Cranelift module phase is skipped for `use_llvm`, so inlining
             // runs once under the LLVM target's cost model.
             //
@@ -185,7 +203,7 @@ impl SimpleBackend {
             // phase runs *before* externalization).
             let non_inlinable = std::collections::HashSet::new();
             let tir_funcs = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
-                &ir.functions,
+                ir.functions,
                 &mut llvm_cached_tir,
                 crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
                     target_info: &llvm_tti,
@@ -223,23 +241,6 @@ impl SimpleBackend {
             // whole-program module-context rows then override them so every
             // provider definition and consumer declaration in separate batch
             // objects uses byte-identical machine carriers.
-            let function_signatures: BTreeMap<_, _> = ir
-                .functions
-                .iter()
-                .map(|function| {
-                    (
-                        function.name.clone(),
-                        function.function_signature().unwrap_or_else(|error| {
-                            panic!("invalid LLVM linkage signature: {error}")
-                        }),
-                    )
-                })
-                .collect();
-            let parameter_custody: BTreeMap<_, _> = ir
-                .functions
-                .iter()
-                .map(|function| (function.name.clone(), function.parameter_custody.clone()))
-                .collect();
             llvm.function_linkage_abis = tir_funcs
                 .iter()
                 .filter(|(is_extern, _)| !*is_extern)
@@ -290,18 +291,18 @@ impl SimpleBackend {
                 }
             }
 
-            for (is_extern, tir_func) in &tir_funcs {
-                if *is_extern {
+            for (is_extern, tir_func) in tir_funcs {
+                if is_extern {
                     continue;
                 }
                 if env_setting("MOLT_TIR_DUMP").as_deref() == Some("1") {
                     eprintln!(
                         "[LLVM] TIR for '{}':\n{}",
                         tir_func.name,
-                        crate::tir::printer::print_function(tir_func)
+                        crate::tir::printer::print_function(&tir_func)
                     );
                 }
-                crate::llvm_backend::lowering::try_lower_tir_to_llvm(tir_func, &llvm)
+                crate::llvm_backend::lowering::try_lower_tir_to_llvm(&tir_func, &llvm)
                     .unwrap_or_else(|err| panic!("{err}"));
             }
 
