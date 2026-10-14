@@ -152,3 +152,90 @@ fn unique_dominating_definition_still_requires_earlier_emission() {
         crate::tir::dominators::SimpleProgramPoint::Before(5)
     ));
 }
+
+#[test]
+fn internal_single_predecessor_chain_resolves_only_demanded_values() {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.returns.push(AbiParam::new(types::I64));
+    let mut function = Function::with_name_signature(UserFuncName::default(), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let mut homes = Vec::new();
+        for value in 0..128 {
+            let home = builder.declare_var(types::I64);
+            let value = builder.ins().iconst(types::I64, value);
+            builder.def_var(home, value);
+            homes.push((home, value));
+        }
+        for _ in 0..128 {
+            let next = builder.create_block();
+            builder.ins().jump(next, &[]);
+            builder.seal_block(next);
+            builder.switch_to_block(next);
+        }
+        let (home, expected) = homes[37];
+        assert_eq!(builder.use_var(home), expected);
+        builder.ins().return_(&[expected]);
+        builder.finalize();
+    }
+    for block in function.layout.blocks() {
+        assert!(function.dfg.block_params(block).is_empty());
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+}
+
+#[test]
+fn internal_diamond_preserves_redefinitions_before_and_after_sealing() {
+    for seal_before_use in [false, true] {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut function = Function::with_name_signature(UserFuncName::default(), sig);
+        let mut context = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut function, &mut context);
+            let home = builder.declare_var(types::I64);
+            let entry = builder.create_block();
+            let left = builder.create_block();
+            let right = builder.create_block();
+            let join = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let condition = builder.block_params(entry)[0];
+            let initial = builder.ins().iconst(types::I64, 11);
+            builder.def_var(home, initial);
+            builder.ins().brif(condition, left, &[], right, &[]);
+            builder.switch_to_block(left);
+            builder.seal_block(left);
+            let replaced = builder.ins().iconst(types::I64, 23);
+            builder.def_var(home, replaced);
+            let final_left = builder.ins().iconst(types::I64, 47);
+            builder.def_var(home, final_left);
+            builder.ins().jump(join, &[]);
+            builder.switch_to_block(right);
+            builder.seal_block(right);
+            assert_eq!(builder.use_var(home), initial);
+            builder.ins().jump(join, &[]);
+            builder.switch_to_block(join);
+            if seal_before_use {
+                builder.seal_block(join);
+            }
+            let result = builder.use_var(home);
+            if !seal_before_use {
+                builder.seal_block(join);
+            }
+            assert_eq!(builder.block_params(join), &[result]);
+            assert_ne!(result, initial);
+            assert_ne!(result, replaced);
+            assert_ne!(result, final_left);
+            builder.ins().return_(&[result]);
+            builder.finalize();
+        }
+        verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+    }
+}
