@@ -224,12 +224,29 @@ impl<'a> SsaContext<'a> {
         if self.cfg.blocks.is_empty() {
             return;
         }
+        let traced_name = std::env::var("MOLT_TIR_TRACE_FUNC")
+            .ok()
+            .is_some_and(|filter| filter == "1" || self.func_name.contains(&filter))
+            .then(|| self.func_name.clone());
+        let trace_stage = |stage: &str| {
+            if let Some(name) = traced_name.as_ref() {
+                eprintln!("[TIR-SSA] {name} {stage}");
+            }
+        };
+        trace_stage("before_defs_uses");
         self.gather_defs_uses();
+        trace_stage("after_defs_uses");
+        trace_stage("before_augmented_cfg");
         self.build_augmented_cfg();
+        trace_stage("after_augmented_cfg");
+        trace_stage("before_dominance_frontiers");
         self.compute_dominance_frontiers();
+        trace_stage("after_dominance_frontiers");
         // All argument placement consumes one liveness solution. Seeding SSA
         // arguments changes neither source defs/uses nor the executable graph.
+        trace_stage("before_liveness");
         let live_in = self.compute_live_in_vars();
+        trace_stage("after_liveness");
         // Handler-block arguments must be established BEFORE the iterated
         // dominance frontier runs: a handler block that receives a live-in
         // variable as a block argument is a *new* SSA definition of that
@@ -244,9 +261,15 @@ impl<'a> SsaContext<'a> {
         // `state_switch` dispatch edge; seed their block arguments before the
         // IDF runs, for the same reason handler-block arguments are seeded above
         // (each becomes a fresh SSA def whose rejoin frontier needs a phi).
+        trace_stage("before_implicit_arguments");
         self.insert_implicit_edge_block_arguments(&live_in);
+        trace_stage("after_implicit_arguments");
+        trace_stage("before_phi_arguments");
         self.insert_block_arguments(&live_in);
+        trace_stage("after_phi_arguments");
+        trace_stage("before_rename");
         self.rename_and_emit();
+        trace_stage("after_rename");
     }
 
     // -- Phase 4: rename variables and emit TIR blocks -----------------------

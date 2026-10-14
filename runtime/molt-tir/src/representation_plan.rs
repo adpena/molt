@@ -65,6 +65,7 @@ use indexed_facts::{
     FunctionFactIndex, IndexedFunctionFactIndex, PlanHashMap, PlanHashSet, alias_source_name,
     is_cold_module_chunk_function, plan_hash_map, plan_hash_set,
     simple_op_produces_non_scalar_value, store_var_targets_all_sources_where,
+    tir_container_storage_needs_repr,
 };
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -233,23 +234,13 @@ impl LlvmReprFacts {
 }
 
 impl ScalarRepresentationPlan {
-    fn with_capacity(op_count: usize) -> Self {
-        let name_capacity = op_count.saturating_mul(2).max(16);
+    fn with_capacity(value_count: usize) -> Self {
         Self {
-            facts_by_name: plan_hash_map(name_capacity),
-            conflicted_names: plan_hash_set(op_count / 4 + 1),
-            weak_fact_names: plan_hash_set(name_capacity),
-            non_scalar_names: plan_hash_set(op_count / 4 + 1),
-            integer_family_names: plan_hash_set(name_capacity),
-            container_storage_by_name: plan_hash_map(op_count / 2 + 1),
-            container_storage_conflicted_names: plan_hash_set(op_count / 8 + 1),
-            container_storage_ops: plan_hash_map(op_count / 8 + 1),
-            exact_builtin_list_names: plan_hash_set(op_count / 4 + 1),
-            repr_by_name: plan_hash_map(name_capacity),
-            direct_numeric_op_reprs: plan_hash_map(op_count / 4 + 1),
-            typed_slot_store_modes: BTreeMap::new(),
-            scalar_slot_exclusion_unsafe: plan_hash_set(op_count / 4 + 1),
-            scalar_store_targets_by_kind: BTreeMap::new(),
+            facts_by_name: plan_hash_map(value_count),
+            // Other fact categories allocate only when an actual producer or
+            // conflict is observed. Operation count includes labels/releases
+            // and is not a bound on the number of facts a category needs.
+            ..Self::default()
         }
     }
 
@@ -257,22 +248,69 @@ impl ScalarRepresentationPlan {
         func_ir: &FunctionIR,
         target_info: &crate::tir::target_info::TargetInfo,
     ) -> Self {
+        Self::for_function_ir_with_optimized_view::<false>(func_ir, target_info)
+    }
+
+    fn for_function_ir_with_optimized_view<const FORCE_OPTIMIZED_VIEW: bool>(
+        func_ir: &FunctionIR,
+        target_info: &crate::tir::target_info::TargetInfo,
+    ) -> Self {
+        let trace = std::env::var("MOLT_TIR_TRACE_FUNC")
+            .ok()
+            .is_some_and(|filter| filter == "1" || func_ir.name.contains(&filter));
+        let trace_stage = |stage: &str| {
+            if trace {
+                eprintln!(
+                    "[TIR-REPR] {} {stage}: simple_ops={}",
+                    func_ir.name,
+                    func_ir.ops.len(),
+                );
+            }
+        };
+        let needs_primary = !is_cold_module_chunk_function(&func_ir.name);
+        let needs_direct_numeric = func_ir
+            .ops
+            .iter()
+            .any(|op| Self::simple_op_supports_direct_numeric_result(&op.kind));
+        // Tests can retain the former eager view as an independent negative
+        // demand control without maintaining a second projection algorithm.
+        let needs_optimized_view = FORCE_OPTIMIZED_VIEW || needs_primary || needs_direct_numeric;
+        trace_stage("before_fact_index");
         let fact_index = FunctionFactIndex::for_function(func_ir);
         let indexed_fact_index = fact_index
             .needs_indexed_name_graph()
             .then(|| IndexedFunctionFactIndex::for_function_facts(&fact_index));
+        trace_stage("after_fact_index");
+        trace_stage("before_lift");
         let mut tir_func = lower_to_tir_for_target(func_ir, target_info);
+        trace_stage("after_lift");
+        trace_stage("before_refine");
         refine_types(&mut tir_func);
+        trace_stage("after_refine");
+        trace_stage("before_name_and_store_facts");
         let names = SimpleValueNames::for_function(&tir_func);
         let typed_slot_store_modes = Self::project_typed_slot_store_modes(func_ir, &tir_func);
+        trace_stage("after_name_and_store_facts");
         let mut optimized_tir_func = None;
         let mut optimized_names = None;
-        if crate::tir::verify::verify_function(&tir_func).is_ok() {
-            let mut projected_tir_func = tir_func.clone();
-            crate::tir::passes::run_pipeline(&mut projected_tir_func, target_info);
-            refine_types(&mut projected_tir_func);
-            optimized_names = Some(SimpleValueNames::for_function(&projected_tir_func));
-            optimized_tir_func = Some(projected_tir_func);
+        if needs_optimized_view {
+            trace_stage("before_verify_projection");
+            if crate::tir::verify::verify_function(&tir_func).is_ok() {
+                trace_stage("after_verify_projection_valid");
+                trace_stage("before_optimized_clone");
+                let mut projected_tir_func = tir_func.clone();
+                trace_stage("after_optimized_clone");
+                trace_stage("before_optimized_pipeline");
+                crate::tir::passes::run_pipeline(&mut projected_tir_func, target_info);
+                trace_stage("after_optimized_pipeline");
+                refine_types(&mut projected_tir_func);
+                optimized_names = Some(SimpleValueNames::for_function(&projected_tir_func));
+                optimized_tir_func = Some(projected_tir_func);
+            } else {
+                trace_stage("after_verify_projection_refused");
+            }
+        } else {
+            trace_stage("optimized_view_undemanded");
         }
         // Fact extraction uses the semantic type floor. Raw-int carrier homes
         // are projected from `repr_by_value_for` after the LIR facts have been
@@ -280,9 +318,45 @@ impl ScalarRepresentationPlan {
         // Projection also sees the optimized TIR view because the canonical TIR
         // pipeline exposes loop phis and promoted store/load slots that the
         // backend lowers as raw value carriers.
+        trace_stage("before_semantic_floor");
         let lir_func = lower_function_to_lir_for_repr_fact_extraction(&tir_func);
+        trace_stage("after_semantic_floor");
 
-        let mut plan = Self::with_capacity(func_ir.ops.len());
+        trace_stage("before_value_facts");
+        let needs_carriers = needs_primary || needs_direct_numeric;
+        let repr = if needs_carriers || tir_container_storage_needs_repr(&tir_func) {
+            let ranges = value_range_for(&tir_func);
+            repr_by_value_for(&tir_func, Some(&ranges))
+        } else {
+            HashMap::new()
+        };
+        let carriers = needs_carriers
+            .then(|| native_projectable_scalar_reprs_for(&tir_func, &repr))
+            .unwrap_or_default();
+        let optimized_carriers =
+            optimized_tir_func
+                .as_ref()
+                .filter(|_| needs_carriers)
+                .map(|function| {
+                    let ranges = value_range_for(function);
+                    let repr = repr_by_value_for(function, Some(&ranges));
+                    native_projectable_scalar_reprs_for(function, &repr)
+                });
+        trace_stage("after_value_facts");
+
+        let value_count = lir_func
+            .blocks
+            .values()
+            .map(|block| {
+                block.args.len()
+                    + block
+                        .ops
+                        .iter()
+                        .map(|op| op.result_values.len())
+                        .sum::<usize>()
+            })
+            .sum();
+        let mut plan = Self::with_capacity(value_count);
         // This plan describes the input SimpleIR stream, not the renamed stream
         // a future lowering could emit. Distinct SSA producers sharing an input
         // spelling cannot donate one producer's representation to that binding.
@@ -291,7 +365,8 @@ impl ScalarRepresentationPlan {
         plan.container_storage_conflicted_names
             .extend(names.ambiguous_source_names().map(str::to_string));
         plan.typed_slot_store_modes = typed_slot_store_modes;
-        plan.seed_container_storage_from_tir(&tir_func, &names);
+        trace_stage("before_storage_and_floor_projection");
+        plan.seed_container_storage_from_tir(&tir_func, &names, &repr);
         plan.seed_exact_builtin_lists(&tir_func, &names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
@@ -334,6 +409,8 @@ impl ScalarRepresentationPlan {
                 }
             }
         }
+        trace_stage("after_storage_and_floor_projection");
+        trace_stage("before_alias_joins");
         if fact_index.has_scalar_alias_or_store_edges()
             && let Some(indexed_fact_index) = indexed_fact_index.as_ref()
         {
@@ -348,15 +425,26 @@ impl ScalarRepresentationPlan {
         plan.mark_container_storage_ops(func_ir);
         plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
         plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(&fact_index);
-        let mut tir_value_views = Vec::with_capacity(2);
-        tir_value_views.push((&tir_func, &names));
-        if let (Some(optimized_tir_func), Some(optimized_names)) =
-            (optimized_tir_func.as_ref(), optimized_names.as_ref())
-        {
-            tir_value_views.push((optimized_tir_func, optimized_names));
+        trace_stage("after_alias_joins");
+        let mut tir_value_views = [(&tir_func, &names, &carriers); 2];
+        let view_count =
+            if let (Some(optimized_tir_func), Some(optimized_names), Some(optimized_carriers)) = (
+                optimized_tir_func.as_ref(),
+                optimized_names.as_ref(),
+                optimized_carriers.as_ref(),
+            ) {
+                tir_value_views[1] = (optimized_tir_func, optimized_names, optimized_carriers);
+                2
+            } else {
+                1
+            };
+        let tir_value_views = &tir_value_views[..view_count];
+        trace_stage("before_carrier_projection");
+        plan.seed_repr_by_name(func_ir, &fact_index, tir_value_views);
+        if needs_direct_numeric {
+            plan.seed_direct_numeric_op_reprs(func_ir, tir_value_views);
         }
-        plan.seed_repr_by_name(func_ir, &fact_index, &tir_value_views);
-        plan.seed_direct_numeric_op_reprs(func_ir, &tir_value_views);
+        trace_stage("after_carrier_projection");
         plan
     }
 
@@ -371,7 +459,7 @@ impl ScalarRepresentationPlan {
         &mut self,
         func_ir: &FunctionIR,
         fact_index: &FunctionFactIndex<'_>,
-        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
+        tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
     ) {
         let primary = self.compute_primary_name_sets(func_ir, fact_index, tir_value_views);
         let mut repr_by_name =
@@ -737,10 +825,9 @@ impl ScalarRepresentationPlan {
         &mut self,
         tir_func: &TirFunction,
         names: &SimpleValueNames,
+        repr: &HashMap<ValueId, Repr>,
     ) {
-        let ranges = value_range_for(tir_func);
-        let repr = repr_by_value_for(tir_func, Some(&ranges));
-        let storage_by_value = tir_container_storage_facts(tir_func, &repr);
+        let storage_by_value = tir_container_storage_facts(tir_func, repr);
         let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
         for block_id in block_ids {
@@ -1078,7 +1165,7 @@ impl ScalarRepresentationPlan {
         &self,
         func_ir: &FunctionIR,
         fact_index: &FunctionFactIndex<'_>,
-        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
+        tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
     ) -> ScalarPrimaryNameSets {
         if is_cold_module_chunk_function(&func_ir.name) {
             return ScalarPrimaryNameSets::default();
@@ -1115,12 +1202,14 @@ impl ScalarRepresentationPlan {
     fn project_scalar_name_reprs_from_tir_views(
         &self,
         fact_index: &FunctionFactIndex<'_>,
-        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
+        tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
     ) -> BTreeMap<String, Repr> {
         let mut projected = BTreeMap::new();
         let mut blocked = BTreeSet::new();
-        for (tir_func, names) in tir_value_views {
-            for (name, repr) in Self::projected_scalar_carrier_name_reprs_for(tir_func, names) {
+        for (tir_func, names, carriers) in tir_value_views {
+            for (name, repr) in
+                Self::projected_scalar_carrier_name_reprs_for(tir_func, names, carriers)
+            {
                 self.insert_projected_scalar_name_repr(
                     fact_index,
                     name,
@@ -1141,10 +1230,8 @@ impl ScalarRepresentationPlan {
     fn projected_scalar_carrier_name_reprs_for(
         tir_func: &TirFunction,
         names: &SimpleValueNames,
+        carrier_by_value: &HashMap<ValueId, Repr>,
     ) -> Vec<(String, Repr)> {
-        let vr = value_range_for(tir_func);
-        let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
-        let carrier_by_value = native_projectable_scalar_reprs_for(tir_func, &repr_by_value);
         let mut out = Vec::new();
 
         let mut push_value = |name: String, value: ValueId| {
@@ -1174,7 +1261,7 @@ impl ScalarRepresentationPlan {
     fn seed_direct_numeric_op_reprs(
         &mut self,
         func_ir: &FunctionIR,
-        tir_value_views: &[(&TirFunction, &SimpleValueNames)],
+        tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
     ) {
         let mut blocked = plan_hash_set(func_ir.ops.len() / 8 + 1);
         let mut current_ops_by_output = plan_hash_map(func_ir.ops.len() / 2 + 1);
@@ -1188,10 +1275,7 @@ impl ScalarRepresentationPlan {
                 .or_insert(Some(op_index));
         }
 
-        for (tir_func, names) in tir_value_views {
-            let vr = value_range_for(tir_func);
-            let repr_by_value = repr_by_value_for(tir_func, Some(&vr));
-            let carrier_by_value = native_projectable_scalar_reprs_for(tir_func, &repr_by_value);
+        for (tir_func, names, carrier_by_value) in tir_value_views {
             let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
             block_ids.sort_by_key(|block_id| block_id.0);
             for block_id in block_ids {
@@ -1211,7 +1295,7 @@ impl ScalarRepresentationPlan {
                     ) {
                         continue;
                     }
-                    let Some(repr) = Self::direct_numeric_repr_for_tir_op(op, &carrier_by_value)
+                    let Some(repr) = Self::direct_numeric_repr_for_tir_op(op, carrier_by_value)
                     else {
                         continue;
                     };
