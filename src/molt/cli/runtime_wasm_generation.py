@@ -28,6 +28,7 @@ from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
     _freeze_json,
     _frozen_json_projection,
+    runtime_family_digest,
 )
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
     from molt.wasm_artifact import WasmRuntimeFacts
 
 
-_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v3"
+_RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v4"
 _RUNTIME_WASM_EXPECTED_PAIR_SCHEMA = "molt.runtime-wasm-expected-pair.v2"
 _RUNTIME_WASM_GENERATION_NAME = "molt_runtime.generation.json"
 _MEMBER_SUFFIX = ".runtime-wasm-member"
@@ -526,7 +527,7 @@ def _stage_artifact(
         "member": member_name,
         "sha256": digest,
         "size": size,
-        "identity": identity.to_dict(),
+        "identity": identity.member_reference(),
     }
 
 
@@ -596,9 +597,11 @@ def publish_runtime_wasm_generation(
         )
         shared_member = shared.parent / str(shared_record["member"])
         reloc_member = reloc.parent / str(reloc_record["member"])
+        # Both members share one family; the receipt stores it once.
         payload = {
             "schema": _RUNTIME_WASM_GENERATION_SCHEMA,
             "family_digest": shared_identity.family_digest,
+            "family": shared_identity.family_payload(),
             "receipts": {"shared": shared_record, "reloc": reloc_record},
         }
         manifest = runtime_wasm_generation_path(shared)
@@ -662,13 +665,7 @@ def _artifact_record_descriptor(
     ):
         return None
     member = _member_path(manifest, record)
-    if member is None:
-        return None
-    try:
-        RuntimeBuildIdentity.from_dict(
-            record.get("identity"), expected=expected_identity
-        )
-    except ValueError:
+    if member is None or record.get("identity") != expected_identity.member_reference():
         return None
     digest, size = record.get("sha256"), record.get("size")
     if (
@@ -733,6 +730,33 @@ def _generation_receipts(
     return typed
 
 
+def runtime_wasm_generation_identities(
+    payload: object,
+) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
+    """Rebuild a receipt's shared and reloc identities from its one family.
+
+    For readers that hold no trusted identity, such as an installed runtime
+    bundle; each member is validated in full, digests included.
+    """
+    value = string_keyed_mapping(payload)
+    receipts = None if value is None else _generation_receipts(value.get("receipts"))
+    if (
+        value is None
+        or receipts is None
+        or value.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
+    ):
+        raise ValueError("runtime WASM generation receipt is invalid")
+    shared, reloc = (
+        RuntimeBuildIdentity.from_member_reference(
+            receipts[kind].get("identity"),
+            family=value.get("family"),
+            family_digest=value.get("family_digest"),
+        )
+        for kind in ("shared", "reloc")
+    )
+    return shared, reloc
+
+
 def read_runtime_wasm_generation(
     manifest: Path,
     *,
@@ -778,10 +802,15 @@ def _generation_record_descriptors(
     if (
         expected_shared_identity.family_digest != expected_reloc_identity.family_digest
         or not isinstance(payload, Mapping)
-        or set(payload) != {"schema", "family_digest", "receipts"}
+        or set(payload) != {"schema", "family_digest", "family", "receipts"}
         or payload.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
         or payload.get("family_digest") != expected_shared_identity.family_digest
     ):
+        return None
+    try:
+        if runtime_family_digest(payload.get("family")) != payload["family_digest"]:
+            return None
+    except (TypeError, ValueError):
         return None
     receipts = _generation_receipts(payload.get("receipts"))
     if receipts is None:

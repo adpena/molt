@@ -17,6 +17,7 @@ from molt.cli.runtime_wasm_generation import (
     hydrate_runtime_wasm_generation,
     publish_runtime_wasm_generation,
     read_runtime_wasm_generation,
+    runtime_wasm_generation_identities,
     runtime_wasm_generation_path,
 )
 from tests.runtime_build_identity_helper import (
@@ -282,6 +283,42 @@ def test_generation_rejects_self_asserted_identity_and_cross_pair_mix(
         )
         is None
     )
+
+
+def test_receipt_stores_the_shared_family_once_and_rebuilds_both_members(
+    tmp_path: Path,
+) -> None:
+    generation, shared_identity, reloc_identity = _publish_pair(tmp_path)
+    payload = json.loads(generation.manifest.read_text(encoding="utf-8"))
+    # HF-183: one family payload; each member keeps only its reference.
+    assert payload["family"] == shared_identity.to_dict()["payload"]["family"]
+    for kind, identity in (("shared", shared_identity), ("reloc", reloc_identity)):
+        assert payload["receipts"][kind]["identity"] == {
+            "digest": identity.digest,
+            "compile_digest": identity.compile_digest,
+            "member_kind": kind,
+        }
+    rebuilt = runtime_wasm_generation_identities(payload)
+    assert [
+        (item.digest, item.compile_digest, item.family_digest) for item in rebuilt
+    ] == [
+        (item.digest, item.compile_digest, item.family_digest)
+        for item in (shared_identity, reloc_identity)
+    ]
+
+    # A family that no longer hashes to family_digest is refused by both readers.
+    payload["family"]["schema"] = "tampered"
+    generation.manifest.write_text(json.dumps(payload), encoding="utf-8")
+    assert (
+        read_runtime_wasm_generation(
+            generation.manifest,
+            expected_shared_identity=shared_identity,
+            expected_reloc_identity=reloc_identity,
+        )
+        is None
+    )
+    with pytest.raises(ValueError):
+        runtime_wasm_generation_identities(payload)
 
 
 def test_reader_and_existing_member_race_reject_symlink_indirection(
