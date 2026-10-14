@@ -1094,7 +1094,8 @@ def test_luau_runtime_command_owns_required_runner_without_ambient_discovery() -
     "command_id",
     [
         "wasm.test.freestanding-e2e",
-        "wasm.test.finally-pending-observer-parity",
+        "wasm.test.finally-pending-observer-parity.native",
+        "wasm.test.finally-pending-observer-parity.wasm",
     ],
 )
 def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
