@@ -1,8 +1,8 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
-    NativeBackendModuleContext, NativeRcAuthority, SimpleBackend, TrampolineKey,
-    analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_candidates,
+    NativeBackendModuleContext, NativeFinalCallbacks, NativeRcAuthority, SimpleBackend,
+    TrampolineKey, analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_candidates,
     merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_task_kinds,
     preprocess_backend_tir_input, should_flush_deferred_codegen,
 };
@@ -281,6 +281,39 @@ fn compile_function_to_clif_with_imports(
     }
 }
 
+/// Direct-codegen fixtures must provide the same final typed callback boundary
+/// as production. Tests may pay the lift cost; production consumes retained TIR.
+fn final_callbacks_for_test(functions: &[FunctionIR]) -> NativeFinalCallbacks {
+    let mut callbacks = NativeFinalCallbacks::default();
+    for function in functions.iter().filter(|function| !function.is_extern) {
+        callbacks.record(&crate::tir::lower_from_simple::lower_to_tir(function));
+    }
+    callbacks
+}
+
+/// Independent former whole-module oracle, retained only in tests. It observes
+/// actual final SimpleIR through the real shared call graph and drop authority.
+fn final_leaf_oracle(functions: &[FunctionIR]) -> BTreeSet<String> {
+    let functions = functions
+        .iter()
+        .filter(|function| !function.is_extern)
+        .map(crate::tir::lower_from_simple::lower_to_tir)
+        .filter(|function| {
+            matches!(
+                function
+                    .attrs
+                    .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+                Some(crate::tir::ops::AttrValue::Bool(true)),
+            )
+        })
+        .collect();
+    crate::tir::CallGraph::build(&crate::tir::TirModule {
+        name: "native_leaf_test_oracle".into(),
+        functions,
+    })
+    .leaf_functions()
+}
+
 /// Share direct function compilation between CLIF inspection and executable
 /// tests without running a preprocessing pipeline that changes the RC authority.
 pub(in crate::native_backend) fn compile_selected_functions_direct(
@@ -294,6 +327,7 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
     let analysis = analyze_native_backend_ir(
         &ir,
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
+        final_callbacks_for_test(&ir.functions),
     );
     let function_has_ret = compute_function_has_ret(&ir.functions);
     let function_arities = ir
