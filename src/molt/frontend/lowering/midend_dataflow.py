@@ -523,11 +523,8 @@ class MidendDataflowMixin(GeneratorMixinBase):
         def type_fact_key(name: str) -> str:
             return f"__tag__:{name}"
 
-        def dict_shape_fact_key(name: str) -> str:
-            return f"__dict_shape__:{name}"
-
         def is_heap_fact(name: str) -> bool:
-            return name.startswith(("__tag__:", "__dict_shape__:"))
+            return name.startswith("__tag__:")
 
         def invalidate_heap_facts(op: MoltOp, known: dict[str, Any]) -> None:
             operand_constants = {
@@ -1030,37 +1027,16 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 in_values[block_id] = new_in
 
             known = dict(new_in)
-            block_traps = False
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 # Include no-result operations: a callback need not produce an
                 # SSA value to invalidate observations of captured objects.
                 invalidate_heap_facts(op, known)
-                if op.kind == "GUARD_DICT_SHAPE" and len(op.args) == 3:
-                    guarded = op.args[0]
-                    dict_type = op.args[1]
-                    version = op.args[2]
-                    if (
-                        isinstance(guarded, MoltValue)
-                        and isinstance(dict_type, MoltValue)
-                        and isinstance(version, MoltValue)
-                    ):
-                        shape_key = dict_shape_fact_key(guarded.name)
-                        expected_shape = (dict_type.name, version.name)
-                        known_shape = known.get(shape_key)
-                        if isinstance(known_shape, tuple):
-                            if known_shape != expected_shape:
-                                block_traps = True
-                                break
-                        else:
-                            known[shape_key] = expected_shape
-                    continue
                 out_name = op.result.name
                 if out_name == "none":
                     continue
                 known.pop(out_name, None)
                 known.pop(type_fact_key(out_name), None)
-                known.pop(dict_shape_fact_key(out_name), None)
                 lattice_value = _admit_sccp_value(eval_lattice_value(op, known, op_idx))
                 if lattice_value is _SCCP_UNKNOWN:
                     continue
@@ -1095,9 +1071,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
 
             succs = cfg.successors.get(block_id, [])
             chosen_succs = succs
-            # A failing guard sets pending state; CHECK_EXCEPTION still owns
-            # its transfer. Never prune the routing after a known failure.
-            if not block_traps and block.start < block.end:
+            if block.start < block.end:
                 terminator_idx = block.end - 1
                 terminator = ops[terminator_idx]
                 if terminator.kind == "IF" and len(terminator.args) == 1:

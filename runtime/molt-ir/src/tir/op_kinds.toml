@@ -5479,10 +5479,6 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAtt
 # ---------------------------------------------------------------------------
 
 [[frontend_lowering_kind]]
-kind = "CLASS_VERSION"
-wire_kind = "class_layout_version"
-
-[[frontend_lowering_kind]]
 kind = "DELATTR_GENERIC_OBJ"
 wire_kind = "del_attr_generic_obj"
 
@@ -5859,11 +5855,6 @@ reason = "mutation: legacy frontend index write spelling"
 kind = "CHECK_EXCEPTION"
 effect = "control"
 reason = "control-flow: pending-exception branch/check node"
-
-[[frontend_effect_kind]]
-kind = "GUARD_DICT_SHAPE"
-effect = "control"
-reason = "control-flow: dictionary shape guard deopt/check"
 
 [[frontend_effect_kind]]
 kind = "GUARD_LAYOUT"

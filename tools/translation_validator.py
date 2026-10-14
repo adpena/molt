@@ -750,7 +750,7 @@ class TranslationValidator:
             report = validator()
         else:
             # Generic structural checks for simplify, prune, join_canonicalize,
-            # guard_hoist, etc.
+            # etc.
             report = PassReport(function="", pass_name=pass_name)
             report.checks.append(self.check_control_flow_structure(before, after))
             report.checks.append(self.check_pure_op_preservation(before, after))

@@ -78,12 +78,11 @@ The midend runs a fixed-point loop with these passes (in order):
 1. **simplify** -- structural region canonicalization
 2. **sccp_edge_thread** -- sparse conditional constant propagation + edge threading
 3. **join_canonicalize** -- try/except join label normalization
-4. **guard_hoist** -- redundant guard elimination
-5. **licm** -- loop-invariant code motion
-6. **prune** -- unreachable region/label/jump pruning
-7. **verifier** -- definite-assignment verification
-8. **dce** -- dead trivial constant elimination
-9. **cse** -- common subexpression elimination
+4. **licm** -- loop-invariant code motion
+5. **prune** -- unreachable region/label/jump pruning
+6. **verifier** -- definite-assignment verification
+7. **dce** -- dead trivial constant elimination
+8. **cse** -- common subexpression elimination
 
 The loop repeats until convergence (no changes) or the round cap is reached.
 

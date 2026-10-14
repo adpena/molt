@@ -314,14 +314,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
             if op.result.name != "none":
                 guard["out"] = op.result.name
             ctx.json_ops.append(guard)
-        elif op.kind == "GUARD_DICT_SHAPE":
-            ctx.json_ops.append(
-                {
-                    "kind": "guard_dict_shape",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "INC_REF":
             ctx.json_ops.append(
                 {

@@ -59,20 +59,6 @@ def test_runtime_guard_preserves_value_and_expected_tag_operands(result: str) ->
     assert lowered == expected
 
 
-def test_guard_dict_shape_lowers_to_guard_dict_shape_lane() -> None:
-    op = MoltOp(
-        kind="GUARD_DICT_SHAPE",
-        args=[MoltValue("obj"), MoltValue("dict_type"), MoltValue("version")],
-        result=MoltValue("guard"),
-    )
-    lowered = _map_single(op)
-    assert lowered == {
-        "kind": "guard_dict_shape",
-        "args": ["obj", "dict_type", "version"],
-        "out": "guard",
-    }
-
-
 def test_box_lowers_to_explicit_box_lane() -> None:
     op = MoltOp(kind="BOX", args=[MoltValue("value")], result=MoltValue("boxed"))
     lowered = _map_single(op)
@@ -365,7 +351,6 @@ def test_raw_dict_increment_uses_runtime_admission_for_bound_operands() -> None:
     assert len(increment.args) == 3
     assert all(isinstance(arg, MoltValue) for arg in increment.args)
     assert increment.result.type_hint == "bool"
-    assert not any(op.kind == "GUARD_DICT_SHAPE" for op in ops)
 
 
 def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
@@ -442,21 +427,6 @@ def test_lowered_dynamic_noncallable_attr_uses_runtime_callable_check() -> None:
         "import types\nns = types.SimpleNamespace()\nns.fn = 7\nns.fn()\n"
     )
     assert "call_func" in kinds
-
-
-def test_lowered_explicit_dict_shape_guard_preserves_version_operand() -> None:
-    lowered = _map_single(
-        MoltOp(
-            kind="GUARD_DICT_SHAPE",
-            args=[MoltValue("obj"), MoltValue("dict_type"), MoltValue("shape_ver")],
-            result=MoltValue("guard"),
-        )
-    )
-    assert lowered == {
-        "kind": "guard_dict_shape",
-        "args": ["obj", "dict_type", "shape_ver"],
-        "out": "guard",
-    }
 
 
 def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:

@@ -5,10 +5,10 @@
   "check x is int before int_add"). When a guard's condition is provably
   true from a dominating check, the redundant guard can be eliminated.
 
-  In Molt's midend pipeline, this corresponds to
-  `_eliminate_redundant_guards_cfg`: it walks the CFG in dominator-tree
-  order and removes guards whose conditions are implied by earlier guards
-  that dominate them.
+  This is an abstract model. No frontend midend pass implements it: the
+  frontend's only success-idempotent guard kind had no producer, so its
+  CFG redundant-guard pass was deleted. Runtime type-guard misses are
+  counted on every execution, so repeated type guards are not redundant.
 
   Model: a guard is an instruction whose RHS is a guard expression
   (GuardExpr). If the same guard expression appears in a dominating
