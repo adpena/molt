@@ -224,12 +224,12 @@ pub(super) struct FunctionFactIndex<'a> {
 
 impl<'a> FunctionFactIndex<'a> {
     pub(super) fn for_function(func_ir: &'a FunctionIR) -> Self {
-        let mut stores = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
-        let mut aliases = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
+        let mut stores = Vec::new();
+        let mut aliases = Vec::new();
         let mut data_ops = Vec::with_capacity(func_ir.ops.len());
-        let mut store_index_ops = Vec::with_capacity(func_ir.ops.len() / 8 + 1);
-        let mut sentinel_outputs = plan_hash_set(func_ir.ops.len() / 16 + 1);
-        let mut delete_targets = plan_hash_set(func_ir.ops.len() / 8 + 1);
+        let mut store_index_ops = Vec::new();
+        let mut sentinel_outputs = plan_hash_set(0);
+        let mut delete_targets = plan_hash_set(0);
 
         for op in &func_ir.ops {
             if let Some(binding) = simple_ir_binding(op) {
@@ -1164,6 +1164,9 @@ pub(super) fn tir_exact_builtin_list_values(func: &TirFunction) -> HashSet<Value
         })
         .flat_map(|op| op.results.iter().copied())
         .collect();
+    if roots.is_empty() {
+        return HashSet::new();
+    }
     let inputs = tir_container_alias_inputs(func);
     let (aliases, foreign) = rooted_container_aliases(&roots, &inputs);
     aliases
@@ -1181,6 +1184,15 @@ fn flat_list_int_storage_fact() -> ContainerStorageFact {
     }
 }
 
+/// Only these constructor shapes can request a physical-list proof. This is
+/// a demand census, not admission: ranges and alias closure still decide it.
+pub(super) fn tir_container_storage_needs_repr(func: &TirFunction) -> bool {
+    func.blocks.values().flat_map(|block| &block.ops).any(|op| {
+        (tir_op_original_kind(op) == Some("list_int_new") && op.operands.len() >= 2)
+            || (op.opcode == crate::tir::ops::OpCode::Mul && op.operands.len() == 2)
+    })
+}
+
 /// A function-wide physical promise requires both admitted construction and
 /// closure of every alias over storage-preserving uses. Semantic int/list types
 /// cannot establish either fact. LIR receives this map, never reseeds by opcode.
@@ -1192,6 +1204,9 @@ pub(crate) fn tir_container_storage_facts(
     use crate::tir::op_kinds_generated::opcode_has_local_only_operands_table;
     use crate::tir::ops::OpCode;
 
+    if !tir_container_storage_needs_repr(func) {
+        return HashMap::new();
+    }
     let inline = |value: &ValueId| repr.get(value) == Some(&Repr::RawI64Safe);
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
     let index = |value: &ValueId| {
@@ -1233,7 +1248,6 @@ pub(crate) fn tir_container_storage_facts(
     let mut roots = HashSet::new();
     let mut flat_roots = HashSet::new();
     let mut repeat_sources = HashMap::new();
-    let inputs = tir_container_alias_inputs(func);
     for block in func.blocks.values() {
         for op in &block.ops {
             let admitted_fill = tir_op_original_kind(op) == Some("list_int_new")
@@ -1273,6 +1287,7 @@ pub(crate) fn tir_container_storage_facts(
         return HashMap::new();
     }
 
+    let inputs = tir_container_alias_inputs(func);
     let (aliases, foreign) = rooted_container_aliases(&roots, &inputs);
 
     let mut invalid = HashSet::new();

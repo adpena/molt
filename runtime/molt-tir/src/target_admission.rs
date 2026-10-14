@@ -53,8 +53,8 @@ pub fn validate_target_contract(ir: &SimpleIR, target_info: &TargetInfo) -> Resu
 }
 
 /// Validate a target contract while sharing each function's representation
-/// plan with a backend-specific semantic check. Representation planning lowers
-/// and optimizes the whole function, so composing checks here prevents source
+/// plan with a backend-specific semantic check. Representation planning may
+/// normalize and optimize the function; composing checks here prevents source
 /// backends from independently rebuilding the same target plan.
 pub fn validate_target_contract_with_representation_plan<F>(
     ir: &SimpleIR,

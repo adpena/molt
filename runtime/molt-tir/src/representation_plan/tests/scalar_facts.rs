@@ -1388,7 +1388,7 @@ fn duplicate_output_producers_block_direct_numeric_projection() {
 #[test]
 fn returned_counted_loop_retains_direct_add_op_repr() {
     let add = op("add", Some("i_next"), None, &["i_cur", "one"]);
-    let func = function(
+    let mut func = function(
         "returned_counted_store_load_loop",
         &[],
         None,
@@ -1410,9 +1410,19 @@ fn returned_counted_loop_retains_direct_add_op_repr() {
         ],
     );
 
-    let plan = native_representation_plan(&func);
-
-    assert_eq!(plan.op_direct_numeric_repr(8, &add), Some(Repr::RawI64Safe));
+    for name in [
+        "returned_counted_store_load_loop",
+        "__molt_module_chunk_returned_counted_loop",
+    ] {
+        func.name = name.to_string();
+        for target in [
+            crate::tir::TargetInfo::native_release_fast(),
+            crate::tir::TargetInfo::wasm_release_fast(),
+        ] {
+            let plan = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
+            assert_eq!(plan.op_direct_numeric_repr(8, &add), Some(Repr::RawI64Safe));
+        }
+    }
 }
 
 #[test]
@@ -1746,6 +1756,124 @@ fn cold_module_chunk_functions_keep_semantic_facts_without_primary_carriers() {
             Some(ScalarKind::NoneValue)
         );
         assert_eq!(plan.name_container_kind("items"), Some(ContainerKind::List));
+    }
+}
+
+#[test]
+fn cold_non_numeric_plans_match_the_former_eager_optimized_view() {
+    let string = |name: &str, value: &str| OpIR {
+        kind: "const_str".to_string(),
+        out: Some(name.to_string()),
+        s_value: Some(value.to_string()),
+        ..OpIR::default()
+    };
+    let cases = [
+        vec![
+            string("key", "name"),
+            string("value", "text"),
+            op("dict_new", Some("mapping"), None, &["key", "value"]),
+            op("store_var", None, Some("saved"), &["mapping"]),
+            op("load_var", Some("restored"), Some("saved"), &[]),
+        ],
+        vec![
+            const_int("value", 7),
+            const_bool("flag", true),
+            op("list_new", Some("items"), None, &["value"]),
+            op("copy", Some("alias"), None, &["items"]),
+            op("const_none", Some("nothing"), None, &[]),
+        ],
+        vec![
+            const_int("n", 4),
+            const_int("fill", 7),
+            const_int("i", 0),
+            op("list_int_new", Some("items"), None, &["n", "fill"]),
+            op("copy", Some("alias"), None, &["items"]),
+            op("index", Some("read"), None, &["alias", "i"]),
+        ],
+    ];
+    for target in [
+        crate::tir::TargetInfo::native_release_fast(),
+        crate::tir::TargetInfo::wasm_release_fast(),
+        crate::tir::TargetInfo::llvm_release_fast(),
+        crate::tir::TargetInfo::luau_release_fast(),
+        crate::tir::TargetInfo::rust_release_fast(),
+        crate::tir::TargetInfo::mlir_release_fast(),
+    ] {
+        for (case, ops) in cases.iter().enumerate() {
+            let function = function(
+                &format!("__molt_module_chunk_demand_{case}"),
+                &[],
+                None,
+                ops.clone(),
+            );
+            let mut lifted = lower_to_tir_for_target(&function, &target);
+            refine_types(&mut lifted);
+            assert!(crate::tir::verify::verify_function(&lifted).is_ok());
+            let plan = ScalarRepresentationPlan::for_function_ir_for_target(&function, &target);
+            let eager = ScalarRepresentationPlan::for_function_ir_with_optimized_view::<true>(
+                &function, &target,
+            );
+            assert_eq!(
+                plan,
+                eager,
+                "case {case}, target {}",
+                target.target.as_str()
+            );
+            assert!(plan.primary_name_sets().int.is_empty());
+            assert!(plan.primary_name_sets().bool_.is_empty());
+            assert!(plan.primary_name_sets().float.is_empty());
+            if case == 0 {
+                assert_eq!(plan.name_scalar_kind("key"), Some(ScalarKind::Str));
+                assert_eq!(
+                    plan.name_container_kind("restored"),
+                    Some(ContainerKind::Dict)
+                );
+            } else {
+                assert!(plan.op_has_exact_builtin_list(&op("index", None, None, &["alias", "i"],)));
+                if case == 2 {
+                    assert_eq!(
+                        plan.name_container_storage_kind("alias"),
+                        Some(ContainerStorageKind::FlatListInt),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cold_numeric_results_retain_direct_carriers_without_primary_names() {
+    let add = op("add", Some("sum"), None, &["lhs", "rhs"]);
+    let float_add = op("add", Some("float_sum"), None, &["float_lhs", "float_rhs"]);
+    let dynamic_add = op("add", Some("unknown_sum"), None, &["unknown", "rhs"]);
+    let function = function(
+        "__molt_module_chunk_numeric",
+        &["unknown"],
+        Some(vec!["int"]),
+        vec![
+            const_int("lhs", 2),
+            const_int("rhs", 3),
+            add.clone(),
+            const_float("float_lhs", 1.25),
+            const_float("float_rhs", 2.5),
+            float_add.clone(),
+            dynamic_add.clone(),
+        ],
+    );
+    for target in [
+        crate::tir::TargetInfo::native_release_fast(),
+        crate::tir::TargetInfo::wasm_release_fast(),
+    ] {
+        let plan = ScalarRepresentationPlan::for_function_ir_for_target(&function, &target);
+        assert_eq!(plan.op_direct_numeric_repr(2, &add), Some(Repr::RawI64Safe));
+        assert_eq!(
+            plan.op_direct_numeric_repr(5, &float_add),
+            Some(Repr::FloatUnboxed),
+        );
+        assert_eq!(plan.op_direct_numeric_repr(6, &dynamic_add), None);
+        assert!(plan.primary_name_sets().int.is_empty());
+        assert!(plan.primary_name_sets().float.is_empty());
+        assert!(!plan.is_raw_int_carrier_name("unknown"));
     }
 }
 
