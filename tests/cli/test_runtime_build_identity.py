@@ -4,6 +4,7 @@ import os
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 from tests.operation_probe import same_thread_probe
+from tests.process_guard_common import install_module_view
 from tests.runtime_build_identity_helper import (
     build_python_identity_fixture,
     RuntimeFixtureRoot,
@@ -1029,10 +1031,13 @@ def test_tool_version_banner_never_serializes_installed_directory(
     tool = tmp_path / "clang.exe"
     write_mock_executable(tool, b"MZtool-bytes")
     monkeypatch.setattr(identity, "_command_path", lambda *_args, **_kwargs: tool)
-    monkeypatch.setattr(
-        toolchain_identity.subprocess,
-        "run",
-        lambda *_args, **_kwargs: type(
+    # Toolchain identity runs the version probe.
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        toolchain_identity,
+        run=lambda *_args, **_kwargs: type(
             "Completed",
             (),
             {
