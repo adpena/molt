@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import json
+import tomllib
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -382,3 +383,72 @@ def test_admission_expansion_requires_observed_numeric_coordinates(monkeypatch):
     monkeypatch.setattr(policy, "TARGETS", (*policy.TARGETS, "3.15"))
     with pytest.raises(policy.SchemaError, match="needs observed numeric coordinates"):
         policy.load_policy()
+
+
+@pytest.fixture
+def synthetic_catalog_policy(tmp_path, monkeypatch):
+    """Synthetic majors, minors and column order expose positional binding."""
+    monkeypatch.setattr(policy, "TARGETS", ("4.20", "3.7"))
+    current = tomllib.loads(policy.SOURCE.read_text(encoding="utf-8"))
+    lines = ["schema_version = 1", 'supported_targets = ["4.20", "3.7"]']
+    for row in current["context"]:
+        lines.append("\n[[context]]")
+        for field in ("name", "operation", "operand_kind", "error_class"):
+            lines.append(f"{field} = {json.dumps(row[field])}")
+        lines.extend(
+            (
+                'python_3_7 = "seventh coordinate"',
+                'python_4_20 = "twentieth coordinate"',
+            )
+        )
+    path = tmp_path / "synthetic.toml"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_numeric_columns_follow_exact_selected_catalog(synthetic_catalog_policy):
+    rows = policy.load_policy(synthetic_catalog_policy)
+    assert rows
+    assert all(
+        row.messages == ("twentieth coordinate", "seventh coordinate") for row in rows
+    )
+    rendered = policy.render(rows)
+    twentieth = rendered.index("            (4, 20) => Some(match self {")
+    seventh = rendered.index("            (3, 7) => Some(match self {")
+    assert twentieth < seventh
+    for row in rows:
+        assert (
+            f'Self::{row.name} => "twentieth coordinate",'
+            in rendered[twentieth:seventh]
+        )
+        assert f'Self::{row.name} => "seventh coordinate",' in rendered[seventh:]
+    assert "            (3, 12) =>" not in rendered
+    assert "            (3, 13) =>" not in rendered
+    assert "            (3, 14) =>" not in rendered
+    assert "            _ => None," in rendered
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ('["4.20", "3.7"]', '["3.7", "4.20"]'),
+        ('["4.20", "3.7"]', '["4.20"]'),
+        ('["4.20", "3.7"]', '["4.20", "3.8"]'),
+        ('python_3_7 = "seventh coordinate"\n', ""),
+        ('python_3_7 = "seventh coordinate"', 'python_3_8 = "foreign coordinate"'),
+        (
+            'python_3_7 = "seventh coordinate"',
+            'python_3_7 = "seventh coordinate"\npython_3_8 = "foreign coordinate"',
+        ),
+        ('python_3_7 = "seventh coordinate"', 'python_3_7 = ""'),
+        ('python_3_7 = "seventh coordinate"', "python_3_7 = 7"),
+    ],
+)
+def test_synthetic_catalog_stays_closed(synthetic_catalog_policy, before, after):
+    source = synthetic_catalog_policy.read_text(encoding="utf-8")
+    assert before in source
+    synthetic_catalog_policy.write_text(
+        source.replace(before, after, 1), encoding="utf-8"
+    )
+    with pytest.raises(policy.SchemaError):
+        policy.load_policy(synthetic_catalog_policy)

@@ -97,6 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             param_name_set,
             last_use,
@@ -434,6 +435,7 @@ fn handle_call_direct_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     param_name_set: &BTreeSet<&str>,
     last_use: &BTreeMap<String, usize>,
@@ -627,6 +629,7 @@ fn handle_call_direct_op(
         // propagates to the caller instead of being silently
         // swallowed as None when no check_exception follows.
         switch_to_block_materialized(&mut *builder, error_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, error_block);
         let raise_ref = import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -663,6 +666,7 @@ fn handle_call_direct_op(
 
         // Call block: direct call to the target function.
         switch_to_block_materialized(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         let direct_call = builder.ins().call(local_callee, &args);
         let direct_results = builder.inst_results(direct_call);
         let call_res = if direct_results.is_empty() {

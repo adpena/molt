@@ -52,6 +52,14 @@ architecture, runner, and Rust-target coordinates. Generated projections do not
 redeclare those facts. Human status and coverage-index documents are
 presentations, not receipt inputs or hidden support authorities.
 
+Python 3.15 is also required before v1.0 release. Its target admission, semantic
+and ABI migration, and complete release-matrix qualification remain open under
+V1-35 in the [release ledger](../../../../agent/V1_HANDOFF_FINDINGS.md#open-release-requirements).
+The current executable matrix above must not be interpreted as completing that
+obligation. A future version enters the existing authority only with its pinned
+CPython source and complete producer/consumer migration; no unknown version is
+accepted by extrapolation.
+
 ## Test projection
 
 `tools/compat/test_policy.py` is the sole authority for differential-test
