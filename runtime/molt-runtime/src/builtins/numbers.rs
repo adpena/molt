@@ -1402,6 +1402,7 @@ pub(crate) fn is_exact_float(py: &PyToken<'_>, bits: u64) -> bool {
 /// Exact-float storage for consumers that must dispatch subclass special methods.
 /// This is separate from the managed-only carrier predicate above: a native
 /// exact float is admitted through its physical type, without projecting it.
+#[cfg(feature = "stdlib_math")]
 pub(crate) fn exact_float_storage_value(py: &PyToken<'_>, bits: u64) -> Result<Option<f64>, ()> {
     if is_exact_float(py, bits) {
         return Ok(as_float_extended(obj_from_bits(bits)));

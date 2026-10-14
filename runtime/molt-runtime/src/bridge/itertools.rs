@@ -26,26 +26,6 @@ pub fn bridge_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
     crate::molt_call_bind(call_bits, builder_bits)
 }
 
-/// Snapshot a live sequence through the runtime's single pinned-export
-/// authority. Every returned handle and the bridge buffer are owned by the
-/// guard, exactly matching the out-of-tree satellite contract.
-///
-/// # Safety
-///
-/// `ptr` must identify a live Molt list or tuple for this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
-    let mut out_ptr = std::ptr::null();
-    let mut out_len = 0usize;
-    let exported = crate::with_gil_entry_nopanic!(py, {
-        unsafe { crate::seq_snapshot_bridge::export(py, ptr, &mut out_ptr, &mut out_len) }
-    });
-    if exported == 0 {
-        out_ptr = std::ptr::null();
-        out_len = 0;
-    }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
-}
-
 /// # Safety
 ///
 /// `ptr` must identify a live sequence and the caller must hold GIL custody.
