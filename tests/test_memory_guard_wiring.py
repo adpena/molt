@@ -37,6 +37,26 @@ def bootstrap_uses_a_private_os(monkeypatch: pytest.MonkeyPatch) -> None:
     install_module_os_view(monkeypatch, pytest_memory_guard_bootstrap)
 
 
+@pytest.fixture(autouse=True)
+def pytest_tmpdir_patches_stay_in_their_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore pytest's temp-dir functions after each test.
+
+    Under the Windows process model ``install_pytest_custody_roots`` replaces
+    them for the whole process, as a real Windows session needs; a test that
+    selects that model must not leave the replacement to later tests.
+    """
+    import _pytest.pathlib as pytest_pathlib
+    import _pytest.tmpdir as pytest_tmpdir
+
+    monkeypatch.setattr(
+        pytest_pathlib, "make_numbered_dir", pytest_pathlib.make_numbered_dir
+    )
+    monkeypatch.setattr(
+        pytest_tmpdir, "make_numbered_dir", pytest_tmpdir.make_numbered_dir
+    )
+    monkeypatch.setattr(pytest_tmpdir, "Path", pytest_tmpdir.Path)
+
+
 def _own_host_records(root: Path) -> set[str]:
     """Names of host guard records that this test process could have written."""
     prefix = f"guard-{os.getpid()}-"
@@ -124,7 +144,8 @@ def test_session_children_recognize_the_outer_guard_by_its_marker(
 
 
 def test_tests_consume_the_outer_guard_lease_under_the_session_root(
-    test_guard_custody_roots, monkeypatch,
+    test_guard_custody_roots,
+    monkeypatch,
 ) -> None:
     """The CI failure of HF-163: a test allocates helper scratch in process.
 
@@ -938,12 +959,14 @@ def test_outer_guard_handoff_uses_supplied_environment_for_every_custody_path(
             == summary.parent
         )
     # The guard and every test process start inside the run context (HF-114):
-    # Cargo builds go to the artifact root's stable target, not the CLI's
-    # `<checkout>/target` default.
+    # Cargo builds go to this checkout's stable target under the artifact
+    # root (HF-45), not the CLI's `<checkout>/target` default.
     child_env = captured["env"]
     assert all(child_env.get(key) for key in dx.MOLT_ROOT_ENV_KEYS)
-    assert Path(child_env["CARGO_TARGET_DIR"]) == (
-        Path(child_env["MOLT_EXT_ROOT"]) / "target"
+    child_target = Path(child_env["CARGO_TARGET_DIR"])
+    assert Path(child_env["MOLT_EXT_ROOT"]) / "target" in child_target.parents
+    assert child_target == dx.cargo_target_dir_for_artifact_root(
+        Path(child_env["MOLT_EXT_ROOT"]), None, source_root=REPO_ROOT
     )
     assert "MOLT_EXT_ROOT" not in env
 
@@ -966,7 +989,11 @@ def test_pytest_process_enters_run_context_roots_and_keeps_explicit_ones(
     artifact_root = dx.configured_artifact_root(relative_to=REPO_ROOT)
     # A pytest session id never scopes a target, least of all in the checkout.
     assert artifact_root is not None
-    assert target == artifact_root / "target"
+    assert target == dx.cargo_target_dir_for_artifact_root(
+        artifact_root, None, source_root=REPO_ROOT
+    )
+    assert artifact_root / "target" in target.parents
+    assert "sessions" not in target.relative_to(artifact_root).parts
     assert REPO_ROOT / "target" / "sessions" not in target.parents
 
 
