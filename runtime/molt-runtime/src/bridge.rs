@@ -4,6 +4,19 @@
 //! `#[path]`. Those files depend on a `crate::bridge` access layer; this facade
 //! preserves that API while routing helper families to focused submodules.
 
+// A test build with every satellite extracted compiles this facade only for
+// the differential tests in `path_bridge.rs`, which call a few items. HF-87
+// owns gating each item by the satellites that call it.
+#![cfg_attr(
+    all(
+        test,
+        feature = "stdlib_http",
+        feature = "stdlib_itertools",
+        feature = "stdlib_path"
+    ),
+    allow(dead_code)
+)]
+
 mod attrs;
 mod core;
 mod ext_state;

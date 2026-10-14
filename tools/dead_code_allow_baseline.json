@@ -1,5 +1,5 @@
 {
-  "baseline_total": 67,
+  "baseline_total": 68,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -205,6 +205,11 @@
       "id": "runtime/molt-launcher/tests/entrypoint.rs::allow_dead_code::mod:cargo_test_artifacts",
       "owner": "runtime-authority-closure",
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
+    },
+    {
+      "id": "runtime/molt-runtime/src/bridge.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "a test build with every satellite extracted compiles the reduced-profile bridge only for the path_bridge.rs differential tests, which call a few items; HF-87 owns gating each bridge item by the satellites that call it"
     },
     {
       "id": "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs::allow_dead_code::inner",
