@@ -206,6 +206,7 @@ def _produce_native(
     from molt.cli.native_symbol_inspection import _native_symbol_artifact_identity
     from molt.cli.runtime_callable_symbols import _runtime_callable_symbols_file
     from molt.cli.runtime_native_build import _ensure_runtime_lib
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.runtime_paths import _runtime_lib_path
     from molt.compiler_distribution import (
         NATIVE_CALLABLE_PROJECTION_ROLE,
@@ -229,6 +230,8 @@ def _produce_native(
             timeout,
             stdlib_profile=request.stdlib_profile,
             extra_runtime_features=request.extra_runtime_features,
+            # A shipped cell runs on every CPU of its architecture.
+            rust_cpu=RustCpuPolicy.BASELINE,
             runtime_state=state,
         )
         or state.native_runtime_build_identity is None
@@ -283,6 +286,7 @@ def _produce_wasm(
 ) -> dict[str, Any]:
     from molt.cli.runtime_build import _initialize_runtime_artifact_state
     from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
+    from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_surface
     from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
     from molt.compiler_distribution import WASM_RUNTIME_CELL
@@ -296,6 +300,7 @@ def _produce_wasm(
         runtime_cargo_profile=cargo_profile,
         target_triple=None,
         stdlib_profile=request.stdlib_profile,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     # A distributed cell carries its complete tier ceiling and the full
     # canonical CPython C-API export surface; installed admission then checks

@@ -199,3 +199,38 @@ fn method_ic_import_demand_and_codegen_follow_generated_arity_selector() {
         );
     }
 }
+
+#[test]
+fn explicit_trace_ops_call_their_runtime_imports() {
+    let op = |kind: &str| OpIR {
+        kind: kind.to_string(),
+        ..OpIR::default()
+    };
+    let mut enter = op("trace_enter_slot");
+    enter.s_value = Some("molt_test_func".into());
+    let bindings: molt_ir::code_slots::CodeSlotBindings =
+        serde_json::from_value(serde_json::json!({"molt_test_func": 0})).unwrap();
+    let wasm = WasmBackend::new()
+        .with_code_slots(bindings)
+        .compile(SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_test_func".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                execution_context: molt_ir::ExecutionContextPolicy::Local,
+                ops: vec![enter, op("trace_exit"), op("ret_void")],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        });
+    let imports = wasm_function_import_indices(&wasm);
+    let calls = wasm_direct_call_indices(&wasm);
+    for name in ["trace_enter_slot", "trace_exit"] {
+        let index = imports
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} must be imported; imports={imports:?}"));
+        assert!(
+            calls.contains(index),
+            "the {name} op must call its runtime import; calls={calls:?}"
+        );
+    }
+}

@@ -337,9 +337,11 @@ def validate_clippy_selection(
             raise ValueError("Clippy component path is malformed")
         path = Path(raw)
         require_custody_coordinate(path)
+        # capture_image records the resolved image under custody spelling too,
+        # which on Windows lowercases the drive anchor that resolve() restores.
         if (role, str(custody_path(path))) not in captured or (
             role,
-            str(path.resolve(strict=True)),
+            str(custody_path(path.resolve(strict=True))),
         ) not in captured:
             raise ValueError(f"Clippy component image closure is incomplete: {role}")
     launcher = Path(str(paths["clippy-launcher"]))
@@ -1523,7 +1525,14 @@ def validate_llvm_sdk_selection(
             Path(record["prefix"]), Path(tools["llvm-config"])
         )
     }
-    if dict(tools) != canonical or tools["llvm-config"] != identity.get("path"):
+    selected_path = identity.get("path")
+    if (
+        dict(tools) != canonical
+        or not isinstance(selected_path, str)
+        # The selection reports the OS spelling; the identity path carries
+        # custody's, which lowercases a Windows drive anchor.
+        or custody_path(Path(tools["llvm-config"])) != custody_path(Path(selected_path))
+    ):
         raise ValueError("LLVM SDK tools differ from the verification selection")
     if expected is not None and {
         key: record[key]

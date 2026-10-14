@@ -32,7 +32,6 @@ FIRST_PARTY_PREFIXES = ("molt", "tools")
 # the host `src/molt` package, so host bindings are not the authority.
 COMPILED_CORPUS_DIRS = frozenset(
     {
-        "molt_only",
         "differential",
         "parity",
         "compliance",

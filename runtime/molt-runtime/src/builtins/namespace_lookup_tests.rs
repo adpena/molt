@@ -273,7 +273,14 @@ fn global_dict_subclass_key_error_falls_back_to_captured_builtins() {
         LOOKUP_RESULT.store(0, Ordering::SeqCst);
         LOOKUP_CALLS.store(0, Ordering::SeqCst);
 
-        let found = lookup_global_namespace(_py, 0, "<test>", globals, builtins, key, "bound");
+        let found = lookup_global_namespace(
+            _py,
+            0,
+            GlobalsOwner::Named("<test>"),
+            globals,
+            builtins,
+            key,
+        );
         assert_eq!(found, value);
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(refcount(value), value_before + 1);
@@ -302,7 +309,14 @@ fn global_dict_subclass_value_error_propagates_without_builtins_fallback() {
         LOOKUP_RESULT.store(0, Ordering::SeqCst);
         LOOKUP_CALLS.store(0, Ordering::SeqCst);
 
-        let result = lookup_global_namespace(_py, 0, "<test>", globals, builtins, key, "bound");
+        let result = lookup_global_namespace(
+            _py,
+            0,
+            GlobalsOwner::Named("<test>"),
+            globals,
+            builtins,
+            key,
+        );
         assert!(obj_from_bits(result).is_none());
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(refcount(fallback), fallback_before);
@@ -329,7 +343,14 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
         LOOKUP_RESULT.store(value, Ordering::SeqCst);
         LOOKUP_CALLS.store(0, Ordering::SeqCst);
 
-        let found = lookup_global_namespace(_py, 0, "<test>", globals, builtins, key, "len");
+        let found = lookup_global_namespace(
+            _py,
+            0,
+            GlobalsOwner::Named("<test>"),
+            globals,
+            builtins,
+            key,
+        );
         assert_eq!(found, value);
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(refcount(value), value_before + 1);
@@ -337,7 +358,14 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
         dec_ref_bits(_py, found);
 
         LOOKUP_MODE.store(LOOKUP_KEY_ERROR, Ordering::SeqCst);
-        let missing = lookup_global_namespace(_py, 0, "<test>", globals, builtins, key, "len");
+        let missing = lookup_global_namespace(
+            _py,
+            0,
+            GlobalsOwner::Named("<test>"),
+            globals,
+            builtins,
+            key,
+        );
         assert!(obj_from_bits(missing).is_none());
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(refcount(value), value_before);

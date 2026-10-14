@@ -685,22 +685,26 @@ def _command_registration(
     entrypoint = _command_entrypoint(argv)
     named_entrypoints = registry["named_entrypoints"]
     assert isinstance(named_entrypoints, dict)
-    lane_near_matches = named_entrypoints.get(entrypoint)
-    if isinstance(lane_near_matches, list):
-        # A program registered as a named lane spawns processes by design; an
-        # argv that differs from every registered lane must not silently
-        # degrade into a leaf with children forbidden.
-        raise ValueError(
-            "named-lane entrypoint argv must match its registered command exactly; "
-            f"near-match would discard the toolchain closure of {lane_near_matches!r}"
-        )
     registered_entrypoints = registry["entrypoints"]
     assert isinstance(registered_entrypoints, dict)
-    near_matches = registered_entrypoints.get(entrypoint)
-    if isinstance(near_matches, list) and typed_python is None:
+    # A program registered as a named lane spawns processes by design, and a
+    # proof-plan command owns its declared toolchains. An argv that differs
+    # from every registered command must not silently degrade into a leaf
+    # with children forbidden; name every authority the near-match discards.
+    lane_near_matches = named_entrypoints.get(entrypoint)
+    plan_near_matches = registered_entrypoints.get(entrypoint)
+    discarded = [
+        *(lane_near_matches if isinstance(lane_near_matches, list) else ()),
+        *(
+            plan_near_matches
+            if isinstance(plan_near_matches, list) and typed_python is None
+            else ()
+        ),
+    ]
+    if discarded:
         raise ValueError(
-            "proof-plan entrypoint argv must match its registered command exactly; "
-            f"near-match would discard toolchain authority for {near_matches!r}"
+            "registered entrypoint argv must match its registered command exactly; "
+            f"near-match would discard toolchain authority for {discarded!r}"
         )
 
     if execution_argv is not None:

@@ -107,6 +107,7 @@ EXPECTED_MIXINS = [
     "ClassResolutionMixin",
     "TypeAnnotationMixin",
     "LoopLoweringMixin",
+    "BuiltinGuardMixin",
     "AnalysisCollectStaticMixin",
     "AnalysisPatternMixin",
     "AsyncGenVisitorMixin",

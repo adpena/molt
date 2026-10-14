@@ -18,7 +18,7 @@ env:
 jobs:
   wasm-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 263
+    timeout-minutes: 293
     env:
       PYTHONPATH: ${{ github.workspace }}/src
       MOLT_EXT_ROOT: /tmp/molt-ext

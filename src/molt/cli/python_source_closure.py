@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from threading import Lock
 from types import MappingProxyType
 import tomllib
 from typing import Literal, cast
@@ -113,11 +114,18 @@ def _read_graph_cache(
     entries = payload.get("entries")
     if not isinstance(entries, dict):
         return {}, True
+    retained = _retained_graph_entries(project_root, entries)
+    return retained, retained != entries
+
+
+def _retained_graph_entries(
+    project_root: Path, entries: Mapping[str, object]
+) -> dict[str, dict[str, object]]:
     retained: dict[str, dict[str, object]] = {}
     for key, value in entries.items():
         if not isinstance(key, str) or not isinstance(value, dict):
             continue
-        # Persisted keys never grant source authority: only fresh canonical
+        # Cached keys never grant source authority: only fresh canonical
         # discovery can look one up. Validate spelling without resolving every
         # sibling policy's paths, then prune vanished sources with one stat.
         relative = PurePosixPath(key)
@@ -137,7 +145,37 @@ def _read_graph_cache(
             # Cache hints are disposable; discovery owns errors for reached sources.
             continue
         retained[key] = value
-    return retained, retained != entries
+    return retained
+
+
+# Content-keyed analysis rows this process has derived, per project root. A
+# fresh MOLT_CACHE reuses them; the persisted cache still decides every variant
+# it holds, so a tampered or stale persisted row is re-analyzed, never masked.
+_PROCESS_GRAPH_ENTRIES: dict[Path, dict[str, dict[str, object]]] = {}
+_PROCESS_GRAPH_ENTRIES_LOCK = Lock()
+
+
+def _with_process_graph_entries(
+    project_root: Path, persisted: dict[str, dict[str, object]]
+) -> dict[str, dict[str, object]]:
+    with _PROCESS_GRAPH_ENTRIES_LOCK:
+        remembered = dict(_PROCESS_GRAPH_ENTRIES.get(project_root, {}))
+    merged = {
+        key: dict(variants)
+        for key, variants in _retained_graph_entries(project_root, remembered).items()
+    }
+    for key, variants in persisted.items():
+        merged.setdefault(key, {}).update(variants)
+    return merged
+
+
+def _remember_process_graph_entries(
+    project_root: Path, entries: dict[str, dict[str, object]]
+) -> None:
+    with _PROCESS_GRAPH_ENTRIES_LOCK:
+        remembered = _PROCESS_GRAPH_ENTRIES.setdefault(project_root, {})
+        for key, variants in entries.items():
+            remembered.setdefault(key, {}).update(variants)
 
 
 def _write_graph_cache(
@@ -557,7 +595,8 @@ def local_python_import_closure(
         if not policy.module_level_only
         else (None, {})
     )
-    cached_entries, cache_pruned = _read_graph_cache(root)
+    persisted_entries, cache_pruned = _read_graph_cache(root)
+    cached_entries = _with_process_graph_entries(root, persisted_entries)
     analysis_digest = hashlib.sha256(
         json.dumps(local_import_analysis_identity(), sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -670,8 +709,9 @@ def local_python_import_closure(
         for dependency in dependencies:
             if dependency not in visited:
                 pending.append(dependency)
-    if cache_pruned or next_entries != cached_entries:
+    if cache_pruned or next_entries != persisted_entries:
         _write_graph_cache(root, next_entries)
+    _remember_process_graph_entries(root, next_entries)
     content_by_path = {
         path: snapshots[path].content for path in reached | covered_sources
     }

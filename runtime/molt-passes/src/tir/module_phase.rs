@@ -27,8 +27,7 @@ struct ModuleStageAuditShape {
 }
 
 fn module_stage_audit_enabled() -> bool {
-    std::env::var("MOLT_MODULE_STAGE_AUDIT").as_deref() == Ok("1")
-        || std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1")
+    molt_ir::stage_audit::stage_audit_enabled(molt_ir::stage_audit::AuditStage::Module)
 }
 
 fn module_stage_shape(module: &TirModule) -> ModuleStageAuditShape {

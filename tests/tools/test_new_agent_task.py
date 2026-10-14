@@ -24,10 +24,16 @@ def _export_value(stdout: str, key: str) -> str:
 
 @pytest.mark.parametrize("pinned", [False, True], ids=["init-named", "pinned"])
 @pytest.mark.usefixtures("developer_host_context")
-def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
+def test_new_agent_task_scaffolds_canonical_agent_env(
+    pinned: bool, tmp_path: Path
+) -> None:
     task = f"unit-agent-{uuid4().hex}"
     pinned_session = f"lane-{uuid4().hex}"
-    base = REPO_ROOT / "logs" / "agents" / task
+    # The scaffold is checkout-relative; a test checkout keeps it out of the
+    # real one, which concurrent sessions watch for new entries.
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    base = checkout / "logs" / "agents" / task
     artifact_root = (Path("/tmp") / f"molt-agent-artifacts-{uuid4().hex}").resolve()
     socket_root = (Path("/tmp") / f"molt-agent-sockets-{uuid4().hex}").resolve()
     env = dict(os.environ)
@@ -63,6 +69,8 @@ def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
             [
                 sys.executable,
                 "tools/agent_coordination.py",
+                "--repo-root",
+                str(checkout),
                 "init",
                 task,
                 *(["--session", pinned_session] if pinned else []),
@@ -100,11 +108,11 @@ def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
                 == artifact_root
                 / "target"
                 / "checkouts"
-                / checkout_component(REPO_ROOT)
+                / checkout_component(checkout)
                 / "sessions"
             )
             assert cargo_target == cargo_target_dir_for_artifact_root(
-                artifact_root, session_id, source_root=REPO_ROOT
+                artifact_root, session_id, source_root=checkout
             )
         else:
             # A session init names itself shares the warm persistent target;
@@ -113,10 +121,7 @@ def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
             assert _export_value(env_text, "MOLT_SESSION_ID_GENERATED") == "1"
             assert (
                 cargo_target
-                == artifact_root
-                / "target"
-                / "checkouts"
-                / checkout_component(REPO_ROOT)
+                == artifact_root / "target" / "checkouts" / checkout_component(checkout)
             )
         assert _export_value(env_text, "MOLT_DIFF_CARGO_TARGET_DIR") == str(
             cargo_target
@@ -138,11 +143,3 @@ def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
         assert "initialized task=" in progress_log.read_text(encoding="utf-8")
     finally:
         shutil.rmtree(base, ignore_errors=True)
-        # The scaffold lives in the checkout by design; leave the checkout as
-        # the session found it (HF-135). rmdir refuses a parent that a
-        # parallel test or a real task still uses.
-        for directory in (base.parent, base.parent.parent):
-            try:
-                directory.rmdir()
-            except OSError:
-                break

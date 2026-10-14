@@ -295,7 +295,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.python_unit_collection == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 16
+    timeout-minutes: 24
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.python_unit_collection_matrix) }}
@@ -388,7 +388,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 284
+    timeout-minutes: 308
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

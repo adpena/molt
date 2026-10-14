@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! `molt-runtime-ipaddress` — IP address intrinsics for the Molt runtime.
 //!
 //! Isolates the ipaddress module intrinsics (IPv4/IPv6 addresses, networks,

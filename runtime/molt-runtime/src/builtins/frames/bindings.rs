@@ -671,7 +671,10 @@ unsafe fn take_extras(ptr: *mut u8) -> (u64, Vec<u64>) {
         let history = if history == 0 {
             Vec::new()
         } else {
-            *Box::from_raw(history as usize as *mut Vec<u64>)
+            *Box::from_raw(
+                crate::provenance::abi::mut_ptr::<Vec<u64>>(history)
+                    .expect("frame binding history word names a runtime allocation"),
+            )
         };
         (locals, history)
     }
@@ -841,10 +844,10 @@ fn unlent_home(py: &PyToken<'_>) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_home_load(home: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let pair = home as usize as *mut u64;
-        if pair.is_null() {
+        let Some(pair) = crate::provenance::abi::mut_ptr::<u64>(home).filter(|p| !p.is_null())
+        else {
             return unlent_home(py);
-        }
+        };
         unsafe { plain_home_value(py, pair) }.unwrap_or_else(|()| missing_bits(py))
     })
 }
@@ -890,10 +893,10 @@ unsafe fn plain_home_value(py: &PyToken<'_>, pair: *mut u64) -> Result<u64, ()> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_home_take(home: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let pair = home as usize as *mut u64;
-        if pair.is_null() {
+        let Some(pair) = crate::provenance::abi::mut_ptr::<u64>(home).filter(|p| !p.is_null())
+        else {
             return unlent_home(py);
-        }
+        };
         let missing = missing_bits(py);
         let (kind, bits) = unsafe { (*pair as i64, *pair.add(1)) };
         let taken = match kind {
@@ -1031,7 +1034,10 @@ unsafe fn pair_words(ptr: *mut u8) -> Option<*mut u64> {
     unsafe {
         let state = state_of(ptr);
         if state & STATE_LIVE_HOMES != 0 {
-            Some(*word(ptr, SOURCE_WORD) as usize as *mut u64)
+            Some(
+                crate::provenance::abi::mut_ptr::<u64>(*word(ptr, SOURCE_WORD))
+                    .expect("live frame homes word names a runtime address"),
+            )
         } else if state & STATE_RETIRED != 0 {
             Some(word(ptr, SLOT_BASE_WORD))
         } else {
@@ -1043,7 +1049,10 @@ unsafe fn pair_words(ptr: *mut u8) -> Option<*mut u64> {
 /// The stateful activation a live payload reads, borrowed.
 pub(crate) fn frame_bindings_live_activation(ptr: *mut u8) -> Option<*mut u8> {
     (state_of(ptr) & STATE_LIVE_ACTIVATION != 0)
-        .then(|| unsafe { *word(ptr, SOURCE_WORD) } as usize as *mut u8)
+        .then(|| {
+            crate::provenance::abi::mut_ptr::<u8>(unsafe { *word(ptr, SOURCE_WORD) })
+                .expect("live activation word names a runtime address")
+        })
         .filter(|task| !task.is_null())
 }
 
@@ -1259,9 +1268,10 @@ unsafe fn history_reserve(py: &PyToken<'_>, ptr: *mut u8) -> Result<*mut Vec<u64
                 return Err(());
             }
             history.write(Vec::new());
-            *slot = history as usize as u64;
+            *slot = crate::provenance::abi::expose_address(history.cast_const());
         }
-        let history = *slot as usize as *mut Vec<u64>;
+        let history = crate::provenance::abi::mut_ptr::<Vec<u64>>(*slot)
+            .expect("frame binding history word names a runtime allocation");
         // Amortized growth: one reservation per write, never a copy per write.
         if (*history).try_reserve(1).is_err() {
             crate::record_memory_error_without_allocation(py);
@@ -1552,7 +1562,9 @@ pub(crate) unsafe fn frame_bindings_visit(ptr: *mut u8, visit: &mut dyn FnMut(u6
         visit(*word(ptr, LOCALS_WORD));
         let history = *word(ptr, HISTORY_WORD);
         if history != 0 {
-            for &bits in (*(history as usize as *const Vec<u64>)).iter() {
+            let history = crate::provenance::abi::const_ptr::<Vec<u64>>(history)
+                .expect("frame binding history word names a runtime allocation");
+            for &bits in (*history).iter() {
                 visit(bits);
             }
         }

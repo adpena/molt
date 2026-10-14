@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use serde_json::Value as JsonValue;
 
 pub type JsonObject = serde_json::Map<String, JsonValue>;

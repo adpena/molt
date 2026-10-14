@@ -13,11 +13,16 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
-from tests.executable_test_support import custody_spelling
+from tests.executable_test_support import (
+    custody_spelling,
+    native_executable_name,
+    write_mock_executable,
+)
 import pytest
 
-from tests.process_guard_common import run_isolated_python_probe
+from tests.process_guard_common import install_module_view, run_isolated_python_probe
 
+from molt import file_publication
 from molt.exact_json import canonical_json_sha256
 from tools.proof_queue_pkg import (
     custody_cas,
@@ -761,7 +766,8 @@ def test_custody_cas_recursively_fsyncs_new_directories(
             directory_fsyncs.append("directory")
         real_fsync(descriptor)
 
-    monkeypatch.setattr(custody_cas.os, "fsync", observed_fsync)
+    # The CAS issues every directory barrier through file publication.
+    install_module_view(monkeypatch, "os", os, file_publication, fsync=observed_fsync)
     reference = custody_cas.put_json(
         tmp_path / "new" / "nested" / "cas",
         {"schema": custody_cas.ARTIFACT_SCHEMA, "kind": "durable-directories"},
@@ -1977,7 +1983,9 @@ def test_process_image_revalidation_rejects_mutation(tmp_path: Path) -> None:
 def test_platform_auxiliary_images_are_absent_off_windows_or_for_leaf_custody(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(process_image_capture.sys, "platform", "linux")
+    install_module_view(
+        monkeypatch, "sys", sys, process_image_capture, platform="linux"
+    )
     assert process_image_capture.platform_auxiliary_images("declared-toolchains") == []
 
     monkeypatch.setattr(process_image_capture.sys, "platform", "win32")
@@ -3553,30 +3561,37 @@ def test_cargo_check_uses_source_bound_effective_flags_before_any_probe(
         env["CARGO_ENCODED_RUSTFLAGS"] = "--emit=link"
     elif setting in {"active-cfg", "inactive-cfg"}:
         predicate = "windows" if setting == "active-cfg" else "unix"
-        config.write_text(f"[target.'cfg({predicate})']\nrustflags=[\"--emit=link\"]\n")
+        config.write_text(
+            f"[target.'cfg({predicate})']\nrustflags=[\"--emit=link\"]\n",
+            encoding="utf-8",
+        )
     elif setting == "output-destinations":
         env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(expected_flags)
-        config.write_text("[target.'cfg(windows)']\nrustflags=[]\n")
+        config.write_text("[target.'cfg(windows)']\nrustflags=[]\n", encoding="utf-8")
     elif setting == "custom-profile":
         (tmp_path / "Cargo.toml").write_text(
-            '[profile.small]\ninherits="dev"\nopt-level="s"\n[profile.small.package.some_package]\nopt-level=3\n'
+            '[profile.small]\ninherits="dev"\nopt-level="s"\n[profile.small.package.some_package]\nopt-level=3\n',
+            encoding="utf-8",
         )
         command.extend(("--profile", "small"))
     elif setting == "documenter-tests":
         env["RUSTDOCFLAGS"] = "--test"
     elif setting == "documenter-cfg":
-        config.write_text("[target.'cfg(windows)']\nrustdocflags=[\"--test\"]\n")
+        config.write_text(
+            "[target.'cfg(windows)']\nrustdocflags=[\"--test\"]\n", encoding="utf-8"
+        )
     elif setting == "documenter-rendering":
         env["RUSTDOCFLAGS"] = (
             "--test --html-in-header --test --emit=html-static-files,dep-info"
         )
     elif setting == "forced-environment":
         config.write_text(
-            '[env.CARGO_ENCODED_RUSTFLAGS]\nvalue="--emit=metadata=/user/metadata"\nforce=true\n'
+            '[env.CARGO_ENCODED_RUSTFLAGS]\nvalue="--emit=metadata=/user/metadata"\nforce=true\n',
+            encoding="utf-8",
         )
-    linker = tmp_path / "selected-linker"
-    linker.write_bytes(b"linker")
-    linker.chmod(0o755)
+    linker = write_mock_executable(
+        tmp_path / native_executable_name("selected-linker"), b"linker"
+    )
     calls = []
 
     def run(argv, **kwargs):
@@ -3638,7 +3653,10 @@ def test_cargo_check_uses_source_bound_effective_flags_before_any_probe(
     with pytest.raises(ValueError, match="selected flags differ"):
         toolchain_capture.validate_rust_link_selection(forged, command_argv=command)
     if config.exists():
-        config.write_text(config.read_text() + "# changed after capture\n")
+        config.write_text(
+            config.read_text(encoding="utf-8") + "# changed after capture\n",
+            encoding="utf-8",
+        )
         with pytest.raises(ValueError, match="Cargo flag source changed"):
             toolchain_capture.revalidate_rust_link_process_images(
                 identity, target=target, command_argv=command
@@ -3661,7 +3679,9 @@ def test_unresolved_rust_flags_fail_before_flag_bearing_probe(
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
     (tmp_path / ".cargo").mkdir()
-    (tmp_path / ".cargo/config.toml").write_text("[target.'cfg(unix)']\nrustflags=[]\n")
+    (tmp_path / ".cargo/config.toml").write_text(
+        "[target.'cfg(unix)']\nrustflags=[]\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="response files|unstable Rust"):
         toolchain_capture.capture_rust_link_process_images(
             rustc=tmp_path / "rustc",
@@ -3721,12 +3741,11 @@ def test_documenter_has_independent_linker_witness_and_target_filters_avoid_it(
     import copy
 
     drivers = {
-        name: tmp_path / (name + "-linker")
+        name: tmp_path / native_executable_name(name + "-linker")
         for name in ("compiler", "documenter", "host")
     }
     for path in drivers.values():
-        path.write_bytes(path.name.encode())
-        path.chmod(0o755)
+        write_mock_executable(path, path.name.encode())
     command = ["cargo", *arguments]
     target = "x86_64-pc-windows-msvc"
     position = command.index("--") if "--" in command else len(command)
@@ -3805,7 +3824,8 @@ def test_external_unstable_manifest_is_rejected_before_capability_compile(
     external = tmp_path / "external-workspace"
     external.mkdir()
     (external / "Cargo.toml").write_text(
-        'cargo-features=["profile-rustflags"]\n[profile.dev]\nrustflags=["--emit=link"]\n'
+        'cargo-features=["profile-rustflags"]\n[profile.dev]\nrustflags=["--emit=link"]\n',
+        encoding="utf-8",
     )
     calls = []
     env = {"PATH": ""}
@@ -3947,18 +3967,24 @@ def _clippy_component_fixture(tmp_path, monkeypatch, *, proxy=False):
             argv, 0, str(tools["cargo-clippy"]) + "\n", ""
         )
 
+    def names(argv0: str, path: Path) -> bool:
+        # Route by the platform's path identity: Windows custody spells the
+        # drive anchor in lowercase (custody_spelling).
+        return os.path.normcase(argv0) == os.path.normcase(str(path))
+
     def probe(argv, **_kwargs):
         calls.append(("probe", tuple(argv)))
-        if proxy and argv[0] == str(home_bin / ("rustup" + suffix)):
-            assert argv[1:3] == ["run", str(tmp_path.parent)]
+        if proxy and names(argv[0], home_bin / ("rustup" + suffix)):
+            assert os.path.normcase(argv[2]) == os.path.normcase(str(tmp_path.parent))
+            assert argv[1] == "run"
             argv = argv[3:]
-        if argv[0] == str(tools["cargo-clippy"]):
+        if names(argv[0], tools["cargo-clippy"]):
             assert list(argv[1:]) == ["--version"]
             output = "clippy 0.1.99 (123456789 2026-09-28)\n"
-        elif argv[0] == str(tools["clippy-driver"]):
+        elif names(argv[0], tools["clippy-driver"]):
             assert list(argv[1:]) == ["--rustc", "--version", "--verbose"]
             output = version
-        elif argv[0] == str(tools["rustc"]) and list(argv[1:]) == [
+        elif names(argv[0], tools["rustc"]) and list(argv[1:]) == [
             "--version",
             "--verbose",
         ]:
@@ -3999,9 +4025,9 @@ def test_clippy_capture_owns_selected_plugin_and_sibling_driver(
         identity, required=True, expected_paths=paths
     )
     captured = {(row["role"], row["path"]) for row in identity["process_images"]}
-    assert ("cargo-clippy", str(tools["cargo-clippy"])) in captured
-    assert ("clippy-driver", str(tools["clippy-driver"])) in captured
-    assert paths["clippy-launcher"] == str(
+    assert ("cargo-clippy", custody_spelling(tools["cargo-clippy"])) in captured
+    assert ("clippy-driver", custody_spelling(tools["clippy-driver"])) in captured
+    assert paths["clippy-launcher"] == custody_spelling(
         tools["cargo-clippy"]
         if not proxy
         else tmp_path / "cargo-home" / "bin" / tools["cargo-clippy"].name
@@ -4072,8 +4098,8 @@ def test_clippy_alias_requires_one_cross_platform_sibling_driver(
     env["PATH"] = os.pathsep.join((str(aliases), env["PATH"]))
     if matching:
         paths = toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
-        assert paths["cargo-clippy"] == str(plugin)
-        assert paths["clippy-driver"] == str(driver)
+        assert paths["cargo-clippy"] == custody_spelling(plugin)
+        assert paths["clippy-driver"] == custody_spelling(driver)
     else:
         with pytest.raises(ValueError, match="different sibling drivers"):
             toolchain_capture.select_clippy_component_paths(cwd=tmp_path, env=env)
@@ -4181,11 +4207,12 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
         selection, cwd=tmp_path, env={}
     )
     assert len(calls) == 2
-    assert str(default_linker) in {row["path"] for row in images}
+    captured = {row["path"] for row in images}
+    assert custody_spelling(default_linker) in captured
     if aliases:
-        assert str(physical_lld) in {row["path"] for row in images}
-        assert str(linker_alias) in {row["path"] for row in images}
-    launcher = next(row for row in images if row["path"] == str(config))
+        assert custody_spelling(physical_lld) in captured
+        assert custody_spelling(linker_alias) in captured
+    launcher = next(row for row in images if row["path"] == custody_spelling(config))
     plan = proof_plan.ProofPlan.load()
     policy = next(p for p in plan.toolchain_policies if p.name == "llvm-sdk")
     identity = dict(
@@ -4203,7 +4230,9 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
     for omitted in ("llvm-config", *names, *selection["selectors"]):
         broken = copy.deepcopy(identity)
         path = {**selection["tools"], **selection["selectors"]}[omitted]
-        broken["process_images"] = [row for row in images if row["path"] != path]
+        broken["process_images"] = [
+            row for row in images if row["path"] != custody_spelling(Path(path))
+        ]
         with pytest.raises(ValueError, match="missing|substituted"):
             command_identity._validate_toolchain_identity(plan, "llvm-sdk", broken)
     for receiver in (
@@ -4230,7 +4259,7 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
         broken = copy.deepcopy(identity)
         if corruption == "helper":
             broken["process_images"] = [
-                row for row in images if row["path"] != str(default_linker)
+                row for row in images if row["path"] != custody_spelling(default_linker)
             ]
         elif corruption == "transcript":
             broken["llvm_sdk"]["probes"][1]["stderr"] = '"/other/ld" "phase"'
@@ -4242,7 +4271,7 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
             if not aliases:
                 continue
             broken["process_images"] = [
-                row for row in images if row["path"] != str(physical_lld)
+                row for row in images if row["path"] != custody_spelling(physical_lld)
             ]
         elif corruption == "foreign-image":
             foreign = tmp_path / "unrelated-executable"
@@ -4287,11 +4316,11 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
     assert len(version_calls) == 1 and len(calls) == 4
     # An omitted role cannot be laundered by resealing the stored JSON identity.
     location = Path(telemetry[-1]["record"])
-    stored = json.loads(location.read_text())
+    stored = json.loads(location.read_text(encoding="utf-8"))
     del stored["identity"]["llvm_sdk"]
     stored["identity"].pop("identity_sha256")
     stored["identity"]["identity_sha256"] = canonical_json_sha256(stored["identity"])
-    location.write_text(json.dumps(stored))
+    location.write_text(json.dumps(stored), encoding="utf-8")
     recaptured = capture()
     command_identity._validate_toolchain_identity(plan, "llvm-sdk", recaptured)
     assert recaptured["process_images"] == captured["process_images"]

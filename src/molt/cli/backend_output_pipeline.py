@@ -16,6 +16,7 @@ from molt.cli.build_results import (
     _emit_non_native_build_result,
 )
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.models import (
     BuildProfile,
     _BuildOutputLayout,
@@ -214,7 +215,9 @@ def _emit_backend_pipeline_outputs(
             sysroot_path=prepared_build_roots.sysroot_path,
             emit_mode=output_layout.emit_mode,
             profile=profile,
-            native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
+            native_arch_perf_enabled=(
+                prepared_build_preamble.rust_cpu is RustCpuPolicy.NATIVE
+            ),
             diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
             build_diagnostics_payload=snapshot_build_diagnostics,
             pgo_profile_payload=prepared_build_config.pgo_profile_payload,
@@ -353,7 +356,9 @@ def _emit_backend_pipeline_outputs(
             sysroot_path=prepared_build_roots.sysroot_path,
             emit_mode=output_layout.emit_mode,
             profile=profile,
-            native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
+            native_arch_perf_enabled=(
+                prepared_build_preamble.rust_cpu is RustCpuPolicy.NATIVE
+            ),
             diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
             build_diagnostics_payload=snapshot_build_diagnostics,
             pgo_profile_payload=prepared_build_config.pgo_profile_payload,
@@ -468,7 +473,9 @@ def _emit_backend_pipeline_outputs(
         sysroot_path=prepared_build_roots.sysroot_path,
         emit_mode=output_layout.emit_mode,
         profile=profile,
-        native_arch_perf_enabled=prepared_build_preamble.native_arch_perf_enabled,
+        native_arch_perf_enabled=(
+            prepared_build_preamble.rust_cpu is RustCpuPolicy.NATIVE
+        ),
         output_obj=prepared_native_link.output_obj,
         stub_path=prepared_native_link.stub_path,
         runtime_lib=prepared_native_link.runtime_lib,

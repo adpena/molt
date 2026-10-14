@@ -4,10 +4,12 @@ use crate::randomness::{fill_os_random, os_random_supported};
 use crate::*;
 use molt_cpython_abi::abi_types::{Py_hash_t, Py_uhash_t};
 use molt_obj_model::MoltObject;
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
+use molt_obj_model::hash_policy::PY_HASH_BITS;
 use molt_obj_model::hash_policy::{self, TupleHashAccumulator, normalize_hash as fix_hash};
 pub(crate) use molt_obj_model::hash_policy::{
-    PY_HASH_BITS, PY_HASH_IMAG, PY_HASH_INF, PY_HASH_MODULUS, PY_HASH_NAN, PY_HASH_NONE,
-    PY_HASH_WIDTH, hash_int, hash_pointer,
+    PY_HASH_IMAG, PY_HASH_INF, PY_HASH_MODULUS, PY_HASH_NAN, PY_HASH_NONE, PY_HASH_WIDTH, hash_int,
+    hash_pointer,
 };
 use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
@@ -224,6 +226,7 @@ impl SipHasher13 {
     }
 }
 
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 fn reduce_mersenne(mut value: u128) -> u64 {
     let mask = PY_HASH_MODULUS as u128;
     value = (value & mask) + (value >> PY_HASH_BITS);
@@ -234,6 +237,7 @@ fn reduce_mersenne(mut value: u128) -> u64 {
     if value == mask { 0 } else { value as u64 }
 }
 
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial", test))]
 fn mul_mod_mersenne(lhs: u64, rhs: u64) -> u64 {
     reduce_mersenne((lhs as u128) * (rhs as u128))
 }

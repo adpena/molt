@@ -44,10 +44,6 @@ pub(super) enum MoltSocketKind {
 pub(crate) struct MoltSocketInner {
     pub(super) kind: MoltSocketKind,
     pub(super) family: i32,
-    #[allow(dead_code)]
-    pub(super) sock_type: i32,
-    #[allow(dead_code)]
-    pub(super) proto: i32,
     pub(super) connect_pending: bool,
 }
 
@@ -363,8 +359,6 @@ impl MoltSocket {
     pub(super) fn new(
         kind: MoltSocketKind,
         family: i32,
-        sock_type: i32,
-        proto: i32,
         connect_pending: bool,
         timeout: Option<Duration>,
     ) -> Self {
@@ -372,8 +366,6 @@ impl MoltSocket {
             inner: Mutex::new(MoltSocketInner {
                 kind,
                 family,
-                sock_type,
-                proto,
                 connect_pending,
             }),
             timeout: Mutex::new(timeout),
@@ -387,19 +379,10 @@ impl MoltSocket {
 pub(super) fn socket_alloc(
     kind: MoltSocketKind,
     family: i32,
-    sock_type: i32,
-    proto: i32,
     timeout: Option<Duration>,
     connect_pending: bool,
 ) -> *mut u8 {
-    let socket = Box::new(MoltSocket::new(
-        kind,
-        family,
-        sock_type,
-        proto,
-        connect_pending,
-        timeout,
-    ));
+    let socket = Box::new(MoltSocket::new(kind, family, connect_pending, timeout));
     let socket_ptr = Box::into_raw(socket) as *mut u8;
     socket_register_descriptor(socket_ptr);
     socket_ptr
@@ -434,7 +417,7 @@ impl MoltSocketInner {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(windows)]
     fn is_stream(&self) -> bool {
         match self.kind {
             MoltSocketKind::TcpStream(_)
@@ -767,8 +750,6 @@ mod socket_runtime_state_tests {
                             .unwrap(),
                     ),
                     libc::AF_INET,
-                    libc::SOCK_STREAM,
-                    0,
                     None,
                     false,
                 )

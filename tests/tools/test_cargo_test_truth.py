@@ -448,14 +448,14 @@ def test_truth_runner_traverses_the_root_workspace_exactly_once(
             )
             if publish_binary is True:
                 path = receipt_dir / "one.json"
-                payload = json.loads(path.read_text())
+                payload = json.loads(path.read_text(encoding="utf-8"))
                 payload.update(
                     receipt_custody_root=str(receipt_dir),
                     retained_root=str(receipt_dir),
                     retained_files={},
                 )
                 descendants.retain_fixture_file(payload, executable)
-                path.write_text(json.dumps(payload))
+                path.write_text(json.dumps(payload), encoding="utf-8")
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
         evidence_path.write_text(output, encoding="utf-8")
         return runner.StreamedCommandResult(
@@ -2181,7 +2181,7 @@ def test_truth_runner_loads_only_typed_atomic_binary_receipts(tmp_path: Path) ->
         run_id=None,
         source=None,
     )
-    receipt.write_text(json.dumps(payload))
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
     assert runner.load_binary_receipts(tmp_path) == [payload]
 
     receipt.write_text(json.dumps({"schema": "wrong"}), encoding="utf-8")
@@ -2226,14 +2226,14 @@ def test_truth_runner_revalidates_exact_executable_bytes_at_collection(
         encoding="utf-8",
     )
 
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     payload.update(
         receipt_custody_root=str(tmp_path),
         retained_root=str(tmp_path),
         retained_files={},
     )
     descendants.retain_fixture_file(payload, executable)
-    receipt.write_text(json.dumps(payload))
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
     assert len(runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")) == 1
     executable.write_bytes(b"new Cargo build bytes")
     assert len(runner.load_binary_receipts(tmp_path, expected_run_id="exact-run")) == 1

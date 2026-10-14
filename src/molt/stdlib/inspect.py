@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 from functools import partial as _partial
 import collections.abc as _collections_abc
+import types as _types
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -45,6 +46,7 @@ __all__ = [
     "iscoroutine",
     "iscoroutinefunction",
     "isasyncgenfunction",
+    "isgenerator",
     "isgeneratorfunction",
     "markcoroutinefunction",
     "signature",
@@ -153,6 +155,10 @@ def markcoroutinefunction(func):
 
 def isasyncgenfunction(obj):
     return _molt_isasyncgenfunction(_unwrap_callable_kind(obj))
+
+
+def isgenerator(obj):
+    return isinstance(obj, _types.GeneratorType)
 
 
 def isgeneratorfunction(obj):

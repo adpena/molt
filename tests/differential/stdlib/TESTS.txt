@@ -236,6 +236,7 @@ tests/differential/stdlib/contextlib_suppress_multiple.py
 tests/differential/stdlib/contextvars_basic.py
 tests/differential/stdlib/contextvars_task_propagation.py
 tests/differential/stdlib/copy_basic.py
+tests/differential/stdlib/copy_class_hook.py
 tests/differential/stdlib/copyreg_basic.py
 tests/differential/stdlib/copyreg_failures.py
 tests/differential/stdlib/copyreg_helpers.py
@@ -1309,6 +1310,7 @@ tests/differential/stdlib/inspect_getsource_basic.py
 tests/differential/stdlib/inspect_isawaitable.py
 tests/differential/stdlib/inspect_iscoroutine.py
 tests/differential/stdlib/inspect_iscoroutinefunction.py
+tests/differential/stdlib/inspect_isgenerator.py
 tests/differential/stdlib/inspect_signature_bound.py
 tests/differential/stdlib/inspect_signature_descriptor_builtins.py
 tests/differential/stdlib/inspect_signature_intrinsic_payload.py
@@ -1407,6 +1409,7 @@ tests/differential/stdlib/logging_capturewarnings_basic.py
 tests/differential/stdlib/logging_config_dict.py
 tests/differential/stdlib/logging_disable_levels.py
 tests/differential/stdlib/logging_extra_collision.py
+tests/differential/stdlib/logging_file_stream_authority.py
 tests/differential/stdlib/logging_filter_mutation.py
 tests/differential/stdlib/logging_filters_propagation.py
 tests/differential/stdlib/logging_format_errors.py
@@ -1484,8 +1487,10 @@ tests/differential/stdlib/multiprocessing_pool_maxtasksperchild.py
 tests/differential/stdlib/multiprocessing_pool_starmap.py
 tests/differential/stdlib/multiprocessing_pool_starmap_async.py
 tests/differential/stdlib/multiprocessing_pool_timeout.py
+tests/differential/stdlib/multiprocessing_sem_unlink_arguments.py
 tests/differential/stdlib/multiprocessing_shared_value_array.py
 tests/differential/stdlib/multiprocessing_start_method.py
+tests/differential/stdlib/native_handle_close_protocols.py
 tests/differential/stdlib/netrc_basic.py
 tests/differential/stdlib/numeric_cross_type_hash_invariant.py
 tests/differential/stdlib/opcode_basic.py
@@ -1947,6 +1952,7 @@ tests/differential/stdlib/typing_typevar_default_version_gate.py
 tests/differential/stdlib/unicode_normalization.py
 tests/differential/stdlib/unicodedata_basic.py
 tests/differential/stdlib/unittest_import_closure.py
+tests/differential/stdlib/unittest_lazy_import.py
 tests/differential/stdlib/unittest_main_argv.py
 tests/differential/stdlib/unittest_mock_protocol.py
 tests/differential/stdlib/unraisable_hook_args_authority.py

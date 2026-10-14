@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 use crate::bridge::*;
 use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};

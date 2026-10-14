@@ -175,8 +175,10 @@ sys.exit(int(sys.argv[3]))
     assert result.stdout == "owned cwd and explicit inputs\n"
     assert leaves[0].exists() is keep
     if keep:
-        assert (leaves[0] / "relative-output").read_text() == "guest output"
-    assert source.read_text() == "print('source')\n"
+        assert (leaves[0] / "relative-output").read_text(
+            encoding="utf-8"
+        ) == "guest output"
+    assert source.read_text(encoding="utf-8") == "print('source')\n"
     assert not (tmp_path / "relative-output").exists()
 
 

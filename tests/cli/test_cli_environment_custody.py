@@ -1,12 +1,14 @@
 """The CLI never uses the process environment as a parameter channel (HF-60).
 
 A value the CLI resolves (``--backend``, ``--portable``, ``--wasm-profile``,
-``--type-gate``, ``--stdlib-profile``, the Luau chunk size, the runtime policy
-flags) travels as a typed parameter; a child process receives its share in an
-environment mapping built for that child. Before HF-60 the CLI wrote these to
-``os.environ``: ``MOLT_BACKEND`` and ``MOLT_MODULE_CHUNK_OPS`` stayed there for
-the rest of the process, so a later in-process build (library use, the batch
-build server, a test) silently inherited the previous choice.
+``--stdlib-profile``, the Luau chunk size, the runtime policy
+flags, the native-arch Rust CPU policy) travels as a typed parameter; a child
+process receives its share in an environment mapping built for that child.
+Before HF-60 the CLI wrote these to ``os.environ``: ``MOLT_BACKEND``,
+``MOLT_MODULE_CHUNK_OPS`` and ``-C target-cpu=native`` in ``RUSTFLAGS`` stayed
+there for the rest of the process, so a later in-process build (library use,
+the batch build server, a test, a WASM build) silently inherited the previous
+choice.
 
 The behavioral tests below fail on that code: each observes ``os.environ``
 during and after the operation, or the value a later operation receives. The
@@ -38,6 +40,12 @@ from molt.cli import (
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.config_resolution import _select_codegen_backend
 from molt.cli.project_roots import _find_project_root
+from molt.cli.rust_cpu_policy import (
+    NATIVE_CPU_RUSTFLAGS,
+    RustCpuPolicy,
+    resolve_rust_cpu_policy,
+)
+from molt.environment_registry import load_registry
 
 ROOT = Path(__file__).resolve().parents[2]
 _SELECTION_NAMES = (
@@ -50,7 +58,6 @@ _SELECTION_NAMES = (
     "MOLT_MODULE_CHUNK_OPS",
     "MOLT_PORTABLE",
     "MOLT_STDLIB_PROFILE",
-    "MOLT_TYPE_GATE",
     "MOLT_WASM_PROFILE",
 )
 
@@ -145,7 +152,6 @@ def test_build_passes_every_selection_explicitly(
         trusted=True,
         portable=True,
         wasm_profile="pure",
-        type_gate=True,
         audit_log="jsonl:stderr",
         io_mode="virtual",
         stdlib_profile="full",
@@ -157,7 +163,7 @@ def test_build_passes_every_selection_explicitly(
     assert captured["environ"] == before
     assert dict(os.environ) == before
     assert captured["codegen"] == CodegenSelection(
-        backend="llvm", portable=True, wasm_profile="pure", type_gate=True
+        backend="llvm", portable=True, wasm_profile="pure"
     )
     assert (captured["trusted"], captured["audit_log"], captured["io_mode"]) == (
         True,
@@ -186,7 +192,7 @@ def test_codegen_selection_projects_into_a_copy() -> None:
 
     default = CodegenSelection().environment(base)
     chosen = CodegenSelection(
-        backend="llvm", portable=True, wasm_profile="pure", type_gate=True
+        backend="llvm", portable=True, wasm_profile="pure"
     ).environment(base)
 
     assert base == {"MOLT_PORTABLE": "0", "MOLT_WASM_PROFILE": "full", "OTHER": "x"}
@@ -203,7 +209,6 @@ def test_codegen_selection_projects_into_a_copy() -> None:
         "MOLT_DEBUG_ARTIFACT_DIR": debug_dir,
         "MOLT_PORTABLE": "1",
         "MOLT_WASM_PROFILE": "pure",
-        "MOLT_TYPE_GATE": "1",
         "OTHER": "x",
     }
     with pytest.raises(ValueError, match="unknown codegen backend"):
@@ -331,6 +336,115 @@ def test_batch_server_selects_each_request_backend_explicitly(
     assert "--target native --backend llvm" in responses[3]["error"]
 
 
+# --- the native-arch Rust CPU policy (MOLT_PERF_PROFILE) --------------------
+
+_RUST_FLAG_NAMES = ("RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS")
+
+
+def _prepare_preamble(target: str) -> Any:
+    preamble, error = build_inputs._prepare_build_preamble(
+        diagnostics=False,
+        diagnostics_file=None,
+        diagnostics_verbosity=None,
+        json_output=True,
+        target=target,
+    )
+    assert error is None and preamble is not None
+    return preamble
+
+
+def test_a_native_arch_build_leaves_no_rust_flags_for_a_later_wasm_build(
+    clean_selection_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in _RUST_FLAG_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_PERF_PROFILE", "native-arch")
+    before = dict(os.environ)
+
+    native = _prepare_preamble("native")
+    assert dict(os.environ) == before
+    wasm = _prepare_preamble("wasm")
+
+    # Before HF-60 the native build appended -C target-cpu=native to
+    # os.environ["RUSTFLAGS"], and every later Cargo plan read it.
+    assert dict(os.environ) == before
+    assert (native.rust_cpu, native.warnings) == (RustCpuPolicy.NATIVE, [])
+    assert wasm.rust_cpu is RustCpuPolicy.BASELINE
+    assert len(wasm.warnings) == 1 and "'wasm'" in wasm.warnings[0]
+
+
+@pytest.mark.parametrize("target", ["native", "wasm", "luau", "aarch64-apple-darwin"])
+def test_an_unset_perf_profile_selects_the_baseline_cpu(target: str) -> None:
+    assert resolve_rust_cpu_policy(target, {}) == (RustCpuPolicy.BASELINE, None)
+    assert resolve_rust_cpu_policy(target, {"MOLT_PERF_PROFILE": " "}) == (
+        RustCpuPolicy.BASELINE,
+        None,
+    )
+
+
+def test_only_the_registered_perf_profile_value_is_accepted() -> None:
+    # The registry is the knob's declared contract; the resolver must accept
+    # exactly its values and reject every former alias and near miss.
+    variable = load_registry().lookup_variable("MOLT_PERF_PROFILE")
+    assert variable is not None and variable.values == ("native-arch",)
+    for value in variable.values:
+        policy, warning = resolve_rust_cpu_policy(
+            "native", {"MOLT_PERF_PROFILE": value}
+        )
+        assert (policy, warning) == (RustCpuPolicy.NATIVE, None)
+    for value in ("native", "native_arch", "NATIVE-ARCH", "1", "portable"):
+        with pytest.raises(ValueError, match="MOLT_PERF_PROFILE"):
+            resolve_rust_cpu_policy("native", {"MOLT_PERF_PROFILE": value})
+
+
+def test_one_registered_knob_selects_the_native_cpu() -> None:
+    # One policy, one knob: a second spelling of -C target-cpu=native was
+    # retired with MOLT_PERF_PROFILE as its replacement, and no other
+    # registered variable may describe that flag again.
+    registry = load_registry()
+    knobs = [row.name for row in registry.variables if "target-cpu" in row.summary]
+
+    assert knobs == ["MOLT_PERF_PROFILE"]
+    assert "2026-10-13" in {
+        row.retired
+        for row in registry.retired
+        if row.replacement == "MOLT_PERF_PROFILE"
+    }
+
+
+def test_an_invalid_perf_profile_fails_the_build_preamble(
+    clean_selection_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("MOLT_PERF_PROFILE", "native")
+
+    preamble, error = build_inputs._prepare_build_preamble(
+        diagnostics=False,
+        diagnostics_file=None,
+        diagnostics_verbosity=None,
+        json_output=True,
+        target="native",
+    )
+
+    assert preamble is None and error is not None
+    assert "MOLT_PERF_PROFILE" in capsys.readouterr().out
+
+
+def test_the_native_policy_appends_the_flag_last_and_once() -> None:
+    selected = ("--cfg", "configured", "-C", "target-cpu=x86-64-v3")
+
+    native = RustCpuPolicy.NATIVE.rustflags(selected)
+
+    # rustc applies the last -C target-cpu, so the native flag must follow
+    # every flag Cargo selected.
+    assert native == (*selected, "-C", "target-cpu=native")
+    assert NATIVE_CPU_RUSTFLAGS == ("-C", "target-cpu=native")
+    assert RustCpuPolicy.NATIVE.rustflags(native) == native
+    assert RustCpuPolicy.NATIVE.rustflags(()) == ("-C", "target-cpu=native")
+    assert RustCpuPolicy.BASELINE.rustflags(selected) == selected
+
+
 # --- structure: no other process-environment writer under src/molt ---------
 
 # The one sanctioned overlay (see its docstring) and the pytest bootstrap,
@@ -340,11 +454,6 @@ _SANCTIONED_WRITERS = {
     "src/molt/cli/env_overrides.py",
     "src/molt/pytest_memory_guard_bootstrap.py",
 }
-# Open under HF-60: the native-arch perf policy appends to RUSTFLAGS in the
-# process environment, which every later Cargo build and compiler fingerprint
-# reads. Moving it needs an explicit flags parameter through every Cargo
-# environment authority, which only Cargo builds can prove.
-_OPEN_WRITERS = {("src/molt/cli/build_inputs.py", "_append_rustflags")}
 _MUTATORS = {"update", "setdefault", "pop", "popitem", "clear"}
 _MUTABLE_ANNOTATIONS = ("MutableMapping", "dict", "Dict")
 
@@ -452,7 +561,7 @@ def _environment_writes(path: str, tree: ast.Module, mutable: dict) -> list[str]
                 if isinstance(callee, ast.Name)
                 else None
             )
-            if name is None or name not in mutable or (path, name) in _OPEN_WRITERS:
+            if name is None or name not in mutable:
                 continue
             passed = [
                 *(arg for index, arg in enumerate(node.args) if index in mutable[name]),

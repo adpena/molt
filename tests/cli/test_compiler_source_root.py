@@ -525,24 +525,31 @@ def test_wheel_layout_classification_uses_own_install_scheme_without_attestation
     if present:
         source.mkdir(parents=True)
     # Deliberately missing manifest: known installation must not become source mode.
-    with monkeypatch.context() as patch:
-        patch.setattr(source_root, "__file__", str(package / "source_root.py"))
-        patch.setattr(source_root.sysconfig, "get_scheme_names", lambda: ("selected",))
-        patch.setattr(
-            source_root.sysconfig,
-            "get_paths",
-            lambda _scheme: {
-                "purelib": str(package.parent),
-                "platlib": str(package.parent),
-                "data": str(tmp_path / "env"),
-            },
-        )
-        assert source_root.packaged_distribution_root() == bundle
-        patch.delenv("MOLT_SOURCE_ROOT", raising=False)
-        assert source_root.compiler_source_root() == source
-        assert source_root.installed_distribution_root(source, environ={}) == bundle
-        assert (
-            source_root.installed_distribution_root(tmp_path / "guest", environ={})
-            is None
-        )
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(source_root, "__file__", str(package / "source_root.py"))
+            patch.setattr(
+                source_root.sysconfig, "get_scheme_names", lambda: ("selected",)
+            )
+            patch.setattr(
+                source_root.sysconfig,
+                "get_paths",
+                lambda _scheme: {
+                    "purelib": str(package.parent),
+                    "platlib": str(package.parent),
+                    "data": str(tmp_path / "env"),
+                },
+            )
+            # The answer is a process constant; this test changes the process layout.
+            source_root.packaged_distribution_root.cache_clear()
+            assert source_root.packaged_distribution_root() == bundle
+            patch.delenv("MOLT_SOURCE_ROOT", raising=False)
+            assert source_root.compiler_source_root() == source
+            assert source_root.installed_distribution_root(source, environ={}) == bundle
+            assert (
+                source_root.installed_distribution_root(tmp_path / "guest", environ={})
+                is None
+            )
+    finally:
+        source_root.packaged_distribution_root.cache_clear()
     assert not (source / source_root.MANIFEST_NAME).exists()

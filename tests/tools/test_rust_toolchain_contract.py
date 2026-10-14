@@ -39,7 +39,7 @@ def test_repository_rust_toolchain_contract_is_canonical() -> None:
 def test_workspace_clippy_configuration_stops_at_tracked_default_root() -> None:
     from molt.cargo_workspace import workspace_member_manifests
 
-    assert tomllib.loads((ROOT / "clippy.toml").read_text()) == {}
+    assert tomllib.loads((ROOT / "clippy.toml").read_text(encoding="utf-8")) == {}
     members = workspace_member_manifests(ROOT)
     assert members
     assert all(manifest.resolve().is_relative_to(ROOT) for manifest in members)

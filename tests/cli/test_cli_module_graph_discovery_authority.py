@@ -187,17 +187,14 @@ def test_core_initialization_does_not_activate_undemanded_class_methods(
             {"entry", "api", "helperdep"},
         ),
         ("import api\nf = api.helper\nf = lambda: None\nf()\n", {"entry", "api"}),
-        (
-            "from api import *\nhelper()\n",
-            {"entry", "api", "heap", "classdep", "helperdep", "deaddep", "callbackdep"},
-        ),
+        ("from api import *\nhelper()\n", {"entry", "api", "helperdep"}),
         ("import api\napi.factory()()\n", {"entry", "api", "callbackdep"}),
     ],
 )
 def test_deferred_source_demand_closes_only_live_source_owners(
     tmp_path: Path, entry_source: str, expected: set[str]
 ) -> None:
-    (tmp_path / "entry.py").write_text(entry_source)
+    (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
     (tmp_path / "api.py").write_text(
         "class Counter:\n"
         "    def most_common(self):\n        import heap\n"
@@ -206,10 +203,102 @@ def test_deferred_source_demand_closes_only_live_source_owners(
         "def unused():\n    import deaddep\n"
         "def factory():\n"
         "    def callback():\n        import callbackdep\n"
-        "    return callback\n"
+        "    return callback\n",
+        encoding="utf-8",
     )
     for name in ("heap", "classdep", "helperdep", "deaddep", "callbackdep"):
-        (tmp_path / f"{name}.py").write_text("VALUE = 1\n")
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert set(result.graph) == expected
+
+
+@pytest.mark.parametrize(
+    ("entry_source", "expected"),
+    [
+        ("import api\n", {"entry", "api", "impl"}),
+        ("import api\napi.helper()\n", {"entry", "api", "impl", "helperdep"}),
+        ("from api import helper\nhelper()\n", {"entry", "api", "impl", "helperdep"}),
+        (
+            "import chain\nchain.helper()\n",
+            {"entry", "chain", "api", "impl", "helperdep"},
+        ),
+        ("import runner\nrunner.run()\n", {"entry", "runner", "impl", "helperdep"}),
+        (
+            "import api\nprint(api)\n",
+            {"entry", "api", "impl", "helperdep", "deaddep"},
+        ),
+        ("import cyc_a\ncyc_a.b_helper()\n", {"entry", "cyc_a", "cyc_b", "bdep"}),
+    ],
+)
+def test_star_import_selects_star_bound_names_on_demand(
+    tmp_path: Path, entry_source: str, expected: set[str]
+) -> None:
+    # CPython copies the exported names at the star import. A read selects one
+    # name; only an escaped importing namespace exposes the whole source.
+    sources = {
+        "impl": "def helper():\n    import helperdep\ndef unused():\n    import deaddep\n",
+        "api": "from impl import *\n",
+        "chain": "from api import *\n",
+        "runner": "from impl import *\ndef run():\n    helper()\n",
+        "cyc_a": "from cyc_b import *\ndef a_helper():\n    import adep\n",
+        "cyc_b": "from cyc_a import *\ndef b_helper():\n    import bdep\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    for name in ("helperdep", "deaddep", "adep", "bdep"):
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert set(result.graph) == expected
+
+
+@pytest.mark.parametrize(
+    ("entry_source", "expected"),
+    [
+        ("import importlib\nimportlib.import_module('plain')\n", {"entry", "plain"}),
+        (
+            "import importlib\nimportlib.import_module('plain').helper()\n",
+            {"entry", "plain", "helperdep"},
+        ),
+        ("__import__('plain').helper()\n", {"entry", "plain", "helperdep"}),
+        (
+            "import importlib\nprint(importlib.import_module('plain'))\n",
+            {"entry", "plain", "helperdep", "deaddep"},
+        ),
+    ],
+)
+def test_import_call_result_selects_members_like_an_import_alias(
+    tmp_path: Path, entry_source: str, expected: set[str]
+) -> None:
+    # An import call returns a module. Its member reads select that module's
+    # members; passing it to unknown code exposes the module whole.
+    (tmp_path / "plain.py").write_text(
+        "def helper():\n    import helperdep\ndef unused():\n    import deaddep\n",
+        encoding="utf-8",
+    )
+    for name in ("helperdep", "deaddep"):
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -226,19 +315,21 @@ def test_deferred_source_demand_closes_only_live_source_owners(
 
 def test_module_getattr_demands_lazy_returned_class(tmp_path: Path) -> None:
     (tmp_path / "api.py").write_text(
-        "def __getattr__(name):\n    from lazy import Result\n    return Result\n"
+        "def __getattr__(name):\n    from lazy import Result\n    return Result\n",
+        encoding="utf-8",
     )
     (tmp_path / "lazy.py").write_text(
-        "class Result:\n    def run(self):\n        import dependency\n"
+        "class Result:\n    def run(self):\n        import dependency\n",
+        encoding="utf-8",
     )
-    (tmp_path / "dependency.py").write_text("VALUE = 1\n")
+    (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     for source, expected in (
         ("import api\n", {"entry", "api"}),
         ("import api\napi.Result().run()\n", {"entry", "api", "lazy", "dependency"}),
     ):
-        (tmp_path / "entry.py").write_text(source)
+        (tmp_path / "entry.py").write_text(source, encoding="utf-8")
         result = module_graph_discovery._discover_module_graph_from_paths(
             (tmp_path / "entry.py",),
             [tmp_path],
@@ -266,6 +357,15 @@ def test_module_getattr_demands_lazy_returned_class(tmp_path: Path) -> None:
             set(),
         ),
         ("import json\njson.JSONDecoder().raw_decode('1')\n", {"operator"}, set()),
+        # Bootstrap modules expose no namespace: types binds its runtime
+        # payload by name, the frozen importer passes no globals, and the
+        # ByteString hooks select one warnings member.
+        (
+            "import types\nimport _collections_abc\nimport importlib._bootstrap_external\n",
+            set(),
+            {"functools", "collections", "re", "reprlib", "math", "itertools"},
+        ),
+        ("import types\ntypes.coroutine(lambda: None)\n", {"functools"}, set()),
         (
             "from email.message import EmailMessage\nEmailMessage().as_string()\n",
             {"email.generator"},
@@ -279,7 +379,7 @@ def test_public_stdlib_deferred_demand_graph(
     from molt.cli import module_resolution, module_stdlib_policy
 
     entry = tmp_path / "entry.py"
-    entry.write_text(source)
+    entry.write_text(source, encoding="utf-8")
     stdlib = module_resolution._stdlib_root_path()
     result = module_graph_discovery._discover_module_graph(
         entry,
@@ -348,10 +448,12 @@ def test_member_context_is_proven_or_widens(
     monkeypatch.setattr(
         module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "test"
     )
-    (tmp_path / "entry.py").write_text("import api\n" + use + "\n")
-    (tmp_path / "api.py").write_text("def __getattr__(name):\n    " + hook + "\n")
+    (tmp_path / "entry.py").write_text("import api\n" + use + "\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "def __getattr__(name):\n    " + hook + "\n", encoding="utf-8"
+    )
     for name in ("selected", "alternate"):
-        (tmp_path / f"{name}.py").write_text("VALUE = 1\n")
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     graphs = []
@@ -372,12 +474,17 @@ def test_member_context_is_proven_or_widens(
 
 
 def test_deferred_publication_does_not_define_initial_namespace(tmp_path):
-    (tmp_path / "entry.py").write_text("import api\napi.install()\napi.published()\n")
-    (tmp_path / "api.py").write_text(
-        "def install():\n    global published\n    from provider import callback as published\n"
+    (tmp_path / "entry.py").write_text(
+        "import api\napi.install()\napi.published()\n", encoding="utf-8"
     )
-    (tmp_path / "provider.py").write_text("def callback():\n    import dependency\n")
-    (tmp_path / "dependency.py").write_text("VALUE = 1\n")
+    (tmp_path / "api.py").write_text(
+        "def install():\n    global published\n    from provider import callback as published\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "provider.py").write_text(
+        "def callback():\n    import dependency\n", encoding="utf-8"
+    )
+    (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -400,7 +507,7 @@ def test_context_requests_reuse_the_parsed_source_record(tmp_path, monkeypatch):
     cache = _ModuleResolutionCache()
     path = tmp_path / "api.py"
     source = "def __getattr__(name):\n    if name == 'left':\n        import left\n    else:\n        import right\n"
-    path.write_text(source)
+    path.write_text(source, encoding="utf-8")
     parsed = cache.parse_module_ast(path, source, filename=str(path))
     digest_calls = []
     digest = python_source_keys.python_ast_digest
@@ -445,12 +552,13 @@ def test_context_requests_reuse_the_parsed_source_record(tmp_path, monkeypatch):
 
 
 def test_cyclic_initialization_does_not_suppress_module_hook(tmp_path):
-    (tmp_path / "entry.py").write_text("import api\n")
+    (tmp_path / "entry.py").write_text("import api\n", encoding="utf-8")
     (tmp_path / "api.py").write_text(
-        "def __getattr__(name):\n    if name == 'f':\n        import dependency\n        return lambda: None\nimport cycle\ndef f():\n    pass\n"
+        "def __getattr__(name):\n    if name == 'f':\n        import dependency\n        return lambda: None\nimport cycle\ndef f():\n    pass\n",
+        encoding="utf-8",
     )
-    (tmp_path / "cycle.py").write_text("import api\napi.f()\n")
-    (tmp_path / "dependency.py").write_text("VALUE = 1\n")
+    (tmp_path / "cycle.py").write_text("import api\napi.f()\n", encoding="utf-8")
+    (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -470,11 +578,14 @@ def test_cyclic_initialization_does_not_suppress_module_hook(tmp_path):
     ["class Unused(Base):\n    pass\n", "class Unused(metaclass=Meta):\n    pass\n"],
 )
 def test_class_creation_demands_hooks_without_instantiation(tmp_path, declaration):
-    (tmp_path / "entry.py").write_text("from bases import Base, Meta\n" + declaration)
-    (tmp_path / "bases.py").write_text(
-        "class Base:\n    def __init_subclass__(cls):\n        import dependency\nclass Meta(type):\n    def __new__(cls, name, bases, namespace):\n        import dependency\n        return super().__new__(cls, name, bases, namespace)\n"
+    (tmp_path / "entry.py").write_text(
+        "from bases import Base, Meta\n" + declaration, encoding="utf-8"
     )
-    (tmp_path / "dependency.py").write_text("VALUE = 1\n")
+    (tmp_path / "bases.py").write_text(
+        "class Base:\n    def __init_subclass__(cls):\n        import dependency\nclass Meta(type):\n    def __new__(cls, name, bases, namespace):\n        import dependency\n        return super().__new__(cls, name, bases, namespace)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -497,12 +608,17 @@ def test_class_creation_demands_hooks_without_instantiation(tmp_path, declaratio
     ],
 )
 def test_deferred_namespace_publication_family(tmp_path, publication):
-    (tmp_path / "entry.py").write_text("import api\napi.install()\napi.callback()\n")
-    (tmp_path / "api.py").write_text(
-        "def install():\n    global callback\n    " + publication + "\n"
+    (tmp_path / "entry.py").write_text(
+        "import api\napi.install()\napi.callback()\n", encoding="utf-8"
     )
-    (tmp_path / "provider.py").write_text("def callback():\n    import dependency\n")
-    (tmp_path / "dependency.py").write_text("VALUE = 1\n")
+    (tmp_path / "api.py").write_text(
+        "def install():\n    global callback\n    " + publication + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "provider.py").write_text(
+        "def callback():\n    import dependency\n", encoding="utf-8"
+    )
+    (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -525,10 +641,10 @@ def test_deferred_namespace_publication_family(tmp_path, publication):
     ],
 )
 def test_cyclic_import_observes_prior_publications(tmp_path, source):
-    (tmp_path / "entry.py").write_text("import api\n")
-    (tmp_path / "api.py").write_text(source)
-    (tmp_path / "cycle.py").write_text("import api\napi.f()\n")
-    (tmp_path / "dependency.py").write_text("VALUE = 1\n")
+    (tmp_path / "entry.py").write_text("import api\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(source, encoding="utf-8")
+    (tmp_path / "cycle.py").write_text("import api\napi.f()\n", encoding="utf-8")
+    (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -548,9 +664,11 @@ def test_cyclic_import_observes_prior_publications(tmp_path, source):
     [("import api\n", False), ("import api\napi.Alias.__value__\n", True)],
 )
 def test_type_alias_value_uses_the_same_deferred_owner(tmp_path, use, required):
-    (tmp_path / "entry.py").write_text(use)
-    (tmp_path / "api.py").write_text("type Alias = __import__('dependency').Value\n")
-    (tmp_path / "dependency.py").write_text("Value = int\n")
+    (tmp_path / "entry.py").write_text(use, encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "type Alias = __import__('dependency').Value\n", encoding="utf-8"
+    )
+    (tmp_path / "dependency.py").write_text("Value = int\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -566,12 +684,13 @@ def test_type_alias_value_uses_the_same_deferred_owner(tmp_path, use, required):
 
 
 def test_member_context_reaches_import_call_name(tmp_path):
-    (tmp_path / "entry.py").write_text("import api\napi.live\n")
+    (tmp_path / "entry.py").write_text("import api\napi.live\n", encoding="utf-8")
     (tmp_path / "api.py").write_text(
-        "def __getattr__(name):\n    return __import__('selected' if name == 'live' else 'alternate')\n"
+        "def __getattr__(name):\n    return __import__('selected' if name == 'live' else 'alternate')\n",
+        encoding="utf-8",
     )
     for name in ("selected", "alternate"):
-        (tmp_path / f"{name}.py").write_text("VALUE = 1\n")
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -590,11 +709,13 @@ def test_member_context_reaches_import_call_name(tmp_path):
 def test_source_change_during_body_scan_refuses_fixpoint(tmp_path, monkeypatch):
     from molt.cli.module_source import PythonSourceChangedError
 
-    (tmp_path / "entry.py").write_text("from api import live\nlive()\n")
+    (tmp_path / "entry.py").write_text(
+        "from api import live\nlive()\n", encoding="utf-8"
+    )
     api = tmp_path / "api.py"
-    api.write_text("def live():\n    import first\n")
+    api.write_text("def live():\n    import first\n", encoding="utf-8")
     for name in ("first", "other"):
-        (tmp_path / f"{name}.py").write_text("VALUE = 1\n")
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     collect = module_import_scanner._collect_imports_for_graph
@@ -602,7 +723,7 @@ def test_source_change_during_body_scan_refuses_fixpoint(tmp_path, monkeypatch):
     def mutate(*args, **kwargs):
         result = collect(*args, **kwargs)
         if kwargs.get("source_owner") is not None:
-            api.write_text("def live():\n    import other\n")
+            api.write_text("def live():\n    import other\n", encoding="utf-8")
         return result
 
     monkeypatch.setattr(module_import_scanner, "_collect_imports_for_graph", mutate)
@@ -658,19 +779,21 @@ def test_scan_authority_projects_and_merges_exact_body_contexts(tmp_path):
 @pytest.mark.parametrize("invoke", [False, True])
 def test_deferred_assignment_publication_operations(tmp_path, publication, invoke):
     (tmp_path / "entry.py").write_text(
-        "import api\n" + ("api.install()\n" if invoke else "")
+        "import api\n" + ("api.install()\n" if invoke else ""), encoding="utf-8"
     )
     (tmp_path / "api.py").write_text(
         "callback = []\ndef install():\n    global callback\n    import provider\n    "
         + publication
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     (tmp_path / "provider.py").write_text(
         "def callback():\n    import dependency\n"
         "class Manager:\n    def __enter__(self):\n        return callback\n"
-        "    def __exit__(self, *args):\n        pass\n"
+        "    def __exit__(self, *args):\n        pass\n",
+        encoding="utf-8",
     )
-    (tmp_path / "dependency.py").write_text("VALUE = 1\n")
+    (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(

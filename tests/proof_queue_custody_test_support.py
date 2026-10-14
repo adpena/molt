@@ -631,6 +631,44 @@ def assert_execution_context_rejects_substitutions(
                 execution_nonce="a" * 64,
                 returncode=0,
             )
+    # A bound but unstable receipt is refused with the input that moved (HF-169).
+    moved = {"action": "modified", "path": str(tmp_path / "repo" / "tracked.txt")}
+    unstable = {
+        "schema": execution_custody.LIVE_CUSTODY_RECEIPT_SCHEMA,
+        "watch_roots": 1,
+        "events": [moved],
+        "apparatus_events": [],
+        "errors": [],
+        "state": "DRAINED",
+        "lifecycle": ["CREATED", "ARMED", "DRAINING", "DRAINED"],
+        "stable": False,
+    }
+    unstable["identity_sha256"] = execution_custody.live_custody_identity_sha256(
+        events=[moved],
+        apparatus_events=[],
+        errors=[],
+        state="DRAINED",
+        lifecycle=unstable["lifecycle"],
+    )
+    context["live_input_custody"] = supervisor_custody._publish_live_custody_receipt(
+        unstable, cas_root=tmp_path / "custody-cas"
+    )
+    context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
+        context, run_id="run-one", returncode=0
+    )
+    with pytest.raises(ValueError) as unstable_refusal:
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+        )
+    assert str(unstable_refusal.value) == (
+        "guarded receipt live input custody is unstable: state=DRAINED; "
+        f"1 input event(s): modified {moved['path']}"
+    )
     context["live_input_custody"] = original_live_custody
     context["execution_custody_sha256"] = supervisor_custody.execution_custody_sha256(
         context, run_id="run-one", returncode=0

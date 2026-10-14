@@ -4,17 +4,23 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(feature = "wasm-backend")]
-use crate::backend_process::emit::validate_wasm_module_catalog;
+use crate::backend_process::WasmTargetOptions;
 #[cfg(feature = "wasm-backend")]
-use molt_backend::{WasmBackend, WasmCompileOptions};
+use crate::backend_process::emit::validate_wasm_module_catalog;
+#[cfg(feature = "native-backend")]
+use crate::backend_process::native_artifact::shared_stdlib_cache_entry_path_from_env;
+#[cfg(feature = "native-backend")]
+use crate::backend_process::{NativeTargetOptions, shared_stdlib_archive_path_from_env};
+#[cfg(feature = "wasm-backend")]
+use molt_backend::WasmBackend;
 
 #[cfg(feature = "native-backend")]
 use super::super::super::native_batch::compile_native_application_artifact_to_path;
 #[cfg(feature = "native-backend")]
 use super::super::super::shared_stdlib_cache::{
-    NativeStdlibCachePrepare, prepare_native_application_artifact,
+    NativeStdlibCachePrepare, prepare_native_application_artifact, shared_stdlib_cache_matches,
 };
-use super::super::DaemonJobRequest;
+use super::super::{DaemonJobRequest, DaemonJobTarget};
 
 pub(crate) enum DaemonCompiledOutput {
     #[cfg(feature = "wasm-backend")]
@@ -23,90 +29,137 @@ pub(crate) enum DaemonCompiledOutput {
     WrittenToPath,
 }
 
-pub(crate) fn compile_daemon_job_output(
-    job: &DaemonJobRequest,
-    document: molt_backend::BackendIrDocument,
-    stdlib_archive_path: Option<&str>,
-) -> Result<DaemonCompiledOutput, String> {
-    let molt_backend::BackendIrDocument {
-        ir,
-        module_registry,
-        code_slots,
-    } = document;
+/// A job's target with the environment it compiles under resolved. A native
+/// job may link a shared stdlib archive, which its output kind must admit,
+/// may publish that archive to an optional cache entry, and writes its
+/// artifact itself; the daemon writes WASM bytes for its job.
+pub(super) enum ResolvedJobTarget {
+    #[cfg(feature = "native-backend")]
+    Native {
+        options: NativeTargetOptions,
+        stdlib_archive_path: Option<String>,
+        cache_archive_path: Option<String>,
+        output_path: String,
+    },
+    #[cfg(feature = "wasm-backend")]
+    Wasm(WasmTargetOptions),
+}
 
-    if job.is_wasm {
-        #[cfg(feature = "wasm-backend")]
-        {
-            if let Some(registry) = module_registry.as_ref() {
-                validate_wasm_module_catalog(&ir, registry).map_err(|err| err.to_string())?;
-            }
-            let mut options = WasmCompileOptions {
-                reloc_enabled: job.wasm_link,
-                ..WasmCompileOptions::default()
-            };
-            if let Some(data_base) = job.wasm_data_base {
-                options.data_base = data_base;
-            }
-            if let Some(table_base) = job.wasm_table_base {
-                options.table_base = table_base;
-            }
-            if let Some(split_runtime_app_table_base) = job.wasm_split_runtime_app_table_base {
-                options.split_runtime_app_table_base = Some(split_runtime_app_table_base);
-            }
-            let backend = WasmBackend::with_options(options)
-                .with_module_registry(module_registry)
-                .with_code_slots(code_slots);
-            Ok(DaemonCompiledOutput::Bytes(Arc::from(backend.compile(ir))))
-        }
-        #[cfg(not(feature = "wasm-backend"))]
-        {
-            Err("backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend".to_string())
-        }
-    } else {
-        #[cfg(feature = "native-backend")]
-        {
-            let mut ir = ir;
-            let target_triple = job.target_triple.as_deref();
-            let cache_archive_path =
-                crate::backend_process::native_artifact::shared_stdlib_cache_entry_path_from_env()
-                    .map_err(|err| err.to_string())?;
-            let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
-            let expected_stdlib_cache_manifest = std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
-            let entry_module =
-                std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
-            let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
-            let explicit_stdlib_module_symbols = molt_backend::stdlib_module_symbols_from_env()?;
-            let compile_options = prepare_native_application_artifact(
-                &mut ir,
-                NativeStdlibCachePrepare {
-                    native_output_kind: job.native_output_kind,
-                    target_triple,
+impl ResolvedJobTarget {
+    pub(super) fn resolve(job: &DaemonJobRequest) -> Result<Self, String> {
+        match &job.target {
+            #[cfg(feature = "native-backend")]
+            DaemonJobTarget::Native(options) => {
+                let stdlib_archive_path =
+                    shared_stdlib_archive_path_from_env().map_err(|error| error.to_string())?;
+                options
+                    .output_kind
+                    .validate_shared_stdlib(stdlib_archive_path.is_some())?;
+                let cache_archive_path =
+                    shared_stdlib_cache_entry_path_from_env().map_err(|error| error.to_string())?;
+                Ok(Self::Native {
+                    options: options.clone(),
                     stdlib_archive_path,
-                    cache_archive_path: cache_archive_path.as_deref(),
-                    expected_cache_key: expected_stdlib_cache_key.as_deref(),
-                    expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
-                    have_entry_module,
-                    entry_module: &entry_module,
-                    explicit_stdlib_module_symbols: explicit_stdlib_module_symbols.as_ref(),
-                    log_prefix: "MOLT_BACKEND(daemon)",
-                    module_registry,
-                    code_slots,
-                },
-            )
-            .map_err(|err| err.to_string())?;
-
-            compile_native_application_artifact_to_path(
-                ir,
-                Path::new(&job.output),
-                compile_options,
-            )
-            .map_err(|err| format!("failed to compile native application artifact: {err}"))?;
-            Ok(DaemonCompiledOutput::WrittenToPath)
+                    cache_archive_path,
+                    output_path: job.output.clone(),
+                })
+            }
+            #[cfg(feature = "wasm-backend")]
+            DaemonJobTarget::Wasm(options) => Ok(Self::Wasm(*options)),
         }
-        #[cfg(not(feature = "native-backend"))]
-        {
-            let _ = stdlib_archive_path;
-            Err("backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend".to_string())
+    }
+
+    /// Whether the in-memory artifact cache may serve and keep this job's
+    /// output. Requested compilation diagnostics must run the compiler, and a
+    /// shared stdlib archive must still match the cache key it was built for.
+    pub(super) fn memory_cache_allowed(&self) -> bool {
+        if molt_ir::backend_environment::compilation_diagnostics_requested() {
+            return false;
+        }
+        match self {
+            #[cfg(feature = "native-backend")]
+            Self::Native {
+                stdlib_archive_path: Some(stdlib_archive_path),
+                ..
+            } => shared_stdlib_cache_matches(
+                Path::new(stdlib_archive_path),
+                std::env::var("MOLT_STDLIB_CACHE_KEY").ok().as_deref(),
+                std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok().as_deref(),
+                None,
+            ),
+            #[cfg(feature = "native-backend")]
+            Self::Native {
+                stdlib_archive_path: None,
+                ..
+            } => true,
+            #[cfg(feature = "wasm-backend")]
+            Self::Wasm(_) => true,
+        }
+    }
+
+    pub(super) fn compile(
+        self,
+        document: molt_backend::BackendIrDocument,
+    ) -> Result<DaemonCompiledOutput, String> {
+        let molt_backend::BackendIrDocument {
+            ir,
+            module_registry,
+            code_slots,
+        } = document;
+        match self {
+            #[cfg(feature = "wasm-backend")]
+            Self::Wasm(options) => {
+                if let Some(registry) = module_registry.as_ref() {
+                    validate_wasm_module_catalog(&ir, registry).map_err(|err| err.to_string())?;
+                }
+                let backend = WasmBackend::with_options(options.compile_options())
+                    .with_module_registry(module_registry)
+                    .with_code_slots(code_slots);
+                Ok(DaemonCompiledOutput::Bytes(Arc::from(backend.compile(ir))))
+            }
+            #[cfg(feature = "native-backend")]
+            Self::Native {
+                options,
+                stdlib_archive_path,
+                cache_archive_path,
+                output_path,
+            } => {
+                let mut ir = ir;
+                let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
+                let expected_stdlib_cache_manifest =
+                    std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
+                let entry_module =
+                    std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
+                let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
+                let explicit_stdlib_module_symbols =
+                    molt_backend::stdlib_module_symbols_from_env()?;
+                let compile_options = prepare_native_application_artifact(
+                    &mut ir,
+                    NativeStdlibCachePrepare {
+                        native_output_kind: options.output_kind,
+                        target_triple: options.target_triple.as_deref(),
+                        stdlib_archive_path: stdlib_archive_path.as_deref(),
+                        cache_archive_path: cache_archive_path.as_deref(),
+                        expected_cache_key: expected_stdlib_cache_key.as_deref(),
+                        expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
+                        have_entry_module,
+                        entry_module: &entry_module,
+                        explicit_stdlib_module_symbols: explicit_stdlib_module_symbols.as_ref(),
+                        log_prefix: "MOLT_BACKEND(daemon)",
+                        module_registry,
+                        code_slots,
+                    },
+                )
+                .map_err(|err| err.to_string())?;
+
+                compile_native_application_artifact_to_path(
+                    ir,
+                    Path::new(&output_path),
+                    compile_options,
+                )
+                .map_err(|err| format!("failed to compile native application artifact: {err}"))?;
+                Ok(DaemonCompiledOutput::WrittenToPath)
+            }
         }
     }
 }

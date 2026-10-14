@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/ssl.rs ===
 //! SSL/TLS intrinsics for the Molt `ssl` stdlib module.
 //!
@@ -14,7 +13,7 @@ use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use std::collections::HashMap;
 #[cfg(molt_has_net_io)]
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 #[cfg(molt_has_net_io)]
 use std::net::TcpStream;
 #[cfg(all(molt_has_net_io, unix))]
@@ -38,8 +37,6 @@ fn require_ssl_capability(
 // ── Constants (mirror CPython ssl module integer values) ──────────────────
 
 const PURPOSE_SERVER_AUTH: i64 = 1;
-#[allow(dead_code)]
-const PURPOSE_CLIENT_AUTH: i64 = 2;
 const PROTOCOL_TLS_CLIENT: i64 = 16;
 const PROTOCOL_TLS_SERVER: i64 = 17;
 const CERT_NONE: i64 = 0;
@@ -122,7 +119,6 @@ struct SslSocketState {
     peer_cert_der: Option<Vec<u8>>,
     cipher_name: Option<String>,
     protocol_version: Option<String>,
-    server_hostname: Option<String>,
 }
 
 // ── Process-wide handle storage ──────────────────────────────────────────
@@ -155,6 +151,7 @@ fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
+#[cfg(molt_has_net_io)]
 fn return_bytes_val(_py: &PyToken<'_>, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
@@ -668,7 +665,6 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 peer_cert_der: None,
                 cipher_name: None,
                 protocol_version: None,
-                server_hostname,
             }
         } else {
             // Client-side TLS
@@ -774,7 +770,6 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 peer_cert_der: None,
                 cipher_name: None,
                 protocol_version: None,
-                server_hostname: Some(hostname),
             }
         };
 

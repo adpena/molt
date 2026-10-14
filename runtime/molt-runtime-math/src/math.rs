@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: molt-runtime-math/src/math.rs ===
 //
 // Python `math` and `statistics` module intrinsics, extracted from the
@@ -877,17 +876,17 @@ fn normalize_slice_step1_bounds(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { logarithm(_py, val_bits, math_log) })
+    molt_runtime_core::with_gil_entry!(_py, logarithm(_py, val_bits, math_log))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log2(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { logarithm(_py, val_bits, math_log2) })
+    molt_runtime_core::with_gil_entry!(_py, logarithm(_py, val_bits, math_log2))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_math_log10(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, { logarithm(_py, val_bits, math_log10) })
+    molt_runtime_core::with_gil_entry!(_py, logarithm(_py, val_bits, math_log10))
 }
 
 #[unsafe(no_mangle)]

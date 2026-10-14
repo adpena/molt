@@ -5,6 +5,7 @@ import hashlib
 import os
 import runpy
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from tests.process_guard_common import install_module_view, run_custody_subject_
 
 from tools.proof_queue_pkg import (
     execution_custody,
+    python_child_custody,
     supervisor_custody,
     windows_createprocess,
 )
@@ -1249,6 +1251,32 @@ def test_environment_rust_proxy_component_reaches_both_custody_consumers(
         supervisor_custody._supervisor_fixed_images({}, incomplete, [sys.executable])
 
 
+def test_vanished_watch_entries_keep_their_own_key(tmp_path, monkeypatch):
+    # HF-169: Windows custody raises for an absent entry, and the watcher
+    # reports the whole subtree, so a staging file renamed away under a watched
+    # directory once counted as an input mutation. Emulate that lookup here.
+    real_norm = execution_custody._norm
+
+    def windows_norm(path):
+        if not Path(path).exists():
+            raise FileNotFoundError(path)
+        return real_norm(path)
+
+    monkeypatch.setattr(execution_custody, "_norm", windows_norm)
+    watched = tmp_path / "pyproject.toml"
+    watched.write_text("[project]\n", encoding="utf-8")
+    spec = execution_custody.WatchSpec(tmp_path, frozenset({real_norm(watched)}))
+    staged = tmp_path / "proof-receipts" / ".molt-stage-0.tmp"
+    staged.parent.mkdir()
+    staged.write_text("receipt", encoding="utf-8")
+    staged.rename(staged.with_name("receipt.json"))
+    assert not spec.owns(staged)
+    watched.unlink()
+    assert spec.owns(watched), "a removed watched file must remain an input event"
+    # Windows may report a deleted entry by its 8.3 short name; stay owned.
+    assert spec.owns(tmp_path / "PYPROJ~1.TOM")
+
+
 def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
@@ -1278,3 +1306,33 @@ def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
     (replacement / "tool").write_bytes(tool.read_bytes())
     alias.symlink_to(replacement, target_is_directory=True)
     assert alias_spec.owns(alias), "same-byte alias retarget still changes selection"
+
+
+def test_popen_announcement_covers_only_its_own_createprocess() -> None:
+    # HF-138: Popen decides its launch, then calls _winapi.CreateProcess with
+    # the same application name; a direct call (multiprocessing spawn) is new.
+    announced = python_child_custody.WindowsLaunchAnnouncements()
+    assert not announced.consume("C:\\tools\\python.exe")
+    announced.announce(None)
+    assert not announced.consume("C:\\tools\\python.exe")
+    assert announced.consume(None)
+    assert not announced.consume(None)
+
+
+def test_popen_announcements_belong_to_the_announcing_thread() -> None:
+    announced = python_child_custody.WindowsLaunchAnnouncements()
+    announced.announce("C:\\tools\\python.exe")
+    other_thread: list[bool] = []
+    worker = threading.Thread(
+        target=lambda: other_thread.append(announced.consume("C:\\tools\\python.exe"))
+    )
+    worker.start()
+    worker.join()
+    assert other_thread == [False]
+    assert announced.consume("C:\\tools\\python.exe")
+
+
+def test_shell_and_startfile_launches_are_opaque_but_judged_launches_are_not() -> None:
+    opaque = python_child_custody.OPAQUE_PROCESS_EVENTS
+    assert {"os.system", "os.startfile", "os.startfile/2"} <= opaque
+    assert not {"subprocess.Popen", "_winapi.CreateProcess"} & opaque

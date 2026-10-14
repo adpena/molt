@@ -20,7 +20,7 @@ use molt_runtime_core::host_capabilities_generated::MAXIMUM_BUILTIN_CAPABILITY_T
 include!(concat!(env!("OUT_DIR"), "/molt_wasi_test_startup.rs"));
 
 #[allow(dead_code)]
-mod cargo_test_artifacts {
+pub(crate) mod cargo_test_artifacts {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../test_support/cargo_test_artifacts.rs"
@@ -311,6 +311,9 @@ pub(crate) struct RuntimeTestTransaction {
     gc: Option<crate::object::gc::GcRuntimeTestSnapshot>,
     execution_thread_attached: bool,
     retained_thread_state_before: bool,
+    /// Isolate teardown failures recorded before this transaction began.
+    #[cfg(not(target_arch = "wasm32"))]
+    isolate_teardown_failures: usize,
     _process_state: MutexGuard<'static, ()>,
 }
 
@@ -535,6 +538,9 @@ impl RuntimeTestTransaction {
 
     fn enter(isolate_gc: bool) -> Self {
         let process_state = process_global_test_state();
+        #[cfg(not(target_arch = "wasm32"))]
+        let isolate_teardown_failures =
+            crate::concurrency::isolates::isolate_teardown_failure_count();
         let retained_thread_state_before =
             molt_cpython_abi::api::object::current_thread_has_retained_runtime_state();
         assert_eq!(
@@ -576,6 +582,8 @@ impl RuntimeTestTransaction {
             gc,
             execution_thread_attached,
             retained_thread_state_before,
+            #[cfg(not(target_arch = "wasm32"))]
+            isolate_teardown_failures,
             _process_state: process_state,
         }
     }
@@ -644,6 +652,17 @@ impl Drop for RuntimeTestTransaction {
             && molt_cpython_abi::api::object::current_thread_has_retained_runtime_state()
         {
             drop(crate::concurrency::execution::RuntimeExecutionGuard::enter_with_worker_cleanup());
+        }
+        // A panicking isolate teardown only logs and retains the isolate, so
+        // the test that started it would otherwise pass. Checked last, after
+        // every restoration, so this failure cannot leak state into later tests.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !std::thread::panicking() {
+            assert_eq!(
+                crate::concurrency::isolates::isolate_teardown_failure_count(),
+                self.isolate_teardown_failures,
+                "an isolate teardown panicked during this runtime test transaction"
+            );
         }
     }
 }

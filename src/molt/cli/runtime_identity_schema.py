@@ -38,6 +38,7 @@ _RUNTIME_BUILD_OUTER_FIELDS = {
     "family_digest",
     "payload",
 }
+_RUNTIME_BUILD_MEMBER_REFERENCE_FIELDS = {"digest", "compile_digest", "member_kind"}
 _RUNTIME_BUILD_FAMILY_FIELDS = {
     "schema",
     "compile_digest",
@@ -142,6 +143,11 @@ def _canonical_json(value: object) -> str:
     return canonical_json_bytes(
         _freeze_json(value), default=_frozen_json_projection
     ).decode("utf-8")
+
+
+def runtime_family_digest(family: object) -> str:
+    """The digest a member identity's ``family_digest`` names for ``family``."""
+    return _digest(family)
 
 
 def _digest(value: object) -> str:
@@ -891,6 +897,40 @@ class RuntimeBuildIdentity(Mapping[str, object]):
             "family_digest": self.family_digest,
             "payload": _thaw_json(self.payload),
         }
+
+    def member_reference(self) -> dict[str, object]:
+        """This member's identity without the family payload its siblings share.
+
+        A record that holds the family once pairs it with each member's
+        reference; ``from_member_reference`` rebuilds and validates the member.
+        """
+        return {
+            "digest": self.digest,
+            "compile_digest": self.compile_digest,
+            "member_kind": self.payload["member_kind"],
+        }
+
+    def family_payload(self) -> dict[str, object]:
+        """The family payload, mutable, for a record that stores it once."""
+        return cast(dict[str, object], _thaw_json(self.payload["family"]))
+
+    @classmethod
+    def from_member_reference(
+        cls, reference: object, *, family: object, family_digest: object
+    ) -> RuntimeBuildIdentity:
+        """Rebuild one member identity from its reference and the shared family."""
+        value = string_keyed_mapping(reference)
+        if value is None or set(value) != _RUNTIME_BUILD_MEMBER_REFERENCE_FIELDS:
+            raise ValueError("runtime build member reference shape is invalid")
+        return cls.from_dict(
+            {
+                "schema": _SCHEMA,
+                "digest": value.get("digest"),
+                "compile_digest": value.get("compile_digest"),
+                "family_digest": family_digest,
+                "payload": {"family": family, "member_kind": value.get("member_kind")},
+            }
+        )
 
     @property
     def toolchain_manifest(self) -> RuntimeToolchainContentManifest:

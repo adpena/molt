@@ -95,8 +95,8 @@ def _normalize_molt_cmd(cmd: str | list[str]) -> list[str]:
 
 def find_molt() -> list[str] | None:
     """Return the command used to invoke the Molt CLI, or None."""
-    if os.environ.get("MOLT_BIN"):
-        return _normalize_molt_cmd(os.environ["MOLT_BIN"])
+    if os.environ.get("MOLT_CONFORMANCE_MOLT_CMD"):
+        return _normalize_molt_cmd(os.environ["MOLT_CONFORMANCE_MOLT_CMD"])
     if (SRC_ROOT / "molt" / "cli" / "__init__.py").exists():
         return [sys.executable, "-m", "molt.cli"]
     for candidate in ("molt", "/opt/homebrew/bin/molt", "/usr/local/bin/molt"):
@@ -577,7 +577,8 @@ def main(argv: list[str] | None = None) -> int:
     molt = find_molt()
     if molt is None:
         print(
-            "ERROR: molt CLI not found. Install Molt or set MOLT_BIN.", file=sys.stderr
+            "ERROR: molt CLI not found. Install Molt or set MOLT_CONFORMANCE_MOLT_CMD.",
+            file=sys.stderr,
         )
         return 1
     molt_cmd = _normalize_molt_cmd(molt)

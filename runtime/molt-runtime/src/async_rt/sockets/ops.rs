@@ -165,7 +165,7 @@ pub extern "C" fn molt_socket_new(
         } else {
             MoltSocketKind::Pending(socket)
         };
-        let socket_ptr = socket_alloc(kind, family, base_type, proto, timeout, connect_pending);
+        let socket_ptr = socket_alloc(kind, family, timeout, connect_pending);
         opaque_handle_bits(socket_ptr)
     })
 }
@@ -559,8 +559,7 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
                     }
                     continue;
                 }
-                let socket_ptr =
-                    socket_alloc(accepted_kind, family, libc::SOCK_STREAM, 0, timeout, false);
+                let socket_ptr = socket_alloc(accepted_kind, family, timeout, false);
                 let handle_bits = opaque_handle_bits(socket_ptr);
                 let tuple_ptr = alloc_tuple(_py, &[handle_bits, addr_bits]);
                 if tuple_ptr.is_null() {

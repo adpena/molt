@@ -53,6 +53,7 @@ from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import _cargo_profile_dir
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.static_archive_identity import artifact_content_identity
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
@@ -395,14 +396,22 @@ def _backend_fingerprint(
 
 
 def _current_backend_fingerprint(
-    project_root: Path, *, cargo_profile: str, backend_features: tuple[str, ...]
+    project_root: Path,
+    *,
+    cargo_profile: str,
+    backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
 ) -> dict[str, Any]:
     """This checkout's backend identity, hashed in full without a receipt."""
     return _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         build_admission=backend_build_admission(
-            project_root, backend_features, cargo_profile, os.environ
+            project_root,
+            backend_features,
+            cargo_profile,
+            os.environ,
+            rust_cpu=rust_cpu,
         ),
         backend_features=backend_features,
     )
@@ -414,6 +423,7 @@ def admitted_backend_binary(
     binary: Path,
     cargo_profile: str,
     backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
 ) -> tuple[Path, Path]:
     """The backend executable and receipt a build of this checkout reuses.
 
@@ -422,7 +432,10 @@ def admitted_backend_binary(
     checkout's backend identity and binds the executable's content.
     """
     fingerprint = _current_backend_fingerprint(
-        project_root, cargo_profile=cargo_profile, backend_features=backend_features
+        project_root,
+        cargo_profile=cargo_profile,
+        backend_features=backend_features,
+        rust_cpu=rust_cpu,
     )
     for candidate, receipt in (
         (binary, _backend_fingerprint_path(project_root, binary, cargo_profile)),
@@ -441,6 +454,7 @@ def import_backend_binary(
     binary: Path,
     cargo_profile: str,
     backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
     executable: Path,
     receipt: Path,
 ) -> Path:
@@ -454,7 +468,10 @@ def import_backend_binary(
     if transported is None or "artifact_content_identity" not in transported:
         raise ValueError(f"transported backend receipt is invalid: {receipt}")
     fingerprint = _current_backend_fingerprint(
-        project_root, cargo_profile=cargo_profile, backend_features=backend_features
+        project_root,
+        cargo_profile=cargo_profile,
+        backend_features=backend_features,
+        rust_cpu=rust_cpu,
     )
     if any(
         transported.get(key) != fingerprint.get(key)
@@ -494,6 +511,73 @@ def import_backend_binary(
     return canonical_binary
 
 
+def _backend_probe_target(backend_features: tuple[str, ...]) -> str:
+    if "wasm-backend" in backend_features:
+        return "wasm"
+    if "luau-backend" in backend_features:
+        return "luau"
+    if "rust-backend" in backend_features:
+        return "rust"
+    return "native"
+
+
+def _admit_published_backend(
+    backend_bin: Path,
+    *,
+    project_root: Path,
+    cargo_profile: str,
+    build_admission: BackendBuildAdmission,
+    backend_features: tuple[str, ...],
+    fingerprint_path: Path,
+    probe_validation_path: Path,
+) -> _BackendBinaryEnsureResult | None:
+    """Admit a published feature lane by reads alone, or return None.
+
+    The build lock serializes Cargo's shared output and publication, which
+    only a build or a republication needs. Every check here binds content: the
+    receipt names the source identity and the executable's bytes, and the probe
+    evidence names those bytes. A concurrent publication can make a check fail
+    but never pass for other bytes, and any failure takes the locked path,
+    which repairs it. So reusing one lane never waits out another lane's
+    cold build.
+    """
+    if backend_bin == backend_bin.parent / backend_executable_name(os_name=os.name):
+        # Cargo's shared output belongs to whichever lane built last.
+        return None
+    try:
+        build_admission.verify()
+        stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+        if stored_fingerprint is None:
+            return None
+        fingerprint = _backend_fingerprint(
+            project_root,
+            cargo_profile=cargo_profile,
+            build_admission=build_admission,
+            backend_features=backend_features,
+            stored_fingerprint=stored_fingerprint,
+        )
+        if not _runtime_artifact_fingerprint_matches(
+            backend_bin, fingerprint, fingerprint_path, require_artifact_digest=True
+        ):
+            return None
+        fingerprint = _admitted_runtime_fingerprint(
+            fingerprint, _read_runtime_fingerprint(fingerprint_path)
+        )
+        if _runtime_fingerprint_metadata_needs_refresh(stored_fingerprint, fingerprint):
+            return None
+        if not _backend_probe_validation_matches(
+            probe_validation_path,
+            binary_path=backend_bin,
+            probe_target=_backend_probe_target(backend_features),
+            backend_features=backend_features,
+            fingerprint=fingerprint,
+        ):
+            return None
+    except (CompilerIdentityError, OSError, ValueError):
+        return None
+    return _backend_ensure_success(binary_path=backend_bin, fingerprint=fingerprint)
+
+
 @_structured_backend_lock_failure
 def _ensure_backend_binary(
     backend_bin: Path,
@@ -503,6 +587,7 @@ def _ensure_backend_binary(
     cargo_profile: str,
     project_root: Path,
     backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendBinaryEnsureResult:
     # Installed compilers are immutable release inputs, never Cargo outputs.
@@ -512,6 +597,11 @@ def _ensure_backend_binary(
             project_root, backend_features, cargo_profile
         )
         if installed is not None:
+            if rust_cpu is not RustCpuPolicy.BASELINE:
+                raise ValueError(
+                    "Installed Molt ships a baseline-CPU backend compiler; "
+                    "MOLT_PERF_PROFILE=native-arch needs a source checkout"
+                )
             if backend_bin != installed.compiler.binary:
                 raise ValueError(
                     "Selected compiler differs from the installed compiler"
@@ -524,7 +614,7 @@ def _ensure_backend_binary(
         return _backend_ensure_failure("installed_compiler", str(exc))
     try:
         build_admission = backend_build_admission(
-            project_root, backend_features, cargo_profile, os.environ
+            project_root, backend_features, cargo_profile, os.environ, rust_cpu=rust_cpu
         )
     except CompilerIdentityError as exc:
         return _backend_ensure_failure("backend_source_identity", str(exc))
@@ -534,6 +624,21 @@ def _ensure_backend_binary(
     probe_validation_path = _backend_probe_validation_path(
         project_root, backend_bin, cargo_profile
     )
+    stage_start = time.perf_counter()
+    published = _admit_published_backend(
+        backend_bin,
+        project_root=project_root,
+        cargo_profile=cargo_profile,
+        build_admission=build_admission,
+        backend_features=backend_features,
+        fingerprint_path=fingerprint_path,
+        probe_validation_path=probe_validation_path,
+    )
+    if published is not None:
+        _record_backend_binary_stage_ms(
+            stage_timings_ms, "backend_binary_published_admission", stage_start
+        )
+        return published
     # Every feature lane publishes the same Cargo output before its alias.
     with _backend_admission_lock(
         project_root, cargo_profile, cargo_timeout=cargo_timeout
@@ -622,15 +727,6 @@ def _ensure_backend_binary(
                 )
             rebuilt_source_identity, rebuilt_alias_identity = materialized
             return _BackendBinaryEnsureResult(ok=True)
-
-        def _backend_probe_target() -> str:
-            if "wasm-backend" in backend_features:
-                return "wasm"
-            if "luau-backend" in backend_features:
-                return "luau"
-            if "rust-backend" in backend_features:
-                return "rust"
-            return "native"
 
         def _probe_backend_binary_support(
             probe_target: str,
@@ -840,7 +936,7 @@ def _ensure_backend_binary(
                 "backend_binary_read_fingerprint",
                 stage_start,
             )
-        _quick_target = _backend_probe_target()
+        _quick_target = _backend_probe_target(backend_features)
         probe_failure: _BackendBinaryEnsureResult | None = None
         alias_failure = _refresh_feature_tagged_backend_alias(_quick_target)
         if alias_failure is not None:
@@ -945,7 +1041,7 @@ def _ensure_backend_binary(
                 )
             except ValueError as exc:
                 return _backend_ensure_failure("backend_receipt_identity", str(exc))
-            _probe_target = _backend_probe_target()
+            _probe_target = _backend_probe_target(backend_features)
             _probe_result = _probe_backend_binary_support(_probe_target)
             if _probe_result:
                 return _backend_ensure_success(
@@ -1069,7 +1165,7 @@ def _ensure_backend_binary(
         # Admit the built compiler before publishing provenance. A failed probe
         # is a failed build outcome: rerunning the same Cargo plan changes no
         # input and cannot establish why that compiler was unusable.
-        _probe_target = _backend_probe_target()
+        _probe_target = _backend_probe_target(backend_features)
         _probe_result = _probe_backend_binary_support(_probe_target)
         if _probe_result.phase == "backend_probe_publication" and not _probe_result:
             return _probe_result

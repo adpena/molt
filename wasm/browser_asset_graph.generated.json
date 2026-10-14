@@ -179,7 +179,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "0729f85cd27473154a1670e1fbeebfce6f948250de0e32785ac62b35eadc1f8f",
+      "sha256": "25398fbd305afbb2a5638db4aa90b4db1c3f8953e830ba04b7dbe25a7f082fd3",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -365,7 +365,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "6b3fc429d0f4f5011fff067176ddbd784402424b1d09ab927294954fb12c0f62",
+      "sha256": "8def206fd7caa0bda8708efe54a42596d6514d9e13ebf8c0c31f161978b50420",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -401,7 +401,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "47fd05fd5ae5b34a12bf9db350b6f0a3cdc2f898ccf92f9912cfe557dd928ef1",
+      "sha256": "70d0809755e3b7ada7105a4122bc19e84130e1fd624938336752bee2005de290",
       "source_type": "data"
     }
   },

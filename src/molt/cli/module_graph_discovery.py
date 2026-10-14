@@ -43,10 +43,18 @@ from molt.target_python import (
 PLATFORM_EXCLUDED_SUBMODULES = ("urllib3.contrib.emscripten",)
 
 
-class _SourceDemandJob(NamedTuple):
+class _SourceValueJob(NamedTuple):
+    """Resolve one demanded source value of a module."""
+
     module_name: str
     source: PythonSourceKey | None
-    phase: str
+
+
+class _SourceBodyJob(NamedTuple):
+    """Scan one function, lambda or type-alias body that a demand reaches."""
+
+    module_name: str
+    source: PythonSourceKey
     arguments: tuple[str, ...] = ()
 
 
@@ -434,10 +442,13 @@ def _discover_module_graph_from_paths(
         else:
             seed_entries.append((path, None))
     seed_entries = list(dict.fromkeys(seed_entries))
-    queue: list[tuple[Path, str | None]] = list(reversed(seed_entries))
+    # Entry seeds, then source-demand jobs the scan discovers.
+    queue: list[tuple[Path, str | None] | _SourceValueJob | _SourceBodyJob] = list(
+        reversed(seed_entries)
+    )
     queued_entries = {
         (resolution_cache.resolved_path(path), forced_name)
-        for path, forced_name in queue
+        for path, forced_name in seed_entries
     }
     import_admission_policy = import_admission_policy or _ImportAdmissionPolicy()
     resolved_entry_paths = frozenset(
@@ -469,6 +480,11 @@ def _discover_module_graph_from_paths(
         tuple[str, PythonSourceKey | None], set[tuple[str, tuple[str, ...]]]
     ] = {}
     pending_modules: dict[str, set[tuple[str, PythonSourceKey | None]]] = {}
+    # Star-import aliases per importing module, and the modules whose namespace
+    # escaped. A star import copies names; it exposes nothing until a read or
+    # the importing namespace itself selects them.
+    star_aliases: dict[str, set[PythonSourceKey]] = {}
+    escaped_modules: set[str] = set()
     namespaces = {}
     attributes = {}
     import_bindings = {}
@@ -482,10 +498,10 @@ def _discover_module_graph_from_paths(
         str, tuple[str, _module_source.PythonSourceSnapshot | None]
     ] = {}
 
-    def queue_value(value):
+    def queue_value(value: tuple[str, PythonSourceKey | None]) -> None:
         if value not in value_jobs:
             value_jobs.add(value)
-            queue.append(_SourceDemandJob(*value, "value"))
+            queue.append(_SourceValueJob(*value))
 
     def demand(value, phase, arguments=()):
         phases = value_phases.setdefault(value, set())
@@ -542,7 +558,7 @@ def _discover_module_graph_from_paths(
                     queued_entries.add(entry)
                     queue.append((resolved, admitted_name))
 
-    def select_member(owner, name, user, *, from_import=False):
+    def select_member(owner, name, user, *, from_import=False, visiting=frozenset()):
         owner_module, owner_source = owner
         result = set()
         pending_modules.setdefault(owner_module, set()).add(user)
@@ -570,6 +586,16 @@ def _discover_module_graph_from_paths(
                         demand(candidate, "escape")
         else:
             demand(owner, "escape")
+        if owner_source is None:
+            # No namespace summary spells a star-bound name; select it from each
+            # star-imported module. Star-import cycles stop at a visited module.
+            visiting = visiting | {owner_module}
+            for alias in tuple(star_aliases.get(owner_module, ())):
+                for candidate in tuple(watch((owner_module, alias), user)):
+                    if candidate[0] not in visiting:
+                        result.update(
+                            select_member(candidate, name, user, visiting=visiting)
+                        )
         return result
 
     def activate(origin, phase, arguments=()):
@@ -586,13 +612,18 @@ def _discover_module_graph_from_paths(
                     demand((module_name, value), "escape")
             for value in bases:
                 demand((module_name, value), "escape")
+            if owner is None:
+                # An escaped namespace exposes its star-bound names as well.
+                escaped_modules.add(module_name)
+                for alias in tuple(star_aliases.get(module_name, ())):
+                    demand((module_name, alias), "escape")
         elif owner[-1] in {"FunctionDef", "AsyncFunctionDef", "Lambda", "TypeAlias"}:
             if (
                 scan_sources[module_name].mode != "full"
                 and (module_name, owner, arguments) not in body_jobs
             ):
                 body_jobs.add((module_name, owner, arguments))
-                queue.append(_SourceDemandJob(module_name, owner, "body", arguments))
+                queue.append(_SourceBodyJob(module_name, owner, arguments))
 
     def process_value(value):
         value_jobs.discard(value)
@@ -620,10 +651,8 @@ def _discover_module_graph_from_paths(
             binding = import_bindings[value]
             for imported in binding.modules:
                 for candidate in tuple(watch((imported, None), value)):
-                    if binding.attribute is None:
+                    if binding.attribute in {None, "*"}:
                         candidates.add(candidate)
-                    elif binding.attribute == "*":
-                        demand(candidate, "escape")
                     else:
                         candidates.update(
                             select_member(
@@ -656,6 +685,10 @@ def _discover_module_graph_from_paths(
             key = (module_name, binding.source)
             import_bindings[key] = binding
             queue_value(key)
+            if binding.attribute == "*":
+                star_aliases.setdefault(module_name, set()).add(binding.source)
+                if module_name in escaped_modules:
+                    demand(key, "escape")
         for request in scan.source_demands:
             demand((module_name, request.source), request.phase)
         if scan.source_values.namespaces or scan.source_values.attributes:
@@ -702,10 +735,10 @@ def _discover_module_graph_from_paths(
 
     while queue:
         job = queue.pop()
-        if isinstance(job, _SourceDemandJob):
-            if job.phase == "value":
-                process_value((job.module_name, job.source))
-                continue
+        if isinstance(job, _SourceValueJob):
+            process_value((job.module_name, job.source))
+            continue
+        if isinstance(job, _SourceBodyJob):
             path = graph[job.module_name]
             authority = scan_sources[job.module_name]
             loaded = _load_module_import_scan(

@@ -1898,7 +1898,9 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
         caller.update(
             MOLT_EXT_ROOT=str(artifact), CARGO_INCREMENTAL="0", MOLT_USE_SCCACHE="0"
         )
-        environments[name] = RunContext(root).canonical_env(caller, create_dirs=False)
+        # Launch as consumers do: the linker needs the context's TMP to exist
+        # (MSVC link.exe writes its response file there).
+        environments[name] = RunContext(root).canonical_env(caller, create_dirs=True)
 
     def build_and_run(name, expected, *, fresh):
         env = environments[name]

@@ -1425,7 +1425,7 @@ def test_loadavg_uses_windows_cpu_load_probe(monkeypatch) -> None:
 
 
 def test_ncpu_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
-    monkeypatch.setattr(ps.os, "cpu_count", lambda: 6)
+    install_module_view(monkeypatch, "os", os, ps, cpu_count=lambda: 6)
     monkeypatch.setattr(
         ps,
         "_metadata_probe",
@@ -1435,7 +1435,7 @@ def test_ncpu_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
 
 
 def test_ncpu_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None:
-    monkeypatch.setattr(ps.os, "cpu_count", lambda: None)
+    install_module_view(monkeypatch, "os", os, ps, cpu_count=lambda: None)
 
     def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
         assert cmd == ["sysctl", "-n", "hw.ncpu"]

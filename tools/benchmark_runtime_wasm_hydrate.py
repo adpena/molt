@@ -18,6 +18,7 @@ from molt.cli.runtime_wasm_cache import (
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
+    runtime_wasm_generation_identities,
 )
 from molt.cli.runtime_wasm_validation import (
     runtime_wasm_generation_admission,
@@ -30,15 +31,7 @@ def _read_cached_generation(
     manifest: Path,
 ) -> RuntimeWasmGeneration:
     payload = json.loads(manifest.read_text(encoding="utf-8"))
-    receipts = payload.get("receipts")
-    if not isinstance(receipts, dict):
-        raise ValueError(f"runtime generation receipts are missing: {manifest}")
-    shared_record = receipts.get("shared")
-    reloc_record = receipts.get("reloc")
-    if not isinstance(shared_record, dict) or not isinstance(reloc_record, dict):
-        raise ValueError(f"runtime generation member receipts are invalid: {manifest}")
-    shared_identity = RuntimeBuildIdentity.from_dict(shared_record.get("identity"))
-    reloc_identity = RuntimeBuildIdentity.from_dict(reloc_record.get("identity"))
+    shared_identity, reloc_identity = runtime_wasm_generation_identities(payload)
     generation = read_runtime_wasm_generation(
         manifest,
         expected_shared_identity=shared_identity,

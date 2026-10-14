@@ -197,7 +197,7 @@ def test_real_git_preserves_index_worktree_and_untracked_path_families(tmp_path)
 
     # The working copy equals HEAD here; a net HEAD-to-worktree diff would
     # erase the distinct index generation, which remains owned source work.
-    assert (source / "cancelled.py").read_text() == "original\n"
+    assert (source / "cancelled.py").read_text(encoding="utf-8") == "original\n"
     assert _git(source, "show", ":cancelled.py") == "retained index generation\n"
     assert _git(source, "show", ":new staged.py") == "index addition\n"
     assert set(tool.dirty_source_paths(source)) == initial | {

@@ -21,6 +21,7 @@ from molt.cli.wasm_link_cache import (
 )
 from tests.process_guard_common import (
     close_owned_test_process,
+    install_module_view,
     run_custody_subject_process,
     start_owned_test_process,
 )
@@ -464,10 +465,12 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
     project = tmp_path / "project"
     namespace = project / "ns_pkg"
     namespace.mkdir(parents=True)
-    (project / "main.py").write_text("import ns_pkg.leaf\nprint(ns_pkg.leaf.VALUE)\n")
-    (namespace / "leaf.py").write_text("VALUE = 7\n")
+    (project / "main.py").write_text(
+        "import ns_pkg.leaf\nprint(ns_pkg.leaf.VALUE)\n", encoding="utf-8"
+    )
+    (namespace / "leaf.py").write_text("VALUE = 7\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "active-planner"\nversion = "0.1.0"\n'
+        '[project]\nname = "active-planner"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     monkeypatch.setenv("MOLT_CACHE", str(cache))
     monkeypatch.delenv("MOLT_HOME", raising=False)
@@ -748,7 +751,8 @@ def test_retention_throttles_failed_attempt_and_obeys_optout(
     module, cache, entry, env = retention_cache
     pruner = _load_molt_cache_prune()
     now = time.time()
-    monkeypatch.setattr(pruner.time, "time", lambda: now)
+    # The pruner's private clock; other modules keep the real one.
+    clock = install_module_view(monkeypatch, "time", time, pruner, time=lambda: now)
     with monkeypatch.context() as patch:
 
         def fail(_root, **_kwargs):
@@ -758,9 +762,7 @@ def test_retention_throttles_failed_attempt_and_obeys_optout(
         first = module.prune_after_payload(env)
     assert first == {"status": "failed", "error": "OSError: inventory unavailable"}
     assert module.prune_after_payload(env)["status"] == "recent"
-    monkeypatch.setattr(
-        pruner.time, "time", lambda: now + pruner.AUTOMATIC_PRUNE_INTERVAL_SECONDS
-    )
+    clock.time = lambda: now + pruner.AUTOMATIC_PRUNE_INTERVAL_SECONDS
     assert module.prune_after_payload({**env, "MOLT_CACHE_PRUNE": "0"}) is None
     assert entry.exists()
     assert module.prune_after_payload(env)["entries_removed"] == 1

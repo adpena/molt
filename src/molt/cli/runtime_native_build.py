@@ -59,6 +59,7 @@ from molt.cli.runtime_identity_schema import (
     require_native_runtime_staticlib_identity,
 )
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _runtime_cargo_features,
@@ -385,6 +386,7 @@ def _ensure_runtime_lib_ready(
         stdlib_profile=stdlib_profile,
         resolved_modules=resolved_modules,
         extra_runtime_features=runtime_state.extra_runtime_features,
+        rust_cpu=runtime_state.rust_cpu,
         stage_timings_ms=stage_timings_ms,
         runtime_state=runtime_state,
     )
@@ -507,6 +509,7 @@ def _ensure_native_runtime_lib_ready_before_link(
                 cargo_profile=runtime_cargo_profile,
                 stdlib_profile=stdlib_profile,
                 extra_runtime_features=runtime_state.extra_runtime_features,
+                rust_cpu=runtime_state.rust_cpu,
                 build_python_admission=runtime_state.build_python_admission,
             )
             binding.verify()
@@ -821,6 +824,7 @@ def _prepare_native_runtime_build(
     *,
     stdlib_profile: str | None,
     extra_runtime_features: Sequence[str] | None,
+    rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None,
     runtime_state: _RuntimeArtifactState | None,
     read_generations: bool = True,
@@ -860,6 +864,7 @@ def _prepare_native_runtime_build(
             env=build_env,
             cargo_command=cmd,
             requested_target=target_triple,
+            rustflags_transform=rust_cpu.rustflags,
         )
         cmd = list(cargo_plan.command)
         build_env = dict(cargo_plan.environment)
@@ -942,6 +947,7 @@ def current_native_runtime_build_identity(
     cargo_profile: str,
     stdlib_profile: str | None,
     extra_runtime_features: Sequence[str] | None = None,
+    rust_cpu: RustCpuPolicy,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
     """Resolve the exact current native-runtime build-plan identity.
@@ -970,6 +976,7 @@ def current_native_runtime_build_identity(
         None,
         stdlib_profile=stdlib_profile,
         extra_runtime_features=extra_runtime_features,
+        rust_cpu=rust_cpu,
         stage_timings_ms=None,
         runtime_state=None,
         read_generations=False,
@@ -1124,6 +1131,8 @@ def _ensure_runtime_lib(
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     resolved_modules: Collection[str] | None = None,
     extra_runtime_features: Sequence[str] | None = None,
+    *,
+    rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
     runtime_state: _RuntimeArtifactState | None = None,
 ) -> bool:
@@ -1181,6 +1190,7 @@ def _ensure_runtime_lib(
                 cargo_timeout,
                 stdlib_profile=stdlib_profile,
                 extra_runtime_features=extra_runtime_features,
+                rust_cpu=rust_cpu,
                 stage_timings_ms=stage_timings_ms,
                 runtime_state=runtime_state,
                 build_python_admission=build_python_admission,

@@ -89,7 +89,7 @@ theorem Ty.isSubtype_all_of (ms : List Ty) (u : Ty)
   | cons x xs ih =>
     unfold Ty.isSubtype_all
     exact band_tt
-      (h x (List.mem_cons_self x xs))
+      (h x List.mem_cons_self)
       (ih (fun y hy => h y (List.mem_cons_of_mem x hy)))
 
 /-- Helper: isSubtype_any x ms = true when isSubtype x m = true for some m ∈ ms. -/
@@ -116,7 +116,7 @@ theorem Ty.isSubtypeList_refl_of (ts : List Ty)
   | cons t ts ih =>
     unfold Ty.isSubtypeList
     exact band_tt
-      (h t (List.mem_cons_self t ts))
+      (h t List.mem_cons_self)
       (ih (fun s hs => h s (List.mem_cons_of_mem t hs)))
 
 /-- For non-union, non-never types, isSubtype t (union_ ms) = isSubtype_any t ms.

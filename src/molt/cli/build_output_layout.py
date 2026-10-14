@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import re
 
@@ -10,11 +11,13 @@ from molt.default_paths import (
     _default_molt_bin,
     _default_molt_cache,
     _default_molt_home,
-    configured_artifact_root_text,
 )
 from molt.cli.models import _BuildOutputLayout
+from molt.dx import configured_artifact_root, project_cargo_target_dir
 
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+# The default runtime WASM directory inside a project's Cargo target.
+WASM_RUNTIME_TARGET_DIR = "molt-runtime-wasm"
 
 _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
     "cloudflare": {
@@ -58,29 +61,26 @@ def _safe_output_base(name: str) -> str:
     return cleaned or "molt"
 
 
-@functools.lru_cache(maxsize=128)
-def _wasm_runtime_root_cached(
-    project_root_str: str,
-    env_root: str | None,
-    ext_root: str | None,
-    cwd_str: str,
-) -> Path:
-    if env_root:
-        return Path(env_root).expanduser()
-    project_root = Path(project_root_str)
-    external_root = Path(ext_root).expanduser() if ext_root else Path(cwd_str)
-    if external_root.is_dir():
-        return external_root / "wasm"
-    return project_root / "wasm"
-
-
 def _wasm_runtime_root(project_root: Path) -> Path:
-    return _wasm_runtime_root_cached(
-        os.fspath(project_root),
-        os.environ.get("MOLT_WASM_RUNTIME_DIR"),
-        configured_artifact_root_text(os.environ),
-        os.fspath(Path.cwd()),
-    )
+    return _wasm_runtime_root_from_env(project_root, os.environ)
+
+
+def _wasm_runtime_root_from_env(project_root: Path, env: Mapping[str, str]) -> Path:
+    """The one root of runtime WASM artifacts: build, link and tools agree on it.
+
+    An explicit ``MOLT_WASM_RUNTIME_DIR`` wins. An artifact root
+    (``MOLT_EXT_ROOT``) holds one content-addressed runtime directory that its
+    checkouts share. Otherwise the runtime sits in the project's Cargo target
+    beside the native runtime libraries, so a build never writes into the
+    source tree or the working directory.
+    """
+    explicit = env.get("MOLT_WASM_RUNTIME_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    external = configured_artifact_root(env, relative_to=project_root)
+    if external is not None:
+        return external / "wasm"
+    return project_cargo_target_dir(project_root, env) / WASM_RUNTIME_TARGET_DIR
 
 
 @functools.lru_cache(maxsize=256)

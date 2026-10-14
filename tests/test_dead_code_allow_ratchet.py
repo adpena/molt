@@ -89,6 +89,35 @@ def _scan_ids(root: Path) -> list[str]:
 
 
 @pytest.mark.parametrize(
+    ("source", "counted"),
+    [
+        # A mask that applies only in some builds hides dead code in those builds.
+        ("#[cfg_attr(windows, allow(dead_code))]\nfn probe() {}\n", True),
+        (
+            '#[cfg_attr(\n    not(any(feature = "a", feature = "b")),\n'
+            "    allow(dead_code)\n)]\nstruct Probe;\n",
+            True,
+        ),
+        # `unused` is the lint group that contains `dead_code`.
+        ('#![cfg_attr(target_arch = "wasm32", allow(unused))]\n', True),
+        ("#[allow(unused)]\nfn probe() {}\n", True),
+        ("#[allow(unused_imports)]\nuse a::b;\n", False),
+        (
+            "#[cfg_attr(test, allow(clippy::too_many_arguments))]\nfn probe() {}\n",
+            False,
+        ),
+        ("#[cfg(windows)]\nfn probe() {}\n", False),
+    ],
+)
+def test_conditional_and_lint_group_masks_are_counted(
+    tmp_path: Path, source: str, counted: bool
+) -> None:
+    root = tmp_path / "checkout"
+    (_fixture_checkout(root) / "probe.rs").write_text(source, encoding="utf-8")
+    assert bool(_scan_ids(root)) is counted
+
+
+@pytest.mark.parametrize(
     ("source", "item"),
     [
         ("#[allow(dead_code)]\nfn probe() {}\n", "fn:probe"),

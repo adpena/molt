@@ -68,6 +68,9 @@ from molt.compiler_analysis.python_value_identity import (
     exact_identity,
     possible_identity,
 )
+from molt.compiler_analysis.builtin_binding_guards_generated import (
+    BUILTIN_BINDING_GUARD_BITS,
+)
 from molt.compiler_analysis.python_builtin_shapes import (
     builtin_call_shape,
     builtin_method_call_shape,
@@ -196,6 +199,10 @@ _ANALYSIS_SCHEMA: Final = 55
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+)
+# Scopes whose own locals the frontend binds in a running frame's homes.
+_FRAME_LOCAL_SCOPE_KINDS: Final[frozenset[str]] = frozenset(
+    {"function", "lambda", "comprehension"}
 )
 _CALLEE_ELISION_FORBIDDEN_EFFECTS: Final[EffectMask] = (
     EXECUTES_ARBITRARY_PYTHON
@@ -2287,6 +2294,10 @@ class _ObservedStateFrame:
     # the states they affect. No second source/context registry is maintained.
     deferred_execution: frozenset[DeferredExecution] = frozenset()
     module_metadata_effects: EffectMask = NO_EFFECTS
+    # The join of states that a failed frame-local store leaves in place. The
+    # next completion flow built in this observation raises from it; one the
+    # statement leaves unrouted raises from the statement itself.
+    failed_store: int | None = None
 
     def exceptional_state(self, pool: _StatePool) -> int:
         pool.observation_fold_calls += 1
@@ -2333,6 +2344,13 @@ class _Analyzer:
         self.source_namespace_exposure: dict[
             PythonSourceKey, frozenset[PythonSourceKey]
         ] = {}
+        # Star-import aliases of this module. A star import binds names that no
+        # source node spells, so a module-namespace read selects its name from
+        # each star-imported module instead of exposing those modules whole.
+        self._star_import_origins: frozenset[PythonSourceKey] = frozenset()
+        # Builtin-name reads in an activation scope; the guard bit is projected
+        # once the module's final bindings are known (HF-79).
+        self._builtin_guard_reads: dict[PythonNodeKey, str] = {}
         self.statements: dict[PythonNodeKey, PythonStatementFact] = {}
         self.iterations: dict[PythonNodeKey, PythonIterationFact] = {}
         self.assignment_effects: dict[PythonNodeKey, EffectMask] = {}
@@ -3051,6 +3069,28 @@ class _Analyzer:
                 name_lookup = "lexical"
             else:
                 name_lookup = "global"
+                if (
+                    isinstance(node.ctx, ast.Load)
+                    and not scope.activation_namespace_stable
+                    and scope.kind in {"function", "lambda", "comprehension"}
+                    and node.id in BUILTIN_BINDING_GUARD_BITS
+                ):
+                    self._builtin_guard_reads[key] = node.id
+            if (
+                self._star_import_origins
+                and isinstance(node.ctx, ast.Load)
+                and name_lookup in {"global", "class_global"}
+            ):
+                # The read may find a star-bound name: it selects that name
+                # from the star-imported modules, as an attribute read would.
+                source_key = python_node_source_key(node)
+                result = replace(
+                    result, source_origins=result.source_origins | {source_key}
+                )
+                self.source_attributes[source_key] = (
+                    node.id,
+                    self._star_import_origins,
+                )
         previous = self.expressions.get(key)
         self.expressions[key] = PythonExpressionFact(
             key,
@@ -3860,6 +3900,14 @@ class _Analyzer:
             if callee_result.result.source_origins:
                 result_override = replace(
                     result_override, source_origins=callee_result.result.source_origins
+                )
+            if callee_result.identities & _DYNAMIC_IMPORT_CALL_IDENTITIES:
+                # An import call returns a module, as an import statement binds
+                # one: the call itself is the source the module value flows from.
+                result_override = replace(
+                    result_override,
+                    source_origins=result_override.source_origins
+                    | {python_node_source_key(node)},
                 )
             # Exact builtins follow their invocation effects: copying retains
             # deferred values; hashing/repr/index protocols can reach elements.
@@ -5249,9 +5297,17 @@ class _Analyzer:
         )
 
     def _bind_name(
-        self, name: str, value: IdentityMask, state_id: int, scope: _Scope
+        self,
+        name: str,
+        value: IdentityMask,
+        state_id: int,
+        scope: _Scope,
+        *,
+        store_can_fail: bool = True,
     ) -> tuple[int, EffectMask]:
-        return self._write_name(state_id, scope, name, value)
+        return self._write_name(
+            state_id, scope, name, value, store_can_fail=store_can_fail
+        )
 
     def _write_name(
         self,
@@ -5262,6 +5318,8 @@ class _Analyzer:
         static_value: PythonStaticValue = None,
         result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT,
         owner_token: int = 0,
+        *,
+        store_can_fail: bool = True,
     ) -> tuple[int, EffectMask]:
         slot = self._slot_for_name(scope, name)
         if (
@@ -5311,6 +5369,21 @@ class _Analyzer:
             return self._apply_effects(state_id, effects), effects
         if slot is None:
             return state_id, NO_EFFECTS
+        if (
+            store_can_fail
+            and scope.kind in _FRAME_LOCAL_SCOPE_KINDS
+            and name in scope.locals
+            and name not in scope.globals
+            and name not in scope.nonlocals
+        ):
+            # Molt binds a frame local through FRAME_HOME_STORE. Its boxed view
+            # of a raw integer may allocate, so op_kinds.toml declares the store
+            # raising. The allocation precedes publication: a failed store
+            # leaves this state, old binding included. A handler or a
+            # suppressing __exit__ that resumes there must see the name as
+            # possibly unbound: `with ... as name` binds first in its protected
+            # region, and `try: name = other_local` raises nowhere else.
+            self._note_failed_store(state_id)
         state_id, effects = self._replace_binding(
             state_id, slot, value, static_value, result, owner_token, scope=scope
         )
@@ -5340,8 +5413,42 @@ class _Analyzer:
             if effects & RAISES
             else None
         )
+        failed_store = self._take_failed_store()
+        if failed_store is not None:
+            effects |= RAISES
+            exceptional = (
+                failed_store
+                if exceptional is None
+                else self.states.join(exceptional, failed_store)
+            )
         return PythonCompletionFlow(
             normal=state_id, raised=exceptional, effects=effects
+        )
+
+    def _note_failed_store(self, state_id: int) -> None:
+        frame = self._observed_stack[-1]
+        frame.failed_store = (
+            state_id
+            if frame.failed_store is None
+            else self.states.join(frame.failed_store, state_id)
+        )
+
+    def _take_failed_store(self) -> int | None:
+        if not self._observed_stack:
+            return None
+        frame = self._observed_stack[-1]
+        failed_store, frame.failed_store = frame.failed_store, None
+        return failed_store
+
+    def _raise_unrouted_failed_store(
+        self, flow: PythonCompletionFlow[int], observation: _ObservedStateFrame
+    ) -> PythonCompletionFlow[int]:
+        # A store that no flow inside the statement routed fails the statement.
+        if observation.failed_store is None:
+            return flow
+        return self._merge_flows(
+            flow,
+            PythonCompletionFlow(raised=observation.failed_store, effects=RAISES),
         )
 
     def exec_statements(
@@ -5397,6 +5504,7 @@ class _Analyzer:
                             flow = self._exec_statement(node, incoming, scope)
                         finally:
                             observation = self._observed_stack.pop()
+                        flow = self._raise_unrouted_failed_store(flow, observation)
                         self._record_statement_flow(
                             node,
                             scope,
@@ -5428,6 +5536,7 @@ class _Analyzer:
                         continue
                     flow = self._merge_flows(frame.prefix.without_normal(), frame.flow)
                     observation = self._observed_stack.pop()
+                    flow = self._raise_unrouted_failed_store(flow, observation)
                     self._record_statement_flow(
                         frame.node,
                         scope,
@@ -6419,11 +6528,14 @@ class _Analyzer:
             def clear_exception(incoming: int) -> PythonCompletionFlow[int]:
                 # CPython clears an exception target by storing None before
                 # deleting it, including when the handler already deleted it.
+                # The frontend lowers this clear to FRAME_HOME_CLEAR, which
+                # cannot raise.
                 rebound, release_effects = self._bind_name(
                     exception_name,
                     exact_identity(PythonIdentity.INERT_VALUE),
                     incoming,
                     scope,
+                    store_can_fail=False,
                 )
                 cleared, cleanup_effects = self.delete_target(
                     ast.Name(id=exception_name, ctx=ast.Del()), rebound, scope
@@ -6720,6 +6832,23 @@ class _Analyzer:
             )
         return self.states.set_bindings(state_id, updates)
 
+    def _project_builtin_guard_bits(self) -> Iterator[PythonExpressionFact]:
+        """Attach a guard bit to each builtin read the module never binds.
+
+        A function's read of `len` is a live lookup. When no module statement,
+        `global` declaration or literal reflective write binds `len`, the
+        compiler may specialize the read behind a runtime binding guard; the
+        guard, not this projection, proves the binding at run time. A name the
+        module binds would fail its guard on every call, so it gets none.
+        """
+        assert self.module_scope is not None
+        for key, fact in self.expressions.items():
+            name = self._builtin_guard_reads.get(key)
+            if name is None or self._module_slot(name) is not None:
+                yield fact
+            else:
+                yield replace(fact, builtin_guard_bit=BUILTIN_BINDING_GUARD_BITS[name])
+
     def analyze(self, tree: ast.Module) -> _BindingAnalysis:
         self._future_annotations = any(
             isinstance(statement, ast.ImportFrom)
@@ -6730,6 +6859,13 @@ class _Analyzer:
         self._dependency_authority = PythonDependencyAuthority(
             eager_annotations=self._eager_annotations,
             future_annotations=self._future_annotations,
+        )
+        self._star_import_origins = frozenset(
+            python_node_source_key(alias)
+            for statement in ast.walk(tree)
+            if isinstance(statement, ast.ImportFrom)
+            for alias in statement.names
+            if alias.name == "*"
         )
         declarations = python_scope_declarations(
             tree.body, eager_annotations=self._eager_annotations
@@ -6857,7 +6993,7 @@ class _Analyzer:
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
             expressions=tuple(
-                sorted(self.expressions.values(), key=lambda fact: fact.node)
+                sorted(self._project_builtin_guard_bits(), key=lambda fact: fact.node)
             ),
             statements=tuple(
                 sorted(self.statements.values(), key=lambda fact: fact.node)

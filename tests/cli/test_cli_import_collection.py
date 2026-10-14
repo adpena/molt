@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -108,6 +109,7 @@ from molt.source_root import compiler_source_root
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION, TargetPythonVersion
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY,
     NativeArchiveFixtureCatalog,
@@ -129,7 +131,6 @@ from tests.native_artifact_fixtures import (
     NativeSymbolFixture,
     native_relocatable_object,
 )
-from tests.operation_probe import same_thread_probe
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     mock_wasm_optimizer_cache_fact,
@@ -141,7 +142,7 @@ from tests.wasm_object_fixtures import (
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import current_thread_only, install_module_view
 
 cli_deps = importlib.import_module("molt.cli.deps")
 cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
@@ -2916,7 +2917,9 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
         "from nativepkg import doccer\n\ndocfiller = doccer.filldoc({})\n",
         encoding="utf-8",
     )
-    (external_root / "never_needed_artifact_dependency.py").write_text("VALUE = 1\n")
+    (external_root / "never_needed_artifact_dependency.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
     support_sha = hashlib.sha256(support_path.read_bytes()).hexdigest()
     doc_sha = hashlib.sha256(doc_path.read_bytes()).hexdigest()
     _write_external_native_artifact(
@@ -3132,6 +3135,7 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert "copy" in backend_setup.stdlib_module_symbols
@@ -5195,7 +5199,13 @@ def test_native_archive_fixture_preserves_digest_and_cache_custody(
     def forbid_reader_execution(*args: Any, **kwargs: Any) -> None:
         pytest.fail("synthetic symbol reader executable is identity-only")
 
-    monkeypatch.setattr(subprocess, "Popen", forbid_reader_execution)
+    # A tripwire must catch this launch from any module, subprocess.run among
+    # them, so it stays process-wide. Only this thread meets the fake.
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        current_thread_only(forbid_reader_execution, subprocess.Popen),
+    )
     first = native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
     assert first.artifact_digest == hashlib.sha256(first_bytes).hexdigest()
     assert first.defined == frozenset({"PyInit__native", "state"})
@@ -13086,7 +13096,9 @@ def _payload_digest_cache_key(
     digest.update(b"|")
     digest.update(suffix.encode("utf-8"))
     digest.update(b"|")
-    digest.update(CACHE_KEYS._cache_fingerprint().encode("utf-8"))
+    digest.update(
+        CACHE_KEYS._cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE).encode("utf-8")
+    )
     digest.update(b"|")
     digest.update(CACHE_KEYS._cache_tooling_fingerprint().encode("utf-8"))
     digest.update(b"|")
@@ -13365,7 +13377,7 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
         return original_resolve(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        Path, "resolve", same_thread_probe(original_resolve, wrapped_resolve)
+        Path, "resolve", current_thread_only(wrapped_resolve, original_resolve)
     )
 
     cache = cli_module_resolution._ModuleResolutionCache()
@@ -13394,7 +13406,7 @@ def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_pa
         raise AssertionError(f"resolve() should not run for {self}")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(Path, "resolve", same_thread_probe(Path.resolve, fail_resolve))
+        scoped.setattr(Path, "resolve", current_thread_only(fail_resolve, Path.resolve))
         assert cache.resolved_path(path) == path
 
 
@@ -13415,7 +13427,7 @@ def test_shared_module_resolution_cache_resolves_relative_paths(
         return original_resolve(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        Path, "resolve", same_thread_probe(original_resolve, wrapped_resolve)
+        Path, "resolve", current_thread_only(wrapped_resolve, original_resolve)
     )
     assert cache.resolved_path(rel_path) == resolved_path
     assert calls == 1
@@ -14873,10 +14885,12 @@ def test_verify_cargo_lock_uses_workspace_member_manifests_only(
 
     captured: dict[str, list[Path]] = {}
 
-    monkeypatch.setattr(
-        LOCKFILES.shutil,
-        "which",
-        lambda name: "/usr/bin/cargo" if name == "cargo" else None,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        LOCKFILES,
+        which=lambda name: "/usr/bin/cargo" if name == "cargo" else None,
     )
     monkeypatch.setattr(
         LOCKFILES,
@@ -15142,19 +15156,15 @@ def test_default_molt_bin_is_cached(
     assert info.currsize >= 1
 
 
-def test_wasm_runtime_root_is_cached(
+def test_wasm_runtime_root_explicit_directory_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli_build_output_layout._wasm_runtime_root_cached.cache_clear()
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(tmp_path / "wasm-root"))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
 
-    first = cli_build_output_layout._wasm_runtime_root(tmp_path)
-    second = cli_build_output_layout._wasm_runtime_root(tmp_path)
-
-    info = cli_build_output_layout._wasm_runtime_root_cached.cache_info()
-    assert first == second == (tmp_path / "wasm-root")
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    assert cli_build_output_layout._wasm_runtime_root(tmp_path) == (
+        tmp_path / "wasm-root"
+    )
 
 
 def test_safe_output_base_is_cached() -> None:
@@ -15266,25 +15276,55 @@ def test_runtime_lib_path_includes_target_triple(
     )
 
 
-def test_runtime_wasm_artifact_path_is_cached(
+def test_runtime_wasm_artifact_path_follows_the_artifact_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_clear()
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    project = tmp_path / "project"
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
 
-    first = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
-    second = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    assert RUNTIME_PATHS._runtime_wasm_artifact_path(project, "molt_runtime.wasm") == (
+        tmp_path / "artifacts" / "wasm" / "molt_runtime.wasm"
+    )
 
-    info = RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_info()
-    assert first == second == (tmp_path / "wasm" / "molt_runtime.wasm")
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    # A relative artifact root is anchored at the project, never the cwd, and
+    # the root need not exist yet: the build creates it.
+    monkeypatch.setenv("MOLT_EXT_ROOT", "artifacts")
+    assert RUNTIME_PATHS._runtime_wasm_artifact_path(project, "molt_runtime.wasm") == (
+        project / "artifacts" / "wasm" / "molt_runtime.wasm"
+    )
+
+
+@pytest.mark.usefixtures("developer_host_context")
+def test_runtime_wasm_default_sits_in_the_native_runtime_cargo_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.chdir(elsewhere)
+
+    runtime_wasm = RUNTIME_PATHS._runtime_wasm_artifact_path(
+        project, "molt_runtime.wasm"
+    )
+    native_lib = cli._runtime_lib_path(project, "release", None)
+
+    # Cargo's own target of the project holds both runtimes, so neither a
+    # build from another directory nor one in the checkout writes into a
+    # source tree.
+    assert (
+        runtime_wasm == project / "target" / "molt-runtime-wasm" / "molt_runtime.wasm"
+    )
+    assert native_lib.parent.parent == runtime_wasm.parent.parent
+    assert not runtime_wasm.is_relative_to(elsewhere)
 
 
 def test_runtime_wasm_artifact_path_uses_explicit_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_clear()
     override = tmp_path / "custom-wasm"
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(override))
 
@@ -21175,6 +21215,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21301,6 +21342,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21427,6 +21469,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21556,6 +21599,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             resolved_modules={"__main__", "json"},
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21677,6 +21721,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             resolved_modules={"__main__"},
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21704,6 +21749,7 @@ def test_initialize_runtime_artifact_state_assigns_native_object_runtime_lib(
         runtime_cargo_profile="release-fast",
         target_triple=None,
         stdlib_profile="micro",
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert state.runtime_lib == cli._runtime_lib_path(
@@ -24241,7 +24287,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         module_reasons={},
         stdlib_root=tmp_path,
         warnings=[],
-        native_arch_perf_enabled=False,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     build_roots = cli._PreparedBuildRoots(
         cwd_root=tmp_path,
@@ -24576,6 +24622,7 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         backend_daemon_config_digest=None,
         warnings=[],
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert prepared is None
@@ -24631,6 +24678,7 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert seen_features == [("native-backend",), ("native-backend",)]
     assert build_cmds == [
@@ -24711,6 +24759,7 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert identity_path.exists()
 
@@ -24766,6 +24815,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("wasm-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert seen_features == [("wasm-backend",), ("wasm-backend",)]
     assert build_cmds == [
@@ -24855,6 +24905,7 @@ def test_ensure_backend_binary_materializes_admitted_feature_alias_without_rebui
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("wasm-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert build_cmds == []
@@ -24899,6 +24950,7 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("wasm-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
 
@@ -25381,7 +25433,6 @@ def test_build_scopes_pipeline_env_updates(
         "MOLT_AUDIT_OUTPUT",
         "MOLT_IO_MODE",
         "MOLT_PORTABLE",
-        "MOLT_TYPE_GATE",
     }
     for key in cleared_keys:
         monkeypatch.delenv(key, raising=False)
@@ -25398,7 +25449,6 @@ def test_build_scopes_pipeline_env_updates(
         stdlib_profile="full",
         audit_log="jsonl:stderr",
         io_mode="virtual",
-        type_gate=True,
         json_output=True,
     )
 
@@ -26376,11 +26426,13 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     monkeypatch.setattr(
         cli_commands, "_run_completed_command", fake_run_completed_command
     )
-    original_which = cli_commands.shutil.which
-    monkeypatch.setattr(
-        cli_commands.shutil,
-        "which",
-        lambda name, *, path=None: (
+    original_which = shutil.which
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        cli_commands,
+        which=lambda name, *, path=None: (
             f"/usr/bin/{name}" if name == "lune" else original_which(name, path=path)
         ),
     )
@@ -26769,11 +26821,13 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
-    original_which = cli_commands.shutil.which
-    monkeypatch.setattr(
-        cli_commands.shutil,
-        "which",
-        lambda name, *, path=None: (
+    original_which = shutil.which
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        cli_commands,
+        which=lambda name, *, path=None: (
             f"/usr/bin/{name}"
             if name == "wrangler"
             else original_which(name, path=path)
@@ -28357,22 +28411,6 @@ def test_resolve_wasm_cargo_profile_is_cached(
 
     info = RUNTIME_WASM_BUILD_POLICY._resolve_wasm_cargo_profile_cached.cache_info()
     assert first == second == "wasm-release"
-    assert info.hits >= 1
-    assert info.currsize >= 1
-
-
-def test_native_arch_perf_requested_is_cached(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cli_build_inputs._native_arch_perf_requested_cached.cache_clear()
-    monkeypatch.setenv("MOLT_PERF_PROFILE", "native")
-
-    first = cli_build_inputs._native_arch_perf_requested()
-    second = cli_build_inputs._native_arch_perf_requested()
-
-    info = cli_build_inputs._native_arch_perf_requested_cached.cache_info()
-    assert first is True
-    assert second is True
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -30686,7 +30724,9 @@ def test_replace_directory_tree_from_source_restores_previous_tree_on_publish_fa
             raise OSError("publish failed")
         original_replace(src_arg, dst_arg)
 
-    monkeypatch.setattr(os, "replace", fail_temp_publish)
+    install_module_view(
+        monkeypatch, "os", os, cli_non_native_output, replace=fail_temp_publish
+    )
 
     with pytest.raises(OSError, match="publish failed"):
         cli_non_native_output._replace_directory_tree_from_source(src, dest)
@@ -31945,6 +31985,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
@@ -32029,6 +32070,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert setup.cache_path is not None
@@ -32105,6 +32147,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert setup.cache_path is None
@@ -32353,6 +32396,7 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
             backend_bin=backend_bin,
             backend_compiler_fingerprint=fingerprint,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert error is None
         assert prepared is not None

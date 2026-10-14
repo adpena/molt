@@ -17,6 +17,7 @@ import pytest
 from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
 from molt.cli import runtime_native_build
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_toolchain_test_support import (
     BACKEND_FEATURES,
     BACKEND_PROFILE,
@@ -55,6 +56,29 @@ def _forbid_cargo(monkeypatch: pytest.MonkeyPatch) -> None:
         "_run_subprocess_captured_to_tempfiles",
         lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
+
+
+def test_current_selection_is_the_baseline_cpu(tmp_path, monkeypatch):
+    monkeypatch.delenv("MOLT_PERF_PROFILE", raising=False)
+
+    selection = transfer.NativeToolchainSelection.current(tmp_path)
+
+    assert selection.backend.rust_cpu is RustCpuPolicy.BASELINE
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [("native-arch", "never transfer"), ("native", "MOLT_PERF_PROFILE must be")],
+)
+def test_current_selection_refuses_a_host_cpu_build(
+    tmp_path, monkeypatch, value, message
+):
+    # -C target-cpu=native names no CPU, so its identity cannot tell two hosts
+    # apart; a transported native-arch product could fault on another CPU.
+    monkeypatch.setenv("MOLT_PERF_PROFILE", value)
+
+    with pytest.raises(transfer.NativeToolchainTransferError, match=message):
+        transfer.NativeToolchainSelection.current(tmp_path)
 
 
 def test_export_names_the_admitted_runtime_generation_and_backend(
@@ -110,6 +134,7 @@ def test_imported_toolchain_is_admitted_by_the_next_build_without_cargo(
         cargo_profile=BACKEND_PROFILE,
         project_root=consumer.root,
         backend_features=BACKEND_FEATURES,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert (
         selection.backend.binary.read_bytes()

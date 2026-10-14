@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from molt import verified_subset as authority
 from tools import verified_subset
 from tools.compat import comparison, test_policy
+from tests.process_guard_common import current_thread_only
 from tests.tools.verified_subset_fixtures import synthetic_validation
 
 
@@ -943,7 +945,11 @@ def test_process_backend_identity_never_probes_node(backend, monkeypatch):
     def unexpected_probe(*args, **kwargs):
         raise AssertionError("process backend must not use Node identity")
 
-    monkeypatch.setattr(verified_subset.shutil, "which", unexpected_probe)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(
+        shutil, "which", current_thread_only(unexpected_probe, shutil.which)
+    )
     assert verified_subset._backend_identity(coordinate) == {
         "backend": backend,
         "runner": "process",
@@ -956,7 +962,11 @@ def test_backend_identity_rejects_unknown_backend_before_probe(monkeypatch):
     def unexpected_probe(*args, **kwargs):
         raise AssertionError("unknown backend must fail before tool discovery")
 
-    monkeypatch.setattr(verified_subset.shutil, "which", unexpected_probe)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(
+        shutil, "which", current_thread_only(unexpected_probe, shutil.which)
+    )
     with pytest.raises(ValueError, match="unsupported verified-subset backend"):
         verified_subset._backend_identity(coordinate)
 

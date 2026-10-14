@@ -2761,13 +2761,7 @@ mod resolver_admission_tests {
     use super::*;
     use std::cell::Cell;
 
-    #[allow(dead_code)]
-    mod cargo_test_artifacts {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../test_support/cargo_test_artifacts.rs"
-        ));
-    }
+    use crate::test_support::cargo_test_artifacts;
 
     thread_local! {
         static FINDER_CALLS: Cell<usize> = const { Cell::new(0) };

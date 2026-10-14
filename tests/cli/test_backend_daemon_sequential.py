@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import backend_binary as cli_backend_binary
 
 from tests.cli.process_guard import cli_test_popen_kwargs, close_cli_test_process_group
@@ -50,6 +51,7 @@ def _candidate_daemon_binaries() -> list[Path]:
             cargo_profile=profile,
             project_root=ROOT,
             backend_features=("native-backend",),
+            rust_cpu=RustCpuPolicy.BASELINE,
         ):
             return [path]
     except Exception:

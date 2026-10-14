@@ -127,7 +127,7 @@ pub(crate) fn reserved_wasm_runtime_direct_callable_info_for_table_idx(
 /// (`[direct_start, direct_start + count)`) or the trampoline region
 /// (`[trampoline_start, trampoline_start + count)`), returns the reserved
 /// callable index it belongs to, or `None` when it is outside both regions.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg(any(test, target_arch = "wasm32"))]
 fn reserved_slot_index_for_any_region(
     table_idx: u64,
     direct_start: u64,

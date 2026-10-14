@@ -82,7 +82,8 @@ fn enter_frame(py: &PyToken<'_>, code: u64, slots: usize) -> (*mut u64, usize) {
         slots,
         FramePolicy::of_runtime(py)
     )));
-    let homes = molt_frame_homes(slots as u64) as usize as *mut u64;
+    let homes = crate::provenance::abi::mut_ptr::<u64>(molt_frame_homes(slots as u64))
+        .expect("frame homes address fits the target");
     assert!(!exception_pending(py));
     assert!(!homes.is_null() || slots == 0);
     let index = FRAME_STACK.with(|stack| stack.borrow().len() - 1);
@@ -802,7 +803,8 @@ fn compiled_code_borrows_only_homes_the_frame_has() {
         let code = slot_code(py, &[b"a", b"b"], &[]);
         let (homes, _) = enter_frame(py, code, 2);
         assert_eq!(
-            molt_frame_homes(1) as usize as *mut u64,
+            crate::provenance::abi::mut_ptr::<u64>(molt_frame_homes(1))
+                .expect("frame homes address fits the target"),
             homes,
             "a split chunk"
         );

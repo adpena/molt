@@ -56,6 +56,25 @@ from tools.proof_queue_pkg import diagnostic_engine, diagnostic_model
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
+def _live_custody_instability(
+    state: object, events: list[object], errors: list[object], *, shown: int = 3
+) -> str:
+    """Name what made a live-custody receipt unstable, in one bounded line."""
+    parts = [f"state={state}"]
+    if events:
+        named = ", ".join(
+            f"{event.get('action')} {event.get('path')}"
+            for event in events[:shown]
+            if isinstance(event, Mapping)
+        )
+        parts.append(f"{len(events)} input event(s): {named}")
+    if errors:
+        parts.append(
+            f"{len(errors)} error(s): " + "; ".join(str(e) for e in errors[:shown])
+        )
+    return "; ".join(parts)
+
+
 def _is_receipt_object(value: object) -> TypeGuard[dict[str, object]]:
     return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
@@ -498,9 +517,8 @@ def _validated_execution_context(
     if (
         not _is_receipt_object(live_custody)
         or live_custody.get("schema") != execution_custody.LIVE_CUSTODY_RECEIPT_SCHEMA
-        or live_custody.get("stable") is not True
     ):
-        raise ValueError("guarded receipt has no stable live input custody")
+        raise ValueError("guarded receipt has no live input custody")
     live_event_artifact = live_custody.get("event_artifact")
     if not _is_receipt_object(live_event_artifact):
         raise ValueError("guarded receipt has no durable live-custody event authority")
@@ -529,6 +547,13 @@ def _validated_execution_context(
         )
     ):
         raise ValueError("guarded receipt live-custody event binding is invalid")
+    if live_custody.get("stable") is not True:
+        raise ValueError(
+            "guarded receipt live input custody is unstable: "
+            + _live_custody_instability(
+                live_custody.get("state"), live_events, live_errors
+            )
+        )
     execution_custody.validate_apparatus_events(
         live_apparatus_events,
         [execution_custody.validated_uv_environment_lock_capture(full_toolchains)]

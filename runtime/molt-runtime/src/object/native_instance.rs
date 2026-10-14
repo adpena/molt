@@ -195,6 +195,27 @@ pub(crate) unsafe fn field_payload_size(object: *mut u8) -> usize {
     }
 }
 
+/// Whether `class` extends its payload's root. A payload with one canonical
+/// owner compares against it, so a native class that declares its own slot
+/// layout on top of `tuple` keeps its identity and fields. FileHandle has
+/// several concrete native roots, each declaring NativeSlotLayout.
+unsafe fn extends_root(
+    py: &PyToken<'_>,
+    kind: NativePayload,
+    class: u64,
+    class_ptr: *mut u8,
+) -> bool {
+    match kind.owner(py) {
+        Some(owner) => class != owner,
+        None => unsafe {
+            !super::class_storage::class_declares(
+                class_ptr,
+                super::class_storage::ClassDeclaration::NativeSlotLayout,
+            )
+        },
+    }
+}
+
 /// Allocate only zeroed physical storage. The caller fills all native owners
 /// before publish installs the class edge, admits GC membership, and publishes.
 pub(crate) unsafe fn alloc_unpublished(
@@ -207,10 +228,7 @@ pub(crate) unsafe fn alloc_unpublished(
         let Some(class_ptr) = kind.admit(py, class) else {
             return std::ptr::null_mut();
         };
-        let subtype = !super::class_storage::class_declares(
-            class_ptr,
-            super::class_storage::ClassDeclaration::NativeSlotLayout,
-        );
+        let subtype = extends_root(py, kind, class, class_ptr);
         let native = kind.native_bytes(length);
         let payload = if subtype {
             native.and_then(align).and_then(|offset| {
@@ -256,10 +274,7 @@ pub(crate) unsafe fn prepare_publication(py: &PyToken<'_>, object: *mut u8, clas
         }
         let kind = NativePayload::from_type_id(object_type_id(object)).expect("native allocation");
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
-        let subtype = !super::class_storage::class_declares(
-            class_ptr,
-            super::class_storage::ClassDeclaration::NativeSlotLayout,
-        );
+        let subtype = extends_root(py, kind, class, class_ptr);
         if subtype {
             let size = super::layout::class_cached_layout_size(class_ptr).unwrap();
             if super::field_storage::initialize_fields(py, object, class_ptr, size).is_err() {

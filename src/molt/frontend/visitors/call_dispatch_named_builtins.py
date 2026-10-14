@@ -43,14 +43,20 @@ class CallNamedBuiltinDispatchMixin(
         index = self.python_binding_index
         fact = index.call_fact(node) if index is not None else None
         name = fact.exact_builtin_name() if fact is not None else None
+        elision_safe = fact is not None and fact.callee_elision_safe
+        if self._builtin_guard_covers(node.func):
+            # The enclosing guard proved the binding where Python loads it, and
+            # a builtin callable's lifetime is unobservable (HF-79).
+            assert isinstance(node.func, ast.Name)
+            name = node.func.id if node.func.id in BUILTIN_SHAPE_NAMES else None
+            elision_safe = True
         if name is None and not (
             isinstance(node.func, ast.Name) and node.func.id in BUILTIN_SHAPE_NAMES
         ):
             return CALL_NOT_HANDLED
         if (
             name is not None
-            and fact is not None
-            and fact.callee_elision_safe
+            and elision_safe
             and not node.keywords
             and not any(isinstance(arg, ast.Starred) for arg in node.args)
         ):

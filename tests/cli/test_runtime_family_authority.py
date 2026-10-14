@@ -20,6 +20,7 @@ from molt.cli.runtime_build_identity import (
     _verify_plan_toolchain_content,
 )
 from molt.cli.runtime_cargo_plan import _rust_resource_roots
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     runtime_build_fingerprint,
@@ -510,6 +511,40 @@ def test_encoded_flags_win_and_transform_is_applied_once(plan_root: Path) -> Non
     assert seen == [("--cfg", "encoded")]
     assert plan.rustflags == ("--cfg", "encoded", "--cfg", "molt")
     assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(plan.rustflags)
+
+
+@pytest.mark.parametrize(
+    ("env", "selected"),
+    [
+        ({}, ("--cfg", "configured")),
+        ({"RUSTFLAGS": "--cfg environment"}, ("--cfg", "environment")),
+        (
+            {"CARGO_ENCODED_RUSTFLAGS": "--cfg\x1fencoded", "RUSTFLAGS": "--cfg x"},
+            ("--cfg", "encoded"),
+        ),
+    ],
+)
+def test_rust_cpu_policy_extends_the_flags_cargo_selects(
+    plan_root: Path, env: dict[str, str], selected: tuple[str, ...]
+) -> None:
+    # Cargo's precedence (encoded > RUSTFLAGS > config) picks one source. The
+    # native policy appends to that source's flags and never replaces them;
+    # the plan pins the result for Cargo and for every identity that binds it.
+    _config(plan_root, '[build]\nrustflags=["--cfg", "configured"]\n')
+
+    baseline = _plan(
+        plan_root, env=env, rustflags_transform=RustCpuPolicy.BASELINE.rustflags
+    )
+    native = _plan(
+        plan_root, env=env, rustflags_transform=RustCpuPolicy.NATIVE.rustflags
+    )
+
+    assert baseline.rustflags == selected
+    assert native.rustflags == (*selected, "-C", "target-cpu=native")
+    for plan in (baseline, native):
+        assert plan.environment["CARGO_ENCODED_RUSTFLAGS"] == "\x1f".join(
+            plan.rustflags
+        )
 
 
 def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(

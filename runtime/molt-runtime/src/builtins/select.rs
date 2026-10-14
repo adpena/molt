@@ -71,8 +71,6 @@ struct SelectorRegistry {
     obj_to_fd: HashMap<u64, i64>,
     closed: bool,
     fileno: i64,
-    #[allow(dead_code)]
-    kind: i64,
 }
 
 type SelectorHandle = u64;
@@ -902,7 +900,6 @@ pub extern "C" fn molt_select_selector_new(kind_bits: u64) -> u64 {
             obj_to_fd: HashMap::new(),
             closed: false,
             fileno,
-            kind,
         });
         selector_handle_from_ptr(Box::into_raw(selector) as *mut u8)
     })

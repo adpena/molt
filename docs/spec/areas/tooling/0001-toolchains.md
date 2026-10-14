@@ -713,6 +713,18 @@ After Cargo completes, a rejected compiler feature probe fails the build with
 its original diagnostic and publishes no new provenance. The CLI does not
 rerun the unchanged Cargo plan to conceal that failed outcome.
 
+Source builds publish the runtime WASM pair into one runtime directory: an
+explicit `MOLT_WASM_RUNTIME_DIR`, else `<MOLT_EXT_ROOT>/wasm`, else
+`molt-runtime-wasm` in the project's Cargo target beside the native runtime
+libraries. A build never writes runtime outputs into the source tree or the
+working directory. The directory is a working set of immutable generations.
+Under the directory's store lock, each publication and each code-generation
+binding records the generation it uses in the store ledger, and each
+publication evicts the generation files that no build used for 24 hours. It
+never evicts the selected pair. Recency lives in the ledger because a member's
+stat identity includes its file times. The shared generation cache under
+`MOLT_CACHE`, or a rebuild, restores an evicted generation.
+
 For source-checkout reuse, `MOLT_SKIP_RUNTIME_REBUILD=1` disables compiler and
 runtime source builds, including Cargo-based provenance refresh. It does not
 skip source, configuration, content, manifest or feature admission. Compatible

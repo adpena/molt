@@ -417,12 +417,11 @@ fn format_qualified_type_name_in_context(
         let qualname =
             string_obj_bytes(obj_from_bits(class_qualname_bits(type_ptr))).unwrap_or(name);
         let mut module_name: Option<Vec<u8>> = None;
-        if !exception_pending(_py) {
-            if let Some(value) =
+        if !exception_pending(_py)
+            && let Some(value) =
                 crate::object::class_storage::class_module_bits(_py, type_ptr).ok()?
-            {
-                module_name = string_obj_bytes(obj_from_bits(value));
-            }
+        {
+            module_name = string_obj_bytes(obj_from_bits(value));
         }
         if let Some(module) = module_name
             && (!module.is_empty() || context == QualifiedTypeNameContext::Diagnostic)
@@ -2314,39 +2313,6 @@ fn is_printable_for_repr(ch: char) -> bool {
     unicode_printable_table::is_printable(ch as u32)
 }
 
-#[allow(dead_code)]
-fn format_string_repr(s: &str) -> String {
-    let use_double = s.contains('\'') && !s.contains('"');
-    let quote = if use_double { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(quote);
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if !is_printable_for_repr(c) => {
-                let code = c as u32;
-                if code <= 0xff {
-                    out.push_str(&format!("\\x{:02x}", code));
-                } else if code <= 0xffff {
-                    out.push_str(&format!("\\u{:04x}", code));
-                } else {
-                    out.push_str(&format!("\\U{:08x}", code));
-                }
-            }
-            _ => out.push(ch),
-        }
-    }
-    out.push(quote);
-    out
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct FormatSpec {
     pub(crate) fill: u32,
@@ -3547,9 +3513,8 @@ pub(crate) fn format_with_spec(
             )
         })
     });
-    let native_integer = native.is_some_and(|value| unsafe {
-        molt_cpython_abi::api::numbers::PyLong_Check(value) != 0
-    });
+    let native_integer = native
+        .is_some_and(|value| unsafe { molt_cpython_abi::api::numbers::PyLong_Check(value) != 0 });
     let is_integral = integer.is_some() || native_integer;
     let is_float = as_float_extended(obj).is_some()
         || native.is_some_and(|value| unsafe {

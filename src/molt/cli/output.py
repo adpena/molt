@@ -41,6 +41,60 @@ def json_payload(
     }
 
 
+def read_json_payload(stdout: str) -> dict[str, Any]:
+    """The payload a ``--json`` command printed: its last payload line.
+
+    Raises ``ValueError`` when no line of ``stdout`` is a payload of this
+    schema version.
+    """
+    for line in reversed(stdout.splitlines()):
+        text = line.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("schema_version") == JSON_SCHEMA_VERSION
+        ):
+            return payload
+    raise ValueError("the command printed no molt JSON payload")
+
+
+def json_command_failure(stdout: str, stderr: str, *, limit: int = 2000) -> str:
+    """Why a ``--json`` command failed, in at most ``limit`` characters.
+
+    The payload's ``errors`` are the CLI's own failure messages. Without a
+    payload the failure is at the end of stderr (else stdout); the start holds
+    banners such as the sccache notice.
+    """
+    try:
+        errors = read_json_payload(stdout).get("errors")
+    except ValueError:
+        errors = None
+    if isinstance(errors, list) and errors:
+        detail = "; ".join(str(error) for error in errors)
+    else:
+        detail = stderr.strip() or stdout.strip() or "(no output)"
+    return detail if len(detail) <= limit else "..." + detail[-limit:]
+
+
+def build_output_path(payload: dict[str, Any]) -> str:
+    """The artifact a successful ``molt build --json`` wrote: ``data.output``.
+
+    Every emit mode names its artifact there (``--emit obj`` names the object).
+    """
+    if payload.get("status") != "ok":
+        raise ValueError(f"build reported status {payload.get('status')!r}")
+    data = payload.get("data")
+    output = data.get("output") if isinstance(data, dict) else None
+    if not isinstance(output, str) or not output:
+        raise ValueError("the build payload names no output path")
+    return output
+
+
 def fail(
     message: str,
     json_output: bool,

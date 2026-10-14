@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: molt-runtime-math/src/random_mod.rs ===
 //
 // Mersenne Twister random module intrinsics, extracted from the monolithic

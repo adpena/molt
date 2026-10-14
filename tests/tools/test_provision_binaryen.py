@@ -13,7 +13,7 @@ import tarfile
 
 import pytest
 
-from molt import binaryen_identity
+from molt import binaryen_identity, process_guard
 from molt.binaryen_identity import (
     BinaryenIdentityError,
     load_binaryen_install_receipt,
@@ -818,7 +818,10 @@ def test_version_probe_preserves_windows_text_newline_contract(
             stdout = stream.read()
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
-    monkeypatch.setattr(subprocess, "run", completed)
+    # The shared runner launches unguarded metadata probes.
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, process_guard, run=completed
+    )
     assert (
         provisioner._read_wasm_opt_version(executable, expected_sha256=digest) == "130"
     )

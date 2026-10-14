@@ -278,13 +278,15 @@ class BuildPythonAdmission:
             raise ValueError(
                 "runtime build Python fresh selection emitted invalid JSON"
             ) from exc
-        if selected != self._startup_selection:
-            assert self._startup_selection is not None
-            changes = (
-                startup_selection_difference(self._startup_selection, selected)
-                if isinstance(selected, dict)
-                else ["payload"]
+        assert self._startup_selection is not None
+        changes = (
+            startup_selection_difference(
+                self._startup_selection, selected, admit_new_images=False
             )
+            if isinstance(selected, dict)
+            else ["payload"]
+        )
+        if changes:
             raise ValueError(
                 "runtime build Python fresh startup selection changed after "
                 "admission: " + "; ".join(changes)

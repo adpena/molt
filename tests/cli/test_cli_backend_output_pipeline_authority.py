@@ -25,6 +25,7 @@ from molt.cli.runtime_build_python import BuildPythonAdmission
 import molt.cli as cli
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
 from molt.cli import build_pipeline as cli_build_pipeline
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.process_guard_common import install_module_view
 
 
@@ -188,7 +189,7 @@ def terminal_build(
         phase_starts=phases,
         resolved_diagnostics_verbosity="summary",
         warnings=[],
-        native_arch_perf_enabled=False,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     layout = SimpleNamespace(
         is_rust_transpile=False,

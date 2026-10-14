@@ -768,7 +768,10 @@ def _collect_imports(
         )
 
     def demand(
-        result: StaticExpressionResult, phase: str, *, contents: bool = False
+        result: StaticExpressionResult,
+        phase: Literal["read", "call", "escape"],
+        *,
+        contents: bool = False,
     ) -> None:
         if _source_demands is not None:
             origins = (
@@ -1505,7 +1508,18 @@ def _collect_imports(
         assert target is not None
         payload = _static_import_call_payload(node, target)
         if payload is not None:
-            imports.extend(_resolve_static_import_call(payload, source_bindings))
+            modules = _resolve_static_import_call(payload, source_bindings)
+            imports.extend(modules)
+            if modules and _source_bindings is not None:
+                # The returned module is one of those the call imports; uses of
+                # the result select from them, as uses of an import alias do.
+                _source_bindings.append(
+                    _SourceImportBinding(
+                        python_node_source_key(node),
+                        tuple(dict.fromkeys(modules)),
+                        None,
+                    )
+                )
 
     def publishes_binding(node: ast.AST, name: str) -> bool:
         fact = (
@@ -1606,8 +1620,7 @@ def _collect_imports(
                     _SourceValueDemand(
                         python_node_source_key(alias),
                         "escape"
-                        if alias.name == "*"
-                        or publishes_binding(node, alias.asname or alias.name)
+                        if publishes_binding(node, alias.asname or alias.name)
                         else "read",
                     )
                     for alias in node.names
@@ -1722,7 +1735,10 @@ def _collect_imports(
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             type_alias = cast(ast.TypeAlias, node)
             needs_typing = True
-            if publishes_target(node, type_alias.name) and _source_demands is not None:
+            if (
+                publishes_target(type_alias, type_alias.name)
+                and _source_demands is not None
+            ):
                 _source_demands.append(
                     _SourceValueDemand(python_node_source_key(node), "escape")
                 )

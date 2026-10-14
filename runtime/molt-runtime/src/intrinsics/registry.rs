@@ -169,7 +169,7 @@ fn publish_manifest(
     0
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, target_arch = "wasm32"))]
 fn manifest_snapshot() -> Option<(*mut u8, usize)> {
     if MANIFEST_STATE.load(Ordering::Acquire) != PUBLICATION_READY {
         return None;
@@ -179,7 +179,7 @@ fn manifest_snapshot() -> Option<(*mut u8, usize)> {
     Some((ptr, len))
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, target_arch = "wasm32"))]
 fn manifest_bytes() -> Option<&'static [u8]> {
     let (ptr, len) = manifest_snapshot()?;
     if len == 0 {
@@ -1912,12 +1912,16 @@ mod tests {
                 let owner = construct_registry_owner(py);
                 // Independent CPython method declarations: suffix stripping
                 // loses spelling/case; socketserver.time retains monotonic.
+                // A row exists only in builds whose resolver provides it.
                 for (runtime, expected) in [
+                    #[cfg(feature = "stdlib_math")]
                     ("molt_math_floor", "floor"),
                     ("molt_operator_and", "and_"),
                     ("molt_operator_countof", "countOf"),
                     ("molt_operator_inv", "inv"),
+                    #[cfg(feature = "stdlib_serial")]
                     ("molt_binascii_hexlify", "hexlify"),
+                    #[cfg(feature = "stdlib_serial")]
                     ("molt_binascii_unhexlify", "unhexlify"),
                     ("molt_json_scanstring_obj", "scanstring"),
                     ("molt_time_monotonic", "monotonic"),
@@ -1957,7 +1961,9 @@ mod tests {
                 // CPython publishes distinct methods even with one implementation.
                 for (alias, original) in [
                     ("molt_operator_inv", "molt_operator_invert"),
+                    #[cfg(feature = "stdlib_serial")]
                     ("molt_binascii_hexlify", "molt_binascii_b2a_hex"),
+                    #[cfg(feature = "stdlib_serial")]
                     ("molt_binascii_unhexlify", "molt_binascii_a2b_hex"),
                 ] {
                     let original_bits = resolve_intrinsic_func(py, original, true).unwrap();

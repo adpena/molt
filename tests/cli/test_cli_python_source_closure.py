@@ -1984,3 +1984,35 @@ def test_closure_profile_preserves_another_tracing_owner(
         assert tracemalloc.is_tracing()
     finally:
         tracemalloc.stop()
+
+
+def test_fresh_cache_root_reuses_this_process_analysis_but_not_changed_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    seed = project / "entry.py"
+    helper = project / "helper.py"
+    project.mkdir()
+    seed.write_text("import helper\n", encoding="utf-8")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "first-cache"))
+    first = local_python_import_closure(project, (seed,))
+    analyzed = []
+    analyze = graph.analyze_local_imports
+
+    def record(snapshot, *args, **kwargs):
+        analyzed.append(snapshot.path)
+        return analyze(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(graph, "analyze_local_imports", record)
+    # A test or build with its own empty cache root reuses this process's
+    # content-keyed rows, and still publishes them to the new root.
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "second-cache"))
+    assert local_python_import_closure(project, (seed,)) == first
+    assert analyzed == []
+    assert graph.python_source_closure_cache_path(project).is_file()
+    # Changed bytes never reuse a remembered row.
+    helper.write_text("import entry\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "third-cache"))
+    local_python_import_closure(project, (seed,))
+    assert analyzed == [helper.resolve()]

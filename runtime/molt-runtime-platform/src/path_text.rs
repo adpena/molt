@@ -1119,7 +1119,9 @@ mod tests {
     fn joins_match_cpython_posix_nt_text_and_bytes() {
         // Expected bytes from CPython 3.12.15 posixpath/ntpath, including
         // opaque bytes, WTF-8, Unicode drives, UNC and separator spelling.
-        let cases: &[(u8, bool, &[&[u8]], &[u8])] = &[
+        /// (separator, text join, parts, expected result)
+        type JoinCase = (u8, bool, &'static [&'static [u8]], &'static [u8]);
+        let cases: &[JoinCase] = &[
             (47, true, &[b"a", b"", b"b"], b"a/b"),
             (47, true, &[b"a", b"//b", b"c"], b"//b/c"),
             (47, false, &[b"a", b"\xff", b""], b"a/\xff/"),

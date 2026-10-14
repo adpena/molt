@@ -9,18 +9,20 @@ Updated: 2026-04-23 (Luau backend proof/code correspondence and `LuauCorrect.lea
 |------|--------|--------|--------|
 | `Backend/LuauCorrect.lean` | 0 | 0 | Complete |
 | `Backend/LuauTargetSemantics.lean` | 0 | 0 | Complete |
-| `Backend/RustCorrect.lean` | 0 | 0 | Complete |
-| `Backend/CrossBackend.lean` | 0 | 0 | Complete |
-| `Backend/BackendDeterminism.lean` | 0 | 0 | Complete |
-| `Backend/TargetIndependence.lean` | 0 | 0 | Complete |
+| `Backend/RustCorrect.lean` | 0 | 0 | Not built: imports a stale module (HF-63) |
+| `Backend/CrossBackend.lean` | 0 | 0 | Not built: stale against the current TIR syntax (HF-63) |
+| `Backend/BackendDeterminism.lean` | 0 | 0 | Not built: imports a stale module (HF-63) |
+| `Backend/TargetIndependence.lean` | 0 | 0 | Not built: imports a stale module (HF-63) |
 | `Runtime/WasmNativeCorrect.lean` | 0 | 0 | Complete |
 | `Runtime/WasmABI.lean` | 0 | 0 | Complete |
 | `Determinism/CrossPlatform.lean` | 0 | 1 | Complete (1 axiom) |
 | `Backend/RustSyntax.lean` | 0 | 0 | Complete |
-| `Backend/RustSemantics.lean` | 0 | 0 | Complete |
-| `Backend/RustEmit.lean` | 0 | 0 | Complete |
+| `Backend/RustSemantics.lean` | 0 | 0 | Not built: stale against the current TIR syntax (HF-63) |
+| `Backend/RustEmit.lean` | 0 | 0 | Not built: stale against the current TIR syntax (HF-63) |
 
 **Total sorrys across all 12 files: 0**
+
+Status checked 2026-10-14 against Lean 4.34.1 and the Lake roots in `lakefile.lean`: only files the default target builds are proven. The Rust backend model and the cross-backend theorems sit outside the roots and no longer compile against the current TIR syntax (`RustEmit` misses `BinOp.and_`/`or_`, `RustSemantics` uses removed `Int.land`/`lor`/`xor`); HF-63 tracks them. `LuauTargetSemantics` and `RustSyntax` build and are now Lake roots.
 **Total axioms across backend files: 1** (`ieee754_basic_ops_deterministic` in CrossPlatform.lean)
 
 ## Codebase-Wide Axiom Count

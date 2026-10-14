@@ -1,10 +1,6 @@
 use crate::FunctionIR;
 use std::collections::BTreeMap;
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_STRUCT_ELIDE").is_ok() {
         return;

@@ -8,37 +8,41 @@ use super::super::cache::DaemonCache;
 use super::super::cache::insert_daemon_cache_entries;
 #[cfg(feature = "native-backend")]
 use super::super::cache::maybe_cache_output_file;
-use super::super::protocol::DaemonJobRequest;
 use super::target::DaemonCompiledOutput;
 
+/// Publish a compiled artifact at `output` and, where the job's cache policy
+/// allows it, keep it in memory. Returns the warnings the job reports.
 pub(super) fn write_daemon_compiled_output(
     cache: &mut DaemonCache,
-    job: &DaemonJobRequest,
+    output: &str,
     cache_key: &str,
     function_cache_key: &str,
-    _daemon_memory_cache_allowed: bool,
+    memory_cache_allowed: bool,
     compiled_output: DaemonCompiledOutput,
-    _warnings: &mut Vec<String>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     match compiled_output {
         #[cfg(feature = "wasm-backend")]
         DaemonCompiledOutput::Bytes(output_bytes) => {
-            write_output(&job.output, output_bytes.as_ref())
+            write_output(output, output_bytes.as_ref())
                 .map_err(|err| format!("failed to write compiled output: {err}"))?;
-            insert_daemon_cache_entries(cache, cache_key, function_cache_key, output_bytes);
+            if memory_cache_allowed {
+                insert_daemon_cache_entries(cache, cache_key, function_cache_key, output_bytes);
+            }
+            Ok(Vec::new())
         }
         #[cfg(feature = "native-backend")]
         DaemonCompiledOutput::WrittenToPath => {
-            if _daemon_memory_cache_allowed {
+            let mut warnings = Vec::new();
+            if memory_cache_allowed {
                 maybe_cache_output_file(
                     cache,
-                    Path::new(&job.output),
+                    Path::new(output),
                     cache_key,
                     function_cache_key,
-                    _warnings,
+                    &mut warnings,
                 );
             }
+            Ok(warnings)
         }
     }
-    Ok(())
 }

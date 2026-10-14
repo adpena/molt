@@ -927,6 +927,7 @@ pub extern "C" fn molt_module_capi_get_def(module_bits: MoltHandle) -> usize {
 
 /// Importlib's once-entered check is distinct from PyModule_ExecDef, whose
 /// direct C callers may deliberately run execution slots more than once.
+#[cfg(any(test, all(feature = "cext_loader", not(target_arch = "wasm32"))))]
 pub(crate) fn module_exec_started(module_bits: MoltHandle) -> bool {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {

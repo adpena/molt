@@ -25,6 +25,7 @@ pub(crate) struct CallArgs {
 
 impl CallArgs {
     /// Read the live dictionary, never a projection cached during expansion.
+    #[cfg(any(test, feature = "molt_gpu_primitives"))]
     pub(super) unsafe fn keyword_count(&self) -> usize {
         obj_from_bits(self.keywords)
             .as_ptr()
@@ -1083,7 +1084,7 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
     Ok(clone_bits)
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, feature = "molt_gpu_primitives"))]
 pub(crate) unsafe fn callargs_positional_snapshot(
     _py: &PyToken<'_>,
     builder_bits: u64,

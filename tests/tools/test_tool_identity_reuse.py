@@ -1163,10 +1163,10 @@ def test_compiler_strip_capture_binds_lexical_role_and_physical_image(
     with pytest.raises(ValueError, match="content image is outside"):
         command_identity._validate_toolchain_identity(plan, "llvm-strip", omitted)
     record_path = Path(telemetry[-1]["record"])
-    record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text(encoding="utf-8"))
     omitted.pop("identity_sha256")
     omitted["identity_sha256"] = canonical_json_sha256(omitted)
     record["identity"] = omitted
-    record_path.write_text(json.dumps(record))
+    record_path.write_text(json.dumps(record), encoding="utf-8")
     assert capture() == identity and len(calls) == 2
     assert telemetry[-1]["state"] == "miss"

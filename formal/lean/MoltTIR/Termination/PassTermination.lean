@@ -54,7 +54,7 @@ theorem exprDepth_bin_right (op : BinOp) (a b : Expr) :
 /-- The depth of the operand is strictly less than the unary parent. -/
 theorem exprDepth_un (op : UnOp) (a : Expr) :
     exprDepth a < exprDepth (.un op a) := by
-  simp [exprDepth]; omega
+  simp [exprDepth] <;> omega
 
 -- ══════════════════════════════════════════════════════════════════
 -- Section 2: ConstFold — single structural traversal
@@ -316,6 +316,6 @@ theorem exprDepth_nonneg (e : Expr) : 0 ≤ exprDepth e :=
 theorem constFoldExpr_to_val_depth_le (e : Expr) (v : Value)
     (h : constFoldExpr e = .val v) :
     exprDepth (constFoldExpr e) ≤ exprDepth e := by
-  rw [h]; simp [exprDepth]; exact Nat.zero_le _
+  rw [h]; simp [exprDepth] <;> exact Nat.zero_le _
 
 end MoltTIR.Termination

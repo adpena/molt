@@ -346,6 +346,10 @@ class PythonExpressionFact:
     module_metadata: PythonModuleMetadataProof = NO_MODULE_METADATA_PROOF
     deferred_execution: frozenset[DeferredExecution] = frozenset()
     module_metadata_effects: EffectMask = 0
+    # Nonzero for a builtin-name read in an activation scope whose module never
+    # binds the name: the read's bit in the builtin binding guard mask (HF-79).
+    # It authorizes a guarded specialization, never an unguarded one.
+    builtin_guard_bit: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(

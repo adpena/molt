@@ -6,6 +6,10 @@ import sys
 
 import pytest
 
+from tests.build_payload_test_support import (
+    MALFORMED_BUILD_OUTPUTS,
+    build_payload_line,
+)
 from tools import check_reproducible_build as reproducibility
 
 
@@ -147,8 +151,8 @@ def test_compare_mode_emits_counted_receipt(tmp_path: Path, monkeypatch) -> None
     build_a = tmp_path / "a.json"
     build_b = tmp_path / "b.json"
     receipt = tmp_path / "receipt.json"
-    build_a.write_text(json.dumps({"output": str(artifact)}), encoding="utf-8")
-    build_b.write_text(json.dumps({"output": str(artifact)}), encoding="utf-8")
+    build_a.write_text(build_payload_line(str(artifact)), encoding="utf-8")
+    build_b.write_text(build_payload_line(str(artifact)), encoding="utf-8")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -199,7 +203,7 @@ def test_build_and_ir_receipt_environments_match_real_children(
             artifact = Path(kwargs["env"]["MOLT_CACHE"]) / "artifact"
             tail = (
                 f"Path({str(artifact)!r}).write_bytes(b'constant fixture artifact'); "
-                f"print(json.dumps({{'output': {str(artifact)!r}}}))"
+                f"print({build_payload_line(str(artifact))!r})"
             )
         elif (
             command[:2] == [sys.executable, "-c"]
@@ -333,12 +337,10 @@ def test_failed_compiler_phase_retains_evidence_and_does_not_count_as_pass(
     assert row[phase]["environment"]["PYTHONHASHSEED"] == "0"
 
 
-@pytest.mark.parametrize(
-    "build_json", [[], None, {"output": 23}, {"data": []}, {"data": {"output": 23}}]
-)
+@pytest.mark.parametrize("build_output", MALFORMED_BUILD_OUTPUTS)
 @pytest.mark.parametrize("mode", ["build", "compare"])
 def test_malformed_artifact_shape_is_a_counted_error(
-    tmp_path: Path, monkeypatch, build_json: object, mode: str
+    tmp_path: Path, monkeypatch, build_output: str, mode: str
 ) -> None:
     source = tmp_path / "source.py"
     source.write_text("print('stable')\n", encoding="utf-8")
@@ -350,7 +352,7 @@ def test_malformed_artifact_shape_is_a_counted_error(
         if command[:4] != [sys.executable, "-m", "molt.cli", "build"]:
             return real_guard(command, **kwargs)
         launched = real_guard(
-            [sys.executable, "-B", "-c", f"print({json.dumps(build_json)!r})"], **kwargs
+            [sys.executable, "-B", "-c", f"print({build_output!r})"], **kwargs
         )
         calls.append(launched.args)
         return launched
@@ -362,7 +364,7 @@ def test_malformed_artifact_shape_is_a_counted_error(
         args = ["--build", str(source)]
     else:
         document = tmp_path / "build.json"
-        document.write_text(json.dumps(build_json), encoding="utf-8")
+        document.write_text(build_output, encoding="utf-8")
         args = [str(document), str(document)]
     monkeypatch.setattr(
         sys, "argv", ["check_reproducible_build.py", *args, "--json-out", str(receipt)]
@@ -379,7 +381,7 @@ def test_malformed_artifact_shape_is_a_counted_error(
     ) == (1, 0, 0, 0, 1)
     if mode == "build":
         result = payload["results"][0]
-        assert "build artifact error" in result["error"]
+        assert "build output: " in result["error"]
         row = result["observations"][0]
         assert len(calls) == 1 and row["build"]["argv"] == calls[0]
         assert row["build"]["status"] == "completed"
@@ -412,7 +414,7 @@ def test_later_build_artifact_failure_retains_completed_child(
         script = (
             "import json; from pathlib import Path; "
             f"Path({str(artifact)!r}).write_bytes(b'fixture'); "
-            f"print(json.dumps({{'output': {str(artifact)!r}}}))"
+            f"print({build_payload_line(str(artifact))!r})"
         )
         launched = real_guard([sys.executable, "-B", "-c", script], **kwargs)
         launches.append(launched.args)
@@ -624,22 +626,6 @@ def test_later_ir_empty_oserror_cannot_pass_or_erase_completed_observation(
         assert retained.is_dir()
 
 
-@pytest.mark.parametrize(
-    ("document", "prefer_object", "expected"),
-    [
-        ({"output": "app"}, False, "app"),
-        ({"data": {"output": "app"}, "status": "ok"}, False, "app"),
-        ({"build": {"binary": "app"}}, False, "app"),
-        ({"output": "app", "artifacts": {"object": "app.o"}}, True, "app.o"),
-        ({"data": {"artifacts": {"object": "app.o"}}}, True, "app.o"),
-    ],
-)
-def test_artifact_parser_preserves_supported_output_shapes(
-    document: object, prefer_object: bool, expected: str
-) -> None:
-    assert reproducibility.extract_artifact_path(document, prefer_object) == expected
-
-
 @pytest.mark.parametrize("audit_ir", [False, True])
 def test_later_batch_source_refusal_retains_prior_real_child_cell(
     tmp_path: Path, monkeypatch, audit_ir: bool
@@ -659,7 +645,7 @@ def test_later_batch_source_refusal_retains_prior_real_child_cell(
             script = (
                 "import json; from pathlib import Path; "
                 f"Path({str(artifact)!r}).write_bytes(b'fixture'); "
-                f"print(json.dumps({{'output': {str(artifact)!r}}}))"
+                f"print({build_payload_line(str(artifact))!r})"
             )
         elif (
             command[:2] == [sys.executable, "-c"]
@@ -750,7 +736,7 @@ def test_post_build_source_admission_belongs_only_to_requested_ir_cell(
         script = (
             "import json; from pathlib import Path; "
             f"Path({str(artifact)!r}).write_bytes(b'fixture'); "
-            f"print(json.dumps({{'output': {str(artifact)!r}}}))"
+            f"print({build_payload_line(str(artifact))!r})"
         )
         launched = real_guard([sys.executable, "-B", "-c", script], **kwargs)
         launches.append(launched.args)
@@ -844,7 +830,7 @@ def test_compare_input_failures_have_one_counted_receiver_without_launch(
     artifact = tmp_path / "artifact"
     artifact.write_bytes(b"fixture")
     document = tmp_path / "build.json"
-    document.write_text(json.dumps({"output": str(artifact)}), encoding="utf-8")
+    document.write_text(build_payload_line(str(artifact)), encoding="utf-8")
     if failure == "json-utf8":
         document.write_bytes(b"\xff")
     receipt = tmp_path / "receipt.json"
