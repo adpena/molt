@@ -1,5 +1,6 @@
 {
   "blast_radius": {
+    "cranelift-object": 2,
     "molt-artifact-publish": 2,
     "molt-backend": 0,
     "molt-backend-luau": 1,

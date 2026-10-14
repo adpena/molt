@@ -31,6 +31,7 @@ None  -  every dependency edge respects the declared layer ordering.
 | 3 | `molt-db` | L0 | molt-cext-discovery, molt-runtime, molt-worker |
 | 3 | `molt-gpu` | L0 | molt-cext-discovery, molt-gpu-runtime, molt-runtime |
 | 3 | `molt-runtime-resource` | L3 | molt-cext-discovery, molt-runtime, molt-wasm-host |
+| 2 | `cranelift-object` | L0 | molt-backend, molt-backend-native |
 | 2 | `molt-artifact-publish` | L0 | molt-backend, molt-wasm-host |
 | 2 | `molt-gpu-runtime` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-lang-cpython-abi` | L2 | molt-cext-discovery, molt-runtime |
@@ -74,7 +75,7 @@ None  -  every dependency edge respects the declared layer ordering.
 
 ## Declared layer map (`runtime/crate_graph.toml`)
 
-- **Layer 0:** `molt-artifact-publish`, `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-launcher`, `molt-runtime-platform`, `molt-runtime-protobuf`, `molt-wasm-facts`
+- **Layer 0:** `cranelift-object`, `molt-artifact-publish`, `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-launcher`, `molt-runtime-platform`, `molt-runtime-protobuf`, `molt-wasm-facts`
 - **Layer 1:** `molt-lang-obj-model`, `molt-passes`, `molt-worker`
 - **Layer 2:** `molt-lang-cpython-abi`, `molt-runtime-core`, `molt-tir`
 - **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-gpu-runtime`, `molt-runtime-asyncio`, `molt-runtime-audit`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-constants`, `molt-runtime-crypto`, `molt-runtime-diagnostics`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-regex`, `molt-runtime-resource`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`, `molt-stdlib-graphlib`, `molt-stdlib-text`
