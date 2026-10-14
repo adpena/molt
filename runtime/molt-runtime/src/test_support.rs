@@ -453,7 +453,8 @@ impl RuntimeTestTransaction {
         let _process_state = process_global_test_state();
         assert!(
             crate::state::runtime_state::runtime_execution_is_admitted_for_current_thread(false),
-            "runtime lifecycle transaction requires a restartable runtime"
+            "runtime lifecycle transaction requires a restartable runtime ({})",
+            crate::state::runtime_state::runtime_lifecycle_test_diagnostic()
         );
         let mut restart =
             (mode == RuntimeTestLifecycleMode::TrustedFresh).then(RuntimeTestRestartCustody::enter);
@@ -1133,9 +1134,11 @@ fn runtime_test_transactions_preserve_terminal_failures() {
                 .map(String::as_str)
                 .or_else(|| rejected.downcast_ref::<&str>().copied())
                 .unwrap_or("");
-            assert_eq!(
-                message,
-                "runtime lifecycle transaction requires a restartable runtime"
+            assert!(
+                message.starts_with(
+                    "runtime lifecycle transaction requires a restartable runtime (phase Failed,"
+                ),
+                "{message}"
             );
             unsafe extern "C" fn forbidden(_: *mut std::ffi::c_void) -> std::os::raw::c_int {
                 panic!("closed queue callback")

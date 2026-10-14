@@ -835,6 +835,34 @@ fn clear_and_drop_extension_slots(slots: Vec<RuntimeExtensionStateSlot>) {
     }
 }
 
+/// The thread that last moved the lifecycle phase, kept for test diagnostics:
+/// a lifecycle test that finds the runtime mid-transition names its owner.
+#[cfg(test)]
+static LIFECYCLE_TRANSITION_THREAD: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+fn note_lifecycle_transition() {
+    let name = thread::current().name().unwrap_or("<unnamed>").to_string();
+    *LIFECYCLE_TRANSITION_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(name);
+}
+
+/// The lifecycle phase and the thread that last moved it.
+#[cfg(test)]
+pub(crate) fn runtime_lifecycle_test_diagnostic() -> String {
+    let phase = *runtime_lifecycle()
+        .phase
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mover = LIFECYCLE_TRANSITION_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_default();
+    format!("phase {phase:?}, last moved by thread '{mover}'")
+}
+
 // `Failed` is terminal after a lifecycle panic caught at a C entrypoint. Abort
 // builds stop at the panic, so that phase exists only in unwind builds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -924,6 +952,8 @@ fn runtime_lifecycle_failed(message: &str) {
         );
         std::process::abort();
     }
+    #[cfg(test)]
+    note_lifecycle_transition();
     *phase = RuntimeLifecyclePhase::Failed;
     lifecycle.phase.clear_poison();
     lifecycle.changed.notify_all();
@@ -1662,6 +1692,8 @@ fn runtime_exit(code_bits: u64) -> u64 {
                         return 0;
                     }
                     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+                    #[cfg(test)]
+                    note_lifecycle_transition();
                     *phase = RuntimeLifecyclePhase::Finalizing { owner, ptr };
                     lifecycle.changed.notify_all();
                     Some(ptr as *mut RuntimeState)
@@ -1691,6 +1723,8 @@ fn runtime_exit(code_bits: u64) -> u64 {
                     ptr: ptr as usize,
                 }
             );
+            #[cfg(test)]
+            note_lifecycle_transition();
             *phase = RuntimeLifecyclePhase::Shutdown;
             lifecycle.changed.notify_all();
         }
@@ -1853,6 +1887,8 @@ fn runtime_init() -> u64 {
                     molt_cpython_abi::api::pending_calls::register_main_thread(owner),
                     "runtime initialization attempted to transfer process-main custody"
                 );
+                #[cfg(test)]
+                note_lifecycle_transition();
                 *phase = RuntimeLifecyclePhase::Initializing { owner };
             }
         }
@@ -1886,6 +1922,8 @@ fn runtime_init() -> u64 {
         );
         let mut phase = lifecycle.phase.lock().unwrap();
         assert_eq!(*phase, RuntimeLifecyclePhase::Initializing { owner });
+        #[cfg(test)]
+        note_lifecycle_transition();
         *phase = RuntimeLifecyclePhase::Ready { ptr: ptr as usize };
         RUNTIME_READY_PTR.store(ptr, AtomicOrdering::Release);
         let previous = RUNTIME_EXECUTION_ADMISSION.swap(0, AtomicOrdering::AcqRel);
@@ -1941,6 +1979,8 @@ fn runtime_shutdown() -> u64 {
         return 0;
     }
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+    #[cfg(test)]
+    note_lifecycle_transition();
     *phase = RuntimeLifecyclePhase::Finalizing {
         owner,
         ptr: ptr as usize,
@@ -1980,6 +2020,8 @@ fn runtime_shutdown() -> u64 {
             ptr: ptr as usize,
         }
     );
+    #[cfg(test)]
+    note_lifecycle_transition();
     *phase = RuntimeLifecyclePhase::Shutdown;
     lifecycle.changed.notify_all();
     1
@@ -2095,6 +2137,8 @@ pub(crate) fn molt_runtime_reset_for_testing() {
         runtime_ready_ptr().is_none(),
         "runtime test reset found a published owner"
     );
+    #[cfg(test)]
+    note_lifecycle_transition();
     *phase = RuntimeLifecyclePhase::Uninitialized;
     lifecycle.changed.notify_all();
     drop(phase);
