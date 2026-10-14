@@ -23,40 +23,53 @@ The gaps are the LOAD-BEARING ones — the passes/substrates that make everythin
 ---
 
 ## TIER 0 — Foundational substrate (everything depends on these; build first)
-These six are absent and are prerequisites cited repeatedly across lanes.
+These dependency families now have live implementations. The June absence
+statements were superseded by the following source inspection on 2026-10-14;
+implementation presence is not completeness or release qualification. Reuse
+these owners, preserve the build order below, and close their actual consumer
+and precision gaps instead of building parallel substrates.
 
-- **S1. Pass + Analysis Manager** (LLVM new-PM/AnalysisManager analog). Today `run_pipeline`
-  (passes/mod.rs:72) is a monolithic linear per-function sequence; dominators are recomputed
-  independently in gvn/licm/verify/verify_lir/bce (~5×/run, O(n²)); no analysis caching, no
-  invalidation, no fixpoint scheduling, no per-function pipeline customization. Build: an analysis
-  context threaded through passes with lazy compute + cache + invalidation; fixpoint outer loop.
-  Unblocks: cheaper compiles + every future pass. Also fixes the redundant-dominator gap.
-- **S2. Unified cost model / TargetTransformInfo**. Every profitability threshold is a magic constant
-  (inline 30 ops, unroll trip≤8, vector width=2, tile=32, LICM register-pressure-blind). Build a
-  shared `TargetInfo` (latencies, vector widths, cache hierarchy, branch-mispredict, call overhead)
-  consulted by all passes. Unblocks: consistent, tunable, target-aware decisions.
-- **S3. Unified effects/alias oracle**. The legacy three-list hazard has been structurally reduced:
-  DCE/LICM consume generated opcode effect/purity facts, and GVN consumes a generated numbering-role
-  table for always-numberable, type-gated, and value-keyed-constant families. Remaining S3 work is the
-  richer per-op memory/effect tag model (`reads/writes-memory[region]`, allocates, exception-flag
-  reads/writes) that can derive load/store and MemorySSA legality without ad-hoc pass predicates.
-  Unblocks: correctness + CSE/LICM/DCE of pure ops; the substrate for S5.
-- **S4. Call graph + whole-program (module) pass phase**. `run_pipeline` is strictly per-function;
-  `TirModule` (function.rs:135) exists but is unused; the driver holds the full set only in SimpleIR
-  (main.rs:~449, wasm.rs:~2155). Build `run_module_pipeline(&mut TirModule)` + a call graph (the DFE
-  BFS at cli.py:17019 already builds one — factor it out). Unblocks: the ENTIRE IPO tier (inliner,
-  IPSCCP, IP-escape, monomorphization, CHA, purity inference). The single biggest architectural unlock.
-- **S5. Alias analysis + Memory SSA**. NO first-class alias analysis (4 ad-hoc barrier lists); NO
-  memory versioning → no store-to-load forwarding, no redundant-load elim, LICM can't hoist loads
-  (licm.rs:51 excludes LoadAttr), GVN can't dedup loads, cross-block DSE impossible (dead_store_elim.rs:50
-  documents the limit). Build alias analysis (points-to + region/TBAA-style) then MemorySSA (memory phis
-  via the existing dominance-frontier machinery). Unblocks: SROA on heap, redundant-load elim,
-  cross-block DSE, LICM-of-loads, CoroElide. The memory-opt keystone (Julia's allocation-elision engine).
-- **S6. Value-range / ScalarEvolution / LazyValueInfo**. NO closed-form recurrence (SCEV) → no
-  trip-count for dynamic bounds, no IV strength reduction, no general BCE, no polyhedral; NO interval/
-  range analysis (LVI) → BCE limited to range()/BuildList, the MaybeBigInt→RawI64Safe promotion can't
-  prove 47-bit fit. Build a SCEV-style recurrence representation + a per-edge RangeFact lattice from
-  guards+IVs. Unblocks: general BCE, IV strength reduction, loop transforms, Repr Phase 2 promotion.
+- **S1. Pass + Analysis Manager.** `molt-passes/src/tir/pass_manager.rs` owns
+  pass order and mutation classes; `analysis/mod.rs` owns lazy analyses with
+  CFG/operation invalidation. Main and terminal-drop pipelines consume it.
+  `MOLT_VERIFY_ANALYSIS` compares cached analyses with fresh recomputation.
+  Arbitrary fixpoint scheduling and every consumer's preservation claim still
+  require their own evidence.
+- **S2. Unified cost model / TargetTransformInfo.**
+  `molt-ir/src/tir/target_info.rs` owns typed capabilities, lowering policy,
+  costs and profiles; the pass manager/inliner consume it and cache identity
+  includes its target contract. Remaining work is measured calibration and
+  consistent profitability through actual consumers and supported cells.
+- **S3. Unified effects/alias oracle.** `op_kinds.toml` generates operation
+  facts; `op_semantics.rs` supplies instance-sensitive semantics and
+  `molt-passes/src/tir/passes/effects.rs` supplies optimizer legality.
+  Callback, exception, memory-region and reference-release effects remain
+  distinct. Preserved Copy spellings and scalar annotations do not establish
+  purity, exact type, or reference-count neutrality.
+- **S4. Call graph + whole-program module phase.** `call_graph.rs`, call
+  facts/sites and `module_phase.rs` feed inlining, generator fusion and module
+  promotion through `pipeline_cache.rs`. Address-taken functions, initializer
+  roots and cross-batch declarations must retain their existing custody;
+  they are not equivalent to ordinary direct-call edges.
+- **S5. Alias analysis + MemorySSA.** `passes/alias_analysis/` and
+  `passes/memory_ssa/` are live, including memory defs/uses/phis over implicit
+  exception edges. Memory GVN, dead-store elimination and SROA consume the
+  shared AnalysisManager. Generic heap operations remain conservative;
+  broader precision requires site-specific alias, escape and ownership proof.
+- **S6. Value ranges / ScalarEvolution.** `passes/scev/`, `value_range/` and
+  shared representation range queries are live. Unsupported recurrences remain
+  Unknown. Python integer exactness does not establish a raw machine carrier;
+  inline-window, full-i64, overflow and boxed-BigInt contracts remain explicit.
+
+The current compounding bottleneck is final-fact custody: LLVM consumes owned
+final TIR, while native/WASM discard it and later reconstruct facts from
+rewritten SimpleIR. Native's copy-alias, split-field and direct-raise rewrites
+must join the final typed transformation/projection owner before codegen can
+reuse its representation and ownership facts. Every normal, skip and batch
+consumer must migrate together, then the replaced reconstruction is deleted.
+This extends [Century section 4.4](CENTURY_SYSTEMS_PLAN.md#44-compiler-runtime-abi-and-backends);
+[the IR contract](../spec/areas/compiler/0100_MOLT_IR.md) owns the current transport
+and [the findings ledger](../agent/V1_HANDOFF_FINDINGS.md) owns release status.
 
 ---
 

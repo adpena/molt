@@ -254,3 +254,24 @@ def test_push_uses_validated_commit_when_local_head_advances_during_check(
     assert result.returncode == 0, result.stdout + result.stderr
     assert _git(work, "rev-parse", "HEAD") == advanced
     assert _git(work, "rev-parse", "origin/main") == validated
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_foreign_push_rejection_reports_original_diagnostic(
+    work: Path, stream: str
+) -> None:
+    _init_commit(work, "complete.txt")
+    before = _git(work, "rev-parse", "origin/main")
+    hook = work / ".git" / "hooks" / "pre-push"
+    redirect = "" if stream == "stdout" else " >&2"
+    hook.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' 'FOREIGN POLICY: review ticket missing'{redirect}\nexit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    result = _run(work)
+    assert result.returncode == 1
+    assert "FOREIGN POLICY: review ticket missing" in result.stdout
+    assert "failed to push some refs" in result.stdout
+    assert _git(work, "rev-parse", "origin/main") == before
+    assert hook.read_text().endswith("exit 1\n")

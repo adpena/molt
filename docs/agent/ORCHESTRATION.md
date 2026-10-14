@@ -87,26 +87,20 @@ a ledger finding is open.
 4. **PROFILE BEFORE OPTIMIZING.** State the hot path + Big-O and attest a
    before/after delta for any perf/build change (tools/dx_build_timer.py,
    tools/build_graph_audit.py). No optimizing by feel.
-5. **DRIFT DISCIPLINE (P0, RECURRING — NOW GATED).** Worktree/branch accumulation
-   is POISON and terrible OSS hygiene (it once reached ~130 worktrees plus a
-   165-branch OneDrive `.git`). LAND your signal onto main and
-   DELETE your worktree+branch when a lane finishes — do not leave it. Install the
-   managed hooks once per clone: **`python tools/install_git_hooks.py`** (idempotent;
-   wires the drift gate into `.git/hooks/pre-push` and the attribution policy into
-   `.git/hooks/commit-msg` — NOT `core.hooksPath`, which would also enable the
-   pre-commit type-check and block every commit; preserves+chains foreign hooks;
-   `--check` for CI). The drift gate runs `--no-fetch` in ~3 s on every push. Every session also
-   run **`python tools/drift_harvest.py --gate`** — it FAILS (exit 1) on SPRAWL
-   (>24 live worktrees) or STALE-SIGNAL (a SIGNAL worktree whose unlanded unique
-   commits are older than 72 h). A red gate is a blocker: harvest + prune before new
-   work. To harvest: DON'T trust `git cherry` (patch-id false-positives flag
-   already-landed work as unique) — use 3-way `git merge`/`git merge-tree` against
-   current origin/main to see the GENUINE unlanded delta, land it surgically
-   (per-commit or squashed, regenerate generated files from source, queue-verify
-   the build/tests), then `python tools/drift_harvest.py --prune`. Do NOT hoard
-   bundles/backups as a substitute for landing: harvest the real signal onto main,
-   verify, then delete. Keep worktrees short-lived; rebase often. If a worktree
-   vanishes it was SUPERSEDED (on main) — zero loss; do not re-create it.
+5. **DRIFT DISCIPLINE.** Land each complete change and retire its worktree when
+   the owner confirms its work is preserved. Use
+   `python tools/drift_harvest.py --report` for explicit maintenance; reconcile
+   actual unlanded changes before any requested prune. Preserve active and
+   unrelated WIP. Worktree age, counts,
+   and other checkouts' state do not block an independently complete landing.
+   Install managed hooks with **`python tools/install_git_hooks.py`**. The installer
+   retains the commit-attribution hook and retires the obsolete Molt pre-push
+   hook, restoring preserved foreign hooks; `--check` verifies this state. It
+   uses the common Git hooks directory, without enabling `core.hooksPath` or the
+   unrelated pre-commit type-check. `tools/ff_land.py` validates the exact commit
+   selected for a fast-forward push, while canonical CI checks generated
+   projections. Explicit proof-plan tiers remain available. Molt installs no
+   global hygiene or live-working-tree generator gate at push time.
 6. **REVIEW FINDINGS ARE LANES.** The 2026-07-08 full-stack adversarial review
    recorded **26 CONFIRMED** findings (bug classes / metabugs / optimizations), each
    independently refuted-then-survived, in
