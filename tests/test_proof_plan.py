@@ -3159,8 +3159,13 @@ def _successful_synthetic_record(
 def test_executor_hashes_declared_evidence_and_rejects_zero_work(
     tmp_path: Path, monkeypatch
 ) -> None:
-    relative = f"proof-results/tests/{tmp_path.name}/result.json"
-    output = proof_plan.ROOT / relative
+    # Declared evidence is checkout-relative. Resolve it in the test's own
+    # directory, so concurrent sessions never see the checkout change.
+    monkeypatch.setattr(
+        proof_plan, "_evidence_path", lambda relative: tmp_path / relative
+    )
+    relative = "proof-results/tests/result.json"
+    output = tmp_path / relative
     producer = _synthetic_executor_command("synthetic.evidence")
     producer = replace(
         producer,
@@ -3183,45 +3188,30 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
         "toolchain_fingerprints",
         lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
     )
-    try:
-        receipt_path = tmp_path / "receipt.json"
-        assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
-        record = json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0]
-        assert record["declared_evidence_outputs"] == [relative]
-        assert record["evidence_outputs"][0]["path"] == relative
-        assert record["evidence_outputs"][0]["total_size_bytes"] > 0
+    receipt_path = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
+    record = json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0]
+    assert record["declared_evidence_outputs"] == [relative]
+    assert record["evidence_outputs"][0]["path"] == relative
+    assert record["evidence_outputs"][0]["total_size_bytes"] > 0
 
-        missing = replace(
-            producer,
-            id="synthetic.missing-evidence",
-            data={
-                **producer.data,
-                "id": "synthetic.missing-evidence",
-                "argv": [sys.executable, "-c", "pass"],
-            },
-        )
-        missing_plan = _synthetic_executor_plan((missing,), limits={"resource-a": 1})
-        missing_receipt = tmp_path / "missing.json"
-        assert (
-            proof_plan.execute_commands(missing_plan, (missing,), missing_receipt) == 2
-        )
-        missing_record = json.loads(missing_receipt.read_text(encoding="utf-8"))[
-            "commands"
-        ][0]
-        assert missing_record["status"] == "failure"
-        assert "evidence output is missing" in missing_record["evidence_error"]
-    finally:
-        proof_plan._clear_evidence_outputs(producer)
-        # Declared evidence is checkout-relative by design; leave the checkout
-        # as the session found it (HF-135). rmdir refuses a non-empty parent,
-        # so a parallel test's evidence stays.
-        for directory in (output.parent, *output.parent.parents):
-            if directory == proof_plan.ROOT:
-                break
-            try:
-                directory.rmdir()
-            except OSError:
-                break
+    missing = replace(
+        producer,
+        id="synthetic.missing-evidence",
+        data={
+            **producer.data,
+            "id": "synthetic.missing-evidence",
+            "argv": [sys.executable, "-c", "pass"],
+        },
+    )
+    missing_plan = _synthetic_executor_plan((missing,), limits={"resource-a": 1})
+    missing_receipt = tmp_path / "missing.json"
+    assert proof_plan.execute_commands(missing_plan, (missing,), missing_receipt) == 2
+    missing_record = json.loads(missing_receipt.read_text(encoding="utf-8"))[
+        "commands"
+    ][0]
+    assert missing_record["status"] == "failure"
+    assert "evidence output is missing" in missing_record["evidence_error"]
 
 
 def test_executor_schedules_dependencies_and_resources_with_deterministic_receipts(

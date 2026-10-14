@@ -328,9 +328,14 @@ def test_resolved_compiler_profile_features_preserved():
     )
 
 
-def abi_compiler_fixture(source_root: Path, features: list[str]):
+def abi_compiler_fixture(
+    source_root: Path, features: list[str], *, artifact_root: Path | None = None
+):
     # Cargo metadata and compiler-artifact are independent structured inputs.
     # The library carries no executable, so executable-only discovery misses it.
+    # Identity names the source root; the library files live in the test's own
+    # directory, never in a checkout's target/.
+    library_dir = (artifact_root or source_root) / "target" / "deps"
     manifest = source_root / "runtime/molt-cpython-abi/Cargo.toml"
     package_id = f"path+{manifest.parent.as_uri()}#molt-lang-cpython-abi@0.1.0"
     target = {
@@ -366,8 +371,8 @@ def abi_compiler_fixture(source_root: Path, features: list[str]):
         "profile": {"test": False, "debug_assertions": False, "opt_level": "3"},
         "features": features,
         "filenames": [
-            str(source_root / "target/deps/libmolt_cpython_abi-fixture.rlib"),
-            str(source_root / "target/deps/libmolt_cpython_abi-fixture.dylib"),
+            str(library_dir / "libmolt_cpython_abi-fixture.rlib"),
+            str(library_dir / "libmolt_cpython_abi-fixture.dylib"),
         ],
         "executable": None,
         "fresh": True,
@@ -816,7 +821,9 @@ def test_observer_builds_once_and_requires_isolated_source_bound_controls(
     images = {name: support.make_image(tmp_path / name) for name in OBSERVER_WITNESSES}
     package_id = "path+file:///runtime#molt-runtime@0.1.0"
     metadata, abi_artifact = abi_compiler_fixture(
-        gate.ROOT, ["allocation-observer", "l7-attestation-core"]
+        gate.ROOT,
+        ["allocation-observer", "l7-attestation-core"],
+        artifact_root=tmp_path,
     )
     metadata["packages"].append(
         {"id": package_id, "name": "molt-runtime", "version": "0.1.0"}
@@ -1097,7 +1104,9 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     native = support.make_image(tmp_path / "host")
     production_host = support.make_image(tmp_path / "molt-wasm-host")
     host = "aarch64-unknown-linux-gnu"
-    metadata, abi_artifact = abi_compiler_fixture(gate.ROOT, ["l7-attestation-core"])
+    metadata, abi_artifact = abi_compiler_fixture(
+        gate.ROOT, ["l7-attestation-core"], artifact_root=tmp_path
+    )
     metadata["packages"].extend(
         [
             {
