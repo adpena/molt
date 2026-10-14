@@ -6,31 +6,49 @@ HF-198.
 
 ## Finding
 
-Two structural boundaries set Molt's performance, binary-size and compile-time
-ceiling. Missing passes do not: the Tier-0 analysis substrate (S1-S6 in
-`00_integrated_parallel_program.md`) has landed, but its facts do not reach
-codegen intact, and compiled code pays a full runtime re-entry for each dynamic
-operation.
+Two structural boundaries constrain performance, binary size and compile time.
+The existing Tier-0 analysis owners must converge through them, rather than be
+reimplemented. [Century section 4.4](../CENTURY_SYSTEMS_PLAN.md#44-compiler-runtime-abi-and-backends)
+owns the governing invariant; this document specifies its compiler/runtime
+migration. The findings ledger remains the only release-status index.
 
-**The IR boundary.** Native, WASM op_loop, Luau and Rust generate code from
-SimpleIR. TIR, where the optimizer works, is lowered back by `lower_to_simple`
-(10,131 lines) and re-lifted at 27 sites. 387 of 570 op kinds (68%) survive TIR
-only as `Copy` plus a string `_original_kind`. `representation_plan.rs`
-re-lifts and re-runs the whole pipeline per function per backend, and maps its
-facts back by variable name (a recorded `_v43` collision demoted a value to the
-boxed lane). Three optimizers (the Python midend, the doc-76 SimpleIR pipeline
-and TIR) repeat constant folding, DCE and exception-check elimination.
-`OpIR` has 35 fields whose meaning depends on the kind; TIR attributes are a
-string-keyed map read through 815 literal keys.
+**The IR boundary.** Native, WASM op_loop, Luau and Rust still generate code
+from SimpleIR. LLVM already consumes owned final TIR. A pre-migration source
+census at `cff0ccf03` found 35 OpIR fields and 11 direct production lift callsites,
+with additional invocation through wrappers. Of 570 registered wire names,
+409 preserve Copy plus `_original_kind`; this is vocabulary cardinality, not a
+dynamic operation mix. Original-kind consumers must migrate with the generated
+schema, not lose their effect/ownership meaning during enum conversion.
 
-**The runtime boundary.** Runtime entry costs 32% of a call-heavy loop and
-`_tlv_get_addr` alone 19%, because each entry reads several of 96 thread-local
-statics (HF-198). Each refcount change is an out-of-line call that also enters
-the runtime (HF-205). Runtime calls are indirect (`adrp`+`add`+`blr`).
-Satellite crates re-enter through four untyped symbol mechanisms (HF-206).
-Builtin calls in loops run 3-15x slower than CPython 3.12: `round` 395-422 ns
-against 138-154, `math.trunc` 554-578 against 32-40, `pow(i, 3, m)` 314-333
-against 51-56, `enumerate` 215-231 ns per element against 17.6.
+Native/WASM discard final typed bodies and later reconstruct facts from changed
+SimpleIR. The representation owner already shares demanded range/carrier work
+and skips an unused secondary optimizer for cold functions. Its remaining
+native reconstruction cannot simply reuse earlier facts: copy-alias,
+split-field, direct-raise and downstream reachability transforms change the
+input. Final typed transforms, exact projection and every normal/skip/batch
+consumer must move together. Facts stay on SSA values; transient source names
+are a projection with explicit ambiguity rules, not a new semantic authority.
+Overlap between Python, SimpleIR and TIR passes requires semantic retirement
+proof through actual callers, not deletion because pass names match.
+
+**The runtime boundary.** Compiled native main already establishes persistent
+execution custody; WASM and the public C hooks also have explicit entry/leave
+contracts. Nested runtime entry avoids a second global lease but still performs
+TLS/depth work. Some satellite helpers discard an existing token and re-enter
+private callbacks. Core GIL proof, runtime attachment and callable context are
+distinct; a zero-sized CoreGilToken cannot license an unowned RuntimeState
+pointer. Owner-bound immutable views are a correctness prerequisite before
+context transport spreads. Tk's bytes/bytearray conversion must follow CPython's
+actual AsObj policy, not infer a new fast path from a mistaken type branch.
+
+The exploratory runtime-entry/TLS percentages, indirect-call observations and
+builtin timings in HF-198/HF-205 are leads from their recorded source/workloads.
+They do not establish current-image attribution or universal multipliers. Select
+one exact-image workload for the changed boundary and retain source, image,
+feature/profile, samples and independent output before choosing or claiming its
+optimization. The source-proven serial RuntimeVtable is the first complete
+admitted-service aperture; other bridges and public C RuntimeHooks have distinct
+feature, attachment and ABI obligations.
 
 **Identity by spelling.** Op kinds, exception classes, class layouts and
 decorators are identified by strings. Each has produced a defect: stale
@@ -63,6 +81,17 @@ transform (HF-203).
 - **Typed identity.** CPython raises class objects, not names; mypyc resolves
   decorators to full names before it specializes them.
 
+Primary mechanism references:
+[MLIR dialect conversion](https://mlir.llvm.org/docs/DialectConversion/)
+for explicit legal transformations and type conversion;
+[LLVM's analysis manager](https://llvm.org/docs/NewPassManager.html)
+for cached analyses and preservation/invalidation;
+[Cranelift IR](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md)
+for explicit SSA/block arguments; and
+[CPython's buffer protocol](https://docs.python.org/3/c-api/buffer.html)
+for owner-backed views and balanced release. These are design references,
+not evidence that Molt's migration or a target cell is complete.
+
 ## Target architecture
 
 ### A. One op definition
@@ -94,8 +123,11 @@ runtime context read once per entry, then passed from compiled code (HF-198).
 Refcount, inline-cache guards and type tests have inline fast paths generated
 from `molt-codegen-abi` facts; the runtime is called only for slow paths
 (HF-205). Runtime imports are direct calls when the link plan is static. A
-guarded builtin lowers to a direct runtime call. Satellite crates use one
-generated `#[repr(C)]` `RuntimeApi` table carried by the GIL token (HF-206).
+guarded builtin lowers to a direct runtime call. Satellite services consume a generated typed API within the existing
+execution/core ownership boundary. Migrate the complete current service family
+and its publication/feature closure before deleting its wrappers. Preserve the
+separate public C attachment/error contract until its own complete migration;
+a GIL token alone is not execution or object-lifetime custody.
 Exceptions are raised by generated class handles (HF-207). Native object state
 lives in typed layouts with drop and traverse, not global handle maps (HF-208).
 The C-API keeps one error slot and O(1) object views (HF-209).
@@ -109,10 +141,14 @@ struct, not process environment (HF-211).
 
 ### E. Verification that matches the claim
 
-Every test file runs in a proof cell (HF-212). Rust tests run process-per-test
-under nextest; fuzzing, TSan, Miri and Kani cover the shipped code; a per-merge
-instruction-count row guards performance (HF-210). Each source scraper is
-deleted when its fact is generated or type-checked (HF-211).
+Every shipped contract has meaningful tests in its claimed proof cells
+(HF-212). Isolate process-global runtime tests using the existing child/nextest
+custody; pure compiler tests do not acquire runtime isolation costs by default.
+Fuzzing, TSan, Miri and Kani exercise actual shipped owners where applicable.
+Performance regression checks select reproducible affected workloads and reuse
+input-bound evidence; counts, blanket reruns and unmeasured gates do not prove a
+contract. Source scrapers retire only when generated types enforce the same
+producer/consumer invariant (HF-211).
 
 ### F. Build and artifact
 
@@ -135,20 +171,30 @@ input digest (HF-190, HF-211).
 
 Each step is a complete migration of one contract, measured before and after.
 
-1. **Gates first.** The op-kind census (HF-197 stage 1, landed with this doc),
-   proof-cell ownership for every test file, and the per-merge perf row.
-2. **Runtime boundary (C).** It is the largest measured cost and is independent
-   of the IR work: the per-thread context, inline refcount, direct runtime
-   calls, then guarded builtins as direct calls. Gate: the builtin probe at or
-   below CPython 3.12.
-3. **Typed identity fixes (D).** The reproduced miscompiles (HF-203, HF-207,
-   HF-213) close first because they are wrong answers.
-4. **Wire census and dead kinds (A, HF-197 stage 2), then per-kind registry
-   rows and the generated `OpKind` (stages 3-4).**
-5. **Backends onto LIR (B).** Start with the representation plan keyed by
-   `ValueId`; move native, then WASM op_loop, Luau and Rust; delete
-   `lower_to_simple` and the doc-76 passes as their families move.
-6. **Typed runtime API, object layouts and C-API (C).**
+1. **Correctness and custody.** Close reproduced wrong answers, unsafe views
+   and producer/consumer drift through the existing owners. Reuse the landed
+   op-kind producer census; every subsequent deletion migrates its real family.
+2. **Final typed native facts (B).** Move post-TIR semantic rewrites under the
+   typed final owner, migrate all codegen entry paths, and delete native plan
+   reconstruction. Preserve LLVM's direct typed custody. Then migrate WASM's
+   operation-reachability boundary and the genuine source backends.
+3. **Measured runtime entry (C).** Profile one actual current-image consumer.
+   Migrate its complete admitted-service/context family while preserving
+   callbacks, isolate changes, shutdown, error and ownership contracts. Choose
+   direct calls and inline fast paths from typed link/capability/lifetime facts;
+   do not assume a blanket boundary replacement removes every measured cost.
+4. **Generated closed vocabulary and typed identity (A/D).** Continue op-kind
+   census, operand/property/type generation and binding identities through all
+   actual consumers, deleting each replaced spelling-based authority together.
+5. **Feature/artifact and ecosystem closure (C/F).** Reachability selects real
+   feature crates without stubs. C-API errors/views and package/extension custody
+   consume the same lifetime and identity authorities, with actual support-cell
+   evidence. Development proof reuse remains outside emitted binaries.
+
+Independent complete families can land concurrently; these dependencies do not
+hold one proven repair behind an unrelated open finding. Checks validate the
+exact committed inputs and reuse qualified unchanged evidence. Build each
+necessary compatible graph once, then execute its affected consumer images.
 
 The live finding rows in `docs/agent/V1_HANDOFF_FINDINGS.md` own the status of
 each step. This document owns the design and changes only when the design does.
