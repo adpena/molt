@@ -14,6 +14,84 @@ pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
     pub(in crate::native_backend::simple_backend) leaf_functions: BTreeSet<String>,
 }
 
+/// A required, one-consumer projection of final typed function custody.
+/// Entries cover every local function, including bodies that cannot certify a
+/// leaf. This is never serialized into early/cross-batch module context.
+#[cfg(feature = "native-backend")]
+#[derive(Default)]
+pub(in crate::native_backend::simple_backend) struct NativeFinalCallbacks {
+    eligibility: BTreeMap<String, NativeLeafEligibility>,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeLeafEligibility {
+    Unfinalized,
+    Callback,
+    Leaf,
+}
+
+#[cfg(feature = "native-backend")]
+impl NativeFinalCallbacks {
+    pub(in crate::native_backend::simple_backend) fn record(
+        &mut self,
+        function: &crate::tir::TirFunction,
+    ) {
+        let finalized = matches!(
+            function
+                .attrs
+                .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+            Some(crate::tir::ops::AttrValue::Bool(true)),
+        );
+        let eligibility = if !finalized {
+            // Legacy cleanup can still mint finalizer calls. Exception-only
+            // drop authority does not certify a function's complete lifetime.
+            NativeLeafEligibility::Unfinalized
+        } else if crate::tir::call_sites::FunctionCallSites::for_function(function)
+            .may_call_python()
+        {
+            NativeLeafEligibility::Callback
+        } else {
+            NativeLeafEligibility::Leaf
+        };
+        assert!(
+            self.eligibility
+                .insert(function.name.clone(), eligibility)
+                .is_none(),
+            "native final callback custody produced duplicate function '{}'",
+            function.name,
+        );
+    }
+
+    fn into_leaf_functions(mut self, functions: &[FunctionIR]) -> BTreeSet<String> {
+        let mut leaves = BTreeSet::new();
+        for function in functions.iter().filter(|function| !function.is_extern) {
+            let eligibility = self.eligibility.remove(&function.name).unwrap_or_else(|| {
+                panic!(
+                    "native final callback custody is missing local function '{}'",
+                    function.name,
+                )
+            });
+            let finalized = function
+                .ops
+                .iter()
+                .any(|op| op.kind == crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
+            assert_eq!(
+                eligibility != NativeLeafEligibility::Unfinalized,
+                finalized,
+                "native final callback custody disagrees with final lifetime authority for '{}'",
+                function.name,
+            );
+            if eligibility == NativeLeafEligibility::Leaf {
+                leaves.insert(function.name.clone());
+            }
+        }
+        // DFE and shared-stdlib externalization may retire local bodies after
+        // their projection. Their facts die here and never certify an extern.
+        leaves
+    }
+}
+
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct NativeFunctionLinkageAbi {
@@ -285,6 +363,7 @@ impl NativeBackendModuleContext {
 pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
     ir: &SimpleIR,
     mut callable_metadata: molt_tir::trampolines::CallableMetadata,
+    final_callbacks: NativeFinalCallbacks,
 ) -> NativeBackendIrAnalysis {
     let functions = &ir.functions;
     let defined_functions: BTreeSet<String> = functions
@@ -304,15 +383,10 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
     let task_kinds = callable_metadata.task_kinds;
     let task_closure_sizes = callable_metadata.task_closure_sizes;
 
-    // Detect leaf functions via the whole-program TIR call graph (Tier-0 S4).
-    // A leaf makes no call of any kind and therefore cannot recurse, so call
-    // sites targeting it may skip the recursion guard. The TIR call graph is
-    // strictly more precise than the former raw-SimpleIR "has no call op" scan
-    // (TIR DCE / devirtualization may have removed calls the raw IR still
-    // carried), and it conservatively treats dynamic dispatch (`CallMethod`) and
-    // indirect/opaque calls as recursion-capable  never marking a function that
-    // retains a call as a leaf. See `tir::call_graph` and `tir::module_phase`.
-    let leaf_functions = compute_leaf_functions_via_call_graph(functions);
+    // Typed callback facts were streamed from final lifetime custody before
+    // back-conversion. The final SimpleIR rewrites preserve callback eligibility;
+    // consume only the surviving local function identities here.
+    let leaf_functions = final_callbacks.into_leaf_functions(functions);
     if !leaf_functions.is_empty() {
         eprintln!(
             "MOLT_BACKEND: final-body leaf functions (skip recursion guard): {} detected",
@@ -327,66 +401,6 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
         task_closure_sizes,
         leaf_functions,
     }
-}
-
-/// Compute the leaf-function set over the whole-program TIR call graph
-/// (Tier-0 S4). Lifts the SimpleIR `functions` to a [`crate::tir::TirModule`]
-/// and returns the leaf set of its [`crate::tir::CallGraph`]. The transient
-/// `TirModule` is dropped as soon as the leaf set is extracted, so peak
-/// additional memory is one whole-program TIR lift (the same function set
-/// already held as `FunctionIR`), not a retained copy.
-///
-/// ## Why this builds the call graph directly, NOT via `run_module_pipeline`
-///
-/// `run_module_pipeline` runs the **E1 inliner** (a body transform) and already
-/// ran earlier in `compile`  the `FunctionIR`s analyzed HERE are the
-/// post-inline, post-lifetime-finalization, post-`split_megafunctions` program. The leaf set gates the
-/// recursion-guard skip at call sites in the *emitted* code, so it must
-/// describe exactly this final function set (megafunction chunk functions
-/// included), which a graph built before lifetime finalization cannot. Re-running the full
-/// module pipeline here would re-inline; a plain `CallGraph::build` over the
-/// final bodies is the sound leaf authority.
-///
-/// Extern functions (bodies in `stdlib_shared.o`) carry no ops here; they lift
-/// to call-free TIR and would appear "leaf", but the leaf set only gates the
-/// recursion-guard skip at *direct* call sites to *defined* functions, so an
-/// extern entry is harmless. We exclude them to keep the set identity-equal to
-/// the set of real local function bodies.
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn compute_leaf_functions_via_call_graph(
-    functions: &[FunctionIR],
-) -> BTreeSet<String> {
-    let tir_functions: Vec<crate::tir::TirFunction> = functions
-        .iter()
-        .filter(|f| !f.is_extern)
-        .map(crate::tir::lower_from_simple::lower_to_tir)
-        .collect();
-    compute_leaf_functions_from_tir(tir_functions)
-}
-
-#[cfg(feature = "native-backend")]
-fn compute_leaf_functions_from_tir(
-    tir_functions: Vec<crate::tir::TirFunction>,
-) -> BTreeSet<String> {
-    // A TIR callback graph cannot see releases later minted by legacy native
-    // value tracking. Only the full lifetime-finalization fact disables that
-    // competing authority (including line/branch/return cleanup). The narrower
-    // exception-region marker does not qualify. Unfinalized bodies keep guards.
-    let module = crate::tir::TirModule {
-        name: "native_leaf_analysis".to_string(),
-        functions: tir_functions
-            .into_iter()
-            .filter(|function| {
-                matches!(
-                    function
-                        .attrs
-                        .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
-                    Some(crate::tir::ops::AttrValue::Bool(true)),
-                )
-            })
-            .collect(),
-    };
-    crate::tir::CallGraph::build(&module).leaf_functions()
 }
 
 pub(crate) fn parse_truthy_env(raw: &str) -> bool {

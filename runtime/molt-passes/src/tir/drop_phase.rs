@@ -277,6 +277,7 @@ pub fn finalize_simple_ir_drops(functions: &mut [crate::ir::FunctionIR], tti: &T
         functions,
         tti,
         &mut std::collections::BTreeMap::new(),
+        |_| {},
     );
 }
 
@@ -290,6 +291,7 @@ pub fn finalize_simple_ir_drops_with_tir_custody(
     functions: &mut [crate::ir::FunctionIR],
     tti: &TargetInfo,
     optimized_tir_by_name: &mut std::collections::BTreeMap<String, TirFunction>,
+    mut consume_final_tir: impl FnMut(&TirFunction),
 ) {
     for func_ir in functions.iter_mut() {
         if func_ir.is_extern {
@@ -303,7 +305,11 @@ pub fn finalize_simple_ir_drops_with_tir_custody(
         // The function arriving here already went through the per-function pipeline
         // (its SimpleIR is the optimized output), so it is NOT yet drop-inserted —
         // its debug_assert verifies that.
-        if finalize_function_drops(&mut tir_func, tti) {
+        let changed = finalize_function_drops(&mut tir_func, tti);
+        // Required consumer seam: final typed facts are projected while this
+        // body's custody still exists, before its SimpleIR bridge consumes it.
+        consume_final_tir(&tir_func);
+        if changed {
             assert_eq!(
                 func_ir.return_abi, tir_func.return_abi,
                 "terminal drops must preserve the authored function return ABI"
@@ -484,12 +490,22 @@ mod tests {
 
         let mut custody = std::collections::BTreeMap::new();
         custody.insert("custody".into(), tir);
+        let mut consumed = Vec::new();
         finalize_simple_ir_drops_with_tir_custody(
             &mut funcs,
             &TargetInfo::native_release_fast(),
             &mut custody,
+            |function| {
+                assert_eq!(
+                    function.attrs.get(DROP_INSERTED_ATTR),
+                    Some(&AttrValue::Bool(true)),
+                    "consumer must observe final lifetime authority"
+                );
+                consumed.push(function.name.clone());
+            },
         );
 
+        assert_eq!(consumed, ["custody"]);
         assert!(custody.is_empty());
         assert!(
             funcs[0]

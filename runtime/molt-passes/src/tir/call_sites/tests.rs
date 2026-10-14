@@ -98,6 +98,7 @@ fn dynamic_protocol_families_are_callbacks_despite_scalar_annotations() {
         let args: Vec<_> = (0..arity).map(|i| ValueId(i % 2)).collect();
         let site = append(&mut func, op(opcode, &args, &output));
         let sites = FunctionCallSites::for_function(&func);
+        assert!(sites.may_call_python(), "{opcode:?}");
         assert_eq!(
             sites.at(site).unwrap().target,
             CallSiteTarget::Opaque,
@@ -155,6 +156,10 @@ fn exact_scalar_operations_and_releases_keep_leaf_precision() {
         let site = append(&mut func, op(opcode, &[a, b][..arity], &results));
         assert!(
             FunctionCallSites::for_function(&func).at(site).is_none(),
+            "{opcode:?}"
+        );
+        assert!(
+            !FunctionCallSites::for_function(&func).may_call_python(),
             "{opcode:?}"
         );
         let graph = CallGraph::build(&TirModule {
@@ -225,6 +230,11 @@ fn polls_and_unknown_preserved_ops_fail_closed_but_inert_primitives_do_not() {
             callback,
             "{kind}"
         );
+        assert_eq!(
+            FunctionCallSites::for_function(&func).may_call_python(),
+            callback,
+            "{kind}"
+        );
     }
     let mut func = function();
     let ordinary = append(&mut func, op(OpCode::CheckException, &[], &[]));
@@ -291,6 +301,10 @@ fn conditional_terminators_share_the_exact_truthiness_oracle() {
                 .is_some(),
             !known_scalar
         );
+        assert_eq!(
+            FunctionCallSites::for_function(&func).may_call_python(),
+            !known_scalar
+        );
         let graph = CallGraph::build(&TirModule {
             name: "m".into(),
             functions: vec![func],
@@ -355,4 +369,34 @@ fn checked_boxed_callbacks_can_capture_operands() {
             crate::tir::passes::escape_analysis::EscapeState::GlobalEscape
         );
     }
+}
+
+#[test]
+fn fixed_gpu_primitive_is_a_site_without_a_python_callback() {
+    let mut func = function();
+    let result = func.fresh_value();
+    let mut gpu = op(OpCode::Call, &[], &[result]);
+    gpu.attrs.insert(
+        "s_value".into(),
+        AttrValue::Str("molt_gpu_thread_id".into()),
+    );
+    gpu.attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("gpu_thread_id".into()),
+    );
+    let position = append(&mut func, gpu);
+    let sites = FunctionCallSites::for_function(&func);
+    assert_eq!(
+        sites.at(position).unwrap().target,
+        CallSiteTarget::RuntimePrimitive
+    );
+    assert!(!sites.may_call_python());
+    assert!(
+        CallGraph::build(&TirModule {
+            name: "m".into(),
+            functions: vec![func]
+        })
+        .leaf_functions()
+        .contains("callback")
+    );
 }

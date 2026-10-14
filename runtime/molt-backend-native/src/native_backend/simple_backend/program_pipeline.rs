@@ -1,4 +1,5 @@
 use super::*;
+use crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage;
 use molt_tir::ir_rewrites::{
     elide_useless_try_blocks_for_function, rewrite_copy_aliases, rewrite_phi_to_store_load,
 };
@@ -11,6 +12,7 @@ pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
     pub(in crate::native_backend::simple_backend) app_callable_manifest: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) source_callables:
         molt_tir::trampolines::CallableMetadata,
+    pub(in crate::native_backend::simple_backend) final_callbacks: NativeFinalCallbacks,
 }
 
 #[cfg(feature = "native-backend")]
@@ -96,11 +98,13 @@ impl SimpleBackend {
             );
         }
 
+        let mut final_callbacks = NativeFinalCallbacks::default();
         self.run_cranelift_module_pipeline_if_needed(
             ir,
             use_llvm,
             native_tti.as_ref(),
             native_cached_tir.as_mut(),
+            &mut final_callbacks,
         );
 
         if self.skip_ir_passes && !use_llvm {
@@ -113,6 +117,7 @@ impl SimpleBackend {
                 native_cached_tir
                     .as_mut()
                     .expect("native TIR custody missing for Cranelift drop finalization"),
+                |function| final_callbacks.record(function),
             );
         }
 
@@ -152,6 +157,7 @@ impl SimpleBackend {
             emit_resolver_here,
             app_callable_manifest,
             source_callables,
+            final_callbacks,
         }
     }
 
@@ -161,6 +167,7 @@ impl SimpleBackend {
         use_llvm: bool,
         native_tti: Option<&crate::tir::target_info::TargetInfo>,
         native_cached_tir: Option<&mut crate::tir::pipeline_cache::CachedTirCustody>,
+        final_callbacks: &mut NativeFinalCallbacks,
     ) {
         // The SimpleIR-carrier module phase runs for the Cranelift path and is
         // skipped for the LLVM path. LLVM lowers from TIR directly and runs the
@@ -179,6 +186,13 @@ impl SimpleBackend {
             let non_inlinable: HashSet<String> = external_symbols.into_iter().collect();
             let native_cached_tir = native_cached_tir
                 .expect("native TIR custody missing for Cranelift module pipeline");
+            let mut consume_final_tir = |stage: TirSimpleIrModulePipelineStage<'_>| {
+                if let TirSimpleIrModulePipelineStage::AfterModulePipeline { module, .. } = stage {
+                    for function in &module.functions {
+                        final_callbacks.record(function);
+                    }
+                }
+            };
             crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
                 &mut ir.functions,
                 native_cached_tir,
@@ -188,7 +202,7 @@ impl SimpleBackend {
                     non_inlinable: &non_inlinable,
                     missing_tir_context: "native TIR cache runner",
                     backconvert_context: "native TIR module pipeline",
-                    stage_observer: None,
+                    stage_observer: Some(&mut consume_final_tir),
                 },
             );
         }
@@ -260,7 +274,17 @@ fn dump_raw_ir_if_requested(functions: &[FunctionIR]) {
     }
 }
 
-fn run_post_tir_simple_ir_rewrites(functions: &mut [FunctionIR]) {
+/// These final bridge rewrites preserve synchronous Python callback eligibility:
+/// alias collapse forwards only immutable identities; split-field deforestation
+/// keeps an opaque field primitive (and any unproved guard); raise-edge cleanup
+/// removes only duplicate local exception-status checks. The family retains
+/// every release, async-work observation and truthiness boundary; primitive
+/// substitutions preserve the function's callback eligibility.
+/// Differential tests compare the canonical typed callback oracle before/after
+/// the complete rewrite family, including its ownership and refusal cases.
+pub(in crate::native_backend::simple_backend) fn run_post_tir_simple_ir_rewrites(
+    functions: &mut [FunctionIR],
+) {
     for func in functions {
         rewrite_copy_aliases(&mut func.ops);
         // Split-field read deforestation runs after copy-alias rewrite so

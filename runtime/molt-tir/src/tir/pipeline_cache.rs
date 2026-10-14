@@ -751,11 +751,20 @@ pub fn finalize_simple_ir_drops_from_cached_tir(
     functions: &mut [FunctionIR],
     target_info: &TargetInfo,
     cached_tir: &mut CachedTirCustody,
+    consume_final_tir: impl FnMut(&TirFunction),
 ) {
+    for function in functions.iter().filter(|function| !function.is_extern) {
+        assert!(
+            cached_tir.contains_function(&function.name),
+            "cached terminal drops are missing typed custody for '{}'",
+            function.name,
+        );
+    }
     super::drop_phase::finalize_simple_ir_drops_with_tir_custody(
         functions,
         target_info,
         cached_tir.optimized_tir_by_name_mut(),
+        consume_final_tir,
     );
 }
 
@@ -1572,7 +1581,12 @@ mod tests {
                         .contains_key(super::super::passes::drop_insertion::DROP_INSERTED_ATTR)
                 );
             }
-            finalize_simple_ir_drops_from_cached_tir(&mut ir.functions, &target, &mut cache);
+            finalize_simple_ir_drops_from_cached_tir(
+                &mut ir.functions,
+                &target,
+                &mut cache,
+                |_| {},
+            );
             for function in &ir.functions {
                 assert!(
                     function
