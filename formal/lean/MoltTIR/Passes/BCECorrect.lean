@@ -94,6 +94,6 @@ theorem bce_non_index_not_marked (callee : String) (args : List Expr) (dst : Var
     requires the extended evaluation model for `SideEffectOp`. -/
 theorem bceOps_preserve_ops (ops : List SideEffectOp) :
     (bceOps ops).map (·.op) = ops := by
-  simp [bceOps, bceOp, List.map_map, Function.comp]
+  simp [bceOps, bceOp, List.map_map, Function.comp_def]
 
 end MoltTIR
