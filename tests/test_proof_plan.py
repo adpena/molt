@@ -25,6 +25,7 @@ from tools import (
     check_subprocess_guard_coverage,
     gen_proof_plan,
     proof_plan,
+    proof_receipts,
     toolchain_probe,
 )
 from tools.proof_queue_pkg import command_admission, supervisor_custody
@@ -2780,8 +2781,24 @@ def _receipt_for(
     }
 
 
+def _verify_receipts(plan, selected_names, receipt_root, *, tier=None):
+    # Bind the real selection/identity owners; receipt fixtures above remain
+    # independently authored wire data and deliberately malformed negatives.
+    return proof_receipts.verify_receipts(
+        plan,
+        selected_names,
+        receipt_root,
+        selected_commands=proof_plan._topological_commands,
+        authority_sha256=proof_plan._authority_sha256,
+        source_identity=proof_plan._source_identity,
+        toolchain_fingerprint_digest=proof_plan._toolchain_fingerprint_digest,
+        validate_python_fingerprint=proof_plan.validate_selected_python_fingerprint,
+        tier=tier,
+    )
+
+
 def test_receipt_verdict_fails_selected_but_unexecuted_cells(tmp_path: Path) -> None:
-    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
     selected = [
         command.id for command in PLAN.commands if command.family == "python_static"
     ]
@@ -2806,7 +2823,9 @@ def test_cache_disposition_never_infers_restore_hit_from_directory_existence(
     assert proof_plan._cache_disposition(command) == "unknown"
 
 
-def test_receipt_verdict_accepts_every_exact_selected_partition(tmp_path: Path) -> None:
+def test_receipt_verdict_accepts_every_exact_selected_partition(
+    tmp_path: Path, capsys
+) -> None:
     commands = [
         command for command in PLAN.commands if command.family == "python_static"
     ]
@@ -2814,11 +2833,41 @@ def test_receipt_verdict_accepts_every_exact_selected_partition(tmp_path: Path) 
         (tmp_path / f"{command.id}.json").write_text(
             json.dumps(_receipt_for(command, tmp_path)), encoding="utf-8"
         )
-    assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
+    assert _verify_receipts(PLAN, ["python_static"], tmp_path) == []
+    argv = [
+        "--verify-selected",
+        '["python_static"]',
+        "--receipt-dir",
+        str(tmp_path),
+        "--tier",
+        "pr",
+    ]
+    # Artifact downloads can merge any JSON value alongside proof receipts.
+    for index, value in enumerate(
+        ([{"evidence": 1}], None, "evidence", 7, 1.5, True, False, {})
+    ):
+        (tmp_path / f"non-receipt-{index}.json").write_text(
+            json.dumps(value), encoding="utf-8"
+        )
+    assert proof_plan.main(argv) == 0
+    capsys.readouterr()
+    unreadable = tmp_path / "invalid-utf8.json"
+    unreadable.write_bytes(b"\xff")
+    assert proof_plan.main(argv) == 1
+    assert "invalid-utf8.json: unreadable receipt:" in capsys.readouterr().err
+    unreadable.unlink()
+    assert proof_plan.main(argv) == 0
+    selected = proof_plan._topological_commands(PLAN, family="python_static", tier="pr")
+    receipt_path = tmp_path / f"{selected[0].id}.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["commands"][0]["argv"] = ["true"]
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert proof_plan.main(argv) == 1
 
 
 def test_scheduled_verdict_requires_every_command_and_evidence_output(
     tmp_path: Path,
+    capsys,
 ) -> None:
     scheduled_names = [family.name for family in PLAN.scheduled_families]
     scheduled_commands = [
@@ -2829,7 +2878,23 @@ def test_scheduled_verdict_requires_every_command_and_evidence_output(
             json.dumps(_receipt_for(command, tmp_path)), encoding="utf-8"
         )
 
-    assert proof_plan.verify_receipts(PLAN, scheduled_names, tmp_path) == []
+    assert _verify_receipts(PLAN, scheduled_names, tmp_path) == []
+    argv = ["--verify-scheduled", "--receipt-dir", str(tmp_path)]
+    # Artifact downloads can merge any JSON value alongside proof receipts.
+    for index, value in enumerate(
+        ([{"evidence": 1}], None, "evidence", 7, 1.5, True, False, {})
+    ):
+        (tmp_path / f"non-receipt-{index}.json").write_text(
+            json.dumps(value), encoding="utf-8"
+        )
+    assert proof_plan.main(argv) == 0
+    capsys.readouterr()
+    unreadable = tmp_path / "invalid-utf8.json"
+    unreadable.write_bytes(b"\xff")
+    assert proof_plan.main(argv) == 1
+    assert "invalid-utf8.json: unreadable receipt:" in capsys.readouterr().err
+    unreadable.unlink()
+    assert proof_plan.main(argv) == 0
 
     terminal = next(
         command for command in scheduled_commands if command.evidence_outputs
@@ -2838,8 +2903,169 @@ def test_scheduled_verdict_requires_every_command_and_evidence_output(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["commands"][0]["evidence_outputs"] = []
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    errors = proof_plan.verify_receipts(PLAN, scheduled_names, tmp_path)
+    errors = _verify_receipts(PLAN, scheduled_names, tmp_path)
     assert any("evidence outputs do not match authority" in error for error in errors)
+    assert proof_plan.main(argv) == 1
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize(
+    "placement", ["leaf-file", "leaf-directory", "parent", "nested"]
+)
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_evidence_link_refusal_preserves_real_targets(
+    tmp_path: Path, monkeypatch, external: bool, placement: str, link_kind: str
+) -> None:
+    if link_kind == "junction" and (os.name != "nt" or placement == "leaf-file"):
+        pytest.skip("Windows directory junction coordinate")
+    root = tmp_path / "owned"
+    root.mkdir()
+    target = (tmp_path if external else root) / "target"
+    target.mkdir()
+    payload = target / "evidence.txt"
+    payload.write_bytes(b"keep exact evidence")
+    identity = payload.stat()
+    relative = "proof-results/evidence"
+    output = root / relative
+    if placement == "parent":
+        link = root / "proof-results"
+        relative = "proof-results/evidence.txt"
+        destination = target
+    elif placement == "nested":
+        output.mkdir(parents=True)
+        link = output / "alias"
+        destination = target
+    else:
+        output.parent.mkdir()
+        link = output
+        destination = payload if placement == "leaf-file" else target
+    if link_kind == "junction":
+        import _winapi
+
+        _winapi.CreateJunction(str(destination), str(link))
+    else:
+        try:
+            link.symlink_to(destination, target_is_directory=destination.is_dir())
+        except OSError:
+            pytest.skip("host does not permit symbolic links")
+    untouched = root / "proof-results-first.txt"
+    untouched.write_bytes(b"first output must survive rejected cleanup")
+    command = SimpleNamespace(evidence_outputs=(relative,))
+    cleanup = SimpleNamespace(evidence_outputs=(untouched.name, relative))
+
+    def no_hash(*args, **kwargs):
+        pytest.fail("refused evidence was opened for hashing")
+
+    install_module_view(
+        monkeypatch, "hashlib", hashlib, proof_receipts, file_digest=no_hash
+    )
+    with pytest.raises(ValueError, match="link or junction"):
+        proof_receipts.clear_evidence_outputs(root, cleanup)
+    with pytest.raises(ValueError, match="link or junction"):
+        proof_receipts.snapshot_evidence_output(root, relative)
+    item = {
+        "path": relative,
+        "kind": "file" if placement in {"leaf-file", "parent"} else "directory",
+        "sha256": "0" * 64,
+        "total_size_bytes": 19,
+        "files": [{"path": "evidence.txt", "sha256": "0" * 64, "size": 19}],
+    }
+    errors = proof_receipts._verify_receipt_evidence("owned", command, [item], root)
+    assert any("link or junction" in error for error in errors)
+    assert untouched.read_bytes() == b"first output must survive rejected cleanup"
+    assert payload.read_bytes() == b"keep exact evidence"
+    assert (payload.stat().st_dev, payload.stat().st_ino) == (
+        identity.st_dev,
+        identity.st_ino,
+    )
+    assert link.exists()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "../outside",
+        "/outside",
+        "C:/outside",
+        "proof-results/../outside",
+        "proof-results//file",
+        "proof-results/CON",
+        "proof-results/a\\b",
+        ".",
+    ],
+)
+def test_evidence_path_admission_precedes_lookup(
+    tmp_path: Path, monkeypatch, relative: str
+) -> None:
+    def no_lookup(*args, **kwargs):
+        pytest.fail("invalid or unadmitted evidence reached filesystem lookup")
+
+    monkeypatch.setattr(proof_receipts, "resolve_owned_path", no_lookup)
+    monkeypatch.setattr(proof_receipts, "_downloaded_evidence_path", no_lookup)
+    # Invalid declared paths cannot authorize cleanup, even following a valid one.
+    command = SimpleNamespace(evidence_outputs=("proof-results/valid", relative))
+    with pytest.raises(ValueError):
+        proof_receipts.clear_evidence_outputs(tmp_path, command)
+    with pytest.raises(ValueError):
+        proof_receipts.snapshot_evidence_output(tmp_path, relative)
+    item = {"path": relative}
+    declared_invalid = SimpleNamespace(evidence_outputs=(relative,))
+    assert (
+        "invalid evidence output path"
+        in proof_receipts._verify_receipt_evidence(
+            "owned", declared_invalid, [item], tmp_path
+        )[0]
+    )
+    declared_valid = SimpleNamespace(evidence_outputs=("proof-results/valid",))
+    assert proof_receipts._verify_receipt_evidence(
+        "owned", declared_valid, [item], tmp_path
+    ) == ["owned: receipt evidence outputs do not match authority"]
+
+
+def test_downloaded_evidence_preserves_flattened_artifact_layout(
+    tmp_path: Path,
+) -> None:
+    relative = "proof-results/check/output.txt"
+    artifact = tmp_path / "artifact-name"
+    artifact.mkdir()
+    raw = b"independent artifact bytes"
+    (artifact / "output.txt").write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    item = {
+        "path": relative,
+        "kind": "file",
+        "sha256": digest,
+        "total_size_bytes": len(raw),
+        "files": [{"path": "output.txt", "sha256": digest, "size": len(raw)}],
+    }
+    command = SimpleNamespace(evidence_outputs=(relative,))
+    assert (
+        proof_receipts._verify_receipt_evidence("owned", command, [item], tmp_path)
+        == []
+    )
+    duplicate = tmp_path / "another-artifact"
+    duplicate.mkdir()
+    (duplicate / "output.txt").write_bytes(raw)
+    errors = proof_receipts._verify_receipt_evidence("owned", command, [item], tmp_path)
+    assert "missing or ambiguous" in errors[0]
+
+
+def test_receipt_discovery_refuses_link_before_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "receipts"
+    root.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("not even JSON", encoding="utf-8")
+    link = root / "receipt.json"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("host does not permit symbolic links")
+    errors = _verify_receipts(PLAN, ["python_static"], root)
+    assert len(errors) == 1 and "invalid receipt custody" in errors[0]
+    assert "link or junction" in errors[0]
+    assert outside.read_text(encoding="utf-8") == "not even JSON"
 
 
 def test_receipt_verdict_rejects_authority_and_command_drift(tmp_path: Path) -> None:
@@ -2850,7 +3076,7 @@ def test_receipt_verdict_rejects_authority_and_command_drift(tmp_path: Path) -> 
     receipt["authority_sha256"] = "0" * 64
     receipt["commands"][0]["argv"] = ["true"]  # type: ignore[index]
     (tmp_path / "drift.json").write_text(json.dumps(receipt), encoding="utf-8")
-    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
     assert any("authority digest" in error for error in errors)
     assert any("required executable receipt is missing" in error for error in errors)
 
@@ -2863,12 +3089,12 @@ def test_receipt_verdict_rehashes_downloaded_evidence_bytes(tmp_path: Path) -> N
     )
     receipt = _receipt_for(command, tmp_path)
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
-    assert proof_plan.verify_receipts(PLAN, ["nightly_conformance"], tmp_path) == []
+    assert _verify_receipts(PLAN, ["nightly_conformance"], tmp_path) == []
 
     (tmp_path / command.evidence_outputs[0]).write_text(
         '{"schema":"tampered"}', encoding="utf-8"
     )
-    errors = proof_plan.verify_receipts(PLAN, ["nightly_conformance"], tmp_path)
+    errors = _verify_receipts(PLAN, ["nightly_conformance"], tmp_path)
     assert any(
         "downloaded evidence bytes do not match receipt" in error for error in errors
     )
@@ -2900,7 +3126,7 @@ def test_every_authority_input_mutation_invalidates_receipt(
         assert mutated != original, relative
         with monkeypatch.context() as context:
             context.setattr(proof_plan, "_authority_sha256", lambda _plan: mutated)
-            errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+            errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
         assert any("authority digest" in error for error in errors), relative
 
 
@@ -2927,7 +3153,7 @@ def test_receipt_verdict_rejects_source_commit_replay(tmp_path: Path) -> None:
     receipt = _receipt_for(command, tmp_path)
     receipt["source_commit"] = "0" * 40
     (tmp_path / "replayed.json").write_text(json.dumps(receipt), encoding="utf-8")
-    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
     assert any("source commit" in error for error in errors)
 
 
@@ -2944,7 +3170,7 @@ def test_receipt_verdict_rejects_missing_or_mismatched_source_tree(
     else:
         receipt["source_tree"] = tree
     (tmp_path / "wrong-tree.json").write_text(json.dumps(receipt), encoding="utf-8")
-    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
     assert any("source tree identity" in error for error in errors)
 
 
@@ -2955,7 +3181,7 @@ def test_receipt_verdict_rejects_dirty_source_tree_attestation(tmp_path: Path) -
     receipt = _receipt_for(command, tmp_path)
     receipt["source_tree_state"] = "dirty"
     (tmp_path / "dirty.json").write_text(json.dumps(receipt), encoding="utf-8")
-    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
     assert any("source tree is not clean" in error for error in errors)
 
 
@@ -2974,7 +3200,7 @@ def test_receipt_verdict_enforces_toolchain_version_contract(tmp_path: Path) -> 
         ).encode()
     ).hexdigest()
     (tmp_path / "wrong-version.json").write_text(json.dumps(receipt), encoding="utf-8")
-    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
     assert any("uv version violates" in error for error in errors)
 
 
@@ -2995,7 +3221,7 @@ def test_receipt_verdict_enforces_toolchain_probe_cwd_contract(tmp_path: Path) -
     (tmp_path / "wrong-probe-cwd.json").write_text(
         json.dumps(receipt), encoding="utf-8"
     )
-    errors = proof_plan.verify_receipts(PLAN, ["formal"], tmp_path)
+    errors = _verify_receipts(PLAN, ["formal"], tmp_path)
     assert any("invalid lean toolchain identity" in error for error in errors)
 
 
@@ -3243,7 +3469,7 @@ def _successful_synthetic_record(
     command: proof_plan.ProofCommand,
 ) -> dict[str, object]:
     return {
-        **proof_plan._base_command_record(command),
+        **proof_receipts.command_record(command),
         "started_at": "2026-07-18T00:00:00+00:00",
         "duration_seconds": 0.01,
         "peak_rss_bytes": 1,
@@ -3261,7 +3487,7 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
     # Declared evidence is checkout-relative. Resolve it in the test's own
     # directory, so concurrent sessions never see the checkout change.
     monkeypatch.setattr(
-        proof_plan, "_evidence_path", lambda relative: tmp_path / relative
+        proof_receipts, "_evidence_path", lambda root, relative: tmp_path / relative
     )
     relative = "proof-results/tests/result.json"
     output = tmp_path / relative
@@ -5089,18 +5315,18 @@ def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(
     receipt["toolchains"][role] = sdk
     path = tmp_path / "sdk.json"
     path.write_text(json.dumps(receipt), encoding="utf-8")
-    assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
+    assert _verify_receipts(PLAN, ["python_static"], tmp_path) == []
     sdk[digest_field] = "3" * 64
     path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
         f"{role} toolchain identity hash is invalid" in error
-        for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+        for error in _verify_receipts(PLAN, ["python_static"], tmp_path)
     )
     del sdk[digest_field]
     path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
         f"invalid {role} toolchain identity" in error
-        for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+        for error in _verify_receipts(PLAN, ["python_static"], tmp_path)
     )
 
 
@@ -5137,7 +5363,7 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
     receipt["toolchains"]["wasi-clang"] = sdk
     path = receipt_root / "sdk.json"
     path.write_text(json.dumps(receipt), encoding="utf-8")
-    assert proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root) == []
+    assert _verify_receipts(PLAN, ["python_static"], receipt_root) == []
     native_name = next(name for name in receipt["toolchains"] if name != "wasi-clang")
     native = receipt["toolchains"][native_name]
     native["wasi_sdk_sha256"] = sdk["wasi_sdk_sha256"]
@@ -5160,7 +5386,7 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
     path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
         f"invalid {native_name} toolchain identity" in error
-        for error in proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root)
+        for error in _verify_receipts(PLAN, ["python_static"], receipt_root)
     )
 
 
@@ -5590,7 +5816,7 @@ def test_receipt_preserves_empty_behavioral_probe_contract(tmp_path, output):
         shell["identity_sha256"] = proof_plan._toolchain_fingerprint_digest(shell)
     receipt["toolchains"]["posix-sh"] = shell
     (tmp_path / "probe.json").write_text(json.dumps(receipt), encoding="utf-8")
-    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    errors = _verify_receipts(PLAN, ["python_static"], tmp_path)
     shell_errors = [error for error in errors if "posix-sh" in error]
     if output == "" and isinstance(output, str):
         assert not shell_errors, shell_errors
@@ -6025,8 +6251,14 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
             )
         return original_run(command, **kwargs)
 
-    monkeypatch.setattr(proof_plan.subprocess, "run", run)
-    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: str(fixture.uv))
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda _requested: str(fixture.uv),
+    )
     before = proof_plan._version_fingerprint(fixture.policy)
     proof_plan.validate_selected_python_fingerprint(fixture.policy, before)
     library, unicode_file = fixture.installations[str(fixture.selected[0])]
@@ -6051,7 +6283,7 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
     receipt["toolchains"][fixture.policy.name] = after
     path = receipt_root / "selected-python.json"
     path.write_text(json.dumps(receipt))
-    assert proof_plan.verify_receipts(PLAN, [command.family], receipt_root) == []
+    assert _verify_receipts(PLAN, [command.family], receipt_root) == []
     for missing in ("python_runtime", "python_runtime_sha256"):
         broken = copy.deepcopy(receipt)
         identity = broken["toolchains"][fixture.policy.name]
@@ -6060,7 +6292,5 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
         path.write_text(json.dumps(broken))
         assert any(
             "runtime fingerprint is invalid" in error
-            for error in proof_plan.verify_receipts(
-                PLAN, [command.family], receipt_root
-            )
+            for error in _verify_receipts(PLAN, [command.family], receipt_root)
         )

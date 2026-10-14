@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from molt.exact_json import canonical_json_bytes, loads_exact
+from tools import proof_receipts
 from tools.proof_queue_pkg import (
     cargo_cache_custody,
     cargo_output_layout,
@@ -398,32 +399,18 @@ def _queue_proof_receipt(
     environment = context.get("environment")
     if not isinstance(environment, dict):
         raise ValueError("proof run receipt environment is malformed")
-    return {
-        **context,
-        "authority_kind": "proof-queue-dynamic-command",
-        "family": "heavy_queue",
-        "commands": [
-            {
-                "id": command_id,
-                "family": "heavy_queue",
-                "cell": f"{environment.get('os')}-{environment.get('arch')}-dynamic",
-                "argv": argv,
-                "cwd": row["cwd"],
-                "dependencies": [],
-                "tiers": ["queued-heavy"],
-                "resource_class": row["resource_family"],
-                "timeout_seconds": None,
-                "started_at": row["started_at"],
-                "duration_seconds": row["elapsed_s"] or 0.0,
-                "peak_rss_bytes": _row_peak_rss_bytes(row),
-                "cache_disposition": "unknown",
-                "status": "success" if succeeded else status,
-                "returncode": returncode,
-            }
-        ],
-        "executed_partitions": [command_id] if succeeded else [],
-        "status": "success" if succeeded else status,
-    }
+    return proof_receipts.queued_receipt(
+        context,
+        command_id=command_id,
+        argv=argv,
+        cwd=row["cwd"],
+        resource_class=row["resource_family"],
+        started_at=row["started_at"],
+        duration_seconds=row["elapsed_s"] or 0.0,
+        peak_rss_bytes=_row_peak_rss_bytes(row),
+        status=status,
+        returncode=returncode,
+    )
 
 
 def _row_to_payload(

@@ -41,6 +41,8 @@ from tools.command_execution import (  # noqa: E402
     bind_repository_imports,
 )
 from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
+from tools import proof_receipts  # noqa: E402
+from molt.portable_paths import portable_relative_path  # noqa: E402
 from tools.git_identity import (  # noqa: E402
     changed_paths,
     clean_checkout_status_arguments,
@@ -116,7 +118,6 @@ REQUIRED_TOOLCHAIN_FIELDS = (
     "setup_evidence",
 )
 TARGET_DERIVED_IDENTITY_PROVIDERS = frozenset({"source-extension"})
-RECEIPT_SCHEMA = "molt.proof-receipt.v4"
 
 
 def family_matrix_output(family_name: str) -> str:
@@ -845,8 +846,8 @@ class ProofPlan:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
-        if self.receipt_schema != RECEIPT_SCHEMA:
-            errors.append(f"receipt_schema must be {RECEIPT_SCHEMA!r}")
+        if self.receipt_schema != proof_receipts.RECEIPT_SCHEMA:
+            errors.append(f"receipt_schema must be {proof_receipts.RECEIPT_SCHEMA!r}")
         self._validate_named_lanes(errors)
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
@@ -1699,16 +1700,14 @@ class ProofPlan:
                 errors.append(f"{command.id}: evidence_outputs must be unique")
             else:
                 for relative in evidence_outputs:
-                    normalized = _normalize_path(relative)
-                    path = Path(relative)
-                    if (
-                        normalized != relative
-                        or path.is_absolute()
-                        or ".." in path.parts
-                        or not relative.startswith(
+                    try:
+                        portable_relative_path(relative)
+                        canonical = relative.startswith(
                             ("proof-results/", "proof-receipts/evidence/")
                         )
-                    ):
+                    except ValueError:
+                        canonical = False
+                    if not canonical:
                         errors.append(
                             f"{command.id}: evidence output is not a canonical "
                             f"ephemeral path: {relative!r}"
@@ -3152,121 +3151,6 @@ def _topological_commands(
     return tuple(ordered)
 
 
-def _base_command_record(command: ProofCommand) -> dict[str, Any]:
-    return {
-        "id": command.id,
-        "family": command.family,
-        "cell": command.data["cell"],
-        "argv": list(command.argv),
-        "cwd": str(command.data.get("cwd", ".")),
-        "dependencies": list(command.dependencies),
-        "tiers": list(command.data["tiers"]),
-        "resource_class": command.data["resource_class"],
-        "timeout_budget": command.data.get("timeout_budget"),
-        "timeout_seconds": int(command.data["timeout_seconds"]),
-        "timeout_env": list(command.data.get("timeout_env", [])),
-        "environment_overrides": dict(command.data.get("env", {})),
-        "declared_evidence_outputs": list(command.evidence_outputs),
-    }
-
-
-def _evidence_path(relative: str) -> Path:
-    path = (ROOT / relative).resolve()
-    try:
-        path.relative_to(ROOT.resolve())
-    except ValueError as exc:
-        raise ValueError(f"evidence output escapes repository: {relative!r}") from exc
-    return path
-
-
-def _clear_evidence_outputs(command: ProofCommand) -> None:
-    for relative in command.evidence_outputs:
-        path = _evidence_path(relative)
-        if path.is_symlink() or path.is_file():
-            path.unlink()
-        elif path.is_dir():
-            shutil.rmtree(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _snapshot_evidence_output(relative: str) -> dict[str, Any]:
-    path = _evidence_path(relative)
-    return _snapshot_evidence_at(relative, path)
-
-
-def _snapshot_evidence_at(relative: str, path: Path) -> dict[str, Any]:
-    if path.is_symlink():
-        raise ValueError(f"evidence output may not be a symlink: {relative}")
-    if path.is_file():
-        size = path.stat().st_size
-        if size <= 0:
-            raise ValueError(f"evidence output is empty: {relative}")
-        with path.open("rb") as handle:
-            digest = hashlib.file_digest(handle, "sha256").hexdigest()
-        return {
-            "path": relative,
-            "kind": "file",
-            "sha256": digest,
-            "total_size_bytes": size,
-            "files": [{"path": Path(relative).name, "sha256": digest, "size": size}],
-        }
-    if not path.is_dir():
-        raise ValueError(f"evidence output is missing: {relative}")
-    files: list[dict[str, Any]] = []
-    for candidate in sorted(path.rglob("*")):
-        if candidate.is_symlink():
-            raise ValueError(
-                f"evidence directory contains a symlink: "
-                f"{candidate.relative_to(path).as_posix()}"
-            )
-        if not candidate.is_file():
-            continue
-        size = candidate.stat().st_size
-        with candidate.open("rb") as handle:
-            digest = hashlib.file_digest(handle, "sha256").hexdigest()
-        files.append(
-            {
-                "path": candidate.relative_to(path).as_posix(),
-                "sha256": digest,
-                "size": size,
-            }
-        )
-    if not files or sum(int(item["size"]) for item in files) <= 0:
-        raise ValueError(f"evidence directory is empty: {relative}")
-    manifest = json.dumps(files, separators=(",", ":"), sort_keys=True).encode()
-    return {
-        "path": relative,
-        "kind": "directory",
-        "sha256": hashlib.sha256(manifest).hexdigest(),
-        "total_size_bytes": sum(int(item["size"]) for item in files),
-        "files": files,
-    }
-
-
-def _downloaded_evidence_path(
-    receipt_root: Path, relative: str, kind: str
-) -> Path | None:
-    direct = receipt_root / Path(relative)
-    if (kind == "file" and direct.is_file()) or (
-        kind == "directory" and direct.is_dir()
-    ):
-        return direct
-    name = Path(relative).name
-    matches = [
-        candidate
-        for candidate in receipt_root.rglob(name)
-        if (kind == "file" and candidate.is_file())
-        or (kind == "directory" and candidate.is_dir())
-    ]
-    exact_suffix = [
-        candidate
-        for candidate in matches
-        if candidate.as_posix().endswith(relative.replace("\\", "/"))
-    ]
-    candidates = exact_suffix or matches
-    return candidates[0] if len(candidates) == 1 else None
-
-
 def _command_environment(
     plan: ProofPlan,
     command: ProofCommand,
@@ -3406,7 +3290,7 @@ def _run_command(
     )
     if cancel_event is not None and cancel_event.is_set():
         return {
-            **_base_command_record(command),
+            **proof_receipts.command_record(command),
             "started_at": started_at,
             "duration_seconds": 0.0,
             "peak_rss_bytes": None,
@@ -3422,10 +3306,10 @@ def _run_command(
             "evidence_outputs": [],
         }
     try:
-        _clear_evidence_outputs(command)
+        proof_receipts.clear_evidence_outputs(ROOT, command)
     except OSError as exc:
         return {
-            **_base_command_record(command),
+            **proof_receipts.command_record(command),
             "started_at": started_at,
             "duration_seconds": 0.0,
             "peak_rss_bytes": None,
@@ -3534,7 +3418,9 @@ def _run_command(
     evidence_error: str | None = None
     for relative in command.evidence_outputs:
         try:
-            evidence_outputs.append(_snapshot_evidence_output(relative))
+            evidence_outputs.append(
+                proof_receipts.snapshot_evidence_output(ROOT, relative)
+            )
         except (OSError, ValueError) as exc:
             if status == "success":
                 status = "failure"
@@ -3546,7 +3432,7 @@ def _run_command(
                 )
             break
     record = {
-        **_base_command_record(command),
+        **proof_receipts.command_record(command),
         "started_at": started_at,
         "duration_seconds": (
             round(float(metrics["duration_seconds"]), 6) if metrics_valid else None
@@ -3642,317 +3528,7 @@ def execute_commands(
         _required_toolchains=lambda command: _required_toolchains(plan, command),
         _run_command=_run_command,
         _cache_disposition=_cache_disposition,
-        _base_command_record=_base_command_record,
     )
-
-
-def _receipt_files(root: Path) -> list[Path]:
-    if root.is_file():
-        return [root]
-    return sorted(root.rglob("*.json")) if root.is_dir() else []
-
-
-def _verify_receipt_evidence(
-    command_id: str,
-    command: ProofCommand,
-    value: object,
-    receipt_root: Path,
-) -> list[str]:
-    if not isinstance(value, list):
-        return [f"{command_id}: receipt evidence_outputs must be a list"]
-    errors: list[str] = []
-    observed_paths = [
-        item.get("path") if isinstance(item, dict) else None for item in value
-    ]
-    if observed_paths != list(command.evidence_outputs):
-        errors.append(f"{command_id}: receipt evidence outputs do not match authority")
-    for item in value:
-        if (
-            not isinstance(item, dict)
-            or item.get("kind") not in {"file", "directory"}
-            or not isinstance(item.get("sha256"), str)
-            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
-            or not isinstance(item.get("total_size_bytes"), int)
-            or item["total_size_bytes"] <= 0
-            or not isinstance(item.get("files"), list)
-            or not item["files"]
-        ):
-            errors.append(f"{command_id}: malformed evidence output receipt")
-            continue
-        materialized = _downloaded_evidence_path(
-            receipt_root,
-            str(item["path"]),
-            str(item["kind"]),
-        )
-        if materialized is None:
-            errors.append(
-                f"{command_id}: downloaded evidence output is missing or ambiguous: "
-                f"{item['path']}"
-            )
-            continue
-        try:
-            observed_evidence = _snapshot_evidence_at(str(item["path"]), materialized)
-        except (OSError, ValueError) as exc:
-            errors.append(f"{command_id}: downloaded evidence output is invalid: {exc}")
-        else:
-            if observed_evidence != item:
-                errors.append(
-                    f"{command_id}: downloaded evidence bytes do not match receipt: "
-                    f"{item['path']}"
-                )
-    return errors
-
-
-def verify_receipts(
-    plan: ProofPlan,
-    selected_names: list[str] | tuple[str, ...],
-    receipt_root: Path,
-    *,
-    tier: str | None = None,
-) -> list[str]:
-    known_families = {
-        *(family.name for family in plan.families),
-        *(family.name for family in plan.scheduled_families),
-    }
-    selected = set(selected_names)
-    errors = [
-        f"unknown selected proof family {name!r}"
-        for name in sorted(selected - known_families)
-    ]
-    # Exactly what `--run-family` executes for this tier: the family's tiered
-    # roots plus their dependency closure.
-    expected_commands = {
-        command.id: command
-        for name in sorted(selected & {command.family for command in plan.commands})
-        for command in _topological_commands(plan, family=name, tier=tier)
-    }
-    expected_digest = _authority_sha256(plan)
-    expected_source = _source_identity()
-    policies = {policy.name: policy for policy in plan.toolchain_policies}
-    observed: dict[str, dict[str, Any]] = {}
-    for path in _receipt_files(receipt_root):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            errors.append(f"{path}: unreadable receipt: {exc}")
-            continue
-        if payload.get("schema") != plan.receipt_schema:
-            continue
-        if payload.get("authority_sha256") != expected_digest:
-            errors.append(
-                f"{path}: receipt authority digest does not match selected plan"
-            )
-            continue
-        if payload.get("source_commit") != expected_source["commit"]:
-            errors.append(f"{path}: receipt source commit does not match checkout")
-            continue
-        if payload.get("source_tree") != expected_source["tree"]:
-            errors.append(
-                f"{path}: receipt source tree identity does not match checkout"
-            )
-            continue
-        if payload.get("source_tree_state") != "clean":
-            errors.append(f"{path}: receipt source tree is not clean and commit-backed")
-            continue
-        environment = payload.get("environment")
-        toolchains = payload.get("toolchains")
-        if not isinstance(environment, dict) or not all(
-            environment.get(key) for key in ("os", "arch", "python")
-        ):
-            errors.append(f"{path}: receipt environment is incomplete")
-        if not isinstance(toolchains, dict) or not toolchains:
-            errors.append(f"{path}: receipt toolchain hashes are missing")
-        records = payload.get("commands")
-        if not isinstance(records, list):
-            errors.append(f"{path}: receipt commands must be a list")
-            continue
-        partitions = payload.get("executed_partitions")
-        if not isinstance(partitions, list):
-            errors.append(f"{path}: executed_partitions must be a list")
-            partitions = []
-        elif len(partitions) != len(set(str(item) for item in partitions)):
-            errors.append(f"{path}: executed_partitions contains duplicates")
-        for record in records:
-            if not isinstance(record, dict) or not isinstance(record.get("id"), str):
-                errors.append(f"{path}: malformed command receipt")
-                continue
-            command_id = record["id"]
-            if command_id not in expected_commands:
-                continue
-            if command_id in observed:
-                errors.append(f"{command_id}: duplicate command receipts")
-                continue
-            command = expected_commands[command_id]
-            cell = next(
-                item for item in plan.matrix_cells if item.id == command.data["cell"]
-            )
-            if record.get("argv") != list(command.argv):
-                errors.append(f"{command_id}: receipt command does not match authority")
-            if (
-                payload.get("family") != command.family
-                or record.get("family") != command.family
-            ):
-                errors.append(f"{command_id}: receipt family does not match authority")
-            if record.get("cell") != command.data["cell"]:
-                errors.append(
-                    f"{command_id}: receipt matrix cell does not match authority"
-                )
-            if record.get("status") != "success" or record.get("returncode") != 0:
-                errors.append(f"{command_id}: executable partition did not succeed")
-            if payload.get("status") != "success":
-                errors.append(f"{command_id}: enclosing receipt did not succeed")
-            exact_fields = {
-                "cwd": str(command.data.get("cwd", ".")),
-                "dependencies": list(command.dependencies),
-                "tiers": list(command.data["tiers"]),
-                "resource_class": command.data["resource_class"],
-                "timeout_budget": command.data.get("timeout_budget"),
-                "timeout_seconds": command.data["timeout_seconds"],
-                "timeout_env": list(command.data.get("timeout_env", [])),
-                "environment_overrides": dict(command.data.get("env", {})),
-                "declared_evidence_outputs": list(command.evidence_outputs),
-                "guard_metrics_schema": "molt.guarded-command-metrics.v1",
-            }
-            for field, expected in exact_fields.items():
-                if record.get(field) != expected:
-                    errors.append(
-                        f"{command_id}: receipt {field} does not match authority"
-                    )
-            if isinstance(environment, dict):
-                if environment.get("os") != cell.data["os"]:
-                    errors.append(
-                        f"{command_id}: receipt OS does not match matrix cell"
-                    )
-                if environment.get("arch") != cell.data["arch"]:
-                    errors.append(
-                        f"{command_id}: receipt architecture does not match matrix cell"
-                    )
-                if (
-                    cell.data["python"] != "none"
-                    and environment.get("python") != cell.data["python"]
-                ):
-                    errors.append(
-                        f"{command_id}: receipt Python does not match matrix cell"
-                    )
-            if command_id not in partitions:
-                errors.append(
-                    f"{command_id}: selected command absent from executed_partitions"
-                )
-            duration = record.get("duration_seconds")
-            if not isinstance(duration, (int, float)) or duration < 0:
-                errors.append(f"{command_id}: receipt duration_seconds is invalid")
-            peak_rss = record.get("peak_rss_bytes")
-            if not isinstance(peak_rss, int) or peak_rss < 0:
-                errors.append(f"{command_id}: receipt peak_rss_bytes is invalid")
-            if record.get("cache_disposition") not in {
-                "cold",
-                "warm",
-                "unknown",
-                "not-applicable",
-            }:
-                errors.append(f"{command_id}: receipt cache_disposition is invalid")
-            errors.extend(
-                _verify_receipt_evidence(
-                    command_id,
-                    command,
-                    record.get("evidence_outputs"),
-                    receipt_root,
-                )
-            )
-            if isinstance(toolchains, dict):
-                for name in _required_toolchains(plan, command):
-                    if name not in toolchains:
-                        errors.append(
-                            f"{command_id}: required {name} toolchain hash is missing"
-                        )
-                for name, identity in toolchains.items():
-                    if not isinstance(identity, dict) or not isinstance(
-                        identity.get("identity_sha256"), str
-                    ):
-                        errors.append(f"{command_id}: malformed {name} toolchain hash")
-                    elif (
-                        len(identity["identity_sha256"]) != 64
-                        or any(
-                            character not in "0123456789abcdef"
-                            for character in identity["identity_sha256"].lower()
-                        )
-                        or not identity.get("path")
-                        or not identity.get("launcher_path")
-                        or not identity.get("content_path")
-                        or not isinstance(identity.get("version"), str)
-                        or not isinstance(identity.get("launcher_sha256"), str)
-                        or len(identity["launcher_sha256"]) != 64
-                        or any(
-                            character not in "0123456789abcdef"
-                            for character in identity["launcher_sha256"].lower()
-                        )
-                        or not isinstance(identity.get("executable_sha256"), str)
-                        or len(identity["executable_sha256"]) != 64
-                        or any(
-                            character not in "0123456789abcdef"
-                            for character in identity["executable_sha256"].lower()
-                        )
-                        or name not in policies
-                        or identity.get("version_pattern")
-                        != policies[name].data["version_pattern"]
-                        or identity.get("probe_cwd")
-                        != policies[name].data.get("probe_cwd", ".")
-                        or (
-                            re.fullmatch(
-                                r"[0-9a-f]{64}",
-                                str(identity.get("wasi_sdk_sha256", "")),
-                            )
-                            is None
-                            if policies[name].data.get("wasi_sdk_tool") is not None
-                            else "wasi_sdk_sha256" in identity
-                        )
-                        or (
-                            re.fullmatch(
-                                r"[0-9a-f]{64}",
-                                str(identity.get("llvm_sdk_sha256", "")),
-                            )
-                            is None
-                            if policies[name].data.get("compiler_tool_selector")
-                            == "llvm-sdk"
-                            else "llvm_sdk_sha256" in identity
-                        )
-                    ):
-                        errors.append(
-                            f"{command_id}: invalid {name} toolchain identity"
-                        )
-                    elif (
-                        re.search(
-                            str(policies[name].data["version_pattern"]),
-                            str(identity["version"]),
-                        )
-                        is None
-                    ):
-                        errors.append(
-                            f"{command_id}: {name} version violates authority contract"
-                        )
-                    elif identity["identity_sha256"] != _toolchain_fingerprint_digest(
-                        identity
-                    ):
-                        errors.append(
-                            f"{command_id}: {name} toolchain identity hash is invalid"
-                        )
-                    if (
-                        name in policies
-                        and policies[name].python_identity_role == "runtime"
-                    ):
-                        try:
-                            validate_selected_python_fingerprint(
-                                policies[name], identity
-                            )
-                        except (KeyError, TypeError, ValueError) as exc:
-                            errors.append(
-                                f"{command_id}: {name} runtime fingerprint is invalid: {exc}"
-                            )
-            observed[command_id] = record
-    for command_id in expected_commands:
-        if command_id not in observed:
-            errors.append(f"{command_id}: required executable receipt is missing")
-    return errors
 
 
 def replay_recent_commits(plan: ProofPlan, count: int) -> dict[str, Any]:

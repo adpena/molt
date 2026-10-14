@@ -35,7 +35,7 @@ from molt import cache_eviction, default_paths, file_locks, file_publication  # 
 from molt import disk_capacity  # noqa: E402
 from molt.exact_json import read_exact  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
-from tools import proof_plan  # noqa: E402
+from tools import proof_plan, proof_receipts  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
     cache_retention,
     command_admission as admission,
@@ -974,21 +974,23 @@ def execute_guarded_request(request_path: Path) -> int:
                 raise ValueError("proof Python identity has no major.minor version")
             python_version = match.group(1)
         context: dict[str, object] = {
-            "schema": plan.receipt_schema,
-            "authority_sha256": proof_plan._authority_sha256(plan),
+            **proof_receipts.receipt_context(
+                schema=plan.receipt_schema,
+                authority_sha256=proof_plan._authority_sha256(plan),
+                source_commit=pre_source.get("commit"),
+                source_tree=pre_source.get("tree"),
+                source_tree_state="clean" if pre_source.get("clean") else "dirty",
+                environment={
+                    "os": proof_plan._normalized_os(),
+                    "arch": proof_plan._normalized_arch(),
+                    "python": python_version,
+                },
+                toolchains=toolchains,
+            ),
             "run_id": run_id,
             "execution_nonce_sha256": hashlib.sha256(
                 execution_nonce.encode()
             ).hexdigest(),
-            "source_commit": pre_source.get("commit"),
-            "source_tree": pre_source.get("tree"),
-            "source_tree_state": "clean" if pre_source.get("clean") else "dirty",
-            "environment": {
-                "os": proof_plan._normalized_os(),
-                "arch": proof_plan._normalized_arch(),
-                "python": python_version,
-            },
-            "toolchains": toolchains,
             "toolchain_custody": {
                 "capture_semantic_sha256": capture_ref["semantic_sha256"],
             },

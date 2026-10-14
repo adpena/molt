@@ -12,6 +12,8 @@ import tomllib
 from types import ModuleType
 from typing import Any
 
+from tools import proof_receipts
+
 
 def replay_recent_commits(
     plan: Any,
@@ -175,7 +177,17 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
                 raise ValueError("--verify-selected must be a JSON string array")
             if args.receipt_dir is None:
                 raise ValueError("--verify-selected requires --receipt-dir")
-            errors = api.verify_receipts(plan, selected, args.receipt_dir, tier=tier)
+            errors = proof_receipts.verify_receipts(
+                plan,
+                selected,
+                args.receipt_dir,
+                selected_commands=api._topological_commands,
+                authority_sha256=api._authority_sha256,
+                source_identity=api._source_identity,
+                toolchain_fingerprint_digest=api._toolchain_fingerprint_digest,
+                validate_python_fingerprint=api.validate_selected_python_fingerprint,
+                tier=tier,
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"proof-plan verdict: {exc}", file=sys.stderr)
             return 2
@@ -196,7 +208,16 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
             )
             return 2
         selected = [family.name for family in plan.scheduled_families]
-        errors = api.verify_receipts(plan, selected, args.receipt_dir)
+        errors = proof_receipts.verify_receipts(
+            plan,
+            selected,
+            args.receipt_dir,
+            selected_commands=api._topological_commands,
+            authority_sha256=api._authority_sha256,
+            source_identity=api._source_identity,
+            toolchain_fingerprint_digest=api._toolchain_fingerprint_digest,
+            validate_python_fingerprint=api.validate_selected_python_fingerprint,
+        )
         if errors:
             for error in errors:
                 print(f"proof-plan scheduled verdict: {error}", file=sys.stderr)

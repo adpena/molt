@@ -151,6 +151,15 @@ These are developer/build-time contracts. Clean-host selected integration and
 installed-package, live-watch and other platform qualification remain explicit
 acceptance work; this does not add an admitted Python target version.
 
+Proof-receipt serialization and evidence verification now share one developer-side
+owner. Declared outputs and downloaded artifacts reuse the canonical portable
+path grammar and lexical ownership checks; cleanup admits the entire output set
+before deletion, and receivers reject unadmitted paths before content reads.
+Focused controls pass on macOS. Windows junction execution and clean-host
+integration remain unqualified; lexical admission does not claim protection
+against concurrent hostile namespace replacement. This removes a duplicate
+protocol boundary without adding work to emitted binaries.
+
 The independent developer Cargo-target migration landed on main as
 `5c1238bda`. The existing selector gives each checkout stable intermediates,
 all direct consumers and cleanup share that policy, and no runtime-binary work
