@@ -497,8 +497,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             ]
         )
         exception = self._emit_exception_new("RuntimeError", missing_message)
-        self.emit(MoltOp(kind="RAISE", args=[exception], result=MoltValue("none")))
-        self._emit_raise_exit()
+        self._emit_raise(exception)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         wrong_message = message(
             [
@@ -509,8 +508,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             ]
         )
         exception = self._emit_exception_new("TypeError", wrong_message)
-        self.emit(MoltOp(kind="RAISE", args=[exception], result=MoltValue("none")))
-        self._emit_raise_exit()
+        self._emit_raise(exception)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))

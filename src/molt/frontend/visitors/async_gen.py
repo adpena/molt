@@ -824,7 +824,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue(self.next_var(), type_hint="None"),
             )
         )
-        self.emit(MoltOp(kind="RAISE", args=[throw_val], result=MoltValue("none")))
+        self._emit_raise(throw_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
@@ -1051,7 +1051,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         err_val = self._emit_exception_new(
             "TypeError", "can't send non-None to a non-generator iterator"
         )
-        self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
+        self._emit_raise(err_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))

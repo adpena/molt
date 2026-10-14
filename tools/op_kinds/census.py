@@ -53,6 +53,7 @@ class Site:
     line: int
     text: str
     reason: str = ""
+    function: str = ""  # enclosing function of a producer site
 
     def __str__(self) -> str:
         suffix = f" ({self.reason})" if self.reason else ""
@@ -493,13 +494,17 @@ def frontend_census(root: Path = ROOT) -> FrontendCensus:
             if not _is_molt_op_call(node):
                 continue
             assert isinstance(node, ast.Call)
+            enclosing = next(_enclosing_functions(node), None)
+            function = enclosing.name if enclosing is not None else ""
             for argument in _kind_arguments(node):
-                site = Site(module.rel, node.lineno, ast.unparse(argument))
+                site = Site(
+                    module.rel, node.lineno, ast.unparse(argument), "", function
+                )
                 try:
                     kinds = resolver.strings(argument)
                 except _Unresolved as error:
                     census.unresolved_producers.append(
-                        Site(site.path, site.line, site.text, str(error))
+                        Site(site.path, site.line, site.text, str(error), function)
                     )
                     continue
                 for kind in kinds:
