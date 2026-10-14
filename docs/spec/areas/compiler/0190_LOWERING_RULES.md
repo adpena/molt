@@ -546,11 +546,17 @@ guarded specialization only:
   namespace that never bound any covered name and its builtins are the sealed
   builtins namespace with each covered name unchanged since the runtime
   published it. The runtime records both in the dictionaries' inline state
-  words from its five dictionary commit primitives (insert, replace, remove,
-  clear, staged publication). Bits are sticky. A key that is not an exact
+  words from its dictionary commits: insertion, value replacement, row
+  removal, and `dict_commit_reset`, the one commit for a whole-contents
+  change (`clear()`, the C-API `PyDict_Clear`, staged publication, and
+  lifecycle and cycle clearing). No other code empties or swaps dictionary
+  storage. Writers add bits with an atomic fetch-or, so concurrent binders
+  cannot lose one; only the builtins seal clears bits, once, before the
+  builtins module is published. Bits are sticky. A key that is not an exact
   `str` marks every name, since its `__eq__` may match any of them. A
   user dictionary installed as globals is untracked and never satisfies a
-  guard. Luau namespaces track nothing, so the Luau guard is always false.
+  guard. A module's `__dict__` is read-only, so a namespace is never
+  replaced. Luau namespaces track nothing, so the Luau guard is always false.
 
 Exact user-class layout follows the actual lowered result, never a constructor
 name recovered from the AST. Only a constructionally exact result may carry

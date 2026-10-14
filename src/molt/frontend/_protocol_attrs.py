@@ -37,6 +37,7 @@ from molt.frontend._types import (
 )
 
 if TYPE_CHECKING:
+    from molt.frontend.lowering.builtin_guards import GuardArmKind
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.compiler_analysis.python_binding_facts import PythonNodeKey

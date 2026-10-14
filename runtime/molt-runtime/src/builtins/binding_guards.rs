@@ -14,12 +14,20 @@
 //! publishes it. Below those flags, bit `i` belongs to guard name `i`
 //! (`runtime/builtin_binding_guards.toml`). Every dictionary mutation that
 //! can bind, rebind or delete a key reaches one of the hooks below through the
-//! dictionary commit primitives, and sets the key's bit. Bits never clear:
-//! a stale bit costs only the fast path, never correctness. A dictionary
-//! without a tracked state word, such as a user dict passed as function
-//! globals, never satisfies a guard.
+//! dictionary commit primitives (`object::ops::dict_set_tables`): insertion,
+//! value replacement, row removal, and `dict_commit_reset`, the one commit for
+//! a dictionary whose whole contents were cleared or replaced (`clear()`, the
+//! C-API `PyDict_Clear`, staged publication, and lifecycle and cycle clearing).
+//! Each sets the key's bit. Bits never clear after the seal: a stale bit costs
+//! only the fast path, never correctness. A dictionary without a tracked state
+//! word, such as a user dict passed as function globals, never satisfies a
+//! guard.
+//!
+//! Writers add bits with an atomic fetch-or, so concurrent binders cannot
+//! lose a bit under free-threaded execution. The seal is the only store that
+//! clears bits; see [`seal_builtins_namespace`].
 
-use crate::object::{object_set_state, object_state};
+use crate::object::{object_set_state, object_state, object_state_fetch_or};
 use crate::*;
 
 #[path = "binding_guards_generated.rs"]
@@ -50,10 +58,12 @@ unsafe fn namespace_state(dict: *mut u8) -> Option<u64> {
     (state & NAMESPACE_TRACKED != 0).then_some(state)
 }
 
+/// Record `bits` in a tracked namespace's state word. Bits only accumulate,
+/// so a snapshot that already holds them is current and needs no write.
 #[inline]
 unsafe fn add_bits(dict: *mut u8, state: u64, bits: u64) {
     if state & bits != bits {
-        object_set_state(dict, (state | bits) as i64);
+        object_state_fetch_or(dict, bits as i64);
     }
 }
 
@@ -97,6 +107,7 @@ pub(crate) unsafe fn note_namespace_rebind(py: &PyToken<'_>, dict: *mut u8, key_
 
 /// The whole mapping was cleared or its contents replaced. A module records
 /// the keys it now binds; in sealed builtins every name may have changed.
+/// Only `dict_commit_reset` calls this, so every reset path shares one commit.
 pub(crate) unsafe fn note_namespace_reset(py: &PyToken<'_>, dict: *mut u8) {
     unsafe {
         let Some(state) = namespace_state(dict) else {
@@ -128,6 +139,12 @@ pub(crate) fn namespace_guard_bits(dict: *mut u8) -> u64 {
 /// its bit, and so does a name the runtime did not publish. Every other guard
 /// name now holds the runtime's own object. Later bindings, including the
 /// Python facade's, set bits again.
+///
+/// This is the only store that clears bits, so it must not race a binder. The
+/// canonical initializer calls it once, from `module_cache_publish`, before
+/// the module cache or `sys.modules` publishes the builtins module: no other
+/// thread can reach the namespace yet, and every later writer uses
+/// [`add_bits`].
 pub(crate) fn seal_builtins_namespace(py: &PyToken<'_>, dict: *mut u8, prior: u64) {
     unsafe {
         if namespace_state(dict).is_none() {
