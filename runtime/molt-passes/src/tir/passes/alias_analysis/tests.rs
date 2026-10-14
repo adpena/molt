@@ -1093,7 +1093,7 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
 #[test]
 fn guarded_field_get_3operand_abi_falls_back_to_generic_heap() {
     // `guarded_field_get` ABI: operands [obj, class_bits, expected_version],
-    // offset in `value`, class in `_class`. obj is operand[0].
+    // offset in `value`. obj is operand[0].
     let res = empty_res();
     let get = with_field_attrs(
         op_kind(
@@ -1115,7 +1115,7 @@ fn guarded_field_get_3operand_abi_falls_back_to_generic_heap() {
 #[test]
 fn guarded_field_set_4operand_abi_falls_back_to_generic_heap() {
     // `guarded_field_set` ABI: operands [obj, class_bits, expected_version,
-    // val], offset in `value`, class in `_class`. obj is operand[0].
+    // val], offset in `value`. obj is operand[0].
     let res = empty_res();
     let set = with_field_attrs(
         op_kind(
@@ -1145,10 +1145,10 @@ fn guarded_field_set_4operand_abi_falls_back_to_generic_heap() {
 }
 
 #[test]
-fn direct_field_without_class_attr_uses_unknown_allocation_identity() {
-    // Exact load shape and offset admit the field. Missing `_class` metadata
-    // does not erase its physical footprint or mint object identity. Ordinary
-    // stores remain GenericHeap without site-specific release-neutral proof.
+fn direct_field_uses_unknown_allocation_identity() {
+    // Exact load shape and offset admit the field. The physical footprint does
+    // not mint object identity. Ordinary stores remain GenericHeap without
+    // site-specific release-neutral proof.
     let res = empty_res();
     let load = with_field_attrs(
         op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
@@ -1175,11 +1175,10 @@ fn direct_field_without_class_attr_uses_unknown_allocation_identity() {
 }
 
 #[test]
-fn opaque_attr_spelling_is_generic_heap_even_with_class_attr() {
+fn opaque_attr_spelling_is_generic_heap_even_with_field_attrs() {
     // A generic `get_attr` / `set_attr` spelling is NOT a typed-slot op (it
     // may dispatch a dunder), so it is GenericHeap regardless of any stray
-    // attrs. (The frontend never stamps `_class` on these, but assert the
-    // classification is robust to it.)
+    // field attrs.
     let res = empty_res();
     let ga = with_field_attrs(
         op_kind(
@@ -1204,8 +1203,8 @@ fn opaque_attr_spelling_is_generic_heap_even_with_class_attr() {
 }
 
 #[test]
-fn exact_allocation_field_keeps_identity_independent_of_class_and_escape() {
-    // Exact allocation-site identity, not `_class` or escape placement, admits
+fn exact_allocation_field_keeps_identity_independent_of_escape() {
+    // Exact allocation-site identity, not escape placement, admits
     // the per-allocation field refinement.
     let root = ValueId(0);
     let mut escape = HashMap::new();

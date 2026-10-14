@@ -1745,5 +1745,4 @@ fn guarded_load_uses_field_custody_and_preserves_its_offset() {
     let lowered = lower_to_simple_ir(&tir);
     let load = lowered.iter().find(|op| op.kind == "guarded_load").unwrap();
     assert_eq!(load.value, Some(24));
-    assert_eq!(load.class_name.as_deref(), Some("C"));
 }
