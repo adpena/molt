@@ -813,12 +813,15 @@ def release_scoreboard_problems(
     if not is_git_object_id(expected_source_sha):
         raise ValueError("expected_source_sha must be lowercase Git object hex")
     revision_fields = dict(scoreboard_revision_fields(doc))
+    # The measured revision is the requested source, and it was on main when
+    # measured (merge-base == HEAD). origin/main itself may have moved on.
     required_revision_fields = {
         "git_rev": doc.get("git_rev"),
         "provenance.local_head_sha": provenance.get("local_head_sha"),
-        "provenance.origin_sha": provenance.get("origin_sha"),
         "provenance.merge_base_sha": provenance.get("merge_base_sha"),
     }
+    if not is_git_object_id(provenance.get("origin_sha")):
+        problems.append(f"{label} provenance.origin_sha must record origin/main")
     for field, value in required_revision_fields.items():
         if value != expected_source_sha:
             problems.append(

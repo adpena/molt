@@ -447,3 +447,45 @@ def test_exploratory_board_marks_statistical_scope_and_unadmitted_e2():
             "observation is missing" in reason
             for reason in board["e2_eligibility"]["problems"]
         )
+
+
+def _revision_problems(doc) -> list[str]:
+    import datetime as dt
+
+    import perf_authority as pa
+
+    return [
+        problem
+        for problem in pa.release_scoreboard_problems(
+            doc,
+            expected_source_sha="a" * 40,
+            now=dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc),
+        )
+        if any(
+            field in problem
+            for field in ("origin_sha", "merge_base_sha", "local_head_sha", "git_rev")
+        )
+    ]
+
+
+def test_release_board_is_the_requested_landed_revision_not_the_main_tip():
+    doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
+    assert _revision_problems(doc) == []
+    moved_on = copy.deepcopy(doc)
+    moved_on["provenance"]["origin_sha"] = "d" * 40
+    assert _revision_problems(moved_on) == []
+    unrecorded = copy.deepcopy(doc)
+    unrecorded["provenance"]["origin_sha"] = None
+    assert any("must record origin/main" in p for p in _revision_problems(unrecorded))
+    off_main = copy.deepcopy(doc)
+    off_main["provenance"]["merge_base_sha"] = "e" * 40
+    assert any("merge_base_sha" in p for p in _revision_problems(off_main))
+
+
+def test_shards_measured_while_main_moved_on_still_merge(tmp_path):
+    a = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
+    b = _merge_source("llvm", CANONICAL_PERF_BENCHMARKS[1])
+    b["provenance"]["origin_sha"] = "d" * 40
+    rc, out = _merge(tmp_path, [a, b])
+    assert rc == 0
+    assert out is not None and out["git_rev"] == "a" * 40

@@ -828,7 +828,7 @@ def test_authoritative_reason_lists_causes() -> None:
     assert "dirty" in ps._authoritative_reason(False, True, False)
     assert "perf_scoreboard.py" in ps._authoritative_reason(False, False, True)
     assert ps._authoritative_reason(False, False, False) == (
-        "tree == origin/main, clean, tool unmodified"
+        "revision is on origin/main, clean, tool unmodified"
     )
 
 
@@ -925,6 +925,43 @@ def test_gather_provenance_authoritative_when_clean(monkeypatch) -> None:
     assert prov["authoritative"] is True
     assert prov["origin_sha"] == prov["local_head_sha"]
     assert prov["dirty_tree"] is False
+
+
+@pytest.mark.parametrize(
+    ("origin", "merge_base", "authoritative"),
+    [
+        ("d" * 40, "a" * 40, True),  # landed; main moved on since
+        ("d" * 40, "e" * 40, False),  # HEAD is not on origin/main
+        (None, None, False),  # origin/main unresolvable: unknown provenance
+    ],
+)
+def test_authority_requires_a_landed_revision_not_the_main_tip(
+    monkeypatch, origin, merge_base, authoritative
+) -> None:
+    def git(args: list[str]) -> str | None:
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return "a" * 40
+        if args[:1] == ["merge-base"]:
+            return merge_base
+        return None
+
+    monkeypatch.setattr(ps, "_git_output", git)
+    monkeypatch.setattr(ps, "_origin_main_sha", lambda: origin)
+    monkeypatch.setattr(
+        ps,
+        "_benchmark_tool_identity",
+        lambda: {
+            "ondisk_blob_sha": "b",
+            "modified_vs_head": "false",
+            "last_commit_sha": "c",
+        },
+    )
+    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
+    prov = ps.gather_provenance(None)
+    assert prov["authoritative"] is authoritative
+    assert prov["diverges_from_origin"] is (not authoritative)
+    if not authoritative:
+        assert "local HEAD is not on origin/main" in prov["authoritative_reason"]
 
 
 def test_benchmark_tool_identity_uses_git_tree_paths(monkeypatch) -> None:

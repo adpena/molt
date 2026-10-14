@@ -35,7 +35,7 @@ against it:
 
 ## Authority (Rule 2)
 
-Only **authoritative** boards (clean tree == origin/main, tool unmodified,
+Only **authoritative** boards (a clean tree at a revision on origin/main, tool unmodified,
 measured quiescent) ever become a baseline. A non-authoritative board (a
 contended CI runner, a dirty local tree) is recorded for the trail but never
 selected as the regression reference — a noisy source cannot certify a target.

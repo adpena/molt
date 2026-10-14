@@ -1346,7 +1346,8 @@ def gather_provenance(
 ) -> dict:
     """Collect the full provenance metadata for a board (council ruling A + #69).
 
-    ``authoritative`` is False whenever the local HEAD diverges from origin/main
+    ``authoritative`` is False whenever the local HEAD is not on origin/main
+    (HEAD must be origin/main or one of its ancestors)
     OR the tree is dirty OR the scoreboard tool itself is modified-vs-HEAD — any
     of which means the numbers are not the canonical origin/main contract. When
     ``require_quiescent`` is set, a NON-QUIET machine ALSO forces
@@ -1368,7 +1369,11 @@ def gather_provenance(
     tool = _benchmark_tool_identity()
     tool_modified = tool.get("modified_vs_head") == "true"
 
-    diverges = bool(local_head and origin and local_head != origin)
+    # A citable measurement names a revision that has landed on main: HEAD is
+    # origin/main or one of its ancestors. Main moving on while the run waits
+    # or measures does not make the measured revision less canonical, and an
+    # unresolvable origin/main is unknown provenance, never authority.
+    diverges = not (local_head and origin and merge_base == local_head)
     quiet = bool(quiescence.get("quiet")) if quiescence else None
     # The quiescence component of authority only BITES when --require-quiescent.
     quiet_blocks = bool(require_quiescent and quiescence is not None and not quiet)
@@ -1428,10 +1433,10 @@ def _authoritative_reason(
     quiescence: dict | None = None,
 ) -> str:
     if not (diverges or dirty or tool_modified or quiet_blocks):
-        return "tree == origin/main, clean, tool unmodified"
+        return "revision is on origin/main, clean, tool unmodified"
     parts = []
     if diverges:
-        parts.append("local HEAD diverges from origin/main")
+        parts.append("local HEAD is not on origin/main")
     if dirty:
         parts.append("working tree is dirty")
     if tool_modified:
@@ -1896,7 +1901,6 @@ def _merge_boards(
                 if doc.get(field) != first_doc.get(field)
             ]
             for field in (
-                "origin_sha",
                 "local_head_sha",
                 "merge_base_sha",
                 "benchmark_tool_sha",
@@ -1926,7 +1930,7 @@ def _merge_boards(
                 return 3
         if any(
             prov.get(field) != doc.get("git_rev")
-            for field in ("origin_sha", "local_head_sha", "merge_base_sha")
+            for field in ("local_head_sha", "merge_base_sha")
         ):
             print(f"--merge: source {src} revisions disagree", file=sys.stderr)
             return 3
