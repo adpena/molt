@@ -17,6 +17,21 @@ pub(crate) unsafe fn dict_commit_structure(ptr: *mut u8) {
     }
 }
 
+/// The one commit for a dictionary whose whole contents were cleared or
+/// replaced: `clear()` and the C-API `PyDict_Clear`, staged publication, and
+/// lifecycle and cycle clearing. It bumps the structural epoch and resets the
+/// namespace binding guard state, so no path that empties or swaps a
+/// namespace can leave its guard bits stale (HF-79). Lifecycle clearing can
+/// reach a dictionary whose order vector was never allocated; it has no epoch.
+pub(crate) unsafe fn dict_commit_reset(py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe {
+        if !dict_entries_ptr(ptr).is_null() {
+            dict_commit_structure(ptr);
+        }
+        crate::builtins::binding_guards::note_namespace_reset(py, ptr);
+    }
+}
+
 /// Publish a fully prepared dictionary without changing the live dictionary's
 /// identity or releasing any displaced Python value. The staged dictionary
 /// receives the old contents; its caller releases that owner only after all
@@ -76,8 +91,7 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
                 (*header_from_obj_ptr(object))
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
-            dict_commit_structure(object);
-            crate::builtins::binding_guards::note_namespace_reset(py, object);
+            dict_commit_reset(py, object);
             if tracked {
                 crate::object::gc::gc_track_dict(py, object);
             }
@@ -2380,8 +2394,7 @@ unsafe fn dict_detach_contents(
         dict_storage(ptr).live = 0;
         dict_storage(ptr).fill = 0;
         (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
-        dict_commit_structure(ptr);
-        crate::builtins::binding_guards::note_namespace_reset(_py, ptr);
+        dict_commit_reset(_py, ptr);
         removed
     }
 }

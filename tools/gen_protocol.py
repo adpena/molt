@@ -137,6 +137,7 @@ _TYPE_CHECKING_IMPORTS = {
     "ModuleImportFlow": "molt.compiler_analysis.python_imports",
     "PythonBindingIndex": "molt.compiler_analysis.python_binding_facts",
     "PythonNodeKey": "molt.compiler_analysis.python_binding_facts",
+    "GuardArmKind": "molt.frontend.lowering.builtin_guards",
     "MoltBuiltinGuardArm": "molt.frontend.lowering.builtin_guards",
     "MoltBuiltinGuardArmExpr": "molt.frontend.lowering.builtin_guards",
     "MoltBuiltinGuardTest": "molt.frontend.lowering.builtin_guards",

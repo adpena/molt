@@ -175,3 +175,100 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
         }
     })
 }
+
+/// A sealed builtins namespace that publishes `len`, `int` and `isinstance`.
+fn sealed_builtins(py: &PyToken<'_>) -> *mut u8 {
+    let dict = new_namespace(py);
+    for name in [&b"len"[..], b"int", b"isinstance"] {
+        unsafe { dict_set_in_place(py, dict, key(py, name), MoltObject::from_int(1).bits()) };
+    }
+    seal_builtins_namespace(py, dict, 0);
+    assert_eq!(
+        guard_bits(dict) & (bit("len") | bit("int") | bit("isinstance")),
+        0
+    );
+    dict
+}
+
+#[test]
+fn every_whole_contents_reset_path_updates_guard_state() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let value = MoltObject::from_int(1).bits();
+
+        // Cycle and lifecycle clearing empties sealed builtins: every name may
+        // now be unbound, so no guard may hold.
+        let builtins = sealed_builtins(py);
+        unsafe { crate::object::heap_lifecycle::clear_cycle_edges(py, builtins) };
+        assert_eq!(guard_bits(builtins), BUILTIN_BINDING_GUARD_ALL_MASK);
+
+        // `dict.clear()` and the C-API `PyDict_Clear` share `molt_dict_clear`.
+        let cleared = sealed_builtins(py);
+        let result = crate::molt_dict_clear(MoltObject::from_ptr(cleared).bits());
+        assert!(obj_from_bits(result).is_none() && !exception_pending(py));
+        assert_eq!(guard_bits(cleared), BUILTIN_BINDING_GUARD_ALL_MASK);
+
+        // A module namespace emptied by lifecycle clearing records the names
+        // bound again afterwards.
+        let module = new_namespace(py);
+        unsafe { dict_set_in_place(py, module, key(py, b"total"), value) };
+        unsafe { crate::object::heap_lifecycle::clear_cycle_edges(py, module) };
+        assert_eq!(guard_bits(module), 0);
+        unsafe { dict_set_in_place(py, module, key(py, b"int"), value) };
+        assert_eq!(guard_bits(module), bit("int"));
+
+        // Staged publication swaps whole contents: the module now binds `len`.
+        let staged = alloc_dict_with_pairs(py, &[key(py, b"len"), value]);
+        assert!(!staged.is_null());
+        unsafe { crate::object::ops::dict_publish_staged(py, module, staged) };
+        assert_eq!(guard_bits(module), bit("int") | bit("len"));
+
+        for dict in [builtins, cleared, module, staged] {
+            dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+        }
+    })
+}
+
+/// Free-threaded binders OR their bits into one state word at once. A load
+/// followed by a store loses one writer's bit when two writers interleave.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn concurrent_binders_never_lose_a_guard_bit() {
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 256;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let address = crate::with_gil_entry_nopanic!(py, { new_namespace(py) as usize });
+    let barrier = std::sync::Barrier::new(THREADS + 1);
+    let mut incomplete_rounds = 0;
+    std::thread::scope(|scope| {
+        for thread in 0..THREADS {
+            let barrier = &barrier;
+            scope.spawn(move || {
+                let dict = address as *mut u8;
+                for _ in 0..ROUNDS {
+                    barrier.wait();
+                    for index in (thread..BUILTIN_BINDING_GUARD_NAMES.len()).step_by(THREADS) {
+                        let state = unsafe { namespace_state(dict) }.expect("tracked namespace");
+                        unsafe { add_bits(dict, state, 1 << index) };
+                    }
+                    barrier.wait();
+                }
+            });
+        }
+        let dict = address as *mut u8;
+        for _ in 0..ROUNDS {
+            object_set_state(dict, NAMESPACE_TRACKED as i64);
+            barrier.wait();
+            barrier.wait();
+            // Count rather than assert: a panic here would strand the binders
+            // at the barrier and hang the test instead of failing it.
+            if guard_bits(dict) != BUILTIN_BINDING_GUARD_ALL_MASK {
+                incomplete_rounds += 1;
+            }
+        }
+    });
+    assert_eq!(incomplete_rounds, 0, "a concurrent binder lost a guard bit");
+    crate::with_gil_entry_nopanic!(py, {
+        dec_ref_bits(py, MoltObject::from_ptr(address as *mut u8).bits());
+    });
+}

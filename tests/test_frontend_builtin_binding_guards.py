@@ -3,13 +3,15 @@
 A builtin read inside a function is a live lookup, so the frontend may only
 specialize it behind ``molt_guard_builtin_bindings``. These tests pin where the
 guard sits, what one guard covers, and that the fallback arm is the dynamic
-lookup and call. ``tests/differential/basic/builtin_binding_guards.py`` proves
-the runtime behavior under every rebinding path.
+lookup and call. ``tests/differential/basic/builtin_binding_guards.py`` and
+the ``builtin_binding_guards_matrix_*.py`` rotations prove the runtime
+behavior under every rebinding path against CPython.
 """
 
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
@@ -18,6 +20,9 @@ from molt.compiler_analysis.python_binding_flow import analyze_python_source_bin
 from molt.frontend import compile_to_tir
 
 GUARD = "molt_guard_builtin_bindings"
+MATRIX_SUPPORT = (
+    Path(__file__).parent / "differential" / "basic" / "builtin_binding_guard_support"
+)
 
 
 def _ops(source: str, suffix: str) -> list[dict]:
@@ -179,3 +184,24 @@ def test_regions_with_nested_scopes_stay_dynamic() -> None:
         if "loop_index_start" in _kinds(_arms(loop, guard)[0])
     ]
     assert not fast_loops
+
+
+def test_shadowing_matrix_probes_compile_behind_guards() -> None:
+    """Each probe the shadowing matrix rebinds starts on the guarded arm.
+
+    The matrix rotations compare with CPython, which has no guard, so they
+    cannot see which arm ran. This pins that every probe they shadow is a
+    guarded call: a shadow then switches it from the specialized arm to the
+    generic one, rather than exercising only the dynamic lowering.
+    """
+    expected = {
+        "size": _bit("len"),
+        "to_int": _bit("int"),
+        "is_int": _bit("isinstance", "int"),
+    }
+    for module, prefix in (("guarded.py", ""), ("matrix.py", "builtins_")):
+        source = (MATRIX_SUPPORT / module).read_text(encoding="utf-8")
+        for name, mask in expected.items():
+            ops = _ops(source, f"__{prefix}{name}")
+            (guard,) = _guards(ops)
+            assert _guard_mask(ops, guard) == mask, (module, name)
