@@ -904,10 +904,6 @@ fn socket_af_unspec() -> i32 {
     {
         libc::AF_UNSPEC
     }
-    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    {
-        0
-    }
 }
 
 #[inline]
@@ -943,17 +939,6 @@ fn socket_getaddrinfo_call(
             )
         }
     }
-    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    {
-        crate::molt_socket_getaddrinfo(
-            host_bits,
-            port_bits,
-            family_bits,
-            type_bits,
-            proto_bits,
-            flags_bits,
-        )
-    }
 }
 
 #[inline]
@@ -965,10 +950,6 @@ fn socket_gethostname_call() -> u64 {
     #[cfg(molt_has_net_io)]
     {
         unsafe { molt_socket_gethostname() }
-    }
-    #[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-    {
-        crate::molt_socket_gethostname()
     }
 }
 
