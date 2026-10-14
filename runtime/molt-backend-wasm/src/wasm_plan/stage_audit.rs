@@ -21,7 +21,9 @@ pub(crate) struct WasmStageAudit {
 impl WasmStageAudit {
     pub(crate) fn from_environment() -> Self {
         Self {
-            enabled: std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1"),
+            enabled: molt_ir::stage_audit::stage_audit_enabled(
+                molt_ir::stage_audit::AuditStage::Wasm,
+            ),
         }
     }
 

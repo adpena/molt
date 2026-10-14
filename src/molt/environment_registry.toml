@@ -2434,14 +2434,6 @@ owner = "tools/disk_guard.py"
 summary = "Age in hours after which a registered lane directory becomes eligible for disk-guard garbage collection; non-numeric or non-positive values use 6."
 
 [[variable]]
-name = "MOLT_DROP_STAGE_AUDIT"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-passes/src/tir/drop_phase.rs"
-summary = "Emits per-function drop-stage audit lines from the TIR drop phase and the drop-insertion pass when set to exactly 1; MOLT_MODULE_STAGE_AUDIT=1 or MOLT_WASM_STAGE_AUDIT=1 also enable it, default off."
-
-[[variable]]
 name = "MOLT_DROP_STAGE_AUDIT_FUNC"
 audience = "user"
 kind = "string"
@@ -3362,14 +3354,6 @@ owner = "src/molt/cli/build_inputs.py"
 summary = "os.pathsep-separated external module roots for molt build imports, the compiled runtime's sys.path, and Cython package custody; each entry is a plain path or a dotted alias (pkg.name=/path), missing entries are reported, the value keys the molt-run wrapper build cache, and unset adds no roots beyond the project."
 
 [[variable]]
-name = "MOLT_MODULE_STAGE_AUDIT"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-passes/src/tir/module_phase.rs"
-summary = "Set to 1 to print a [molt-module-stage-audit] line to stderr after each module-level TIR phase (function count, block and op totals, largest function, changed functions, elapsed ms, peak RSS) and to enable the drop-phase audit lines as well; only the exact value 1 enables it, default off."
-
-[[variable]]
 name = "MOLT_MP_DEBUG"
 audience = "user"
 kind = "bool"
@@ -4259,6 +4243,15 @@ kind = "bool"
 default = "0"
 owner = "runtime/molt-passes/src/tir/passes/sroa/engine.rs"
 summary = "Collects per-root diagnostics (rejected, blocked and not-removable allocation roots) in the TIR scalar-replacement pass when set to exactly 1; default off."
+
+[[variable]]
+name = "MOLT_STAGE_AUDIT"
+audience = "user"
+kind = "enum"
+default = ""
+values = ["drop", "module", "wasm"]
+owner = "runtime/molt-ir/src/stage_audit.rs"
+summary = "Outermost compiler stage whose stage-audit stream the backend prints to stderr; each stage also audits the stages it contains: wasm audits WASM planning and emission, the TIR module pipeline and drop insertion, module audits the last two, drop audits drop insertion alone; unset audits nothing, and an unknown value audits nothing and warns once."
 
 [[variable]]
 name = "MOLT_STARTUP_PYTHON"
@@ -6072,14 +6065,6 @@ owner = "src/molt/cli/backend_compile.py"
 summary = "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime layout: the app's function-table base (u32) in a split-runtime build, which the backend ignores when it does not parse; unset means no split-runtime app table base."
 
 [[variable]]
-name = "MOLT_WASM_STAGE_AUDIT"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-backend-wasm/src/wasm_plan/stage_audit.rs"
-summary = "Set to 1 to stream wasm backend stage audits to stderr (module emission and finalization stages with byte sizes) and to enable the TIR module-phase and drop-phase audits as well; any other value is off."
-
-[[variable]]
 name = "MOLT_WASM_TABLE_BASE"
 audience = "user"
 kind = "int"
@@ -6886,6 +6871,11 @@ replacement = "MOLT_CAPABILITY_TIER"
 retired = 2026-10-06
 
 [[retired]]
+name = "MOLT_DROP_STAGE_AUDIT"
+replacement = "MOLT_STAGE_AUDIT"
+retired = 2026-10-14
+
+[[retired]]
 name = "MOLT_EXTERNAL_ARTIFACT_CANDIDATES"
 replacement = "MOLT_EXTERNAL_ARTIFACT_ROOTS"
 retired = 2026-10-06
@@ -6921,6 +6911,11 @@ retired = 2026-10-06
 name = "MOLT_MEMORY_LIMIT"
 replacement = "MOLT_RESOURCE_MAX_MEMORY"
 retired = 2026-10-06
+
+[[retired]]
+name = "MOLT_MODULE_STAGE_AUDIT"
+replacement = "MOLT_STAGE_AUDIT"
+retired = 2026-10-14
 
 [[retired]]
 name = "MOLT_NATIVE_ARCH_PERF"
@@ -7005,6 +7000,11 @@ rejected_by = [
   "runtime/molt-wasm-host/tests/support/mod.rs",
 ]
 retired = 2026-10-06
+
+[[retired]]
+name = "MOLT_WASM_STAGE_AUDIT"
+replacement = "MOLT_STAGE_AUDIT"
+retired = 2026-10-14
 
 [[retired]]
 name = "MOLT_WIRE"

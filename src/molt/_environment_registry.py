@@ -221,6 +221,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_DROP_STAGE_AUDIT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_STAGE_AUDIT",
+      "retired": "2026-10-14"
+    },
+    {
       "name": "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
       "note": "",
       "rejected_by": [],
@@ -272,6 +279,13 @@ _REGISTRY_JSON = r"""{
       "rejected_by": [],
       "replacement": "MOLT_RESOURCE_MAX_MEMORY",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_MODULE_STAGE_AUDIT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_STAGE_AUDIT",
+      "retired": "2026-10-14"
     },
     {
       "name": "MOLT_NATIVE_ARCH_PERF",
@@ -381,6 +395,13 @@ _REGISTRY_JSON = r"""{
       ],
       "replacement": "",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_WASM_STAGE_AUDIT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_STAGE_AUDIT",
+      "retired": "2026-10-14"
     },
     {
       "name": "MOLT_WIRE",
@@ -3513,15 +3534,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_DROP_STAGE_AUDIT",
-      "owner": "runtime/molt-passes/src/tir/drop_phase.rs",
-      "summary": "Emits per-function drop-stage audit lines from the TIR drop phase and the drop-insertion pass when set to exactly 1; MOLT_MODULE_STAGE_AUDIT=1 or MOLT_WASM_STAGE_AUDIT=1 also enable it, default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "",
       "kind": "string",
       "name": "MOLT_DROP_STAGE_AUDIT_FUNC",
@@ -4598,15 +4610,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_MODULE_STAGE_AUDIT",
-      "owner": "runtime/molt-passes/src/tir/module_phase.rs",
-      "summary": "Set to 1 to print a [molt-module-stage-audit] line to stderr after each module-level TIR phase (function count, block and op totals, largest function, changed functions, elapsed ms, peak RSS) and to enable the drop-phase audit lines as well; only the exact value 1 enables it, default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_MP_DEBUG",
       "owner": "src/molt/stdlib/multiprocessing/_core.py",
       "summary": "Set to 1 to print multiprocessing spawn, worker, and entry-resolution diagnostics to stderr; the parent copies the value into every spawned child's environment; only the exact value 1 enables it, default off.",
@@ -5613,6 +5616,19 @@ _REGISTRY_JSON = r"""{
       "owner": "runtime/molt-passes/src/tir/passes/sroa/engine.rs",
       "summary": "Collects per-root diagnostics (rejected, blocked and not-removable allocation roots) in the TIR scalar-replacement pass when set to exactly 1; default off.",
       "values": []
+    },
+    {
+      "audience": "user",
+      "default": "",
+      "kind": "enum",
+      "name": "MOLT_STAGE_AUDIT",
+      "owner": "runtime/molt-ir/src/stage_audit.rs",
+      "summary": "Outermost compiler stage whose stage-audit stream the backend prints to stderr; each stage also audits the stages it contains: wasm audits WASM planning and emission, the TIR module pipeline and drop insertion, module audits the last two, drop audits drop insertion alone; unset audits nothing, and an unknown value audits nothing and warns once.",
+      "values": [
+        "drop",
+        "module",
+        "wasm"
+      ]
     },
     {
       "audience": "developer",
@@ -7693,15 +7709,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
       "owner": "src/molt/cli/backend_compile.py",
       "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime layout: the app's function-table base (u32) in a split-runtime build, which the backend ignores when it does not parse; unset means no split-runtime app table base.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_STAGE_AUDIT",
-      "owner": "runtime/molt-backend-wasm/src/wasm_plan/stage_audit.rs",
-      "summary": "Set to 1 to stream wasm backend stage audits to stderr (module emission and finalization stages with byte sizes) and to enable the TIR module-phase and drop-phase audits as well; any other value is off.",
       "values": []
     },
     {
