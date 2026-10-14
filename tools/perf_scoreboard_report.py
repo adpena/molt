@@ -100,7 +100,7 @@ def print_summary(doc: dict) -> None:
                 )
     if authoritative:
         print(
-            "  AUTHORITATIVE: tree == origin/main, clean, tool unmodified, machine quiescent"
+            "  AUTHORITATIVE: revision on origin/main, clean, tool unmodified, machine quiescent"
         )
     else:
         print("  *** WARNING: benchmark is NON-AUTHORITATIVE ***")

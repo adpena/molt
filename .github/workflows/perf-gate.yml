@@ -68,7 +68,7 @@ jobs:
         with:
           persist-credentials: false
           # Full history so the provenance check can resolve origin/main and
-          # the merge-base (authoritative requires local tip == origin/main).
+          # the merge-base (authoritative requires HEAD to be on origin/main).
           fetch-depth: 0
 
       - name: Setup performance gate toolchains

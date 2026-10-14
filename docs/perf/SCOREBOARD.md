@@ -124,11 +124,12 @@ against, under the top-level `provenance` block:
   "backend_binary_identity": { "native/release-fast": "<path|mtime_ns|size>" },
   "stdlib_cache_key":        "<runtime/codegen source-tree fingerprint>",
   "authoritative":           true,
-  "authoritative_reason":    "tree == origin/main, clean, tool unmodified"
+  "authoritative_reason":    "revision is on origin/main, clean, tool unmodified"
 }
 ```
 
-`authoritative` is **false** whenever the local HEAD diverges from origin/main,
+`authoritative` is **false** whenever the local HEAD is not on origin/main (it
+must be origin/main or one of its ancestors; main may move on during a run),
 OR the tree is dirty, OR the scoreboard tool itself is modified-vs-HEAD, OR
 `--require-quiescent` cannot certify the machine as quiet. A non-authoritative
 board PRINTS *"WARNING: scoreboard provenance is non-authoritative; benchmark is
