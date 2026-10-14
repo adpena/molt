@@ -733,6 +733,45 @@ fn compile_call_method_uses_s_value_method_name() {
 }
 
 #[test]
+fn compile_guarded_call_invokes_the_callee_operand() {
+    let mut backend = RustBackend::new();
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            name: "molt_main".to_string(),
+            params: vec!["callee".to_string(), "value".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "call_guarded".to_string(),
+                    s_value: Some("main__target".to_string()),
+                    args: Some(vec!["callee".to_string(), "value".to_string()]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        }],
+        profile: None,
+    };
+
+    let source = backend.compile(&ir);
+    // The guard only selects a faster entry; the callee operand is the call.
+    assert!(source.contains("molt_call(&callee, &mut __call_args);"));
+    assert!(source.contains("vec![value.clone()]"));
+    assert!(!source.contains("main__target("));
+    assert!(!source.contains("unsupported Rust backend op"));
+}
+
+#[test]
 fn compile_ord_at_emits_fused_helper() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {

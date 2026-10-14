@@ -42,7 +42,24 @@ impl RustBackend {
                     &self.hoisted_vars.clone(),
                 ));
             }
-        } else if args.is_empty() {
+        } else {
+            self.emit_op_dynamic_call(op);
+        }
+    }
+
+    /// Call args[0] with args[1..]. A guarded call lowers here too: its
+    /// identity guard only selects a faster entry for the same callee.
+    pub(super) fn emit_op_dynamic_call(&mut self, op: &OpIR) {
+        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
+            if hoisted.contains(out_name) {
+                format!("{out_name} = {rhs};")
+            } else {
+                format!("let mut {out_name}: MoltValue = {rhs};")
+            }
+        };
+        let o = out_var(op);
+        let args = op.args.as_deref().unwrap_or(&[]);
+        if args.is_empty() {
             self.emit_unsupported_op(op, "dynamic call requires a callable argument");
         } else {
             // Dynamic call: args[0] is the MoltValue::Func to invoke.

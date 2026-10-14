@@ -124,6 +124,7 @@ impl RustBackend {
                 self.emit_op_ret_void(op)
             }
             "call" | "call_func" | "call_internal" => self.emit_op_call(op),
+            "call_guarded" => self.emit_op_dynamic_call(op),
             "call_method" => self.emit_op_call_method(op),
             "call_bind" | "call_indirect" => self.emit_op_call_bind(op),
             "callargs_new" => self.emit_op_callargs_new(op),
