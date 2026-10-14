@@ -396,7 +396,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         err_val = self._emit_exception_new(
             "ValueError", "range() arg 3 must not be zero"
         )
-        self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
+        self._emit_raise(err_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_range_loop(
@@ -581,7 +581,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="IS", args=[res, none_val], result=is_none))
         self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
         err_val = self._emit_exception_new("TypeError", "object is not iterable")
-        self.emit(MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none")))
+        self._emit_raise(err_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return res
 

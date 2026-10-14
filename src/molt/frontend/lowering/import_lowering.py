@@ -59,7 +59,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         else:
             message = "attempted relative import with no known parent package"
         exc_val = self._emit_exception_new("ImportError", message)
-        self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+        self._emit_raise(exc_val)
 
     def _is_known_project_module(self, module_name: str | None) -> bool:
         """Return True only when *module_name* was discovered in the graph.
@@ -501,7 +501,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
             exc_val = self._emit_exception_new(
                 "ModuleNotFoundError", f"No module named '{module_name}'"
             )
-            self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+            self._emit_raise(exc_val)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         loaded_val = MoltValue(self.next_var(), type_hint="module")
@@ -557,15 +557,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         exc_val = self._emit_exception_new(
             "ImportError", f"No module named '{module_name}'"
         )
-        self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
-        # On the native backend, RAISE sets a pending exception but does not
-        # alter control flow — execution falls through to END_IF and continues.
-        # Without an explicit exit here, the caller proceeds to use the None
-        # module_val in MODULE_GET_ATTR / MODULE_SET_ATTR, triggering a
-        # "module attribute access expects module" TypeError that masks the
-        # real ImportError.  Emit _emit_raise_exit() to jump to the nearest
-        # exception handler (or return) so the ImportError propagates cleanly.
-        self._emit_raise_exit()
+        self._emit_raise(exc_val)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 

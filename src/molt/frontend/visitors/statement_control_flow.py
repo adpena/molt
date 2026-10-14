@@ -532,9 +532,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
+                self._emit_raise(exc_val, continue_to_cleanup=True)
                 return
             handler = handlers[0]
             match_val = self._emit_exception_match(handler, exc_val)
@@ -580,9 +578,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             if len(handlers) > 1:
                 emit_handlers(handlers[1:])
             else:
-                self.emit(
-                    MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none"))
-                )
+                self._emit_raise(exc_val, continue_to_cleanup=True)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         if node.handlers:
@@ -1380,7 +1376,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     )
                 )
             if should_exit:
-                self.emit(MoltOp(kind="RAISE", args=[exc], result=MoltValue("none")))
+                self._emit_raise(exc)
             else:
                 self.emit(
                     MoltOp(
@@ -1436,8 +1432,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
             emit_raise_or_defer(exc_val)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            if should_exit:
-                self._emit_raise_exit()
             return None
 
         exc_val = emit_exception_value(node.exc, allow_none=False, context="raise")
@@ -1488,8 +1482,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         # dropping the bindings here cannot disturb the in-flight exception.
         self._emit_escaping_handler_name_deletes()
         emit_raise_or_defer(exc_val)
-        if should_exit:
-            self._emit_raise_exit()
         return None
 
     def visit_Assert(self, node: ast.Assert) -> None:
@@ -1522,7 +1514,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 return None
             exc_val = self._emit_exception_new_from_args("AssertionError", [msg_val])
-        self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+        self._emit_raise(exc_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return None
 

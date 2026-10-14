@@ -66,6 +66,14 @@ def test_every_spelled_frontend_kind_is_produced(census: FrontendCensus) -> None
     assert not stale, "frontend kinds spelled but never produced:\n" + "\n".join(stale)
 
 
+def test_raise_has_one_producer_that_always_leaves(census: FrontendCensus) -> None:
+    # RAISE only sets the pending exception. `_emit_raise` pairs it with the
+    # exit to the nearest handler, so any other producer could let operations
+    # after a raise run with the exception pending (HF-213).
+    producers = {site.function for site in census.produced["RAISE"]}
+    assert producers == {"_emit_raise"}, census.produced["RAISE"]
+
+
 def _census_of(tmp_path: Path, source: str) -> FrontendCensus:
     package = tmp_path / "src/molt/frontend"
     package.mkdir(parents=True)
