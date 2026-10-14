@@ -243,39 +243,45 @@ def _prebuild_backend_binary(
                 "stage_timings_ms": stage_timings_ms,
             },
         )
-    receipts: dict[str, Any] | None = None
-    try:
-        # Admission releases its lock before returning. Reacquire it while
-        # reading bytes and receipts so another feature lane cannot interleave.
-        with _backend_binary._backend_admission_lock(
-            molt_root, selection.cargo_profile, cargo_timeout=cargo_timeout
-        ):
-            identity = executable_content_identity(
-                selection.binary, label="prebuilt backend compiler"
-            )
-            installed_manifest = installed_compiler_admission(
-                molt_root, selection.features, selection.cargo_profile, fresh=True
-            )
-            installed = installed_manifest is not None
-            if installed_manifest is not None:
-                if installed_manifest.compiler.binary != selection.binary:
-                    raise ValueError(
-                        "Selected compiler differs from the installed compiler"
-                    )
-                fingerprint = installed_manifest.fingerprint
-                if fingerprint != result.cache_compiler_fingerprint:
-                    raise ValueError("Installed compiler changed after admission")
-            else:
-                receipts, receipt_error = _verified_backend_receipts(
-                    molt_root, selection, identity, result.cache_compiler_fingerprint
+
+    def admitted_identity() -> tuple[dict[str, str | int], bool, dict[str, Any] | None]:
+        identity = executable_content_identity(
+            selection.binary, label="prebuilt backend compiler"
+        )
+        installed_manifest = installed_compiler_admission(
+            molt_root, selection.features, selection.cargo_profile, fresh=True
+        )
+        if installed_manifest is not None:
+            if installed_manifest.compiler.binary != selection.binary:
+                raise ValueError(
+                    "Selected compiler differs from the installed compiler"
                 )
-                if receipt_error is not None:
-                    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
-                        receipt_error += (
-                            " MOLT_SKIP_RUNTIME_REBUILD=1 bypasses backend admission;"
-                            " unset it to publish receipts."
-                        )
-                    raise ValueError(receipt_error)
+            if installed_manifest.fingerprint != result.cache_compiler_fingerprint:
+                raise ValueError("Installed compiler changed after admission")
+            return identity, True, None
+        receipts, receipt_error = _verified_backend_receipts(
+            molt_root, selection, identity, result.cache_compiler_fingerprint
+        )
+        if receipt_error is not None:
+            if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
+                receipt_error += (
+                    " MOLT_SKIP_RUNTIME_REBUILD=1 bypasses backend admission;"
+                    " unset it to publish receipts."
+                )
+            raise ValueError(receipt_error)
+        return identity, False, receipts
+
+    try:
+        try:
+            # The receipts bind these exact bytes, so a read without the lock
+            # can only fail if another lane interleaves, never pass for other
+            # bytes. Only a failed read waits for the lock and reads again.
+            identity, installed, receipts = admitted_identity()
+        except (OSError, ValueError):
+            with _backend_binary._backend_admission_lock(
+                molt_root, selection.cargo_profile, cargo_timeout=cargo_timeout
+            ):
+                identity, installed, receipts = admitted_identity()
     except (OSError, ValueError, _backend_binary._BackendAdmissionLockError) as exc:
         return _fail_prebuild(
             f"Prebuilt backend compiler identity failed: {exc}",
