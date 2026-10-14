@@ -496,18 +496,40 @@ def _is_xdist_worker() -> bool:
     return bool(os.environ.get("PYTEST_XDIST_WORKER"))
 
 
+def _cargo_target_in_checkout() -> bool:
+    from molt.path_custody import host_path_is_within
+
+    cargo_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
+    return bool(cargo_target) and host_path_is_within(Path(cargo_target), ROOT)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):  # type: ignore[no-untyped-def]
+    """Name the test that was running when build state entered the checkout."""
+    before = checkout_target_entries()
+    yield
+    leaks = checkout_target_leaks(
+        before,
+        checkout_target_entries(),
+        cargo_target_in_checkout=_cargo_target_in_checkout(),
+    )
+    if leaks:
+        item.warn(
+            pytest.PytestWarning(
+                "build state appeared in the checkout while this test ran "
+                f"(a parallel worker may share the window): {', '.join(leaks)}"
+            )
+        )
+
+
 def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-def]
     before = getattr(session.config, _CHECKOUT_TARGET_SNAPSHOT_ATTR, None)
     if before is None:
         return
-    from molt.path_custody import host_path_is_within
-
-    cargo_target = os.environ.get("CARGO_TARGET_DIR", "").strip()
     leaks = checkout_target_leaks(
         before,
         checkout_target_entries(),
-        cargo_target_in_checkout=bool(cargo_target)
-        and host_path_is_within(Path(cargo_target), ROOT),
+        cargo_target_in_checkout=_cargo_target_in_checkout(),
     )
     if not leaks:
         return
@@ -516,8 +538,9 @@ def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-d
         f"Build or test state appeared in the checkout during this session: {ROOT}",
         *(f"  {entry}" for entry in leaks),
         "Tests build and keep state where a developer run does "
-        "(molt.dx.RunContext.root_env, molt.dx.scratch_dir); find the test that "
-        "cleared or bypassed the run context (HF-114, HF-135).",
+        "(molt.dx.RunContext.root_env, molt.dx.scratch_dir). The warnings "
+        "summary names each test that was running when an entry appeared "
+        "(HF-114, HF-135).",
         "Every session that shares the checkout reports the same entries: a "
         "proof-plan family runs its commands in parallel.",
     ]
