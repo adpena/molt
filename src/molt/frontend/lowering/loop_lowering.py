@@ -22,7 +22,14 @@ from typing import Callable
 
 from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend._types import LoopScope, MoltOp, MoltValue, ScratchCell
+from molt.frontend._types import (
+    ClassId,
+    LoopScope,
+    MoltOp,
+    MoltValue,
+    ScratchCell,
+    TypeHint,
+)
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
@@ -602,9 +609,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
             self._emit_raise_if_pending()
         return pair
 
-    def _emit_layout_guard(self, obj: MoltValue, expected_class: str) -> MoltValue:
-        if expected_class == "dict":
-            return self._emit_guard_dict_shape(obj)
+    def _emit_layout_guard(self, obj: MoltValue, expected_class: ClassId) -> MoltValue:
         class_ref = self._emit_class_ref(expected_class)
         expected_version = MoltValue(self.next_var(), type_hint="int")
         self.emit(
@@ -624,27 +629,9 @@ class LoopLoweringMixin(GeneratorMixinBase):
         )
         return guard
 
-    def _emit_guard_dict_shape(self, obj: MoltValue) -> MoltValue:
-        dict_type = self._emit_builtin_type_value("dict")
-        expected_version = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="CLASS_VERSION",
-                args=[dict_type],
-                result=expected_version,
-            )
-        )
-        guard = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(
-            MoltOp(
-                kind="GUARD_DICT_SHAPE",
-                args=[obj, dict_type, expected_version],
-                result=guard,
-            )
-        )
-        return guard
-
-    def _loop_guard_assumption(self, obj_name: str, expected_class: str) -> bool | None:
+    def _loop_guard_assumption(
+        self, obj_name: str, expected_class: ClassId
+    ) -> bool | None:
         for guard_map in reversed(self.loop_guard_assumptions):
             entry = guard_map.get(obj_name)
             if entry is not None:
@@ -655,10 +642,10 @@ class LoopLoweringMixin(GeneratorMixinBase):
 
     def _push_loop_guard_assumptions(
         self,
-        guard_map: dict[str, tuple[str, MoltValue, int]],
+        guard_map: dict[str, tuple[ClassId, MoltValue, int]],
         assume_true: bool,
     ) -> None:
-        assumptions: dict[str, tuple[str, bool, int]] = {}
+        assumptions: dict[str, tuple[ClassId, bool, int]] = {}
         for name, (expected_class, _, _) in guard_map.items():
             # Entering the emitted bool-only guard branch establishes the
             # layout proof at this exact point. Later callbacks advance the
@@ -675,7 +662,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
             self.loop_guard_assumptions.pop()
 
     def _loop_guard_for(
-        self, obj: MoltValue, expected_class: str, *, obj_name: str | None = None
+        self, obj: MoltValue, expected_class: ClassId, *, obj_name: str | None = None
     ) -> MoltValue | None:
         if not self.loop_layout_guards:
             return None
@@ -696,9 +683,9 @@ class LoopLoweringMixin(GeneratorMixinBase):
         for guard_map in self.loop_layout_guards:
             guard_map.pop(name, None)
 
-    def _invalidate_loop_guards_for_class(self, class_name: str) -> None:
+    def _invalidate_loop_guards_for_class(self, class_id: ClassId) -> None:
         for guard_map in self.loop_layout_guards:
-            stale = [key for key, entry in guard_map.items() if entry[0] == class_name]
+            stale = [key for key, entry in guard_map.items() if entry[0] == class_id]
             for key in stale:
                 guard_map.pop(key, None)
 
@@ -709,13 +696,13 @@ class LoopLoweringMixin(GeneratorMixinBase):
 
     def _emit_hoisted_loop_guards(
         self, body: list[ast.stmt]
-    ) -> dict[str, tuple[str, MoltValue, int]]:
+    ) -> dict[str, tuple[ClassId, MoltValue, int]]:
         if self.is_async() or not self._loop_body_preserves_exact_class_lifetimes(body):
             return {}
         candidates = self._collect_loop_guard_candidates(body)
         if not candidates:
             return {}
-        guard_map: dict[str, tuple[str, MoltValue, int]] = {}
+        guard_map: dict[str, tuple[ClassId, MoltValue, int]] = {}
         for name, expected_class in sorted(candidates.items()):
             # The guarded object is the binding's current value on loop entry;
             # a name with no visible binding here is not guarded.
@@ -731,7 +718,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         }
 
     def _emit_guard_map_condition(
-        self, guard_map: dict[str, tuple[str, MoltValue, int]]
+        self, guard_map: dict[str, tuple[ClassId, MoltValue, int]]
     ) -> MoltValue:
         condition: MoltValue | None = None
         for _, (_, guard, _) in sorted(guard_map.items()):
@@ -796,7 +783,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         return fast_local or fact.binding_invalidated is False
 
     def _emit_tuple_item(
-        self, pair: MoltValue, index: int, type_hint: str
+        self, pair: MoltValue, index: int, type_hint: TypeHint
     ) -> MoltValue:
         position = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[index], result=position))
@@ -1102,7 +1089,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         if not isinstance(key, ast.Attribute) or not isinstance(key.value, ast.Name):
             return False
         class_id = self._exact_class_for_name(key.value.id)
-        class_info = self.classes.get(class_id or "")
+        class_info = self.classes.get(class_id) if class_id is not None else None
         return bool(
             class_info
             and class_info.get("dataclass")
@@ -1351,7 +1338,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
     def _visit_loop_body(
         self,
         body: list[ast.stmt],
-        prefill: dict[str, tuple[str, MoltValue, int]] | None = None,
+        prefill: dict[str, tuple[ClassId, MoltValue, int]] | None = None,
         loop_break_flag: int | ScratchCell | None = None,
     ) -> LoopScope:
         scope = LoopScope(

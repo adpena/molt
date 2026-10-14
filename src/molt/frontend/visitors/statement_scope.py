@@ -301,13 +301,14 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         prev_module_chunk_globals = self.module_chunk_globals
         prev_elided_deleted_funcs = self.module_elided_deleted_funcs
         prev_pending_classes = self.class_definition_pending
+        prev_class_index = self._class_index
+        prev_class_exports = self._class_exports
         self.module_elided_deleted_funcs = set(
             self._module_elidable_deleted_functions(node)
         )
         self.stable_module_funcs = (
             self._module_stable_funcs(node) - self.module_elided_deleted_funcs
         )
-        self.mutated_classes = self._collect_module_class_mutations(node)
         # F2b (doc 44): the static class graph, const environment, and top-level
         # function metadata are now computed once, pre-walk, by frontend/sema/ and
         # the existing god-object dicts are populated FROM the immutable SemaResult.
@@ -315,7 +316,6 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         # byte-identical; F2c rewires the read-sites onto SemaResult directly.
         self._populate_sema_state(node)
         self.stable_module_classes = self._collect_stable_module_classes(node)
-        self.class_definition_pending = set(self.module_declared_classes)
         self.reserved_func_symbols = {}
         for func_name, kind in self.module_declared_funcs.items():
             function_kind = normalize_function_kind(kind)
@@ -329,6 +329,12 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         # AST-derived defaults from SemaResult, with the known_func_defaults
         # runtime override applied in the shim).
         self.future_annotations = future_annotations
+        # Class identity is decided for the whole module before any statement
+        # lowers, so a repeated qualname gives every statement its own ClassId.
+        self._class_index = self._build_class_definition_index(node)
+        self._class_exports = self._build_class_exports()
+        self.mutated_classes = self._collect_module_class_mutations(node)
+        self.class_definition_pending = set(self._class_index.top_level)
         self.module_annotations = None
         self.module_annotation_items = []
         self.module_annotation_ids = {}
@@ -445,7 +451,9 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     self.module_defined_funcs.add(stmt.name)
                 if isinstance(stmt, ast.ClassDef):
-                    self.class_definition_pending.discard(stmt.name)
+                    self.class_definition_pending.discard(
+                        self._class_id_for_definition(stmt)
+                    )
                 if (
                     current_chunk is not None
                     and self.module_chunk_max_ops > 0
@@ -471,7 +479,9 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     self.module_defined_funcs.add(stmt.name)
                 if isinstance(stmt, ast.ClassDef):
-                    self.class_definition_pending.discard(stmt.name)
+                    self.class_definition_pending.discard(
+                        self._class_id_for_definition(stmt)
+                    )
         if defer:
             self._flush_deferred_module_attrs()
         if (
@@ -507,6 +517,8 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         self.reserved_func_symbols = prev_reserved
         self.module_defined_funcs = prev_defined
         self.class_definition_pending = prev_pending_classes
+        self._class_index = prev_class_index
+        self._class_exports = prev_class_exports
         self.module_func_defaults = prev_defaults
         self.future_annotations = prev_future
         self.module_annotations = prev_annotations

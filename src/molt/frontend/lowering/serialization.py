@@ -15,7 +15,7 @@ from typing import (
     Literal,
 )
 
-from molt.frontend._types import _MOLT_CLOSURE_PARAM, MoltOp, MoltValue
+from molt.frontend._types import _MOLT_CLOSURE_PARAM, ClassId, MoltOp, MoltValue
 from molt.frontend.module_publication import inspect_source_module_publication
 from molt.frontend.lowering.serialization_basic_ops import SerializationBasicOpsMixin
 from molt.frontend.lowering.serialization_collection_ops import (
@@ -57,7 +57,10 @@ class SerializationMixin(
             )
         return target
 
-    def _serialization_field_offset(self, expected_class: str, attr: str) -> int | None:
+    def _serialization_field_offset(
+        self, expected_class: ClassId, attr: str
+    ) -> int | None:
+        """The field offset of the class the op was emitted for (frozen facts)."""
         class_info = self.classes.get(expected_class)
         if not class_info:
             return None

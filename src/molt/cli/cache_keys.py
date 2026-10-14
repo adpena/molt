@@ -5,7 +5,14 @@ import hashlib
 import json
 from typing import Any, Iterable, Iterator, Mapping, TextIO
 
-from molt.frontend import MoltValue
+from molt.frontend import (
+    BoundMethodHint,
+    BuiltinClass,
+    ClassId,
+    DeclaredClass,
+    MoltValue,
+    ReceiverKind,
+)
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
 
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
@@ -30,8 +37,92 @@ _CACHE_JSON_TAGS = frozenset(
         "__set__",
         "__frozenset__",
         "__molt_value__",
+        "__class_id__",
+        "__builtin_class__",
+        "__declared_class__",
+        "__bound_method__",
     }
 )
+
+type _ClassIdentity = ClassId | BuiltinClass | DeclaredClass | BoundMethodHint
+
+
+# ── Class identity codec (HF-203) ──────────────────────────────────────────
+# The one place that turns a class identity into cache JSON and back. A
+# ``ClassId`` is ``{"__class_id__": [module, qualname, [line, column] | null]}``;
+# a map keyed by ``ClassId`` is written in ``ClassId.sort_key`` order, so the
+# lowering-context digest never depends on integration order.
+
+
+def _encode_class_identity(value: _ClassIdentity) -> dict[str, Any]:
+    if isinstance(value, ClassId):
+        occurrence = None if value.occurrence is None else list(value.occurrence)
+        return {"__class_id__": [value.module, value.qualname, occurrence]}
+    if isinstance(value, BuiltinClass):
+        return {"__builtin_class__": value.name}
+    if isinstance(value, DeclaredClass):
+        return {
+            "__declared_class__": [
+                _encode_class_identity(value.class_id),
+                value.kind.value,
+            ]
+        }
+    return {"__bound_method__": [_encode_class_identity(value.owner), value.method]}
+
+
+def _decode_class_id(payload: Any) -> ClassId:
+    if not (
+        isinstance(payload, list)
+        and len(payload) == 3
+        and isinstance(payload[0], str)
+        and isinstance(payload[1], str)
+    ):
+        raise ValueError("invalid cached class identity")
+    occurrence = payload[2]
+    if occurrence is None:
+        return ClassId(payload[0], payload[1])
+    if not (
+        isinstance(occurrence, list)
+        and len(occurrence) == 2
+        and all(type(item) is int for item in occurrence)
+    ):
+        raise ValueError("invalid cached class occurrence")
+    return ClassId(payload[0], payload[1], (occurrence[0], occurrence[1]))
+
+
+def _decode_class_ref(value: Any) -> ClassId | BuiltinClass:
+    if isinstance(value, dict) and len(value) == 1:
+        if "__class_id__" in value:
+            return _decode_class_id(value["__class_id__"])
+        if "__builtin_class__" in value and isinstance(value["__builtin_class__"], str):
+            return BuiltinClass(value["__builtin_class__"])
+    raise ValueError("invalid cached class reference")
+
+
+def _decode_class_identity(value: dict[str, Any]) -> _ClassIdentity | None:
+    """Decode one tagged class identity; None when ``value`` carries no tag."""
+    if len(value) != 1:
+        return None
+    if "__class_id__" in value or "__builtin_class__" in value:
+        return _decode_class_ref(value)
+    if "__declared_class__" in value:
+        payload = value["__declared_class__"]
+        if not (isinstance(payload, list) and len(payload) == 2):
+            raise ValueError("invalid cached declared class")
+        class_id = _decode_class_ref(payload[0])
+        if not isinstance(class_id, ClassId):
+            raise ValueError("a declared class names a class statement")
+        return DeclaredClass(class_id, ReceiverKind(payload[1]))
+    if "__bound_method__" in value:
+        payload = value["__bound_method__"]
+        if not (
+            isinstance(payload, list)
+            and len(payload) == 2
+            and isinstance(payload[1], str)
+        ):
+            raise ValueError("invalid cached bound method")
+        return BoundMethodHint(_decode_class_ref(payload[0]), payload[1])
+    return None
 
 
 def _cache_json_sort_key(value: Any) -> str:
@@ -52,10 +143,17 @@ def _cache_json_value(value: Any) -> Any:
     """
     if type(value) is int and not -(1 << 63) <= value < (1 << 63):
         return {"__integer_bytes__": list(integer_literal_bytes(value))}
+    if isinstance(value, (ClassId, BuiltinClass, DeclaredClass, BoundMethodHint)):
+        return _encode_class_identity(value)
     if isinstance(value, dict):
         name_map = all(isinstance(key, str) for key in value)
         if not name_map or any(key in _CACHE_JSON_TAGS for key in value):
-            items = sorted(value.items()) if name_map else value.items()
+            if name_map:
+                items = sorted(value.items())
+            elif value and all(isinstance(key, ClassId) for key in value):
+                items = sorted(value.items(), key=lambda item: item[0].sort_key())
+            else:
+                items = value.items()
             return {
                 "__dict__": [
                     [_cache_json_value(key), _cache_json_value(child)]
@@ -115,11 +213,18 @@ def _json_ir_default(value: Any) -> Any:
         items.sort(key=_cache_json_sort_key)
         tag = "__frozenset__" if isinstance(value, frozenset) else "__set__"
         return {tag: items}
+    if isinstance(value, (ClassId, BuiltinClass, DeclaredClass, BoundMethodHint)):
+        return _encode_class_identity(value)
     if isinstance(value, MoltValue):
+        type_hint = value.type_hint
         return {
             "__molt_value__": {
                 "name": value.name,
-                "type_hint": value.type_hint,
+                "type_hint": (
+                    type_hint
+                    if isinstance(type_hint, str)
+                    else _encode_class_identity(type_hint)
+                ),
             }
         }
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")

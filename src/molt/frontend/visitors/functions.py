@@ -18,6 +18,7 @@ from molt.python_private_names import python_definition_name
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     GEN_CONTROL_SIZE,
+    DeclaredClass,
     FuncInfo,
     MoltOp,
     MoltValue,
@@ -239,7 +240,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             self._publish_definition_binding(func_name, func_val)
 
             prev_state = self._capture_function_state()
-            self.current_class = None
             self.start_function(
                 poll_func_name,
                 stateful_frame_plan=frame_plan,
@@ -457,16 +457,16 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             has_closure=has_closure,
         )
         prev_state = self._capture_function_state()
-        self.current_class = None
         prev_first_param = self.current_method_first_param
         # Extract type hints from parameter annotations for fast-path codegen.
-        _param_type_hints = []
+        _param_type_hints: list[str] = []
         if self._hints_enabled():
             for arg in arg_nodes:
                 hint = (
                     self._annotation_to_hint(arg.annotation) if arg.annotation else None
                 )
-                _param_type_hints.append(hint or "Any")
+                wire_hint = self._wire_type_hint(hint) if hint is not None else None
+                _param_type_hints.append(wire_hint or "Any")
         self.start_function(
             func_symbol,
             python_first_arg=self._python_first_positional_arg(node.args),
@@ -496,7 +496,10 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             hint = None
             if self.type_hint_policy == "ignore" and arg.annotation is not None:
                 inferred = self._annotation_to_hint(arg.annotation)
-                if inferred is not None and inferred in self.classes:
+                if (
+                    isinstance(inferred, DeclaredClass)
+                    and inferred.class_id in self.classes
+                ):
                     hint = inferred
             if self._hints_enabled():
                 hint = self.explicit_type_hints.get(arg.arg)
@@ -860,7 +863,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             has_closure=has_closure,
         )
         prev_state = self._capture_function_state()
-        self.current_class = None
         prev_first_param = self.current_method_first_param
         self.start_function(
             func_symbol,
@@ -888,7 +890,10 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             hint = None
             if self.type_hint_policy == "ignore" and arg.annotation is not None:
                 inferred = self._annotation_to_hint(arg.annotation)
-                if inferred is not None and inferred in self.classes:
+                if (
+                    isinstance(inferred, DeclaredClass)
+                    and inferred.class_id in self.classes
+                ):
                     hint = inferred
             if self._hints_enabled():
                 hint = self.explicit_type_hints.get(arg.arg)

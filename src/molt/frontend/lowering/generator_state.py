@@ -16,6 +16,7 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _ClassNsScope,
     AsyncFrameSlot,
+    ClassId,
     ClassInfo,
     CodeSlotDeclaration,
     CompatibilityReporter,
@@ -27,7 +28,9 @@ from molt.frontend._types import (
     MidendProfile,
     MoltOp,
     MoltValue,
+    TypeHint,
 )
+from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
 from molt.frontend.sema import FunctionKind, SemaResult
 from molt.native_callable_exports import (
     NativeCallableExportError,
@@ -126,7 +129,6 @@ FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
 )
 
 FUNCTION_CONTEXT_STATE_ATTRS = (
-    "current_class",
     "current_method_first_param",
     "defer_module_attrs",
     "deferred_module_attrs",
@@ -150,8 +152,8 @@ class GeneratorStateMixin(GeneratorMixinBase):
     _next_exact_class_token: int
     exact_class_token: int
     exact_locals: dict[str, ExactClassFact]
-    loop_layout_guards: list[dict[str, tuple[str, MoltValue, int]]]
-    loop_guard_assumptions: list[dict[str, tuple[str, bool, int]]]
+    loop_layout_guards: list[dict[str, tuple[ClassId, MoltValue, int]]]
+    loop_guard_assumptions: list[dict[str, tuple[ClassId, bool, int]]]
 
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]:
         missing = [name for name in attrs if not hasattr(self, name)]
@@ -207,9 +209,9 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # explicit closure inputs rather than retaining outer-function SSA.
         self._class_ns_stack: list[_ClassNsScope] = []
         self._class_body_depth: int = 0
-        self.boxed_local_hints = {}
+        self.boxed_local_hints: dict[str, TypeHint] = {}
         self.free_vars = {}
-        self.free_var_hints = {}
+        self.free_var_hints: dict[str, TypeHint] = {}
         self.global_decls = set()
         self.nonlocal_decls = set()
         self.scope_assigned = set()
@@ -243,15 +245,15 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.async_spill_slots: dict[str, AsyncFrameSlot] = {}
         self.async_locals_base = 0
         self.async_closure_offset = None
-        self.async_public_hints: dict[str, str] = {}
-        self.async_internal_hints: dict[str, str] = {}
-        self.async_spill_hints: dict[str, str] = {}
+        self.async_public_hints: dict[str, TypeHint] = {}
+        self.async_internal_hints: dict[str, TypeHint] = {}
+        self.async_spill_hints: dict[str, TypeHint] = {}
 
     def _reset_type_hint_scope_state(self, *, reset_bytearray_len: bool) -> None:
-        self.explicit_type_hints = {}
-        self.container_elem_hints = {}
-        self.dict_key_hints = {}
-        self.dict_value_hints = {}
+        self.explicit_type_hints: dict[str, TypeHint] = {}
+        self.container_elem_hints: dict[str, TypeHint] = {}
+        self.dict_key_hints: dict[str, TypeHint] = {}
+        self.dict_value_hints: dict[str, TypeHint] = {}
         if reset_bytearray_len:
             self.bytearray_len_hints = {}
 
@@ -304,7 +306,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
         direct_call_modules: set[str] | None = None,
-        known_classes: dict[str, ClassInfo] | None = None,
+        known_classes: dict[ClassId, ClassInfo] | None = None,
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
         known_func_kinds: dict[str, dict[str, str]] | None = None,
@@ -345,9 +347,14 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.var_count: int = 0
         self.reserved_python_identifiers: set[str] = set()
         self.state_count: int = 0
-        self.known_classes: dict[str, ClassInfo] = dict(known_classes or {})
-        self.classes: dict[str, ClassInfo] = dict(self.known_classes)
-        self.local_class_names: set[str] = set()
+        self.known_classes: dict[ClassId, ClassInfo] = dict(known_classes or {})
+        self.classes: dict[ClassId, ClassInfo] = dict(self.known_classes)
+        # Class statements this module lowered, in lowering order.
+        self.local_class_ids: list[ClassId] = []
+        # The current module's class statements; set by visit_Module.
+        self._class_index: ClassDefinitionIndex | None = None
+        # Lowering-time derived class facts; ClassInfo stays frozen.
+        self._exception_subclass_memo: dict[ClassId, bool] = {}
         # Token allocation belongs to the generator, not to a restorable
         # function scope. Restoring an outer scope must never recycle a token
         # that was already used while lowering a nested function.
@@ -370,15 +377,18 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.stable_module_classes: set[str] = set()
         self.module_defined_funcs: set[str] = set()
         self.module_elided_deleted_funcs: set[str] = set()
-        self.class_definition_pending: set[str] = set()
+        # Module-level class statements whose body has not finished lowering.
+        self.class_definition_pending: set[ClassId] = set()
         self.module_global_mutations: set[str] = set()
         self.module_globals_dict_escaped = False
         # Track the last-known type hint for module-scope attributes.
         # Populated by _emit_module_attr_set_on and read by _emit_module_attr_get.
         # Enables fast_int/fast_float paths for module-scope loop variables.
-        self._module_attr_type_hints: dict[str, str] = {}
-        self.mutated_classes: set[str] = set()
-        self.instance_attr_mutations: dict[str, set[str]] = {}
+        self._module_attr_type_hints: dict[str, TypeHint] = {}
+        self.mutated_classes: set[ClassId] = set()
+        self.instance_attr_mutations: dict[ClassId, set[str]] = {}
+        # Other modules' classes by the module binding that exports them.
+        self._class_exports: dict[tuple[str, str], ClassId] = {}
         self.global_imported_names: dict[str, str] = {}
         # Maps bind_name -> original attr_name for `from X import Y as Z`
         # (bind_name="Z", attr_name="Y").  Used to resolve cross-module call
@@ -403,7 +413,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.annotation_type_params: dict[str, MoltValue] = {}
         self.in_annotation = False
         self._reset_type_hint_scope_state(reset_bytearray_len=True)
-        self.global_elem_hints: dict[str, str] = {}
+        self.global_elem_hints: dict[str, TypeHint] = {}
         self.stdlib_hint_trust = False
         if source_path:
             normalized_path = source_path.replace("\\", "/")
@@ -413,8 +423,8 @@ class GeneratorStateMixin(GeneratorMixinBase):
                 self.stdlib_hint_trust = True
         self._source_is_stdlib_module = self.stdlib_hint_trust
         self.target_sys_platform = target_sys_platform
-        self.global_dict_key_hints: dict[str, str] = {}
-        self.global_dict_value_hints: dict[str, str] = {}
+        self.global_dict_key_hints: dict[str, TypeHint] = {}
+        self.global_dict_value_hints: dict[str, TypeHint] = {}
         self.type_facts = type_facts
         self._init_module_lifecycle_state(
             source_path=source_path,
@@ -489,7 +499,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.lambda_counter = 0
         self.genexpr_counter = 0
         self.qualname_stack: list[tuple[str, bool]] = []
-        self.current_class: str | None = None
         self.current_method_first_param: str | None = None
         # Module-level constant dicts: name → {str_key: constant_value}
         # Populated during visit_Module to support compile-time **kwargs resolution

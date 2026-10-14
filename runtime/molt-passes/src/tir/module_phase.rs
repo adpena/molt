@@ -272,30 +272,9 @@ pub fn run_module_pipeline(
 /// zero numerator is diagnosable. Writes to stderr (the `MOLT_INLINE_STATS`
 /// channel convention).
 fn report_memgvn_producer_effect(module: &TirModule) {
-    use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrValue, OpCode};
     use crate::tir::passes::alias_analysis::{AliasAnalysisResult, MemRegion};
     use crate::tir::passes::memory_ssa::{MemAccess, compute_standalone};
-
-    // BASELINE mode (`MOLT_MEMGVN_REPORT_BASELINE=1`): strip the `_class` attr
-    // from every op before analysis, so every typed-slot field op fails closed
-    // to `GenericHeap` — exactly the pre-S5-1.5 behavior. Running the report once
-    // with and once without this flag, over the SAME frontend IR, isolates the
-    // producer effect of the class-aware regions (controlling for any frontend
-    // version skew).
-    let baseline = std::env::var("MOLT_MEMGVN_REPORT_BASELINE").as_deref() == Ok("1");
-    let strip_class = |func: &TirFunction| -> TirFunction {
-        if !baseline {
-            return func.clone();
-        }
-        let mut f = func.clone();
-        for block in f.blocks.values_mut() {
-            for op in &mut block.ops {
-                op.attrs.remove("_class");
-            }
-        }
-        f
-    };
 
     let mut funcs_with_two_loads = 0usize;
     let mut funcs_with_forwardable_pair = 0usize;
@@ -306,13 +285,11 @@ fn report_memgvn_producer_effect(module: &TirModule) {
     let mut report_lines: Vec<String> = Vec::new();
 
     // Raw diagnostics (denominator sanity): how many typed-slot LoadAttr ops
-    // exist at all, and how many carry a `_class` attr / physical field region.
+    // exist at all, and how many have a physical field region.
     {
         let mut raw_loads = 0usize;
-        let mut raw_loads_with_class = 0usize;
         let mut raw_typedfield_loads = 0usize;
         for func in &module.functions {
-            let func = &strip_class(func);
             let alias = AliasAnalysisResult::compute(func);
             for block in func.blocks.values() {
                 for op in &block.ops {
@@ -327,9 +304,6 @@ fn report_memgvn_producer_effect(module: &TirModule) {
                         continue;
                     }
                     raw_loads += 1;
-                    if matches!(op.attrs.get("_class"), Some(AttrValue::Str(_))) {
-                        raw_loads_with_class += 1;
-                    }
                     if matches!(
                         alias.region_of(op),
                         crate::tir::passes::alias_analysis::MemRegion::Field { .. }
@@ -340,7 +314,7 @@ fn report_memgvn_producer_effect(module: &TirModule) {
             }
         }
         let line = format!(
-            "[S5-1.5] module '{}': raw typed-slot loads={raw_loads} (with _class={raw_loads_with_class}, physical field regions={raw_typedfield_loads})",
+            "[S5-1.5] module '{}': raw typed-slot loads={raw_loads} (physical field regions={raw_typedfield_loads})",
             module.name
         );
         eprintln!("{line}");
@@ -348,7 +322,6 @@ fn report_memgvn_producer_effect(module: &TirModule) {
     }
 
     for func in &module.functions {
-        let func = &strip_class(func);
         let alias = AliasAnalysisResult::compute(func);
         let mem = compute_standalone(func, &alias);
 

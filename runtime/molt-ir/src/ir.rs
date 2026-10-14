@@ -585,21 +585,6 @@ pub struct OpIR {
     /// operation is in-range.  Codegen can skip the runtime bounds check
     /// and emit a straight-line element access.
     pub bce_safe: Option<bool>,
-    /// The concrete user-class name whose fixed instance layout authored the
-    /// `value` byte-offset of a typed-slot field op (`store` / `load` /
-    /// `guarded_field_get` / `guarded_field_set`).
-    ///
-    /// The frontend emits these offset-based forms ONLY when the object's class
-    /// is proven at the op — either by a preceding runtime version-guard (the
-    /// `guarded_field_*` forms deopt/raise on class mismatch) or by static type
-    /// inference (the plain `store`/`load` forms). Either way the class is the
-    /// authority for `offset`, so the alias oracle can assign a class+offset
-    /// `TypedField` memory region that disjoint-aliases other classes' fields,
-    /// container elements, and module-dict slots (S5-1.5).
-    ///
-    /// Wire name is `"class"` for both JSON and MessagePack transport.
-    #[serde(rename = "class")]
-    pub class_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
@@ -2083,7 +2068,6 @@ mod json_parse_tests {
             end_col_offset: Some(14),
             source_line: Some(15),
             bce_safe: Some(true),
-            class_name: Some("Point".to_string()),
         };
 
         let encoded = serde_json::to_value(&op).expect("serialize OpIR transport");

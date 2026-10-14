@@ -17,19 +17,14 @@ import pytest
 
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend.sema import (
-    ClassGraph,
     SemaResult,
     analyze_module,
     build_class_facts,
-    build_class_graph,
     c3_merge,
     class_body_needs_block_exec,
     collect_module_class_names,
     collect_module_func_defaults,
     collect_module_func_kinds,
-    reachable_base_names,
-    static_class_bases,
-    static_mro_names,
 )
 from molt.frontend.sema.constenv import collect_module_const_dicts
 
@@ -37,127 +32,6 @@ from molt.frontend.sema.constenv import collect_module_const_dicts
 # ---------------------------------------------------------------------------
 # class graph
 # ---------------------------------------------------------------------------
-
-
-def test_class_graph_simple_bases() -> None:
-    mod = ast.parse("class A(B, C): pass\n")
-    g = build_class_graph(mod)
-    assert g.bases_by_class == {"A": [["B", "C"]]}
-    assert g.subclassed_names == {"B", "C"}
-
-
-def test_class_graph_no_bases_defaults_to_object() -> None:
-    g = build_class_graph(ast.parse("class A: pass\n"))
-    assert g.bases_by_class == {"A": [["object"]]}
-    assert g.subclassed_names == set()
-
-
-def test_class_graph_keyword_base_is_opaque() -> None:
-    g = build_class_graph(ast.parse("class A(B, metaclass=M): pass\n"))
-    # any keyword -> the whole definition is opaque (un-foldable MRO)
-    assert g.bases_by_class == {"A": [["<opaque>"]]}
-    # metaclass name and base name are both recorded as referenced
-    assert g.subclassed_names == {"B", "M"}
-
-
-def test_class_graph_non_name_base_is_opaque() -> None:
-    g = build_class_graph(ast.parse("class A(mod.Base): pass\n"))
-    assert g.bases_by_class == {"A": [["<opaque>"]]}
-    # dotted base records every attr segment and the root name
-    assert g.subclassed_names == {"mod", "Base"}
-
-
-def test_class_graph_multiple_definitions_retained() -> None:
-    src = "if x:\n    class A(B): pass\nelse:\n    class A(C): pass\n"
-    g = build_class_graph(ast.parse(src))
-    assert g.bases_by_class == {"A": [["B"], ["C"]]}
-    assert g.subclassed_names == {"B", "C"}
-
-
-def test_class_graph_includes_nested_and_function_local_classes() -> None:
-    src = (
-        "class Outer:\n"
-        "    class Inner(Base): pass\n"
-        "def f():\n"
-        "    class Local(LB): pass\n"
-    )
-    g = build_class_graph(ast.parse(src))
-    assert g.bases_by_class == {
-        "Outer": [["object"]],
-        "Inner": [["Base"]],
-        "Local": [["LB"]],
-    }
-    assert g.subclassed_names == {"Base", "LB"}
-
-
-def _method_classes(*rows: tuple[str, set[str]]) -> dict[str, dict[str, object]]:
-    return {
-        name: {"methods": {method: object() for method in methods}}
-        for name, methods in rows
-    }
-
-
-def test_class_facts_collect_methods_and_attr_blockers() -> None:
-    src = (
-        "class C:\n"
-        "    x = 1\n"
-        "    y: int = 2\n"
-        "    z: int\n"
-        "    def f(self): pass\n"
-        "    async def g(self): pass\n"
-        "    @f.setter\n"
-        "    def f(self, value): pass\n"
-    )
-    facts = build_class_facts(ast.parse(src))
-    assert facts.method_names_by_class == {"C": frozenset({"f", "g"})}
-    assert facts.attr_names_by_class == {"C": frozenset({"x", "y"})}
-    assert facts.opaque_member_class_names == frozenset()
-    assert facts.block_exec_class_nodes == frozenset()
-    assert facts.ambiguous_class_names == frozenset()
-
-
-def test_class_facts_track_final_binding_and_ambiguous_defs() -> None:
-    src = (
-        "class A:\n"
-        "    def f(self): pass\n"
-        "    f = 1\n"
-        "    def g(self): pass\n"
-        "    del g\n"
-        "    import math as m\n"
-        "    class Nested: pass\n"
-        "class A:\n"
-        "    def h(self): pass\n"
-    )
-    facts = build_class_facts(ast.parse(src))
-    assert facts.method_names_by_class == {
-        "A": frozenset({"h"}),
-        "Nested": frozenset(),
-    }
-    assert facts.attr_names_by_class == {
-        "A": frozenset(),
-        "Nested": frozenset(),
-    }
-    assert facts.opaque_member_class_names == frozenset({"A"})
-    assert facts.ambiguous_class_names == frozenset({"A"})
-
-
-def test_class_facts_mark_dynamic_or_decorated_member_surfaces_opaque() -> None:
-    src = (
-        "def deco(x): return x\n"
-        "@deco\n"
-        "class DecoratedClass:\n"
-        "    def f(self): pass\n"
-        "class ControlFlow:\n"
-        "    if FLAG:\n"
-        "        def f(self): pass\n"
-        "class DecoratedMethod:\n"
-        "    @deco\n"
-        "    def f(self): pass\n"
-    )
-    facts = build_class_facts(ast.parse(src))
-    assert facts.opaque_member_class_names == frozenset(
-        {"DecoratedClass", "ControlFlow", "DecoratedMethod"}
-    )
 
 
 def test_class_body_needs_block_exec_tracks_non_straight_line_bodies() -> None:
@@ -190,53 +64,6 @@ def test_c3_merge_computes_diamond_linearization_tail() -> None:
             ["Left", "Right"],
         ]
     ) == ["Left", "Right", "Base", "object"]
-
-
-def test_static_class_bases_fail_closed_for_ambiguous_or_opaque_defs() -> None:
-    classes: dict[str, dict[str, object]] = {
-        "Imported": {"bases": ["object"]},
-        "Dynamic": {"bases": ["object"], "dynamic": True},
-    }
-    graph = ClassGraph(
-        bases_by_class={
-            "Local": [["Base"]],
-            "Ambiguous": [["A"], ["B"]],
-            "Opaque": [["<opaque>"]],
-        },
-        subclassed_names={"Base", "A", "B"},
-    )
-    assert static_class_bases(graph, classes, "object") == ["object"]
-    assert static_class_bases(graph, classes, "Local") == ["Base"]
-    assert static_class_bases(graph, classes, "Imported") == ["object"]
-    assert static_class_bases(graph, classes, "Ambiguous") is None
-    assert static_class_bases(graph, classes, "Opaque") is None
-    assert static_class_bases(graph, classes, "Dynamic") is None
-
-
-def test_static_mro_names_and_reachability_share_class_graph_authority() -> None:
-    graph = ClassGraph(
-        bases_by_class={
-            "Base": [["object"]],
-            "Left": [["Base"]],
-            "Right": [["Base"]],
-            "Final": [["Left", "Right"]],
-        },
-        subclassed_names={"Base", "Left", "Right"},
-    )
-    assert static_mro_names(graph, {}, "Final") == [
-        "Final",
-        "Left",
-        "Right",
-        "Base",
-        "object",
-    ]
-    assert reachable_base_names(graph, "Final") == {
-        "Final",
-        "Left",
-        "Right",
-        "Base",
-        "object",
-    }
 
 
 def test_const_dicts_string_keyed_constant_values() -> None:
@@ -376,11 +203,6 @@ def test_analyze_module_aggregates_all_families() -> None:
     assert r.const_dicts == {"SLOTS": {"slots": True}}
     assert r.function_meta.declared_funcs == {"f": "sync", "g": "async"}
     assert r.function_meta.declared_classes == {"A"}
-    assert r.class_graph.bases_by_class == {"A": [["B"]]}
-    assert r.class_graph.subclassed_names == {"B"}
-    assert r.class_facts.method_names_by_class == {"A": frozenset({"m"})}
-    assert r.class_facts.attr_names_by_class == {"A": frozenset({"k"})}
-    assert r.class_facts.opaque_member_class_names == frozenset()
     assert r.class_facts.block_exec_class_nodes == frozenset()
     assert r.function_meta.defaults["f"]["params"] == 2
 
@@ -394,9 +216,7 @@ def test_sema_result_is_frozen() -> None:
     with pytest.raises(dataclasses.FrozenInstanceError):
         r.const_dicts = {}  # type: ignore[misc]
     with pytest.raises(dataclasses.FrozenInstanceError):
-        r.class_graph.subclassed_names = set()  # type: ignore[misc]
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        r.class_facts.method_names_by_class = {}  # type: ignore[misc]
+        r.class_facts.block_exec_class_nodes = frozenset()  # type: ignore[misc]
     with pytest.raises(dataclasses.FrozenInstanceError):
         r.function_meta.declared_funcs = {}  # type: ignore[misc]
 
@@ -424,11 +244,9 @@ def test_populate_sema_state_fills_god_object_dicts_from_result() -> None:
     assert gen.module_declared_funcs is sema.function_meta.declared_funcs
     assert gen.module_declared_classes == {"A"}
     assert gen.module_declared_classes is sema.function_meta.declared_classes
-    assert sema.class_graph.bases_by_class == {"A": [["B"]]}
-    assert sema.class_graph.subclassed_names == {"B"}
+    assert not hasattr(sema, "class_graph")
     assert not hasattr(gen, "module_class_bases")
     assert not hasattr(gen, "module_subclassed_names")
-    assert gen._sema.class_facts.method_names_by_class == {"A": frozenset({"m"})}
     assert gen._sema.class_facts.block_exec_class_nodes == frozenset()
     assert gen.module_func_defaults["f"]["params"] == 2
     assert gen._sema is sema

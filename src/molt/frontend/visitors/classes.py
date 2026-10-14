@@ -24,10 +24,15 @@ from molt.compiler_analysis.python_lexical_scope import (
 from molt.frontend._types import (
     BUILTIN_LAYOUT_MIN,
     BUILTIN_TYPE_TAGS,
+    OBJECT_CLASS,
+    BuiltinClass,
+    ClassId,
     ClassInfo,
+    ClassRef,
     MethodInfo,
     MoltOp,
     MoltValue,
+    TypeHint,
     _ClassNsScope,
     _function_is_instance_method,
 )
@@ -137,12 +142,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
     def _class_layout_version(
         self,
-        class_name: str,
+        class_id: ClassId,
         class_attrs: dict[str, ast.expr],
         methods: dict[str, MethodInfo] | None = None,
         method_count: int | None = None,
     ) -> int:
-        class_info = self.classes[class_name]
+        class_info = self.classes[class_id]
         field_offsets = (
             1
             if class_info.get("fields")
@@ -155,15 +160,19 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         return 1 + field_offsets + len(class_attrs) + method_count
 
     def _class_constructor_fold_safe(
-        self, class_name: str, class_info: ClassInfo
+        self, class_id: ClassId, class_info: ClassInfo
     ) -> bool:
-        if class_info.get("module") != self.module_name:
+        if class_id.module != self.module_name:
             return False
-        if class_name not in self.stable_module_classes:
+        index = self._class_index
+        if index is None or class_id not in index.top_level:
+            return False
+        binding_name = class_info["binding_name"]
+        if binding_name not in self.stable_module_classes:
             return False
         if self.module_globals_dict_escaped:
             return False
-        if class_name in self.module_global_mutations:
+        if binding_name in self.module_global_mutations:
             return False
         if (
             class_info.get("dynamic")
@@ -186,19 +195,19 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # where `obj.attr` stays a real load and the drop lands at the Python
         # scope boundary. `__del__` classes are rare and inherently slow, so the
         # lost fold is the correct trade for finalizer-dispatch parity.
-        if self._class_defines_finalizer(class_name):
+        if self._class_defines_finalizer(class_id):
             return False
         # `object_new_bound` and the inlined-init constructor fold are only
         # equivalent to `type.__call__` when the MRO resolves `__new__` to
         # default `object.__new__`.  Custom or opaque `__new__` must stay on the
         # runtime class-call route so inherited overrides consume constructor
         # args and decide whether `__init__` should run.
-        if not self._class_resolves_default_object_new(class_name, class_info):
+        if not self._class_resolves_default_object_new(class_id, class_info):
             return False
-        return self._class_layout_stable(class_name)
+        return self._class_layout_stable(class_id)
 
-    def _class_defines_finalizer(self, class_name: str) -> bool:
-        """True iff ``class_name`` resolves a user-defined ``__del__`` through its
+    def _class_defines_finalizer(self, class_id: ClassId) -> bool:
+        """True iff ``class_id`` resolves a user-defined ``__del__`` through its
         MRO (excluding ``object``). Used to suppress lifetime-shortening
         optimizations that would skip or mis-time finalizer dispatch.
 
@@ -213,10 +222,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         with a non-method value (present in ``class_attrs`` but not ``methods``)
         does not install a finalizer, matching ``_resolve_method_info``'s
         override rule."""
-        for name in self._class_mro_names(class_name):
-            if name == "object":
+        for owner in self._class_mro(class_id):
+            if isinstance(owner, BuiltinClass):
                 continue
-            info = self.classes.get(name)
+            info = self.classes.get(owner)
             if not info:
                 continue
             methods = info.get("methods", {})
@@ -228,14 +237,15 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 return False
         return False
 
-    def _builtin_min_layout(self, mro_names: list[str]) -> int:
+    def _builtin_min_layout(self, mro: tuple[ClassRef, ...]) -> int:
         min_size = 0
-        for name in mro_names:
-            min_size = max(min_size, BUILTIN_LAYOUT_MIN.get(name, 0))
+        for entry in mro:
+            if isinstance(entry, BuiltinClass):
+                min_size = max(min_size, BUILTIN_LAYOUT_MIN.get(entry.name, 0))
         return min_size
 
-    def _class_reserved_tail_size(self, mro_names: list[str]) -> int:
-        return 16 if "dict" in mro_names else 8
+    def _class_reserved_tail_size(self, mro: tuple[ClassRef, ...]) -> int:
+        return 16 if BuiltinClass("dict") in mro else 8
 
     def _setup_class_annotations(
         self, node: ast.ClassDef, scope: _ClassNsScope
@@ -513,15 +523,16 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.local_class_names.add(node.name)
-        prev_class_annotations = self.class_annotation_items
-        prev_class_exec_map = self.class_annotation_exec_map
-        prev_class_exec_counter = self.class_annotation_exec_counter
-        self.class_annotation_items = []
-        self.class_annotation_exec_map = None
-        self.class_annotation_exec_counter = 0
-        dataclass_opts = None
+    def _class_decorator_plan(
+        self, node: ast.ClassDef
+    ) -> tuple[dict[str, bool] | None, list[ast.expr]]:
+        """The recognized ``@dataclass`` options and every other decorator.
+
+        One authority for lowering and for class-identity resolution: a class
+        bound through another decorator, or rebuilt by ``slots=True``, is not
+        the class its statement creates.
+        """
+        dataclass_opts: dict[str, bool] | None = None
         other_decorators: list[ast.expr] = []
         if node.decorator_list:
             for deco in node.decorator_list:
@@ -729,6 +740,18 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     continue
                 other_decorators.append(deco)
 
+        return dataclass_opts, other_decorators
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        class_id = self._class_id_for_definition(node)
+        self.local_class_ids.append(class_id)
+        prev_class_annotations = self.class_annotation_items
+        prev_class_exec_map = self.class_annotation_exec_map
+        prev_class_exec_counter = self.class_annotation_exec_counter
+        self.class_annotation_items = []
+        self.class_annotation_exec_map = None
+        self.class_annotation_exec_counter = 0
+        dataclass_opts, other_decorators = self._class_decorator_plan(node)
         # @dataclass combined with other decorators is allowed.  Molt
         # processes @dataclass internally (innermost), then applies the
         # remaining decorators as outer wrappers — matching CPython
@@ -753,24 +776,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             merged.update(type_param_map)
             self.annotation_type_params = merged
 
-        def base_expr_name(expr: ast.expr) -> str | None:
-            if isinstance(expr, ast.Name):
-                return expr.id
-            if isinstance(expr, ast.Attribute):
-                parts: list[str] = []
-                current: ast.expr | None = expr
-                while isinstance(current, ast.Attribute):
-                    parts.append(current.attr)
-                    current = current.value
-                if isinstance(current, ast.Name):
-                    parts.append(current.id)
-                    parts.reverse()
-                    return ".".join(parts)
-            return None
-
         base_vals: list[MoltValue] = []
-        base_names: list[str] = []
-        base_name_lookup: list[str | None] = []
+        # Each base resolves through binding flow to a class statement or a
+        # builtin class; an unresolved base (``None``) builds dynamically.
+        bases: list[ClassRef] = []
+        base_resolution: list[ClassRef | None] = []
         has_explicit_bases = bool(node.bases)
         expanded_bases: MoltValue | None = None
         if any(isinstance(base, ast.Starred) for base in node.bases):
@@ -791,7 +801,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 raise FrontendRejection(
                     Diagnostic.TYPE_FORM, "Unsupported expanded class bases"
                 )
-            base_name_lookup.append(None)
+            base_resolution.append(None)
         elif node.bases:
             for base_expr in node.bases:
                 prev_base_in_annotation = self.in_annotation
@@ -807,10 +817,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         "Base class must be defined before use",
                     )
                 base_vals.append(base_val)
-                base_name = base_expr_name(base_expr)
-                base_name_lookup.append(base_name)
-                if base_name is not None:
-                    base_names.append(base_name)
+                base_ref = self._base_class_reference(base_expr)
+                base_resolution.append(base_ref)
+                if base_ref is not None:
+                    bases.append(base_ref)
 
         has_metaclass_kw = False
         if node.keywords:
@@ -823,22 +833,20 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         inherits_custom_meta = False
         if node.keywords:
             dynamic_build = True
-        for base_name in base_name_lookup:
-            if base_name is None:
+        for base_ref in base_resolution:
+            if base_ref is None:
                 dynamic_build = True
                 continue
-            base_info = self.classes.get(base_name)
-            if (
-                base_info is None
-                and base_name not in BUILTIN_TYPE_TAGS
-                and not self._builtin_exception_is_available(base_name)
-            ):
+            if isinstance(base_ref, BuiltinClass):
+                continue
+            base_info = self.classes.get(base_ref)
+            if base_info is None:
                 dynamic_build = True
                 continue
-            if base_info and base_info.get("custom_metaclass"):
+            if base_info.get("custom_metaclass"):
                 inherits_custom_meta = True
                 dynamic_build = True
-            if base_info and "__mro_entries__" in base_info.get("methods", {}):
+            if "__mro_entries__" in base_info.get("methods", {}):
                 dynamic_build = True
         # A class body that contains anything beyond straight-line attribute
         # bindings / method-and-nested-class definitions (i.e. control flow —
@@ -853,7 +861,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         if body_needs_block:
             dynamic_build = True
         if not has_explicit_bases:
-            base_names = ["object"]
+            bases = [OBJECT_CLASS]
 
         if not base_vals and not dynamic_build:
             tag_val = MoltValue(self.next_var(), type_hint="int")
@@ -863,7 +871,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             base_val = MoltValue(self.next_var(), type_hint="type")
             self.emit(MoltOp(kind="BUILTIN_TYPE", args=[tag_val], result=base_val))
             base_vals = [base_val]
-            base_names = ["object"]
+            bases = [OBJECT_CLASS]
 
         methods: dict[str, MethodInfo] = {}
         method_nodes = class_body_functions(node)
@@ -874,19 +882,14 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # Repeated bases build dynamically like any multi-base class, and
         # molt_class_set_base raises CPython's TypeError when the statement
         # runs; base names cannot decide identity at compile time.
-        dynamic = dynamic_build or len(base_names) > 1
-        if any(
-            name not in self.classes
-            and name not in BUILTIN_TYPE_TAGS
-            and not self._builtin_exception_is_available(name)
-            for name in base_names
-        ):
-            dynamic = True
-        for name in base_names:
-            base_info = self.classes.get(name)
-            if base_info and base_info.get("dynamic"):
+        dynamic = dynamic_build or len(bases) > 1
+        for base_ref in bases:
+            if isinstance(base_ref, BuiltinClass):
+                continue
+            base_info = self.classes.get(base_ref)
+            if base_info is None or base_info.get("dynamic"):
                 dynamic = True
-        if node.name in self.mutated_classes:
+        if class_id in self.mutated_classes:
             dynamic = True
         # ``static`` marks a module-level top-level class whose global binding
         # can supply optional identity for its methods' layout guards. A missing
@@ -901,31 +904,33 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             self.current_func_name == "molt_main" and self._class_body_depth == 0
         )
 
-        base_mros = [self._class_mro_names(name) for name in base_names]
-        base_mros.append(list(base_names))
+        base_mros: list[list[ClassRef]] = [
+            list(self._class_mro(base_ref)) for base_ref in bases
+        ]
+        base_mros.append(list(bases))
         merged = c3_merge(base_mros)
         if merged is None:
-            merged = list(base_names)
-        mro_names = [node.name] + merged
+            merged = list(bases)
+        mro: tuple[ClassRef, ...] = (class_id, *merged)
         # Native base classes own their payload prefix. Inferred Python fields
         # cannot certify offsets into that storage; runtime class sealing and
         # slot assignment own the layout, including transitive subclasses.
-        if any(name != "object" and name not in self.classes for name in mro_names[1:]):
+        if any(
+            entry != OBJECT_CLASS
+            and not (isinstance(entry, ClassId) and entry in self.classes)
+            for entry in mro[1:]
+        ):
             dynamic = True
 
         if dataclass_opts is not None:
-            for name in base_names:
-                if name == "object":
-                    continue
-                base_info = self.classes.get(name)
-                if base_info is None or not base_info.get("dataclass"):
-                    # Non-dataclass bases are allowed; CPython permits
-                    # inheriting from arbitrary classes in a @dataclass.
-                    pass
             field_order: list[str] = []
-            field_hints: dict[str, str] = {}
-            for mro_name in mro_names[1:]:
-                base_info = self.classes.get(mro_name)
+            field_hints: dict[str, TypeHint] = {}
+            for mro_entry in mro[1:]:
+                base_info = (
+                    self.classes.get(mro_entry)
+                    if isinstance(mro_entry, ClassId)
+                    else None
+                )
                 if base_info and base_info.get("dataclass"):
                     for name in base_info.get("field_order", []):
                         if name not in field_order:
@@ -978,17 +983,18 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         if isinstance(target, ast.Name):
                             class_attrs[target.id] = item.value
             field_indices = {name: idx for idx, name in enumerate(field_order)}
-            min_layout = self._builtin_min_layout(mro_names)
+            min_layout = self._builtin_min_layout(mro)
             size = max(len(field_order) * 8, min_layout)
             repr_generated = dataclass_opts["repr"] and "__repr__" not in methods
-            self.classes[node.name] = {
+            self.classes[class_id] = {
+                "binding_name": node.name,
                 "fields": field_indices,
                 "field_order": field_order,
                 "field_hints": field_hints,
                 "class_attrs": class_attrs,
-                "module": self.module_name,
-                "bases": base_names,
-                "mro": mro_names,
+                "data_descriptor_attrs": self._data_descriptor_attrs(class_attrs),
+                "bases": tuple(bases),
+                "mro": mro,
                 "dynamic": dynamic,
                 "static": is_static,
                 "size": size,
@@ -1009,9 +1015,13 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             fields: dict[str, int] = {}
             field_order: list[str] = []
             field_defaults: dict[str, ast.expr] = {}
-            field_hints: dict[str, str] = {}
-            for base_name in mro_names[1:]:
-                base_info = self.classes.get(base_name)
+            field_hints: dict[str, TypeHint] = {}
+            for mro_entry in mro[1:]:
+                base_info = (
+                    self.classes.get(mro_entry)
+                    if isinstance(mro_entry, ClassId)
+                    else None
+                )
                 if base_info is None:
                     continue
                 for field in base_info.get("field_order", []):
@@ -1141,13 +1151,14 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     for stmt in method.body:
                         collector.visit(stmt)
 
-            min_layout = self._builtin_min_layout(mro_names)
-            reserved_tail = self._class_reserved_tail_size(mro_names)
+            min_layout = self._builtin_min_layout(mro)
+            reserved_tail = self._class_reserved_tail_size(mro)
             base_size = (
                 (len(field_order) * 8 + reserved_tail) if not dynamic else reserved_tail
             )
             size = max(base_size, min_layout)
-            self.classes[node.name] = ClassInfo(
+            self.classes[class_id] = ClassInfo(
+                binding_name=node.name,
                 fields=fields,
                 size=size,
                 methods=methods,
@@ -1156,9 +1167,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 defaults=field_defaults,
                 field_hints=field_hints,
                 class_attrs=class_attrs,
-                module=self.module_name,
-                bases=base_names,
-                mro=mro_names,
+                data_descriptor_attrs=self._data_descriptor_attrs(class_attrs),
+                bases=tuple(bases),
+                mro=mro,
                 dynamic=dynamic,
                 static=is_static,
                 needs_classcell=needs_classcell,
@@ -1172,8 +1183,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # eagerly instantiated by a separate method-emission lane. Dynamic class
         # bodies use runtime layout and never turn conditional methods into
         # unconditional devirtualization targets.
-        self.classes[node.name]["layout_version"] = self._class_layout_version(
-            node.name,
+        self.classes[class_id]["layout_version"] = self._class_layout_version(
+            class_id,
             class_attrs,
             method_count=len(pending_methods),
         )
@@ -1189,6 +1200,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
         )
         qualname = self._definition_qualname(node)
+        if qualname != class_id.qualname:
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                f"class {qualname!r} lowered under ClassId qualname "
+                f"{class_id.qualname!r}",
+            )
         qualname_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[qualname], result=qualname_val))
         module_name = (
@@ -1637,7 +1654,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 )
             )
             if classcell_val is not None:
-                self._verify_classcell_result(node.name, classcell_val, class_val)
+                self._verify_classcell_result(class_id.name, classcell_val, class_val)
         else:
             # Outlined class definition: collect attrs, emit single CLASS_DEF op
             class_def_attrs: list[tuple[MoltValue, MoltValue]] = []
@@ -1671,7 +1688,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 class_def_attrs.append((sa_key, sa_tuple))
             class_val = MoltValue(self.next_var(), type_hint="type")
 
-        class_info = self.classes[node.name]
+        class_info = self.classes[class_id]
         if not dynamic_build:
             # Collect field offsets into attrs
             if (
@@ -1711,7 +1728,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             for k, v in class_def_attrs:
                 class_def_args.append(k)
                 class_def_args.append(v)
-            layout_version = self.classes[node.name].get("layout_version", 0)
+            layout_version = class_info.get("layout_version", 0)
             class_def_flags = 1 if base_vals else 0
             class_def_meta = f"{len(base_vals)},{len(class_def_attrs)},{class_info['size']},{layout_version},{class_def_flags}"
             self.emit(
@@ -1723,7 +1740,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 )
             )
             if classcell_val is not None:
-                self._verify_classcell_result(node.name, classcell_val, class_val)
+                self._verify_classcell_result(class_id.name, classcell_val, class_val)
             self._publish_class_value(node.name, class_val)
             # ``@dataclass`` runtime application is construction-method-agnostic:
             # it operates on the finished ``class_val`` via ``setattr`` /
@@ -1774,7 +1791,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
             # The selected metaclass owns __set_name__ and __init_subclass__
             # during construction. Replaying either after return is observable.
-            layout_version = self.classes[node.name].get("layout_version", 0)
+            layout_version = class_info.get("layout_version", 0)
             layout_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[layout_version], result=layout_val))
             self.emit(
@@ -1844,7 +1861,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             )
         ):
             class_info["class_value_name"] = class_val.name
-            if self._class_constructor_fold_safe(node.name, class_info):
+            if self._class_constructor_fold_safe(class_id, class_info):
                 class_info["constructor_fold_safe"] = True
             else:
                 class_info.pop("constructor_fold_safe", None)

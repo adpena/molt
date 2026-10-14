@@ -186,17 +186,12 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="GEN_CLOSE", args=[receiver], result=res))
                     return res
-            class_name = None
-            if isinstance(node.func.value, ast.Name):
-                candidate = node.func.value.id
-                candidate_info = self.classes.get(candidate)
-                if candidate_info is not None:
-                    class_name = candidate
-            lookup_class = class_name
-            if lookup_class is None and receiver.type_hint in self.classes:
-                lookup_class = receiver.type_hint
+            lookup_class = self._class_reference(node.func.value)
+            if lookup_class is None or lookup_class not in self.classes:
+                declared = self._declared_class(receiver)
+                lookup_class = declared.class_id if declared is not None else None
             method_info = None
-            if lookup_class:
+            if lookup_class is not None and lookup_class in self.classes:
                 method_info, _ = self._resolve_method_info(lookup_class, method)
             if method_info:
                 # Attribute lookup owns descriptor binding; the actual callable

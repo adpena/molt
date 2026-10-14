@@ -4,8 +4,11 @@ import ast
 
 import pytest
 
-from molt.frontend import SimpleTIRGenerator
+from molt.frontend import BuiltinClass, ClassId, SimpleTIRGenerator
+from molt.frontend._types import OBJECT_CLASS
 from molt.frontend.sema import FunctionKind
+
+OPS_ERROR = ClassId("nativepkg.ops", "OpsError")
 
 
 IMPORTS = [
@@ -284,7 +287,16 @@ def test_published_native_class_collision_uses_object_before_argument_effects(
         known_modules={"nativepkg", "nativepkg.ops"},
         direct_call_modules={"__main__", "nativepkg.ops"},
         known_classes={
-            "OpsError": {"module": "nativepkg.ops", "exception_subclass": True}
+            OPS_ERROR: {
+                "binding_name": "OpsError",
+                "static": True,
+                "mro": (
+                    OPS_ERROR,
+                    BuiltinClass("Exception"),
+                    BuiltinClass("BaseException"),
+                    OBJECT_CLASS,
+                ),
+            }
         },
         native_python_exports=set() if metadata_only else {"nativepkg.ops.OpsError"},
         native_callable_exports=exports,

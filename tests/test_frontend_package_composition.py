@@ -28,6 +28,7 @@ from pathlib import Path
 
 import molt.frontend as frontend
 from molt.frontend import (
+    ClassId,
     MoltOp,
     MoltValue,
     SimpleTIRGenerator,
@@ -49,6 +50,11 @@ FRONTEND_DIR = ROOT / "src" / "molt" / "frontend"
 # The public names that external consumers (the CLI package, debug/ir.py, tests, tools)
 # import from molt.frontend. This is the backward-compatibility contract.
 PUBLIC_SURFACE = [
+    "BoundMethodHint",
+    "BuiltinClass",
+    "ClassId",
+    "DeclaredClass",
+    "ReceiverKind",
     "MoltValue",
     "MoltOp",
     "SimpleTIRGenerator",
@@ -264,7 +270,11 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_class_layout_stable")
     assert hasattr(SimpleTIRGenerator, "_emit_class_ref")
     assert hasattr(SimpleTIRGenerator, "_emit_class_method_func")
-    assert hasattr(SimpleTIRGenerator, "_class_mro_names")
+    assert hasattr(SimpleTIRGenerator, "_class_mro")
+    assert hasattr(SimpleTIRGenerator, "_class_reference")
+    assert hasattr(SimpleTIRGenerator, "_annotation_class")
+    assert hasattr(SimpleTIRGenerator, "_build_class_definition_index")
+    assert not hasattr(SimpleTIRGenerator, "_class_mro_names")
     assert hasattr(SimpleTIRGenerator, "_resolve_method_info")
     # class method compilation
     assert hasattr(SimpleTIRGenerator, "_compile_class_method")
@@ -642,7 +652,9 @@ def test_function_state_restore_cannot_recycle_exact_class_tokens() -> None:
     state = gen._capture_function_state()
 
     gen.start_function("nested", code_slots=CodeSlotDeclaration((), (), (), ()))
-    nested_value = gen._stamp_exact_class(MoltValue("nested_value"), "Point")
+    nested_value = gen._stamp_exact_class(
+        MoltValue("nested_value"), ClassId("__main__", "Point")
+    )
     nested_token = gen.exact_class_token
     assert nested_token > outer_token
 

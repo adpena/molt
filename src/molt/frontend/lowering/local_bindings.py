@@ -27,11 +27,13 @@ from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     AsyncFrameSlotRole,
+    ClassId,
     ComprehensionBinding,
     ExactClassFact,
     MoltOp,
     MoltValue,
     ScratchCell,
+    TypeHint,
     _ClassNsScope,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -83,15 +85,15 @@ class LocalBindingMixin(GeneratorMixinBase):
         self._advance_exact_class_token()
         self.exact_locals.clear()
 
-    def _stamp_exact_class(self, value: MoltValue, class_id: str) -> MoltValue:
+    def _stamp_exact_class(self, value: MoltValue, class_id: ClassId) -> MoltValue:
         value.exact_class = class_id
         value.exact_class_token = self.exact_class_token
         return value
 
-    def _publish_exact_local(self, name: str, class_id: str) -> None:
+    def _publish_exact_local(self, name: str, class_id: ClassId) -> None:
         self.exact_locals[name] = ExactClassFact(class_id, self.exact_class_token)
 
-    def _exact_class_for_name(self, name: str) -> str | None:
+    def _exact_class_for_name(self, name: str) -> ClassId | None:
         fact = self.exact_locals.get(name)
         if fact is None or fact.token != self.exact_class_token:
             return None
@@ -124,7 +126,9 @@ class LocalBindingMixin(GeneratorMixinBase):
     def _emit_cell_new(self, value: MoltValue) -> MoltValue:
         return self._emit_runtime_call("molt_cell_new", [value], type_hint="cell")
 
-    def _emit_cell_get(self, cell: MoltValue, *, type_hint: str = "Any") -> MoltValue:
+    def _emit_cell_get(
+        self, cell: MoltValue, *, type_hint: TypeHint = "Any"
+    ) -> MoltValue:
         return self._emit_runtime_call("molt_cell_get", [cell], type_hint=type_hint)
 
     def _emit_cell_set(self, cell: MoltValue, value: MoltValue) -> None:
@@ -194,7 +198,7 @@ class LocalBindingMixin(GeneratorMixinBase):
             raise AssertionError("function transport parameters must be unique")
         return transport_params, bindings
 
-    def _parameter_value(self, public_name: str, *, type_hint: str) -> MoltValue:
+    def _parameter_value(self, public_name: str, *, type_hint: TypeHint) -> MoltValue:
         transport_name = self.parameter_bindings.get(public_name, public_name)
         return MoltValue(transport_name, type_hint=type_hint)
 
@@ -362,7 +366,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         self,
         initial: MoltValue | None = None,
         *,
-        type_hint: str = "Any",
+        type_hint: TypeHint = "Any",
     ) -> ScratchCell:
         """Allocate opaque mutable storage outside every Python name map."""
         if initial is None:
@@ -460,7 +464,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         value_captures: dict[str, MoltValue] | None = None,
         cell_captures: Mapping[str, MoltValue] | None = None,
         class_scope: _ClassNsScope | None = None,
-    ) -> tuple[list[str], dict[str, str], MoltValue | None, bool]:
+    ) -> tuple[list[str], dict[str, TypeHint], MoltValue | None, bool]:
         """Capture one lexical owner for every function-like source region.
 
         A class mapping is never an enclosing lexical frame. Its implicit
@@ -503,7 +507,7 @@ class LocalBindingMixin(GeneratorMixinBase):
             if not free_vars:
                 return [], {}, None, False
             self.unbound_check_names.update(free_vars)
-            hints: dict[str, str] = {}
+            hints: dict[str, TypeHint] = {}
             cells: list[MoltValue] = []
             for name in free_vars:
                 if name in captured_cells:
@@ -687,7 +691,7 @@ class LocalBindingMixin(GeneratorMixinBase):
 
     def _exact_class_for_value(
         self, value: MoltValue | None, source_name: str | None = None
-    ) -> str | None:
+    ) -> ClassId | None:
         """Resolve the canonical lowered fact, with named-binding recovery."""
         if source_name is not None:
             named_class = self._exact_class_for_name(source_name)
@@ -751,7 +755,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         # storage and never enter the class namespace path.
         return True
 
-    def _async_binding_hint(self, name: str) -> str:
+    def _async_binding_hint(self, name: str) -> TypeHint:
         slot = self._async_binding_slot(name)
         if slot.role is AsyncFrameSlotRole.PUBLIC:
             return self.async_public_hints.get(name, "Any")

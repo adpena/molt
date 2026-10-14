@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
 from molt.frontend.sema import collect_module_func_kinds
 from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.type_facts import TypeFacts
@@ -25,7 +26,11 @@ from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
     _source_tree_fingerprint_transaction,
 )
-from molt.cli.cache_keys import _cache_json_value, _json_ir_default
+from molt.cli.cache_keys import (
+    _cache_json_value,
+    _decode_class_identity,
+    _json_ir_default,
+)
 from molt.opcode_literal_payloads import integer_literal_value
 from molt.cli.function_references import (
     format_function_reference_edges,
@@ -166,18 +171,18 @@ def _scoped_known_classes(
     module_name: str,
     *,
     module_deps: dict[str, set[str]],
-    known_classes: Mapping[str, Any],
+    known_classes: Mapping[ClassId, ClassInfo],
     module_dep_closures: dict[str, frozenset[str]] | None = None,
-) -> dict[str, Any]:
+) -> dict[ClassId, ClassInfo]:
     scoped_modules = (
         module_dep_closures.get(module_name) if module_dep_closures else None
     )
     if scoped_modules is None:
         scoped_modules = _module_dependency_closure(module_name, module_deps)
     return {
-        class_name: class_info
-        for class_name, class_info in known_classes.items()
-        if isinstance(class_info, dict) and class_info.get("module") in scoped_modules
+        class_id: class_info
+        for class_id, class_info in known_classes.items()
+        if class_id.module in scoped_modules
     }
 
 
@@ -409,9 +414,9 @@ def _build_scoped_known_classes_snapshot(
     *,
     module_deps: dict[str, set[str]],
     module_dep_closures: dict[str, frozenset[str]],
-    known_classes_snapshot: Mapping[str, Any],
-) -> dict[str, dict[str, Any]]:
-    scoped_known_classes_by_module: dict[str, dict[str, Any]] = {}
+    known_classes_snapshot: Mapping[ClassId, ClassInfo],
+) -> dict[str, dict[ClassId, ClassInfo]]:
+    scoped_known_classes_by_module: dict[str, dict[ClassId, ClassInfo]] = {}
     for module_name in sorted(module_names):
         scoped_known_classes_by_module[module_name] = _scoped_known_classes(
             module_name,
@@ -426,10 +431,11 @@ def _scoped_known_classes_view(
     module_name: str,
     *,
     module_deps: dict[str, set[str]],
-    known_classes_snapshot: Mapping[str, Any],
+    known_classes_snapshot: Mapping[ClassId, ClassInfo],
     module_dep_closures: dict[str, frozenset[str]] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    | None = None,
+) -> dict[ClassId, ClassInfo]:
     if (
         scoped_known_classes_by_module is not None
         and module_name in scoped_known_classes_by_module
@@ -694,13 +700,14 @@ def _module_lowering_execution_view(
     known_func_kinds: dict[str, dict[str, str]],
     pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
-    known_classes_snapshot: Mapping[str, Any],
+    known_classes_snapshot: Mapping[ClassId, ClassInfo],
     module_dep_closures: dict[str, frozenset[str]],
     path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     known_modules_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    | None = None,
     source_modules: Collection[str] | None = None,
     direct_call_modules: Collection[str] | None = None,
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None = None,
@@ -746,7 +753,7 @@ def _module_lowering_execution_view(
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 11
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 4
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 5
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -1150,16 +1157,36 @@ def _decode_cached_json_value(value: Any) -> Any:
             return frozenset(
                 _decode_cached_json_value(item) for item in value["__frozenset__"]
             )
+        class_identity = _decode_class_identity(value)
+        if class_identity is not None:
+            return class_identity
         if "__molt_value__" in value and isinstance(value["__molt_value__"], dict):
             payload = value["__molt_value__"]
             name = payload.get("name")
-            type_hint = payload.get("type_hint", "Unknown")
-            if isinstance(name, str) and isinstance(type_hint, str):
+            raw_hint = payload.get("type_hint", "Unknown")
+            type_hint = (
+                _decode_class_identity(raw_hint)
+                if isinstance(raw_hint, dict)
+                else raw_hint
+            )
+            if isinstance(name, str) and isinstance(
+                type_hint, (str, DeclaredClass, BoundMethodHint)
+            ):
                 return MoltValue(name=name, type_hint=type_hint)
         return {
             str(key): _decode_cached_json_value(item) for key, item in value.items()
         }
     return value
+
+
+def _known_classes_from_payload(value: object) -> dict[ClassId, ClassInfo]:
+    """Admit a pickled or cache-decoded class table only with ClassId keys."""
+    if not isinstance(value, dict) or not all(
+        isinstance(class_id, ClassId) and isinstance(class_info, dict)
+        for class_id, class_info in value.items()
+    ):
+        raise ValueError("class tables are keyed by ClassId")
+    return cast(dict[ClassId, ClassInfo], value)
 
 
 @_source_tree_fingerprint_transaction()
@@ -1339,60 +1366,6 @@ def _module_lowering_local_reference_issue(
     )
 
 
-# Class-info fields that are LOWERING-TIME derived memos, not analysis-time semantic
-# inputs: they are lazily written onto the shared ``class_info`` the first time some
-# module's lowering asks for them, and are fully derivable from fields the digest
-# already carries. A cache-hydrated class (whose defining module was a cache hit)
-# lacks the memo while a fresh-lowered one has it, so hashing them makes the
-# ``known_classes`` context-digest component depend on cache-population provenance
-# rather than only on the source -- the residual after the idempotent-AST fix that
-# still missed every module scoping such a class (numpy witness: 26/152 modules).
-#
-# ``exception_subclass`` (``frontend.lowering.class_resolution``) is a bool memo
-# derived entirely from the class's ``mro``/bases (already in the digest) plus the
-# builtin-exception name set (in the frontend tooling fingerprint); it is written
-# onto ``class_info`` the first time ``_class_is_exception_subclass`` runs for that
-# class. Excluding it from the digest is provably lossless (no information the
-# digest lacks) and output-invariant (proven: the lowered ``local_classes`` are
-# byte-identical whether or not the memo was populated), so it can only merge keys
-# that were already producing identical lowerings.
-_CLASS_INFO_DERIVED_MEMO_FIELDS = frozenset({"exception_subclass"})
-
-
-def _class_info_for_context_digest(class_info: Any) -> Any:
-    """Project one ``class_info`` to its provenance-independent semantic fields.
-
-    Drops the lowering-time derived memos (:data:`_CLASS_INFO_DERIVED_MEMO_FIELDS`)
-    so a fresh-lowered class and a cache-hydrated one hash identically. Returns the
-    input unchanged when there is nothing to drop (the common case), and never
-    mutates the shared ``class_info`` (the lowering path still sees the memo).
-    """
-    if not isinstance(class_info, dict):
-        return class_info
-    if _CLASS_INFO_DERIVED_MEMO_FIELDS.isdisjoint(class_info):
-        return class_info
-    return {
-        key: value
-        for key, value in class_info.items()
-        if key not in _CLASS_INFO_DERIVED_MEMO_FIELDS
-    }
-
-
-def _known_classes_for_context_digest(
-    scoped_known_classes: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Digest-only projection of the scoped ``known_classes`` snapshot.
-
-    The lowering path keeps the full ``class_info`` (the memo is a legitimate
-    lowering cache); only the context-digest view drops the derived memos so the
-    shared per-module lowering cache is provenance-independent.
-    """
-    return {
-        class_name: _class_info_for_context_digest(class_info)
-        for class_name, class_info in scoped_known_classes.items()
-    }
-
-
 def _module_lowering_context_payload(
     module_name: str,
     module_path: Path,
@@ -1400,7 +1373,7 @@ def _module_lowering_context_payload(
     logical_source_path: str,
     entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
-    known_classes_snapshot: Mapping[str, Any],
+    known_classes_snapshot: Mapping[ClassId, ClassInfo],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -1427,8 +1400,9 @@ def _module_lowering_context_payload(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
     source_modules: Collection[str] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_classes: dict[str, Any] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    | None = None,
+    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1507,7 +1481,9 @@ def _module_lowering_context_payload(
         "enable_phi": enable_phi,
         "known_modules": known_modules_sorted,
         "direct_call_modules": direct_call_modules_sorted,
-        "known_classes": _known_classes_for_context_digest(scoped_known_classes),
+        # ClassInfo is frozen after its class statement lowers; lowering-time
+        # derived facts live in generator side tables, never in this payload.
+        "known_classes": scoped_known_classes,
         "stdlib_allowlist": stdlib_allowlist_sorted,
         "known_func_defaults": scoped_known_func_defaults,
         "known_func_kinds": scoped_known_func_kinds,
@@ -1597,7 +1573,7 @@ def _module_lowering_context_digest_for_module(
     logical_source_path: str,
     entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
-    known_classes_snapshot: Mapping[str, Any],
+    known_classes_snapshot: Mapping[ClassId, ClassInfo],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -1624,8 +1600,9 @@ def _module_lowering_context_digest_for_module(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
     source_modules: Collection[str] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_classes: dict[str, Any] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    | None = None,
+    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
     is_package: bool | None = None,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1854,7 +1831,7 @@ def _load_cached_module_lowering_result(
     entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
     is_package: bool,
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: dict[ClassId, ClassInfo],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -1880,8 +1857,9 @@ def _load_cached_module_lowering_result(
     module_dep_closures: dict[str, frozenset[str]] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_classes: dict[str, Any] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    | None = None,
+    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
     context_digest: str | None = None,
     resolution_cache: _ModuleResolutionCache | None = None,
     source_modules: Collection[str] | None = None,
@@ -1968,7 +1946,7 @@ def _module_worker_payload(
     enable_phi: bool,
     known_modules: Collection[str],
     direct_call_modules: Collection[str] | None = None,
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: dict[ClassId, ClassInfo],
     stdlib_allowlist_sorted: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     known_func_kinds: dict[str, dict[str, str]],
@@ -1984,8 +1962,9 @@ def _module_worker_payload(
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_inputs: _ScopedLoweringInputView | None = None,
     source_modules: Collection[str] | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
-    scoped_known_classes: dict[str, Any] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    | None = None,
+    scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
     stdlib_allowlist_payload: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,

@@ -13,6 +13,7 @@ from typing import Any, Collection, Mapping, cast
 
 from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
 from molt.cli.models import (
@@ -37,6 +38,7 @@ from molt.cli.module_source import (
     _read_module_source,
 )
 from molt.cli.module_cache import (
+    _known_classes_from_payload,
     _build_scoped_known_classes_snapshot,
     _load_cached_module_lowering_result,
     _module_lowering_context_digest_for_module,
@@ -161,7 +163,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     enable_phi = bool(payload["enable_phi"])
     known_modules = set(cast(list[str], payload["known_modules"]))
     direct_call_modules = set(cast(list[str], payload["direct_call_modules"]))
-    known_classes = cast(dict[str, Any], payload["known_classes"])
+    known_classes = _known_classes_from_payload(payload["known_classes"])
     stdlib_allowlist = set(cast(list[str], payload["stdlib_allowlist"]))
     known_func_defaults = cast(
         dict[str, dict[str, dict[str, Any]]], payload["known_func_defaults"]
@@ -301,10 +303,8 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "functions": ir["functions"],
         "func_code_ids": dict(gen.func_code_ids),
-        "local_class_names": sorted(gen.local_class_names),
         "local_classes": {
-            class_name: gen.classes[class_name]
-            for class_name in sorted(gen.local_class_names)
+            class_id: gen.classes[class_id] for class_id in gen.local_class_ids
         },
         "midend_policy_outcomes_by_function": dict(
             gen.midend_policy_outcomes_by_function
@@ -334,10 +334,8 @@ def _module_frontend_payload(
     return {
         "functions": ir["functions"],
         "func_code_ids": dict(gen.func_code_ids),
-        "local_class_names": sorted(gen.local_class_names),
         "local_classes": {
-            class_name: gen.classes[class_name]
-            for class_name in sorted(gen.local_class_names)
+            class_id: gen.classes[class_id] for class_id in gen.local_class_ids
         },
         "midend_policy_outcomes_by_function": dict(
             gen.midend_policy_outcomes_by_function
@@ -369,7 +367,7 @@ def _module_frontend_generator(
     target_python: TargetPythonVersion,
     target_sys_platform: str | None,
     scoped_inputs: _ScopedLoweringInputView,
-    scoped_known_classes: dict[str, Any],
+    scoped_known_classes: dict[ClassId, ClassInfo],
 ) -> SimpleTIRGenerator:
     return SimpleTIRGenerator(
         parse_codec=parse_codec,
@@ -695,7 +693,7 @@ def _prepare_frontend_parallel_batch(
     module_sources: dict[str, str] | None = None,
     module_source_catalog: _ModuleSourceCatalog | None = None,
     project_root: Path | None,
-    known_classes_snapshot: dict[str, Any],
+    known_classes_snapshot: dict[ClassId, ClassInfo],
     module_resolution_cache: _ModuleResolutionCache,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
@@ -721,7 +719,8 @@ def _prepare_frontend_parallel_batch(
     path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
-    scoped_known_classes_by_module: Mapping[str, dict[str, Any]] | None = None,
+    scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
+    | None = None,
     target_python: TargetPythonVersion,
     target_sys_platform: str | None,
     frontend_phase_timeout: float | None = None,

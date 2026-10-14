@@ -39,6 +39,7 @@ from molt.compiler_analysis.static_truth import (
     static_expression_result,
 )
 from molt.frontend._types import (
+    ClassId,
     MoltOp,
     MoltValue,
 )
@@ -308,18 +309,25 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
             collector.visit(stmt)
         return counts, func_defs, has_dynamic_bind
 
-    def _collect_module_class_mutations(self, node: ast.Module) -> set[str]:
-        class_names = {
-            stmt.name for stmt in node.body if isinstance(stmt, ast.ClassDef)
-        }
-        if not class_names:
+    def _collect_module_class_mutations(self, node: ast.Module) -> set[ClassId]:
+        """Top-level class statements whose class object the module mutates.
+
+        A mutated receiver resolves through binding flow to every class
+        statement that can reach it, so an ambiguous receiver marks all of them.
+        """
+        index = self._class_index
+        top_level = frozenset(index.top_level) if index is not None else frozenset()
+        if not top_level:
             return set()
-        mutated: set[str] = set()
+        mutated: set[ClassId] = set()
+        outer = self
+
+        def record_receiver(receiver: ast.expr) -> None:
+            mutated.update(outer._class_mutation_targets(receiver) & top_level)
 
         def record_target(target: ast.AST) -> None:
             if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
-                if target.value.id in class_names:
-                    mutated.add(target.value.id)
+                record_receiver(target.value)
             elif isinstance(target, (ast.Tuple, ast.List)):
                 for elt in target.elts:
                     record_target(elt)
@@ -354,9 +362,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
                     and node.func.id in {"setattr", "delattr"}
                     and node.args
                 ):
-                    target = node.args[0]
-                    if isinstance(target, ast.Name) and target.id in class_names:
-                        mutated.add(target.id)
+                    record_receiver(node.args[0])
                 self.generic_visit(node)
 
         collector = Collector()
@@ -923,14 +929,12 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         comp_walrus -= self.nonlocal_decls if nonlocal_decls is None else nonlocal_decls
         return sorted(comp_walrus)
 
-    def _collect_class_mutations(self, nodes: list[ast.stmt]) -> set[str]:
+    def _collect_class_mutations(self, nodes: list[ast.stmt]) -> set[ClassId]:
         outer = self
 
-        def record_target(target: ast.AST, names: set[str]) -> None:
+        def record_target(target: ast.AST, names: set[ClassId]) -> None:
             if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
-                class_name = target.value.id
-                if class_name in outer.classes:
-                    names.add(class_name)
+                names.update(outer._class_mutation_targets(target.value))
             elif isinstance(target, ast.Starred):
                 record_target(target.value, names)
             elif isinstance(target, (ast.Tuple, ast.List)):
@@ -939,7 +943,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
 
         class ClassMutationCollector(ast.NodeVisitor):
             def __init__(self) -> None:
-                self.names: set[str] = set()
+                self.names: set[ClassId] = set()
 
             def visit_Assign(self, node: ast.Assign) -> None:
                 for target in node.targets:
@@ -988,7 +992,9 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
                 return False
         return True
 
-    def _collect_loop_guard_candidates(self, body: list[ast.stmt]) -> dict[str, str]:
+    def _collect_loop_guard_candidates(
+        self, body: list[ast.stmt]
+    ) -> dict[str, ClassId]:
         if self.is_async():
             return {}
         assigned = self._collect_assigned_names(body)
@@ -1016,7 +1022,7 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
         collector = AttrCollector()
         for stmt in body:
             collector.visit(stmt)
-        candidates: dict[str, str] = {}
+        candidates: dict[str, ClassId] = {}
         for name in sorted(attr_names):
             if name in assigned:
                 continue

@@ -15,7 +15,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend._types import MoltOp, MoltValue, ScratchCell
+from molt.frontend._types import (
+    MoltOp,
+    MoltValue,
+    ScratchCell,
+    TypeHint,
+)
 from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -29,7 +34,7 @@ class _ConditionBindingState:
     unbound: frozenset[str]
     provenance: dict[str, frozenset[str]]
     locals: dict[str, MoltValue | None]
-    hints: tuple[dict[str, str | None], ...]
+    hints: tuple[dict[str, TypeHint | None], ...]
 
 
 @dataclass

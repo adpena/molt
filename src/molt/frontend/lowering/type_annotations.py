@@ -19,8 +19,10 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     _ClassNsScope,
+    DeclaredClass,
     MoltOp,
     MoltValue,
+    TypeHint,
     normalize_type_hint,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -88,8 +90,11 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         return found
 
     def _normalized_return_hint(self, returns: ast.expr | None) -> str | None:
+        """A function's return hint; it selects result lanes of intrinsics only."""
         hint = self._annotation_to_hint(returns)
-        if hint and hint[:1] in {"'", '"'} and hint[-1:] == hint[:1]:
+        if not isinstance(hint, str):
+            return None
+        if hint[:1] in {"'", '"'} and hint[-1:] == hint[:1]:
             hint = hint[1:-1]
         return hint
 
@@ -118,8 +123,11 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         return parts[0], parts[1]
 
     def _apply_hint_to_value(
-        self, _name: str | None, value: MoltValue, hint: str
+        self, _name: str | None, value: MoltValue, hint: TypeHint
     ) -> None:
+        if not isinstance(hint, str):
+            value.type_hint = hint
+            return
         base, elem = self._parse_container_hint(hint)
         value.type_hint = base
         if self.current_func_name == "molt_main":
@@ -182,7 +190,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         self,
         target: MoltValue,
         target_name: str | None,
-        elem_hint: str | None,
+        elem_hint: TypeHint | None,
     ) -> None:
         elem_map = (
             self.global_elem_hints
@@ -246,17 +254,17 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         if var_name in li_set:
             li_set.add(ssa_name)
 
-    def _container_elem_hint(self, value: MoltValue) -> str | None:
+    def _container_elem_hint(self, value: MoltValue) -> TypeHint | None:
         if value.name in self.container_elem_hints:
             return self.container_elem_hints[value.name]
         return self.global_elem_hints.get(value.name)
 
-    def _dict_key_hint(self, value: MoltValue) -> str | None:
+    def _dict_key_hint(self, value: MoltValue) -> TypeHint | None:
         if value.name in self.dict_key_hints:
             return self.dict_key_hints[value.name]
         return self.global_dict_key_hints.get(value.name)
 
-    def _iterable_element_hint(self, iterable: MoltValue) -> str | None:
+    def _iterable_element_hint(self, iterable: MoltValue) -> TypeHint | None:
         hint = iterable.type_hint
         if hint == "range":
             return "int"
@@ -270,7 +278,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
 
     def _iteration_element_hint(
         self, node: ast.For | ast.AsyncFor | ast.comprehension, iterable: MoltValue
-    ) -> str | None:
+    ) -> TypeHint | None:
         """Project compiler-analysis item authority; unknown facts fail closed."""
 
         if self.python_binding_index is not None:
@@ -286,7 +294,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
                 )
         return self._iterable_element_hint(iterable)
 
-    def _dict_value_hint(self, value: MoltValue) -> str | None:
+    def _dict_value_hint(self, value: MoltValue) -> TypeHint | None:
         if value.name in self.dict_value_hints:
             return self.dict_value_hints[value.name]
         return self.global_dict_value_hints.get(value.name)
@@ -304,9 +312,17 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             )
         self.explicit_type_hints.update(hints)
 
-    def _annotation_to_hint(self, node: ast.expr | None) -> str | None:
+    def _annotation_to_hint(self, node: ast.expr | None) -> TypeHint | None:
+        """A declared class when the annotation names one, else its spelling.
+
+        The class comes from the lexical class bindings of the annotation's
+        scope; a spelling never names a user class.
+        """
         if node is None:
             return None
+        class_id = self._annotation_class(node)
+        if class_id is not None:
+            return DeclaredClass(class_id)
         try:
             text = ast.unparse(node)
         except Exception:
@@ -1023,7 +1039,10 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         }
         return mapping.get(hint)
 
-    def _emit_guard_type(self, value: MoltValue, hint: str) -> None:
+    def _emit_guard_type(self, value: MoltValue, hint: TypeHint) -> None:
+        if not isinstance(hint, str):
+            # A declared class has no builtin tag; its layout guards own it.
+            return
         base = hint.split("[", 1)[0] if "[" in hint else hint
         tag = self._guard_tag_for_hint(base)
         if tag is None or tag == 0:

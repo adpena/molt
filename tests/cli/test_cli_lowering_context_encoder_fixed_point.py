@@ -44,7 +44,15 @@ import sys
 
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
-MoltValue = importlib.import_module("molt.frontend").MoltValue
+_FRONTEND = importlib.import_module("molt.frontend")
+MoltValue = _FRONTEND.MoltValue
+ClassId = _FRONTEND.ClassId
+BuiltinClass = _FRONTEND.BuiltinClass
+DeclaredClass = _FRONTEND.DeclaredClass
+BoundMethodHint = _FRONTEND.BoundMethodHint
+ReceiverKind = _FRONTEND.ReceiverKind
+_CLASS = ClassId("pkg.mod", "C")
+_REDEFINED = ClassId("pkg.mod", "P", (7, 0))
 
 
 def _enc(value: object) -> str:
@@ -85,8 +93,23 @@ _FIXED_POINT_CASES: dict[str, object] = {
         "f": {"a": (1, 2), "b": frozenset({1, 2}), "c": b"xy", "d": 3 + 4j, "e": ...}
     },
     "known_classes_shape": {
-        "C": {"methods": {"__init__": {"inline_init_assigns": [["attr", _NODE]]}}}
+        _REDEFINED: {"binding_name": "P", "mro": (_REDEFINED, BuiltinClass("object"))},
+        _CLASS: {
+            "binding_name": "C",
+            "mro": (_CLASS, BuiltinClass("object")),
+            "field_hints": {"peer": DeclaredClass(_REDEFINED)},
+            "methods": {"__init__": {"inline_init_assigns": [["attr", _NODE]]}},
+        },
     },
+    "class_id": _CLASS,
+    "class_id_with_occurrence": _REDEFINED,
+    "class_refs": (_CLASS, BuiltinClass("Exception")),
+    "declared_class_value": MoltValue(
+        name="cls", type_hint=DeclaredClass(_CLASS, ReceiverKind.CLASS_OBJECT)
+    ),
+    "bound_method_value": MoltValue(
+        name="m", type_hint=BoundMethodHint(BuiltinClass("list"), "append")
+    ),
     "list_of_mixed": [(1, 2), {3, 4}, _NODE, b"z"],
 }
 
@@ -194,3 +217,39 @@ def test_binary_integer_cache_carriers_preserve_keys_tags_and_mixed_sets() -> No
         assert _enc({1, "2"}) != _enc({"1", "2"})
     finally:
         sys.set_int_max_str_digits(previous)
+
+
+def test_class_identity_round_trips_to_equal_values() -> None:
+    """The cache decoder restores the exact typed identity the encoder wrote."""
+    for name in ("class_id", "class_id_with_occurrence", "class_refs"):
+        value = _FIXED_POINT_CASES[name]
+        assert _round_trip(value) == value, name
+    known = _FIXED_POINT_CASES["known_classes_shape"]
+    hydrated = _round_trip(known)
+    assert isinstance(known, dict) and isinstance(hydrated, dict)
+    assert list(hydrated) == sorted(known, key=lambda class_id: class_id.sort_key())
+    for class_id, info in known.items():
+        for field in ("binding_name", "mro", "field_hints"):
+            assert hydrated[class_id].get(field) == info.get(field), (class_id, field)
+    declared = _round_trip(_FIXED_POINT_CASES["declared_class_value"])
+    assert isinstance(declared, MoltValue)
+    assert declared.type_hint == DeclaredClass(_CLASS, ReceiverKind.CLASS_OBJECT)
+    bound = _round_trip(_FIXED_POINT_CASES["bound_method_value"])
+    assert isinstance(bound, MoltValue)
+    assert bound.type_hint == BoundMethodHint(BuiltinClass("list"), "append")
+
+
+def test_same_named_class_identities_keep_distinct_encodings() -> None:
+    """Injectivity: one qualname in two modules, or twice in one module, differs."""
+    encodings = {
+        _enc(identity)
+        for identity in (
+            ClassId("pkg.mod", "P"),
+            ClassId("pkg.other", "P"),
+            ClassId("pkg.mod", "P", (7, 0)),
+            ClassId("pkg.mod", "P", (9, 0)),
+            BuiltinClass("Exception"),
+            ClassId("pkg.mod", "Exception"),
+        )
+    }
+    assert len(encodings) == 6

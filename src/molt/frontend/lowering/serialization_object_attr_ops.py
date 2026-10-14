@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from molt.frontend._types import (
+    BuiltinClass,
     MoltOp,
     MoltValue,
 )
@@ -31,11 +32,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 }
             )
         elif op.kind == "SETATTR":
-            obj, attr, val, *rest = op.args
-            if rest:
-                expected_class = rest[0]
-            else:
-                expected_class = list(self.classes.keys())[-1]
+            obj, attr, val, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             # Metaclass __init__ receives `cls` which is a TYPE object,
             # not an INSTANCE. Field offsets apply to instances, not to
@@ -43,15 +40,11 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
             # (a subclass of `type`), emit generic setattr so the
             # attribute goes into the class __dict__.
             _class_info_meta = self.classes.get(expected_class)
-            _is_type_subclass = (
-                _class_info_meta is not None
-                and "type" in _class_info_meta.get("bases", [])
-            )
+            _is_type_subclass = _class_info_meta is not None and BuiltinClass(
+                "type"
+            ) in _class_info_meta.get("bases", ())
             if offset is None or _is_type_subclass:
-                class_info = self.classes.get(expected_class)
-                if class_info and self._class_is_exception_subclass(
-                    expected_class, class_info
-                ):
+                if self._class_is_exception_subclass(expected_class):
                     ctx.json_ops.append(
                         {
                             "kind": "set_attr_generic_obj",
@@ -75,22 +68,13 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "kind": "store",
                         "args": [obj.name, val.name],
                         "value": offset,
-                        # The concrete class whose fixed layout authored this
-                        # `offset` (the frontend emits the raw-offset form only
-                        # when the object's class is statically proven here).
-                        # Carried through TIR so the alias oracle can assign a
-                        # class+offset `TypedField` region (S5-1.5).
-                        "class": expected_class,
                     }
                 )
         elif op.kind == "GUARDED_SETATTR":
             obj, class_ref, expected_version, attr, val, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             if offset is None:
-                class_info = self.classes.get(expected_class)
-                if class_info and self._class_is_exception_subclass(
-                    expected_class, class_info
-                ):
+                if self._class_is_exception_subclass(expected_class):
                     ctx.json_ops.append(
                         {
                             "kind": "set_attr_generic_obj",
@@ -121,10 +105,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "s_value": attr,
                         "value": offset,
                         "out": op.result.name,
-                        # The class the runtime version-guard proves at this
-                        # op; authority for `offset`. Carried through TIR for
-                        # the class+offset `TypedField` alias region (S5-1.5).
-                        "class": expected_class,
                     }
                 )
         elif op.kind == "SETATTR_GENERIC_PTR":
@@ -188,23 +168,16 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 }
             )
         elif op.kind == "GETATTR":
-            obj, attr, *rest = op.args
-            if rest:
-                expected_class = rest[0]
-            else:
-                expected_class = list(self.classes.keys())[-1]
+            obj, attr, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             # Metaclass methods operate on TYPE objects, not instances.
             # Field offsets don't apply — use generic getattr.
             _ga_class_info = self.classes.get(expected_class)
-            _ga_is_type_sub = (
-                _ga_class_info is not None and "type" in _ga_class_info.get("bases", [])
-            )
+            _ga_is_type_sub = _ga_class_info is not None and BuiltinClass(
+                "type"
+            ) in _ga_class_info.get("bases", ())
             if offset is None or _ga_is_type_sub:
-                class_info = self.classes.get(expected_class)
-                if class_info and self._class_is_exception_subclass(
-                    expected_class, class_info
-                ):
+                if self._class_is_exception_subclass(expected_class):
                     ctx.json_ops.append(
                         {
                             "kind": "get_attr_generic_obj",
@@ -229,20 +202,13 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "args": [obj.name],
                         "value": offset,
                         "out": op.result.name,
-                        # The statically-proven class authoring `offset`.
-                        # Carried through TIR for the class+offset
-                        # `TypedField` alias region (S5-1.5).
-                        "class": expected_class,
                     }
                 )
         elif op.kind == "GUARDED_GETATTR":
             obj, class_ref, expected_version, attr, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             if offset is None:
-                class_info = self.classes.get(expected_class)
-                if class_info and self._class_is_exception_subclass(
-                    expected_class, class_info
-                ):
+                if self._class_is_exception_subclass(expected_class):
                     ctx.json_ops.append(
                         {
                             "kind": "get_attr_generic_obj",
@@ -268,10 +234,6 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "s_value": attr,
                         "value": offset,
                         "out": op.result.name,
-                        # The class the runtime version-guard proves at this
-                        # op; authority for `offset`. Carried through TIR for
-                        # the class+offset `TypedField` alias region (S5-1.5).
-                        "class": expected_class,
                     }
                 )
         elif op.kind == "GETATTR_GENERIC_PTR":

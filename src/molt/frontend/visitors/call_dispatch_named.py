@@ -8,8 +8,12 @@ from typing import (
 )
 
 from molt.frontend._types import (
+    BoundMethodHint,
+    ClassId,
+    DeclaredClass,
     MoltOp,
     MoltValue,
+    TypeHint,
     _intrinsic_arity_exact,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -34,12 +38,8 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         if imported_from is None:
             return CALL_NOT_HANDLED
         original_attr = self._imported_attr_name(func_id)
-        class_info = self.classes.get(original_attr)
-        if (
-            not isinstance(class_info, dict)
-            or class_info.get("module") != imported_from
-            or not class_info.get("exception_subclass")
-        ):
+        class_id = self._class_exports.get((imported_from, original_attr))
+        if class_id is None or not self._class_is_exception_subclass(class_id):
             return CALL_NOT_HANDLED
         if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
             return CALL_NOT_HANDLED
@@ -433,7 +433,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     if default is None:
                         default = MoltValue(self.next_var(), type_hint="None")
                         self.emit(MoltOp(kind="CONST_NONE", args=[], result=default))
-                res_hint = "Any"
+                res_hint: TypeHint = "Any"
                 name_lit = None
                 if isinstance(node.args[1], ast.Constant) and isinstance(
                     node.args[1].value, str
@@ -483,21 +483,22 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                     obj_name=receiver_name,
                                 )
                 if name_lit:
-                    class_name = None
-                    if obj.type_hint in self.classes:
-                        class_name = obj.type_hint
-                    elif isinstance(node.args[0], ast.Name):
-                        if node.args[0].id in self.classes:
-                            class_name = node.args[0].id
-                    if class_name:
+                    declared = self._declared_class(obj)
+                    lookup_class: ClassId | None = (
+                        declared.class_id if declared is not None else None
+                    )
+                    if lookup_class is None or lookup_class not in self.classes:
+                        lookup_class = self._class_reference(node.args[0])
+                    if lookup_class is not None and lookup_class in self.classes:
                         method_info, method_class = self._resolve_method_info(
-                            class_name, name_lit
+                            lookup_class, name_lit
                         )
                         if method_info:
                             descriptor = method_info["descriptor"]
                             if descriptor in {"function", "classmethod"}:
-                                method_owner = method_class or class_name
-                                res_hint = f"BoundMethod:{method_owner}:{name_lit}"
+                                res_hint = BoundMethodHint(
+                                    method_class or lookup_class, name_lit
+                                )
                             elif descriptor == "staticmethod":
                                 res_hint = method_info["func"].type_hint
                 res = MoltValue(self.next_var(), type_hint=res_hint)
@@ -584,13 +585,19 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         node.args[0].id if isinstance(node.args[0], ast.Name) else None
                     )
                     exact_class = self._exact_class_for_value(obj, receiver_name)
+                    declared = self._declared_class(obj)
+                    declared_class = (
+                        declared.class_id
+                        if declared is not None and declared.class_id in self.classes
+                        else None
+                    )
                     if exact_class is not None:
                         self._record_instance_attr_mutation(exact_class, attr_name)
-                    elif obj.type_hint in self.classes:
-                        self._record_instance_attr_mutation(obj.type_hint, attr_name)
+                    elif declared_class is not None:
+                        self._record_instance_attr_mutation(declared_class, attr_name)
                     res = MoltValue(self.next_var(), type_hint="None")
                     attr_name = node.args[1].value
-                    if obj.type_hint in self.classes:
+                    if declared_class is not None:
                         self.emit(
                             MoltOp(
                                 kind="DELATTR_GENERIC_PTR",
@@ -779,18 +786,21 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     MoltOp(kind="CALL_BIND", args=[callee, callargs], result=result)
                 )
                 return result
-            original_import_attr = self._imported_attr_name(func_id)
-            class_id = None
-            if func_id in self.classes:
-                class_id = func_id
-            elif imported_from and original_import_attr in self.classes:
-                class_id = original_import_attr
-            if class_id is not None and imported_from:
-                class_ref = self._emit_module_attr_get_on(imported_from, class_id)
-                # Imported class metadata is keyed by the class' export name, but
-                # multiple modules can legally export the same simple class name.
-                # Dispatch through the imported class object so runtime identity,
-                # not frontend metadata keying, owns constructor semantics.
+            # Binding flow names the one class statement the callee reads, or
+            # nothing; an import binding resolves through the exporting module.
+            class_id = self._class_reference(node.func)
+            if class_id is not None and class_id not in self.classes:
+                class_id = None
+            if (
+                class_id is not None
+                and imported_from
+                and class_id.module != self.module_name
+            ):
+                class_ref = self._emit_module_attr_get_on(
+                    imported_from, self._imported_attr_name(func_id)
+                )
+                # Dispatch through the imported class object so runtime
+                # identity owns constructor semantics.
                 callargs = self._emit_call_args_builder(node)
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(
@@ -813,8 +823,8 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             if (
                 class_id is not None
                 and self.current_func_name == "molt_main"
-                and class_id in self.del_targets
-                and not self._name_resolves_to_builtin(class_id)
+                and func_id in self.del_targets
+                and not self._name_resolves_to_builtin(func_id)
             ):
                 # A module-scope class whose name is `del`'d (or shadowed by an
                 # `except ... as` target) may be unbound when called; a bare Name
@@ -852,7 +862,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     ):
                         class_ref = static_class_ref
                     else:
-                        class_ref = self._emit_global_get(class_id)
+                        class_ref = self._emit_global_get(func_id)
                 else:
                     # The call's own read of the class name: its source fact,
                     # frame storage and capture across the arguments.
@@ -861,7 +871,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         raise FrontendRejection(
                             Diagnostic.CALL_TARGET, "Unsupported call target"
                         )
-                if self._class_is_exception_subclass(class_id, class_info):
+                if self._class_is_exception_subclass(class_id):
                     # Exception __init__ is a mutable Python descriptor too.
                     # Runtime class construction owns allocation and binding.
                     callargs = self._emit_call_args_builder(node)
@@ -887,7 +897,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     field_order = class_info["field_order"]
                     name_val = MoltValue(self.next_var(), type_hint="str")
                     self.emit(
-                        MoltOp(kind="CONST_STR", args=[class_id], result=name_val)
+                        MoltOp(kind="CONST_STR", args=[class_id.name], result=name_val)
                     )
                     field_name_vals: list[MoltValue] = []
                     for field in field_order:
@@ -924,7 +934,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         flags |= 0x8
                     flags_val = MoltValue(self.next_var(), type_hint="int")
                     self.emit(MoltOp(kind="CONST", args=[flags], result=flags_val))
-                    res = MoltValue(self.next_var(), type_hint=class_id)
+                    res = MoltValue(self.next_var(), type_hint="Any")
                     self.emit(
                         MoltOp(
                             kind="DATACLASS_NEW",
@@ -996,13 +1006,13 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     init_info, init_owner = self._resolve_method_info(
                         class_id, "__init__"
                     )
-                    # Treat "no __init__ on this class or any base except
-                    # object" as an instantiation that can run the alloc
-                    # alone — `object.__init__` is a no-op for the no-arg
-                    # case, and we'll only fold when the call has no args.
-                    init_is_default = init_info is None or init_owner == "object"
-                    if init_is_default and len(node.args) == 0:
-                        res = MoltValue(self.next_var(), type_hint=class_id)
+                    # No user ``__init__`` anywhere in the MRO is an instantiation
+                    # that can run the alloc alone — `object.__init__` is a
+                    # no-op for the no-arg case, and we only fold a no-arg call.
+                    if init_info is None and len(node.args) == 0:
+                        res = MoltValue(
+                            self.next_var(), type_hint=DeclaredClass(class_id)
+                        )
                         # Carry static payload extent for typed-field analysis.
                         # The runtime owns physical class layout and allocation;
                         # layout metadata is not a placement or lifetime proof.
@@ -1014,7 +1024,10 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                 kind="OBJECT_NEW_BOUND",
                                 args=[class_ref],
                                 result=res,
-                                metadata={"class_size_bytes": class_size_bytes},
+                                metadata={
+                                    "class_size_bytes": class_size_bytes,
+                                    "class_id": class_id,
+                                },
                             )
                         )
                         self._stamp_exact_class(res, class_id)
@@ -1042,17 +1055,23 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                             and (init_owner or class_id) in self.classes
                         ):
                             init_func_val = init_info.get("func")
-                            if init_func_val is not None and getattr(
-                                init_func_val, "type_hint", ""
-                            ).startswith("Func:"):
-                                init_symbol = init_func_val.type_hint.split(":", 1)[1]
+                            init_func_hint = (
+                                init_func_val.type_hint
+                                if init_func_val is not None
+                                else None
+                            )
+                            if isinstance(
+                                init_func_hint, str
+                            ) and init_func_hint.startswith("Func:"):
+                                init_symbol = init_func_hint.split(":", 1)[1]
                                 if init_symbol in self.func_symbol_names:
                                     param_count = init_info.get("param_count")
                                     if param_count is not None:
                                         expected_positional = param_count - 1
                                         if len(node.args) == expected_positional:
                                             res = MoltValue(
-                                                self.next_var(), type_hint=class_id
+                                                self.next_var(),
+                                                type_hint=DeclaredClass(class_id),
                                             )
                                             # See sibling site above: payload
                                             # size in bytes carried via
@@ -1069,7 +1088,8 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                                     args=[class_ref],
                                                     result=res,
                                                     metadata={
-                                                        "class_size_bytes": class_size_bytes
+                                                        "class_size_bytes": class_size_bytes,
+                                                        "class_id": class_id,
                                                     },
                                                 )
                                             )
@@ -1101,6 +1121,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                                     and self.exact_class_token
                                                     == allocation_token
                                                     and self._try_inline_init_assigns(
+                                                        class_id,
                                                         init_assigns,
                                                         inline_params,
                                                         res,
@@ -1132,7 +1153,9 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                                 )
 
                 callargs = self._emit_call_args_builder(node)
-                res_hint = "Any" if new_returns_any else class_id
+                res_hint: TypeHint = (
+                    "Any" if new_returns_any else DeclaredClass(class_id)
+                )
                 res = MoltValue(self.next_var(), type_hint=res_hint)
                 metadata = (
                     {"defines_del": True}
@@ -1160,7 +1183,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             )
             if stateful_result is not None:
                 return stateful_result
-            if target_info and str(target_info.type_hint).startswith("BoundMethod:"):
+            if target_info and isinstance(target_info.type_hint, BoundMethodHint):
                 callee = self._named_callee_value(target_info, func_id, node)
                 res_hint = "Any"
                 if needs_bind:
@@ -1179,7 +1202,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 self.emit(MoltOp(kind="CALL_METHOD", args=[callee] + args, result=res))
                 return res
 
-            if target_info and str(target_info.type_hint).startswith("Func:"):
+            if (
+                target_info
+                and isinstance(target_info.type_hint, str)
+                and target_info.type_hint.startswith("Func:")
+            ):
                 target_name = target_info.type_hint.split(":")[1]
                 intrinsic_target = _intrinsic_arity_exact(target_name) is not None
                 res_hint = (

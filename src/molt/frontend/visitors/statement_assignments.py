@@ -90,10 +90,10 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         obj = self.visit(node.target.value)
         obj_name = None
         if isinstance(node.target.value, ast.Name):
-            class_name = node.target.value.id
-            obj_name = class_name
-            if class_name in self.classes:
-                self._invalidate_loop_guards_for_class(class_name)
+            obj_name = node.target.value.id
+            stored_class = self._class_reference(node.target.value)
+            if stored_class is not None:
+                self._invalidate_loop_guards_for_class(stored_class)
         self._emit_attribute_store(
             obj,
             node.target.value,
@@ -219,12 +219,18 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                     target.value.id if isinstance(target.value, ast.Name) else None
                 )
                 exact_class = self._exact_class_for_value(obj, target_name)
+                declared = self._declared_class(obj)
+                declared_class = (
+                    declared.class_id
+                    if declared is not None and declared.class_id in self.classes
+                    else None
+                )
                 if exact_class is not None:
                     self._record_instance_attr_mutation(exact_class, target.attr)
-                elif obj.type_hint in self.classes:
-                    self._record_instance_attr_mutation(obj.type_hint, target.attr)
+                elif declared_class is not None:
+                    self._record_instance_attr_mutation(declared_class, target.attr)
                 res = MoltValue(self.next_var(), type_hint="None")
-                if obj.type_hint in self.classes:
+                if declared_class is not None:
                     self.emit(
                         MoltOp(
                             kind="DELATTR_GENERIC_PTR",

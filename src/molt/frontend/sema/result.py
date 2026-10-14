@@ -12,8 +12,8 @@ old inline computations are deleted only once their ``SemaResult`` twin proves
 byte-equal — F2c rewires the walk to read these tables at the use sites.
 
 Scope of this phase: the module-level pre-walk facts that are written **exactly
-once** in ``visit_Module`` and only read thereafter (the class graph, local
-class member facts, the const environment, and per-top-level-function metadata).
+once** in ``visit_Module`` and only read thereafter (class-body block facts,
+the const environment, and per-top-level-function metadata).
 Walk-mutated cursors (``const_ints`` written in ``emit()``, ``exact_locals``
 mutated across visit methods, the per-function scope dicts populated lazily in
 ``start_function``) are deliberately **excluded** — they are cursors, not Sema
@@ -29,40 +29,13 @@ from molt.frontend.sema.funcmeta import FunctionKind
 
 
 @dataclass(frozen=True)
-class ClassGraph:
-    """The module-wide static class graph — the soundness substrate for the
-    zero-arg ``super()`` fold (doc 44 §2.2, ``ClassFacts``).
-
-    * ``bases_by_class`` maps every class-statement name in the module
-      (top-level, nested, or function-local) to the list of *base-name lists*
-      across all class statements that define that name.  A class whose bases
-      are not all simple ``ast.Name`` references contributes the sentinel
-      ``["<opaque>"]`` for that definition.
-    * ``subclassed_names`` is the set of names referenced as a base anywhere.
-    """
-
-    bases_by_class: dict[str, list[list[str]]]
-    subclassed_names: set[str]
-
-
-@dataclass(frozen=True)
 class ClassFacts:
-    """Per-class AST member facts computed before lowering.
+    """Per-class AST facts computed before lowering.
 
-    ``method_names_by_class`` contains names whose final class-body binding is
-    a method definition. ``attr_names_by_class`` contains names whose final
-    binding is a non-method class attribute. A deleted name appears in neither
-    set. ``opaque_member_class_names`` records class bodies whose member set
-    cannot be proven from straight-line syntax. Repeated class definitions are
-    retained as ``ambiguous_class_names`` so consumers fail closed instead of
-    merging incompatible bodies. ``block_exec_class_nodes`` records class bodies
-    whose namespace must be executed through the mutable block path.
+    ``block_exec_class_nodes`` records class bodies whose namespace must be
+    executed through the mutable block path.
     """
 
-    method_names_by_class: dict[str, frozenset[str]]
-    attr_names_by_class: dict[str, frozenset[str]]
-    opaque_member_class_names: frozenset[str]
-    ambiguous_class_names: frozenset[str]
     block_exec_class_nodes: frozenset[int]
 
 
@@ -94,7 +67,6 @@ class SemaResult:
     these fields and deletes the corresponding mutable god-object dicts.
     """
 
-    class_graph: ClassGraph
     class_facts: ClassFacts
     const_dicts: dict[str, dict[str, Any]]
     function_meta: FunctionMeta

@@ -26,6 +26,7 @@ from typing import (
 from molt.frontend._types import (
     ActiveException,
     AsyncFrameSlot,
+    ClassId,
     ClassInfo,
     CodeSlotDeclaration,
     ComprehensionBinding,
@@ -33,10 +34,12 @@ from molt.frontend._types import (
     FuncInfo,
     MoltOp,
     MoltValue,
+    TypeHint,
     _ClassNsScope,
 )
 
 if TYPE_CHECKING:
+    from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.lowering.builtin_guards import GuardArmKind
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
@@ -49,9 +52,12 @@ class _GeneratorProtocolAttrs(Protocol):
     _active_midend_function_name: Any
     _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonNodeKey]] | None
     _class_body_depth: int
+    _class_exports: dict[tuple[str, str], ClassId]
+    _class_index: ClassDefinitionIndex | None
     _class_ns_stack: list[_ClassNsScope]
     _deferred_runtime_warnings: list[str]
     _emitted_syntax_warnings: set[tuple[str, int, str]]
+    _exception_subclass_memo: dict[ClassId, bool]
     _expr_col: tuple[int, int] | None
     _gpu_body_origin_candidates: dict[int, dict[str, Any]]
     _lexical_dependency_cache: PythonDependencyAuthority | None
@@ -59,7 +65,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _list_int_containers: set[str]
     _midend_env_snapshot: Any
     _midend_stats_reported: Any
-    _module_attr_type_hints: dict[str, str]
+    _module_attr_type_hints: dict[str, TypeHint]
     _module_pressure_funcs_map_ref: Any
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any
@@ -76,21 +82,21 @@ class _GeneratorProtocolAttrs(Protocol):
     async_closure_offset: int | None
     async_frame_slots: list[AsyncFrameSlot]
     async_internal_bindings: dict[str, AsyncFrameSlot]
-    async_internal_hints: dict[str, str]
+    async_internal_hints: dict[str, TypeHint]
     async_locals: dict[str, AsyncFrameSlot]
     async_locals_base: int
-    async_public_hints: dict[str, str]
-    async_spill_hints: dict[str, str]
+    async_public_hints: dict[str, TypeHint]
+    async_spill_hints: dict[str, TypeHint]
     async_spill_slots: dict[str, AsyncFrameSlot]
     block_terminated: Any
-    boxed_local_hints: dict[str, str]
+    boxed_local_hints: dict[str, TypeHint]
     boxed_locals: dict[str, MoltValue]
     bytearray_len_hints: dict[str, int]
     class_annotation_exec_counter: Any
     class_annotation_exec_map: MoltValue | None
     class_annotation_items: list[tuple[str, ast.expr, int]]
-    class_definition_pending: set[str]
-    classes: dict[str, ClassInfo]
+    class_definition_pending: set[ClassId]
+    classes: dict[ClassId, ClassInfo]
     closure_locals: set[str]
     code_slots_emitted: Any
     comp_shadow_locals: set[str]
@@ -98,9 +104,8 @@ class _GeneratorProtocolAttrs(Protocol):
     compiler_bindings: dict[str, MoltValue]
     comprehension_bindings: dict[str, ComprehensionBinding]
     const_ints: dict[str, int]
-    container_elem_hints: dict[str, str]
+    container_elem_hints: dict[str, TypeHint]
     control_flow_depth: Any
-    current_class: str | None
     current_func_name: str
     current_line: int | None
     current_method_first_param: str | None
@@ -109,8 +114,8 @@ class _GeneratorProtocolAttrs(Protocol):
     defer_module_attrs: Any
     deferred_module_attrs: set[str]
     del_targets: set[str]
-    dict_key_hints: dict[str, str]
-    dict_value_hints: dict[str, str]
+    dict_key_hints: dict[str, TypeHint]
+    dict_value_hints: dict[str, TypeHint]
     direct_call_modules: Any
     eager_annotations: Any
     enable_phi: Any
@@ -119,11 +124,11 @@ class _GeneratorProtocolAttrs(Protocol):
     exact_locals: dict[str, ExactClassFact]
     exception_stack_depth_baseline: MoltValue | None
     exception_stack_prev_baseline: MoltValue | None
-    explicit_type_hints: dict[str, str]
+    explicit_type_hints: dict[str, TypeHint]
     fallback_policy: Any
     frame_code_slots: CodeSlotDeclaration | None
     frame_home_slots: dict[str, int] | None
-    free_var_hints: dict[str, str]
+    free_var_hints: dict[str, TypeHint]
     free_vars: dict[str, int]
     func_aliases: dict[str, str]
     func_code_ids: dict[str, int]
@@ -134,12 +139,11 @@ class _GeneratorProtocolAttrs(Protocol):
     future_annotations: Any
     genexpr_counter: Any
     global_decls: set[str]
-    global_dict_key_hints: dict[str, str]
-    global_dict_value_hints: dict[str, str]
-    global_elem_hints: dict[str, str]
+    global_dict_key_hints: dict[str, TypeHint]
+    global_dict_value_hints: dict[str, TypeHint]
+    global_elem_hints: dict[str, TypeHint]
     global_imported_attr_names: dict[str, str]
     global_imported_module_attr_mutations: set[tuple[str, str]]
     global_imported_module_provenance: dict[str, frozenset[str]]
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
-    globals: dict[str, MoltValue]

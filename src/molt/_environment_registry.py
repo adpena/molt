@@ -4258,15 +4258,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_MEMGVN_REPORT_BASELINE",
-      "owner": "runtime/molt-passes/src/tir/module_phase.rs",
-      "summary": "Exactly 1 makes the MOLT_MEMGVN_REPORT analysis strip the _class attribute from every op first, so all field regions fail closed to GenericHeap and the report shows the pre-class-aware baseline for comparison.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "",
       "kind": "path",

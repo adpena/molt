@@ -82,8 +82,6 @@ fn typed_load(func: &mut TirFunction, object: ValueId) -> TirOp {
     let mut op = make_op(OpCode::LoadAttr, vec![object], vec![result]);
     op.attrs
         .insert("_original_kind".into(), AttrValue::Str("load".into()));
-    op.attrs
-        .insert("_class".into(), AttrValue::Str("Fixture".into()));
     op.attrs.insert("value".into(), AttrValue::Int(0));
     op
 }

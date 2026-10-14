@@ -35,6 +35,7 @@ from molt.frontend._types import (
     MoltValue,
     ScratchCell,
     TryScope,
+    TypeHint,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -67,7 +68,7 @@ class _ResumeLiveness:
         self.cfg = build_cfg(ops)
         self.names: list[str] = []
         self.def_sites: dict[str, list[int]] = {}
-        self.type_hints: dict[str, str] = {}
+        self.type_hints: dict[str, TypeHint] = {}
         index: dict[str, int] = {}
 
         def bit(value: MoltValue) -> int:
@@ -200,7 +201,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
 
             prev_state = self._capture_function_state()
-            self.current_class = None
             prev_first_param = self.current_method_first_param
             self.start_function(
                 poll_func_name,
@@ -418,7 +418,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         )  # Placeholder size
 
         prev_state = self._capture_function_state()
-        self.current_class = None
         prev_first_param = self.current_method_first_param
         self.start_function(
             poll_func_name,
@@ -1278,7 +1277,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         )
         return offset
 
-    def _reload_async_value(self, offset: int, hint: str) -> MoltValue:
+    def _reload_async_value(self, offset: int, hint: TypeHint) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint=hint)
         self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
         return res

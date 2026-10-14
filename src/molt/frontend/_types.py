@@ -41,13 +41,114 @@ if TYPE_CHECKING:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ClassId:
+    """One class statement, program-wide (HF-203).
+
+    ``qualname`` is the statement's Python ``__qualname__``. ``occurrence`` is
+    the statement's ``(line, column)`` only when its qualname repeats in its
+    module, so a class defined once keeps a position-free identity that
+    survives edits elsewhere in the file. Identity is the whole value: two
+    statements that share a name never compare equal.
+    """
+
+    module: str
+    qualname: str
+    occurrence: tuple[int, int] | None = None
+
+    @property
+    def name(self) -> str:
+        """The Python-visible ``__name__`` (the last qualname component)."""
+        return self.qualname.rpartition(".")[2]
+
+    def sort_key(self) -> tuple[str, str, int, int, int]:
+        """Total, deterministic order; a unique qualname sorts first."""
+        if self.occurrence is None:
+            return (self.module, self.qualname, 0, 0, 0)
+        line, column = self.occurrence
+        return (self.module, self.qualname, 1, line, column)
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, ClassId):
+            return NotImplemented
+        return self.sort_key() < other.sort_key()
+
+    def __le__(self, other: object) -> bool:
+        if not isinstance(other, ClassId):
+            return NotImplemented
+        return self.sort_key() <= other.sort_key()
+
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, ClassId):
+            return NotImplemented
+        return self.sort_key() > other.sort_key()
+
+    def __ge__(self, other: object) -> bool:
+        if not isinstance(other, ClassId):
+            return NotImplemented
+        return self.sort_key() >= other.sort_key()
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltinClass:
+    """A builtin class such as ``object``, ``dict`` or ``Exception``.
+
+    It never compares equal to a :class:`ClassId`, even when a user class has
+    the same name (``class Exception(...)`` in user code).
+    """
+
+    name: str
+
+    def __post_init__(self) -> None:
+        if self.name not in BUILTIN_TYPE_TAGS and self.name not in (
+            BUILTIN_EXCEPTION_NAMES
+        ):
+            raise ValueError(f"{self.name!r} is not a builtin class")
+
+
+type ClassRef = ClassId | BuiltinClass
+
+
+class ReceiverKind(StrEnum):
+    """What a declared class value is: an instance, or the class object itself."""
+
+    INSTANCE = "instance"
+    CLASS_OBJECT = "class_object"
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredClass:
+    """A declared class: an annotation, a return hint or a method receiver.
+
+    Subclasses stay possible and the runtime does not enforce it, so it never
+    authorizes an unguarded fixed layout; only a runtime layout guard or an
+    exact :class:`ClassId` fact does.
+    """
+
+    class_id: ClassId
+    kind: ReceiverKind = ReceiverKind.INSTANCE
+
+
+@dataclass(frozen=True, slots=True)
+class BoundMethodHint:
+    """A bound method whose owner class and method name the producer proved."""
+
+    owner: ClassRef
+    method: str
+
+
+# A value hint: a builtin or transport spelling, a declared class, or a bound
+# method. User class identity never travels as a string.
+type TypeHint = str | DeclaredClass | BoundMethodHint
+
+
 @dataclass
 class MoltValue:
     name: str
-    type_hint: str = "Unknown"
+    type_hint: TypeHint = "Unknown"
     # Concrete runtime class identity proven by the operation that produced
     # this value.  Unlike ``type_hint``, this may authorize fixed-layout access.
-    exact_class: str | None = None
+    exact_class: ClassId | None = None
     # Exact identity is a temporal fact.  A callback or other invalidating
     # boundary advances the generator token, making already-held values stale.
     exact_class_token: int | None = None
@@ -59,7 +160,7 @@ class MoltValue:
 
 @dataclass(frozen=True)
 class ExactClassFact:
-    class_id: str
+    class_id: ClassId
     token: int
 
 
@@ -130,7 +231,7 @@ class ScratchCell:
 
     value: MoltValue | None
     async_slot: AsyncFrameSlot | None
-    type_hint: str
+    type_hint: TypeHint
 
     def __post_init__(self) -> None:
         if (self.value is None) == (self.async_slot is None):
@@ -155,7 +256,7 @@ class ComprehensionBinding:
     variable_slot: str | None
     async_slot: AsyncFrameSlot | None
     is_cell: bool = False
-    type_hint: str = "Any"
+    type_hint: TypeHint = "Any"
     definitely_bound: bool = False
 
     def __post_init__(self) -> None:
@@ -512,8 +613,9 @@ def _function_is_instance_method(item: ast.AST) -> bool:
 
 
 # Methods on built-in types that the native backend can fast-dispatch when the
-# callee's type_hint is "BoundMethod:<type>:<method>".  The value is the set of
-# method names supported per type.  Only methods that have a corresponding
+# callee's hint is a ``BoundMethodHint`` with that builtin owner (the wire
+# spelling is "BoundMethod:<type>:<method>").  The value is the set of method
+# names supported per type.  Only methods that have a corresponding
 # fast-path implementation in function_compiler.rs (the `s_value` match arm)
 # should appear here.
 _BUILTIN_FAST_METHODS: dict[str, frozenset[str]] = {
@@ -595,6 +697,8 @@ BUILTIN_EXCEPTION_NAMES = {
     "ResourceWarning",
     "EncodingWarning",
 }
+
+OBJECT_CLASS = BuiltinClass("object")
 
 BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS = {
     name: idx
@@ -1059,7 +1163,6 @@ class MethodInfo(TypedDict):
     func: MoltValue
     attr: MoltValue
     descriptor: MethodDescriptor
-    return_hint: str | None
     param_count: int
     defaults: list[dict[str, Any]]
     posonly_count: int
@@ -1075,16 +1178,28 @@ class MethodInfo(TypedDict):
 
 
 class ClassInfo(TypedDict, total=False):
+    """Facts for one class statement, keyed by its :class:`ClassId`.
+
+    ``visit_ClassDef`` builds it and nothing writes it afterwards: lowering-time
+    derived facts live in typed side tables on the generator.
+    """
+
+    # The namespace binding the statement writes (a mangled private name
+    # inside a class body). The Python-visible names come from the ClassId.
+    binding_name: str
     fields: dict[str, int]
-    field_hints: dict[str, str]
+    field_hints: dict[str, TypeHint]
     size: int
     field_order: list[str]
     defaults: dict[str, ast.expr]
     class_attrs: dict[str, ast.expr]
-    module: str
-    base: str | None
-    bases: list[str]
-    mro: list[str]
+    # Class attributes whose value the defining module proved is a data
+    # descriptor (``property(...)`` or an instance of a class with ``__set__``
+    # or ``__delete__``). Decided where the class is defined, so a consumer in
+    # another module never resolves the defining module's names.
+    data_descriptor_attrs: frozenset[str]
+    bases: tuple[ClassRef, ...]
+    mro: tuple[ClassRef, ...]
     dynamic: bool
     static: bool
     dataclass: bool
@@ -1095,13 +1210,11 @@ class ClassInfo(TypedDict, total=False):
     methods: dict[str, MethodInfo]
     pending_methods: set[str]
     layout_version: int
-    exception_subclass: bool
     needs_classcell: bool
     custom_metaclass: bool
     class_value_name: str
     constructor_fold_safe: bool
     decorated: bool
-    heap_kind: str | None
 
 
 class FuncInfo(TypedDict):

@@ -7,9 +7,18 @@ import pytest
 from molt.compiler_analysis.python_inlining import (
     inline_expression_is_frame_independent,
 )
-from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend._types import (
+    OBJECT_CLASS,
+    ClassId,
+    ClassRef,
+    DeclaredClass,
+    MoltOp,
+    MoltValue,
+)
 from molt.frontend.visitors.call_method_dispatch import CallMethodDispatchMixin
 from molt.frontend.visitors.class_method_compilation import ClassMethodCompilationMixin
+
+C = ClassId("inline_frame_legality", "C")
 
 
 def expression(source: str) -> ast.expr:
@@ -52,7 +61,7 @@ class InlineHarness(CallMethodDispatchMixin, ClassMethodCompilationMixin):
         self.events: list[str] = []
         self.locals = {"x": MoltValue("caller_x", type_hint="str")}
         self.free_vars = {"x": 0}
-        self.classes = {"C": {"fields": {"first": 0, "second": 8}, "methods": {}}}
+        self.classes = {C: {"fields": {"first": 0, "second": 8}, "methods": {}}}
 
     def visit(self, node: ast.Constant) -> MoltValue:
         assert isinstance(node, ast.Constant)
@@ -65,10 +74,10 @@ class InlineHarness(CallMethodDispatchMixin, ClassMethodCompilationMixin):
     def emit(self, op: MoltOp) -> None:
         self.events.append(op.kind)
 
-    def _class_mro_names(self, name: str) -> list[str]:
-        return [name, "object"]
+    def _class_mro(self, class_ref: ClassRef) -> tuple[ClassRef, ...]:
+        return (class_ref, OBJECT_CLASS)
 
-    def _class_attr_is_data_descriptor(self, name: str, field: str) -> bool:
+    def _class_attr_is_data_descriptor(self, class_id: ClassId, field: str) -> bool:
         return False
 
     def _emit_guarded_setattr(self, receiver, name, value, owner) -> None:
@@ -81,7 +90,7 @@ def test_inline_parameter_never_resolves_through_callers_local_or_cell() -> None
     before = harness.locals
     result = harness._try_inline_method_call(
         {"inline_return": expression("x"), "inline_params": ["self", "x"]},
-        MoltValue("receiver", type_hint="C"),
+        MoltValue("receiver", type_hint=DeclaredClass(C)),
         [argument],
     )
     assert result is argument
@@ -97,7 +106,7 @@ def test_rejected_inline_emits_no_prefix_before_fallback() -> None:
             "inline_return": expression("side_effect() + super().value()"),
             "inline_params": ["self"],
         },
-        MoltValue("receiver", type_hint="C"),
+        MoltValue("receiver", type_hint=DeclaredClass(C)),
         [],
     )
     assert result is None
@@ -107,9 +116,10 @@ def test_rejected_inline_emits_no_prefix_before_fallback() -> None:
 def test_constructor_preflights_all_fields_before_emission() -> None:
     harness = InlineHarness()
     assert not harness._try_inline_init_assigns(
+        C,
         [("first", expression("1")), ("second", expression("callback()"))],
         ["self"],
-        MoltValue("receiver", type_hint="C"),
+        MoltValue("receiver", type_hint=DeclaredClass(C)),
         [],
     )
     assert harness.events == []
@@ -118,9 +128,10 @@ def test_constructor_preflights_all_fields_before_emission() -> None:
 def test_constructor_evaluates_then_stores_each_field_in_source_order() -> None:
     harness = InlineHarness()
     assert harness._try_inline_init_assigns(
+        C,
         [("first", expression("1")), ("second", expression("2"))],
         ["self"],
-        MoltValue("receiver", type_hint="C"),
+        MoltValue("receiver", type_hint=DeclaredClass(C)),
         [],
     )
     assert harness.events == ["constant:1", "store:first", "constant:2", "store:second"]
@@ -132,12 +143,16 @@ def test_constructor_never_bypasses_custom_setattr_or_reuses_initialization_stor
     for custom_setattr in (False, True):
         harness = InlineHarness()
         if custom_setattr:
-            harness.classes["C"]["class_attrs"] = {"__setattr__": object()}
+            harness.classes[C]["class_attrs"] = {"__setattr__": object()}
             assignments = [("first", expression("1"))]
         else:
             assignments = [("first", expression("1")), ("first", expression("2"))]
         assert not harness._try_inline_init_assigns(
-            assignments, ["self"], MoltValue("receiver", type_hint="C"), []
+            C,
+            assignments,
+            ["self"],
+            MoltValue("receiver", type_hint=DeclaredClass(C)),
+            [],
         )
         assert harness.events == []
 

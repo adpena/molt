@@ -1,100 +1,17 @@
-"""Static class-graph analysis (doc 44 §F2b ``classgraph.py``).
+"""Static class-body analysis (doc 44 §F2b ``classgraph.py``).
 
-Free functions over ``ast.Module`` and immutable class tables — the
-``cfg_analysis.py`` house shape.  The static base graph, C3/static-MRO
-linearization, reachability, and class-body block-exec decisions are computed
-outside the lowering generator
-and are unit-testable on bare facts (the doc 44 §5.5 testability win).
+Free functions over ``ast.Module`` — the ``cfg_analysis.py`` house shape. The
+class-body block-exec decision and C3 linearization are computed outside the
+lowering generator and are unit-testable on bare facts. Class identity is not
+decided here: lowering keys every class fact by its ``ClassId``.
 """
 
 from __future__ import annotations
 
 import ast
-from molt.python_private_names import python_import_binding
+from collections.abc import Hashable, Sequence
 
-from collections.abc import Mapping, Sequence
-from typing import Any
-
-from molt.frontend.sema.result import ClassFacts, ClassGraph
-
-
-def build_class_graph(node: ast.Module) -> ClassGraph:
-    """Build the module-wide static class graph used to reason about the
-    zero-arg ``super()`` fold *before* any method body is compiled.
-
-    Returns a :class:`ClassGraph` with ``bases_by_class`` / ``subclassed_names``:
-
-    * ``bases_by_class`` maps every class-statement name in this module
-      (top-level, nested, or function-local) to the list of *base-name
-      lists* across all class statements that define that name.  A name can
-      have multiple definitions (re-binding / conditional class defs); the
-      fold must hold for every one, so all are retained.  A class whose
-      bases are not all simple ``ast.Name`` references contributes the
-      sentinel ``["<opaque>"]`` for that definition, which forces any
-      MRO computation through it to bail (fail-closed).
-
-    * ``subclassed_names`` is the set of names referenced as a base anywhere
-      (the conservative "is this class ever subclassed" view), including
-      dotted/attribute bases and names appearing inside computed bases.
-
-    ``super()`` in ``C.method`` resolves to the class following ``C`` in
-    ``type(self).__mro__``.  Because the method is inherited, ``self`` may be
-    any subclass instance, and a diamond subclass can interpose a cooperative
-    C3 sibling between ``C`` and ``C``'s lexical next base.  The fold is only
-    sound when the *method-resolution successor* of ``C`` is identical across
-    ``C`` and every visible subclass of ``C`` — which requires the full base
-    graph of classes that may be defined *after* ``C`` in source order.
-    """
-    bases_by_class: dict[str, list[list[str]]] = {}
-    subclassed: set[str] = set()
-    _OPAQUE = "<opaque>"
-
-    def simple_base_name(expr: ast.expr) -> str | None:
-        if isinstance(expr, ast.Name):
-            return expr.id
-        return None
-
-    def record_subclassed(expr: ast.expr) -> None:
-        if isinstance(expr, ast.Name):
-            subclassed.add(expr.id)
-            return
-        if isinstance(expr, ast.Attribute):
-            current: ast.expr | None = expr
-            while isinstance(current, ast.Attribute):
-                subclassed.add(current.attr)
-                current = current.value
-            if isinstance(current, ast.Name):
-                subclassed.add(current.id)
-            return
-        for sub in ast.walk(expr):
-            if isinstance(sub, ast.Name):
-                subclassed.add(sub.id)
-
-    for stmt in ast.walk(node):
-        if not isinstance(stmt, ast.ClassDef):
-            continue
-        base_names: list[str] = []
-        opaque = False
-        # A keyword base (metaclass=, or any keyword) makes the class
-        # dynamically built: treat its MRO as un-foldable.
-        if stmt.keywords:
-            opaque = True
-        for base_expr in stmt.bases:
-            record_subclassed(base_expr)
-            name = simple_base_name(base_expr)
-            if name is None:
-                opaque = True
-            else:
-                base_names.append(name)
-        for kw in stmt.keywords:
-            if isinstance(kw.value, (ast.Name, ast.Attribute)):
-                record_subclassed(kw.value)
-        entry = [_OPAQUE] if opaque else (base_names or ["object"])
-        bases_by_class.setdefault(stmt.name, []).append(entry)
-    return ClassGraph(bases_by_class=bases_by_class, subclassed_names=subclassed)
-
-
-ClassTable = Mapping[str, Mapping[str, Any]]
+from molt.frontend.sema.result import ClassFacts
 
 
 CLASS_BODY_SIMPLE_STMTS = (
@@ -122,134 +39,23 @@ def class_body_needs_block_exec(body: Sequence[ast.stmt]) -> bool:
     return False
 
 
-def _is_property_update_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    if len(node.decorator_list) != 1:
-        return False
-    decorator = node.decorator_list[0]
-    return (
-        isinstance(decorator, ast.Attribute)
-        and isinstance(decorator.value, ast.Name)
-        and decorator.value.id == node.name
-        and decorator.attr in {"setter", "deleter"}
-    )
-
-
-def _is_inert_class_expr(node: ast.Expr) -> bool:
-    return isinstance(node.value, ast.Constant) and isinstance(
-        node.value.value, (str, bytes, int, float, complex, bool, type(None))
-    )
-
-
-def _class_member_facts_are_opaque(
-    node: ast.ClassDef, *, body_needs_block: bool
-) -> bool:
-    if node.decorator_list or node.keywords:
-        return True
-    if body_needs_block:
-        return True
-    for item in node.body:
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if item.decorator_list and not _is_property_update_method(item):
-                return True
-        elif isinstance(item, ast.Expr) and not _is_inert_class_expr(item):
-            return True
-    return False
-
-
 def build_class_facts(node: ast.Module) -> ClassFacts:
-    """Collect final class-body member facts used by class semantic predicates."""
-    method_names_by_class: dict[str, frozenset[str]] = {}
-    attr_names_by_class: dict[str, frozenset[str]] = {}
-    counts: dict[str, int] = {}
-    opaque: set[str] = set()
-    block_exec_nodes: set[int] = set()
-
-    def target_names(target: ast.AST) -> list[str]:
-        if isinstance(target, ast.Name):
-            return [target.id]
-        if isinstance(target, ast.Starred):
-            return target_names(target.value)
-        if isinstance(target, (ast.Tuple, ast.List)):
-            names: list[str] = []
-            for elt in target.elts:
-                names.extend(target_names(elt))
-            return names
-        return []
-
-    def bind_method(members: dict[str, str], name: str) -> None:
-        members[name] = "method"
-
-    def bind_attr(members: dict[str, str], name: str) -> None:
-        members[name] = "attr"
-
-    def delete_name(members: dict[str, str], name: str) -> None:
-        members.pop(name, None)
-
-    for stmt in ast.walk(node):
-        if not isinstance(stmt, ast.ClassDef):
-            continue
-        counts[stmt.name] = counts.get(stmt.name, 0) + 1
-        body_needs_block = class_body_needs_block_exec(stmt.body)
-        if body_needs_block:
-            block_exec_nodes.add(id(stmt))
-        if _class_member_facts_are_opaque(stmt, body_needs_block=body_needs_block):
-            opaque.add(stmt.name)
-        members: dict[str, str] = {}
-        for item in stmt.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if not _is_property_update_method(item):
-                    bind_method(members, item.name)
-                continue
-            if isinstance(item, ast.ClassDef):
-                bind_attr(members, item.name)
-                continue
-            if isinstance(item, ast.Assign):
-                for target in item.targets:
-                    for name in target_names(target):
-                        bind_attr(members, name)
-                continue
-            if isinstance(item, ast.AnnAssign):
-                if item.value is not None:
-                    for name in target_names(item.target):
-                        bind_attr(members, name)
-                continue
-            if isinstance(item, ast.AugAssign):
-                for name in target_names(item.target):
-                    bind_attr(members, name)
-                continue
-            if isinstance(item, (ast.Import, ast.ImportFrom)):
-                for alias in item.names:
-                    bind_attr(members, python_import_binding(alias))
-                continue
-            if isinstance(item, ast.Delete):
-                for target in item.targets:
-                    for name in target_names(target):
-                        delete_name(members, name)
-                continue
-
-        method_names_by_class[stmt.name] = frozenset(
-            name for name, kind in members.items() if kind == "method"
-        )
-        attr_names_by_class[stmt.name] = frozenset(
-            name for name, kind in members.items() if kind == "attr"
-        )
-
-    ambiguous = frozenset(name for name, count in counts.items() if count != 1)
+    """Collect the class bodies that must execute through the namespace block."""
     return ClassFacts(
-        method_names_by_class=method_names_by_class,
-        attr_names_by_class=attr_names_by_class,
-        opaque_member_class_names=frozenset(opaque),
-        ambiguous_class_names=ambiguous,
-        block_exec_class_nodes=frozenset(block_exec_nodes),
+        block_exec_class_nodes=frozenset(
+            id(stmt)
+            for stmt in ast.walk(node)
+            if isinstance(stmt, ast.ClassDef) and class_body_needs_block_exec(stmt.body)
+        )
     )
 
 
-def c3_merge(seqs: Sequence[Sequence[str]]) -> list[str] | None:
+def c3_merge[T: Hashable](seqs: Sequence[Sequence[T]]) -> list[T] | None:
     """Merge C3 parent linearizations, returning ``None`` for inconsistency."""
-    merged: list[str] = []
+    merged: list[T] = []
     working = [list(seq) for seq in seqs]
     heads = [0] * len(working)
-    tail_counts: dict[str, int] = {}
+    tail_counts: dict[T, int] = {}
     for seq in working:
         for name in seq[1:]:
             tail_counts[name] = tail_counts.get(name, 0) + 1
@@ -262,7 +68,7 @@ def c3_merge(seqs: Sequence[Sequence[str]]) -> list[str] | None:
         if remaining == 0:
             return merged
 
-        candidate: str | None = None
+        candidate: T | None = None
         for idx, seq in enumerate(working):
             head_idx = heads[idx]
             if head_idx >= len(seq):
@@ -288,73 +94,3 @@ def c3_merge(seqs: Sequence[Sequence[str]]) -> list[str] | None:
                         tail_counts.pop(next_head, None)
                     else:
                         tail_counts[next_head] = count - 1
-
-
-def static_class_bases(
-    class_graph: ClassGraph, classes: ClassTable, class_name: str
-) -> list[str] | None:
-    """Return the single static base-name list for ``class_name`` if sound."""
-    if class_name == "object":
-        return ["object"]
-    defs = class_graph.bases_by_class.get(class_name)
-    if defs is not None:
-        if len(defs) != 1:
-            return None
-        entry = defs[0]
-        if "<opaque>" in entry:
-            return None
-        return list(entry)
-    info = classes.get(class_name)
-    if info is not None:
-        if info.get("dynamic") or info.get("custom_metaclass"):
-            return None
-        return list(info.get("bases", []) or ["object"])
-    return None
-
-
-def static_mro_names(
-    class_graph: ClassGraph,
-    classes: ClassTable,
-    class_name: str,
-    _stack: tuple[str, ...] = (),
-) -> list[str] | None:
-    """Compute static C3 linearization for ``class_name`` or fail closed."""
-    if class_name in _stack:
-        return None
-    if class_name == "object":
-        return ["object"]
-    bases = static_class_bases(class_graph, classes, class_name)
-    if bases is None:
-        return None
-    base_mros: list[list[str]] = []
-    for base in bases:
-        base_mro = static_mro_names(class_graph, classes, base, _stack + (class_name,))
-        if base_mro is None:
-            return None
-        base_mros.append(base_mro)
-    base_mros.append(list(bases))
-    merged = c3_merge(base_mros)
-    if merged is None:
-        return None
-    return [class_name] + merged
-
-
-def reachable_base_names(
-    class_graph: ClassGraph,
-    class_name: str,
-    _seen: set[str] | None = None,
-) -> set[str]:
-    """Transitive base-name reachability over the static module class graph."""
-    if _seen is None:
-        _seen = set()
-    if class_name in _seen:
-        return _seen
-    _seen.add(class_name)
-    defs = class_graph.bases_by_class.get(class_name)
-    if not defs:
-        return _seen
-    for entry in defs:
-        for base in entry:
-            if base != "<opaque>":
-                reachable_base_names(class_graph, base, _seen)
-    return _seen

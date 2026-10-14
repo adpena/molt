@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+from molt.frontend import ClassId, DeclaredClass, MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     BUILTIN_TYPE_TAGS,
@@ -4134,7 +4134,10 @@ def test_producer_owned_exact_class_excludes_protected_attribute_requirement(
     attribute: str | None,
 ) -> None:
     gen = SimpleTIRGenerator(module_name="__main__")
-    exact = gen._stamp_exact_class(MoltValue("safe", type_hint="Safe"), "Safe")
+    safe = ClassId("__main__", "Safe")
+    exact = gen._stamp_exact_class(
+        MoltValue("safe", type_hint=DeclaredClass(safe)), safe
+    )
     assert (
         gen._runtime_protected_attribute_requirement_bits(
             exact,
@@ -4636,7 +4639,12 @@ overridden = Overridden(4)
 
 def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
     gen = SimpleTIRGenerator()
-    gen.classes["Point"] = {"fields": {"x": 24}, "layout_version": 7}
+    point = ClassId("__main__", "Point")
+    gen.classes[point] = {
+        "binding_name": "Point",
+        "fields": {"x": 24},
+        "layout_version": 7,
+    }
 
     lowered = gen.map_ops_to_json(
         [
@@ -4648,7 +4656,7 @@ def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
                     MoltValue("ver"),
                     "x",
                     MoltValue("val"),
-                    "Point",
+                    point,
                 ],
                 result=MoltValue("out"),
             )
@@ -4664,7 +4672,6 @@ def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
         "s_value": "x",
         "value": 24,
         "out": "out",
-        "class": "Point",
     }
 
 

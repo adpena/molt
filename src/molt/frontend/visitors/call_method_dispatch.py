@@ -9,7 +9,11 @@ from molt.compiler_analysis.python_inlining import (
 )
 from molt.frontend._types import (
     BUILTIN_TYPE_TAGS,
+    OBJECT_CLASS,
+    BuiltinClass,
+    ClassId,
     ClassInfo,
+    DeclaredClass,
     MethodInfo,
     MoltOp,
     MoltValue,
@@ -22,16 +26,16 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class CallMethodDispatchMixin(GeneratorMixinBase):
     def _class_resolves_default_object_new(
-        self, class_name: str, class_info: ClassInfo
+        self, class_id: ClassId, class_info: ClassInfo
     ) -> bool:
         if class_info.get("dynamic"):
             return False
-        for base_name in self._class_mro_names(class_name):
-            if base_name == "object":
+        for base in self._class_mro(class_id):
+            if base == OBJECT_CLASS:
                 return True
-            if base_name in BUILTIN_TYPE_TAGS:
+            if isinstance(base, BuiltinClass):
                 return False
-            base_info = self.classes.get(base_name)
+            base_info = self.classes.get(base)
             if base_info is None or base_info.get("dynamic"):
                 return False
             methods = base_info.get("methods", {})
@@ -46,18 +50,20 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         return False
 
     def _class_new_policy(
-        self, class_name: str, class_info: ClassInfo
+        self, class_id: ClassId, class_info: ClassInfo
     ) -> tuple[bool, bool]:
-        if self._class_resolves_default_object_new(class_name, class_info):
+        if self._class_resolves_default_object_new(class_id, class_info):
             return False, False
         if class_info.get("dynamic"):
             return True, True
-        for base_name in self._class_mro_names(class_name):
-            if base_name == "object":
+        for base in self._class_mro(class_id):
+            if base == OBJECT_CLASS:
                 continue
-            if base_name in BUILTIN_TYPE_TAGS:
-                return True, False
-            base_info = self.classes.get(base_name)
+            if isinstance(base, BuiltinClass):
+                # A builtin type owns its ``__new__``; a builtin exception's
+                # constructor result stays opaque.
+                return True, base.name not in BUILTIN_TYPE_TAGS
+            base_info = self.classes.get(base)
             if base_info is None:
                 return True, True
             methods = base_info.get("methods", {})
@@ -145,7 +151,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
     def _try_emit_static_dataclass_constructor(
         self,
         node: ast.Call,
-        class_id: str,
+        class_id: ClassId,
         class_info: ClassInfo,
         class_ref: MoltValue,
     ) -> MoltValue | None:
@@ -174,7 +180,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
 
         values = self._emit_call_args(list(node.args))
         name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[class_id], result=name_val))
+        self.emit(MoltOp(kind="CONST_STR", args=[class_id.name], result=name_val))
         field_name_vals: list[MoltValue] = []
         for field in field_order:
             field_val = MoltValue(self.next_var(), type_hint="str")
@@ -193,7 +199,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             flags |= 0x8
         flags_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[flags], result=flags_val))
-        res = MoltValue(self.next_var(), type_hint=class_id)
+        res = MoltValue(self.next_var(), type_hint=DeclaredClass(class_id))
         self.emit(
             MoltOp(
                 kind="DATACLASS_NEW_VALUES",
@@ -266,18 +272,22 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
 
     def _try_inline_init_assigns(
         self,
+        class_id: ClassId,
         init_assigns: list[tuple[str, ast.expr]],
         inline_params: list[str],
         receiver: MoltValue,
         call_args: list[MoltValue],
     ) -> bool:
-        """Preflight every value and store, then emit in Python source order."""
+        """Preflight every value and store, then emit in Python source order.
+
+        ``receiver`` is the fresh allocation of ``class_id``; the class comes
+        from the allocating constructor, never from a value hint.
+        """
         if len(inline_params) != 1 + len(call_args):
             return False
-        class_name = receiver.type_hint
-        if class_name is None or class_name not in self.classes:
+        class_info = self.classes.get(class_id)
+        if class_info is None:
             return False
-        class_info = self.classes[class_name]
         if (
             class_info.get("dynamic")
             or class_info.get("dataclass")
@@ -285,10 +295,10 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             or class_info.get("decorated")
         ):
             return False
-        for owner in self._class_mro_names(class_name):
-            if owner == "object":
+        for owner in self._class_mro(class_id):
+            if owner == OBJECT_CLASS:
                 continue
-            owner_info = self.classes.get(owner)
+            owner_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
             if owner_info is None or owner_info.get("dynamic"):
                 return False
             if (
@@ -303,7 +313,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             if (
                 name in seen
                 or name not in fields
-                or self._class_attr_is_data_descriptor(class_name, name)
+                or self._class_attr_is_data_descriptor(class_id, name)
                 or not inline_expression_is_frame_independent(expression, inline_params)
             ):
                 return False
@@ -311,7 +321,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         bindings = dict(zip(inline_params, [receiver, *call_args], strict=True))
         for name, expression in init_assigns:
             value = self._emit_inline_expression(expression, bindings)
-            self._emit_guarded_setattr(receiver, name, value, class_name)
+            self._emit_guarded_setattr(receiver, name, value, class_id)
         return True
 
     def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
@@ -342,10 +352,10 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         if not isinstance(attr_node.value, ast.Name):
             return None
         obj_name = attr_node.value.id
-        class_name = self._exact_class_for_name(obj_name)
-        if class_name is None:
+        class_id = self._exact_class_for_name(obj_name)
+        if class_id is None:
             return None
-        class_info = self.classes.get(class_name)
+        class_info = self.classes.get(class_id)
         if class_info is None:
             return None
         # Conservative bail-outs: anything that touches the descriptor /
@@ -355,10 +365,8 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             return None
         if class_info.get("dataclass"):
             return None
-        if class_info.get("metaclass"):
-            return None
         method_name = attr_node.attr
-        method_info, owner_class = self._resolve_method_info(class_name, method_name)
+        method_info, owner_class = self._resolve_method_info(class_id, method_name)
         if method_info is None or owner_class is None:
             return None
         if method_info.get("descriptor") != "function":
@@ -374,13 +382,13 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         # Honour __getattribute__ overrides: the runtime path goes
         # through the override and could observe the bound-method
         # construction.  Skip the fold for those.
-        getattribute_info, _ = self._resolve_method_info(class_name, "__getattribute__")
+        getattribute_info, _ = self._resolve_method_info(class_id, "__getattribute__")
         if getattribute_info is not None:
             return None
         # Same for __getattr__ (only fires when normal lookup misses,
         # but a fold that bypasses the BoundMethod allocation could
         # observably skip the lookup ordering).
-        getattr_info, _ = self._resolve_method_info(class_name, "__getattr__")
+        getattr_info, _ = self._resolve_method_info(class_id, "__getattr__")
         if getattr_info is not None:
             return None
         if node.keywords:
@@ -398,9 +406,10 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         ):
             return None
         function = method_info.get("func")
-        if function is None or not function.type_hint.startswith("Func:"):
+        function_hint = function.type_hint if function is not None else None
+        if not isinstance(function_hint, str) or not function_hint.startswith("Func:"):
             return None
-        method_symbol = function.type_hint.split(":", 1)[1]
+        method_symbol = function_hint.split(":", 1)[1]
         if method_symbol not in self.func_symbol_names:
             return None
 
