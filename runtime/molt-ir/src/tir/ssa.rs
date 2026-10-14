@@ -17,6 +17,7 @@ use crate::ir::OpIR;
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::cfg::CFG;
+use super::cfg_liveness::{SimpleNameSet, SimpleNameTable, solve_name_liveness};
 use super::ops::{AttrDict, AttrValue, Dialect, OpCode, SourceSite, TirOp};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
@@ -245,7 +246,7 @@ impl<'a> SsaContext<'a> {
         // All argument placement consumes one liveness solution. Seeding SSA
         // arguments changes neither source defs/uses nor the executable graph.
         trace_stage("before_liveness");
-        let live_in = self.compute_live_in_vars();
+        let (live_names, live_in) = self.compute_live_in_vars();
         trace_stage("after_liveness");
         // Handler-block arguments must be established BEFORE the iterated
         // dominance frontier runs: a handler block that receives a live-in
@@ -262,10 +263,10 @@ impl<'a> SsaContext<'a> {
         // IDF runs, for the same reason handler-block arguments are seeded above
         // (each becomes a fresh SSA def whose rejoin frontier needs a phi).
         trace_stage("before_implicit_arguments");
-        self.insert_implicit_edge_block_arguments(&live_in);
+        self.insert_implicit_edge_block_arguments(&live_names, &live_in);
         trace_stage("after_implicit_arguments");
         trace_stage("before_phi_arguments");
-        self.insert_block_arguments(&live_in);
+        self.insert_block_arguments(&live_names, &live_in);
         trace_stage("after_phi_arguments");
         trace_stage("before_rename");
         self.rename_and_emit();
@@ -563,6 +564,33 @@ mod tests {
             out: Some(out.to_string()),
             ..OpIR::default()
         }
+    }
+
+    #[test]
+    fn compact_ssa_liveness_retains_unresolved_reads_and_parameter_entry_definitions() {
+        let ops = vec![
+            op_val("jump", 7),
+            op_val("label", 7),
+            op_args("print", &["parameter", "unresolved"]),
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let params = vec!["parameter".to_owned()];
+        let mut context = SsaContext::new("liveness_census", &cfg, &ops, &params);
+        context.gather_defs_uses();
+        context.build_augmented_cfg();
+        let (names, live_in) = context.compute_live_in_vars();
+        let parameter = names.id("parameter").unwrap();
+        let unresolved = names.id("unresolved").unwrap();
+        assert!(
+            !context.all_vars.contains("unresolved"),
+            "a read must not invent a definition"
+        );
+        assert!(!live_in[cfg.entry].contains(parameter));
+        assert!(live_in[cfg.entry].contains(unresolved));
+        let target = cfg.successors[cfg.entry][0];
+        assert!(live_in[target].contains(parameter));
+        assert!(live_in[target].contains(unresolved));
     }
 
     // Helper: count block arguments across all blocks.
