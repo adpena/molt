@@ -46,13 +46,16 @@ PYTHON_IMPORT_FINDER_POLICY = (
 )
 
 # Reviewed upstream artifact, not a digest minted from the local environment.
-# https://github.com/astral-sh/uv/blob/0.12.23/crates/uv-virtualenv/src/_virtualenv.py
-# The GitHub tag tree and immutable blob were independently fetched; uv 0.11.24
-# and 0.12.23 ship this same blob, and its bytes matched the pyvenv.cfg
-# environment. New templates require review.
+# https://github.com/astral-sh/uv/blob/0.13.1/crates/uv-virtualenv/src/_virtualenv.py
+# The GitHub tag trees and immutable blob were independently fetched; uv 0.11.24,
+# 0.12.23 and 0.13.1 ship this same blob. Since uv 0.13 (`install_distutils_patch`
+# in crates/uv-virtualenv/src/virtualenv.rs), uv writes it and `_virtualenv.pth`
+# only for Pythons older than 3.10, below Molt's supported range, so Molt's
+# environments carry no uv startup file; the capability remains for
+# environments made by older uv. New templates require review.
 _UV_BOOTSTRAP_PROVENANCE = {
     "project": "astral-sh/uv",
-    "version": "0.12.23",
+    "version": "0.13.1",
     "path": "crates/uv-virtualenv/src/_virtualenv.py",
     "git_blob_sha1": "c4af24d43878f22da47efa43a3ef7899c6a7c8aa",
     "sha256": "cfb3db86aaa53bb62b5ff764970bec2d71c9228590a0ebec57f6ec926cc0bf1a",

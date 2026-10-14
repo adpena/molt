@@ -540,10 +540,10 @@ setup_evidence = ["tests/differential/stdlib/platform_basic.py::platform.platfor
 name = "uv"
 executable = "uv"
 version_args = ["--version"]
-version_pattern = '^uv 0\.12\.23\b'
-setup_value = "0.12.23"
+version_pattern = '^uv 0\.13\.1\b'
+setup_value = "0.13.1"
 setup_evidence = [
-  ".github/actions/setup-project/action.yml::version: \"0.12.23\"",
+  ".github/actions/setup-project/action.yml::version: \"0.13.1\"",
 ]
 
 [[toolchain_policy]]
