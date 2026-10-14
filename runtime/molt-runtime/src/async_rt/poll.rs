@@ -868,7 +868,6 @@ mod tests {
             let replacement_code_bits = MoltObject::from_ptr(replacement_code).bits();
             dec_ref_bits(py, name);
             dec_ref_bits(py, empty);
-            crate::molt_code_slots_init(1);
             crate::molt_code_slot_set(0, code_bits, lexical);
             let poll = namespace_probe_poll as *const () as usize as u64;
             for bits in [code_bits, replacement_code_bits] {

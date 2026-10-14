@@ -81,9 +81,8 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                         MoltObject::from_int(if module { 1 } else { 90 }).bits(),
                     ))
                 };
-                crate::molt_code_slots_init(1);
-                crate::molt_code_slot_set(0, code, namespace);
-                crate::molt_trace_enter_slot(0);
+                let slot = crate::test_support::publish_test_code_slot(py, code, namespace);
+                crate::molt_trace_enter_slot(slot);
                 assert!(!crate::exception_pending(py));
                 let homes = if module {
                     molt_frame_locals_set(namespace);
@@ -138,7 +137,6 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 }
                 assert!(!crate::exception_pending(py));
                 crate::molt_trace_exit();
-                crate::molt_code_slots_init(0);
                 for bits in [first, second, key, namespace, code, varnames, empty, name] {
                     dec_ref_bits(py, bits);
                 }
@@ -351,7 +349,6 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
         let (_, code) = super::tests::alloc_test_code(py);
         let lexical = dict(py);
         let rebound = dict(py);
-        crate::molt_code_slots_init(1);
         crate::molt_code_slot_set(0, code, lexical);
         let address = namespace_probe as *const () as usize as u64;
         let function = crate::builtins::functions::alloc_runtime_function_obj(py, address, 0);
@@ -418,8 +415,6 @@ fn function_type_code_slot_and_invocation_preserve_dict_subclass_identity() {
             .expect("FunctionType result");
         assert_eq!(unsafe { function_globals_bits(callable_ptr) }, globals);
         assert_eq!(unsafe { function_builtins_bits(callable_ptr) }, builtins);
-
-        crate::molt_code_slots_init(1);
         let set = crate::molt_code_slot_set(0, code, globals);
         assert!(obj_from_bits(set).is_none());
         assert!(!crate::exception_pending(py));
@@ -706,7 +701,6 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
         bind_code_target(py, original, 103);
         bind_code_target(py, replacement, 103);
         let globals = dict(py);
-        crate::molt_code_slots_init(1);
         crate::molt_code_slot_set(0, original, globals);
         let invocation = FrameInvocationGuard::for_namespace(py, original, globals).unwrap();
         crate::molt_code_slot_set(0, replacement, globals);
@@ -804,7 +798,6 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
     crate::with_gil_entry_nopanic!(py, {
         let (_, code) = super::tests::alloc_test_code(py);
         let globals = dict(py);
-        crate::molt_code_slots_init(1);
         crate::molt_code_slot_set(0, code, globals);
         let baseline = refs(code);
         assert_eq!(baseline, 2, "caller and lexical code slot own the code");
@@ -841,7 +834,6 @@ fn compiled_code_slot_identity_cannot_be_reassigned() {
     crate::with_gil_entry_nopanic!(py, {
         let (_, code) = super::tests::alloc_test_code(py);
         let globals = dict(py);
-        crate::molt_code_slots_init(2);
         crate::molt_code_slot_set(0, code, globals);
         crate::molt_code_slot_set(1, code, globals);
         assert!(crate::exception_pending(py));

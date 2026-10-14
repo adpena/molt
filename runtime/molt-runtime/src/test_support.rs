@@ -235,6 +235,44 @@ fn process_global_test_state() -> ProcessTestCustody {
     ProcessTestCustody { _state: state }
 }
 
+/// Compiled code slots are one per-runtime table, sized once by its first
+/// initialization. Every transaction sizes it to this capacity on entry and
+/// empties every slot on exit, so no test reads a plan another test published
+/// (HF-194). `publish_test_code_slot` publishes through the production
+/// publisher (`molt_code_slot_set`, which derives the frame plan from the
+/// current target) under an id no other test in this process uses.
+const TEST_CODE_SLOT_CAPACITY: u64 = 4096;
+static NEXT_TEST_CODE_SLOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Empty every published code slot of the live runtime.
+fn clear_test_code_slots(py: &crate::PyToken<'_>) {
+    if let Some(slots) = crate::runtime_state(py).code_slots.get() {
+        for slot in slots {
+            slot.clear(py);
+        }
+    }
+}
+
+/// Publish `code_bits` with `globals_bits` under a fresh slot id; return the id.
+pub(crate) fn publish_test_code_slot(
+    py: &crate::PyToken<'_>,
+    code_bits: u64,
+    globals_bits: u64,
+) -> u64 {
+    let slot = NEXT_TEST_CODE_SLOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        slot < TEST_CODE_SLOT_CAPACITY,
+        "test code slots exhausted; raise TEST_CODE_SLOT_CAPACITY"
+    );
+    crate::molt_code_slots_init(TEST_CODE_SLOT_CAPACITY);
+    crate::molt_code_slot_set(slot, code_bits, globals_bits);
+    assert!(
+        !crate::exception_pending(py),
+        "test code slot {slot} publication failed"
+    );
+    slot
+}
+
 /// A runtime started while no test holds custody races the next test that
 /// takes it: that test finds the runtime mid-transition (HF-194). Threads a
 /// test spawns may start the runtime only while that test still holds custody.
@@ -602,6 +640,7 @@ impl RuntimeTestTransaction {
             1,
             "runtime test transaction requires successful production bootstrap"
         );
+        crate::molt_code_slots_init(TEST_CODE_SLOT_CAPACITY);
         // Failed bootstrap must not reopen the process-static pending queue.
         let pending_calls = PendingCallTestCustody::enter();
         let execution_thread_attached =
@@ -660,6 +699,9 @@ impl Drop for RuntimeTestTransaction {
             );
             return;
         }
+        crate::with_gil_entry_nopanic!(py, {
+            clear_test_code_slots(py);
+        });
         if let Some(snapshot) = self.interpreter_sys.take() {
             crate::with_gil_entry_nopanic!(py, {
                 snapshot.restore(py);

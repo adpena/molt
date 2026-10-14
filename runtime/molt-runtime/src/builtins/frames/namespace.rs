@@ -96,6 +96,13 @@ impl CompiledCodeSlot {
         value
     }
 
+    /// Empty this slot for the next test: release its pair, forget its plan.
+    #[cfg(test)]
+    pub(crate) fn clear(&self, py: &PyToken<'_>) {
+        self.take(py).release(py);
+        self.frame_plan.store(0, Ordering::Relaxed);
+    }
+
     pub(crate) fn take(&self, _py: &PyToken<'_>) -> CodeNamespace {
         crate::gil_assert();
         CodeNamespace {
