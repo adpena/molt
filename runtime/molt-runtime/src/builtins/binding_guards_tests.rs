@@ -32,14 +32,17 @@ fn module_namespace_records_each_builtin_name_it_binds() {
         let dict = new_namespace(py);
         let value = MoltObject::from_int(1).bits();
         assert_eq!(guard_bits(dict), 0);
-        unsafe { dict_set_in_place(py, dict, key(py, b"total"), value) };
+        assert!(unsafe { dict_set_in_place(py, dict, key(py, b"total"), value) });
         assert_eq!(guard_bits(dict), 0, "a non-builtin name sets no bit");
-        unsafe { dict_set_in_place(py, dict, key(py, b"len"), value) };
+        assert!(unsafe { dict_set_in_place(py, dict, key(py, b"len"), value) });
         assert_eq!(guard_bits(dict), bit("len"));
-        unsafe { dict_del_in_place(py, dict, key(py, b"len")) };
+        assert_eq!(
+            unsafe { dict_del_in_place(py, dict, key(py, b"len")) },
+            Ok(true)
+        );
         assert_eq!(guard_bits(dict), bit("len"), "bits are sticky");
         let tuple = MoltObject::from_ptr(alloc_tuple(py, &[value])).bits();
-        unsafe { dict_set_in_place(py, dict, tuple, value) };
+        assert!(unsafe { dict_set_in_place(py, dict, tuple, value) });
         assert_eq!(
             guard_bits(dict),
             BUILTIN_BINDING_GUARD_ALL_MASK,
@@ -65,7 +68,7 @@ fn sealed_builtins_record_rebinding_deletion_and_reset() {
         let first = MoltObject::from_int(1).bits();
         let second = MoltObject::from_int(2).bits();
         for name in [&b"len"[..], b"range", b"print"] {
-            unsafe { dict_set_in_place(py, dict, key(py, name), first) };
+            assert!(unsafe { dict_set_in_place(py, dict, key(py, name), first) });
         }
         seal_builtins_namespace(py, dict, 0);
         let published = bit("len") | bit("range") | bit("print");
@@ -74,15 +77,18 @@ fn sealed_builtins_record_rebinding_deletion_and_reset() {
             BUILTIN_BINDING_GUARD_ALL_MASK & !published,
             "an unpublished name stays unproven"
         );
-        unsafe { dict_set_in_place(py, dict, key(py, b"len"), first) };
+        assert!(unsafe { dict_set_in_place(py, dict, key(py, b"len"), first) });
         assert_eq!(
             guard_bits(dict) & bit("len"),
             0,
             "storing the same value changes nothing"
         );
-        unsafe { dict_set_in_place(py, dict, key(py, b"len"), second) };
+        assert!(unsafe { dict_set_in_place(py, dict, key(py, b"len"), second) });
         assert_ne!(guard_bits(dict) & bit("len"), 0);
-        unsafe { dict_del_in_place(py, dict, key(py, b"range")) };
+        assert_eq!(
+            unsafe { dict_del_in_place(py, dict, key(py, b"range")) },
+            Ok(true)
+        );
         assert_ne!(guard_bits(dict) & bit("range"), 0);
         assert_eq!(guard_bits(dict) & bit("print"), 0);
         unsafe { crate::object::ops::dict_clear_in_place(py, dict) };
@@ -91,10 +97,10 @@ fn sealed_builtins_record_rebinding_deletion_and_reset() {
 
         // A binding made before publication is not the runtime's object.
         let republished = new_namespace(py);
-        unsafe { dict_set_in_place(py, republished, key(py, b"len"), first) };
+        assert!(unsafe { dict_set_in_place(py, republished, key(py, b"len"), first) });
         let prior = namespace_guard_bits(republished);
         assert_eq!(prior, bit("len"));
-        unsafe { dict_set_in_place(py, republished, key(py, b"range"), first) };
+        assert!(unsafe { dict_set_in_place(py, republished, key(py, b"range"), first) });
         seal_builtins_namespace(py, republished, prior);
         assert_ne!(guard_bits(republished) & bit("len"), 0);
         assert_eq!(guard_bits(republished) & bit("range"), 0);
@@ -109,7 +115,7 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
         let value = MoltObject::from_int(1).bits();
         let builtins = new_namespace(py);
         for name in [&b"len"[..], b"range"] {
-            unsafe { dict_set_in_place(py, builtins, key(py, name), value) };
+            assert!(unsafe { dict_set_in_place(py, builtins, key(py, name), value) });
         }
         seal_builtins_namespace(py, builtins, 0);
         let globals = new_namespace(py);
@@ -136,7 +142,7 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
             MoltObject::from_bool(false).bits(),
             "a mask that is not an int fails"
         );
-        unsafe { dict_set_in_place(py, globals, key(py, b"len"), value) };
+        assert!(unsafe { dict_set_in_place(py, globals, key(py, b"len"), value) });
         assert!(!guard(both), "the globals shadow len");
         assert!(guard(bit("range")));
         frame_stack_pop(py);
@@ -158,14 +164,14 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
         );
         frame_stack_pop(py);
 
-        unsafe {
+        assert!(unsafe {
             dict_set_in_place(
                 py,
                 builtins,
                 key(py, b"range"),
                 MoltObject::from_int(2).bits(),
             )
-        };
+        });
         push(fresh, builtins);
         assert!(!guard(bit("range")), "a rebound builtin fails");
         assert!(guard(bit("len")));
@@ -180,7 +186,9 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
 fn sealed_builtins(py: &PyToken<'_>) -> *mut u8 {
     let dict = new_namespace(py);
     for name in [&b"len"[..], b"int", b"isinstance"] {
-        unsafe { dict_set_in_place(py, dict, key(py, name), MoltObject::from_int(1).bits()) };
+        assert!(unsafe {
+            dict_set_in_place(py, dict, key(py, name), MoltObject::from_int(1).bits())
+        });
     }
     seal_builtins_namespace(py, dict, 0);
     assert_eq!(
@@ -211,10 +219,10 @@ fn every_whole_contents_reset_path_updates_guard_state() {
         // A module namespace emptied by lifecycle clearing records the names
         // bound again afterwards.
         let module = new_namespace(py);
-        unsafe { dict_set_in_place(py, module, key(py, b"total"), value) };
+        assert!(unsafe { dict_set_in_place(py, module, key(py, b"total"), value) });
         unsafe { crate::object::heap_lifecycle::clear_cycle_edges(py, module) };
         assert_eq!(guard_bits(module), 0);
-        unsafe { dict_set_in_place(py, module, key(py, b"int"), value) };
+        assert!(unsafe { dict_set_in_place(py, module, key(py, b"int"), value) });
         assert_eq!(guard_bits(module), bit("int"));
 
         // Staged publication swaps whole contents: the module now binds `len`.
