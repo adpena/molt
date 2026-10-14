@@ -1054,6 +1054,25 @@ fn raised_exception_transfer_preserves_identity_through_finalizers() {
     });
 }
 
+/// CPython's `PyType_Ready` returns 0 for a ready type whatever the error
+/// indicator holds, and leaves the caller's exception in place.
+#[test]
+fn type_ready_on_a_ready_type_keeps_the_callers_exception() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(super::register_cpython_hooks());
+    let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    crate::concurrency::gil::with_gil(|_py| unsafe {
+        let lookup_error = &raw mut PyExc_LookupError;
+        assert_eq!(typeobj::PyType_Ready(lookup_error), 0);
+        let pending = exception(&raw mut PyExc_ValueError, &[]);
+        errors::PyErr_SetRaisedException(object::Py_NewRef(pending.as_ptr()));
+        assert_eq!(typeobj::PyType_Ready(lookup_error), 0);
+        let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(raised.as_ptr(), pending.as_ptr(), "the caller's exception");
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
 #[test]
 fn python_text_transport_preserves_codepoints_and_callback_order() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
