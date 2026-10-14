@@ -120,6 +120,7 @@ if str(SRC_ROOT) not in sys.path:
 import bench  # noqa: E402
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
+from sample_profile import read_self_time  # noqa: E402
 from molt.backend_executable_names import is_backend_executable_name  # noqa: E402
 from perf_schema import (  # noqa: E402
     CLASS_DIMENSIONAL_WIN,
@@ -167,7 +168,6 @@ from perf_scoreboard_profile import (  # noqa: E402
     _LAUNCH_FRAMES as _LAUNCH_FRAMES,
     _emit_hot_only_board as _emit_hot_only_board,
     _is_launch_frame as _is_launch_frame,
-    _parse_sample_heaviest as _parse_sample_heaviest,
     _profiling_tmp_root as _profiling_tmp_root,
     _shquote as _shquote,
     _terminate as _terminate,
@@ -916,7 +916,7 @@ def capture_cycle_profile(
         _terminate(sampler_proc)
     srv_rc = sampler_proc.returncode
     _terminate(proc)
-    symbols = _parse_sample_heaviest(out_file, top_n=top_n)
+    symbols = read_self_time(out_file, top_n=top_n)
     try:
         out_file.unlink()
     except OSError:

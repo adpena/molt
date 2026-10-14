@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import harness_memory_guard
+from sample_profile import read_self_time
 import bench
 import bench_suites
 import perf_inner_repeat
@@ -61,59 +62,6 @@ def _shquote(arg: str) -> str:
 
 def _terminate(proc: subprocess.Popen) -> None:
     harness_memory_guard.force_close_process_group(proc)
-
-
-def _parse_sample_heaviest(out_file: Path, *, top_n: int) -> list[dict]:
-    """Parse ``/usr/bin/sample``'s output for the heaviest self-time symbols.
-
-    ``sample`` emits a 'Sort by top of stack' section listing
-    ``<count>  <symbol>  (in <lib>)`` lines — the self-time leaders. We read that
-    section (the cycle-attribution signal) and return the top ``top_n`` as
-    ``{symbol, self_samples, lib}``.
-    """
-    try:
-        text = out_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    lines = text.splitlines()
-    # Locate the self-time leaderboard.
-    start = None
-    for i, line in enumerate(lines):
-        if "Sort by top of stack" in line:
-            start = i + 1
-            break
-    if start is None:
-        return []
-    out: list[dict] = []
-    for line in lines[start:]:
-        s = line.strip()
-        if not s:
-            if out:
-                break
-            continue
-        if s.startswith("Binary Images"):
-            break
-        # macOS `sample` self-time leaderboard form (count is the TRAILING token):
-        #   "<symbol>  (in <lib>)        <count>"
-        #   "<symbol>        <count>"            (no lib)
-        # Split the trailing integer off the end; everything before is the
-        # symbol (+ optional "(in lib)").
-        toks = s.rsplit(None, 1)
-        if len(toks) != 2 or not toks[1].isdigit():
-            continue
-        count = int(toks[1])
-        rest = toks[0].strip()
-        lib = None
-        if "(in " in rest:
-            sym, _, tail = rest.partition("(in ")
-            lib = tail.split(")")[0].strip()
-            symbol = sym.strip()
-        else:
-            symbol = rest
-        out.append({"symbol": symbol, "self_samples": count, "lib": lib})
-        if len(out) >= top_n:
-            break
-    return out
 
 
 def _is_launch_frame(symbol: str, lib: str | None) -> bool:
@@ -525,7 +473,7 @@ def capture_hot_only_profile(
     except subprocess.TimeoutExpired:
         _terminate(sampler_proc)
     _terminate(proc)
-    symbols = _parse_sample_heaviest(out_file, top_n=max(top_n, 60))
+    symbols = read_self_time(out_file, top_n=max(top_n, 60))
     try:
         out_file.unlink()
     except OSError:

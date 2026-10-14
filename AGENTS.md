@@ -194,6 +194,7 @@ tests, measurements, and explicit user direction over stale prose.
 - Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - CI failure triage (NEW versus main, ledger owners): `python3 tools/ci_triage.py RUN_ID`
+- Optimization insight (loop anatomy, cost buckets): `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md`
 
 These are pointers, not mandatory reading lists. Load only what the current task
 needs, and update the owning authority when its facts change.
