@@ -28,7 +28,6 @@ SPEC_OP_KIND_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "LoadIndex": ("INDEX",),
         "AIter": ("AITER",),
         "ANext": ("ANEXT",),
-        "AllocGenerator": ("ASYNCGEN_NEW",),
     }
 )
 
@@ -86,7 +85,6 @@ class VerificationFinding:
 FRONTEND_LOWERING_LANES: Mapping[str, str] = MappingProxyType(
     {
         "CALL_INDIRECT": "call_indirect",
-        "INVOKE_FFI": "invoke_ffi",
         "GUARD_TAG": "guard_tag",
         "GUARD_DICT_SHAPE": "guard_dict_shape",
         "INC_REF": "inc_ref",

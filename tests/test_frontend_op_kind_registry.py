@@ -52,19 +52,18 @@ def test_every_frontend_produced_kind_is_registered(census: FrontendCensus) -> N
     )
 
 
-def test_every_frontend_kind_test_names_a_produced_kind(
-    census: FrontendCensus,
-) -> None:
-    # A test for a kind that nothing builds is dead code: the producer was
-    # removed and this consumer was left behind (HF-197). Delete it with the
+def test_every_spelled_frontend_kind_is_produced(census: FrontendCensus) -> None:
+    # A literal that spells a registered kind nothing builds is a consumer left
+    # behind when its producer was removed (HF-197): a dead serializer arm, a
+    # set member, a table key or a registry override. Delete it with the
     # producer, or restore the producer.
     stale = [
         f"{site}: {kind}"
-        for kind, sites in sorted(census.consumed.items())
+        for kind, sites in sorted(census.mentioned.items())
         if kind in FRONTEND_REGISTERED_KINDS and kind not in census.produced
         for site in sites
     ]
-    assert not stale, "frontend tests for kinds nothing produces:\n" + "\n".join(stale)
+    assert not stale, "frontend kinds spelled but never produced:\n" + "\n".join(stale)
 
 
 def _census_of(tmp_path: Path, source: str) -> FrontendCensus:
@@ -186,24 +185,28 @@ def test_census_rejects_kinds_it_cannot_prove(
     assert reason in str(site)
 
 
-def test_census_records_kind_tests_in_comparisons_and_named_tables(
+def test_census_records_every_identifier_literal_as_a_mention(
     tmp_path: Path,
 ) -> None:
     census = _census_of(
         tmp_path,
         """
         _CONSTANTS = frozenset({"CONST", "CONST_FLOAT"})
+        LANES = {"ADD": "add"}
 
-        def visit(op):
-            if op.kind == "ADD":
-                pass
-            elif op.kind in {"SUB", "MUL"}:
-                pass
-            elif op.kind not in _CONSTANTS:
-                pass
+        def visit(op, kind):
+            if op.kind == "SUB" or kind in {"MUL"}:
+                return "not an identifier"
         """,
     )
-    assert set(census.consumed) == {"ADD", "SUB", "MUL", "CONST", "CONST_FLOAT"}
+    assert set(census.mentioned) == {
+        "CONST",
+        "CONST_FLOAT",
+        "ADD",
+        "add",
+        "SUB",
+        "MUL",
+    }
     assert not census.produced
 
 

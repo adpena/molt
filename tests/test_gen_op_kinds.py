@@ -5055,8 +5055,6 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
 
     callback_reads = {
         "INDEX",
-        "GET_ATTR",
-        "LOAD_ATTR",
         "GETATTR",
         "HASATTR_NAME",
         "ISINSTANCE",
@@ -5064,7 +5062,6 @@ def test_frontend_effect_classes_pin_pre_specialization_barriers() -> None:
         "MODULE_GET_ATTR",
         "GETATTR_GENERIC_OBJ",
         "GETATTR_GENERIC_PTR",
-        "GETATTR_NAME",
         "GETATTR_NAME_DEFAULT",
         "GETATTR_SPECIAL_OBJ",
         "GUARDED_GETATTR",

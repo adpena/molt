@@ -222,7 +222,6 @@ def test_sccp_state_identity_handles_sentinels_and_key_presence() -> None:
         ("CONST_BOOL", 1, True),
         ("CONST_FLOAT", 1, 1.0),
         ("CONST_BIGINT", b"\x01", 1),
-        ("CONST_INT", 1, 1),
         ("CONST", True, True),
     ],
 )

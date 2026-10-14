@@ -111,7 +111,7 @@ def test_operator_callbacks_invalidate_type_and_shape_guards(
     kind: str, arity: int
 ) -> None:
     gen = SimpleTIRGenerator()
-    guards = {("GUARD_TYPE", ("v", "captured")), ("GUARD_DICT_SHAPE", ("v", "mapping"))}
+    guards = {("GUARD_TAG", ("v", "captured")), ("GUARD_DICT_SHAPE", ("v", "mapping"))}
     op = MoltOp(
         kind=kind,
         args=[MoltValue("lhs"), MoltValue("rhs")][:arity],
@@ -131,7 +131,7 @@ def test_generated_operator_facts_preserve_primitive_guard_and_exception_control
         right.name: MoltOp(kind="CONST", args=[2], result=right),
     }
     op = MoltOp(kind="ADD", args=[left, right], result=MoltValue("result"))
-    guards = {("GUARD_TYPE", ("v", "captured"))}
+    guards = {("GUARD_TAG", ("v", "captured"))}
     gen._clear_invalidated_guard_signatures(guards, op)
     assert guards
     assert gen._op_instance_cannot_raise(op, {})
@@ -276,7 +276,7 @@ def test_native_append_preserves_type_guard_but_generic_mutation_does_not() -> N
     gen = SimpleTIRGenerator()
     value = MoltValue("list")
     gen._op_by_result[value.name] = MoltOp(kind="LIST_NEW", args=[], result=value)
-    guard = ("GUARD_TYPE", (("v", "captured"),))
+    guard = ("GUARD_TAG", (("v", "captured"),))
     available = {guard}
     gen._clear_invalidated_guard_signatures(
         available,
@@ -648,7 +648,6 @@ def test_absent_current_producer_cannot_borrow_stale_emitter_literal(kind: str) 
     ("const_kind", "payload", "expected"),
     [
         ("CONST", 1, 1),
-        ("CONST_INT", "2", 2),
         (
             "CONST_BIGINT",
             bytes.fromhex("661efdf2e3b19f7c045f15"),
@@ -797,7 +796,6 @@ def test_predicate_provenance_rejects_malformed_producer_shapes(defect: str) -> 
         ("MODULE_GET_ATTR", 2),
         ("GETATTR_GENERIC_OBJ", 2),
         ("GETATTR_GENERIC_PTR", 2),
-        ("GETATTR_NAME", 2),
         ("GETATTR_NAME_DEFAULT", 3),
         ("GETATTR_SPECIAL_OBJ", 2),
         ("GUARDED_GETATTR", 2),
@@ -882,7 +880,7 @@ def test_mutator_callbacks_do_not_inherit_type_local_write_precision(kind: str) 
     gen._op_by_result[obj.name] = MoltOp(kind="LIST_NEW", args=[], result=obj)
     op = MoltOp(kind=kind, args=[obj, MoltValue("arg")], result=MoltValue("none"))
     assert gen._heap_alias_classes_for_write_op(op) == set()
-    guards = {("GUARD_TYPE", ("v", "unrelated"), ("v", "class"))}
+    guards = {("GUARD_TAG", ("v", "unrelated"), ("v", "class"))}
     gen._clear_invalidated_guard_signatures(guards, op)
     assert not guards
 
@@ -3032,7 +3030,7 @@ def test_effect_aware_cse_does_not_reuse_heap_read_across_call_boundary() -> Non
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l1")),
-            MoltOp(kind="CALL_INTERNAL", args=["unknown_fn"], result=MoltValue("tmp")),
+            MoltOp(kind="CALL", args=["unknown_fn"], result=MoltValue("tmp")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l2")),
             MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
@@ -3047,7 +3045,7 @@ def test_effect_aware_cse_invalidates_immutable_len_across_call_boundary() -> No
         [
             MoltOp(kind="CONST", args=[(1, 2, 3)], result=MoltValue("t")),
             MoltOp(kind="LEN", args=[MoltValue("t")], result=MoltValue("l1")),
-            MoltOp(kind="CALL_INTERNAL", args=["unknown_fn"], result=MoltValue("tmp")),
+            MoltOp(kind="CALL", args=["unknown_fn"], result=MoltValue("tmp")),
             MoltOp(kind="LEN", args=[MoltValue("t")], result=MoltValue("l2")),
             MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
@@ -3149,7 +3147,7 @@ def test_callback_read_invalidates_unrelated_exact_heap_read() -> None:
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
             MoltOp(kind="CONST_STR", args=["x"], result=MoltValue("name")),
             MoltOp(
-                kind="GETATTR_NAME",
+                kind="GETATTR_GENERIC_OBJ",
                 args=[MoltValue("obj"), MoltValue("name")],
                 result=MoltValue("ignored"),
             ),
@@ -3159,7 +3157,7 @@ def test_callback_read_invalidates_unrelated_exact_heap_read() -> None:
     )
 
     assert len([op for op in lowered if op.get("kind") == "len"]) == 2
-    assert len([op for op in lowered if op.get("kind") == "get_attr_name"]) == 1
+    assert len([op for op in lowered if op.get("kind") == "get_attr_generic_obj"]) == 1
 
 
 def test_module_get_attr_is_not_cse_eligible() -> None:
@@ -5153,12 +5151,12 @@ def test_dynamic_getattr_name_cannot_be_reused_without_callback_proof() -> None:
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
             MoltOp(kind="CONST_STR", args=["x"], result=MoltValue("name")),
             MoltOp(
-                kind="GETATTR_NAME",
+                kind="GETATTR_GENERIC_OBJ",
                 args=[MoltValue("obj"), MoltValue("name")],
                 result=MoltValue("a"),
             ),
             MoltOp(
-                kind="GETATTR_NAME",
+                kind="GETATTR_GENERIC_OBJ",
                 args=[MoltValue("obj"), MoltValue("name")],
                 result=MoltValue("b"),
             ),
@@ -5166,7 +5164,7 @@ def test_dynamic_getattr_name_cannot_be_reused_without_callback_proof() -> None:
         ]
     )
 
-    reads = [op for op in lowered if op.get("kind") == "get_attr_name"]
+    reads = [op for op in lowered if op.get("kind") == "get_attr_generic_obj"]
     assert len(reads) == 2
 
 
@@ -6327,7 +6325,7 @@ def test_full_pipeline_rejects_missing_leak_through_phi() -> None:
                 changed = True
 
     for op in rewritten:
-        if op.kind in {"CALL", "CALL_INDIRECT", "CALL_INTERNAL"}:
+        if op.kind in {"CALL", "CALL_INDIRECT"}:
             for arg in op.args:
                 if isinstance(arg, MoltValue):
                     assert arg.name not in (tainted - direct_missing), (
@@ -6362,8 +6360,8 @@ def test_cse_projected_inputs_invalidate_predecessor_signature() -> None:
     assert lowered[-1].args == [a]
 
 
-@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
-def test_proven_runtime_guard_keeps_a_used_alias_result(kind: str) -> None:
+def test_proven_runtime_guard_keeps_a_used_alias_result() -> None:
+    kind = "GUARD_TAG"
     lowered = _lower_ops(
         [
             MoltOp(kind="CONST", args=[7], result=MoltValue("source")),
@@ -6381,10 +6379,8 @@ def test_proven_runtime_guard_keeps_a_used_alias_result(kind: str) -> None:
     )
 
 
-@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
-def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type(
-    kind: str,
-) -> None:
+def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type() -> None:
+    kind = "GUARD_TAG"
     source, tag, checked, later = map(MoltValue, ["source", "tag", "checked", "later"])
     ops = [
         MoltOp("CONST", [7], source),

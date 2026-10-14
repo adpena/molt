@@ -16,6 +16,61 @@ separate from retired compiler operation spellings.
 
 ---
 
+## Producer census and typed op kinds (HF-197)
+
+**Defect class.** A registered kind can lose its last producer while every
+consumer still compiles. Consumers match kinds as strings, and registration
+comes from membership in fact tables, so nothing notices. 6cf681a1c removed the
+name-matched producers of `JSON_PARSE`, `MSGPACK_PARSE`, `CBOR_PARSE` and
+`BUFFER2D_*` (correctly: they ignored rebinding) and left the serializer arms,
+four backends' lowering arms, WASM manifest rows and tests behind. Fifty-four
+frontend kinds were in that state on 2026-10-14.
+
+**Frontend census (live).** `tools/op_kinds/census.py` proves the set of
+`MoltOp` kinds that production frontend code can build, and the set of kinds
+that frontend code tests for. Every kind expression at a `MoltOp(...)` site must
+resolve to a finite set of literals: a literal or conditional over literals;
+`<op>.kind` (a re-emit, which builds nothing new); a name whose every binding
+resolves; a parameter, over every direct call or `partial` of its function; a
+subscript or `.get` of a literal dict, a module or class constant, a dict
+comprehension or a generated `*_OP_KIND` table; or a call whose every `return`
+resolves. Anything else is unresolved, and the check names the site and the
+reason. Kinds are therefore spelled out, never computed: f-strings, `+=` and
+`.upper()` on kind names are rejected. `tests/test_frontend_op_kind_registry.py`
+requires that every kind expression resolves, that every produced kind is
+registered, and that no registered kind is spelled anywhere in the compiler's
+Python (`src/molt/frontend`, `src/molt/debug`, `tools/op_kinds`) unless it is
+produced: a comparison, set member, table key or registry override for a dead
+kind fails the check.
+
+**Deleting a consumer is not deleting an optimization.** A consumer of a kind
+nothing produces is dead code and removing it changes no behaviour. The
+performance went away when the producer did. Recover it through the general
+mechanisms, never by reviving name-matched lowering: inline thin wrappers whose
+binding is proven, lower calls through proven intrinsic globals directly,
+guarded builtins (HF-79) and the general counted loop (HF-185). Measure each
+lost family against the current path and CPython before its backend lowering is
+retired, and record the numbers in HF-197.
+
+**Order.**
+1. Frontend census and deletion of frontend consumers (done: 54 kinds, IR
+   byte-identical on 1,894 programs; the 42 wire kinds they hid are now in the
+   audit's `mapped_never_emitted` baseline).
+2. Wire census: serializer output of produced frontend kinds, CLI-prepared IR
+   and Rust producers (`lower_to_simple`, passes, backend rewrites). Classify
+   each wire-dead kind's backend lowering as a plain runtime call (retire it;
+   recover the speed through a general mechanism) or specialized codegen
+   (keep it, reached from a proven or guarded binding fact).
+3. Explicit per-kind registry rows with producer, alias, private and custody
+   columns; registration stops being implied by fact-table membership.
+4. A generated `OpKind` enum for `OpIR.kind` and the TIR specialization carrier
+   (`_original_kind`), parsed once at the wire; serde uses wire names, never
+   discriminants; per-kind facts become generated methods.
+5. Retire the source scrapers in `tools/audit_op_kinds.py` that rustc then
+   enforces. The census stays: no type system proves that a variant is built.
+
+---
+
 ## Fail-closed operation admission
 
 The registry owns both the frontend MoltOp vocabulary and the SimpleIR wire

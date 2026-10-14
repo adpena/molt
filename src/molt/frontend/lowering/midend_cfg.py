@@ -840,7 +840,6 @@ class MidendCFGMixin(GeneratorMixinBase):
                 "LOOP_BREAK",
                 "LOOP_BREAK_IF_TRUE",
                 "LOOP_BREAK_IF_FALSE",
-                "LOOP_BREAK_IF_EXCEPTION",
                 "LOOP_CONTINUE",
             }:
                 if not any(open_kind == "LOOP_START" for open_kind, _ in control_stack):
