@@ -6060,7 +6060,7 @@ audience = "user"
 kind = "path"
 default = ""
 owner = "src/molt/cli/build_output_layout.py"
-summary = "Directory that holds the wasm runtime artifacts (molt_runtime.wasm and molt_runtime_reloc.wasm) for source-checkout builds and the wasm tools; when unset Molt uses <MOLT_EXT_ROOT>/wasm if that directory exists, else <project root>/wasm, and an installed Molt rejects the variable because it ships its own runtime cells."
+summary = "Directory that holds the wasm runtime artifacts (molt_runtime.wasm and molt_runtime_reloc.wasm) for source-checkout builds and the wasm tools; when unset Molt uses <MOLT_EXT_ROOT>/wasm (a relative MOLT_EXT_ROOT is anchored at the project root), else molt-runtime-wasm inside the project's Cargo target beside the native runtime libraries, never the working directory or the source tree; an installed Molt rejects the variable because it ships its own runtime cells."
 
 [[variable]]
 name = "MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET"
