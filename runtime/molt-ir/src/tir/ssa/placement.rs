@@ -873,10 +873,52 @@ impl<'a> SsaContext<'a> {
 
     // -- Phase 3: insert block arguments (phi placement) ---------------------
 
+    /// The one definition-site census, initially containing only authored
+    /// definitions (including entry parameters). Implicit seeding extends it.
+    pub(super) fn source_definition_sites(&self, names: &SimpleNameTable) -> Vec<Vec<usize>> {
+        let mut sites = vec![Vec::new(); names.len()];
+        for (bid, block) in self.block_info.iter().enumerate() {
+            for variable in &block.defs {
+                sites[names.id(variable).expect("interned SSA definition") as usize].push(bid);
+            }
+        }
+        sites
+    }
+
+    /// Index the existing augmented dominator tree once. Unreachable blocks
+    /// have no interval; none of the disconnected local-rename protocol changes.
+    fn augmented_dominator_intervals(&self) -> Vec<Option<(usize, usize)>> {
+        let n = self.cfg.blocks.len();
+        let mut children = vec![Vec::new(); n];
+        for (bid, idom) in self.aug_dominators.iter().enumerate() {
+            if let Some(parent) = idom {
+                children[*parent].push(bid);
+            }
+        }
+        let mut intervals = vec![None; n];
+        let mut stack = vec![(self.cfg.entry, false)];
+        let mut next = 0;
+        while let Some((bid, exiting)) = stack.pop() {
+            if exiting {
+                let (start, _) = intervals[bid].expect("entered dominator node");
+                intervals[bid] = Some((start, next));
+                continue;
+            }
+            intervals[bid] = Some((next, next));
+            next += 1;
+            stack.push((bid, true));
+            for &child in children[bid].iter().rev() {
+                stack.push((child, false));
+            }
+        }
+        intervals
+    }
+
     pub(super) fn insert_block_arguments(
         &mut self,
         names: &SimpleNameTable,
         live_in: &[SimpleNameSet],
+        def_sites: &[Vec<usize>],
     ) {
         // For each variable, compute the iterated dominance frontier of all
         // blocks that define it, then insert a block argument at those blocks.
@@ -902,22 +944,8 @@ impl<'a> SsaContext<'a> {
         // Which blocks define which variables.
         let n = self.cfg.blocks.len();
 
-        // Build definition sites once, after implicit arguments introduce their
-        // fresh definitions. Do not scan every block again for every variable.
-        let mut def_sites = vec![Vec::new(); names.len()];
-        for bid in 0..n {
-            for variable in self.block_info[bid]
-                .defs
-                .iter()
-                .chain(&self.block_arg_vars[bid])
-            {
-                let sites =
-                    &mut def_sites[names.id(variable).expect("interned SSA definition") as usize];
-                if sites.last() != Some(&bid) {
-                    sites.push(bid);
-                }
-            }
-        }
+        // Source definitions and only the actually seeded implicit arguments
+        // share this canonical census. Entry parameters were already included.
         let mut all_vars: Vec<_> = self.all_vars.iter().cloned().collect();
         all_vars.sort();
         let mut phi_seen = vec![0usize; n];
@@ -967,22 +995,16 @@ impl<'a> SsaContext<'a> {
         }
     }
 
-    /// Exception handlers and state-machine resume continuations are reached
-    /// through implicit edges. Seed their shared live-in environment before IDF
-    /// placement so each target introduces fresh SSA definitions and every
-    /// normal/exception/resume rejoin receives the required phi. The exception
-    /// operation or StateDispatch supplies that same environment at its source
-    /// program point; unrelated future variables are never threaded through it.
-    ///
-    /// Variables that the frontend spilled to the frame (the common
-    /// live-across-yield case) are reloaded via fresh `closure_load` defs inside
-    /// the resume block and are NOT live-in there, so they are not seeded — only
-    /// the values genuinely threaded across the suspend (the frame `self`
-    /// pointer, exception-stack bookkeeping values) are.
+    /// Keep direct bindings whose sole source-defining block strictly dominates
+    /// the implicit target. All other live-ins retain the existing handler and
+    /// resume protocol, including mutable names, self-edges and disconnected
+    /// roots. Authored exception transfers and state_switch end their blocks,
+    /// so a strict ancestor's final active binding is available at every exit.
     pub(super) fn insert_implicit_edge_block_arguments(
         &mut self,
         names: &SimpleNameTable,
         live_in: &[SimpleNameSet],
+        def_sites: &mut [Vec<usize>],
     ) {
         let mut targets: Vec<usize> = self
             .cfg
@@ -998,17 +1020,47 @@ impl<'a> SsaContext<'a> {
             .collect();
         targets.sort_unstable();
         targets.dedup();
+        if targets.is_empty() {
+            return;
+        }
+        // Freeze source-only eligibility before any seeded argument adds a
+        // fresh definition. Multiple writes in one block still have one final
+        // binding at every exit; writes after a transfer belong to another block.
+        let sole_source: Vec<Option<usize>> = def_sites
+            .iter()
+            .map(|sites| (sites.len() == 1).then(|| sites[0]))
+            .collect();
+        let intervals = self.augmented_dominator_intervals();
         for bid in targets {
-            let mut vars: Vec<String> = live_in[bid]
+            let mut retained: Vec<_> = live_in[bid]
                 .iter()
-                .map(|id| names.name(id).to_owned())
+                .filter(|&id| {
+                    let Some(source) = sole_source[id as usize] else {
+                        return true;
+                    };
+                    let (Some((start, end)), Some((target, _))) =
+                        (intervals[source], intervals[bid])
+                    else {
+                        return true;
+                    };
+                    // Strict ancestry excludes loop/self-entry old values.
+                    !(source != bid && start <= target && target < end)
+                })
+                .map(|id| (names.name(id).to_owned(), id))
                 .collect();
-            vars.sort();
-            for var in &vars {
-                if !self.block_arg_vars[bid].contains(var) {
-                    self.block_arg_vars[bid].push(var.clone());
+            retained.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            for (var, id) in retained {
+                if !self.block_arg_vars[bid].contains(&var) {
+                    self.block_arg_vars[bid].push(var);
+                    def_sites[id as usize].push(bid);
                 }
             }
+        }
+        // Source and seeded sites were each visited in block order. Restore
+        // one canonical ordering and remove a possible self-entry duplicate.
+        for sites in def_sites {
+            sites.sort_unstable();
+            sites.dedup();
         }
     }
 

@@ -248,26 +248,26 @@ impl<'a> SsaContext<'a> {
         trace_stage("before_liveness");
         let (live_names, live_in) = self.compute_live_in_vars();
         trace_stage("after_liveness");
-        // Handler-block arguments must be established BEFORE the iterated
-        // dominance frontier runs: a handler block that receives a live-in
-        // variable as a block argument is a *new* SSA definition of that
-        // variable (the handler re-enters the variable's live range along the
-        // exception edge), so its dominance frontier — every point where the
-        // handler's normal exit rejoins the protected region's control flow —
-        // needs a phi. Seeding the IDF with handler blocks (below) is what
-        // places those rejoin phis; running it afterward would leave the
-        // rejoin merges phi-less and produce values that are defined on the
-        // normal path but undefined on the handler path.
-        // State-machine resume continuations are reached via the implicit
-        // `state_switch` dispatch edge; seed their block arguments before the
-        // IDF runs, for the same reason handler-block arguments are seeded above
-        // (each becomes a fresh SSA def whose rejoin frontier needs a phi).
+        // One source census serves implicit admission and IDF. Actual seeded
+        // arguments extend it only after source-only eligibility is captured.
+        let mut def_sites = self.source_definition_sites(&live_names);
+        // A direct dominating binding needs no fresh handler/resume identity.
+        // Remaining implicit arguments are fresh definitions, so seed them
+        // before IDF to preserve every normal/exception/resume rejoin phi.
         trace_stage("before_implicit_arguments");
-        self.insert_implicit_edge_block_arguments(&live_names, &live_in);
+        self.insert_implicit_edge_block_arguments(&live_names, &live_in, &mut def_sites);
         trace_stage("after_implicit_arguments");
+        if let Some(name) = traced_name.as_ref() {
+            let arguments: usize = self.block_arg_vars.iter().map(Vec::len).sum();
+            eprintln!("[TIR-SSA] {name} implicit_arguments={arguments}");
+        }
         trace_stage("before_phi_arguments");
-        self.insert_block_arguments(&live_names, &live_in);
+        self.insert_block_arguments(&live_names, &live_in, &def_sites);
         trace_stage("after_phi_arguments");
+        if let Some(name) = traced_name.as_ref() {
+            let arguments: usize = self.block_arg_vars.iter().map(Vec::len).sum();
+            eprintln!("[TIR-SSA] {name} total_arguments={arguments}");
+        }
         trace_stage("before_rename");
         self.rename_and_emit();
         trace_stage("after_rename");
@@ -2378,7 +2378,7 @@ mod tests {
     }
 
     #[test]
-    fn every_simple_exception_transfer_spelling_threads_live_handler_state() {
+    fn every_simple_exception_transfer_spelling_keeps_dominating_handler_state() {
         for transfer_kind in ["check_exception", "async_work_poll", "try_start"] {
             let ops = vec![
                 op_val_out("const", 7, "live"),
@@ -2396,10 +2396,28 @@ mod tests {
                 .position(|block| block.start_op <= 3 && block.end_op > 3)
                 .expect("handler block");
             let handler = &output.blocks[handler_bid];
+            assert!(
+                handler.args.is_empty(),
+                "{transfer_kind}: direct dominating live value"
+            );
+            let live = output.blocks[cfg.entry]
+                .ops
+                .iter()
+                .find(|op| op.opcode == OpCode::ConstInt)
+                .unwrap()
+                .results[0];
+            let observed = handler
+                .ops
+                .iter()
+                .find(|op| {
+                    op.source_op_index()
+                        .is_some_and(|index| ops[index].kind == "print")
+                })
+                .expect("handler observer must remain");
             assert_eq!(
-                handler.args.len(),
-                1,
-                "{transfer_kind} must place the live handler environment"
+                observed.operands,
+                vec![live],
+                "{transfer_kind}: original binding"
             );
             let transfer = output
                 .blocks
@@ -2583,26 +2601,46 @@ mod tests {
             .expect("handler block should exist");
         let handler_block = &output.blocks[handler_bid];
         assert!(
-            handler_block.args.len() >= 2,
-            "handler block must receive cleanup state args, got {:?}",
-            handler_block.args
+            handler_block.args.is_empty(),
+            "cleanup state already dominates every entry"
         );
-
-        let check_ops: Vec<_> = output
+        let result_at = |source| {
+            output
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .find(|op| op.source_op_index() == Some(source))
+                .unwrap()
+                .results[0]
+        };
+        let stack = result_at(0);
+        let depth = result_at(1);
+        for (kind, expected) in [
+            ("exception_stack_set_depth", depth),
+            ("exception_stack_exit", stack),
+        ] {
+            let cleanup = handler_block
+                .ops
+                .iter()
+                .find(|op| {
+                    op.source_op_index()
+                        .is_some_and(|index| ops[index].kind == kind)
+                })
+                .expect("actual cleanup operation must remain");
+            assert_eq!(
+                cleanup.operands,
+                vec![expected],
+                "{kind}: preserve original cleanup state"
+            );
+        }
+        let checks: Vec<_> = output
             .blocks
             .iter()
-            .flat_map(|block| block.ops.iter())
+            .flat_map(|block| &block.ops)
             .filter(|op| op.opcode == OpCode::CheckException)
             .collect();
-        let rich_check = check_ops
-            .iter()
-            .find(|op| !op.operands.is_empty())
-            .expect("at least one check_exception must carry handler args");
-        assert!(
-            rich_check.operands.len() >= 2,
-            "method guarded-field path must thread cleanup vars into handler edge: {:?}",
-            rich_check.operands
-        );
+        assert_eq!(checks.len(), 4, "all authored exception checks remain");
+        assert!(checks.iter().all(|op| op.operands.is_empty()));
     }
 
     #[test]
