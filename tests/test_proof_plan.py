@@ -2973,6 +2973,12 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
     assert overlap_detected is False
 
 
+# Deadline for executor tests that launch a real guarded child but do not test
+# the deadline. A guarded `python -c` takes about 0.5 s on an idle Mac and about
+# 8x longer on Windows (HF-08); a loaded Windows host passed the old 10 s.
+_REAL_CHILD_DEADLINE_SECONDS = 300
+
+
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     cell = proof_plan.MatrixCell(
@@ -2995,7 +3001,7 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
             "cell": cell.id,
             "tiers": ["test"],
             "resource_class": "python-static",
-            "timeout_seconds": 10,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
             "cache_domain": "none",
             "dependencies": [],
             "timeout_env": ["MOLT_INNER_TIMEOUT"],
@@ -3003,7 +3009,8 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
             "argv": [
                 sys.executable,
                 "-c",
-                "import os; assert os.environ['MOLT_INNER_TIMEOUT'] == '10'; "
+                "import os; assert os.environ['MOLT_INNER_TIMEOUT'] == "
+                f"'{_REAL_CHILD_DEADLINE_SECONDS}'; "
                 "assert os.environ['MOLT_EXECUTOR_MARKER'] == 'canonical'",
             ],
             "toolchains": ["python"],
@@ -3171,6 +3178,7 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
         producer,
         data={
             **producer.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
             "evidence_outputs": [relative],
             "argv": [
                 sys.executable,
@@ -3389,7 +3397,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
                     command.id,
                 ],
                 "toolchains": ["python"],
-                "timeout_seconds": 30,
+                "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
                 # These finite scheduler children emit the fixture marker, not
                 # Cargo receipts. Never clear or claim real repository evidence.
                 "evidence_outputs": [],
@@ -3470,16 +3478,20 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     child_pid_path.parent.mkdir(parents=True)
     fail = _synthetic_executor_command("synthetic.fail")
     live = _synthetic_executor_command("synthetic.live", resource_class="resource-b")
+    # The live command sleeps longer than any loaded host needs to start it,
+    # so a run that ends sooner proves the global stop cancelled it.
+    live_sleep_seconds = 60
     fail = replace(
         fail,
         data={
             **fail.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
             "argv": [
                 sys.executable,
                 "-c",
                 "import pathlib, sys, time\n"
                 f"marker = pathlib.Path({str(child_pid_path)!r})\n"
-                "deadline = time.monotonic() + 5.0\n"
+                "deadline = time.monotonic() + 30.0\n"
                 "while True:\n"
                 "    try:\n"
                 "        ready = marker.read_text().strip().isdecimal()\n"
@@ -3495,14 +3507,21 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
             ],
         },
     )
-    child_code = "import time; time.sleep(60)"
+    child_code = f"import time; time.sleep({live_sleep_seconds})"
     live_code = (
         "import pathlib, subprocess, sys, time; "
         f"child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
         f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
-        "time.sleep(60)"
+        f"time.sleep({live_sleep_seconds})"
     )
-    live = replace(live, data={**live.data, "argv": [sys.executable, "-c", live_code]})
+    live = replace(
+        live,
+        data={
+            **live.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
+            "argv": [sys.executable, "-c", live_code],
+        },
+    )
     commands = (fail, live)
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
     monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
@@ -3515,7 +3534,7 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     started = time.monotonic()
     receipt_path = tmp_path / "receipt.json"
     assert proof_plan.execute_commands(plan, commands, receipt_path) == 130
-    assert time.monotonic() - started < 20.0
+    assert time.monotonic() - started < live_sleep_seconds
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert [record["status"] for record in receipt["commands"]] == [
         "failure",
@@ -3523,7 +3542,7 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     ]
     assert child_pid_path.is_file()
     child_pid = int(child_pid_path.read_text(encoding="utf-8"))
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 30.0
     while proof_queue_custody._pid_alive(child_pid) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not proof_queue_custody._pid_alive(child_pid)
