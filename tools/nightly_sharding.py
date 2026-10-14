@@ -41,6 +41,7 @@ from molt.artifact_publication import (  # noqa: E402
 )
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools import nightly_shard_profile  # noqa: E402
+from tools.shard_partition import lpt_shards  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
 from molt.verified_subset import load_verified_subset_policy  # noqa: E402
 
@@ -67,6 +68,7 @@ AUTHORITY_INPUTS = (
     "tools/nightly_profile_feedback.py",
     "tools/nightly_shard_profile.py",
     "tools/nightly_sharding.py",
+    "tools/shard_partition.py",
     "tools/nightly_runtime_bundle.py",
     "src/molt/cli/native_toolchain_transfer.py",
     "config/nightly_shard_profile.json",
@@ -268,35 +270,6 @@ def _current_corpus_paths(root: Path, program: str) -> list[str]:
         and (entry / "__main__.py").is_file()
     )
     return sorted(names)
-
-
-def lpt_shards(
-    entries: Sequence[Mapping[str, Any]], count: int
-) -> list[dict[str, Any]]:
-    """Partition entries using deterministic longest-processing-time first."""
-
-    if count <= 0:
-        raise ValueError("shard count must be positive")
-    if len(entries) < count:
-        raise ValueError(
-            f"corpus has {len(entries)} entries but requires {count} nonempty shards"
-        )
-    bins: list[list[Mapping[str, Any]]] = [[] for _ in range(count)]
-    weights = [0] * count
-    for entry in sorted(
-        entries, key=lambda row: (-int(row["weight"]), str(row["path"]))
-    ):
-        shard_id = min(range(count), key=lambda index: (weights[index], index))
-        bins[shard_id].append(entry)
-        weights[shard_id] += int(entry["weight"])
-    return [
-        {
-            "id": shard_id,
-            "weight": weights[shard_id],
-            "entries": sorted(str(entry["path"]) for entry in bins[shard_id]),
-        }
-        for shard_id in range(count)
-    ]
 
 
 @dataclass(frozen=True)

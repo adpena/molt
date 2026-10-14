@@ -136,6 +136,8 @@ authority_inputs = [
   "tools/perf_scoreboard_model.py",
   "tools/perf_scoreboard_profile.py",
   "tools/perf_scoreboard_report.py",
+  "tools/perf_scoreboard_resolver.py",
+  "tools/shard_partition.py",
   "tools/release_matrix_acceptance.py",
   "tools/safe_run.py",
   "tests/tools/test_cargo_test_binary_discovery.py",

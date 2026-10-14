@@ -60,6 +60,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 
@@ -1210,6 +1211,10 @@ PERF_TOOL_IDENTITY_PATHS = (
     "tools/perf_scoreboard_build_profiles.py",
     "tools/perf_scoreboard_measure.py",
     "tools/perf_scoreboard_report.py",
+    "tools/perf_scoreboard_resolver.py",
+    "tools/perf_scoreboard_profile.py",
+    "tools/sample_profile.py",
+    "tools/shard_partition.py",
     "tools/perf_authority.py",
     "src/molt/cli/build_results.py",
     "src/molt/cli/backend_output_pipeline.py",
@@ -1755,6 +1760,54 @@ def _rebuild_summary(
     )
 
 
+def _shard_coverage_problem(
+    records: list[tuple[Path, object, list]],
+) -> str | None:
+    """Return why shard boards do not cover their benchmark set exactly once.
+
+    Boards without a shard record merge as separate lanes. Boards with one must
+    all carry one, agree on the set, use every shard id once, measure exactly
+    their own members, and together cover every set member.
+    """
+    shards = [record for _src, record, _run in records if record is not None]
+    if not shards:
+        return None
+    if len(shards) != len(records):
+        return "shard boards cannot merge with unsharded boards"
+    first = shards[0]
+    if not isinstance(first, Mapping):
+        return "invalid shard record"
+    count = first.get("count")
+    set_members = first.get("set_members")
+    if not isinstance(count, int) or not isinstance(set_members, list):
+        return "invalid shard record"
+    seen_ids: set[int] = set()
+    covered: list[str] = []
+    for src, record, run in records:
+        if not isinstance(record, Mapping):
+            return f"invalid shard record in {src}"
+        if (
+            record.get("count") != count
+            or record.get("set") != first.get("set")
+            or record.get("set_members") != set_members
+        ):
+            return f"{src} belongs to a different shard plan"
+        shard_id = record.get("id")
+        if not isinstance(shard_id, int) or shard_id in seen_ids:
+            return f"{src} repeats or lacks a shard id"
+        seen_ids.add(shard_id)
+        members = record.get("members")
+        if not isinstance(members, list) or sorted(run) != sorted(members):
+            return f"{src} did not measure exactly its shard members"
+        covered.extend(members)
+    if seen_ids != set(range(count)):
+        missing = sorted(set(range(count)) - seen_ids)
+        return f"shards {missing} of {count} are missing"
+    if sorted(covered) != sorted(set_members) or len(covered) != len(set(covered)):
+        return "shard members do not cover the benchmark set exactly once"
+    return None
+
+
 def _merge_boards(
     sources: list[Path],
     out: Path,
@@ -1782,6 +1835,7 @@ def _merge_boards(
     first_doc: dict | None = None
     merged_identities: dict = {}
     merged_invocations: list[dict] = []
+    shard_records: list[tuple[Path, object, list]] = []
     for src in sources:
         try:
             doc = json.loads(src.read_text(encoding="utf-8"))
@@ -1908,6 +1962,15 @@ def _merge_boards(
         for b in doc.get("benchmarks_run", []):
             if b not in benchmarks_run:
                 benchmarks_run.append(b)
+        shard_records.append(
+            (src, prov.get("shard"), list(doc.get("benchmarks_run", [])))
+        )
+    shard_problem = _shard_coverage_problem(shard_records)
+    if shard_problem is not None:
+        print(f"--merge: {shard_problem}", file=sys.stderr)
+        return 3
+    # A complete set of shards is one board; no shard identity survives.
+    provenance.pop("shard", None)
     provenance["producer_invocations"] = merged_invocations
     provenance["backend_binary_identity"] = merged_identities
     cells = list(by_key.values())
