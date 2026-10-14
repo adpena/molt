@@ -433,13 +433,18 @@ def parse_fixups(text: str, symbols: dict[int, str]) -> dict[int, str]:
 
 
 def _symbol_table(binary: Path) -> SymbolTable:
-    nm = _COMMANDS.check_output(["nm", str(binary)], text=True, timeout=120)
+    nm = _COMMANDS.check_output(
+        ["nm", str(binary)], text=True, encoding="utf-8", timeout=120
+    )
     assert isinstance(nm, str)
     symbols = parse_nm(nm)
     got: dict[int, str] = {}
     if Path("/usr/bin/dyld_info").is_file():
         fixups = _COMMANDS.check_output(
-            ["/usr/bin/dyld_info", "-fixups", str(binary)], text=True, timeout=120
+            ["/usr/bin/dyld_info", "-fixups", str(binary)],
+            text=True,
+            encoding="utf-8",
+            timeout=120,
         )
         assert isinstance(fixups, str)
         got = parse_fixups(fixups, symbols)
@@ -450,7 +455,9 @@ def _disassemble(binary: Path, symbols: list[str]) -> str:
     args = ["objdump", "-d", "--no-show-raw-insn"]
     if symbols:
         args.append("--disassemble-symbols=" + ",".join(symbols))
-    text = _COMMANDS.check_output([*args, str(binary)], text=True, timeout=600)
+    text = _COMMANDS.check_output(
+        [*args, str(binary)], text=True, encoding="utf-8", timeout=600
+    )
     assert isinstance(text, str)
     return text
 
@@ -543,7 +550,11 @@ def demangle(symbols: list[str]) -> dict[str, str]:
         return {}
     try:
         out = _COMMANDS.check_output(
-            ["c++filt"], input="\n".join(unique) + "\n", text=True, timeout=60
+            ["c++filt"],
+            input="\n".join(unique) + "\n",
+            text=True,
+            encoding="utf-8",
+            timeout=60,
         )
     except (OSError, subprocess.CalledProcessError):
         return {symbol: symbol for symbol in unique}
