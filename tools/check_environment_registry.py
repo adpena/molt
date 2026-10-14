@@ -154,7 +154,7 @@ SKIP_PREFIXES = (
     "tests/fixtures/",
 )
 TEXT_SUFFIXES = frozenset(
-    {".yml", ".yaml", ".toml", ".sh", ".ps1", ".bat", ".cmd", ".mjs", ".js"}
+    {".yml", ".yaml", ".toml", ".sh", ".ps1", ".bat", ".cmd", ".cjs", ".mjs", ".js"}
 )
 RUST_TEST_MARKERS = (
     "/tests/",
