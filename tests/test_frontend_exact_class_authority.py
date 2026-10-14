@@ -486,7 +486,7 @@ def test_dataclass_type_hint_does_not_authorize_direct_field_storage() -> None:
 
 @pytest.mark.parametrize(
     ("default", "default_kind"),
-    [("fallback()", "CALL_FUNC"), ("1 // 0", "FLOORDIV")],
+    [("fallback()", "CALL_GUARDED"), ("1 // 0", "FLOORDIV")],
     ids=["callback", "raising-primitive"],
 )
 def test_getattr_default_dataflow_preserves_evaluation_order(
@@ -514,10 +514,12 @@ def test_getattr_default_dataflow_preserves_evaluation_order(
     assert strings[access.args[2].name] == "x"
     default_op = next(op for op in ops if op.result is access.args[3])
     assert default_op.kind == default_kind
-    if default_kind == "CALL_FUNC":
+    if default_kind == "CALL_GUARDED":
+        # The guard checks the live global read, not a cached callable.
         fallback = next(op for op in ops if op.result is default_op.args[0])
         assert fallback.kind == "MODULE_GET_GLOBAL"
         assert strings[fallback.args[1].name] == "fallback"
+        assert default_op.metadata["target"] == "exact_class_authority__fallback"
     assert ops.index(callee) < ops.index(default_op) < ops.index(access)
 
 

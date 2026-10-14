@@ -1103,10 +1103,16 @@ def _positional_call(
     *,
     parameters: list[str] | tuple[str, ...] = (),
 ) -> dict[str, object]:
-    """Require one call of the actual callable, without argument-builder transport."""
+    """Require one call of the actual callable, without argument-builder transport.
+
+    A guarded call qualifies: its operand is the same live callable, and its
+    identity guard decides at run time whether the direct entry applies.
+    """
     assert targets
     (call,) = (
-        op for op in ops if op.get("kind") == "call_func" and op["args"][0] in targets
+        op
+        for op in ops
+        if op.get("kind") in {"call_func", "call_guarded"} and op["args"][0] in targets
     )
     assert len(call["args"]) == arity + 1
     if call["args"][0] in parameters:
@@ -3210,6 +3216,35 @@ def test_imported_callable_hint_respects_link_partition(
         }
     else:
         assert any(op.kind == "CALL_FUNC" for op in ops)
+
+
+@pytest.mark.parametrize(
+    ("source", "calls", "guarded"),
+    [
+        # Self-recursion: each call reads the live global, then calls through
+        # the identity guard with the function's own code symbol.
+        ("def fib(n):\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\n", 2, True),
+        # The module rebinds the name, so it has no stable code symbol.
+        ("def fib(n):\n    return fib(n - 1)\nfib = abs\n", 1, False),
+    ],
+)
+def test_global_function_read_calls_through_identity_guard(
+    source: str, calls: int, guarded: bool
+) -> None:
+    gen = SimpleTIRGenerator()
+    gen.visit(ast.parse(source))
+    (symbol,) = (name for name in gen.funcs_map if name.endswith("__fib"))
+    ops = gen.funcs_map[symbol]["ops"]
+    reads = [op.result for op in ops if op.kind == "MODULE_GET_GLOBAL"]
+    guarded_calls = [op for op in ops if op.kind == "CALL_GUARDED"]
+    # The read keeps LOAD_GLOBAL semantics; the guard checks what it returned.
+    assert len(reads) == calls
+    assert len(guarded_calls) == (calls if guarded else 0)
+    for call in guarded_calls:
+        assert call.args[0] in reads
+        assert call.metadata["target"] == symbol
+    if not guarded:
+        assert sum(op.kind == "CALL_FUNC" for op in ops) == calls
 
 
 def test_stdlib_direct_call_requires_lowered_target_module() -> None:
