@@ -358,7 +358,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "0871baa7dae5cc213aaf54ad79aad33d5e02ea3042c7e38c8491fd5bfae5cbac",
+  "authority_sha256": "01681172f9efb46092ecbea244feee26d02339a3396e6ac30906c1b5f46f6964",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -9314,6 +9314,8 @@
       "name": "nightly_conformance",
       "resource_class": "scheduled-suite",
       "shard_count": 8,
+      "shard_overhead_seconds": 600,
+      "shard_timeout_minutes": 60,
       "sharded_program": "conformance",
       "tiers": [
         "scheduled"
@@ -9328,6 +9330,8 @@
       "name": "nightly_differential",
       "resource_class": "scheduled-suite",
       "shard_count": 16,
+      "shard_overhead_seconds": 600,
+      "shard_timeout_minutes": 180,
       "sharded_program": "differential",
       "tiers": [
         "scheduled"
@@ -9342,6 +9346,8 @@
       "name": "nightly_regrtest",
       "resource_class": "scheduled-suite",
       "shard_count": 4,
+      "shard_overhead_seconds": 600,
+      "shard_timeout_minutes": 120,
       "sharded_program": "regrtest",
       "tiers": [
         "scheduled"

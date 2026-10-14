@@ -5582,3 +5582,26 @@ def test_sdk_compiler_selector_uses_requested_working_directory(tmp_path, monkey
         == requested / "external/llvm-config"
     )
     assert calls == [(proof_plan.ROOT, env, requested)]
+
+
+def test_shard_jobs_enforce_their_declared_budget() -> None:
+    def with_budget(**changes: int) -> list[str]:
+        families = tuple(
+            replace(family, data={**family.data, **changes})
+            if family.name == "nightly_differential"
+            else family
+            for family in PLAN.scheduled_families
+        )
+        return replace(PLAN, scheduled_families=families).validate()
+
+    assert not [error for error in PLAN.validate() if "shard" in error]
+    assert (
+        "nightly_differential: shard job omits 'timeout-minutes: 181'"
+        in with_budget(shard_timeout_minutes=181)
+    )
+    budget_error = (
+        "nightly_differential: shard_timeout_minutes and shard_overhead_seconds "
+        "must leave a positive shard deadline"
+    )
+    assert budget_error in with_budget(shard_overhead_seconds=180 * 60)
+    assert budget_error in with_budget(shard_overhead_seconds=0)

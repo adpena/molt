@@ -139,7 +139,7 @@ jobs:
     name: Differential shard ${{ matrix.shard }}
     needs: nightly-prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     env:
       MOLT_STDLIB_PROFILE: "full"
       MOLT_DIFF_STDLIB_PROFILE: "full"

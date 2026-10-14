@@ -27,7 +27,14 @@ Nightly shard execution is one authority family: `tools/nightly_prepare.py`
 builds the immutable runtime and digest-bound plan, `tools/nightly_sharding.py`
 owns exact corpus closure/LPT execution/aggregation, and
 `tools/nightly_profile_feedback.py fit` reduces successful aggregate item
-timings into a compact next-run candidate. The checked-in
+timings into a compact next-run candidate. The proof plan's sharded scheduled
+families own each program's shard count and shard budget
+(`shard_timeout_minutes`, `shard_overhead_seconds`); the plan carries the
+resulting shard deadline, so a slow shard stops itself and publishes its
+evidence before its job is killed. A shard prints its verdict and, when it
+failed, the child's output tails; an aggregate prints its verdict, its
+integrity errors and every non-passing item, and an incomplete aggregate is a
+named failure rather than a contract error. The checked-in
 `config/nightly_shard_profile.json` is promoted only through
 `tools/nightly_profile_feedback.py promote`; CI publishes candidates and never
 self-commits or invents an external scheduling authority.

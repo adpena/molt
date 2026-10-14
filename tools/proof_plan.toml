@@ -1392,6 +1392,10 @@ job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "conformance"
 shard_count = 8
+# A shard job's budget; the shard stops itself shard_overhead_seconds earlier
+# so its evidence is published before the job is killed.
+shard_timeout_minutes = 60
+shard_overhead_seconds = 600
 
 [[scheduled_family]]
 name = "nightly_differential"
@@ -1405,6 +1409,10 @@ job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "differential"
 shard_count = 16
+# A shard job's budget; the shard stops itself shard_overhead_seconds earlier
+# so its evidence is published before the job is killed.
+shard_timeout_minutes = 180
+shard_overhead_seconds = 600
 
 [[scheduled_family]]
 name = "nightly_regrtest"
@@ -1418,6 +1426,10 @@ job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "regrtest"
 shard_count = 4
+# A shard job's budget; the shard stops itself shard_overhead_seconds earlier
+# so its evidence is published before the job is killed.
+shard_timeout_minutes = 120
+shard_overhead_seconds = 600
 
 [[scheduled_family]]
 name = "nightly_shard_profile_feedback"
