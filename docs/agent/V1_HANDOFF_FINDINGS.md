@@ -61,9 +61,8 @@ retain the historical repair evidence without treating it as release acceptance.
 
 ## Active integration
 
-Main contains the runtime/ABI, public-consumer and developer-cost integration
-through `0b2f013f4`, with the exact qualification boundaries below. The parent
-integrator continues to own preserved WIP reconciliation. Coordination records own active
+The qualified boundaries below identify their source versions and limits. The
+parent integrator continues to own preserved WIP reconciliation. Coordination records own active
 write scopes and private receipts; this ledger owns release status.
 `tools/finding_status.py` counts its open and fixed rows and reports identity
 defects; no prose here repeats that count. Rows are obligations, not a
@@ -93,8 +92,10 @@ identifies two convergence boundaries within the existing exit obligations:
   copy-alias, split-field and direct-raise transformations before final
   refinement/ownership, and requires one body/fact pair at every normal, skip
   and batch codegen entry. Reachability and partition ownership preserve the
-  pair; native plan reconstruction is deleted. Actual consumer and cost
-  qualification is still pending, so this is not a closed release obligation.
+  pair; native plan reconstruction is deleted. At `1222c2fdf`, 45 selected
+  native/LLVM/WASM consumer controls, 32 upstream writer controls and 16
+  upstream emitter controls pass from one compatible development graph.
+  This qualifies those consumers, not the complete release obligation.
   WASM's later operation reachability and the remaining source backends require
   their own complete migration. This is compiler-side V1-07 work.
 - Runtime optimization must reuse admitted execution and object custody.
@@ -125,6 +126,30 @@ is an independent schema migration, not a prerequisite for typed custody.
 Freeze one complete contract before owning execution, preserve direct-codegen
 fixture inputs, establish independent semantic oracles, reuse unchanged
 evidence and land after actual consumers and measured costs qualify it.
+
+The native object correction lives in the target policy and maintained,
+provenance-pinned emitters. Six OS/architecture object cells pass, including
+Windows ARM64 local data and callable addresses; the actual Linux generated
+ABI mismatch-link control remains intact. LLVM 22 assembler and PE linker
+observations independently confirm signed byte addends and page carries.
+The unchanged external-fixture reader cases omitted from the published upstream
+crate remain outside the writer proof; self-contained library reader controls
+remain selected. Windows runtime linking/execution and release profiles remain
+unqualified. The retained Linux batch emits identical 1,318,528-byte objects
+before and after the emitter correction. Three interleaved samples per image
+give medians of 3.252 and 3.259 seconds; this bounds that developer observation
+and establishes no release-wide speedup. Selected patch bytes participate in
+the existing compiler/runtime cache custody, and vendor-only changes select
+their owning proofs without adding user-binary checks or a legalization pass.
+
+Selected generator and proof prerequisites now share the existing Python
+runtime admission owner. Runtime/Unicode custody follows the selected interpreter
+through queries, queue reuse, watch capture and receipt consumers; missing
+prerequisites aggregate before rendering. The complete source consumer migration,
+isolated staged generation and 92 affected cache/source/policy controls pass.
+These are developer/build-time contracts. Clean-host selected integration and
+installed-package, live-watch and other platform qualification remain explicit
+acceptance work; this does not add an admitted Python target version.
 
 The independent developer Cargo-target migration landed on main as
 `5c1238bda`. The existing selector gives each checkout stable intermediates,
