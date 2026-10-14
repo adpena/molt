@@ -15,6 +15,44 @@ CHILD_ENDPOINT_ENV = "MOLT_PROOF_CHILD_CUSTODY_ENDPOINT"
 CHILD_TOKEN_ENV = "MOLT_PROOF_CHILD_CUSTODY_TOKEN"
 
 
+# Process-creation audit events that run no image the policy can judge.
+OPAQUE_PROCESS_EVENTS = frozenset(
+    {
+        "os.system",
+        "os.exec",
+        "os.posix_spawn",
+        "os.posix_spawnp",
+        "os.spawn",
+        "os.fork",
+        "os.forkpty",
+        "os.startfile",
+        "os.startfile/2",
+    }
+)
+
+
+class WindowsLaunchAnnouncements(threading.local):
+    """Popen launches already decided, until their CreateProcess event arrives.
+
+    On Windows ``subprocess.Popen`` raises its audit event and then, in the
+    same thread, calls ``_winapi.CreateProcess`` with the same application
+    name. Other callers (``multiprocessing`` spawn) call it directly.
+    """
+
+    def __init__(self) -> None:
+        self.pending: list[object] = []
+
+    def announce(self, application_name: object) -> None:
+        self.pending.append(application_name)
+
+    def consume(self, application_name: object) -> bool:
+        """True when this CreateProcess is the launch Popen announced."""
+        if application_name in self.pending:
+            self.pending.remove(application_name)
+            return True
+        return False
+
+
 _child_channel: socket.socket | None = None
 _child_channel_reader: BinaryIO | None = None
 _child_channel_lock = threading.Lock()
@@ -175,6 +213,8 @@ def install_python_child_custody() -> None:
     posix_launch = _posix_launch
     windows = os.name == "nt"
     caller_facts = _windows_caller_facts() if windows else None
+    announced = WindowsLaunchAnnouncements()
+    opaque_events = OPAQUE_PROCESS_EVENTS
     endpoint = os.environ.get(CHILD_ENDPOINT_ENV, "")
     token = os.environ.get(CHILD_TOKEN_ENV, "")
     try:
@@ -250,15 +290,29 @@ def install_python_child_custody() -> None:
                     args[2] if len(args) > 2 else None,
                 )
             admit_executable(launch)
-        elif event in {
-            "os.system",
-            "os.exec",
-            "os.posix_spawn",
-            "os.posix_spawnp",
-            "os.spawn",
-            "os.fork",
-            "os.forkpty",
-        }:
+            if caller_facts is not None:
+                announced.announce(launch["application_name"])
+        elif event == "_winapi.CreateProcess" and caller_facts is not None:
+            application_name = args[0] if args else None
+            if announced.consume(application_name):
+                return
+            # CPython's event does not carry the real command line (it passes
+            # the object where its format expects a wide string), so a launch
+            # Popen did not announce is judged by its application name alone.
+            if application_name is None:
+                record_event({"event": "policy-violation", "surface": event})
+                raise PermissionError(
+                    "opaque process creation is forbidden in proof custody: "
+                    f"{event} without an application name"
+                )
+            admit_executable(
+                {
+                    "application_name": application_name,
+                    "command_line": None,
+                    **caller_facts(),
+                }
+            )
+        elif event in opaque_events:
             record_event({"event": "policy-violation", "surface": event})
             raise PermissionError(
                 f"opaque process creation is forbidden in proof custody: {event}"
