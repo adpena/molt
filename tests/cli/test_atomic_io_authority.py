@@ -3,7 +3,9 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import shutil
 import stat
+import time
 from pathlib import Path
 import zipfile
 
@@ -15,6 +17,7 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactKind,
 )
+from molt import artifact_publication
 from molt import file_publication
 from molt.cli.runtime_wasm_generation import publish_runtime_wasm_generation
 from molt.wasm_artifact import (
@@ -22,6 +25,7 @@ from molt.wasm_artifact import (
     _write_wasm_string,
     transform_wasm_publication_file,
 )
+from tests.process_guard_common import install_module_view
 from tests.runtime_build_identity_helper import runtime_build_identity
 
 
@@ -46,13 +50,16 @@ def test_verified_copy_checks_staged_bytes_before_publication(
     if existing:
         destination.write_bytes(b"previous")
     expected = hashlib.sha256(source.read_bytes()).hexdigest()
-    copyfile = atomic_io.shutil.copyfile
+    copyfile = shutil.copyfile
 
     def changed_copy(src: Path, staged: Path) -> None:
         copyfile(src, staged)
         staged.write_bytes(b"changed during copy")
 
-    monkeypatch.setattr(atomic_io.shutil, "copyfile", changed_copy)
+    # Artifact publication stages the verified copy.
+    install_module_view(
+        monkeypatch, "shutil", shutil, artifact_publication, copyfile=changed_copy
+    )
     with pytest.raises(ValueError, match="source changed while staging verified copy"):
         atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
     assert not list(tmp_path.glob(".*.tmp"))
@@ -60,7 +67,7 @@ def test_verified_copy_checks_staged_bytes_before_publication(
         assert destination.read_bytes() == b"previous"
     else:
         assert not destination.exists()
-    monkeypatch.setattr(atomic_io.shutil, "copyfile", copyfile)
+    monkeypatch.setattr(artifact_publication.shutil, "copyfile", copyfile)
     atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
     assert destination.read_bytes() == b"expected"
 
@@ -83,7 +90,7 @@ def test_atomic_publication_accepts_long_destination_components(
             def no_links(*_args, **_kwargs):
                 raise OSError(errno.EXDEV, "fixture has no hard links")
 
-            monkeypatch.setattr(atomic_io.os, "link", no_links)
+            install_module_view(monkeypatch, "os", os, atomic_io, link=no_links)
         atomic_io._atomic_link_or_copy_file(source, destination)
     else:
         with atomic_io._atomic_zip_file(destination) as archive:
@@ -121,7 +128,10 @@ def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[int] = []
-    monkeypatch.setattr(atomic_io.os, "fsync", lambda fd: calls.append(fd))
+    # File publication issues every publication barrier.
+    install_module_view(
+        monkeypatch, "os", os, file_publication, fsync=lambda fd: calls.append(fd)
+    )
     barriers_per_commit = 2 if atomic_io.os.name == "posix" else 1
 
     atomic_io._atomic_write_text(tmp_path / "text", "value")
@@ -205,7 +215,9 @@ def test_windows_write_through_replace_retries_only_sharing_violations(
             error.winerror = 32  # type: ignore[attr-defined]
             raise error
 
-    monkeypatch.setattr(file_publication.time, "sleep", lambda _seconds: None)
+    install_module_view(
+        monkeypatch, "time", time, file_publication, sleep=lambda _seconds: None
+    )
 
     file_publication.windows_replace_write_through(
         tmp_path / "stage",
@@ -223,16 +235,16 @@ def test_readonly_copy_flushes_payload_and_preserves_final_mode(
     destination = tmp_path / "destination"
     source.write_bytes(b"immutable")
     source.chmod(stat.S_IREAD)
-    original = file_publication.os.fsync
+    original = os.fsync
     flushed_files: list[tuple[int, int]] = []
 
     def observe(descriptor: int) -> None:
-        metadata = file_publication.os.fstat(descriptor)
+        metadata = os.fstat(descriptor)
         original(descriptor)
         if stat.S_ISREG(metadata.st_mode):
             flushed_files.append((metadata.st_size, metadata.st_mode))
 
-    monkeypatch.setattr(file_publication.os, "fsync", observe)
+    install_module_view(monkeypatch, "os", os, file_publication, fsync=observe)
     atomic_io._atomic_copy_file(source, destination)
 
     assert len(flushed_files) == 1

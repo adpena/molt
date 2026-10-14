@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import tomllib
 
 import pytest
@@ -296,7 +297,14 @@ def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, rel
     source = str(REPO_ROOT / "src")
     paths = [path for path in sys.path if path not in {root, test_root}]
     monkeypatch.setattr(sys, "path", paths.copy())
-    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-I", "-c", "pass"])
+    # Every startup surface reads the interpreter argv through the bootstrap.
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        orig_argv=[sys.executable, "-I", "-c", "pass"],
+    )
     monkeypatch.setattr(sys, "argv", ["-c"])
     monkeypatch.setattr(builtins, "__import__", no_repository_tooling)
     surface = REPO_ROOT / relative
@@ -2001,7 +2009,9 @@ def test_pytest_current_test_writer_retries_windows_atomic_replace(
         "_is_windows_process_model",
         lambda: True,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.time, "sleep", lambda _s: None)
+    install_module_view(
+        monkeypatch, "time", time, pytest_memory_guard_bootstrap, sleep=lambda _s: None
+    )
 
     calls = 0
     original_replace = pytest_memory_guard_bootstrap._ATOMIC_REPLACE

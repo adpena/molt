@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 import molt.cli as cli
 from molt.cli import build_output_layout as cli_build_output_layout
+from molt.cli import toolchain_validation
 
 from tests.cli.process_guard import run_cli_test_process
 from tests.process_guard_common import install_module_view
@@ -577,7 +578,9 @@ def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
             return None
         return real_which(name)
 
-    monkeypatch.setattr(cli.shutil, "which", fake_which, raising=True)
+    install_module_view(
+        monkeypatch, "shutil", shutil, toolchain_validation, which=fake_which
+    )
     steps, warnings = cli._planned_update_steps(
         ROOT,
         include_toolchains=False,

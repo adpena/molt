@@ -11,7 +11,7 @@ import traceback
 from typing import Iterator, Mapping
 
 from molt.backend_environment import CodegenSelection
-from molt.cli import native_symbol_inspection
+from molt.cli import native_link_plan, native_symbol_inspection
 import pytest
 
 import molt.cli as cli
@@ -24,6 +24,7 @@ from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.exact_json import canonical_json_sha256
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.process_guard import run_cli_test_process
+from tests.process_guard_common import install_module_view
 from tests.cli.native_link_test_support import (
     mock_symbol_reader_admission,
     static_archive_bytes,
@@ -2907,13 +2908,14 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
 def test_native_symbol_normalization_is_platform_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli.sys, "platform", "win32")
+    # The host target triple is the only platform read on this path.
+    install_module_view(monkeypatch, "sys", sys, native_link_plan, platform="win32")
     assert (
         cli._normalize_native_symbol_name("__future_____Feature___init__")
         == "__future_____Feature___init__"
     )
 
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setattr(native_link_plan.sys, "platform", "darwin")
     assert (
         cli._normalize_native_symbol_name("___future_____Feature___init__")
         == "__future_____Feature___init__"
