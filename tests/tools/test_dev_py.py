@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import custody_layout
+from molt import dx as molt_dx
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -632,7 +633,7 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_dev_py()
-    _isolated_checkout(module, monkeypatch, tmp_path)
+    clone = _isolated_checkout(module, monkeypatch, tmp_path)
     calls: list[dict[str, str]] = []
     explicit_root = tmp_path / "external-root"
     explicit_cache = tmp_path / "cache"
@@ -665,8 +666,14 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     assert env["MOLT_CACHE"] == str(explicit_cache)
     assert env["MOLT_SESSION_ID"] == "caller-session"
     assert "MOLT_SESSION_ID_GENERATED" not in env
+    # A pinned session scopes this checkout's target under the root (HF-45).
     assert env["CARGO_TARGET_DIR"] == str(
-        explicit_root / "target" / "sessions" / "caller-session"
+        explicit_root
+        / "target"
+        / "checkouts"
+        / molt_dx.checkout_component(clone)
+        / "sessions"
+        / "caller-session"
     )
 
 
