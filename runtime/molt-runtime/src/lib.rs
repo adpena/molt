@@ -303,8 +303,8 @@ pub mod lifecycle {
 
         #[test]
         fn ready_execution_lease_blocks_shutdown_and_refuses_late_calls() {
-            let (racing_entry, racing_entered, racing_release) =
-                crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime_then(
+                || {
                     let release = Arc::new(Barrier::new(2));
                     let (entered_tx, entered_rx) = mpsc::channel();
                     let worker_release = Arc::clone(&release);
@@ -373,16 +373,20 @@ pub mod lifecycle {
                         "racing entry must wait outside the GIL through shutdown/reset"
                     );
                     (racing_entry, racing_rx, racing_release)
-                });
-
-            racing_entered
-                .recv_timeout(Duration::from_secs(2))
-                .expect("racing entry must resume after restart owner withdrawal");
-            racing_release.wait();
-            assert_eq!(
-                racing_entry.join().unwrap(),
-                (41, false),
-                "resumed entry must detach its worker thread exactly once"
+                },
+                // The racing entry resumes once the restart owner withdraws; it
+                // must finish while this test still holds custody.
+                |(racing_entry, racing_entered, racing_release)| {
+                    racing_entered
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("racing entry must resume after restart owner withdrawal");
+                    racing_release.wait();
+                    assert_eq!(
+                        racing_entry.join().unwrap(),
+                        (41, false),
+                        "resumed entry must detach its worker thread exactly once"
+                    );
+                },
             );
         }
     }

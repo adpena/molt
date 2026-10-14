@@ -205,15 +205,50 @@ impl Drop for PendingCallTestCustody {
     }
 }
 
-fn process_global_test_state() -> MutexGuard<'static, ()> {
+/// Whether some test holds the process-global runtime test state. The mutex
+/// admits one holder, so one flag describes it.
+static PROCESS_TEST_CUSTODY_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Custody of the process-global runtime test state.
+struct ProcessTestCustody {
+    _state: MutexGuard<'static, ()>,
+}
+
+impl Drop for ProcessTestCustody {
+    fn drop(&mut self) {
+        // The flag clears before the lock releases (fields drop after this).
+        PROCESS_TEST_CUSTODY_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn process_global_test_state() -> ProcessTestCustody {
     #[cfg(not(target_arch = "wasm32"))]
     assert!(
         !crate::concurrency::gil_held(),
         "runtime test transaction must acquire process-state custody before the GIL"
     );
-    PROCESS_GLOBAL_TEST_STATE
+    let state = PROCESS_GLOBAL_TEST_STATE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    PROCESS_TEST_CUSTODY_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+    ProcessTestCustody { _state: state }
+}
+
+/// A runtime started while no test holds custody races the next test that
+/// takes it: that test finds the runtime mid-transition (HF-194). Threads a
+/// test spawns may start the runtime only while that test still holds custody.
+pub(crate) fn require_custody_to_start_runtime() {
+    if PROCESS_TEST_CUSTODY_ACTIVE.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let thread = std::thread::current();
+    panic!(
+        "thread '{}' started the runtime while no test held RuntimeTestTransaction \
+         custody; the test that spawned it must keep custody until the thread ends\n{}",
+        thread.name().unwrap_or("<unnamed>"),
+        std::backtrace::Backtrace::force_capture()
+    );
 }
 
 struct MaximumCapabilityTierTestEnvironment(Option<std::ffi::OsString>);
@@ -314,7 +349,7 @@ pub(crate) struct RuntimeTestTransaction {
     /// Isolate teardown failures recorded before this transaction began.
     #[cfg(not(target_arch = "wasm32"))]
     isolate_teardown_failures: usize,
-    _process_state: MutexGuard<'static, ()>,
+    _process_state: ProcessTestCustody,
 }
 
 /// Private restoration for one synchronous target operation. Callers cannot
@@ -403,7 +438,17 @@ impl RuntimeTestTransaction {
     /// This delegates to the shared shutdown/reset lifecycle authority while
     /// adding restart custody, the trusted environment, and eager bootstrap.
     pub(crate) fn with_trusted_fresh_runtime<R>(f: impl FnOnce() -> R) -> R {
-        Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::TrustedFresh, f)
+        Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::TrustedFresh, f, |value| value)
+    }
+
+    /// Like `with_trusted_fresh_runtime`, then run `epilogue` after the restart
+    /// owner withdraws but before custody ends, for threads the body left
+    /// waiting on the restart.
+    pub(crate) fn with_trusted_fresh_runtime_then<R, T>(
+        f: impl FnOnce() -> R,
+        epilogue: impl FnOnce(R) -> T,
+    ) -> T {
+        Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::TrustedFresh, f, epilogue)
     }
 
     /// Run a test that owns the complete cold runtime lifecycle.
@@ -416,7 +461,7 @@ impl RuntimeTestTransaction {
     /// restart custody. Cleanup still retires any runtime left Ready, resets the
     /// one-shot lifecycle state, and leaves pending-call custody unowned.
     pub(crate) fn with_cold_runtime_lifecycle<R>(f: impl FnOnce() -> R) -> R {
-        Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::Cold, f)
+        Self::with_runtime_lifecycle(RuntimeTestLifecycleMode::Cold, f, |value| value)
     }
 
     /// Exercise production admission with an exact grant set and no ambient tier.
@@ -449,7 +494,11 @@ impl RuntimeTestTransaction {
         });
     }
 
-    fn with_runtime_lifecycle<R>(mode: RuntimeTestLifecycleMode, f: impl FnOnce() -> R) -> R {
+    fn with_runtime_lifecycle<R, T>(
+        mode: RuntimeTestLifecycleMode,
+        f: impl FnOnce() -> R,
+        epilogue: impl FnOnce(R) -> T,
+    ) -> T {
         let _process_state = process_global_test_state();
         assert!(
             crate::state::runtime_state::runtime_execution_is_admitted_for_current_thread(false),
@@ -514,7 +563,7 @@ impl RuntimeTestTransaction {
                 restart.finish();
             }
         }));
-        match (outcome, cleanup) {
+        let value = match (outcome, cleanup) {
             (Ok(value), Ok(())) => value,
             (Ok(_), Err(cleanup)) => std::panic::resume_unwind(cleanup),
             (Err(primary), Ok(())) => std::panic::resume_unwind(primary),
@@ -534,7 +583,11 @@ impl RuntimeTestTransaction {
                 );
                 std::panic::resume_unwind(primary)
             }
-        }
+        };
+        // Threads the body left waiting resume once the restart owner withdraws.
+        // They finish here, still in custody. A runtime they start stays Ready
+        // like any test's runtime; the next transaction retires it in custody.
+        epilogue(value)
     }
 
     fn enter(isolate_gc: bool) -> Self {
