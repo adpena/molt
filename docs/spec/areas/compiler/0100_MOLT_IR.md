@@ -5,8 +5,9 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 ## Module transformations and demanded analyses
 
 The shared cached TIR runner optimizes functions before the module phase.
-Native, WASM and Luau request SimpleIR projections within bounded optimization
-waves. LLVM and FactGraph borrow preparation input and retain only optimized TIR;
+WASM and Luau request SimpleIR projections within bounded optimization waves.
+Native retains final owned TIR through module optimization or the explicit
+terminal-drops-only route. LLVM and FactGraph borrow preparation input and retain only optimized TIR;
 neither cache hits nor misses build an unused SimpleIR projection. Owned module
 assembly accepts moved LLVM source bodies or borrowed diagnostic inputs, retaining
 source order and canonical extern declarations. LLVM freezes source ABI metadata
@@ -19,6 +20,23 @@ SimpleIR wrapper consumes this set directly for selective back-conversion and
 returns its count; the owned-TIR wrapper returns the transformed bodies. Changes
 from multiple passes name a function once. Body order and original SimpleIR
 indices remain independent of set order.
+
+Native and LLVM apply the shared typed copy-alias, split-field and direct-raise
+transformations before final type refinement and ownership planning. Native
+projects each final typed body and its representation facts together through
+the actual emitted value-name allocation. The consumed typed body is then
+retired. Dead-function removal and partition externalization move or retire
+each source body and its facts as one pair. Every normal, skip and batch native
+codegen entry consumes that pair; codegen does not lift the projection or rerun
+the optimizer to reconstruct facts. Extern declarations carry no local plan.
+This preserves the existing source transport without treating it as a second
+semantic authority. WASM's later operation-reachability transformations still
+require their own complete final-fact migration.
+
+`MOLT_DUMP_REWRITTEN_FUNC` explicitly requests the final native/LLVM source
+projection after module and ownership finalization. Ordinary LLVM compilation
+does not construct that diagnostic projection. `MOLT_DISABLE_SPLIT_FIELD_DEFOREST`
+continues to disable the shared typed transformation by presence.
 
 Final analyses are requested where their inputs and consumers are known.
 FactGraph builds a graph and summaries over the final local module and requests

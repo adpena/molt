@@ -48,8 +48,11 @@ Hazard -> proving test(s):
 from __future__ import annotations
 
 import importlib.util
+import json
+import shlex
 import os
 import sys
+import sysconfig
 from pathlib import Path
 from tests.process_guard_common import install_module_os_view
 
@@ -133,6 +136,11 @@ def origin_and_clone(tmp_path):
 
     seed = tmp_path / "seed"
     _init_repo(seed)
+    (seed / "tools").mkdir()
+    (seed / "tools/proof_plan.toml").write_text(
+        'always = ["echo integration-policy"]\n', encoding="utf-8"
+    )
+    _git(seed, "add", "tools/proof_plan.toml")
     _commit_file(seed, "README.md", "seed\n", "seed: initial commit")
     _git(tmp_path, "clone", "--bare", "-q", str(seed), str(origin))
 
@@ -162,37 +170,58 @@ def test_committed_gate_manifest_is_valid(drv):
     assert "wasm-host" in names
 
 
-def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "runtime/molt-ir/src/tir/ops.rs",
+        "runtime/molt-passes/src/tir/passes/effects.rs",
+        "runtime/molt-passes/src/tir/lower_to_simple.rs",
+        "runtime/molt-tir/src/representation_plan.rs",
+    ],
+)
+def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
-    gates, matched = cfg.select(["runtime/molt-ir/src/tir/ops.rs"])
-
+    gates, matched = cfg.select([path])
     assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
-    assert (
-        "cargo clippy --locked -p molt-tir --all-targets --all-features -- -D warnings"
-        in (gates)
-    )
-    assert "cargo test --locked -p molt-tir --all-features --no-fail-fast" in gates
-    assert (
-        "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings"
-        in gates
-    )
-    assert "cargo test --locked -p molt-passes --all-features --no-fail-fast" in gates
+    cargo = [shlex.split(gate) for gate in gates if gate.startswith("cargo ")]
+    assert len(cargo) == 2
+    assert [command[1] for command in cargo] == ["clippy", "test"]
+    for command in cargo:
+        packages = {command[i + 1] for i, token in enumerate(command) if token == "-p"}
+        assert packages == {"molt-ir", "molt-passes", "molt-tir"}
+        assert "--locked" in command and "--all-features" in command
+        assert command[command.index("--profile") + 1] == "dev-fast"
+    assert "--all-targets" in cargo[0] and cargo[0][-3:] == ["--", "-D", "warnings"]
+    assert "--no-fail-fast" in cargo[1]
 
-    gates, matched = cfg.select(["runtime/molt-passes/src/tir/passes/effects.rs"])
-    assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
-    assert (
-        "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings"
-        in gates
-    )
-    assert "cargo test --locked -p molt-passes --all-features --no-fail-fast" in gates
 
-    gates, matched = cfg.select(["runtime/molt-passes/src/tir/lower_to_simple.rs"])
-    assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
-    assert (
-        "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings"
-        in gates
-    )
-    assert "cargo test --locked -p molt-passes --all-features --no-fail-fast" in gates
+@pytest.mark.parametrize(
+    "path",
+    [
+        "runtime/molt-backend-native/src/lib.rs",
+        "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
+        "runtime/molt-backend-native/src/simple_backend/module_metadata.rs",
+        "runtime/molt-backend-native/Cargo.toml",
+        "runtime/molt-backend/src/lib.rs",
+    ],
+)
+def test_committed_native_policy_includes_owning_crate(drv, path):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    _, matched = cfg.select([path])
+    rule = next(rule for rule in matched if rule.name == "backend-native")
+    clippy, tests = [shlex.split(gate) for gate in rule.gates]
+    for command in (clippy, tests):
+        packages = {command[i + 1] for i, token in enumerate(command) if token == "-p"}
+        assert packages == {
+            "molt-backend",
+            "molt-backend-native",
+            "molt-artifact-publish",
+        }
+        assert "--locked" in command
+        assert command[command.index("--features") + 1] == "molt-backend/native-backend"
+    assert clippy[1] == "clippy" and clippy[-3:] == ["--", "-D", "warnings"]
+    assert tests[1] == "test" and "--lib" in tests and "--no-fail-fast" in tests
+    assert tests[tests.index("--profile") + 1] == "release-fast"
 
 
 def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
@@ -851,14 +880,13 @@ def test_marker_parse_rejects_bad_spec(drv):
 def test_integrate_marker_mismatch_fails(drv, origin_and_clone):
     # A declared marker that is NOT satisfied post-rebase halts integrate before
     # push, LOUDLY (a DriverError — the fail-loud contract). We isolate the
-    # marker step with --no-gates/--no-push.
+    # marker step before the committed policy runs.
     origin, work = origin_and_clone
     _commit_file(work, "impl.py", "def f():\n    return 1\n", "feat: impl")
     ns = _integrate_ns(
         drv,
         repo=str(work),
         marker=["contains:impl.py::NONEXISTENT_TOKEN"],
-        no_gates=True,
         no_push=True,
     )
     with pytest.raises(drv.DriverError) as exc:
@@ -880,7 +908,6 @@ def test_integrate_marker_mismatch_via_main_returns_fail(drv, origin_and_clone):
             "integrate",
             "--repo",
             str(work),
-            "--no-gates",
             "--no-push",
             "--marker",
             "contains:impl.py::NONEXISTENT_TOKEN",
@@ -896,7 +923,6 @@ def test_integrate_marker_match_passes(drv, origin_and_clone):
         drv,
         repo=str(work),
         marker=["exists:impl.py", "contains:impl.py::return 1"],
-        no_gates=True,
         no_push=True,  # stop before push so the test stays local
     )
     assert drv.cmd_integrate(ns) == drv.EXIT_OK
@@ -949,23 +975,13 @@ def test_integrate_runs_selected_gate_and_halts_on_failure(
     # A gate that exits non-zero must halt integrate BEFORE push.
     origin, work = origin_and_clone
     _commit_file(work, "src/molt/m.py", "x = 1\n", "feat: py change")
-    gates = tmp_path / "g.toml"
-    gates.write_text(
-        """
-always = []
-[[rule]]
-name = "frontend-python"
-globs = ["src/molt/**/*.py"]
-gates = ["exit 3"]
-""",
-        encoding="utf-8",
+    _commit_file(
+        work, "tools/proof_plan.toml", 'always = ["exit 3"]\n', "failing policy"
     )
     ns = _integrate_ns(
         drv,
         repo=str(work),
-        no_gates=False,
         no_push=True,
-        gates_config=str(gates),
     )
     # A failing gate halts integrate LOUDLY (DriverError) BEFORE push.
     with pytest.raises(drv.DriverError) as exc:
@@ -982,25 +998,12 @@ def test_integrate_full_push_and_confirm(drv, origin_and_clone, tmp_path):
     # confirm. Proves the push-confirm gate accepts a genuinely-landed tip.
     origin, work = origin_and_clone
     _commit_file(work, "src/molt/ok.py", "ok = True\n", "feat: ok")
-    gates = tmp_path / "g.toml"
-    gates.write_text(
-        """
-always = ["echo true"]
-[[rule]]
-name = "frontend-python"
-globs = ["src/molt/**/*.py"]
-gates = ["echo true"]
-""",
-        encoding="utf-8",
-    )
     git = drv.Git(work)
     tip = git.head_sha()
     ns = _integrate_ns(
         drv,
         repo=str(work),
-        no_gates=False,
         no_push=False,
-        gates_config=str(gates),
     )
     assert drv.cmd_integrate(ns) == drv.EXIT_OK
     # origin/main now contains the tip (confirmed by the same ancestor check).
@@ -1014,15 +1017,11 @@ def test_integrate_dry_run_mutates_nothing(drv, origin_and_clone, tmp_path):
     git = drv.Git(work)
     head_before = git.head_sha()
     origin_before = _git(work, "rev-parse", "origin/main").stdout.strip()
-    gates = tmp_path / "g.toml"
-    gates.write_text("always = []\n", encoding="utf-8")
     ns = _integrate_ns(
         drv,
         repo=str(work),
         dry_run=True,
-        no_gates=False,
         no_push=False,
-        gates_config=str(gates),
     )
     assert drv.cmd_integrate(ns) == drv.EXIT_OK
     assert git.head_sha() == head_before
@@ -1032,7 +1031,7 @@ def test_integrate_dry_run_mutates_nothing(drv, origin_and_clone, tmp_path):
 def test_integrate_nothing_to_do_is_green(drv, origin_and_clone):
     # HEAD already on origin/main -> integrate is a green no-op.
     origin, work = origin_and_clone
-    ns = _integrate_ns(drv, repo=str(work), no_gates=True, no_push=True)
+    ns = _integrate_ns(drv, repo=str(work), no_push=True)
     assert drv.cmd_integrate(ns) == drv.EXIT_OK
 
 
@@ -1053,9 +1052,8 @@ def _integrate_ns(drv, **overrides):
         remote="origin",
         branch="main",
         dry_run=False,
-        no_gates=False,
         no_push=False,
-        gates_config=None,
+        expected_upstream=None,
         marker=None,
         extra_gate=None,
         cleanup_worktree=False,
@@ -1462,3 +1460,250 @@ def test_difftest_roots_relative_output_dir_before_safe_run(drv, tmp_path, monke
 
     run_cmds = [cmd for cmd in captured if str(root / "tools" / "safe_run.py") in cmd]
     assert len(run_cmds) == 1
+
+
+def _commit_integration_policy(work: Path, commands: list[str]) -> str:
+    return _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        "always = " + json.dumps(commands) + "\n",
+        "policy",
+    )
+
+
+def _integration_python(source: str) -> str:
+    return shlex.join([sys.executable, "-c", source])
+
+
+@pytest.mark.parametrize("kind", ["tracked", "staged", "untracked", "policy"])
+def test_integrate_refuses_dirty_selected_source(drv, origin_and_clone, kind):
+    _, work = origin_and_clone
+    _commit_file(work, "feature.py", "value = 1\n", "feature")
+    original = _git(work, "rev-parse", "origin/main").stdout.strip()
+    path = (
+        work
+        / {
+            "tracked": "feature.py",
+            "staged": "feature.py",
+            "untracked": "injected.py",
+            "policy": "tools/proof_plan.toml",
+        }[kind]
+    )
+    path.write_text(
+        "always = []\n" if kind == "policy" else "uncommitted\n", encoding="utf-8"
+    )
+    if kind == "staged":
+        _git(work, "add", path.name)
+    _git(work, "config", "status.showUntrackedFiles", "no")
+    with pytest.raises(drv.DriverError, match="clean selected source"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    assert path.read_text(encoding="utf-8").startswith(
+        "always" if kind == "policy" else "uncommitted"
+    )
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == original
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell quoting for adversarial gate")
+@pytest.mark.parametrize("mutation", ["source", "head", "policy"])
+def test_integrate_refuses_gate_source_or_head_drift(drv, origin_and_clone, mutation):
+    _, work = origin_and_clone
+    if mutation == "head":
+        command = "git -c user.name=Test -c user.email=test@example.test commit --allow-empty -qm changed"
+    else:
+        path = "README.md" if mutation == "source" else "tools/proof_plan.toml"
+        command = _integration_python(
+            f"from pathlib import Path; Path({path!r}).write_text('changed')"
+        )
+    _commit_integration_policy(work, [command])
+    original = _git(work, "rev-parse", "origin/main").stdout.strip()
+    with pytest.raises(drv.DriverError, match="HEAD changed|clean selected source"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == original
+    )
+
+
+def test_integrate_uses_original_policy_despite_replace_ref(drv, origin_and_clone):
+    _, work = origin_and_clone
+    failing = _commit_integration_policy(work, ["exit 19"])
+    passing = _commit_integration_policy(work, ["echo replacement-must-not-run"])
+    _git(work, "checkout", "--detach", failing)
+    _git(work, "replace", failing, passing)
+    with pytest.raises(drv.DriverError, match="gate failed.*19"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    # The replacement ref remains operator-owned; admission does not delete it.
+    assert _git(work, "replace", "-l").stdout.strip() == failing
+
+
+@pytest.mark.skipif(os.name == "nt", reason="executable POSIX Git hook")
+def test_integrate_preserves_foreign_hook_and_both_rejection_streams(
+    drv, origin_and_clone, capsys
+):
+    _, work = origin_and_clone
+    _commit_file(work, "feature.py", "value = 1\n", "feature")
+    hook = work / ".git/hooks/pre-push"
+    content = b"#!/bin/sh\necho foreign-stdout\necho foreign-stderr >&2\nexit 1\n"
+    hook.write_bytes(content)
+    hook.chmod(0o755)
+    original = _git(work, "rev-parse", "origin/main").stdout.strip()
+    with pytest.raises(drv.DriverError, match="PUSH NOT CONFIRMED"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "foreign-stdout" in output and "foreign-stderr" in output
+    assert hook.read_bytes() == content and hook.stat().st_mode & 0o111
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == original
+    )
+
+
+def test_integrate_claim_refuses_advanced_upstream_without_rebase(
+    drv, origin_and_clone
+):
+    origin, work = origin_and_clone
+    checked = _git(work, "rev-parse", "origin/main").stdout.strip()
+    local = _commit_file(work, "claim.txt", "mine\n", "my claim")
+    other = work.parent / "competing"
+    _git(work.parent, "clone", "-q", str(origin), str(other))
+    _git(other, "config", "user.email", "other@example.test")
+    _git(other, "config", "user.name", "Other")
+    winner = _commit_file(other, "claim.txt", "theirs\n", "competing claim")
+    _git(other, "push", "origin", "main")
+    with pytest.raises(drv.DriverError, match="expected upstream changed"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), expected_upstream=checked))
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == local
+    assert (work / "claim.txt").read_text(encoding="utf-8") == "mine\n"
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0] == winner
+    )
+
+
+def test_integrate_has_no_gate_bypass_cli(drv):
+    for flag in ("--no-gates", "--gates-config"):
+        with pytest.raises(SystemExit) as exc:
+            drv.build_parser().parse_args(["integrate", flag])
+        assert exc.value.code == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason="executable POSIX Git hook")
+def test_integrate_pushes_captured_commit_when_foreign_hook_moves_head(
+    drv, origin_and_clone
+):
+    _, work = origin_and_clone
+    selected = _commit_file(work, "feature.py", "value = 1\n", "feature")
+    hook = work / ".git/hooks/pre-push"
+    hook.write_text(
+        "#!/bin/sh\ngit -c user.name=Test -c user.email=test@example.test commit --allow-empty -qm hook-head\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() != selected
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == selected
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell quoting for adversarial gate")
+def test_integrate_remote_race_after_gates_is_not_rebased_or_force_pushed(
+    drv, origin_and_clone
+):
+    origin, work = origin_and_clone
+    other = work.parent / "racing"
+    _git(work.parent, "clone", "-q", str(origin), str(other))
+    _git(other, "config", "user.email", "racer@example.test")
+    _git(other, "config", "user.name", "Racer")
+    winner = _commit_file(other, "winner.txt", "winner\n", "winner")
+    policy = shlex.join(["git", "-C", str(other), "push", "origin", "main"])
+    selected = _commit_integration_policy(work, [policy])
+    with pytest.raises(drv.DriverError, match="PUSH NOT CONFIRMED"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == selected
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0] == winner
+    )
+
+
+def test_integrate_clean_rebase_runs_committed_policy(drv, origin_and_clone):
+    origin, work = origin_and_clone
+    _commit_file(work, "feature.py", "value = 1\n", "local")
+    other = work.parent / "upstream"
+    _git(work.parent, "clone", "-q", str(origin), str(other))
+    _git(other, "config", "user.email", "upstream@example.test")
+    _git(other, "config", "user.name", "Upstream")
+    upstream = _commit_file(other, "other.py", "other = 1\n", "upstream")
+    _git(other, "push", "origin", "main")
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    selected = _git(work, "rev-parse", "HEAD").stdout.strip()
+    assert drv.Git(work).is_ancestor(upstream, selected)
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == selected
+    )
+    assert (work / "feature.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_integrate_classifies_raw_paths_without_git_quote_escaping(
+    drv, origin_and_clone
+):
+    _, work = origin_and_clone
+    _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        'always = ["echo required"]\n[[rule]]\nname = "source"\nglobs = ["src/**"]\ngates = ["exit 23"]\n',
+        "path policy",
+    )
+    _commit_file(work, 'src/a"b.py', "pass\n", "quoted source path")
+    with pytest.raises(drv.DriverError, match="gate failed.*23"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+
+
+def test_integrate_rename_runs_both_source_and_destination_rules(drv, origin_and_clone):
+    _, work = origin_and_clone
+    # Seed the source path upstream so this is a genuine cross-rule rename,
+    # not an added file whose destination alone is sufficient.
+    _commit_file(work, "native/owner.rs", "same body\n", "upstream owner")
+    _git(work, "push", "origin", "main")
+    _commit_file(
+        work,
+        "tools/proof_plan.toml",
+        'always = ["echo always"]\n'
+        '[[rule]]\nname = "destination"\nglobs = ["docs/**"]\ngates = ["echo destination-proof"]\n'
+        '[[rule]]\nname = "source"\nglobs = ["native/**"]\ngates = ["exit 29"]\n',
+        "rename policy",
+    )
+    (work / "docs").mkdir()
+    _git(work, "mv", "native/owner.rs", "docs/owner.rs")
+    _git(work, "commit", "-qm", "move across proof classes")
+    assert _git(work, "diff", "--name-status", "origin/main..HEAD").stdout.startswith(
+        "R100"
+    )
+    with pytest.raises(drv.DriverError, match="gate failed.*29"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    assert _git(work, "show", "origin/main:native/owner.rs").stdout == "same body\n"
+
+
+def test_integrate_cli_starts_without_ambient_pythonpath(tmp_path):
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    # Ignore guard PYTHONPATH and site-startup hooks that can preload another
+    # checkout. Retain third-party dependencies without executing .pth files.
+    bootstrap = (
+        "import runpy, sys; "
+        f"sys.path[:0] = {[str(TOOLS_ROOT), sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]!r}; "
+        f"sys.argv = {[str(SCRIPT_PATH), 'integrate', '--help']!r}; "
+        f"runpy.run_path({str(SCRIPT_PATH)!r}, run_name='__main__')"
+    )
+    result = _run_fast_captured_command(
+        [sys.executable, "-E", "-S", "-c", bootstrap],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--expected-upstream" in result.stdout

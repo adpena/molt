@@ -28,16 +28,22 @@ fail-loud, tested** countermeasure inside the driver.
 
 `tools/molt_dev.py integrate` runs these steps in order. Every step is loud
 (prints `==>`/`OK`/`FAIL`), idempotent, and safe to re-run. `--dry-run` plans
-the whole pipeline without mutating anything.
+the whole pipeline without mutating anything. Use an exclusive clean checkout
+containing the intended committed source; preserve parallel WIP in its existing
+checkout. The driver checks source cleanliness and the selected HEAD at gate
+boundaries. These checks are not a continuous filesystem monitor.
 
 ```
 fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  →  confirm  →  cleanup
 ```
 
-1. **fetch** — `git fetch origin main`; record the upstream tip.
+1. **fetch** — require clean source, then `git fetch origin main`; pin the full
+   upstream identity. `--expected-upstream <full-commit>` additionally requires
+   that exact tip and prohibits rebase, preserving ownership-claim atomicity.
 2. **rebase** — rebase HEAD onto `origin/main` *only if behind*. A conflicting
    rebase is **aborted** (restoring the pre-rebase HEAD) and the run fails
-   loudly; it never leaves a half-applied rebase.
+   loudly; it never leaves a half-applied rebase. Pin the resulting full commit
+   once for markers, gate selection, source checks, push and confirmation.
 3. **verify-commits (hazard 1)** — every source commit's **patch-id** computed
    *before* the rebase must be present *after*: either replayed into the new
    branch range, or already-upstream (the legitimate patch-id dedup). A missing
@@ -46,10 +52,13 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    (`exists:<path>` / `contains:<path>::<needle>`) are checked against the
    post-rebase tree via python file ops. A mismatch fails before push.
 5. **gates (hazard 10)** — the set of touched paths selects gate commands from
-   `tools/proof_plan.toml` (change-class → gates). A non-zero gate halts the
-   run **before push**. `--extra-gate` appends arc-specific gates;
-   `--no-gates` skips gating (use only when gating out-of-band).
-6. **push** — `git push origin HEAD:main`. The push command's **exit code is
+   the selected commit's `tools/proof_plan.toml` (change-class → gates). Always
+   gates and every matching rule run. A non-zero gate or source/HEAD drift halts
+   the run **before push**. `--extra-gate` only adds arc-specific gates. There is
+   no gate-skipping or alternate-manifest landing route.
+6. **push** — `git push origin <captured-commit>:refs/heads/main`. Foreign Git
+   hooks remain active and both rejection streams are retained. Git identity
+   reads ignore local replacement refs. The push command's **exit code is
    NOT trusted** (hazard 2).
 7. **confirm (hazard 2)** — `git fetch` then confirm `origin/main` **contains**
    the pushed tip via `git merge-base --is-ancestor`. Cleanup is gated on THIS,
@@ -81,7 +90,7 @@ code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 
 | Subcommand | Purpose |
 |---|---|
-| `integrate` | fetch → rebase → verify-commits → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-gates`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--gates-config`, `--ignore`, toolchain-freshness flags. |
+| `integrate` | fetch → rebase → verify-commits → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--ignore` (cleanup only), toolchain-freshness flags. |
 | `secure-wip` | Commit **all** tracked modifications in one `WIP-RECOVERY` commit. `--dry-run`, `-m/--message`, `--ignore`, `--include-untracked`. |
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
 | `verify-toolchain` | Behavior-marker probe + binary-freshness report. `--marker`, `--probe-arg`, `--require-fresh`, `--reference`, `--require-differs`, `--json`. |

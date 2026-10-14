@@ -15,7 +15,7 @@ commit for every agent. So this installer wires ONLY the managed hooks, straight
 into ``<git-common-dir>/hooks/``.
 
 The obsolete Molt pre-push hook is retired, restoring any preserved foreign
-hook. Drift maintenance stays explicit; ff_land validates its selected commit
+hook. Drift maintenance stays explicit; integrate validates its selected commit
 and CI checks generated projections. No replacement push hook is installed.
 
 Idempotent and non-destructive, per active hook:

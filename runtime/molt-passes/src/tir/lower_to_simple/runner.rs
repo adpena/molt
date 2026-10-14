@@ -24,6 +24,12 @@ use crate::tir::simple_value_names::{
 };
 
 pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
+    lower_to_simple_ir_with_names(func).0
+}
+
+/// Return the source projection and the exact identity allocation it used.
+/// Consumers of final typed facts must share this owner with emission.
+pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleValueNames) {
     let simple_value_names = SimpleValueNames::for_function(func);
     set_value_names(simple_value_names.clone());
 
@@ -987,5 +993,5 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         missing
     );
 
-    out
+    (out, simple_value_names)
 }

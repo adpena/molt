@@ -18,7 +18,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 356 |
 | Local path rules | 35 | 44 |
-| Unique local commands | 73 | 112 |
+| Unique local commands | 73 | 110 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -314,9 +314,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 | Rule | Input globs | Commands | Fresh toolchain |
 |---|---:|---:|---:|
-| `backend-native` | 4 | 2 | yes |
+| `backend-native` | 8 | 2 | yes |
 | `backend-llvm` | 2 | 1 | yes |
-| `tir-midend` | 9 | 4 | yes |
+| `tir-midend` | 9 | 2 | yes |
 | `wasm-host` | 5 | 2 | yes |
 | `gpu-core` | 3 | 1 | no |
 | `gpu-runtime` | 3 | 2 | no |

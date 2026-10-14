@@ -53,7 +53,7 @@ SUBSTANTIVE_TOOL_THRESHOLD = 2
 
 BLOCK_MESSAGE = (
     "This turn reported without landing. Land a commit / proof / passing test via "
-    "the queue (tools/proof_queue.py, tools/ff_land.py), or record the real external "
+    "the queue (tools/proof_queue.py, tools/molt_dev.py integrate), or record the real external "
     'blocker (python tools/hooks/landing_gate.py --record-blocker "<reason>"), then '
     "stop. Reporting/planning without landing is the standing M12 violation; a PASS "
     "is a hypothesis until reproduced (M05)."

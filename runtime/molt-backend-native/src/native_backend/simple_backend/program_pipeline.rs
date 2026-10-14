@@ -1,18 +1,13 @@
 use super::*;
-use crate::tir::pipeline_cache::TirSimpleIrModulePipelineStage;
-use molt_tir::ir_rewrites::{
-    elide_useless_try_blocks_for_function, rewrite_copy_aliases, rewrite_phi_to_store_load,
-};
+use molt_tir::ir_rewrites::{elide_useless_try_blocks_for_function, rewrite_phi_to_store_load};
 use std::fmt::Write as _;
 
 pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
-    pub(in crate::native_backend::simple_backend) native_target_info:
-        Option<crate::tir::target_info::TargetInfo>,
     pub(in crate::native_backend::simple_backend) emit_resolver_here: bool,
     pub(in crate::native_backend::simple_backend) app_callable_manifest: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) source_callables:
         molt_tir::trampolines::CallableMetadata,
-    pub(in crate::native_backend::simple_backend) final_callbacks: NativeFinalCallbacks,
+    pub(in crate::native_backend::simple_backend) final_functions: Option<NativeFinalFunctions>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -81,7 +76,7 @@ impl SimpleBackend {
             )
             .cached_tir
         });
-        if !self.skip_ir_passes {
+        if use_llvm && !self.skip_ir_passes {
             eliminate_dead_ops(ir, &lane_target_info);
         }
 
@@ -98,35 +93,55 @@ impl SimpleBackend {
             );
         }
 
-        let mut final_callbacks = NativeFinalCallbacks::default();
-        self.run_cranelift_module_pipeline_if_needed(
-            ir,
-            use_llvm,
-            native_tti.as_ref(),
-            native_cached_tir.as_mut(),
-            &mut final_callbacks,
-        );
-
-        if self.skip_ir_passes && !use_llvm {
-            let native_tti = native_tti
-                .as_ref()
-                .expect("native TIR target info missing for Cranelift skip path");
-            crate::tir::pipeline_cache::finalize_simple_ir_drops_from_cached_tir(
-                &mut ir.functions,
-                native_tti,
+        let mut final_functions = if use_llvm {
+            None
+        } else {
+            let native_tti = native_tti.as_ref().expect("native target missing");
+            let non_inlinable: HashSet<String> = if self.skip_shared_stdlib_partition {
+                BTreeSet::new()
+            } else {
+                shared_stdlib_external_symbols(ir, &self.partition_sources)
+            }
+            .into_iter()
+            .collect();
+            let typed = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+                &ir.functions,
                 native_cached_tir
                     .as_mut()
-                    .expect("native TIR custody missing for Cranelift drop finalization"),
-                |function| final_callbacks.record(function),
+                    .expect("native finalization requires typed custody"),
+                crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
+                    target_info: native_tti,
+                    module_name: "native_module",
+                    non_inlinable: &non_inlinable,
+                    missing_tir_context: "native final function custody",
+                    mode: if self.skip_ir_passes {
+                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::TerminalDropsOnly
+                    } else {
+                        crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase
+                    },
+                },
             );
-        }
-
-        // Dead function elimination after inlining reduces both object size and
-        // downstream linker work.
-        if !self.skip_ir_passes {
+            let mut final_functions = NativeFinalFunctions::from_final_tir(
+                SimpleIR {
+                    functions: std::mem::take(&mut ir.functions),
+                    profile: ir.profile.take(),
+                },
+                typed,
+            );
+            if !self.skip_ir_passes {
+                final_functions.retain_reachable(&module_registry_roots);
+            }
+            Some(final_functions)
+        };
+        if use_llvm && !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
-        run_post_tir_simple_ir_rewrites(&mut ir.functions);
+        let final_ir = final_functions
+            .as_ref()
+            .map_or(&*ir, NativeFinalFunctions::ir);
+        if !use_llvm {
+            dump_rewritten_ir_if_requested(&final_ir.functions);
+        }
 
         let emit_resolver_here = self.emit_app_callable_resolver;
         let app_callable_manifest = if emit_resolver_here {
@@ -135,17 +150,25 @@ impl SimpleBackend {
                 // only when some `molt_`-prefixed callable candidate exists. An
                 // empty module has a necessarily empty manifest and must not
                 // demand a symbol file that is not staged for it.
-                crate::passes::compute_app_callable_manifest_checked(&ir.functions)
+                crate::passes::compute_app_callable_manifest_checked(&final_ir.functions)
             })
         } else {
             self.app_callable_manifest.take().unwrap_or_default()
         };
         if !self.skip_shared_stdlib_partition {
-            externalize_shared_stdlib_partition(
-                ir,
-                &module_registry_roots,
-                &self.partition_sources,
-            );
+            if let Some(final_functions) = &mut final_functions {
+                final_functions.externalize_partition(
+                    self.skip_ir_passes,
+                    &module_registry_roots,
+                    &self.partition_sources,
+                );
+            } else {
+                externalize_shared_stdlib_partition(
+                    ir,
+                    &module_registry_roots,
+                    &self.partition_sources,
+                );
+            }
         }
         if timing {
             let passes_elapsed = compile_start.elapsed();
@@ -153,58 +176,10 @@ impl SimpleBackend {
         }
 
         NativeProgramPipeline {
-            native_target_info: native_tti,
             emit_resolver_here,
             app_callable_manifest,
             source_callables,
-            final_callbacks,
-        }
-    }
-
-    fn run_cranelift_module_pipeline_if_needed(
-        &self,
-        ir: &mut SimpleIR,
-        use_llvm: bool,
-        native_tti: Option<&crate::tir::target_info::TargetInfo>,
-        native_cached_tir: Option<&mut crate::tir::pipeline_cache::CachedTirCustody>,
-        final_callbacks: &mut NativeFinalCallbacks,
-    ) {
-        // The SimpleIR-carrier module phase runs for the Cranelift path and is
-        // skipped for the LLVM path. LLVM lowers from TIR directly and runs the
-        // same module pipeline on its own TIR functions in the LLVM branch, so
-        // every emitted program is inlined exactly once.
-        if !self.skip_ir_passes && !use_llvm {
-            let native_tti = native_tti.expect("native TIR target info missing for Cranelift path");
-            // Shared-stdlib bodies externalized into `stdlib_shared.o` must stay
-            // opaque to this app object. Compute this before externalization
-            // clears their ops, from the same predicate it uses.
-            let external_symbols = if self.skip_shared_stdlib_partition {
-                BTreeSet::new()
-            } else {
-                shared_stdlib_external_symbols(ir, &self.partition_sources)
-            };
-            let non_inlinable: HashSet<String> = external_symbols.into_iter().collect();
-            let native_cached_tir = native_cached_tir
-                .expect("native TIR custody missing for Cranelift module pipeline");
-            let mut consume_final_tir = |stage: TirSimpleIrModulePipelineStage<'_>| {
-                if let TirSimpleIrModulePipelineStage::AfterModulePipeline { module, .. } = stage {
-                    for function in &module.functions {
-                        final_callbacks.record(function);
-                    }
-                }
-            };
-            crate::tir::pipeline_cache::run_simple_ir_module_pipeline_from_cached_tir(
-                &mut ir.functions,
-                native_cached_tir,
-                crate::tir::pipeline_cache::TirSimpleIrModulePipelineOptions {
-                    target_info: native_tti,
-                    module_name: "native_module",
-                    non_inlinable: &non_inlinable,
-                    missing_tir_context: "native TIR cache runner",
-                    backconvert_context: "native TIR module pipeline",
-                    stage_observer: Some(&mut consume_final_tir),
-                },
-            );
+            final_functions,
         }
     }
 }
@@ -274,31 +249,36 @@ fn dump_raw_ir_if_requested(functions: &[FunctionIR]) {
     }
 }
 
-/// These final bridge rewrites preserve synchronous Python callback eligibility:
-/// alias collapse forwards only immutable identities; split-field deforestation
-/// keeps an opaque field primitive (and any unproved guard); raise-edge cleanup
-/// removes only duplicate local exception-status checks. The family retains
-/// every release, async-work observation and truthiness boundary; primitive
-/// substitutions preserve the function's callback eligibility.
-/// Differential tests compare the canonical typed callback oracle before/after
-/// the complete rewrite family, including its ownership and refusal cases.
-pub(in crate::native_backend::simple_backend) fn run_post_tir_simple_ir_rewrites(
-    functions: &mut [FunctionIR],
-) {
-    for func in functions {
-        rewrite_copy_aliases(&mut func.ops);
-        // Split-field read deforestation runs after copy-alias rewrite so
-        // inlined len/ord_at consumers reference the field's canonical SSA name.
-        crate::passes::deforest_split_field_reads(func);
-        canonicalize_direct_raise_edges(func);
-        if std::env::var("MOLT_DUMP_REWRITTEN_FUNC").as_deref() == Ok(func.name.as_str()) {
-            let mut dump = String::new();
-            for (idx, op) in func.ops.iter().enumerate() {
-                let _ = writeln!(dump, "{idx:04}: {:?}", op);
-            }
-            let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
-        }
+fn dump_rewritten_ir_if_requested(functions: &[FunctionIR]) {
+    let Ok(requested) = std::env::var("MOLT_DUMP_REWRITTEN_FUNC") else {
+        return;
+    };
+    if let Some(function) = functions.iter().find(|function| function.name == requested) {
+        dump_rewritten_ops(&function.ops);
     }
+}
+
+#[cfg(feature = "llvm")]
+pub(super) fn dump_rewritten_tir_if_requested(functions: &[(bool, crate::tir::TirFunction)]) {
+    let Ok(requested) = std::env::var("MOLT_DUMP_REWRITTEN_FUNC") else {
+        return;
+    };
+    if let Some((_, function)) = functions
+        .iter()
+        .find(|(_, function)| function.name == requested)
+    {
+        // A requested diagnostic is the only LLVM consumer of this projection;
+        // normal machine emission keeps the final typed body as its sole owner.
+        dump_rewritten_ops(&crate::tir::lower_to_simple::lower_to_simple_ir(function));
+    }
+}
+
+fn dump_rewritten_ops(ops: &[OpIR]) {
+    let mut dump = String::new();
+    for (idx, op) in ops.iter().enumerate() {
+        let _ = writeln!(dump, "{idx:04}: {:?}", op);
+    }
+    let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
 }
 
 pub(crate) fn preprocess_backend_tir_input(

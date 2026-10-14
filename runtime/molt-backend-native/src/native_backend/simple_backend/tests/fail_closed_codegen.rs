@@ -60,8 +60,7 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
     };
     let defined = BTreeSet::from(["caller".to_string()]);
     backend.compile_func(
-        caller,
-        &crate::tir::target_info::TargetInfo::native_release_fast(),
+        final_function_for_test(caller),
         &BTreeMap::new(),
         &BTreeMap::new(),
         &defined,
@@ -130,8 +129,7 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
     let function_has_ret =
         BTreeMap::from([("caller".to_string(), true), ("helper".to_string(), true)]);
     backend.compile_func(
-        caller,
-        &crate::tir::target_info::TargetInfo::native_release_fast(),
+        final_function_for_test(caller),
         &BTreeMap::new(),
         &BTreeMap::new(),
         &defined_functions,

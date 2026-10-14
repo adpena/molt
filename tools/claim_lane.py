@@ -3,7 +3,7 @@
 get the check / claim / back-off dance subtly wrong.
 
 The claim is a git-atomic lock: appends a row to CLAIMS.md and lands it via
-`tools/ff_land.py`. Because landing is a fast-forward, exactly one agent wins a
+`tools/molt_dev.py integrate`. Because landing is a fast-forward, exactly one agent wins a
 claim race; the loser's push is refused and it backs off. This tool wraps that
 with a fail-closed pre-check (drift-sweep + current claim state) and correct row
 formatting.
@@ -13,7 +13,7 @@ Usage::
     # Before starting a SOLO lane — is it free? (read-only; exit 0=claimable, 1=held)
     python tools/claim_lane.py E1-WITNESS-TO-GREEN --check
 
-    # Claim it (pre-checks, appends CLAIMED, ff_lands; backs off if raced)
+    # Claim it (pre-checks, appends CLAIMED, integrates; backs off if raced)
     python tools/claim_lane.py E1-WITNESS-TO-GREEN --claim --agent codex-xyz --note "first step ..."
 
     # Log progress / release / complete (claimant only)
@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +41,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
     import claims_status as cs  # type: ignore
     from command_execution import CommandExecutor  # type: ignore
+
+from tools.release.git_source_snapshot import immutable_git_environment
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -52,6 +55,7 @@ def _git(
     return _COMMANDS.run(
         ["git", *args],
         cwd=root,
+        env=immutable_git_environment(os.environ),
         check=check,
         capture_output=True,
         text=True,
@@ -78,14 +82,12 @@ def _lane_state(claims_text: str, lane: str) -> tuple[str, cs.Row | None]:
     return ("STALE" if klass == cs.STALE else "CLAIMED-ALIVE"), last
 
 
-def _read_claims_at_origin(root: Path) -> str:
-    _git(root, "fetch", "origin", "--quiet", check=False)
-    r = _git(root, "show", f"origin/main:{CLAIMS_REL}", check=False)
-    return (
-        r.stdout
-        if r.returncode == 0
-        else (root / CLAIMS_REL).read_text(encoding="utf-8")
+def _read_claims_at_origin(root: Path) -> tuple[str, str]:
+    _git(
+        root, "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"
     )
+    upstream = _git(root, "rev-parse", "origin/main").stdout.strip()
+    return _git(root, "show", f"{upstream}:{CLAIMS_REL}").stdout, upstream
 
 
 def _claimable(state: str) -> bool:
@@ -102,7 +104,7 @@ def _report(lane: str, state: str, row: cs.Row | None) -> None:
 
 
 def _append_row_and_land(
-    root: Path, lane: str, agent: str, status: str, note: str
+    root: Path, lane: str, agent: str, status: str, note: str, upstream: str
 ) -> int:
     claims_path = root / CLAIMS_REL
     text = claims_path.read_text(encoding="utf-8")
@@ -112,10 +114,18 @@ def _append_row_and_land(
     claims_path.write_text(text + row, encoding="utf-8")
     _git(root, "add", "--", CLAIMS_REL)
     _git(root, "commit", "-m", f"{status} {lane} ({agent})", "--", CLAIMS_REL)
-    # Land with the ff_land that ships beside this tool; `root` (from cwd) is
-    # only the repository being landed, as `tests/tools/test_ff_land.py` runs it.
+    # The checked upstream is an admission constraint: a claim must never be
+    # automatically rebased over a competing claim after the ownership check.
     land = _COMMANDS.run(
-        [sys.executable, str(Path(__file__).with_name("ff_land.py"))],
+        [
+            sys.executable,
+            str(Path(__file__).with_name("molt_dev.py")),
+            "integrate",
+            "--repo",
+            str(root),
+            "--expected-upstream",
+            upstream,
+        ],
         cwd=root,
         capture_output=True,
         text=True,
@@ -140,13 +150,13 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument(
         "--claim",
         action="store_true",
-        help="claim the lane (pre-check + append CLAIMED + ff_land)",
+        help="claim the lane (pre-check + append CLAIMED + integrate)",
     )
     action.add_argument(
         "--append",
         metavar="STATUS",
         choices=sorted(cs.ALL_STATUSES),
-        help="append a status row + ff_land",
+        help="append a status row + integrate",
     )
     parser.add_argument("--agent", help="your agent id (required for --claim/--append)")
     parser.add_argument("--note", default="", help="note / evidence for the row")
@@ -154,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
 
     root = _repo_root()
     try:
-        state, row = _lane_state(_read_claims_at_origin(root), args.lane)
+        claims_text, upstream = _read_claims_at_origin(root)
+        state, row = _lane_state(claims_text, args.lane)
     except cs.ClaimsLogError as exc:
         print(f"claim_lane: {CLAIMS_REL} at origin/main: {exc}", file=sys.stderr)
         return 2
@@ -187,9 +198,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"escalate to the orchestrator (CLAIMS.md §6)."
             )
             return 1
-        rc = _append_row_and_land(root, args.lane, args.agent, args.append, args.note)
+        rc = _append_row_and_land(
+            root, args.lane, args.agent, args.append, args.note, upstream
+        )
         if rc != 0:
-            print("  (ff_land refused — fetch, re-check, and retry if still valid)")
+            print("  (integrate refused — fetch, re-check, and retry if still valid)")
         return rc
 
     if args.claim:
@@ -199,13 +212,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"BACK OFF: {args.lane} is already {state}. Pick a different SOLO lane or a standing lane."
             )
             return 1
-        rc = _append_row_and_land(root, args.lane, args.agent, "CLAIMED", args.note)
+        rc = _append_row_and_land(
+            root, args.lane, args.agent, "CLAIMED", args.note, upstream
+        )
         if rc != 0:
             # someone raced us to the fast-forward — re-check and back off if now held
-            state2, row2 = _lane_state(_read_claims_at_origin(root), args.lane)
+            latest, _ = _read_claims_at_origin(root)
+            state2, row2 = _lane_state(latest, args.lane)
             _report(args.lane, state2, row2)
             print(
-                "BACK OFF: lost the claim race (ff_land refused). Reset to origin/main and pick another lane."
+                "Claim did not land: integration failed. Preserve the local commit and inspect the gate or remote rejection before retrying."
             )
             return 1
         print(

@@ -88,7 +88,6 @@ impl SimpleBackend {
         // covers declarations created by shared-stdlib externalization.
         crate::ir::validate_extern_call_abis(&ir).unwrap_or_else(|error| panic!("native {error}"));
         let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
-        let native_target_info = prepared.native_target_info;
         let emit_resolver_here = prepared.emit_resolver_here;
         assert!(
             (self.code_slots.is_none() && self.module_registry.is_none()) || emit_resolver_here,
@@ -96,21 +95,25 @@ impl SimpleBackend {
         );
         let app_callable_manifest = prepared.app_callable_manifest;
         let source_callables = prepared.source_callables;
-        let final_callbacks = prepared.final_callbacks;
+        let final_functions = prepared.final_functions;
+        let final_ir = final_functions
+            .as_ref()
+            .map_or(&ir, NativeFinalFunctions::ir);
         // Extern bodies are discarded by both native backends. Capture and
         // validate their complete target-neutral ABI first so no backend can
         // reconstruct a declaration from a caller after the authority is gone.
-        let extern_function_signatures = collect_extern_function_signatures(&ir.functions);
-        crate::ir::validate_extern_call_abis(&ir).unwrap_or_else(|error| panic!("native {error}"));
+        let extern_function_signatures = collect_extern_function_signatures(&final_ir.functions);
+        crate::ir::validate_extern_call_abis(final_ir)
+            .unwrap_or_else(|error| panic!("native {error}"));
         if let Some(module_context) = self.module_context.as_ref() {
             module_context
-                .validate_function_linkage_abis(&ir.functions)
+                .validate_function_linkage_abis(&final_ir.functions)
                 .unwrap_or_else(|error| panic!("invalid native module context: {error}"));
         }
         // Capture each function's entry custody while its extern declaration
         // is still present; `func_new` lowering reads it.
         self.function_entry_custody =
-            merge_function_entry_custody(self.module_context.as_ref(), &ir.functions);
+            merge_function_entry_custody(self.module_context.as_ref(), &final_ir.functions);
         //  LLVM backend dispatch
         // When MOLT_BACKEND=llvm and the llvm feature is compiled in, route
         // through the LLVM backend instead of Cranelift.  Each function is
@@ -218,6 +221,7 @@ impl SimpleBackend {
                     },
                 },
             );
+            super::program_pipeline::dump_rewritten_tir_if_requested(&tir_funcs);
             // Build LLVM representation facts from the exact post-module-phase
             // TIR the LLVM backend is about to lower. The trusted-unbox gate is
             // pure TIR/value-range authority, so fresh ValueIds introduced by
@@ -401,7 +405,9 @@ impl SimpleBackend {
         // Analyze the exact post-lifetime/post-partition bodies codegen emits.
         // Shared batch context predates worker finalization and carries no leaf
         // claims. External targets retain guards without a final-body proof.
-        let ir_analysis = analyze_native_backend_ir(&ir, source_callables, final_callbacks);
+        let final_functions = final_functions.expect("Cranelift requires final function custody");
+        let ir_analysis = analyze_native_backend_ir(&final_functions, source_callables);
+        let ir = final_functions.ir();
         // Compile functions into one module. Backend codegen failures are hard
         // failures: the compiler must not produce partial objects with
         // runtime-aborting placeholders for functions it could not compile.
@@ -437,12 +443,13 @@ impl SimpleBackend {
             }
         }
         // Filter out extern functions  they have no ops to compile.
-        ir.functions.retain(|f| !f.is_extern);
-        let func_count = ir.functions.len();
+        let func_count = ir
+            .functions
+            .iter()
+            .filter(|function| !function.is_extern)
+            .count();
         let total_ops: usize = ir.functions.iter().map(|f| f.ops.len()).sum();
         eprintln!("MOLT_BACKEND: compiling {func_count} functions ({total_ops} total ops)");
-        let native_target_info = native_target_info
-            .expect("Cranelift preparation must resolve one explicit native target");
         let codegen_start = std::time::Instant::now();
         let mut local_function_arities: BTreeMap<String, usize> = extern_function_signatures
             .iter()
@@ -492,13 +499,12 @@ impl SimpleBackend {
         let mut last_progress = std::time::Instant::now();
         let mut deferred_codegen_ops = 0usize;
 
-        for func_ir in ir.functions {
-            let func_name = func_ir.name.clone();
-            let func_op_count = func_ir.ops.len().max(1);
+        for function in final_functions.into_local_functions() {
+            let func_name = function.function().name.clone();
+            let func_op_count = function.function().ops.len().max(1);
             let func_start = std::time::Instant::now();
             self.compile_func(
-                func_ir,
-                &native_target_info,
+                function,
                 &effective_task_kinds,
                 &effective_task_closure_sizes,
                 &ir_analysis.defined_functions,

@@ -435,7 +435,7 @@ activate the landing requirement. SessionStart renders the gate's canonical
 The bounded JSONL activity reader ignores
 quoted/result records and duplicate tool IDs; shells and unfamiliar tools remain
 potentially mutating. Transcript errors fail open with a visible diagnostic.
-**Composes with:** proof_queue.py (rows = evidence), ff_land landing flow.
+**Composes with:** proof_queue.py (rows = evidence), molt_dev integrate landing flow.
 
 ### A3. Molt triality drift detector (M63 made mechanical)
 
@@ -610,7 +610,7 @@ re-grounding gets a query instead of a re-read-everything).
 
 ### A11. Claims self-retirement + commit serialization hardening
 
-Molt's CLAIMS.md already has ff-land atomic claims + staleness (M11).
+Molt's CLAIMS.md already has expected-upstream atomic claims + staleness (M11).
 Adopt the two missing pact properties: (a) **terminal-status vocabulary**
 (`falsified_`, `measured_implementation_retired_`, `stale_assumed_dead`) so
 a claim row can retire ITSELF with evidence, distinct from RELEASED; (b) the
@@ -621,7 +621,7 @@ collide on one checkout, port the serializer's expected-content-sha +
 named-files-only discipline into agent_coordination.py (fcntl -> msvcrt on
 Windows).
 **Mechanizes:** M11, M20, M22, M24. **Composes with:** claim_lane.py,
-ff_land.py, tree_drift_check.py.
+molt_dev.py integrate, tree_drift_check.py.
 
 ### A12. PowerPlay acceptance for molt's own perf/apparatus changes
 
@@ -672,7 +672,7 @@ not the model, is the design.
   layout (tools/*.py + molt_dev_gates.toml) is healthier; adopt the LIFECYCLE
   (warn->strict, waivers, canaries), not the monolith. (pact's own god-file
   is a cautionary tale molt's god-file ratchet M43 already guards.)
-- Auto-push on Stop — molt lands via ff_land + queue custody; keep landing
+- Auto-push on Stop — molt lands via molt_dev integrate + queue custody; keep landing
   deliberate. Adopt only the layered secret-scan shape if/when an auto-push
   lane is ever wanted.
 - omx/Ralph loop macros — Claude-Code-native molt equivalents exist

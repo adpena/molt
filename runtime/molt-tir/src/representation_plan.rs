@@ -103,9 +103,9 @@ impl ScalarRepresentationFact {
 
 /// A backend's read-only view of final typed representation facts.
 ///
-/// This is built from the exact `FunctionIR` that a backend is about to lower,
-/// after module-level TIR roundtrip and post-TIR SimpleIR rewrites have already
-/// run. It deliberately does not trust transport hints (`fast_int`,
+/// Native finalization projects these facts with its exact emitted body from
+/// final TIR. Genuine fresh-source clients use the separate source constructor.
+/// Both share fact extraction and reject transport hints (`fast_int`,
 /// `fast_float`, or `type_hint`) as representation authority.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScalarRepresentationPlan {
@@ -274,12 +274,6 @@ impl ScalarRepresentationPlan {
         // Tests can retain the former eager view as an independent negative
         // demand control without maintaining a second projection algorithm.
         let needs_optimized_view = FORCE_OPTIMIZED_VIEW || needs_primary || needs_direct_numeric;
-        trace_stage("before_fact_index");
-        let fact_index = FunctionFactIndex::for_function(func_ir);
-        let indexed_fact_index = fact_index
-            .needs_indexed_name_graph()
-            .then(|| IndexedFunctionFactIndex::for_function_facts(&fact_index));
-        trace_stage("after_fact_index");
         trace_stage("before_lift");
         let mut tir_func = lower_to_tir_for_target(func_ir, target_info);
         trace_stage("after_lift");
@@ -288,7 +282,6 @@ impl ScalarRepresentationPlan {
         trace_stage("after_refine");
         trace_stage("before_name_and_store_facts");
         let names = SimpleValueNames::for_function(&tir_func);
-        let typed_slot_store_modes = Self::project_typed_slot_store_modes(func_ir, &tir_func);
         trace_stage("after_name_and_store_facts");
         let mut optimized_tir_func = None;
         let mut optimized_names = None;
@@ -311,6 +304,70 @@ impl ScalarRepresentationPlan {
         } else {
             trace_stage("optimized_view_undemanded");
         }
+        Self::extract_typed_facts(
+            func_ir,
+            &tir_func,
+            &names,
+            optimized_tir_func.as_ref(),
+            optimized_names.as_ref(),
+            false,
+        )
+    }
+
+    /// Project an exact final TIR emission. The projection's injective names
+    /// replace authored names only for this output stream; fresh-input callers
+    /// still reject ambiguous authored bindings. No SSA or optimizer is replayed.
+    pub fn project_final_tir(func_ir: &mut FunctionIR, tir_func: &TirFunction) -> Self {
+        assert_eq!(
+            func_ir.name, tir_func.name,
+            "final projection function identity mismatch"
+        );
+        assert_eq!(
+            func_ir.params, tir_func.param_names,
+            "final projection parameter identity mismatch"
+        );
+        assert_eq!(
+            func_ir.return_abi, tir_func.return_abi,
+            "final projection return ABI mismatch"
+        );
+        drop(std::mem::take(&mut func_ir.ops));
+        let (ops, names) = crate::tir::lower_to_simple::lower_to_simple_ir_with_names(tir_func);
+        func_ir.ops = ops;
+        let emitted_names = names.into_emission_facts();
+        Self::extract_typed_facts(func_ir, tir_func, &emitted_names, None, None, true)
+    }
+
+    fn extract_typed_facts(
+        func_ir: &FunctionIR,
+        tir_func: &TirFunction,
+        names: &SimpleValueNames,
+        optimized_tir_func: Option<&TirFunction>,
+        optimized_names: Option<&SimpleValueNames>,
+        final_emission: bool,
+    ) -> Self {
+        let trace = std::env::var("MOLT_TIR_TRACE_FUNC")
+            .ok()
+            .is_some_and(|filter| filter == "1" || func_ir.name.contains(&filter));
+        let trace_stage = |stage: &str| {
+            if trace {
+                eprintln!(
+                    "[TIR-REPR] {} {stage}: simple_ops={}",
+                    func_ir.name,
+                    func_ir.ops.len()
+                );
+            }
+        };
+        let needs_primary = !is_cold_module_chunk_function(&func_ir.name);
+        let needs_direct_numeric = func_ir
+            .ops
+            .iter()
+            .any(|op| Self::simple_op_supports_direct_numeric_result(&op.kind));
+        trace_stage("before_fact_index");
+        let fact_index = FunctionFactIndex::for_function(func_ir);
+        let indexed_fact_index = fact_index
+            .needs_indexed_name_graph()
+            .then(|| IndexedFunctionFactIndex::for_function_facts(&fact_index));
+        trace_stage("after_fact_index");
         // Fact extraction uses the semantic type floor. Raw-int carrier homes
         // are projected from `repr_by_value_for` after the LIR facts have been
         // named, so this extraction step never becomes a second carrier proof.
@@ -318,31 +375,29 @@ impl ScalarRepresentationPlan {
         // pipeline exposes loop phis and promoted store/load slots that the
         // backend lowers as raw value carriers.
         trace_stage("before_semantic_floor");
-        let lir_func = lower_function_to_lir_for_repr_fact_extraction(&tir_func);
+        let lir_func = lower_function_to_lir_for_repr_fact_extraction(tir_func);
         trace_stage("after_semantic_floor");
 
         trace_stage("before_value_facts");
         let needs_carriers = needs_primary || needs_direct_numeric;
-        let repr = if needs_carriers || tir_container_storage_needs_repr(&tir_func) {
-            let ranges = value_range_for(&tir_func);
-            repr_by_value_for(&tir_func, Some(&ranges))
+        let repr = if needs_carriers || tir_container_storage_needs_repr(tir_func) {
+            let ranges = value_range_for(tir_func);
+            repr_by_value_for(tir_func, Some(&ranges))
         } else {
             HashMap::new()
         };
         let carriers = if needs_carriers {
-            native_projectable_scalar_reprs_for(&tir_func, &repr)
+            native_projectable_scalar_reprs_for(tir_func, &repr)
         } else {
             Default::default()
         };
-        let optimized_carriers =
-            optimized_tir_func
-                .as_ref()
-                .filter(|_| needs_carriers)
-                .map(|function| {
-                    let ranges = value_range_for(function);
-                    let repr = repr_by_value_for(function, Some(&ranges));
-                    native_projectable_scalar_reprs_for(function, &repr)
-                });
+        let optimized_carriers = optimized_tir_func
+            .filter(|_| needs_carriers)
+            .map(|function| {
+                let ranges = value_range_for(function);
+                let repr = repr_by_value_for(function, Some(&ranges));
+                native_projectable_scalar_reprs_for(function, &repr)
+            });
         trace_stage("after_value_facts");
 
         let value_count = lir_func
@@ -365,10 +420,10 @@ impl ScalarRepresentationPlan {
             .extend(names.ambiguous_source_names().map(str::to_string));
         plan.container_storage_conflicted_names
             .extend(names.ambiguous_source_names().map(str::to_string));
-        plan.typed_slot_store_modes = typed_slot_store_modes;
+        plan.typed_slot_store_modes = Self::project_typed_slot_store_modes(func_ir, tir_func);
         trace_stage("before_storage_and_floor_projection");
-        plan.seed_container_storage_from_tir(&tir_func, &names, &repr);
-        plan.seed_exact_builtin_lists(&tir_func, &names);
+        plan.seed_container_storage_from_tir(tir_func, names, &repr);
+        plan.seed_exact_builtin_lists(tir_func, names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
         for block_id in block_ids {
@@ -388,10 +443,10 @@ impl ScalarRepresentationPlan {
                     Some(AttrValue::Bool(true))
                 );
                 for (index, result) in op.result_values.iter().enumerate() {
-                    if checked_i64_arithmetic && index == 0 {
-                        // A synthetic re-lift name is only a weak projection.
-                        // The authored producer identity below is independent
-                        // of the injective name a later emission might allocate.
+                    if checked_i64_arithmetic && index == 0 && !final_emission {
+                        // A fresh source analysis may need the weak canonical
+                        // fallback. Final emission already has exact injective
+                        // identities and must never invent another spelling.
                         plan.insert_lir_value_weak(
                             SimpleValueNames::canonical_value_name(result.id),
                             result,
@@ -427,11 +482,11 @@ impl ScalarRepresentationPlan {
         plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
         plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(&fact_index);
         trace_stage("after_alias_joins");
-        let mut tir_value_views = [(&tir_func, &names, &carriers); 2];
+        let mut tir_value_views = [(tir_func, names, &carriers); 2];
         let view_count =
             if let (Some(optimized_tir_func), Some(optimized_names), Some(optimized_carriers)) = (
-                optimized_tir_func.as_ref(),
-                optimized_names.as_ref(),
+                optimized_tir_func,
+                optimized_names,
                 optimized_carriers.as_ref(),
             ) {
                 tir_value_views[1] = (optimized_tir_func, optimized_names, optimized_carriers);

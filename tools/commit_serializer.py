@@ -11,14 +11,14 @@ an fcntl lock with named-files-only + an expected-content-sha per file
 (``fcntl`` -> ``msvcrt`` on Windows).
 
 It is the SAFE multi-agent commit primitive, and it is OPTIONAL / ADVISORY -- it
-does NOT replace ``tools/ff_land.py`` (the fast-forward push guard) or the live
+does NOT replace ``tools/molt_dev.py integrate`` (the fast-forward push guard) or the live
 ``bash_guard`` hook; it COMPLEMENTS them:
 
   * ``bash_guard`` refuses a raw ``git add -A``/add-then-commit in a Bash tool
     call (the live PreToolUse gate);
   * this refuses ``-A`` / ``.`` / a flag / a glob at the commit API level too,
     and adds the expected-content-sha guard the hook cannot see;
-  * ``ff_land`` then pushes the resulting HEAD only if it is a clean fast-forward.
+  * ``molt_dev integrate`` then pushes the resulting HEAD only if it is a clean fast-forward.
 
 Guarantees (each a pure, unit-tested surface + the locked commit that composes
 them):

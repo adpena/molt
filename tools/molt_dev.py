@@ -137,9 +137,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_SRC_ROOT = Path(__file__).resolve().parent.parent / "src"
-if str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
+from import_file import bind_repository_imports
+
+# Bind both tools and molt before loading any repository module; an editable
+# installation or an unrelated cwd must not select another checkout.
+bind_repository_imports(__file__)
 
 from molt import python_interpreter  # noqa: E402
 
@@ -159,6 +161,14 @@ from molt_dev_common import (  # noqa: E402
     _step,
     _warn,
 )
+
+from tools.git_identity import (  # noqa: E402
+    changed_paths,
+    clean_checkout_status_arguments,
+    require_git_object_id,
+)
+from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
+
 from molt_dev_detached import (  # noqa: E402
     DETACHED_STATE_ROOT,
     cmd_detached_run,
@@ -211,7 +221,7 @@ class Git:
         check: bool = True,
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
+        env = immutable_git_environment(os.environ)
         env["GIT_TERMINAL_PROMPT"] = "0"
         proc = _run_fast_captured_command(
             ["git", "-C", str(self.repo), *args],
@@ -221,7 +231,7 @@ class Git:
         if check and proc.returncode != 0:
             raise DriverError(
                 f"git {' '.join(args)} failed (exit {proc.returncode}):\n"
-                f"{proc.stderr.strip()}"
+                f"{proc.stdout.strip()}\n{proc.stderr.strip()}"
             )
         return proc
 
@@ -390,14 +400,17 @@ class GateConfig:
         if not path.exists():
             raise DriverError(
                 f"gate manifest missing: {path}. The change-class->gates manifest "
-                "is required for `integrate` (run with --no-gates to skip gating, "
-                "or point --gates-config at it).",
+                "is required for `integrate`.",
                 code=EXIT_USAGE,
             )
+        return GateConfig.parse(path.read_text(encoding="utf-8"), str(path))
+
+    @staticmethod
+    def parse(source: str, label: str) -> "GateConfig":
         try:
-            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            data = tomllib.loads(source)
         except tomllib.TOMLDecodeError as exc:
-            raise DriverError(f"gate manifest is not valid TOML ({path}): {exc}")
+            raise DriverError(f"gate manifest is not valid TOML ({label}): {exc}")
         rules: list[GateRule] = []
         for entry in data.get("rule", []):
             name = entry.get("name")
@@ -846,6 +859,23 @@ def _subject(git: Git, sha: str) -> str:
     return git._run(["log", "-1", "--format=%s", sha]).stdout.strip()
 
 
+def _assert_integration_source(git: Git, commit: str) -> None:
+    """Use the proof executor's clean-checkout boundary, pinned to one commit.
+
+    This is a boundary check, not a continuous filesystem monitor. Integration
+    runs in an exclusive clean checkout; parallel work belongs in its own tree.
+    """
+    if git.head_sha() != commit:
+        raise DriverError("integration source HEAD changed; refusing to publish")
+    dirty = git._run(list(clean_checkout_status_arguments(null_terminated=True))).stdout
+    if dirty:
+        raise DriverError(
+            "integration requires a clean selected source checkout; preserve WIP "
+            "in its existing checkout and integrate from an exclusive clean checkout:\n"
+            + dirty.replace("\0", "\n")
+        )
+
+
 def cmd_integrate(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     git = Git(repo)
@@ -859,7 +889,8 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     _step(f"integrate [{mode}] repo={repo} upstream={upstream_ref}")
 
     # --- preflight: HEAD must be a real commit; record source state ---------
-    head_before = git.head_sha()
+    head_before = require_git_object_id(git.head_sha(), label="integration source")
+    _assert_integration_source(git, head_before)
     sym = git.symbolic_head()
     _say(f"    HEAD={git.short(head_before)} ({sym or 'detached'})")
 
@@ -869,12 +900,21 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         _say(f"    would: git fetch {remote} {branch}")
     else:
         git.fetch(remote, branch)
-    upstream_before = git.rev_parse(upstream_ref)
+    upstream_before = require_git_object_id(
+        git.rev_parse(upstream_ref), label="integration upstream"
+    )
+    if args.expected_upstream is not None:
+        require_git_object_id(args.expected_upstream, label="expected upstream")
+        if upstream_before != args.expected_upstream:
+            raise DriverError(
+                "expected upstream changed; re-check ownership before integrating"
+            )
+    _assert_integration_source(git, head_before)
     _ok(f"{upstream_ref} = {git.short(upstream_before)}")
 
     # The source commits we are integrating: everything on HEAD not yet on
     # upstream. Captured with patch-ids BEFORE any rebase (hazard 1).
-    source_range = f"{upstream_ref}..HEAD"
+    source_range = f"{upstream_before}..{head_before}"
     source_shas = git.commits_in_range(source_range)
     if not source_shas:
         _ok("no commits to integrate (HEAD already on upstream); nothing to do")
@@ -894,10 +934,14 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
     # --- step 2: rebase onto upstream (only if behind) ----------------------
     _step(f"rebase onto {upstream_ref}")
-    behind = git.commits_in_range(f"HEAD..{upstream_ref}")
+    behind = git.commits_in_range(f"{head_before}..{upstream_before}")
     if not behind:
         _ok("HEAD already contains upstream tip; no rebase needed")
         new_range = source_range
+    elif args.expected_upstream is not None:
+        raise DriverError(
+            "claim source does not contain expected upstream; re-check ownership without rebasing"
+        )
     elif dry:
         _say(
             f"    would: git rebase {upstream_ref}  "
@@ -907,7 +951,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         # patch-ids against the current state as a best-effort preview.
         new_range = source_range
     else:
-        proc = git._run(["rebase", upstream_ref], check=False)
+        proc = git._run(["rebase", upstream_before], check=False)
         if proc.returncode != 0:
             # Abort a half-applied rebase so the tree is never left mid-conflict.
             git._run(["rebase", "--abort"], check=False)
@@ -917,8 +961,13 @@ def cmd_integrate(args: argparse.Namespace) -> int:
                 f"re-run integrate.\n{proc.stdout.strip()}\n{proc.stderr.strip()}"
             )
         new_head = git.head_sha()
-        new_range = f"{upstream_ref}..HEAD"
+        new_range = f"{upstream_before}..{new_head}"
         _ok(f"rebased; HEAD {git.short(head_before)} -> {git.short(new_head)}")
+
+    selected_commit = require_git_object_id(
+        git.head_sha(), label="selected integration commit"
+    )
+    _assert_integration_source(git, selected_commit)
 
     # --- step 3: verify no commits dropped (hazard 1) -----------------------
     _step("verify no dropped commits (patch-id survival)")
@@ -956,46 +1005,37 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     gate_cmds: list[str] = []
     matched_rules: list[GateRule] = []
     require_fresh = False
-    if args.no_gates:
-        _step("gates SKIPPED (--no-gates)")
-    else:
-        gates_config_path = (
-            Path(args.gates_config).resolve()
-            if args.gates_config
-            else repo / "tools" / GATES_CONFIG_NAME
-        )
-        config = GateConfig.load(gates_config_path)
-        # Touched paths across the integrated commits drive change-class.
-        touched = sorted(
-            set(
-                git._run(
-                    ["diff", "--name-only", f"{upstream_before}..HEAD"]
-                ).stdout.splitlines()
+    # Policy comes from the same immutable commit whose clean source executes it.
+    policy = git._run(["show", f"{selected_commit}:tools/{GATES_CONFIG_NAME}"]).stdout
+    config = GateConfig.parse(policy, f"{selected_commit}:tools/{GATES_CONFIG_NAME}")
+    touched = changed_paths(
+        upstream_before,
+        selected_commit,
+        run_git=lambda arguments: git._run(arguments).stdout,
+    )
+    gate_cmds, matched_rules = config.select(touched)
+    require_fresh = any(r.require_fresh_toolchain for r in matched_rules)
+    gate_cmds = list(gate_cmds) + list(args.extra_gate or [])
+    _step(
+        f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
+        f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
+    )
+    env = immutable_git_environment(os.environ)
+    env["MOLT_SESSION_ID"] = args.session_id
+    env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
+    for cmd in gate_cmds:
+        _assert_integration_source(git, selected_commit)
+        if dry:
+            _say(f"    would-run gate: {cmd}")
+            continue
+        rc = run_gate(cmd, repo, env)
+        _assert_integration_source(git, selected_commit)
+        if rc != 0:
+            raise DriverError(
+                f"gate failed (exit {rc}): {cmd}\n    Integration halts "
+                "before push; fix the gate and re-run."
             )
-        )
-        gate_cmds, matched_rules = config.select(touched)
-        require_fresh = any(r.require_fresh_toolchain for r in matched_rules)
-        gate_cmds = list(gate_cmds) + list(args.extra_gate or [])
-        _step(
-            f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
-            f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
-        )
-        if not gate_cmds:
-            _ok("no gates selected for this change-class")
-        env = dict(os.environ)
-        env.setdefault("MOLT_SESSION_ID", args.session_id)
-        env.setdefault("PYTHONPATH", str(repo / "src"))
-        for cmd in gate_cmds:
-            if dry:
-                _say(f"    would-run gate: {cmd}")
-                continue
-            rc = run_gate(cmd, repo, env)
-            if rc != 0:
-                raise DriverError(
-                    f"gate failed (exit {rc}): {cmd}\n    Integration halts "
-                    "before push; fix the gate and re-run."
-                )
-            _ok(f"gate passed: {cmd}")
+        _ok(f"gate passed: {cmd}")
 
     # Optional toolchain-freshness requirement (gate manifest opt-in).
     if require_fresh and args.toolchain_binary:
@@ -1023,10 +1063,11 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
     # --- step 6: push (only after every gate is green) ----------------------
     _step(f"push to {upstream_ref}")
-    head_to_push = git.head_sha()
+    _assert_integration_source(git, selected_commit)
+    head_to_push = selected_commit
     if dry:
         _say(
-            f"    would: git push {remote} HEAD:{branch}  (tip {git.short(head_to_push)})"
+            f"    would: git push {remote} {head_to_push}:{branch}  (tip {git.short(head_to_push)})"
         )
         _say("    would: confirm by fetch + ancestor check (hazard 2)")
         _say("    would: cleanup gate (hazard 3) after confirmation")
@@ -1038,21 +1079,23 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             "Run `molt_dev.py verify-push` after pushing externally."
         )
         return EXIT_OK
-    push = git._run(["push", remote, f"HEAD:{branch}"], check=False)
+    push = git._run(
+        ["push", remote, f"{head_to_push}:refs/heads/{branch}"], check=False
+    )
     if push.returncode != 0:
         # Do NOT trust the exit code as final — but a non-zero exit with no
         # landed tip is a real failure; the confirm step below is authoritative.
         _warn(
             f"git push exited {push.returncode}; NOT trusting it (hazard 2). "
             "Confirming by fetch+ancestor instead.\n"
-            f"{push.stderr.strip()}"
+            f"{push.stdout.strip()}\n{push.stderr.strip()}"
         )
 
     # --- step 7: confirm the push by FETCH + ANCESTOR (hazard 2) ------------
     _step("confirm push landed (fetch + ancestor, not exit code)")
     git.fetch(remote, branch)
     upstream_after = git.rev_parse(upstream_ref)
-    landed = git.is_ancestor(head_to_push, upstream_ref)
+    landed = git.is_ancestor(head_to_push, upstream_after)
     if not landed:
         raise DriverError(
             f"PUSH NOT CONFIRMED (hazard 2): {upstream_ref} is now "
@@ -1797,15 +1840,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_remote_branch(p_int)
     p_int.add_argument("--dry-run", action="store_true", help="plan without mutating")
     p_int.add_argument(
-        "--no-gates", action="store_true", help="skip gate selection/execution"
-    )
-    p_int.add_argument(
         "--no-push",
         action="store_true",
         help="stop before pushing (run verify-push after pushing externally)",
     )
     p_int.add_argument(
-        "--gates-config", help=f"path to {GATES_CONFIG_NAME} (default: tools/ in repo)"
+        "--expected-upstream",
+        help="require this full upstream commit; refuse rebase for ownership claims",
     )
     p_int.add_argument(
         "--marker",
@@ -2098,11 +2139,11 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     try:
         return args.func(args)
-    except DriverError as exc:
+    except (DriverError, ValueError) as exc:
         _say("")
         _fail(str(exc))
         _say("")
-        return exc.code
+        return exc.code if isinstance(exc, DriverError) else EXIT_USAGE
 
 
 if __name__ == "__main__":

@@ -22,9 +22,8 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
     };
 
     let analysis = analyze_native_backend_ir(
-        &ir,
+        &final_functions_for_test(&ir.functions),
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-        final_callbacks_for_test(&ir.functions),
     );
 
     assert!(analysis.defined_functions.contains("molt_main"));
@@ -56,9 +55,8 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
     };
 
     let analysis = analyze_native_backend_ir(
-        &ir,
+        &final_functions_for_test(&ir.functions),
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-        final_callbacks_for_test(&ir.functions),
     );
 
     assert!(analysis.closure_functions.contains("worker_poll"));
@@ -335,9 +333,8 @@ fn shared_context_cannot_override_final_lifetime_callback_facts() {
         profile: None,
     };
     let analysis = analyze_native_backend_ir(
-        &ir,
+        &final_functions_for_test(&ir.functions),
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-        final_callbacks_for_test(&ir.functions),
     );
     assert!(!analysis.leaf_functions.contains("released_local"));
     assert!(analysis.leaf_functions.contains("pure_local"));
@@ -369,27 +366,35 @@ fn assert_callback_rewrite_preserves_oracle(mut function: FunctionIR) -> Functio
         .ops
         .insert(0, callback_op("drop_inserted", &[], None));
     let before = final_leaf_oracle(std::slice::from_ref(&function));
-    let callbacks = final_callbacks_for_test(std::slice::from_ref(&function));
-    super::super::program_pipeline::run_post_tir_simple_ir_rewrites(std::slice::from_mut(
-        &mut function,
-    ));
-    let after = final_leaf_oracle(std::slice::from_ref(&function));
+    let mut typed = crate::tir::lower_from_simple::lower_to_tir(&function);
+    crate::tir::drop_phase::prepare_final_backend_lowering(
+        &mut typed,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
+    );
+    crate::tir::type_refine::refine_types(&mut typed);
+    let finalized = NativeFinalFunctions::from_final_tir(
+        SimpleIR {
+            functions: vec![function],
+            profile: None,
+        },
+        vec![(false, typed)],
+    );
+    let after = final_leaf_oracle(&finalized.ir().functions);
     assert_eq!(
         before, after,
-        "callback projection changed for {}",
-        function.name
+        "typed final rewrite changed callback eligibility"
     );
-    let ir = SimpleIR {
-        functions: vec![function.clone()],
-        profile: None,
-    };
     let analysis = analyze_native_backend_ir(
-        &ir,
-        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-        callbacks,
+        &finalized,
+        molt_tir::trampolines::CallableMetadata::from_functions(&finalized.ir().functions),
     );
     assert_eq!(analysis.leaf_functions, after);
-    function
+    finalized
+        .into_local_functions()
+        .next()
+        .unwrap()
+        .into_parts()
+        .0
 }
 
 #[test]
@@ -409,7 +414,12 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
             callback_op("ret_void", &[], None),
         ],
     ));
-    assert_eq!(rewritten.ops[2].kind, "nop");
+    assert!(
+        !rewritten
+            .ops
+            .iter()
+            .any(|op| op.out.as_deref() == Some("alias"))
+    );
     assert!(final_leaf_oracle(std::slice::from_ref(&rewritten)).contains("scalar_alias"));
 
     let mut poll = callback_op("async_work_poll", &[], None);
@@ -482,10 +492,11 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
             &["source", "replacement"],
             ops,
         ));
-        assert_eq!(
-            rewritten.ops[1].kind,
-            if mutable { "copy_var" } else { "nop" }
-        );
+        // The shared SSA owner preserves a mutable load's value at the load
+        // point; immutable identity copies no longer need a source nop.
+        if mutable {
+            assert!(rewritten.ops.iter().any(|op| op.kind == "store_var"));
+        }
         assert!(rewritten.ops.iter().any(|op| op.kind == "binding_alias"));
         assert!(rewritten.ops.iter().any(|op| op.kind == "dec_ref"));
     }
@@ -528,7 +539,7 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
         );
     }
 
-    let mut constructor = callback_op("exception_new_builtin", &[], Some("exc"));
+    let mut constructor = callback_op("exception_new_builtin_empty", &[], Some("exc"));
     constructor.value = Some(5);
     let mut check = callback_op("check_exception", &[], None);
     check.value = Some(9);
@@ -554,39 +565,31 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
 }
 
 #[test]
-fn native_final_callback_custody_requires_every_local_and_exact_lifetime_authority() {
+fn native_final_custody_requires_every_local_and_rejects_wrong_identity() {
     let pure = callback_function("pure", &[], vec![callback_op("ret_void", &[], None)]);
-    let mut callbacks = final_callbacks_for_test(std::slice::from_ref(&pure));
-    let duplicate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        callbacks.record(&crate::tir::lower_from_simple::lower_to_tir(&pure));
-    }));
-    assert!(duplicate.is_err(), "duplicate producers must fail loud");
-
-    for missing in [false, true] {
-        let callbacks = if missing {
-            NativeFinalCallbacks::default()
-        } else {
-            final_callbacks_for_test(std::slice::from_ref(&pure))
-        };
-        let mut final_body = pure.clone();
-        final_body
-            .ops
-            .insert(0, callback_op("drop_inserted", &[], None));
-        let ir = SimpleIR {
-            functions: vec![final_body],
-            profile: None,
+    for mode in ["missing", "duplicate", "wrong_name", "wrong_params"] {
+        let mut typed = crate::tir::lower_from_simple::lower_to_tir(&pure);
+        if mode == "wrong_name" {
+            typed.name = "other".into();
+        }
+        if mode == "wrong_params" {
+            typed.param_names.push("other".into());
+        }
+        let typed = match mode {
+            "missing" => vec![],
+            "duplicate" => vec![(false, typed.clone()), (false, typed)],
+            _ => vec![(false, typed)],
         };
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            analyze_native_backend_ir(
-                &ir,
-                molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-                callbacks,
-            );
+            NativeFinalFunctions::from_final_tir(
+                SimpleIR {
+                    functions: vec![pure.clone()],
+                    profile: None,
+                },
+                typed,
+            )
         }));
-        assert!(
-            failed.is_err(),
-            "missing={missing}: incomplete or stale custody must fail loud"
-        );
+        assert!(failed.is_err(), "{mode}: invalid custody must fail loud");
     }
 }
 
@@ -619,9 +622,13 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
                 false,
                 &std::time::Instant::now(),
             );
-            let expected = final_leaf_oracle(&ir.functions);
-            let analysis =
-                analyze_native_backend_ir(&ir, prepared.source_callables, prepared.final_callbacks);
+            let finalized = prepared.final_functions.expect("native final owner");
+            assert!(
+                ir.functions.is_empty(),
+                "source custody moved into final owner"
+            );
+            let expected = final_leaf_oracle(&finalized.ir().functions);
+            let analysis = analyze_native_backend_ir(&finalized, prepared.source_callables);
             assert_eq!(
                 analysis.leaf_functions, expected,
                 "skip={skip_ir_passes}, callback={callback}"
@@ -632,7 +639,7 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
 }
 
 #[test]
-fn final_callback_projection_retires_dead_and_externalized_bodies() {
+fn final_function_custody_retires_dead_bodies_and_preserves_externs() {
     let functions: Vec<_> = ["local", "dead", "externalized"]
         .into_iter()
         .map(|name| {
@@ -646,17 +653,218 @@ fn final_callback_projection_retires_dead_and_externalized_bodies() {
             )
         })
         .collect();
-    let callbacks = final_callbacks_for_test(&functions);
-    let external = functions[2].extern_declaration().unwrap();
-    let ir = SimpleIR {
-        functions: vec![functions[0].clone(), external],
-        profile: None,
-    };
+    let mut sources = functions.clone();
+    sources[2] = sources[2].extern_declaration().unwrap();
+    let mut finalized = final_functions_for_test(&sources);
+    finalized.retain_reachable(&BTreeSet::from(["externalized".into()]));
     let analysis = analyze_native_backend_ir(
-        &ir,
-        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-        callbacks,
+        &finalized,
+        molt_tir::trampolines::CallableMetadata::from_functions(&finalized.ir().functions),
     );
     assert_eq!(analysis.leaf_functions, BTreeSet::from(["local".into()]));
-    assert_eq!(analysis.leaf_functions, final_leaf_oracle(&ir.functions));
+    assert_eq!(
+        analysis.leaf_functions,
+        final_leaf_oracle(&finalized.ir().functions)
+    );
+    let emitted: Vec<_> = finalized
+        .into_local_functions()
+        .map(|function| function.function().name.clone())
+        .collect();
+    assert_eq!(emitted, vec!["local"]);
+}
+
+#[test]
+fn final_partition_retires_body_facts_together_and_preserves_source_order() {
+    let _guard = acquire_backend_env_lock();
+    let executable = std::env::current_exe().unwrap();
+    let _stdlib = ScopedEnvVar::set("MOLT_STDLIB_OBJ", executable.to_str());
+    let _entry = ScopedEnvVar::set("MOLT_ENTRY_MODULE", Some("application"));
+    let _symbols = ScopedEnvVar::set("MOLT_STDLIB_MODULE_SYMBOLS", Some("[\"stdlib\"]"));
+    let _dfe = ScopedEnvVar::set("MOLT_DISABLE_DEAD_FUNC_ELIM", None);
+    let mut entry = callback_function(
+        "molt_main",
+        &[],
+        vec![
+            callback_op("drop_inserted", &[], None),
+            callback_op("call_func", &[], None),
+            callback_op("call_func", &[], None),
+            callback_op("ret_void", &[], None),
+        ],
+    );
+    entry.ops[1].s_value = Some("stdlib__helper".into());
+    entry.ops[2].s_value = Some("application__helper".into());
+    let pure = |name| {
+        callback_function(
+            name,
+            &[],
+            vec![
+                callback_op("drop_inserted", &[], None),
+                callback_op("ret_void", &[], None),
+            ],
+        )
+    };
+    let sources = vec![
+        entry,
+        pure("stdlib__helper"),
+        pure("dead"),
+        pure("application__helper"),
+        pure("compiler_partition"),
+    ];
+    let roots = BTreeSet::from(["compiler_partition".into()]);
+    let partitions = BTreeMap::from([("compiler_partition".into(), "stdlib__other".into())]);
+    for needs_reachability in [false, true] {
+        let mut finalized = final_functions_for_test(&sources);
+        assert!(
+            analyze_native_backend_ir(&finalized, Default::default())
+                .leaf_functions
+                .contains("stdlib__helper")
+        );
+        if !needs_reachability {
+            finalized.retain_reachable(&roots);
+        }
+        let mut oracle = finalized.ir().clone();
+        crate::native_backend::simple_backend::externalize_shared_stdlib_partition(
+            &mut oracle,
+            &roots,
+            &partitions,
+        );
+        finalized.externalize_partition(needs_reachability, &roots, &partitions);
+        let rows = |functions: &[FunctionIR]| {
+            functions
+                .iter()
+                .map(|f| {
+                    (
+                        f.name.clone(),
+                        f.is_extern,
+                        f.return_abi,
+                        f.parameter_custody.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rows(&finalized.ir().functions), rows(&oracle.functions));
+        assert_eq!(
+            finalized
+                .ir()
+                .functions
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "molt_main",
+                "application__helper",
+                "stdlib__helper",
+                "compiler_partition"
+            ]
+        );
+        let analysis = analyze_native_backend_ir(&finalized, Default::default());
+        assert!(!analysis.leaf_functions.contains("stdlib__helper"));
+        assert!(!analysis.leaf_functions.contains("compiler_partition"));
+        assert!(!analysis.leaf_functions.contains("dead"));
+        assert_eq!(
+            analysis.leaf_functions,
+            final_leaf_oracle(&finalized.ir().functions)
+        );
+        let names = finalized
+            .into_local_functions()
+            .map(|f| f.function().name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["molt_main", "application__helper"]);
+    }
+}
+
+#[test]
+fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
+    use crate::tir::pipeline_cache::{
+        TirOwnedModulePipelineMode, TirOwnedModulePipelineOptions, TirPipelineCacheFlavor,
+        TirPipelineInput, TirPipelineRunOptions, run_cached_tir_pipeline,
+        run_owned_module_pipeline_from_cached_tir,
+    };
+    let _guard = acquire_backend_env_lock();
+    let cache_dir = std::env::temp_dir().join(format!(
+        "molt-native-final-custody-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let target = crate::tir::TargetInfo::native_release_fast();
+    let mut seven = callback_op("const", &[], Some("seven"));
+    seven.value = Some(7);
+    let mut source = callback_function(
+        "cached_final",
+        &[],
+        vec![seven, callback_op("ret", &["seven"], None)],
+    );
+    source.return_abi = molt_ir::FunctionReturnAbi::Value;
+    let non_inlinable = std::collections::HashSet::new();
+    for mode in [
+        TirOwnedModulePipelineMode::ModulePhase,
+        TirOwnedModulePipelineMode::TerminalDropsOnly,
+    ] {
+        let mut reference = None;
+        for warm in [false, true] {
+            let mut functions = vec![source.clone()];
+            let mut run = run_cached_tir_pipeline(
+                TirPipelineInput::SimpleIr(&mut functions),
+                TirPipelineRunOptions {
+                    target_info: target.clone(),
+                    cache_flavor: TirPipelineCacheFlavor::Native,
+                    cache_dir: Some(cache_dir.join(format!("{mode:?}"))),
+                    process_externs: false,
+                    verify_lir: true,
+                    tir_dump: false,
+                    tir_stats: false,
+                    progress_prefix: None,
+                    resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
+                },
+                |_| {},
+            );
+            assert_eq!(run.uncached_count, usize::from(!warm));
+            let typed = run_owned_module_pipeline_from_cached_tir(
+                &functions,
+                &mut run.cached_tir,
+                TirOwnedModulePipelineOptions {
+                    target_info: &target,
+                    module_name: "cached_final",
+                    non_inlinable: &non_inlinable,
+                    missing_tir_context: "native final cache test",
+                    mode,
+                },
+            );
+            let finalized = NativeFinalFunctions::from_final_tir(
+                SimpleIR {
+                    functions,
+                    profile: None,
+                },
+                typed,
+            );
+            assert_eq!(
+                analyze_native_backend_ir(&finalized, Default::default()).leaf_functions,
+                BTreeSet::from(["cached_final".into()])
+            );
+            let (body, plan) = finalized
+                .into_local_functions()
+                .next()
+                .unwrap()
+                .into_parts();
+            let literal = body
+                .ops
+                .iter()
+                .find(|operation| operation.kind == "const" && operation.value == Some(7))
+                .expect("constant return value");
+            assert!(plan.is_inline_safe_int_name(literal.out.as_deref().unwrap()));
+            let snapshot = (serde_json::to_vec(&body).unwrap(), plan);
+            if let Some(reference) = &reference {
+                assert_eq!(
+                    &snapshot, reference,
+                    "{mode:?}: cache transport changed final body or facts"
+                );
+            } else {
+                reference = Some(snapshot);
+            }
+        }
+    }
+    std::fs::remove_dir_all(cache_dir).unwrap();
 }

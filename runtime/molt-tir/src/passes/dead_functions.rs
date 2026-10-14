@@ -25,19 +25,41 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
 /// here.  Every native DFE invocation on IR that carries a module registry
 /// MUST pass those roots or the registry blob relocations dangle at link.
 pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTreeSet<String>) {
-    if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
-        return;
+    let reachable = reachable_function_names(&ir.functions, extra_roots);
+    let original_count = ir.functions.len();
+    ir.functions.retain(|f| reachable.contains(&f.name));
+    let eliminated = original_count - ir.functions.len();
+
+    if eliminated > 0 && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+        eprintln!(
+            "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
+            ir.functions.len()
+        );
     }
-    if ir.functions.is_empty() {
-        return;
+}
+
+/// One reachability decision for both source-only collections and native
+/// collections that retain final body/fact custody. Callers retain whole rows.
+pub fn reachable_function_names(
+    functions: &[crate::FunctionIR],
+    extra_roots: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
+        return functions
+            .iter()
+            .map(|function| function.name.clone())
+            .collect();
+    }
+    if functions.is_empty() {
+        return BTreeSet::new();
     }
 
     // Build the call graph: function name -> set of referenced function names.
-    // Use owned Strings so that `ir.functions` is not borrowed when we call retain().
-    let defined: BTreeSet<String> = ir.functions.iter().map(|f| f.name.clone()).collect();
+    // The owned decision can be consumed while retiring an entire body/fact row.
+    let defined: BTreeSet<String> = functions.iter().map(|f| f.name.clone()).collect();
     let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
-    for func in &ir.functions {
+    for func in functions {
         let mut refs = super::app_callable_manifest::gpu_descriptor_body_symbols(func);
         for op in &func.ops {
             if simpleir_kind_references_defined_function(&op.kind)
@@ -64,7 +86,7 @@ pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTre
         };
 
     // (1) First function is always the module entry.
-    seed(ir.functions[0].name.clone(), &mut reachable, &mut queue);
+    seed(functions[0].name.clone(), &mut reachable, &mut queue);
 
     // (2) + (3) Scan all functions for keep-patterns.
     //
@@ -79,7 +101,7 @@ pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTre
     // module loads) that route through the runtime rather than direct IR edges.
     // Binary size should be controlled by the module graph itself, not by
     // mutating the semantics of runtime entrypoints during DFE.
-    for func in &ir.functions {
+    for func in functions {
         if is_protected_runtime_entrypoint(&func.name) || extra_roots.contains(&func.name) {
             seed(func.name.clone(), &mut reachable, &mut queue);
         }
@@ -95,14 +117,5 @@ pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTre
         }
     }
 
-    let original_count = ir.functions.len();
-    ir.functions.retain(|f| reachable.contains(&f.name));
-    let eliminated = original_count - ir.functions.len();
-
-    if eliminated > 0 && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
-        eprintln!(
-            "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
-            ir.functions.len()
-        );
-    }
+    reachable
 }

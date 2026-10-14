@@ -167,7 +167,7 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
     let mut func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "direct_raise".to_string(),
-        params: vec![],
+        params: vec!["acc".into()],
         param_types: None,
         source_file: None,
         is_extern: false,
@@ -181,7 +181,6 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
                 value: Some(5),
                 ..Default::default()
             },
-            make_store_var("_bb7_arg0", "acc"),
             OpIR {
                 kind: "check_exception".to_string(),
                 value: Some(100),
@@ -192,13 +191,11 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
                 args: Some(vec!["exc".to_string()]),
                 ..Default::default()
             },
-            make_store_var("_bb7_arg0", "acc"),
             OpIR {
                 kind: "check_exception".to_string(),
                 value: Some(100),
                 ..Default::default()
             },
-            make_store_var("_bb7_arg0", "acc"),
             OpIR {
                 kind: "jump".to_string(),
                 value: Some(100),
@@ -212,7 +209,12 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
         ],
     };
 
-    canonicalize_direct_raise_edges(&mut func);
+    let mut typed = crate::tir::lower_from_simple::lower_to_tir(&func);
+    crate::tir::drop_phase::prepare_final_backend_lowering(
+        &mut typed,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
+    );
+    func.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
 
     assert!(
         !func.ops.iter().any(|op| op.kind == "check_exception"),
@@ -224,9 +226,8 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
         .iter()
         .position(|op| op.kind == "raise")
         .expect("raise must remain");
-    assert_eq!(func.ops[raise_idx + 1].kind, "store_var");
-    assert_eq!(func.ops[raise_idx + 2].kind, "jump");
-    assert_eq!(func.ops[raise_idx + 2].value, Some(100));
+    assert_eq!(func.ops[raise_idx + 1].kind, "jump");
+    assert!(crate::tir::lower_to_simple::validate_labels(&func.ops));
 }
 
 #[test]

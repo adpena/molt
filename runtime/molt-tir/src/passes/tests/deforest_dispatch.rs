@@ -43,8 +43,21 @@ fn split_field_deforestation_preserves_source_site() {
     let mut func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "f".to_string(),
-        params: vec![],
-        ops: vec![field, op_with("check_exception", None, None, &[]), len],
+        params: vec!["hay".into(), "sep".into(), "idx".into()],
+        ops: vec![
+            field,
+            OpIR {
+                value: Some(9),
+                ..op_with("check_exception", None, None, &[])
+            },
+            len,
+            op_with("ret_void", None, None, &[]),
+            OpIR {
+                value: Some(9),
+                ..op_with("label", None, None, &[])
+            },
+            op_with("ret_void", None, None, &[]),
+        ],
         param_types: None,
         source_file: None,
         is_extern: false,
@@ -53,7 +66,12 @@ fn split_field_deforestation_preserves_source_site() {
         execution_context: Default::default(),
     };
 
-    deforest_split_field_reads(&mut func);
+    let mut typed = crate::tir::lower_from_simple::lower_to_tir(&func);
+    crate::tir::drop_phase::prepare_final_backend_lowering(
+        &mut typed,
+        &crate::tir::target_info::TargetInfo::native_release_fast(),
+    );
+    func.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
 
     let start = func
         .ops
@@ -449,7 +467,12 @@ fn split_field_guards_require_matching_tags_and_no_observed_alias() {
                 parameter_custody: vec![],
                 execution_context: Default::default(),
             };
-            deforest_split_field_reads(&mut func);
+            let mut typed = crate::tir::lower_from_simple::lower_to_tir(&func);
+            crate::tir::drop_phase::prepare_final_backend_lowering(
+                &mut typed,
+                &crate::tir::target_info::TargetInfo::native_release_fast(),
+            );
+            func.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
             assert_eq!(
                 func.ops.iter().any(|op| op.kind == kind),
                 !removable,

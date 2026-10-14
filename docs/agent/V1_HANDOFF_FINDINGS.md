@@ -89,13 +89,14 @@ qualify all semantics, precision or target cells. Current source inspection
 identifies two convergence boundaries within the existing exit obligations:
 
 - Final typed function facts must survive through codegen. LLVM already consumes
-  owned final TIR; native/WASM discard it and later reconstruct facts from
-  SimpleIR. The first native migration must include copy-alias, split-field and
-  direct-raise transformations before exporting exact representation, identity
-  and ownership facts to every normal, skip and batch consumer. Earlier facts
-  cannot be reused across those rewrites by assumption. Delete the replaced
-  reconstruction together; WASM's later operation reachability remains a
-  separate affected consumer obligation. This is compiler-side V1-07 work.
+  owned final TIR. The native source migration retains that owner, moves
+  copy-alias, split-field and direct-raise transformations before final
+  refinement/ownership, and requires one body/fact pair at every normal, skip
+  and batch codegen entry. Reachability and partition ownership preserve the
+  pair; native plan reconstruction is deleted. Actual consumer and cost
+  qualification is still pending, so this is not a closed release obligation.
+  WASM's later operation reachability and the remaining source backends require
+  their own complete migration. This is compiler-side V1-07 work.
 - Runtime optimization must reuse admitted execution and object custody.
   Native main already attaches execution, and public C hooks expose operation
   entry/leave. Core GIL tokens, callable contexts and runtime attachment prove

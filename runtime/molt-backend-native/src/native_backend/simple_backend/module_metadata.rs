@@ -14,13 +14,41 @@ pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
     pub(in crate::native_backend::simple_backend) leaf_functions: BTreeSet<String>,
 }
 
-/// A required, one-consumer projection of final typed function custody.
-/// Entries cover every local function, including bodies that cannot certify a
-/// leaf. This is never serialized into early/cross-batch module context.
+/// Final source and its typed facts have one private owner. Source is exposed
+/// read-only; retention/externalization retire matching rows in the same move.
+/// No early or cross-batch context can supply these final facts.
 #[cfg(feature = "native-backend")]
-#[derive(Default)]
-pub(in crate::native_backend::simple_backend) struct NativeFinalCallbacks {
-    eligibility: BTreeMap<String, NativeLeafEligibility>,
+pub(in crate::native_backend::simple_backend) struct NativeFinalFunctions {
+    ir: SimpleIR,
+    facts: Vec<Option<NativeFunctionFacts>>,
+}
+
+#[cfg(feature = "native-backend")]
+struct NativeFunctionFacts {
+    representation: crate::representation_plan::ScalarRepresentationPlan,
+    eligibility: NativeLeafEligibility,
+}
+
+#[cfg(feature = "native-backend")]
+pub(crate) struct NativeFinalFunction {
+    function: FunctionIR,
+    facts: NativeFunctionFacts,
+}
+
+#[cfg(feature = "native-backend")]
+impl NativeFinalFunction {
+    pub(crate) fn function(&self) -> &FunctionIR {
+        &self.function
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        FunctionIR,
+        crate::representation_plan::ScalarRepresentationPlan,
+    ) {
+        (self.function, self.facts.representation)
+    }
 }
 
 #[cfg(feature = "native-backend")]
@@ -32,63 +60,171 @@ enum NativeLeafEligibility {
 }
 
 #[cfg(feature = "native-backend")]
-impl NativeFinalCallbacks {
-    pub(in crate::native_backend::simple_backend) fn record(
-        &mut self,
-        function: &crate::tir::TirFunction,
-    ) {
-        let finalized = matches!(
-            function
-                .attrs
-                .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
-            Some(crate::tir::ops::AttrValue::Bool(true)),
-        );
-        let eligibility = if !finalized {
-            // Legacy cleanup can still mint finalizer calls. Exception-only
-            // drop authority does not certify a function's complete lifetime.
-            NativeLeafEligibility::Unfinalized
-        } else if crate::tir::call_sites::FunctionCallSites::for_function(function)
-            .may_call_python()
-        {
-            NativeLeafEligibility::Callback
-        } else {
-            NativeLeafEligibility::Leaf
-        };
-        assert!(
-            self.eligibility
-                .insert(function.name.clone(), eligibility)
-                .is_none(),
-            "native final callback custody produced duplicate function '{}'",
-            function.name,
-        );
-    }
-
-    fn into_leaf_functions(mut self, functions: &[FunctionIR]) -> BTreeSet<String> {
-        let mut leaves = BTreeSet::new();
-        for function in functions.iter().filter(|function| !function.is_extern) {
-            let eligibility = self.eligibility.remove(&function.name).unwrap_or_else(|| {
+impl NativeFinalFunctions {
+    pub(in crate::native_backend::simple_backend) fn from_final_tir(
+        mut ir: SimpleIR,
+        typed: Vec<(bool, crate::tir::TirFunction)>,
+    ) -> Self {
+        // The owned module wrapper groups externs separately. Reconcile that
+        // producer order once, preserving the authored source order; this map
+        // is retired before any consumer sees final records.
+        let mut by_name = BTreeMap::new();
+        for (external, function) in typed {
+            assert!(
+                by_name
+                    .insert(function.name.clone(), (external, function))
+                    .is_none(),
+                "native final custody produced duplicate function"
+            );
+        }
+        let mut facts = Vec::with_capacity(ir.functions.len());
+        for function in &mut ir.functions {
+            let (external, typed) = by_name.remove(&function.name).unwrap_or_else(|| {
                 panic!(
-                    "native final callback custody is missing local function '{}'",
-                    function.name,
+                    "native final custody is missing local function '{}'",
+                    function.name
                 )
             });
-            let finalized = function
-                .ops
-                .iter()
-                .any(|op| op.kind == crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
             assert_eq!(
-                eligibility != NativeLeafEligibility::Unfinalized,
-                finalized,
-                "native final callback custody disagrees with final lifetime authority for '{}'",
-                function.name,
+                external, function.is_extern,
+                "native final custody extern mismatch"
             );
-            if eligibility == NativeLeafEligibility::Leaf {
-                leaves.insert(function.name.clone());
+            if external {
+                facts.push(None);
+                continue;
+            }
+            assert_eq!(
+                function.return_abi, typed.return_abi,
+                "native final custody return ABI mismatch"
+            );
+            assert_eq!(
+                function.params, typed.param_names,
+                "native final custody parameter identity mismatch"
+            );
+            let representation =
+                crate::representation_plan::ScalarRepresentationPlan::project_final_tir(
+                    function, &typed,
+                );
+            let finalized = matches!(
+                typed
+                    .attrs
+                    .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+                Some(crate::tir::ops::AttrValue::Bool(true))
+            );
+            let eligibility = if !finalized {
+                NativeLeafEligibility::Unfinalized
+            } else if crate::tir::call_sites::FunctionCallSites::for_function(&typed)
+                .may_call_python()
+            {
+                NativeLeafEligibility::Callback
+            } else {
+                NativeLeafEligibility::Leaf
+            };
+            facts.push(Some(NativeFunctionFacts {
+                representation,
+                eligibility,
+            }));
+            // Each typed body is dropped here immediately after its only final
+            // projection; it is never retained through machine emission.
+        }
+        assert!(
+            by_name.is_empty(),
+            "native final custody has unmatched typed bodies"
+        );
+        Self { ir, facts }
+    }
+
+    pub(in crate::native_backend::simple_backend) fn ir(&self) -> &SimpleIR {
+        &self.ir
+    }
+
+    pub(in crate::native_backend::simple_backend) fn retain_reachable(
+        &mut self,
+        roots: &BTreeSet<String>,
+    ) {
+        let reachable = crate::passes::reachable_function_names(&self.ir.functions, roots);
+        let original_count = self.ir.functions.len();
+        let mut kept_functions = Vec::new();
+        let mut kept_facts = Vec::new();
+        for (function, facts) in std::mem::take(&mut self.ir.functions)
+            .into_iter()
+            .zip(std::mem::take(&mut self.facts))
+        {
+            if reachable.contains(&function.name) {
+                kept_functions.push(function);
+                kept_facts.push(facts);
             }
         }
-        // DFE and shared-stdlib externalization may retire local bodies after
-        // their projection. Their facts die here and never certify an extern.
-        leaves
+        self.ir.functions = kept_functions;
+        self.facts = kept_facts;
+        let eliminated = original_count - self.ir.functions.len();
+        if eliminated > 0 && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+            eprintln!(
+                "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
+                self.ir.functions.len()
+            );
+        }
+    }
+
+    pub(in crate::native_backend::simple_backend) fn externalize_partition(
+        &mut self,
+        needs_reachability: bool,
+        roots: &BTreeSet<String>,
+        partition_sources: &BTreeMap<String, String>,
+    ) {
+        if let Some(externals) = shared_stdlib_external_symbol_plan(&self.ir, partition_sources) {
+            if needs_reachability {
+                self.retain_reachable(roots);
+            }
+            let mut local = Vec::new();
+            let mut external = Vec::new();
+            for (mut function, facts) in std::mem::take(&mut self.ir.functions)
+                .into_iter()
+                .zip(std::mem::take(&mut self.facts))
+            {
+                if externals.contains(&function.name) {
+                    crate::externalize_function_with_signature(&mut function);
+                    external.push((function, None));
+                    // The retired plan is dropped here, never certified as an extern.
+                } else {
+                    local.push((function, facts));
+                }
+            }
+            local.extend(external);
+            (self.ir.functions, self.facts) = local.into_iter().unzip();
+        }
+    }
+
+    fn leaf_functions(&self) -> BTreeSet<String> {
+        self.ir
+            .functions
+            .iter()
+            .zip(&self.facts)
+            .filter_map(|(function, facts)| {
+                let facts = facts.as_ref()?;
+                (facts.eligibility == NativeLeafEligibility::Leaf).then(|| function.name.clone())
+            })
+            .collect()
+    }
+
+    pub(in crate::native_backend::simple_backend) fn into_local_functions(
+        self,
+    ) -> impl Iterator<Item = NativeFinalFunction> {
+        self.ir
+            .functions
+            .into_iter()
+            .zip(self.facts)
+            .filter_map(|(function, facts)| {
+                if function.is_extern {
+                    assert!(facts.is_none());
+                    None
+                } else {
+                    Some(NativeFinalFunction {
+                        function,
+                        facts: facts.expect("native local function requires final facts"),
+                    })
+                }
+            })
     }
 }
 
@@ -361,11 +497,10 @@ impl NativeBackendModuleContext {
 /// pre-pipeline shared context never supplies or overrides them.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
-    ir: &SimpleIR,
+    final_functions: &NativeFinalFunctions,
     mut callable_metadata: molt_tir::trampolines::CallableMetadata,
-    final_callbacks: NativeFinalCallbacks,
 ) -> NativeBackendIrAnalysis {
-    let functions = &ir.functions;
+    let functions = &final_functions.ir.functions;
     let defined_functions: BTreeSet<String> = functions
         .iter()
         .filter(|func| !func.is_extern)
@@ -383,10 +518,9 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
     let task_kinds = callable_metadata.task_kinds;
     let task_closure_sizes = callable_metadata.task_closure_sizes;
 
-    // Typed callback facts were streamed from final lifetime custody before
-    // back-conversion. The final SimpleIR rewrites preserve callback eligibility;
-    // consume only the surviving local function identities here.
-    let leaf_functions = final_callbacks.into_leaf_functions(functions);
+    // Callback facts and emitted bodies share final lifetime custody. Retention
+    // and externalization have already retired their corresponding fact rows.
+    let leaf_functions = final_functions.leaf_functions();
     if !leaf_functions.is_empty() {
         eprintln!(
             "MOLT_BACKEND: final-body leaf functions (skip recursion guard): {} detected",
@@ -592,28 +726,38 @@ pub(in crate::native_backend::simple_backend) fn shared_stdlib_external_symbols(
     ir: &SimpleIR,
     partition_sources: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
+    shared_stdlib_external_symbol_plan(ir, partition_sources).unwrap_or_default()
+}
+
+#[cfg(feature = "native-backend")]
+fn shared_stdlib_external_symbol_plan(
+    ir: &SimpleIR,
+    partition_sources: &BTreeMap<String, String>,
+) -> Option<BTreeSet<String>> {
     let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
-        return BTreeSet::new();
+        return None;
     };
     let Ok(entry_module) = std::env::var("MOLT_ENTRY_MODULE") else {
-        return BTreeSet::new();
+        return None;
     };
     if !std::path::Path::new(&stdlib_obj_path).exists() {
-        return BTreeSet::new();
+        return None;
     }
     let explicit_stdlib_module_symbols =
         crate::stdlib_module_symbols::stdlib_module_symbols_from_env_or_panic();
-    ir.functions
-        .iter()
-        .filter(|f| {
-            !is_user_owned_symbol(
-                original_partition_source(&f.name, partition_sources),
-                &entry_module,
-                explicit_stdlib_module_symbols.as_ref(),
-            )
-        })
-        .map(|f| f.name.clone())
-        .collect()
+    Some(
+        ir.functions
+            .iter()
+            .filter(|f| {
+                !is_user_owned_symbol(
+                    original_partition_source(&f.name, partition_sources),
+                    &entry_module,
+                    explicit_stdlib_module_symbols.as_ref(),
+                )
+            })
+            .map(|f| f.name.clone())
+            .collect(),
+    )
 }
 
 #[cfg(feature = "native-backend")]

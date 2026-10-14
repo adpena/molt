@@ -219,7 +219,7 @@ authority_inputs = [
   "tools/check_reproducible_build.py",
   "tools/ci_gate.py",
   "tools/cpython_regrtest.py",
-  "tools/ff_land.py",
+  "tools/molt_dev.py",
   "tools/fuzz_compiler.py",
   "tools/proof_plan.py",
   "tools/proof_executor.py",
@@ -2220,7 +2220,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_ff_land.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3436,8 +3436,8 @@ toolchains = ["python"]
 # integration before push.
 #
 # DELIBERATELY: heavy cargo gates (clippy/build/test) are listed for the rules
-# whose change-class needs them. Under host contention an operator may run with
-# --no-gates and gate out-of-band, but the DEFAULT is full mechanical coverage.
+# whose change-class needs them. Integration always runs the selected policy
+# in an exclusive clean checkout; no alternate gate manifest or skip flag exists.
 #
 # require_fresh_toolchain = true on a rule makes `integrate` additionally
 # demand a fresh built binary (hazard 6) when --toolchain-binary is supplied —
@@ -3446,17 +3446,21 @@ toolchains = ["python"]
 # --- Native (Cranelift) backend Rust -------------------------------------
 [[rule]]
 name = "backend-native"
-description = "Cranelift/native backend Rust: clippy + backend lib tests, fresh binary."
+description = "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary."
 require_fresh_toolchain = true
 globs = [
   "runtime/molt-backend/**/*.rs",
   "runtime/molt-backend/**/Cargo.toml",
+  "runtime/molt-backend-native/Cargo.toml",
+  "runtime/molt-backend-native/src/*.rs",
+  "runtime/molt-backend-native/src/native_backend/**/*.rs",
+  "runtime/molt-backend-native/src/simple_backend/**/*.rs",
   "runtime/molt-artifact-publish/**/*.rs",
   "runtime/molt-artifact-publish/Cargo.toml",
 ]
 gates = [
-  "cargo clippy --locked -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-  "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
+  "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+  "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
 ]
 
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
@@ -3488,11 +3492,11 @@ globs = [
   "runtime/molt-tir/**/*.toml",
   "runtime/molt-tir/Cargo.toml",
 ]
+# One feature-complete development graph, including the owning IR tests.
+# Shipped-profile acceptance remains in its target/profile proof authorities.
 gates = [
-  "cargo clippy --locked -p molt-passes --all-targets --all-features -- -D warnings",
-  "cargo test --locked -p molt-passes --all-features --no-fail-fast",
-  "cargo clippy --locked -p molt-tir --all-targets --all-features -- -D warnings",
-  "cargo test --locked -p molt-tir --all-features --no-fail-fast",
+  "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
+  "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast",
 ]
 
 # --- WASM host Rust -------------------------------------------------------
