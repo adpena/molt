@@ -1,3 +1,4 @@
+use super::super::seal_block_once;
 use super::*;
 use cranelift_codegen::ir::{ExternalName, InstructionData};
 
@@ -58,11 +59,12 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
     let (retain, release, materializers);
     {
         let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let mut sealed_blocks = BTreeSet::new();
         let entry = builder.create_block();
         let exit = builder.create_block();
         builder.append_block_param(exit, types::I64);
-        builder.switch_to_block(entry);
-        builder.seal_block(entry);
+        switch_to_block_materialized(&mut builder, entry);
+        seal_block_once(&mut builder, &mut sealed_blocks, entry);
         let mut vars = BTreeMap::new();
         for op in &input.ops {
             let out = op.out.as_ref().unwrap();
@@ -107,12 +109,19 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
             &mut backend.data_pool,
             &mut backend.next_data_id,
             &mut builder,
+            &mut sealed_blocks,
             &vars,
             LiteralFailureExit {
                 block: exit,
                 returns_value: true,
             },
         );
+        let body_entry = builder.current_block().unwrap();
+        assert!(
+            sealed_blocks.contains(&body_entry),
+            "literal success continuations must use the function's seal record"
+        );
+        seal_block_once(&mut builder, &mut sealed_blocks, body_entry);
         materializers = [
             "molt_string_from_bytes",
             "molt_bytes_from_bytes",
@@ -140,7 +149,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         let result = builder.use_var(vars[input.ops.last().unwrap().out.as_ref().unwrap()]);
         jump_block(&mut builder, exit, &[result]);
         switch_to_block_materialized(&mut builder, exit);
-        builder.seal_block(exit);
+        seal_block_once(&mut builder, &mut sealed_blocks, exit);
         hoists.release_anchors(&mut builder, release);
         let result = builder.block_params(exit)[0];
         builder.ins().return_(&[result]);

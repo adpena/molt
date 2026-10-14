@@ -26,15 +26,12 @@ OUTPUTS = tuple(
     )
 )
 TARGETS = SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
-CONTEXT_FIELDS = frozenset(
+CONTEXT_IDENTITY_FIELDS = frozenset(
     {
         "name",
         "operation",
         "operand_kind",
         "error_class",
-        "python_3_12",
-        "python_3_13",
-        "python_3_14",
     }
 )
 OPERAND_DOMAINS = {
@@ -57,7 +54,7 @@ class Context:
     operation: str
     operand_kind: str
     error_class: str
-    messages: tuple[str, str, str]
+    messages: tuple[str, ...]
 
     @property
     def wire_key(self) -> str:
@@ -65,13 +62,8 @@ class Context:
 
 
 def load_policy(path: Path = SOURCE) -> tuple[Context, ...]:
-    observed_coordinates = {
-        field.removeprefix("python_").replace("_", ".")
-        for field in CONTEXT_FIELDS
-        if field.startswith("python_")
-    }
-    if set(TARGETS) != observed_coordinates:
-        raise SchemaError("admitted target catalog needs observed numeric coordinates")
+    message_fields = tuple(f"python_{target.replace('.', '_')}" for target in TARGETS)
+    context_fields = CONTEXT_IDENTITY_FIELDS | frozenset(message_fields)
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     if set(data) != {"schema_version", "supported_targets", "context"}:
         raise SchemaError("numeric policy fields are not the closed schema")
@@ -79,7 +71,8 @@ def load_policy(path: Path = SOURCE) -> tuple[Context, ...]:
         raise SchemaError("unsupported numeric policy schema")
     if data["supported_targets"] != list(TARGETS):
         raise SchemaError(
-            "numeric policy requires exact ordered 3.12/3.13/3.14 coordinates"
+            "admitted target catalog needs observed numeric coordinates in exact order: "
+            + ", ".join(TARGETS)
         )
     contexts = data["context"]
     if not isinstance(contexts, list) or not contexts:
@@ -88,7 +81,7 @@ def load_policy(path: Path = SOURCE) -> tuple[Context, ...]:
     seen_names: set[str] = set()
     seen_pairs: set[tuple[str, str]] = set()
     for row in contexts:
-        if not isinstance(row, dict) or set(row) != CONTEXT_FIELDS:
+        if not isinstance(row, dict) or set(row) != context_fields:
             raise SchemaError(
                 "numeric context fields or target rows are incomplete/unknown"
             )
@@ -114,7 +107,7 @@ def load_policy(path: Path = SOURCE) -> tuple[Context, ...]:
                 operation,
                 kind,
                 row["error_class"],
-                tuple(row[f"python_3_{v}"] for v in (12, 13, 14)),
+                tuple(row[field] for field in message_fields),
             )
         )
     expected_pairs = {
@@ -161,8 +154,9 @@ def render(
         "    pub const fn message(self, major: i64, minor: i64) -> Option<&'static str> {",
         "        match (major, minor) {",
     ]
-    for index, minor in enumerate((12, 13, 14)):
-        lines += [f"            (3, {minor}) => Some(match self {{"]
+    for index, target in enumerate(TARGETS):
+        major, minor = (int(part) for part in target.split("."))
+        lines += [f"            ({major}, {minor}) => Some(match self {{"]
         lines += [
             f"                Self::{c.name} => {json.dumps(c.messages[index], ensure_ascii=False)},"
             for c in contexts

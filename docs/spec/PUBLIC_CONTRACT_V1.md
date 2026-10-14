@@ -16,7 +16,7 @@ this page explains them and never restates their content.
   decision. The snapshot records each command's full argparse surface (flags,
   destinations, arity, choices, scalar defaults, required-ness).
 - **Target Python range.** The supported target versions are generated from
-  `config/release_targets.toml` into `molt.release_matrix` and snapshotted.
+  `src/molt/target_python.py` into `molt.release_matrix` and snapshotted.
 - **Release targets.** Operating system, architecture, Rust target, and archive
   format per release target, from the same generated matrix. There is no second
   release-target table.

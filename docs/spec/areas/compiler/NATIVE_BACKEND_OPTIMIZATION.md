@@ -37,6 +37,20 @@ limit.
 
 ## Representation and operation boundaries
 
+Semantic labels use the shared liveness and dominance projections to transport
+only values that need incoming parameters. Compiler-internal branches and fresh
+single-predecessor fallthrough blocks use Cranelift FunctionBuilder's existing
+lazy SSA construction. Each branch registers its predecessors before sealing;
+variable reads resolve the actual predecessor definitions, including rebindings.
+The compiler does not snapshot every live value around each operation or copy
+the full live set onto fresh fallthrough edges. Native preanalysis retains the
+shared compact block-liveness facts; consumers that need an operation boundary
+replay that block instead of retaining a live-name vector for every operation.
+The function compiler has one sealing owner: it requires a materialized block,
+seals it after the final predecessor, and records success only afterward. Calls,
+literal-construction continuations, structured branches and loops use that same
+record. A loop header remains open until all backedges have been registered.
+
 `extract_exact_scalar_map` owns exact producer provenance, including individual
 result slots and executable copy/phi edges. `repr_by_value_for` raises exact
 Bool/F64 producers and applies integer range or checked-overflow proofs.

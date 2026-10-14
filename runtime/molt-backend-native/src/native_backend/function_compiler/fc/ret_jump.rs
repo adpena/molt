@@ -31,7 +31,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    func_ops: &[OpIR],
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -49,7 +48,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     label_blocks: &BTreeMap<i64, Block>,
     label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
     ssa_values: &NativeSsaValues,
-    cfg_liveness: &crate::tir::cfg_liveness::SimpleCfgLiveness,
     function_exception_label_id: Option<i64>,
     slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     raw_backed_slot_names: &BTreeSet<String>,
@@ -174,21 +172,8 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             let target_block = label_blocks[&target_id];
 
             let fallthrough_block = builder.create_block();
-            let fallthrough_transport = if op_idx + 1 < func_ops.len() {
-                let block_id = cfg_liveness.block_for_op(op_idx + 1);
-                BlockTransportPlan::from_live_ids(
-                    cfg_liveness.live_in_by_block[block_id].iter(),
-                    ssa_values,
-                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
-                )
-            } else {
-                BlockTransportPlan::from_live_ids(
-                    std::iter::empty(),
-                    ssa_values,
-                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
-                )
-            };
-            fallthrough_transport.append_block_params(&mut *builder, fallthrough_block);
+            // Only the semantic target needs explicit transport. The fresh
+            // fallthrough has one predecessor and uses FunctionBuilder SSA.
             if debug_block_origins.is_some() {
                 eprintln!(
                     "BLOCK_ORIGIN {} op{} br_if target_label={} target_block={:?} fallthrough={:?}",
@@ -332,21 +317,19 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 .get(&target_id)
                 .map(|plan| plan.edge_args(&mut *builder))
                 .unwrap_or_default();
-            let fallthrough_args = fallthrough_transport.edge_args(&mut *builder);
             brif_block(
                 &mut *builder,
                 cond_bool,
                 target_block,
                 &target_args,
                 fallthrough_block,
-                &fallthrough_args,
+                &[],
             );
             crate::switch_to_block_tracking(
                 &mut *builder,
                 fallthrough_block,
                 &mut *is_block_filled,
             );
-            fallthrough_transport.bind_block_params(&mut *builder, fallthrough_block, ssa_values);
             maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough_block);
         }

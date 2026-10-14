@@ -62,9 +62,48 @@ def _compile_for_python_314(source: str) -> dict[str, object]:
     return generator.to_json()
 
 
-def test_frontend_rejects_unsupported_target_python_feature_version() -> None:
-    with pytest.raises(ValueError, match="supported feature versions"):
-        SimpleTIRGenerator(target_python=(3, 15))
+@pytest.mark.parametrize(
+    ("target", "eager_annotations"),
+    [((3, 12), True), ((3, 13), True), ((3, 14), False)],
+)
+def test_frontend_preserves_supported_target_python_feature_versions(
+    target: tuple[int, int], eager_annotations: bool
+) -> None:
+    generator = SimpleTIRGenerator(target_python=target)
+    assert generator.target_python == target
+    assert generator.eager_annotations is eager_annotations
+
+
+@pytest.mark.parametrize("target", [(3, 11), (3, 15), (3, 99), (4, 12)])
+def test_frontend_rejects_unsupported_target_python_feature_version(
+    target: tuple[int, int],
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"CPython {target[0]}\.{target[1]} is outside the supported target set: "
+            r"3\.12, 3\.13, 3\.14"
+        ),
+    ):
+        SimpleTIRGenerator(target_python=target)
+
+
+def test_frontend_admission_uses_the_canonical_catalog(monkeypatch) -> None:
+    import molt.target_python as target_python
+
+    # Synthetic admission only: this does not claim Python 3.11 semantics.
+    monkeypatch.setattr(
+        target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.14", "3.11")
+    )
+    for target, eager in (((3, 11), True), ((3, 14), False)):
+        generator = SimpleTIRGenerator(target_python=target)
+        assert generator.target_python == target
+        assert generator.eager_annotations is eager
+    for target in ((3, 12), (3, 13)):
+        with pytest.raises(
+            ValueError, match=r"outside the supported target set: 3\.11, 3\.14"
+        ):
+            SimpleTIRGenerator(target_python=target)
 
 
 def test_python_314_class_annotations_have_one_lazy_execution_authority() -> None:

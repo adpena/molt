@@ -110,6 +110,33 @@ receipts validate after that transfer.
 This qualifies queued development reuse on Linux aarch64; it adds no guest work
 and does not qualify release performance or other host cells.
 
+The demand-directed TIR preparation change is on main as `60d1d54b4`.
+Its retained comparison covers 14 cold/warm preparation coordinates with exact
+output-byte equality. On the large asyncio LLVM preparation case it removes
+117,507–117,517 allocation calls and about 49.4 MB of requested allocation;
+these are preparation measurements, not whole-program peak-memory or release
+performance acceptance. One coherent developer Cargo build at `9a3636423`
+passes all 170 selected compiler/exporter/LLVM consumer tests. Native preanalysis now retains compact shared liveness facts, and all function
+compiler branches use one physical sealing owner. Composed qualification at
+`f829813d1` passes 188 distinct affected Rust controls: 10 shared CFG/liveness,
+17 cache, five exporter, 155 native/LLVM, and one generated-object linkage case.
+The repaired indexed-loop fixture is the only source change after the 154 other
+native/LLVM passes, so those unchanged controls were reused. Actual guards,
+redefinitions, literal ownership, exception labels and cleanup edges are covered.
+This is Linux aarch64 developer-profile qualification, not other target/profile
+execution or release performance acceptance. The retained locale batch still
+exceeds a three-minute `dev-fast` observation window before native function
+code generation; no speedup or completed batch is claimed. Source review also
+identifies redundant final whole-module TIR reconstruction solely for native
+leaf analysis, after final typed custody was consumed. Reuse the shared callback
+facts with complete final-drop and rewrite custody; V1-07 retains this performance
+obligation.
+Numeric-policy generation and frontend target admission now derive from the
+existing supported-target catalog. Twenty generator checks and 73 affected
+Python consumer checks pass; all three numeric Rust projections are unchanged.
+This removes copied version lists without adding a supported coordinate.
+Python 3.15 implementation and target qualification remain open under V1-35.
+
 ### Qualified boundaries
 
 | Boundary | Current retained evidence and limits |
@@ -559,6 +586,9 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | V1-32 | Logging Filterer requires a `.filter` attribute and swallows filter exceptions; it does not implement callable filters or propagate a replacement LogRecord through handler/logger consumers. These semantics are separate from the corrected stream writer, whose tests intentionally use object filters. | Reconcile Filterer, Handler.handle and Logger.handle against the declared CPython-version matrix. Prove callable and object filters, exception propagation, replacement-record identity, false results and mutation/order across actual native/WASM execution. Stream/file admission controls do not qualify this row. |
 
 | V1-34 | Opaque-resource facades can look up native cleanup functions after module namespaces retire, leak registry owners after logical close, or detach owners before partial-construction cleanup has finished acquiring its inputs. Native execution reproduces unraisable Event finalizer errors; source review also finds closed SQLite cursor retention, DBM retention on close failure and the discarded SSL unwrap descriptor. `_multiprocessing.SemLock` exposes a value-only constructor where CPython requires five arguments, and its intrinsic call omits the required bounded argument. Its `sem_unlink` name was incorrectly aliased to unsafe process-handle destruction, allowing ordinary string input into a process-owner-only pointer boundary. The alias is removed; name validation now precedes explicit unavailability, without requesting process cleanup. Host controls pass with process cleanup absent or poisoned. A strict-stderr invalid-argument fixture passes the CPython reference; compiled qualification remains outstanding. Successful named-resource behavior is not implemented or claimed. Public multiprocessing synchronization currently substitutes thread-local objects instead of owning interprocess synchronization. | Complete the existing constructor/close/drop/finalizer family, preserving borrowed owners, reentrancy, failure identity and each original suppression boundary. The successor changes 64 owner classes; an automatic development-side census also covers already-correct siblings and ties discovered opaque cleanup owners to behavioral controls. Host controls do not qualify compiled shutdown or native registry retirement. Execute the actual native/WASM consumer matrix and real OS-resource controls. Replace the wrong semaphore/process alias through the genuine semaphore authority; reconcile creation, naming, unlink, rebuild, export, pickling and public process synchronization against CPython. Migrate real native/WASM/platform consumers and test arity and opaque-owner role boundaries without invoking the unsafe legacy route. Thread-only substitutes or private-module mocks do not qualify interprocess behavior. Named Tcl deletion and user-visible flush/writeback are distinct ownership protocols, not covered by the opaque-handle claim. SSL graceful shutdown remains under V1-10. |
+
+| V1-35 | Python 3.15.0, released 2026-10-09, must join the complete v1.0 language/runtime, OS/architecture, backend/profile and ABI/concurrency support scope. Current target admission remains 3.12–3.14. The >=3.15 import-analysis refusal, fixed generator/version cases, frontend interpreter selection, UTF-8 defaults, new syntax/builtins, stdlib changes and C-API/ABI deltas are unresolved migration work; extending a version list is not qualification. | Reuse `TargetPythonVersion`, pinned CPython source/projections, verified-subset coordinates and the release-target authority. The v3.15.0 source commit is `d220409a13b77de7a6c30abe16ea90db01528edc`; [official changes](https://docs.python.org/3.15/whatsnew/3.15.html) and applicable PEPs define the delta. Reconcile lazy imports, comprehension unpacking, sentinel/frozendict, startup encoding/configuration, removed APIs and free-threaded/C-ABI changes against that source. Migrate every parser, generator, runtime, packaging, oracle, fixture, CI and installed-consumer boundary together; preserve explicit refusal until its contract exists. Generate matrices and version-dependent projections from existing authorities, make missing/unknown versions fail visibly, and retain independent source/behavior oracles. Qualify every required platform/architecture/backend/profile coordinate without fallback Python. Share Rust builds only where the compiled inputs and dynamic target-version selection actually permit it; development automation adds no unnecessary guest work. |
+| V1-36 | The canonical environment mapping sorts keys in `BTreeMap` and `popitem` selects the lexical maximum. CPython `_Environ` preserves dictionary insertion order, and its inherited `MutableMapping.popitem` removes the first iterated key. Consolidated snapshots expose the mismatch through iteration and every mapping view. Windows key normalization also fails to provide CPython uppercase identity. These are runtime conformance defects within the supported subset. | Correct the existing raw OS-string environment owner and migrate every seed/read/mutation/snapshot/view/popitem consumer together. Preserve overwrite order, deletion/reinsertion order, process-versus-mapping separation for `putenv`/`unsetenv`, failure atomicity, lock order and raw byte custody; avoid repeated linear shifts or a second order registry. Pin behavior to CPython source and independent ordered-mutation, isolated-popitem and mixed-case identity oracles. Qualify full/extracted and edge/direct profiles separately, plus actual native/WASM consumers and Windows identity; a feature union or host facade test cannot substitute for those execution cells. |
 
 ## Open: correctness and release blockers
 
