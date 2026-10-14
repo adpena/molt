@@ -50,9 +50,10 @@ pub(crate) fn def_var_named(
     }
 }
 
-/// Seal a block only if it hasn't been sealed yet. Prevents the
-/// `!self.is_sealed(block)` assertion panic in Cranelift's SSA builder
-/// when multiple code paths attempt to seal the same block.
+/// Seal a materialized block after its final predecessor has been emitted.
+/// This is the sole writer of the function compiler's seal record: a block is
+/// recorded only after Cranelift has actually sealed it. Repeated requests are
+/// harmless, but a missing layout entry is a codegen error, not a deferred seal.
 #[cfg(feature = "native-backend")]
 #[inline]
 pub(crate) fn seal_block_once(
@@ -60,8 +61,13 @@ pub(crate) fn seal_block_once(
     sealed: &mut std::collections::BTreeSet<Block>,
     block: Block,
 ) {
-    if sealed.insert(block) && builder.func.layout.is_block_inserted(block) {
+    assert!(
+        builder.func.layout.is_block_inserted(block),
+        "native codegen cannot seal unmaterialized block {block:?}",
+    );
+    if !sealed.contains(&block) {
         builder.seal_block(block);
+        sealed.insert(block);
     }
 }
 

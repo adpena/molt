@@ -732,7 +732,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .ins()
                     .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, cleanup_block, is_block_filled);
-                if exception_label_ids.is_empty() && sealed_blocks.insert(cleanup_block) {
+                if exception_label_ids.is_empty() {
                     maybe_debug_seal("loop_break_exception_cleanup", op_idx, cleanup_block);
                     seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
                 }
@@ -747,7 +747,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 jump_block(&mut *builder, frame.after_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, frame.body_block, is_block_filled);
                 // Seal body_block now — its only predecessor is the brif above.
-                if exception_label_ids.is_empty() && sealed_blocks.insert(frame.body_block) {
+                if exception_label_ids.is_empty() {
                     maybe_debug_seal("loop_break_exception_body", op_idx, frame.body_block);
                     seal_block_once(&mut *builder, sealed_blocks, frame.body_block);
                 }
@@ -883,7 +883,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .ins()
                     .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, cleanup_block, is_block_filled);
-                if exception_label_ids.is_empty() && sealed_blocks.insert(cleanup_block) {
+                if exception_label_ids.is_empty() {
                     maybe_debug_seal("loop_break_true_cleanup", op_idx, cleanup_block);
                     seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
                 }
@@ -898,7 +898,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 jump_block(&mut *builder, frame.after_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, frame.body_block, is_block_filled);
                 // Seal body_block now — its only predecessor is the brif above.
-                if exception_label_ids.is_empty() && sealed_blocks.insert(frame.body_block) {
+                if exception_label_ids.is_empty() {
                     maybe_debug_seal("loop_break_true_body", op_idx, frame.body_block);
                     seal_block_once(&mut *builder, sealed_blocks, frame.body_block);
                 }
@@ -1046,7 +1046,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .ins()
                     .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, cleanup_block, is_block_filled);
-                if exception_label_ids.is_empty() && sealed_blocks.insert(cleanup_block) {
+                if exception_label_ids.is_empty() {
                     maybe_debug_seal("loop_break_false_cleanup", op_idx, cleanup_block);
                     seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
                 }
@@ -1063,7 +1063,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 // Seal body_block now — its only predecessor is the brif
                 // above.  Early sealing helps Cranelift resolve SSA variables
                 // (especially the loop induction variable) immediately.
-                if exception_label_ids.is_empty() && sealed_blocks.insert(frame.body_block) {
+                if exception_label_ids.is_empty() {
                     maybe_debug_seal("loop_break_false_body", op_idx, frame.body_block);
                     seal_block_once(&mut *builder, sealed_blocks, frame.body_block);
                 }
@@ -1301,10 +1301,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         frame.after_block,
                         is_block_filled,
                     );
-                    if exception_label_ids.is_empty()
-                        && builder.func.layout.is_block_inserted(frame.after_block)
-                        && sealed_blocks.insert(frame.after_block)
-                    {
+                    if exception_label_ids.is_empty() {
                         maybe_debug_seal("loop_end_after", op_idx, frame.after_block);
                         seal_block_once(&mut *builder, sealed_blocks, frame.after_block);
                     }
