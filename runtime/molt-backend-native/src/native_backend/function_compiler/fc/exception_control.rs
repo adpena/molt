@@ -27,8 +27,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     loop_depth: i32,
     label_blocks: &BTreeMap<i64, Block>,
     label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
-    ssa_values: &NativeSsaValues,
-    cfg_liveness: &crate::tir::cfg_liveness::SimpleCfgLiveness,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
     rc_authority: NativeRcAuthority,
@@ -223,20 +221,9 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 }
             }
             let fallthrough = builder.create_block();
-            let fallthrough_transport = if op_idx < cfg_liveness.live_after_op.len() {
-                BlockTransportPlan::from_live_ids(
-                    cfg_liveness.live_after(op_idx).iter().copied(),
-                    ssa_values,
-                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
-                )
-            } else {
-                BlockTransportPlan::from_live_ids(
-                    std::iter::empty(),
-                    ssa_values,
-                    crate::tir::dominators::SimpleProgramPoint::After(op_idx),
-                )
-            };
-            fallthrough_transport.append_block_params(&mut *builder, fallthrough);
+            // A fresh fallthrough has this one predecessor. FunctionBuilder
+            // resolves its values lazily after sealing; semantic handler labels
+            // retain their explicit transport plan.
             reachable_blocks.insert(target_block);
             reachable_blocks.insert(fallthrough);
             let (pending_observer, pending_flag_slot) = if op.is_async_work_poll() {
@@ -260,14 +247,13 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 .get(&target_id)
                 .map(|plan| plan.edge_args(&mut *builder))
                 .unwrap_or_default();
-            let fallthrough_args = fallthrough_transport.edge_args(&mut *builder);
             brif_block(
                 &mut *builder,
                 cond,
                 target_block,
                 &target_args,
                 fallthrough,
-                &fallthrough_args,
+                &[],
             );
             // The fallthrough block is always fresh and has its only
             // predecessor emitted here. Seal it immediately so later
@@ -278,7 +264,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
             crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
-            fallthrough_transport.bind_block_params(&mut *builder, fallthrough, ssa_values);
             // check_exception's fallthrough is always a fresh empty
             // block — force-clear is_block_filled so subsequent ops
             // (add, loop_index_next) are never incorrectly skipped by

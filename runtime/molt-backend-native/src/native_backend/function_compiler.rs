@@ -1149,27 +1149,10 @@ impl SimpleBackend {
             // unexpressible. `None` means an inline arm (below) or no native
             // codegen (handled by the loud catch-all).
             let op_family = fc::native_op_family(op.kind.as_str());
-            let op_live_through = if matches!(
-                op_family,
-                Some(
-                    fc::NativeOpFamily::RetJump
-                        | fc::NativeOpFamily::ControlFlow
-                        | fc::NativeOpFamily::Loops
-                        | fc::NativeOpFamily::Coroutine
-                        | fc::NativeOpFamily::ExceptionControl
-                )
-            ) {
-                OpLiveThroughSnapshot::empty()
-            } else {
-                OpLiveThroughSnapshot::capture(
-                    &mut builder,
-                    cfg_liveness.live_after(op_idx),
-                    &op,
-                    &cfg_liveness.names,
-                    &ssa_values,
-                    crate::tir::dominators::SimpleProgramPoint::Before(op_idx),
-                )
-            };
+            // FunctionBuilder owns SSA through every handler's internal CFG.
+            // Branch insertion records predecessors; use_var resolves only the
+            // values actually read. Eagerly snapshotting all live values here
+            // repeats whole live sets even for operations that never split.
             pending_definition_op = Some(op_idx);
             match op.kind.as_str() {
                 _ if op_family == Some(fc::NativeOpFamily::ConstLiterals) => {
@@ -1886,8 +1869,6 @@ impl SimpleBackend {
                         loop_depth,
                         &label_blocks,
                         &label_transport_plans,
-                        &ssa_values,
-                        &cfg_liveness,
                         &mut reachable_blocks,
                         &mut is_block_filled,
                         rc_authority,
@@ -2070,7 +2051,6 @@ impl SimpleBackend {
                         &op,
                         op_idx,
                         func_ir.name.as_str(),
-                        &func_ir.ops,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -2088,7 +2068,6 @@ impl SimpleBackend {
                         &label_blocks,
                         &label_transport_plans,
                         &ssa_values,
-                        &cfg_liveness,
                         function_exception_label_id,
                         &slot_backed_join_slots,
                         &raw_backed_slot_names,
@@ -2179,10 +2158,6 @@ impl SimpleBackend {
             // We therefore only drain entry-tracked cleanup while still emitting the entry block.
             // Values whose "last use" happens exclusively in a non-entry block remain live until
             // the function-level return cleanup, which is emitted on all paths.
-            if !is_block_filled {
-                op_live_through.rebind(&mut builder);
-            }
-
             if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
                 && std::env::var("MOLT_DEBUG_FUNC_FILTER")
                     .ok()

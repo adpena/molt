@@ -842,7 +842,7 @@ fn structured_phi_actual_selected_value_survives_label_transport() {
 }
 
 #[test]
-fn structured_phi_actual_selected_value_survives_live_through_snapshot() {
+fn structured_phi_actual_selected_value_survives_internal_cfg() {
     let name = "structured_phi_live_through";
     let function = compile_function_to_clif(
         vec![structured_phi_transport_fixture(
