@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "43165f3b484e4ac5103f1eafcf1426eb2de281bf6f4b8c893d793607ce6b505c",
+  "authority_sha256": "af7f3968415d898129783efe757ed16c95685d9c7fb68f53ae2fb8173c856362",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5114,7 +5114,8 @@
         "tests/test_tinygrad_tokenizer_contract.py",
         "tests/test_nemotron_ocr_boundaries.py",
         "tests/test_wasm_build_policy_authority.py",
-        "tests/test_runtime_state_ownership.py"
+        "tests/test_runtime_state_ownership.py",
+        "tests/test_tinygrad_onnx_public_interpreter.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -5478,7 +5479,8 @@
         "tests/test_tinygrad_tokenizer_contract.py",
         "tests/test_nemotron_ocr_boundaries.py",
         "tests/test_wasm_build_policy_authority.py",
-        "tests/test_runtime_state_ownership.py"
+        "tests/test_runtime_state_ownership.py",
+        "tests/test_tinygrad_onnx_public_interpreter.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
