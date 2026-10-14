@@ -365,7 +365,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "6b3fc429d0f4f5011fff067176ddbd784402424b1d09ab927294954fb12c0f62",
+      "sha256": "8def206fd7caa0bda8708efe54a42596d6514d9e13ebf8c0c31f161978b50420",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {

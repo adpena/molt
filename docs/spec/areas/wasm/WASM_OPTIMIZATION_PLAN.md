@@ -200,7 +200,7 @@ The host links against WASI Preview 1 (`wasi_snapshot_preview1`) and exposes 22 
 | `mmap` | `mmap` module | Not applicable (linear memory model) |
 | Symlinks | `os.symlink` | Not available in WASI P1 |
 | Pipes | `subprocess` | Custom `molt_process_*` host imports |
-| Locale | `locale` module | Host-side `num_format::SystemLocale` |
+| Locale | `locale` module | None: the hosts pass no locale data (the former `MOLT_WASM_LOCALE_*` copy had no guest reader) |
 
 ### 2.3 WASI Preview 2/3 Migration Plan
 

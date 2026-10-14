@@ -337,6 +337,27 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_WASM_LOCALE_DECIMAL",
+      "note": "nothing read it; the WASM hosts no longer copy host locale formatting into the guest environment",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
+    },
+    {
+      "name": "MOLT_WASM_LOCALE_GROUPING",
+      "note": "nothing read it; the WASM hosts no longer copy host locale formatting into the guest environment",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
+    },
+    {
+      "name": "MOLT_WASM_LOCALE_THOUSANDS",
+      "note": "nothing read it; the WASM hosts no longer copy host locale formatting into the guest environment",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-14"
+    },
+    {
       "name": "MOLT_WASM_LONGDOUBLE_ARCHIVE",
       "note": "",
       "rejected_by": [],
@@ -7450,33 +7471,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_LINKED",
       "owner": "src/molt/cli/build_output_layout.py",
       "summary": "Controls whether a wasm build produces linked output by default; unset or any value other than 0, false, no, or off (case-insensitive) selects linked output, and 0 keeps the unlinked module unless --linked, --require-linked, --linked-output, or --split-runtime is given.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_WASM_LOCALE_DECIMAL",
-      "owner": "runtime/molt-wasm-host/src/wasi_env.rs",
-      "summary": "Decimal separator string that molt-wasm-host and wasm/run_wasm.js place in the guest WASI environment; when none of MOLT_WASM_LOCALE_DECIMAL, MOLT_WASM_LOCALE_THOUSANDS, or MOLT_WASM_LOCALE_GROUPING is set the host fills it from the system locale (Intl.NumberFormat under Node), and setting any one of the three keeps the host from filling the others.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_WASM_LOCALE_GROUPING",
-      "owner": "runtime/molt-wasm-host/src/wasi_env.rs",
-      "summary": "Digit-group size (for example 3) that molt-wasm-host and wasm/run_wasm.js place in the guest WASI environment; the host fills it from the system locale only when that locale has a thousands separator and none of the three MOLT_WASM_LOCALE_* names is already set.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_WASM_LOCALE_THOUSANDS",
-      "owner": "runtime/molt-wasm-host/src/wasi_env.rs",
-      "summary": "Thousands separator string that molt-wasm-host and wasm/run_wasm.js place in the guest WASI environment; the host fills it from the system locale only when that locale has a non-empty separator and none of the three MOLT_WASM_LOCALE_* names is already set.",
       "values": []
     },
     {

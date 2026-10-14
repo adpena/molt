@@ -139,45 +139,6 @@ const getWebSocketCtor = () => globalThis.WebSocket || UndiciWebSocket || null;
 const hostExportCallsSpecPath = process.env.MOLT_WASM_EXPORT_CALLS_JSON || null;
 const hostExportCallsEnabled = Boolean(hostExportCallsSpecPath);
 
-const ensureWasmLocaleEnv = (env) => {
-  if (!env) return;
-  if (
-    env.MOLT_WASM_LOCALE_DECIMAL ||
-    env.MOLT_WASM_LOCALE_THOUSANDS ||
-    env.MOLT_WASM_LOCALE_GROUPING
-  ) {
-    return;
-  }
-  let formatter = null;
-  try {
-    const locale =
-      process.env.LC_ALL || process.env.LC_NUMERIC || process.env.LANG || undefined;
-    formatter = new Intl.NumberFormat(locale);
-  } catch (err) {
-    return;
-  }
-  let decimal = '.';
-  let group = '';
-  let lastInteger = '';
-  const parts = formatter.formatToParts(1234567.89);
-  for (const part of parts) {
-    if (part.type === 'decimal') {
-      decimal = part.value;
-    } else if (part.type === 'group') {
-      group = part.value;
-    } else if (part.type === 'integer') {
-      lastInteger = part.value;
-    }
-  }
-  env.MOLT_WASM_LOCALE_DECIMAL = decimal;
-  if (group) {
-    env.MOLT_WASM_LOCALE_THOUSANDS = group;
-    if (lastInteger) {
-      env.MOLT_WASM_LOCALE_GROUPING = String(lastInteger.length);
-    }
-  }
-};
-
 const resolveManifestModulePath = (manifestPath, descriptor, label) => {
   if (!descriptor || typeof descriptor.path !== 'string' || !descriptor.path) {
     throw new Error(`runtime manifest missing modules.${label}.path`);
@@ -293,7 +254,6 @@ const initWasmAssets = () => {
   ) {
     wasmEnv.MOLT_WASM_TABLE_BASE = String(detectedWasmTableBase);
   }
-  ensureWasmLocaleEnv(wasmEnv);
   wasiExitCode = null;
   ({ wasi, wasiImport } = createWasiContext());
 };
