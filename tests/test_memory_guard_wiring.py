@@ -959,12 +959,12 @@ def test_outer_guard_handoff_uses_supplied_environment_for_every_custody_path(
             == summary.parent
         )
     # The guard and every test process start inside the run context (HF-114):
-    # Cargo builds go to this checkout's stable target under the artifact
-    # root (HF-45), not the CLI's `<checkout>/target` default.
+    # Cargo builds go to the artifact root's target, under this checkout's
+    # stable component when the root is shared (HF-45).
     child_env = captured["env"]
     assert all(child_env.get(key) for key in dx.MOLT_ROOT_ENV_KEYS)
     child_target = Path(child_env["CARGO_TARGET_DIR"])
-    assert Path(child_env["MOLT_EXT_ROOT"]) / "target" in child_target.parents
+    assert child_target.is_relative_to(Path(child_env["MOLT_EXT_ROOT"]) / "target")
     assert child_target == dx.cargo_target_dir_for_artifact_root(
         Path(child_env["MOLT_EXT_ROOT"]), None, source_root=REPO_ROOT
     )
