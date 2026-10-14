@@ -114,7 +114,7 @@ def test_finite_pep562_registry_resolves_exactly(repo: Path) -> None:
 
 def test_compiled_corpus_directories_are_not_host_imports(repo: Path) -> None:
     _write(
-        repo / "tests" / "molt_only" / "basic" / "program.py",
+        repo / "tests" / "differential" / "basic" / "program.py",
         "from molt import CancellationToken\n",
     )
     _write(repo / "tests" / "test_host.py", "from molt.authority import vanished\n")
