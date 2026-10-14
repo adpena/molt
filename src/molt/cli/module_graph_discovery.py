@@ -43,10 +43,18 @@ from molt.target_python import (
 PLATFORM_EXCLUDED_SUBMODULES = ("urllib3.contrib.emscripten",)
 
 
-class _SourceDemandJob(NamedTuple):
+class _SourceValueJob(NamedTuple):
+    """Resolve one demanded source value of a module."""
+
     module_name: str
     source: PythonSourceKey | None
-    phase: str
+
+
+class _SourceBodyJob(NamedTuple):
+    """Scan one function, lambda or type-alias body that a demand reaches."""
+
+    module_name: str
+    source: PythonSourceKey
     arguments: tuple[str, ...] = ()
 
 
@@ -434,10 +442,13 @@ def _discover_module_graph_from_paths(
         else:
             seed_entries.append((path, None))
     seed_entries = list(dict.fromkeys(seed_entries))
-    queue: list[tuple[Path, str | None]] = list(reversed(seed_entries))
+    # Entry seeds, then source-demand jobs the scan discovers.
+    queue: list[tuple[Path, str | None] | _SourceValueJob | _SourceBodyJob] = list(
+        reversed(seed_entries)
+    )
     queued_entries = {
         (resolution_cache.resolved_path(path), forced_name)
-        for path, forced_name in queue
+        for path, forced_name in seed_entries
     }
     import_admission_policy = import_admission_policy or _ImportAdmissionPolicy()
     resolved_entry_paths = frozenset(
@@ -482,10 +493,10 @@ def _discover_module_graph_from_paths(
         str, tuple[str, _module_source.PythonSourceSnapshot | None]
     ] = {}
 
-    def queue_value(value):
+    def queue_value(value: tuple[str, PythonSourceKey | None]) -> None:
         if value not in value_jobs:
             value_jobs.add(value)
-            queue.append(_SourceDemandJob(*value, "value"))
+            queue.append(_SourceValueJob(*value))
 
     def demand(value, phase, arguments=()):
         phases = value_phases.setdefault(value, set())
@@ -592,7 +603,7 @@ def _discover_module_graph_from_paths(
                 and (module_name, owner, arguments) not in body_jobs
             ):
                 body_jobs.add((module_name, owner, arguments))
-                queue.append(_SourceDemandJob(module_name, owner, "body", arguments))
+                queue.append(_SourceBodyJob(module_name, owner, arguments))
 
     def process_value(value):
         value_jobs.discard(value)
@@ -702,10 +713,10 @@ def _discover_module_graph_from_paths(
 
     while queue:
         job = queue.pop()
-        if isinstance(job, _SourceDemandJob):
-            if job.phase == "value":
-                process_value((job.module_name, job.source))
-                continue
+        if isinstance(job, _SourceValueJob):
+            process_value((job.module_name, job.source))
+            continue
+        if isinstance(job, _SourceBodyJob):
             path = graph[job.module_name]
             authority = scan_sources[job.module_name]
             loaded = _load_module_import_scan(

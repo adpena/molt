@@ -235,7 +235,7 @@ class _PythonAstDigestAdmission:
         default=False, init=False, repr=False, compare=False
     )
 
-    def resolved_private_tree(self, tree: ast.AST) -> ast.AST:
+    def resolved_private_tree(self, tree: ast.Module) -> ast.Module:
         if self.tree is not tree:
             raise ValueError("AST digest admission belongs to a different tree")
         if not self._private_names_resolved:

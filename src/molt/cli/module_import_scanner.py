@@ -768,7 +768,10 @@ def _collect_imports(
         )
 
     def demand(
-        result: StaticExpressionResult, phase: str, *, contents: bool = False
+        result: StaticExpressionResult,
+        phase: Literal["read", "call", "escape"],
+        *,
+        contents: bool = False,
     ) -> None:
         if _source_demands is not None:
             origins = (
@@ -1722,7 +1725,10 @@ def _collect_imports(
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             type_alias = cast(ast.TypeAlias, node)
             needs_typing = True
-            if publishes_target(node, type_alias.name) and _source_demands is not None:
+            if (
+                publishes_target(type_alias, type_alias.name)
+                and _source_demands is not None
+            ):
                 _source_demands.append(
                     _SourceValueDemand(python_node_source_key(node), "escape")
                 )
