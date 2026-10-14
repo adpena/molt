@@ -11,10 +11,10 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `196`
+- `implemented-exact`: `197`
 - `implemented-target-limited`: `15`
 - `not-admitted`: `205`
-- `total`: `423`
+- `total`: `424`
 
 ## Matrix
 
@@ -323,6 +323,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `module_import_star` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `module_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `module_set_attr` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `module_slot` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `modulo` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `msgpack_parse` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `mul` | `implemented-target-limited` | Shared target contract admits only representation-proven non-integer scalar domains. |
