@@ -29,11 +29,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
+from molt.cli.output import (  # noqa: E402
+    build_output_path,
+    json_command_failure,
+    read_json_payload,
+)
 from tools import harness_memory_guard  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 from tools.check_reproducible_build import (  # noqa: E402
     _launch_evidence,
-    extract_artifact_path,
     resolve_corpus,
 )
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
@@ -124,42 +128,29 @@ def build_program(
     if result.returncode != 0:
         return (
             None,
-            f"build failed (exit {result.returncode}): {result.stderr[:1000]}",
+            f"build failed (exit {result.returncode}): "
+            f"{json_command_failure(result.stdout, result.stderr)}",
             None,
             launch,
         )
-
-    stdout = result.stdout.strip()
-    json_str = None
-    for line in reversed(stdout.splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            json_str = line
-            break
-
-    if json_str is None:
-        try:
-            build_info = json.loads(stdout)
-        except json.JSONDecodeError as e:
-            return None, f"invalid build JSON: {e}", None, launch
-    else:
-        try:
-            build_info = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            return None, f"invalid build JSON: {e}", None, launch
-
     try:
-        binary = extract_artifact_path(build_info)
-        binary_path = Path(binary)
-        if not binary_path.is_absolute():
-            binary_path = launch_cwd / binary_path
+        build_info = read_json_payload(result.stdout)
+    except ValueError as exc:
+        return None, f"build output: {exc}", None, launch
+    try:
+        binary_path = Path(build_output_path(build_info))
+    except ValueError as exc:
+        return None, f"build output: {exc}", build_info, launch
+    if not binary_path.is_absolute():
+        binary_path = launch_cwd / binary_path
+    try:
         if not binary_path.exists():
-            return None, f"binary not found: {binary}", build_info, launch
-    except (KeyError, ValueError, OSError) as exc:
+            return None, f"binary not found: {binary_path}", build_info, launch
+    except OSError as exc:
         return (
             None,
             f"build artifact error: {str(exc) or type(exc).__name__}",
-            build_info if isinstance(build_info, dict) else None,
+            build_info,
             launch,
         )
 

@@ -7,6 +7,10 @@ import sys
 
 import pytest
 
+from tests.build_payload_test_support import (
+    MALFORMED_BUILD_OUTPUTS,
+    build_payload_line,
+)
 from tools import check_deterministic_runtime as determinism
 
 
@@ -79,7 +83,7 @@ def test_receipt_environment_matches_real_build_and_guest_children(
             binary = Path(kwargs["cwd"]) / "observed-program"
             tail = (
                 f"Path({str(binary)!r}).write_bytes(b'constant fixture artifact'); "
-                f"print(json.dumps({{'output': {str(binary)!r}}}))"
+                f"print({build_payload_line(str(binary))!r})"
             )
         elif len(command) == 1 and Path(command[0]).name == "observed-program":
             phase = "runtime"
@@ -251,11 +255,9 @@ def test_timeout_exception_keeps_attempted_guest_environment(
     assert launch["environment"]["MOLT_DETERMINISTIC"] is None
 
 
-@pytest.mark.parametrize(
-    "build_json", [[], None, {"output": 23}, {"data": []}, {"data": {"output": 23}}]
-)
+@pytest.mark.parametrize("build_output", MALFORMED_BUILD_OUTPUTS)
 def test_wrong_build_json_shape_retains_launch_without_runtime(
-    tmp_path: Path, monkeypatch, build_json: object
+    tmp_path: Path, monkeypatch, build_output: str
 ) -> None:
     source = tmp_path / "source.py"
     source.write_text("print('ok')\n", encoding="utf-8")
@@ -266,7 +268,7 @@ def test_wrong_build_json_shape_retains_launch_without_runtime(
         if command[:4] != [sys.executable, "-m", "molt.cli", "build"]:
             return real_guard(command, **kwargs)
         launched = real_guard(
-            [sys.executable, "-B", "-c", f"print({json.dumps(build_json)!r})"], **kwargs
+            [sys.executable, "-B", "-c", f"print({build_output!r})"], **kwargs
         )
         calls.append(launched.args)
         return launched
@@ -276,7 +278,7 @@ def test_wrong_build_json_shape_retains_launch_without_runtime(
     )
     result = determinism.check_determinism(str(source), 2, "dev")
     assert result["status"] == "build_error"
-    assert "build artifact error" in result["error"]
+    assert "build output: " in result["error"]
     assert result["completed_runs"] == 0
     assert len(calls) == len(result["observations"]) == 1
     row = result["observations"][0]
@@ -319,7 +321,7 @@ def test_later_runtime_failure_retains_launches_and_other_completed_cell(
             script = (
                 "import json; from pathlib import Path; "
                 f"Path({str(artifact)!r}).write_bytes(b'fixture'); "
-                f"print(json.dumps({{'output': {str(artifact)!r}}}))"
+                f"print({build_payload_line(str(artifact))!r})"
             )
         elif len(command) == 1 and Path(command[0]).name in {
             "good-program",
@@ -464,7 +466,7 @@ def test_observations_share_the_compiler_build_but_not_program_state(
         return determinism.harness_memory_guard.GuardedCompletedProcess(
             cmd,
             0,
-            json.dumps({"data": {"output": str(output)}}),
+            build_payload_line(str(output)),
             "",
             elapsed_s=0.0,
             child_returncode=0,
