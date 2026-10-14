@@ -3963,18 +3963,24 @@ def _clippy_component_fixture(tmp_path, monkeypatch, *, proxy=False):
             argv, 0, str(tools["cargo-clippy"]) + "\n", ""
         )
 
+    def names(argv0: str, path: Path) -> bool:
+        # Route by the platform's path identity: Windows custody spells the
+        # drive anchor in lowercase (custody_spelling).
+        return os.path.normcase(argv0) == os.path.normcase(str(path))
+
     def probe(argv, **_kwargs):
         calls.append(("probe", tuple(argv)))
-        if proxy and argv[0] == str(home_bin / ("rustup" + suffix)):
-            assert argv[1:3] == ["run", str(tmp_path.parent)]
+        if proxy and names(argv[0], home_bin / ("rustup" + suffix)):
+            assert os.path.normcase(argv[2]) == os.path.normcase(str(tmp_path.parent))
+            assert argv[1] == "run"
             argv = argv[3:]
-        if argv[0] == str(tools["cargo-clippy"]):
+        if names(argv[0], tools["cargo-clippy"]):
             assert list(argv[1:]) == ["--version"]
             output = "clippy 0.1.99 (123456789 2026-09-28)\n"
-        elif argv[0] == str(tools["clippy-driver"]):
+        elif names(argv[0], tools["clippy-driver"]):
             assert list(argv[1:]) == ["--rustc", "--version", "--verbose"]
             output = version
-        elif argv[0] == str(tools["rustc"]) and list(argv[1:]) == [
+        elif names(argv[0], tools["rustc"]) and list(argv[1:]) == [
             "--version",
             "--verbose",
         ]:
