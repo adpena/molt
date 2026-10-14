@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
+from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, checkout_component
 from tests.native_process_guard import run_native_test_process
 
 
@@ -95,7 +95,10 @@ def test_run_context_env_prefers_external_artifact_root() -> None:
     session_id = _export_value(result.stdout, "MOLT_SESSION_ID")
     target_dir = _export_value(result.stdout, "CARGO_TARGET_DIR")
     assert session_id
-    assert target_dir == str(external_root.resolve() / "target")
+    # Each checkout gets its own stable target under the shared root (HF-45).
+    assert target_dir == str(
+        external_root.resolve() / "target" / "checkouts" / checkout_component(REPO_ROOT)
+    )
     assert session_id not in target_dir
     socket_dir = _export_value(result.stdout, "MOLT_BACKEND_DAEMON_SOCKET_DIR")
     assert Path(socket_dir).name.startswith("molt-backend-")
