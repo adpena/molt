@@ -3447,8 +3447,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "bool",
       "name": "MOLT_DISABLE_SPLIT_FIELD_DEFOREST",
-      "owner": "runtime/molt-tir/src/passes/split_field_deforestation.rs",
-      "summary": "Skips split-field read deforestation in the native backend when the variable is present with any value, even empty or 0; unset runs the pass.",
+      "owner": "runtime/molt-passes/src/tir/passes/deforestation/split_field.rs",
+      "summary": "Skips shared typed split-field read deforestation for native and LLVM when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
     },
     {
@@ -3646,7 +3646,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_DUMP_REWRITTEN_FUNC",
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/program_pipeline.rs",
-      "summary": "Exact function name; after mid-end rewrites the native backend writes that function's op list to tmp/rewritten_func_ir.txt, and unset writes nothing.",
+      "summary": "Exact function name; after module and ownership finalization native or LLVM writes that function's final projected op list to tmp/rewritten_func_ir.txt, and unset writes nothing.",
       "values": []
     },
     {
