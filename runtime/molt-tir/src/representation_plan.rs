@@ -145,7 +145,8 @@ pub struct ScalarPrimaryNameSets {
     /// Inline-int47-safe raw carriers. This is the name-keyed seed for
     /// value-keyed `RawI64Safe` propagation.
     pub int_inline_safe: BTreeSet<String>,
-    /// Full-i64 checked-overflow raw carriers from overflow-peel loops.
+    /// Full-i64 raw carriers requiring overflow-safe boxing: checked arithmetic
+    /// results and exact literals outside the inline-int47 window.
     pub int_full_deopt: BTreeSet<String>,
     pub bool_: BTreeSet<String>,
     pub float: BTreeSet<String>,
@@ -620,8 +621,8 @@ impl ScalarRepresentationPlan {
             .collect()
     }
 
-    /// Full-i64 checked-overflow carrier names — the `{RawI64FullDeopt}` view
-    /// over `repr_by_name`.
+    /// Full-i64 carrier names requiring overflow-safe boxing — the
+    /// `{RawI64FullDeopt}` view over `repr_by_name`, including wide literals.
     pub fn int_full_deopt_names(&self) -> BTreeSet<String> {
         self.repr_by_name
             .iter()
@@ -664,7 +665,8 @@ impl ScalarRepresentationPlan {
             .is_some_and(|repr| repr.is_raw_i64_safe())
     }
 
-    /// Name-keyed full-i64 checked-overflow predicate for native lowering.
+    /// Name-keyed full-i64 carrier predicate for native lowering. These values
+    /// require overflow-safe boxing even when their producer is an exact literal.
     pub fn is_full_deopt_int_name(&self, name: &str) -> bool {
         self.repr_by_name
             .get(name)
