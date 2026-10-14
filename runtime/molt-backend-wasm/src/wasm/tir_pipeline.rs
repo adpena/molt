@@ -24,7 +24,7 @@ pub(super) fn run_tir_pipeline(
         let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
         let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
         let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
-            &mut ir.functions,
+            crate::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut ir.functions),
             crate::tir::pipeline_cache::TirPipelineRunOptions {
                 target_info: target_info.clone(),
                 cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Wasm,

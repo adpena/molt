@@ -13,7 +13,7 @@ pub(crate) fn run_luau_tir_module_pipeline(
     let target_info = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
     let local_function_count = ir.functions.iter().filter(|func| !func.is_extern).count();
     let mut tir_run = molt_backend::tir::pipeline_cache::run_cached_tir_pipeline(
-        &mut ir.functions,
+        molt_backend::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut ir.functions),
         molt_backend::tir::pipeline_cache::TirPipelineRunOptions {
             target_info: target_info.clone(),
             cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::Luau,

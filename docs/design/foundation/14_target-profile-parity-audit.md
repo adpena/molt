@@ -24,9 +24,11 @@ which calls codegen emits.
 
 Cache hits and misses transfer the same optimized TIR custody into the module
 wrappers. The change does not alter cache identities, pass skip policy, terminal
-drop gates, optimization budgets, or target capability decisions. LLVM's cached
-per-function runner still produces a SimpleIR projection even though its module
-consumer lowers owned TIR. That distinct conversion is outside this contract.
+drop gates, optimization budgets, or target capability decisions. Native, WASM
+and Luau request a SimpleIR projection in each bounded optimization wave. LLVM
+and FactGraph request only TIR and leave preparation input unchanged. LLVM moves
+its source bodies into module assembly and retires each TIR body after lowering;
+FactGraph borrows source functions without cloning the full input vector.
 
 `skip_ir_passes` and preoptimized batch entrypoints retain their existing
 semantics; they must not perform inlining twice. Build profile alone does not

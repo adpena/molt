@@ -27,9 +27,8 @@ pub(crate) fn emit_fact_graph_for_ir(
     ir: &SimpleIR,
     request: FactGraphEmitRequest<'_>,
 ) -> io::Result<()> {
-    let mut functions = ir.functions.clone();
     let mut tir_run = molt_backend::tir::pipeline_cache::run_cached_tir_pipeline(
-        &mut functions,
+        molt_backend::tir::pipeline_cache::TirPipelineInput::TirOnly(&ir.functions),
         molt_backend::tir::pipeline_cache::TirPipelineRunOptions {
             target_info: request.target_info.clone(),
             cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::FactGraph,
@@ -46,7 +45,7 @@ pub(crate) fn emit_fact_graph_for_ir(
     let non_inlinable = HashSet::new();
     let tir_functions =
         molt_backend::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
-            &functions,
+            &ir.functions,
             &mut tir_run.cached_tir,
             molt_backend::tir::pipeline_cache::TirOwnedModulePipelineOptions {
                 target_info: request.target_info,
@@ -153,6 +152,7 @@ mod tests {
         let output = root.join("nested").join("molt_main.fact_graph.json");
         let target_info = molt_backend::tir::target_info::TargetInfo::native_release_fast();
 
+        let original = serde_json::to_vec(&ir).expect("source IR");
         emit_fact_graph_for_ir(
             &ir,
             FactGraphEmitRequest {
@@ -163,6 +163,10 @@ mod tests {
         )
         .expect("fact graph emission");
 
+        assert_eq!(
+            serde_json::to_vec(&ir).expect("source IR after diagnostic"),
+            original
+        );
         assert!(output.is_file(), "fact graph output file must be created");
         let graph: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&output).expect("read graph"))

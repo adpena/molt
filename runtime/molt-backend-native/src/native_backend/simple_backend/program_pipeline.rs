@@ -89,7 +89,7 @@ impl SimpleBackend {
         });
         let mut native_cached_tir = native_tti.as_ref().map(|native_tti| {
             crate::tir::pipeline_cache::run_cached_tir_pipeline(
-                &mut ir.functions,
+                crate::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut ir.functions),
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
                     target_info: native_tti.clone(),
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
