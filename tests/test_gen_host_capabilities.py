@@ -108,7 +108,9 @@ def test_typed_operation_requirements_and_target_gates_are_generated() -> None:
 
 
 @pytest.mark.parametrize("target", ["wasi", "browser", "cloudflare", "fastly"])
-def test_wasm_platform_coordinates_preserve_portable_and_native_operation_boundary(target):
+def test_wasm_platform_coordinates_preserve_portable_and_native_operation_boundary(
+    target,
+):
     generated = _generated()
     for operation in (
         generated.OperationId.IO_OPEN_READ,
