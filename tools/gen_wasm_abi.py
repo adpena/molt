@@ -2071,44 +2071,55 @@ def render_runtime_callables_rs(data: dict) -> str:
     lines.extend(
         [
             "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
-            "    runtime_reserved_callable_key_from_symbol_name(symbol_name)\n",
-            "        .or_else(|| runtime_poll_callable_key_from_symbol_name(symbol_name))\n",
-            "}\n\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_poll_table_slot_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
-            "    match symbol_name {\n",
+            "/// Runtime poll callables and their table slots.\n",
+            "pub(crate) const RUNTIME_POLL_CALLABLES: &[(u64, &str)] = &[\n",
         ]
     )
     for slot, import_name in poll_imports:
-        lines.append(f'        "molt_{import_name}" => Some({slot}),\n')
+        lines.append(f'    ({slot}, "molt_{import_name}"),\n')
     lines.extend(
         [
-            "        _ => None,\n",
+            "];\n\n",
+            "const fn runtime_symbol_name_eq(left: &[u8], right: &[u8]) -> bool {\n",
+            "    if left.len() != right.len() {\n",
+            "        return false;\n",
+            "    }\n",
+            "    let mut index = 0;\n",
+            "    while index < left.len() {\n",
+            "        if left[index] != right[index] {\n",
+            "            return false;\n",
+            "        }\n",
+            "        index += 1;\n",
+            "    }\n",
+            "    true\n",
+            "}\n\n",
+            "/// The one name-to-key authority. It is `const` so `fn_key!` and\n",
+            "/// `fn_addr!` resolve each named identity at compile time; dynamic\n",
+            "/// resolvers call the same function at run time.\n",
+            "pub(crate) const fn runtime_callable_key_from_symbol_name(symbol_name: &[u8]) -> Option<u64> {\n",
+            "    let mut index = 0;\n",
+            "    while index < RESERVED_RUNTIME_CALLABLES.len() {\n",
+            "        let entry = &RESERVED_RUNTIME_CALLABLES[index];\n",
+            "        if runtime_symbol_name_eq(entry.runtime_name.as_bytes(), symbol_name) {\n",
+            "            return Some(RUNTIME_CALLABLE_KEY_BASE + entry.index);\n",
+            "        }\n",
+            "        index += 1;\n",
+            "    }\n",
+            "    match wasm_poll_table_slot_from_symbol_name(symbol_name) {\n",
+            "        Some(slot) => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + slot),\n",
+            "        None => None,\n",
             "    }\n",
             "}\n\n",
-            "#[inline]\n",
-            "fn runtime_reserved_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
-            "    RESERVED_RUNTIME_CALLABLES\n",
-            "        .iter()\n",
-            "        .find(|entry| entry.runtime_name == symbol_name)\n",
-            "        .map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)\n",
-            "}\n\n",
-            "#[inline]\n",
-            "fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {\n",
-            "    match symbol_name {\n",
-        ]
-    )
-    for slot, import_name in poll_imports:
-        lines.append(
-            f'        "molt_{import_name}" => '
-            f"Some(RUNTIME_POLL_CALLABLE_KEY_BASE + {slot}),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
+            "pub(crate) const fn wasm_poll_table_slot_from_symbol_name(symbol_name: &[u8]) -> Option<u64> {\n",
+            "    let mut index = 0;\n",
+            "    while index < RUNTIME_POLL_CALLABLES.len() {\n",
+            "        let (slot, name) = RUNTIME_POLL_CALLABLES[index];\n",
+            "        if runtime_symbol_name_eq(name.as_bytes(), symbol_name) {\n",
+            "            return Some(slot);\n",
+            "        }\n",
+            "        index += 1;\n",
             "    }\n",
+            "    None\n",
             "}\n\n",
             "#[inline]\n",
             "pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
@@ -2221,6 +2232,8 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    };\n",
             "    Some(crate::provenance::abi::expose_function_address(target))\n",
             "}\n\n",
+            "/// `fn_key!` folds each symbol to the key its table row names, and the\n",
+            "/// key resolves back to the same executable target.\n",
             "#[cfg(test)]\n",
             "#[rustfmt::skip]\n",
             "pub(crate) fn assert_reserved_runtime_symbols_resolve() {\n",
@@ -2228,11 +2241,27 @@ def render_runtime_callables_rs(data: dict) -> str:
     )
     for entry in reserved_callables:
         runtime_feature = entry.get("runtime_feature")
+        symbol_path = entry["symbol_path"]
         if isinstance(runtime_feature, str):
             lines.append(f'    #[cfg(feature = "{runtime_feature}")]\n')
-        lines.append(f"    let _ = {entry['symbol_path']} as *const ();\n")
+        lines.append(
+            f"    assert_runtime_symbol_key(fn_key!({symbol_path}), "
+            f"RUNTIME_CALLABLE_KEY_BASE, {entry['index']}, "
+            f"{symbol_path} as *const ());\n"
+        )
+    for slot, import_name in poll_imports:
+        lines.append(
+            f"    assert_runtime_symbol_key(fn_key!(crate::molt_{import_name}), "
+            f"RUNTIME_POLL_CALLABLE_KEY_BASE, {slot}, "
+            f"crate::molt_{import_name} as *const ());\n"
+        )
     lines.extend(
         [
+            "}\n\n",
+            "#[cfg(test)]\n",
+            "fn assert_runtime_symbol_key(key: u64, base: u64, offset: u64, target: *const ()) {\n",
+            "    assert_eq!(key, base + offset);\n",
+            "    assert_eq!(runtime_callable_target_ptr(key), Some(target));\n",
             "}\n",
         ]
     )

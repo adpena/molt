@@ -627,92 +627,81 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
     },
 ];
 
-#[inline]
-pub(crate) fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    runtime_reserved_callable_key_from_symbol_name(symbol_name)
-        .or_else(|| runtime_poll_callable_key_from_symbol_name(symbol_name))
-}
+/// Runtime poll callables and their table slots.
+pub(crate) const RUNTIME_POLL_CALLABLES: &[(u64, &str)] = &[
+    (1, "molt_async_sleep_poll"),
+    (2, "molt_anext_default_poll"),
+    (3, "molt_asyncgen_poll"),
+    (4, "molt_promise_poll"),
+    (5, "molt_io_wait"),
+    (6, "molt_thread_poll"),
+    (7, "molt_process_poll"),
+    (8, "molt_ws_wait"),
+    (9, "molt_asyncio_socket_reader_read_poll"),
+    (10, "molt_asyncio_socket_reader_readline_poll"),
+    (11, "molt_asyncio_stream_reader_read_poll"),
+    (12, "molt_asyncio_stream_reader_readline_poll"),
+    (13, "molt_asyncio_stream_send_all_poll"),
+    (14, "molt_asyncio_sock_recv_poll"),
+    (15, "molt_asyncio_sock_connect_poll"),
+    (16, "molt_asyncio_sock_accept_poll"),
+    (17, "molt_asyncio_sock_recv_into_poll"),
+    (18, "molt_asyncio_sock_sendall_poll"),
+    (19, "molt_asyncio_sock_recvfrom_poll"),
+    (20, "molt_asyncio_sock_recvfrom_into_poll"),
+    (21, "molt_asyncio_sock_sendto_poll"),
+    (22, "molt_asyncio_fd_watcher_poll"),
+    (23, "molt_asyncio_server_accept_loop_poll"),
+    (24, "molt_contextlib_asyncgen_enter_poll"),
+    (25, "molt_contextlib_asyncgen_exit_poll"),
+    (26, "molt_contextlib_async_exitstack_exit_poll"),
+    (27, "molt_contextlib_async_exitstack_enter_context_poll"),
+    (28, "molt_await_iterator_poll"),
+    (29, "molt_coroutine_wrapper_poll"),
+];
 
-#[inline]
-pub(crate) fn wasm_poll_table_slot_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    match symbol_name {
-        "molt_async_sleep_poll" => Some(1),
-        "molt_anext_default_poll" => Some(2),
-        "molt_asyncgen_poll" => Some(3),
-        "molt_promise_poll" => Some(4),
-        "molt_io_wait" => Some(5),
-        "molt_thread_poll" => Some(6),
-        "molt_process_poll" => Some(7),
-        "molt_ws_wait" => Some(8),
-        "molt_asyncio_socket_reader_read_poll" => Some(9),
-        "molt_asyncio_socket_reader_readline_poll" => Some(10),
-        "molt_asyncio_stream_reader_read_poll" => Some(11),
-        "molt_asyncio_stream_reader_readline_poll" => Some(12),
-        "molt_asyncio_stream_send_all_poll" => Some(13),
-        "molt_asyncio_sock_recv_poll" => Some(14),
-        "molt_asyncio_sock_connect_poll" => Some(15),
-        "molt_asyncio_sock_accept_poll" => Some(16),
-        "molt_asyncio_sock_recv_into_poll" => Some(17),
-        "molt_asyncio_sock_sendall_poll" => Some(18),
-        "molt_asyncio_sock_recvfrom_poll" => Some(19),
-        "molt_asyncio_sock_recvfrom_into_poll" => Some(20),
-        "molt_asyncio_sock_sendto_poll" => Some(21),
-        "molt_asyncio_fd_watcher_poll" => Some(22),
-        "molt_asyncio_server_accept_loop_poll" => Some(23),
-        "molt_contextlib_asyncgen_enter_poll" => Some(24),
-        "molt_contextlib_asyncgen_exit_poll" => Some(25),
-        "molt_contextlib_async_exitstack_exit_poll" => Some(26),
-        "molt_contextlib_async_exitstack_enter_context_poll" => Some(27),
-        "molt_await_iterator_poll" => Some(28),
-        "molt_coroutine_wrapper_poll" => Some(29),
-        _ => None,
+const fn runtime_symbol_name_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
     }
-}
-
-#[inline]
-fn runtime_reserved_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    RESERVED_RUNTIME_CALLABLES
-        .iter()
-        .find(|entry| entry.runtime_name == symbol_name)
-        .map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)
-}
-
-#[inline]
-fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    match symbol_name {
-        "molt_async_sleep_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 1),
-        "molt_anext_default_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 2),
-        "molt_asyncgen_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 3),
-        "molt_promise_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 4),
-        "molt_io_wait" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 5),
-        "molt_thread_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 6),
-        "molt_process_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 7),
-        "molt_ws_wait" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 8),
-        "molt_asyncio_socket_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 9),
-        "molt_asyncio_socket_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 10),
-        "molt_asyncio_stream_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 11),
-        "molt_asyncio_stream_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 12),
-        "molt_asyncio_stream_send_all_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 13),
-        "molt_asyncio_sock_recv_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 14),
-        "molt_asyncio_sock_connect_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 15),
-        "molt_asyncio_sock_accept_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 16),
-        "molt_asyncio_sock_recv_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 17),
-        "molt_asyncio_sock_sendall_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 18),
-        "molt_asyncio_sock_recvfrom_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 19),
-        "molt_asyncio_sock_recvfrom_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 20),
-        "molt_asyncio_sock_sendto_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 21),
-        "molt_asyncio_fd_watcher_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 22),
-        "molt_asyncio_server_accept_loop_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 23),
-        "molt_contextlib_asyncgen_enter_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 24),
-        "molt_contextlib_asyncgen_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 25),
-        "molt_contextlib_async_exitstack_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 26),
-        "molt_contextlib_async_exitstack_enter_context_poll" => {
-            Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 27)
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
         }
-        "molt_await_iterator_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 28),
-        "molt_coroutine_wrapper_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 29),
-        _ => None,
+        index += 1;
     }
+    true
+}
+
+/// The one name-to-key authority. It is `const` so `fn_key!` and
+/// `fn_addr!` resolve each named identity at compile time; dynamic
+/// resolvers call the same function at run time.
+pub(crate) const fn runtime_callable_key_from_symbol_name(symbol_name: &[u8]) -> Option<u64> {
+    let mut index = 0;
+    while index < RESERVED_RUNTIME_CALLABLES.len() {
+        let entry = &RESERVED_RUNTIME_CALLABLES[index];
+        if runtime_symbol_name_eq(entry.runtime_name.as_bytes(), symbol_name) {
+            return Some(RUNTIME_CALLABLE_KEY_BASE + entry.index);
+        }
+        index += 1;
+    }
+    match wasm_poll_table_slot_from_symbol_name(symbol_name) {
+        Some(slot) => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + slot),
+        None => None,
+    }
+}
+
+pub(crate) const fn wasm_poll_table_slot_from_symbol_name(symbol_name: &[u8]) -> Option<u64> {
+    let mut index = 0;
+    while index < RUNTIME_POLL_CALLABLES.len() {
+        let (slot, name) = RUNTIME_POLL_CALLABLES[index];
+        if runtime_symbol_name_eq(name.as_bytes(), symbol_name) {
+            return Some(slot);
+        }
+        index += 1;
+    }
+    None
 }
 
 #[inline]
@@ -1608,81 +1597,118 @@ pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64> {
     Some(crate::provenance::abi::expose_function_address(target))
 }
 
+/// `fn_key!` folds each symbol to the key its table row names, and the
+/// key resolves back to the same executable target.
 #[cfg(test)]
 #[rustfmt::skip]
 pub(crate) fn assert_reserved_runtime_symbols_resolve() {
-    let _ = molt_type_call as *const ();
-    let _ = molt_type_new as *const ();
-    let _ = molt_type_init as *const ();
-    let _ = molt_object_new_bound as *const ();
-    let _ = molt_object_init as *const ();
-    let _ = molt_object_init_subclass as *const ();
-    let _ = molt_exception_new_bound as *const ();
-    let _ = molt_exception_init as *const ();
-    let _ = molt_exceptiongroup_init as *const ();
-    let _ = molt_types_mappingproxy_new as *const ();
-    let _ = molt_types_mappingproxy_init as *const ();
-    let _ = molt_types_method_new as *const ();
-    let _ = molt_types_method_init as *const ();
-    let _ = molt_types_simplenamespace_init as *const ();
-    let _ = molt_types_capsule_new as *const ();
-    let _ = molt_types_cell_new as *const ();
-    let _ = molt_types_dynamic_class_attr_init as *const ();
-    let _ = molt_types_coroutine as *const ();
-    let _ = molt_types_get_original_bases as *const ();
-    let _ = molt_types_prepare_class as *const ();
-    let _ = molt_types_resolve_bases as *const ();
-    let _ = molt_types_new_class as *const ();
-    let _ = molt_cpython_abi_cext_call_trampoline as *const ();
-    let _ = molt_importlib_import_transaction as *const ();
-    let _ = molt_importlib_module_spec_init as *const ();
-    let _ = molt_importlib_compiled_loader_create_module as *const ();
-    let _ = molt_importlib_compiled_loader_exec_module as *const ();
-    let _ = molt_importlib_compiled_loader_load_module as *const ();
-    let _ = molt_importlib_module_spec_repr as *const ();
-    let _ = molt_importlib_module_spec_parent as *const ();
-    let _ = crate::molt_coroutine_send_method as *const ();
-    let _ = crate::molt_coroutine_throw_method as *const ();
-    let _ = crate::molt_coroutine_close_method as *const ();
-    let _ = crate::molt_awaitable_await as *const ();
-    let _ = crate::molt_coroutine_wrapper_iter as *const ();
-    let _ = crate::molt_coroutine_wrapper_next as *const ();
-    let _ = crate::molt_asyncgen_awaitable_self as *const ();
-    let _ = crate::molt_asyncgen_awaitable_next as *const ();
-    let _ = crate::molt_asyncgen_awaitable_send as *const ();
-    let _ = crate::molt_asyncgen_awaitable_throw as *const ();
-    let _ = crate::molt_asyncgen_awaitable_close as *const ();
-    let _ = crate::molt_generator_throw_method as *const ();
-    let _ = crate::molt_contextvars_types as *const ();
-    let _ = crate::molt_contextvars_copy_current as *const ();
-    let _ = crate::molt_contextvars_new as *const ();
-    let _ = crate::molt_contextvars_token_new as *const ();
-    let _ = crate::molt_contextvars_missing_new as *const ();
-    let _ = crate::molt_contextvars_keys_new as *const ();
-    let _ = crate::molt_contextvars_values_new as *const ();
-    let _ = crate::molt_contextvars_items_new as *const ();
-    let _ = crate::molt_contextvars_var_new as *const ();
-    let _ = crate::molt_contextvars_var_get as *const ();
-    let _ = crate::molt_contextvars_var_set as *const ();
-    let _ = crate::molt_contextvars_var_reset as *const ();
-    let _ = crate::molt_contextvars_var_hash as *const ();
-    let _ = crate::molt_contextvars_copy as *const ();
-    let _ = crate::molt_contextvars_len as *const ();
-    let _ = crate::molt_contextvars_getitem as *const ();
-    let _ = crate::molt_contextvars_contains as *const ();
-    let _ = crate::molt_contextvars_get as *const ();
-    let _ = crate::molt_contextvars_run as *const ();
-    let _ = crate::molt_contextvars_keys as *const ();
-    let _ = crate::molt_contextvars_values as *const ();
-    let _ = crate::molt_contextvars_items as *const ();
-    let _ = crate::molt_contextvars_iter_self as *const ();
-    let _ = crate::molt_contextvars_iter_next as *const ();
-    let _ = crate::molt_contextvars_eq as *const ();
-    let _ = crate::molt_contextvars_ne as *const ();
-    let _ = crate::molt_contextvars_property as *const ();
-    let _ = crate::molt_contextvars_token_enter as *const ();
-    let _ = crate::molt_contextvars_token_exit as *const ();
-    let _ = crate::molt_contextvars_var_repr as *const ();
-    let _ = crate::molt_contextvars_token_repr as *const ();
-    let _ = crate::molt_contextvars_missing_repr as *const ();
+    assert_runtime_symbol_key(fn_key!(molt_type_call), RUNTIME_CALLABLE_KEY_BASE, 0, molt_type_call as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_type_new), RUNTIME_CALLABLE_KEY_BASE, 1, molt_type_new as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_type_init), RUNTIME_CALLABLE_KEY_BASE, 2, molt_type_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_object_new_bound), RUNTIME_CALLABLE_KEY_BASE, 3, molt_object_new_bound as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_object_init), RUNTIME_CALLABLE_KEY_BASE, 4, molt_object_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_object_init_subclass), RUNTIME_CALLABLE_KEY_BASE, 5, molt_object_init_subclass as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_exception_new_bound), RUNTIME_CALLABLE_KEY_BASE, 6, molt_exception_new_bound as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_exception_init), RUNTIME_CALLABLE_KEY_BASE, 7, molt_exception_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_exceptiongroup_init), RUNTIME_CALLABLE_KEY_BASE, 8, molt_exceptiongroup_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_mappingproxy_new), RUNTIME_CALLABLE_KEY_BASE, 9, molt_types_mappingproxy_new as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_mappingproxy_init), RUNTIME_CALLABLE_KEY_BASE, 10, molt_types_mappingproxy_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_method_new), RUNTIME_CALLABLE_KEY_BASE, 11, molt_types_method_new as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_method_init), RUNTIME_CALLABLE_KEY_BASE, 12, molt_types_method_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_simplenamespace_init), RUNTIME_CALLABLE_KEY_BASE, 13, molt_types_simplenamespace_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_capsule_new), RUNTIME_CALLABLE_KEY_BASE, 14, molt_types_capsule_new as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_cell_new), RUNTIME_CALLABLE_KEY_BASE, 15, molt_types_cell_new as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_dynamic_class_attr_init), RUNTIME_CALLABLE_KEY_BASE, 16, molt_types_dynamic_class_attr_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_coroutine), RUNTIME_CALLABLE_KEY_BASE, 17, molt_types_coroutine as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_get_original_bases), RUNTIME_CALLABLE_KEY_BASE, 18, molt_types_get_original_bases as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_prepare_class), RUNTIME_CALLABLE_KEY_BASE, 19, molt_types_prepare_class as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_resolve_bases), RUNTIME_CALLABLE_KEY_BASE, 20, molt_types_resolve_bases as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_types_new_class), RUNTIME_CALLABLE_KEY_BASE, 21, molt_types_new_class as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_cpython_abi_cext_call_trampoline), RUNTIME_CALLABLE_KEY_BASE, 22, molt_cpython_abi_cext_call_trampoline as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_import_transaction), RUNTIME_CALLABLE_KEY_BASE, 23, molt_importlib_import_transaction as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_init), RUNTIME_CALLABLE_KEY_BASE, 24, molt_importlib_module_spec_init as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_compiled_loader_create_module), RUNTIME_CALLABLE_KEY_BASE, 25, molt_importlib_compiled_loader_create_module as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_compiled_loader_exec_module), RUNTIME_CALLABLE_KEY_BASE, 26, molt_importlib_compiled_loader_exec_module as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_compiled_loader_load_module), RUNTIME_CALLABLE_KEY_BASE, 27, molt_importlib_compiled_loader_load_module as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_repr), RUNTIME_CALLABLE_KEY_BASE, 28, molt_importlib_module_spec_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_parent), RUNTIME_CALLABLE_KEY_BASE, 29, molt_importlib_module_spec_parent as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_send_method), RUNTIME_CALLABLE_KEY_BASE, 30, crate::molt_coroutine_send_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_throw_method), RUNTIME_CALLABLE_KEY_BASE, 31, crate::molt_coroutine_throw_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_close_method), RUNTIME_CALLABLE_KEY_BASE, 32, crate::molt_coroutine_close_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_awaitable_await), RUNTIME_CALLABLE_KEY_BASE, 33, crate::molt_awaitable_await as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_iter), RUNTIME_CALLABLE_KEY_BASE, 34, crate::molt_coroutine_wrapper_iter as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_next), RUNTIME_CALLABLE_KEY_BASE, 35, crate::molt_coroutine_wrapper_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_self), RUNTIME_CALLABLE_KEY_BASE, 36, crate::molt_asyncgen_awaitable_self as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_next), RUNTIME_CALLABLE_KEY_BASE, 37, crate::molt_asyncgen_awaitable_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_send), RUNTIME_CALLABLE_KEY_BASE, 38, crate::molt_asyncgen_awaitable_send as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_throw), RUNTIME_CALLABLE_KEY_BASE, 39, crate::molt_asyncgen_awaitable_throw as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_close), RUNTIME_CALLABLE_KEY_BASE, 40, crate::molt_asyncgen_awaitable_close as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_generator_throw_method), RUNTIME_CALLABLE_KEY_BASE, 41, crate::molt_generator_throw_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_types), RUNTIME_CALLABLE_KEY_BASE, 42, crate::molt_contextvars_types as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy_current), RUNTIME_CALLABLE_KEY_BASE, 43, crate::molt_contextvars_copy_current as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_new), RUNTIME_CALLABLE_KEY_BASE, 44, crate::molt_contextvars_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_new), RUNTIME_CALLABLE_KEY_BASE, 45, crate::molt_contextvars_token_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_new), RUNTIME_CALLABLE_KEY_BASE, 46, crate::molt_contextvars_missing_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys_new), RUNTIME_CALLABLE_KEY_BASE, 47, crate::molt_contextvars_keys_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values_new), RUNTIME_CALLABLE_KEY_BASE, 48, crate::molt_contextvars_values_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items_new), RUNTIME_CALLABLE_KEY_BASE, 49, crate::molt_contextvars_items_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_new), RUNTIME_CALLABLE_KEY_BASE, 50, crate::molt_contextvars_var_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_get), RUNTIME_CALLABLE_KEY_BASE, 51, crate::molt_contextvars_var_get as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_set), RUNTIME_CALLABLE_KEY_BASE, 52, crate::molt_contextvars_var_set as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_reset), RUNTIME_CALLABLE_KEY_BASE, 53, crate::molt_contextvars_var_reset as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_hash), RUNTIME_CALLABLE_KEY_BASE, 54, crate::molt_contextvars_var_hash as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy), RUNTIME_CALLABLE_KEY_BASE, 55, crate::molt_contextvars_copy as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_len), RUNTIME_CALLABLE_KEY_BASE, 56, crate::molt_contextvars_len as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_getitem), RUNTIME_CALLABLE_KEY_BASE, 57, crate::molt_contextvars_getitem as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_contains), RUNTIME_CALLABLE_KEY_BASE, 58, crate::molt_contextvars_contains as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_get), RUNTIME_CALLABLE_KEY_BASE, 59, crate::molt_contextvars_get as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_run), RUNTIME_CALLABLE_KEY_BASE, 60, crate::molt_contextvars_run as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys), RUNTIME_CALLABLE_KEY_BASE, 61, crate::molt_contextvars_keys as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values), RUNTIME_CALLABLE_KEY_BASE, 62, crate::molt_contextvars_values as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items), RUNTIME_CALLABLE_KEY_BASE, 63, crate::molt_contextvars_items as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_self), RUNTIME_CALLABLE_KEY_BASE, 64, crate::molt_contextvars_iter_self as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_next), RUNTIME_CALLABLE_KEY_BASE, 65, crate::molt_contextvars_iter_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_eq), RUNTIME_CALLABLE_KEY_BASE, 66, crate::molt_contextvars_eq as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_ne), RUNTIME_CALLABLE_KEY_BASE, 67, crate::molt_contextvars_ne as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_property), RUNTIME_CALLABLE_KEY_BASE, 68, crate::molt_contextvars_property as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_enter), RUNTIME_CALLABLE_KEY_BASE, 69, crate::molt_contextvars_token_enter as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_exit), RUNTIME_CALLABLE_KEY_BASE, 70, crate::molt_contextvars_token_exit as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_repr), RUNTIME_CALLABLE_KEY_BASE, 71, crate::molt_contextvars_var_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_repr), RUNTIME_CALLABLE_KEY_BASE, 72, crate::molt_contextvars_token_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_repr), RUNTIME_CALLABLE_KEY_BASE, 73, crate::molt_contextvars_missing_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_async_sleep_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 1, crate::molt_async_sleep_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_anext_default_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 2, crate::molt_anext_default_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 3, crate::molt_asyncgen_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_promise_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 4, crate::molt_promise_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_io_wait), RUNTIME_POLL_CALLABLE_KEY_BASE, 5, crate::molt_io_wait as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_thread_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 6, crate::molt_thread_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_process_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 7, crate::molt_process_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_ws_wait), RUNTIME_POLL_CALLABLE_KEY_BASE, 8, crate::molt_ws_wait as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_socket_reader_read_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 9, crate::molt_asyncio_socket_reader_read_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_socket_reader_readline_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 10, crate::molt_asyncio_socket_reader_readline_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_stream_reader_read_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 11, crate::molt_asyncio_stream_reader_read_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_stream_reader_readline_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 12, crate::molt_asyncio_stream_reader_readline_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_stream_send_all_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 13, crate::molt_asyncio_stream_send_all_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recv_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 14, crate::molt_asyncio_sock_recv_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_connect_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 15, crate::molt_asyncio_sock_connect_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_accept_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 16, crate::molt_asyncio_sock_accept_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recv_into_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 17, crate::molt_asyncio_sock_recv_into_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_sendall_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 18, crate::molt_asyncio_sock_sendall_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recvfrom_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 19, crate::molt_asyncio_sock_recvfrom_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recvfrom_into_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 20, crate::molt_asyncio_sock_recvfrom_into_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_sendto_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 21, crate::molt_asyncio_sock_sendto_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_fd_watcher_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 22, crate::molt_asyncio_fd_watcher_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_server_accept_loop_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 23, crate::molt_asyncio_server_accept_loop_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextlib_asyncgen_enter_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 24, crate::molt_contextlib_asyncgen_enter_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextlib_asyncgen_exit_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 25, crate::molt_contextlib_asyncgen_exit_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextlib_async_exitstack_exit_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 26, crate::molt_contextlib_async_exitstack_exit_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextlib_async_exitstack_enter_context_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 27, crate::molt_contextlib_async_exitstack_enter_context_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_await_iterator_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 28, crate::molt_await_iterator_poll as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 29, crate::molt_coroutine_wrapper_poll as *const ());
+}
+
+#[cfg(test)]
+fn assert_runtime_symbol_key(key: u64, base: u64, offset: u64, target: *const ()) {
+    assert_eq!(key, base + offset);
+    assert_eq!(runtime_callable_target_ptr(key), Some(target));
 }

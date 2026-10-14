@@ -1838,18 +1838,25 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
             assert (
                 f"Some(crate::{runtime_name} as *const ())" not in rendered_runtime_rs
             )
-            assert (
-                f"let _ = crate::{runtime_name} as *const ();"
-                not in rendered_runtime_rs
-            )
+            assert f"fn_key!(crate::{runtime_name})" not in rendered_runtime_rs
         assert f"Some({symbol_path} as *const ())" in rendered_runtime_rs
-        assert f"let _ = {symbol_path} as *const ();" in rendered_runtime_rs
+        assert (
+            f"assert_runtime_symbol_key(fn_key!({symbol_path}), "
+            f"RUNTIME_CALLABLE_KEY_BASE, {entry['index']}, {symbol_path} as *const ());"
+        ) in rendered_runtime_rs
     assert "fn_addr!(crate::" not in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
     assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
+    # fn_key! and fn_addr! fold names at compile time through this const fn.
     assert (
-        ".map(|entry| RUNTIME_CALLABLE_KEY_BASE + entry.index)" in rendered_runtime_rs
-    )
+        "pub(crate) const fn runtime_callable_key_from_symbol_name("
+        "symbol_name: &[u8]) -> Option<u64> {"
+    ) in rendered_runtime_rs
+    assert "return Some(RUNTIME_CALLABLE_KEY_BASE + entry.index);" in rendered_runtime_rs
+    assert (
+        "assert_runtime_symbol_key(fn_key!(crate::molt_async_sleep_poll), "
+        "RUNTIME_POLL_CALLABLE_KEY_BASE, 1, crate::molt_async_sleep_poll as *const ());"
+    ) in rendered_runtime_rs
     assert 'runtime_name: "molt_type_call"' in rendered_runtime_rs
     assert '"type_call" => Some(WasmRuntimeImport::TypeCall)' in rendered_rs
     assert (
@@ -1902,13 +1909,13 @@ def test_native_poll_keys_follow_manifest_slots_in_runtime_and_compiler() -> Non
     }
     projected = dict(re.findall(r'"([^"]+)" => Some\(BASE \+ (\d+)\)', keys))
     assert {name: int(slot) for name, slot in projected.items()} == expected
-    runtime_projected = dict(
-        re.findall(
-            r'"([^"]+)"\s*=>\s*(?:\{\s*)?Some\(RUNTIME_POLL_CALLABLE_KEY_BASE\s*\+\s*(\d+)\)',
-            rendered,
-        )
-    )
-    assert {name: int(slot) for name, slot in runtime_projected.items()} == expected
+    poll_table = rendered.split("pub(crate) const RUNTIME_POLL_CALLABLES", 1)[1]
+    poll_table = poll_table.split("];", 1)[0]
+    runtime_projected = {
+        name: int(slot)
+        for slot, name in re.findall(r'\((\d+), "([^"]+)"\)', poll_table)
+    }
+    assert runtime_projected == expected
     assert "_ => None" in keys
     assert "ordinary_poll" not in keys
     assert f"WASM_POLL_SLOT_MAX_OFFSET: u64 = {added['poll_table_slot']};" in rendered

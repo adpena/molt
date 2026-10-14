@@ -21,7 +21,7 @@ use crate::builtins::functions::{
 #[cfg(target_arch = "wasm32")]
 #[inline]
 fn wasm_poll_slot(symbol_name: &str) -> u64 {
-    let offset = wasm_poll_table_slot_from_symbol_name(symbol_name)
+    let offset = wasm_poll_table_slot_from_symbol_name(symbol_name.as_bytes())
         .unwrap_or_else(|| panic!("missing generated wasm poll slot for {symbol_name}"));
     crate::wasm_table_base().saturating_add(offset)
 }

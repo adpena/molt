@@ -626,11 +626,7 @@ unsafe fn callback_member(
             MemberOperation::from_tag(layout::native_descriptor_operation(descriptor)?)?;
         let getter = obj_from_bits(layout::native_descriptor_getter_bits(descriptor)).as_ptr()?;
         if object_type_id(getter) != TYPE_ID_FUNCTION
-            || function_fn_ptr(getter)
-                != crate::builtins::functions::runtime_fn_key(
-                    "molt_wrapper_member_get",
-                    molt_wrapper_member_get as *const (),
-                )
+            || function_fn_ptr(getter) != fn_key!(molt_wrapper_member_get)
         {
             return None;
         }
