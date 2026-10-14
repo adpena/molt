@@ -1,6 +1,8 @@
 # 76. One SimpleIR optimization pipeline for every target
 
-Status: implemented 2026-10-11 (HF-87 follow-up). Owner: compiler midend.
+Status: implemented 2026-10-11 (HF-87 follow-up). Owner: compiler midend. Each pass in the table
+retires when TIR covers its fact family and backends consume typed IR
+([77_architecture_convergence.md](77_architecture_convergence.md)).
 
 ## Problem
 
