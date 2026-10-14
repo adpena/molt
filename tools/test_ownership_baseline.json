@@ -107,7 +107,6 @@
   "tests/test_wasm_split_runtime.py",
   "tests/test_wasm_split_runtime_imported_module.py",
   "tests/test_wasm_threading_gate.py",
-  "tests/tools/test_artifact_cleanup.py",
   "tests/tools/test_perf_history.py"
  ]
 }

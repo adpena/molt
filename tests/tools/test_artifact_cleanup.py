@@ -137,8 +137,13 @@ def test_extra_pathspecs_reject_ancestors_of_protected_data() -> None:
 def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:
     module = _load_artifact_cleanup()
     cache = tmp_path / "cache"
-    (cache / "stale-entry").mkdir(parents=True)
-    (cache / "stale-entry" / "blob").write_bytes(b"x" * 1024)
+    # A published analysis leaf is an eviction unit; an unknown namespace may
+    # own live state, so the pruner never removes it.
+    stale = cache / "module_analysis" / "stale.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"{}" + b" " * 1024)
+    (cache / "unknown-namespace").mkdir()
+    (cache / "unknown-namespace" / "blob").write_bytes(b"x" * 1024)
     env = {
         key: value
         for key, value in os.environ.items()
@@ -150,13 +155,14 @@ def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:
     )
     assert dry.returncode == 0, dry.stderr
     assert "removed.entries=1" in dry.stdout
-    assert (cache / "stale-entry").is_dir()
+    assert stale.is_file()
 
     applied = run_guarded_test_process(
         module.build_cache_prune_command(apply=True, cache_root=cache), env=env
     )
     assert applied.returncode == 0, applied.stderr
-    assert not (cache / "stale-entry").exists()
+    assert not stale.exists()
+    assert (cache / "unknown-namespace" / "blob").is_file()
 
 
 def test_main_prunes_checkout_cache_roots_after_git_clean(
