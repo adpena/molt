@@ -298,7 +298,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
         }
         // `copy` is the frontend's args-based pure SSA value move
         // (`{kind:"copy", args:[src], out:result}`). It survives
-        // `rewrite_copy_aliases` whenever its result/source is a mutable-storage
+        // typed copy propagation whenever its result/source is a mutable-storage
         // (reassigned-local) name, so it reaches codegen and must be lowered
         // here rather than silently dropped. It shares the alias lowering:
         // Generated TIR facts distinguish transparent bit-passthrough aliases

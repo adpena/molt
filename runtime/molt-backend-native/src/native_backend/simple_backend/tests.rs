@@ -1,7 +1,7 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
-    NativeBackendModuleContext, NativeFinalCallbacks, NativeRcAuthority, SimpleBackend,
+    NativeBackendModuleContext, NativeFinalFunctions, NativeRcAuthority, SimpleBackend,
     TrampolineKey, analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_candidates,
     merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_task_kinds,
     preprocess_backend_tir_input, should_flush_deferred_codegen,
@@ -281,14 +281,34 @@ fn compile_function_to_clif_with_imports(
     }
 }
 
-/// Direct-codegen fixtures must provide the same final typed callback boundary
-/// as production. Tests may pay the lift cost; production consumes retained TIR.
-fn final_callbacks_for_test(functions: &[FunctionIR]) -> NativeFinalCallbacks {
-    let mut callbacks = NativeFinalCallbacks::default();
-    for function in functions.iter().filter(|function| !function.is_extern) {
-        callbacks.record(&crate::tir::lower_from_simple::lower_to_tir(function));
-    }
-    callbacks
+/// Fresh direct fixtures enter the real final projection owner. Their authored
+/// legacy/full RC is deliberate test input; no optimizer or second drop phase
+/// may rewrite that independent ownership oracle.
+fn final_functions_for_test(functions: &[FunctionIR]) -> NativeFinalFunctions {
+    let target = crate::tir::target_info::TargetInfo::native_release_fast();
+    let typed = functions
+        .iter()
+        .map(|function| {
+            let mut typed =
+                crate::tir::lower_from_simple::lower_to_tir_for_target(function, &target);
+            crate::tir::type_refine::refine_types(&mut typed);
+            (function.is_extern, typed)
+        })
+        .collect();
+    NativeFinalFunctions::from_final_tir(
+        SimpleIR {
+            functions: functions.to_vec(),
+            profile: None,
+        },
+        typed,
+    )
+}
+
+fn final_function_for_test(function: FunctionIR) -> super::NativeFinalFunction {
+    final_functions_for_test(&[function])
+        .into_local_functions()
+        .next()
+        .expect("local fixture")
 }
 
 /// Independent former whole-module oracle, retained only in tests. It observes
@@ -324,10 +344,10 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
         functions,
         profile: None,
     };
+    let finalized = final_functions_for_test(&ir.functions);
     let analysis = analyze_native_backend_ir(
-        &ir,
+        &finalized,
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-        final_callbacks_for_test(&ir.functions),
     );
     let function_has_ret = compute_function_has_ret(&ir.functions);
     let function_arities = ir
@@ -337,16 +357,13 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
         .collect();
     let mut backend = SimpleBackend::new();
     backend.function_entry_custody = merge_function_entry_custody(None, &ir.functions);
-    for target_name in target_names {
-        let target_func = ir
-            .functions
-            .iter()
-            .find(|func| func.name == *target_name)
-            .unwrap_or_else(|| panic!("missing target function `{target_name}`"))
-            .clone();
+    let mut remaining: BTreeSet<_> = target_names.iter().copied().collect();
+    for function in finalized.into_local_functions() {
+        if !remaining.remove(function.function().name.as_str()) {
+            continue;
+        }
         backend.compile_func(
-            target_func,
-            &crate::tir::target_info::TargetInfo::native_release_fast(),
+            function,
             &analysis.task_kinds,
             &analysis.task_closure_sizes,
             &analysis.defined_functions,
@@ -356,6 +373,10 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
             &function_has_ret,
         );
     }
+    assert!(
+        remaining.is_empty(),
+        "missing direct fixture functions: {remaining:?}"
+    );
     backend
 }
 

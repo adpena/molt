@@ -97,9 +97,9 @@ a ledger finding is open.
    retains the commit-attribution hook and retires the obsolete Molt pre-push
    hook, restoring preserved foreign hooks; `--check` verifies this state. It
    uses the common Git hooks directory, without enabling `core.hooksPath` or the
-   unrelated pre-commit type-check. `tools/ff_land.py` validates the exact commit
-   selected for a fast-forward push, while canonical CI checks generated
-   projections. Explicit proof-plan tiers remain available. Molt installs no
+   unrelated pre-commit type-check. `tools/molt_dev.py integrate` runs the selected canonical gates in an
+   exclusive clean checkout and publishes the captured commit. Canonical CI
+   checks the same generated projections. Explicit proof-plan tiers remain available. Molt installs no
    global hygiene or live-working-tree generator gate at push time.
 6. **REVIEW FINDINGS ARE LANES.** The 2026-07-08 full-stack adversarial review
    recorded **26 CONFIRMED** findings (bug classes / metabugs / optimizations), each
@@ -183,7 +183,7 @@ Example: sccache stayed off for months while "configured". A new silent
 degrade-to-slow path cannot land: `tools/degrade_to_slow_gate.py` enforces this
 class.
 
-The coordination toolchain is complete: tree_drift_check + ff_land +
+The coordination toolchain is complete: tree_drift_check + molt_dev integrate +
 claim_lane + dirty_tree_landing_audit cover
 detection / safe-landing / solo-claims / dirty-replay-coverage. Spend cycles on
 the goal (E1-E4) and the leverage frontiers above, not more meta-tooling.
@@ -638,14 +638,14 @@ Everything else: parallel, lane-owned.
   was rewritten once (2026-10-06) to remove Claude attribution; translate an old
   commit ID with `docs/agent/history-rewrite-2026-10-06.commit-map`. Commit
   messages never carry Claude/AI attribution (hook + CI enforce it).
-- Land via fail-closed fast-forward: `python tools/ff_land.py` captures HEAD,
-  checks that commit's generated proof plan and pushes that exact identity to
-  `origin/main` only as a fast-forward. It refuses a dirty tree unless
-  `--allow-dirty` is explicit, and refuses a drifted base or stale committed
-  projection. Nothing-to-land is a successful no-op. Unlanded source/index
-  changes and local replacement refs cannot alter the committed check. It
-  complements `tools/tree_drift_check.py` (staleness) and
-  `tools/dirty_tree_landing_audit.py` (dirty-replay path coverage).
+- Land through `python tools/molt_dev.py integrate --repo <clean-checkout>`.
+  The publisher pins the post-rebase commit and upstream, reads that commit's
+  canonical proof policy, runs all selected gates, rejects source or HEAD drift,
+  and pushes that exact identity as a fast-forward. Preserve parallel WIP in its
+  existing checkout; use an exclusive clean checkout for integration. Claims
+  supply `--expected-upstream <full-commit>` so a competing claim cannot be
+  silently rebased away. Foreign Git hooks remain active. Nothing-to-land is a
+  successful no-op; no gate-skipping landing entry point is provided.
 - Run the gates you touched before landing; cite queue run IDs as evidence.
 - Compatibility floor: CPython >= 3.12 parity with explicit VERSION GATING
   keyed on the TargetPythonVersion authority, and Windows/macOS/Linux with

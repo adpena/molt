@@ -128,7 +128,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
 /// name (`_v{id}`) can land on a string a DIFFERENT value already claimed via
 /// an explicit `_simple_out` override (carried verbatim from the pre-lift
 /// stream). Two distinct values must NOT resolve to the same SimpleIR name —
-/// otherwise `rewrite_copy_aliases` conflates them (observed: a module-scope
+/// otherwise a backend cannot distinguish their values (observed: a module-scope
 /// guarded property merge read the cold slow path on its hot fast edge). The
 /// override is authoritative; the colliding canonical value gets a fresh,
 /// unique name.

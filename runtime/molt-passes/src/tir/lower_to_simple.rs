@@ -17,5 +17,5 @@ mod structured;
 mod tests;
 
 pub use self::cleanup::validate_labels;
-pub use self::runner::lower_to_simple_ir;
+pub use self::runner::{lower_to_simple_ir, lower_to_simple_ir_with_names};
 pub use crate::tir::simple_value_names::SimpleValueNames;

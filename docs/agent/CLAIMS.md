@@ -6,7 +6,7 @@ colliding edits, trampled landings, and *masked frontiers* (one agent's local
 state hiding the real blocker from another). Those lanes are **SOLO lanes**.
 
 Before working a SOLO lane you MUST claim it here. The claim is a git-atomic
-lock: because claims are landed by fast-forward (`tools/ff_land.py`), exactly one
+lock: because claims are landed by fast-forward (`tools/molt_dev.py integrate`), exactly one
 agent can win a claim race — the loser's push is refused and it backs off.
 
 This registry is authoritative at `origin/main`. Read it there, not from a stale
@@ -29,7 +29,7 @@ a lane from this list when its log row is `COMPLETE`; the log keeps its history.
 **Helper (does steps 1-3 correctly for you):** `python tools/claim_lane.py <lane>
 --check` (read-only; exit 0 = claimable, 1 = held → back off) and
 `python tools/claim_lane.py <lane> --claim --agent <id> --note "..."` (pre-checks,
-appends the row, `ff_land`s, and backs off on a lost race). Log progress/finish
+appends the row, integrates, and backs off on a lost race). Log progress/finish
 with `--append PROGRESS|COMPLETE|RELEASED --agent <id> --note "..."`. The manual
 steps below are the contract it implements.
 
@@ -39,10 +39,10 @@ steps below are the contract it implements.
 2. **Check the claim.** If the SOLO lane you want is `CLAIMED` and not STALE (see
    §6), **BACK OFF** — pick a different unclaimed SOLO lane, or a standing lane
    (Codex B/C/D). Never work a lane another agent holds.
-3. **Claim it.** Append ONE row to the log (lane, your agent-id, UTC ISO
-   timestamp, `CLAIMED`, first-step note) and land it with
-   `python tools/ff_land.py`. Because landing is a fast-forward, exactly ONE
-   claim wins a race. **If `ff_land` REFUSES (non-ff), someone moved first** —
+3. **Claim it.** Run `python tools/claim_lane.py <lane> --claim --agent <id>
+   --note "<first step>"`. The helper appends one row and passes the inspected
+   upstream commit to the canonical integration publisher. Exactly ONE
+   claim wins a race. **If integration REFUSES (upstream changed), someone moved first** —
    `git fetch`, re-read this file; if your lane is now claimed, discard your claim
    row and BACK OFF.
 4. **Own it end-to-end.** While your claim is active, no other agent touches the
@@ -63,7 +63,7 @@ steps below are the contract it implements.
      performance (faster than CPython on the claimed target, honest numbers);
      CPython ≥3.12 compatibility in the verified subset; fidelity; no
      duplicate-authority / no partials. Record the sign-off.
-   Only then append a `COMPLETE` row with the evidence links and `ff_land` it.
+   Only then append a `COMPLETE` row with the evidence links and integrate it.
 6. **Stale / release.** A claim with an explicit `RELEASED` row may be reclaimed.
    Otherwise a claim is STALE **only if BOTH** (a) no `PROGRESS` row for >4h AND
    (b) an OBJECTIVE-LIVENESS check shows no real activity. A missing PROGRESS row
@@ -107,7 +107,7 @@ steps below are the contract it implements.
    Write (exit 8 = STAND_DOWN_DUPLICATE, 9 = WAIT_AND_REASSESS) to avoid
    duplicating a landed lane or colliding with a mid-flight one (M22/M24).
 
-## Log (append-only; newest at bottom; land each row via `ff_land`)
+## Log (append-only; newest at bottom; land each row via `molt_dev integrate`)
 
 | lane | agent-id | UTC (ISO) | status | note / evidence |
 |------|----------|-----------|--------|-----------------|

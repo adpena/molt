@@ -663,3 +663,327 @@ fn tuple_scalarize_single_element() {
     assert_eq!(entry.ops[0].operands, vec![ValueId(0)]);
     assert_eq!(entry.ops[0].results, vec![ValueId(2)]);
 }
+
+fn split_property_fixture() -> (TirFunction, ValueId) {
+    let mut function = TirFunction::new(
+        "split_properties".into(),
+        vec![TirType::DynBox; 4],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let constant = function.fresh_value();
+    let tag = function.fresh_value();
+    let field = function.fresh_value();
+    let length = function.fresh_value();
+    let ordinal = function.fresh_value();
+    let equal = function.fresh_value();
+    let handler = function.fresh_block();
+    function.label_id_map.insert(handler.0, 9);
+    let preserved = |name: &str, operands: Vec<ValueId>, results: Vec<ValueId>| {
+        let mut operation = make_op(
+            crate::tir::op_kinds_generated::kind_to_opcode_table(name).unwrap_or(OpCode::Copy),
+            operands,
+            results,
+        );
+        operation
+            .attrs
+            .insert("_original_kind".into(), AttrValue::Str(name.into()));
+        operation
+    };
+    let mut split = preserved(
+        "string_split_field",
+        vec![ValueId(0), ValueId(1), ValueId(2)],
+        vec![field],
+    );
+    split.source_span = Some((31, 44));
+    split.set_source_op_index(71);
+    split
+        .attrs
+        .insert("_simple_out".into(), AttrValue::Str("field".into()));
+    split
+        .attrs
+        .insert("_source_file".into(), AttrValue::Str("parser.py".into()));
+    split
+        .attrs
+        .insert("passes_execution_context".into(), AttrValue::Bool(true));
+    split
+        .attrs
+        .insert("runtime_requirement_bits".into(), AttrValue::Int(3));
+    let mut literal = make_op(OpCode::ConstStr, vec![], vec![constant]);
+    literal
+        .attrs
+        .insert("s_value".into(), AttrValue::Str("needle".into()));
+    let mut type_tag = make_op(OpCode::ConstInt, vec![], vec![tag]);
+    type_tag.attrs.insert("value".into(), AttrValue::Int(5));
+    let mut check = make_op(OpCode::CheckException, vec![], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(9));
+    let mut len = preserved("len", vec![field], vec![length]);
+    len.set_source_op_index(72);
+    let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+    entry.ops = vec![
+        literal,
+        type_tag,
+        split,
+        check,
+        len,
+        preserved("ord_at", vec![field, ValueId(3)], vec![ordinal]),
+        preserved("eq", vec![constant, field], vec![equal]),
+        preserved("guard_type", vec![field, tag], vec![]),
+    ];
+    entry.terminator = Terminator::Return {
+        values: vec![length],
+    };
+    function.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return {
+                values: vec![ValueId(3)],
+            },
+        },
+    );
+    (function, field)
+}
+
+#[test]
+fn split_properties_rewrite_exact_ssa_uses_and_keep_observation_and_metadata() {
+    let (mut function, field) = split_property_fixture();
+    let old_next = function.fresh_value();
+    let stats = super::run_split_field_reads(&mut function);
+    assert_eq!(stats.values_changed, 1);
+    let entry = &function.blocks[&function.entry_block];
+    let kinds: Vec<_> = entry
+        .ops
+        .iter()
+        .filter_map(|op| match op.attrs.get("_original_kind") {
+            Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "string_split_field_start",
+            "string_split_field_end",
+            "string_split_field_is_ascii",
+            "string_split_field_len_from_bounds",
+            "string_split_field_ord_at_bounds",
+            "string_split_field_eq"
+        ]
+    );
+    let properties = &entry.ops[2..5];
+    for property in properties {
+        assert_eq!(property.source_span, Some((31, 44)));
+        assert_eq!(property.source_op_index(), Some(71));
+        assert_eq!(
+            property.attrs.get("_source_file"),
+            Some(&AttrValue::Str("parser.py".into()))
+        );
+        assert_eq!(
+            property.attrs.get("passes_execution_context"),
+            Some(&AttrValue::Bool(true))
+        );
+        assert_eq!(
+            property.attrs.get("runtime_requirement_bits"),
+            Some(&AttrValue::Int(3))
+        );
+        assert!(!property.attrs.contains_key("_simple_out"));
+        assert!(
+            property.results[0].0 > old_next.0,
+            "fresh identities must not reuse eliminated SSA results"
+        );
+    }
+    assert_eq!(entry.ops[5].opcode, OpCode::CheckException);
+    assert_eq!(entry.ops[5].attrs.get("value"), Some(&AttrValue::Int(9)));
+    assert_eq!(entry.ops[6].source_op_index(), Some(72));
+    assert_eq!(
+        entry.ops[6].operands,
+        vec![
+            ValueId(0),
+            properties[0].results[0],
+            properties[1].results[0],
+            properties[2].results[0]
+        ]
+    );
+    for block in function.blocks.values() {
+        assert!(
+            block
+                .ops
+                .iter()
+                .all(|op| !op.operands.contains(&field) && !op.results.contains(&field))
+        );
+        block
+            .terminator
+            .for_each_value(|value| assert_ne!(value, field));
+    }
+}
+
+#[test]
+fn split_properties_refuse_escape_payload_release_guard_and_custody_changes() {
+    for case in [
+        "return",
+        "payload",
+        "release",
+        "guard_tag",
+        "guard_result",
+        "poll",
+        "producer_custody",
+        "consumer_custody",
+        "unknown_eq",
+        "runtime_override",
+    ] {
+        let (mut function, field) = split_property_fixture();
+        let observed = function.fresh_value();
+        let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+        match case {
+            "return" => {
+                entry.terminator = Terminator::Return {
+                    values: vec![field],
+                }
+            }
+            "payload" => entry.ops[3].operands.push(field),
+            "release" => entry.ops.push(make_op(OpCode::DecRef, vec![field], vec![])),
+            "guard_tag" => {
+                entry.ops[1].attrs.insert("value".into(), AttrValue::Int(1));
+            }
+            "guard_result" => entry.ops[7].results.push(observed),
+            "poll" => {
+                entry.ops[3].mark_async_work_poll();
+            }
+            "producer_custody" => entry.ops[2].set_argument_custody(&[
+                crate::ir::ParameterCustody::Transferred,
+                crate::ir::ParameterCustody::Borrowed,
+                crate::ir::ParameterCustody::Borrowed,
+            ]),
+            "consumer_custody" => {
+                entry.ops[4].set_argument_custody(&[crate::ir::ParameterCustody::Transferred])
+            }
+            "unknown_eq" => entry.ops[6].operands[0] = ValueId(1),
+            "runtime_override" => {
+                entry.ops[4]
+                    .attrs
+                    .insert("runtime_symbol".into(), AttrValue::Str("custom_len".into()));
+            }
+            _ => unreachable!(),
+        }
+        if case == "payload" {
+            let handler = function
+                .blocks
+                .values_mut()
+                .find(|block| block.id != function.entry_block)
+                .unwrap();
+            handler.args.push(crate::tir::values::TirValue {
+                id: observed,
+                ty: TirType::DynBox,
+            });
+            handler.terminator = Terminator::Return {
+                values: vec![observed],
+            };
+        }
+        let before = serde_json::to_vec(&function).unwrap();
+        assert_eq!(
+            super::run_split_field_reads(&mut function).total_changes(),
+            0,
+            "{case}"
+        );
+        assert_eq!(serde_json::to_vec(&function).unwrap(), before, "{case}");
+    }
+}
+
+#[test]
+fn terminal_split_policy_is_shared_only_by_its_actual_native_and_llvm_consumers() {
+    let (function, _) = split_property_fixture();
+    for (target, changes) in [
+        (crate::tir::TargetInfo::native_release_fast(), true),
+        (crate::tir::TargetInfo::llvm_release_fast(), true),
+        (crate::tir::TargetInfo::wasm_release_fast(), false),
+    ] {
+        let mut candidate = function.clone();
+        let before = serde_json::to_vec(&candidate).unwrap();
+        assert_eq!(
+            crate::tir::drop_phase::prepare_final_backend_lowering(&mut candidate, &target),
+            changes
+        );
+        if !changes {
+            assert_eq!(serde_json::to_vec(&candidate).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn direct_raise_projection_requires_identical_edge_payload_and_keeps_observers() {
+    for case in [
+        "equivalent",
+        "different_payload",
+        "different_target",
+        "poll",
+        "release",
+    ] {
+        let mut function = TirFunction::new(
+            "raise_edge".into(),
+            vec![TirType::DynBox; 2],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let handler = function.fresh_block();
+        let other = function.fresh_block();
+        function.label_id_map.insert(handler.0, 9);
+        function.label_id_map.insert(other.0, 10);
+        for id in [handler, other] {
+            let argument = function.fresh_value();
+            function.blocks.insert(
+                id,
+                TirBlock {
+                    id,
+                    args: vec![crate::tir::values::TirValue {
+                        id: argument,
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+        }
+        let mut check = make_op(OpCode::CheckException, vec![ValueId(1)], vec![]);
+        check.attrs.insert(
+            "value".into(),
+            AttrValue::Int(if case == "different_target" { 10 } else { 9 }),
+        );
+        if case == "poll" {
+            check.mark_async_work_poll();
+        }
+        if case == "different_payload" {
+            check.operands[0] = ValueId(0);
+        }
+        let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+        entry.ops = vec![make_op(OpCode::Raise, vec![ValueId(0)], vec![])];
+        if case == "release" {
+            entry
+                .ops
+                .push(make_op(OpCode::DecRef, vec![ValueId(1)], vec![]));
+        }
+        entry.ops.push(check);
+        entry.terminator = Terminator::Branch {
+            target: handler,
+            args: vec![ValueId(1)],
+        };
+        crate::tir::drop_phase::prepare_final_backend_lowering(
+            &mut function,
+            &crate::tir::TargetInfo::native_release_fast(),
+        );
+        let operations = &function.blocks[&function.entry_block].ops;
+        assert_eq!(
+            operations
+                .iter()
+                .any(|op| op.opcode == OpCode::CheckException),
+            case != "equivalent",
+            "{case}"
+        );
+        assert_eq!(
+            operations.iter().any(|op| op.opcode == OpCode::DecRef),
+            case == "release"
+        );
+    }
+}

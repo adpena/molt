@@ -111,6 +111,64 @@ fn emit_drop_function_audit(
     );
 }
 
+/// Complete the native driver's lowering transformations while SSA and
+/// ownership are still mutable. Cranelift and LLVM previously performed this
+/// family on source projections; both now use the same typed owner before
+/// terminal drops. Other target policies are unchanged.
+pub fn prepare_final_backend_lowering(func: &mut TirFunction, tti: &TargetInfo) -> bool {
+    if !matches!(
+        tti.target,
+        super::target_info::TargetKind::NativeCranelift | super::target_info::TargetKind::Llvm
+    ) {
+        return false;
+    }
+    let mut changed = super::passes::copy_prop::run(func).total_changes() > 0;
+    changed |= super::passes::deforestation::run_split_field_reads(func).total_changes() > 0;
+    changed |= canonicalize_direct_raise_edges(func);
+    changed
+}
+
+/// Remove only duplicate exception transfers whose target AND SSA payload
+/// equal the unconditional edge. Async observations and intervening releases
+/// remain observable. Source spelling cannot establish edge equivalence.
+fn canonicalize_direct_raise_edges(func: &mut TirFunction) -> bool {
+    use super::blocks::Terminator;
+    use super::ops::OpCode;
+    let labels = super::dominators::exception_label_to_block(func);
+    let mut changed = false;
+    for block in func.blocks.values_mut() {
+        let Terminator::Branch { target, args } = &block.terminator else {
+            continue;
+        };
+        let matching_check = |op: &super::ops::TirOp| {
+            op.opcode == OpCode::CheckException
+                && !op.is_async_work_poll()
+                && matches!(op.attrs.get("value"), Some(AttrValue::Int(label)) if labels.get(label) == Some(target))
+                && op.operands == *args
+                && op.results.is_empty()
+        };
+        let n = block.ops.len();
+        if n >= 2 && block.ops[n - 2].opcode == OpCode::Raise && matching_check(&block.ops[n - 1]) {
+            block.ops.pop();
+            changed = true;
+        }
+        let n = block.ops.len();
+        if n >= 3 && block.ops[n - 1].opcode == OpCode::Raise && matching_check(&block.ops[n - 2]) {
+            let producer = &block.ops[n - 3];
+            if matches!(producer.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+                if matches!(kind.as_str(), "exception_new_builtin" | "exception_new_builtin_empty" | "exception_new_builtin_one"))
+                && producer.results.len() == 1
+                && block.ops[n - 1].operands == producer.results
+                && !producer.is_async_work_poll()
+            {
+                block.ops.remove(n - 2);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// Run the RC drop phase on a single in-TIR function — the ONE per-function entry
 /// every terminal-phase caller funnels through (the TIR-module finalizer, the
 /// SimpleIR finalizer, and the LLVM `skip_ir_passes` branch). Returns `true` iff
@@ -142,6 +200,7 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
          — drops were placed mid-transform or the finalizer ran twice",
         func.name,
     );
+    let lowering_changed = prepare_final_backend_lowering(func, tti);
     let audit_start = Instant::now();
     let had_drop_inserted = matches!(
         func.attrs.get(DROP_INSERTED_ATTR),
@@ -210,7 +269,8 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
             .get(super::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
         Some(AttrValue::Bool(true))
     );
-    let changed = changed > 0
+    let changed = lowering_changed
+        || changed > 0
         || had_drop_inserted != has_drop_inserted
         || had_exception_region_drops != has_exception_region_drops;
     emit_drop_function_audit(

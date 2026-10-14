@@ -17,6 +17,8 @@ current evidence.
 | Exact scalar producer provenance | `runtime/molt-passes/src/tir/type_refine/exact.rs` |
 | Value-keyed representation and non-heap proofs | `runtime/molt-passes/src/representation_facts.rs` |
 | Native name projection and LLVM representation view | `runtime/molt-tir/src/representation_plan.rs` |
+| Final native body/fact ownership, reachability and partitions | `runtime/molt-backend-native/src/native_backend/simple_backend/program_pipeline.rs` |
+| Shared final typed transformations and ownership planning | `runtime/molt-passes/src/tir/drop_phase.rs`, `runtime/molt-passes/src/tir/passes/deforestation/split_field.rs` |
 | Generated operation semantics and lowering policy | `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py` |
 | Operand-dependent operator results and effects | `runtime/molt-ir/src/tir/op_semantics.rs` |
 | Frontend immutable literal identity | `src/molt/compiler_analysis/literal_identity.py` |
@@ -34,6 +36,25 @@ SimpleIR names remain a native transport projection, not permission to recreate
 semantic facts from strings or hints. Change the shared authority and its
 consumers together when that projection exposes a correctness or performance
 limit.
+
+Native codegen consumes a `NativeFinalFunction`: one final emitted body paired
+with its representation and eligibility facts. The owned TIR finalizer runs all
+semantic transformations before this projection. It uses the emitter's actual
+value names, checks function identity and ABI, and releases the typed body after
+projection. Reachability and partition ownership preserve the pair; an extern
+has no plan. Normal, skip and batch paths use this same boundary. No native
+codegen entry reconstructs its plan from SimpleIR, and tests that author manual
+ownership operations retain those operations when constructing the final pair.
+The remaining name-based transport is an explicit migration boundary; it does
+not establish completion of the typed-backend architecture or of WASM's later
+reachability path. Qualification is recorded in the findings ledger.
+
+The shared plan still performs its existing analysis-floor LIR projection,
+including a typed-body clone/refinement and conservative weak names for
+analysis-only values. Those names do not override explicit emitted facts.
+This is remaining fact-extraction work to measure and reconcile through the
+value-keyed authority; removing codegen re-lifting does not prove its cost is
+optimal or that all name-based analysis has retired.
 
 ## Representation and operation boundaries
 

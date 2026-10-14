@@ -137,6 +137,15 @@ impl SimpleValueNames {
         names
     }
 
+    /// Facts for the emitted stream use the exact allocated transport identity.
+    /// Source-name ambiguity is retained by `for_function` for fresh-input
+    /// analyses; an emission has already separated those SSA definitions.
+    pub fn into_emission_facts(mut self) -> Self {
+        self.source_names.clone_from(&self.value_names);
+        self.ambiguous_source_names.clear();
+        self
+    }
+
     fn allocate_fresh(base: &str, reserved: &mut HashSet<String>) -> String {
         for suffix in 0u64.. {
             let candidate = format!("{base}_c{suffix}");

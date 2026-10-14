@@ -48,6 +48,10 @@ def repo(tmp_path: Path) -> Path:
     _git(w, "config", "user.name", "t")
     _git(w, "remote", "add", "origin", str(bare))
     (w / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
+    (w / "tools").mkdir()
+    (w / "tools/proof_plan.toml").write_text(
+        'always = ["echo claim-policy"]\n', encoding="utf-8"
+    )
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "init")
     _git(w, "push", "-q", "origin", "main")
@@ -137,3 +141,81 @@ def test_append_refuses_a_note_that_breaks_the_table(repo: Path) -> None:
     assert res.returncode == 2 and "--note" in res.stdout
     _git(repo, "fetch", "origin", "--quiet")
     assert _git(repo, "rev-parse", "origin/main") == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="executable POSIX Git hook")
+def test_claim_race_between_precheck_and_integration_preserves_winner(repo: Path):
+    import shlex
+
+    other = repo.parent / "competitor"
+    _git(repo.parent, "clone", "-q", str(repo.parent / "remote.git"), str(other))
+    _git(other, "config", "user.email", "other@test")
+    _git(other, "config", "user.name", "Other")
+    (other / "docs/agent/CLAIMS.md").write_text(
+        _claims_body(_row("L1", "winner", dt.datetime.now(dt.timezone.utc), "CLAIMED")),
+        encoding="utf-8",
+    )
+    _git(other, "commit", "-qm", "winner", "--", "docs/agent/CLAIMS.md")
+    winner = _git(other, "rev-parse", "HEAD")
+    # The real claim command has already read origin when its commit-msg hook
+    # publishes the competing claim. Integrate must not rebase across it.
+    hook = repo / ".git/hooks/commit-msg"
+    hook.write_text(
+        "#!/bin/sh\n"
+        + shlex.join(["git", "-C", str(other), "push", "origin", "main"])
+        + "\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    result = _run(repo, "L1", "--claim", "--agent", "loser")
+    assert result.returncode != 0
+    assert "expected upstream changed" in result.stderr
+    assert _git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == winner
+    assert "| L1 | loser |" in (repo / "docs/agent/CLAIMS.md").read_text(
+        encoding="utf-8"
+    )
+    assert "| L1 | winner |" in _git(repo, "show", "origin/main:docs/agent/CLAIMS.md")
+
+
+def test_claim_runs_committed_policy_and_reports_gate_failure(repo: Path):
+    (repo / "tools/proof_plan.toml").write_text(
+        'always = ["exit 17"]\n', encoding="utf-8"
+    )
+    _git(repo, "commit", "-qm", "required gate", "--", "tools/proof_plan.toml")
+    _git(repo, "push", "origin", "main")
+    original = _git(repo, "rev-parse", "origin/main")
+    result = _run(repo, "L1", "--claim", "--agent", "me")
+    assert result.returncode != 0
+    assert "gate failed (exit 17)" in result.stderr
+    assert "lost the claim race" not in result.stdout
+    assert _git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == original
+
+
+def test_claim_precheck_fetches_main_when_configured_fetch_excludes_it(repo: Path):
+    old = _git(repo, "rev-parse", "origin/main")
+    other = repo.parent / "fresh-claimant"
+    _git(repo.parent, "clone", "-q", str(repo.parent / "remote.git"), str(other))
+    _git(other, "config", "user.email", "other@test")
+    _git(other, "config", "user.name", "Other")
+    _git(other, "push", "origin", "HEAD:refs/heads/other")
+    _set_claims(
+        other, _row("L1", "winner", dt.datetime.now(dt.timezone.utc), "CLAIMED")
+    )
+    winner = _git(other, "rev-parse", "HEAD")
+    _git(
+        repo,
+        "config",
+        "--replace-all",
+        "remote.origin.fetch",
+        "+refs/heads/other:refs/remotes/origin/other",
+    )
+    assert _git(repo, "rev-parse", "origin/main") == old
+    result = _run(repo, "L1", "--check")
+    assert result.returncode == 1
+    assert "CLAIMED-ALIVE" in result.stdout and "winner" in result.stdout
+    assert _git(repo, "rev-parse", "origin/main") == winner
+    assert _git(repo, "rev-parse", "HEAD") == old
+    # Fresh precheck also prevents a local claim commit, not merely its push.
+    result = _run(repo, "L1", "--claim", "--agent", "loser")
+    assert result.returncode == 1 and "BACK OFF" in result.stdout
+    assert _git(repo, "rev-parse", "HEAD") == old

@@ -26,8 +26,7 @@ use preanalysis::*;
 impl SimpleBackend {
     pub(crate) fn compile_func(
         &mut self,
-        func_ir: FunctionIR,
-        target_info: &crate::tir::target_info::TargetInfo,
+        function: super::simple_backend::NativeFinalFunction,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
@@ -36,6 +35,7 @@ impl SimpleBackend {
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
     ) {
+        let func_ir = function.function();
         let trace_compile = env_setting("MOLT_TRACE_COMPILE_FUNC")
             .as_deref()
             .map(parse_truthy_env)
@@ -103,8 +103,7 @@ impl SimpleBackend {
             );
         }
         self.compile_func_inner(
-            func_ir,
-            target_info,
+            function,
             task_kinds,
             task_closure_sizes,
             defined_functions,
@@ -131,10 +130,9 @@ impl SimpleBackend {
     }
 
     /// Inner compilation for the current native backend path.
-    pub(crate) fn compile_func_inner(
+    fn compile_func_inner(
         &mut self,
-        func_ir: FunctionIR,
-        target_info: &crate::tir::target_info::TargetInfo,
+        function: super::simple_backend::NativeFinalFunction,
         task_kinds: &BTreeMap<String, TrampolineKind>,
         task_closure_sizes: &BTreeMap<String, i64>,
         defined_functions: &BTreeSet<String>,
@@ -143,6 +141,7 @@ impl SimpleBackend {
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
     ) {
+        let (func_ir, representation_plan_storage) = function.into_parts();
         {
             let ce_count = func_ir
                 .ops
@@ -168,8 +167,6 @@ impl SimpleBackend {
         }
         let mut builder_ctx = FunctionBuilderContext::new();
         self.module.clear_context(&mut self.ctx);
-        let representation_plan_storage =
-            ScalarRepresentationPlan::for_function_ir_for_target(&func_ir, target_info);
         let representation_plan = &representation_plan_storage;
         let guard_facts = molt_tir::passes::RuntimeGuardFacts::for_function(&func_ir);
         let FunctionPreanalysis {
@@ -1735,7 +1732,7 @@ impl SimpleBackend {
                 //
                 // `copy` is grouped with the args-based alias ops here. The
                 // frontend emits `{kind:"copy", args:[src], out:result}` (a
-                // pure SSA value move), and `rewrite_copy_aliases`
+                // pure SSA value move), and typed copy propagation
                 // (ir_rewrites.rs) collapses it to `nop` ONLY when neither
                 // `out` nor `src` is a mutable-storage name — a `copy` whose
                 // result/source is a reassigned local SURVIVES with kind

@@ -38,7 +38,11 @@ from tools.command_execution import (  # noqa: E402
     bind_repository_imports,
 )
 from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
-from tools.git_identity import clean_checkout_status_arguments, require_git_object_id  # noqa: E402
+from tools.git_identity import (  # noqa: E402
+    changed_paths,
+    clean_checkout_status_arguments,
+    require_git_object_id,
+)
 
 bind_repository_imports(__file__)
 _COMMANDS = CommandExecutor(prefix="MOLT_PROOF", repo_root=ROOT)
@@ -1931,34 +1935,7 @@ def _source_tree_changes() -> tuple[str, ...]:
 
 
 def _diff_paths(base: str, head: str, *, three_dot: bool = False) -> list[str]:
-    if not base or not head or base == NULL_SHA or head == NULL_SHA:
-        raise RuntimeError("event does not provide two non-null commit identities")
-    separator = "..." if three_dot else ".."
-    output = _run_git(
-        [
-            "diff",
-            "--name-status",
-            "-z",
-            "--diff-filter=ACDMRTUXB",
-            f"{base}{separator}{head}",
-        ]
-    )
-    tokens = output.split("\0")
-    paths: list[str] = []
-    index = 0
-    while index < len(tokens):
-        status = tokens[index]
-        index += 1
-        if not status:
-            continue
-        path_count = 2 if status[0] in {"R", "C"} else 1
-        if index + path_count > len(tokens):
-            raise RuntimeError(f"malformed git diff record for status {status!r}")
-        for path in tokens[index : index + path_count]:
-            if path and path not in paths:
-                paths.append(path)
-        index += path_count
-    return paths
+    return changed_paths(base, head, run_git=_run_git, three_dot=three_dot)
 
 
 def _pull_request_paths(base_ref: str) -> list[str]:

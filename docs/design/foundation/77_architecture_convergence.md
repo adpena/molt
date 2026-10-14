@@ -20,13 +20,13 @@ with additional invocation through wrappers. Of 570 registered wire names,
 dynamic operation mix. Original-kind consumers must migrate with the generated
 schema, not lose their effect/ownership meaning during enum conversion.
 
-Native/WASM discard final typed bodies and later reconstruct facts from changed
-SimpleIR. The representation owner already shares demanded range/carrier work
-and skips an unused secondary optimizer for cold functions. Its remaining
-native reconstruction cannot simply reuse earlier facts: copy-alias,
-split-field, direct-raise and downstream reachability transforms change the
-input. Final typed transforms, exact projection and every normal/skip/batch
-consumer must move together. Facts stay on SSA values; transient source names
+The native migration retains owned final TIR, performs copy-alias, split-field
+and direct-raise transformations before final refinement and ownership, and
+projects emitted operations and facts together. Every normal/skip/batch consumer
+requires that pair; dead-function removal and partitions preserve it. Native
+codegen reconstruction is retired. WASM's later operation-reachability boundary
+still reconstructs facts and must migrate independently through its actual
+transformations. Qualification remains owned by the findings ledger. Facts stay on SSA values; transient source names
 are a projection with explicit ambiguity rules, not a new semantic authority.
 Overlap between Python, SimpleIR and TIR passes requires semantic retirement
 proof through actual callers, not deletion because pass names match.

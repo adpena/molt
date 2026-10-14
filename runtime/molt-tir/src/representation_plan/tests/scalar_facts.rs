@@ -2273,3 +2273,192 @@ fn runtime_guard_alias_keeps_source_carrier_despite_mismatching_tag() {
         assert!(facts.is_nonthrowing(&func.ops[8], Some(&plan)));
     }
 }
+
+#[test]
+fn final_projection_uses_emitted_ssa_identity_and_never_authored_name_collisions() {
+    let mut source = function(
+        "final_names",
+        &["_v0"],
+        None,
+        vec![
+            const_int("integer", 7),
+            const_bool("boolean", true),
+            op("ret", None, None, &["boolean"]),
+        ],
+    );
+    let target = crate::tir::TargetInfo::native_release_fast();
+    let mut typed = lower_to_tir_for_target(&source, &target);
+    for block in typed.blocks.values_mut() {
+        for operation in &mut block.ops {
+            if !operation.results.is_empty() {
+                operation
+                    .attrs
+                    .insert("_simple_out".into(), AttrValue::Str("_v0".into()));
+                operation
+                    .attrs
+                    .insert("_simple_result_0".into(), AttrValue::Str("_v0".into()));
+            }
+        }
+    }
+    refine_types(&mut typed);
+    let before = serde_json::to_vec(&typed).unwrap();
+    source.ops = vec![op("ret", None, None, &["poisoned_old_source"])];
+    let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
+    assert_eq!(
+        serde_json::to_vec(&typed).unwrap(),
+        before,
+        "fact extraction must not mutate or optimize final SSA"
+    );
+    assert!(!source.ops.iter().any(|operation| {
+        operation
+            .args
+            .as_ref()
+            .is_some_and(|args| args.iter().any(|arg| arg == "poisoned_old_source"))
+    }));
+    assert_eq!(
+        plan.name_scalar_kind("_v0"),
+        None,
+        "an unproven ABI parameter cannot inherit a colliding scalar producer"
+    );
+    let integer = source
+        .ops
+        .iter()
+        .find(|operation| operation.kind == "const")
+        .unwrap()
+        .out
+        .as_deref()
+        .unwrap();
+    let boolean = source
+        .ops
+        .iter()
+        .find(|operation| operation.kind == "const_bool")
+        .unwrap()
+        .out
+        .as_deref()
+        .unwrap();
+    assert_ne!(integer, boolean);
+    assert_ne!(integer, "_v0");
+    assert_ne!(boolean, "_v0");
+    assert!(plan.is_inline_safe_int_name(integer));
+    assert!(plan.is_bool_unboxed(boolean));
+}
+
+#[test]
+fn final_projection_preserves_inline_integer_boundary_and_float_bool_carriers() {
+    for (value, inline) in [
+        (0, true),
+        ((1_i64 << 46) - 1, true),
+        (-(1_i64 << 46), true),
+        (1_i64 << 46, false),
+        (i64::MAX, false),
+    ] {
+        let mut source = function(
+            "final_window",
+            &[],
+            None,
+            vec![
+                const_int("integer", value),
+                const_float("float", 1.25),
+                const_bool("boolean", true),
+                op("ret", None, None, &["integer"]),
+            ],
+        );
+        let mut typed =
+            lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
+        refine_types(&mut typed);
+        let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
+        assert_eq!(plan.is_inline_safe_int_name("integer"), inline, "{value}");
+        assert!(
+            !plan.is_full_deopt_int_name("integer"),
+            "a full-width literal is not a checked-overflow continuation"
+        );
+        assert!(plan.is_bool_unboxed("boolean"));
+        assert!(plan.is_float_unboxed("float"));
+        let relifted_oracle = native_representation_plan(&source);
+        assert_eq!(
+            plan.int_carrier_names(),
+            relifted_oracle.int_carrier_names()
+        );
+    }
+}
+
+#[test]
+fn final_projection_keeps_typed_store_site_bound_to_emitted_operation() {
+    let mut source = function(
+        "final_store",
+        &[],
+        None,
+        vec![
+            OpIR {
+                value: Some(16),
+                ..op("alloc", Some("object"), None, &[])
+            },
+            const_int("value", 7),
+            OpIR {
+                value: Some(8),
+                source_op_idx: Some(999),
+                ..op("store", None, None, &["object", "value"])
+            },
+            op("ret", None, None, &["object"]),
+        ],
+    );
+    let mut typed =
+        lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
+    refine_types(&mut typed);
+    let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
+    let index = source
+        .ops
+        .iter()
+        .position(|operation| operation.kind == "store")
+        .unwrap();
+    assert_eq!(
+        plan.typed_slot_store_modes().get(&index),
+        Some(&TypedSlotStoreMode::DirectNonHeap)
+    );
+    assert!(
+        !plan.typed_slot_store_modes().contains_key(&999),
+        "source origin is not an emitted operation index"
+    );
+}
+
+#[test]
+fn final_projection_keeps_checked_value_flag_and_owned_alias_carriers_distinct() {
+    let mut source = function(
+        "final_checked",
+        &["_v3"],
+        None,
+        vec![
+            const_int("left", 1_i64 << 31),
+            const_int("right", 1_i64 << 31),
+            op(
+                "checked_mul",
+                Some("overflow"),
+                Some("wide"),
+                &["left", "right"],
+            ),
+            op("binding_alias", Some("owned_alias"), None, &["wide"]),
+            op("ret", None, None, &["owned_alias"]),
+        ],
+    );
+    let mut typed =
+        lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
+    refine_types(&mut typed);
+    let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
+    let checked = source
+        .ops
+        .iter()
+        .find(|operation| operation.kind == "checked_mul")
+        .unwrap();
+    let value = checked.var.as_deref().expect("checked value result");
+    let flag = checked.out.as_deref().expect("checked overflow flag");
+    assert_ne!(value, flag);
+    assert!(plan.is_full_deopt_int_name(value));
+    assert!(!plan.is_inline_safe_int_name(value));
+    assert!(plan.is_bool_unboxed(flag));
+    assert!(plan.is_full_deopt_int_name("owned_alias"));
+    assert_eq!(
+        plan.name_scalar_kind("_v3"),
+        None,
+        "canonical ValueId fallback cannot classify an unrelated ABI parameter"
+    );
+}

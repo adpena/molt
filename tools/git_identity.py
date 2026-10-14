@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 
 _HEX = frozenset("0123456789abcdef")
 GIT_OBJECT_ID_LENGTHS = frozenset({40, 64})
@@ -43,3 +45,45 @@ def require_git_object_id(value: object, *, label: str = "Git object ID") -> str
     if not is_git_object_id(value):
         raise ValueError(f"{label} must be lowercase 40- or 64-hex")
     return value
+
+
+def changed_paths(
+    base: str,
+    head: str,
+    *,
+    run_git: Callable[[list[str]], str],
+    three_dot: bool = False,
+) -> list[str]:
+    """Return every changed path, including both sides of renames and copies.
+
+    The caller supplies its repository-bound Git reader and source identities.
+    NUL framing preserves names that Git would otherwise quote or escape.
+    """
+    if not base or not head or set(base) == {"0"} or set(head) == {"0"}:
+        raise RuntimeError("event does not provide two non-null commit identities")
+    separator = "..." if three_dot else ".."
+    output = run_git(
+        [
+            "diff",
+            "--name-status",
+            "-z",
+            "--diff-filter=ACDMRTUXB",
+            f"{base}{separator}{head}",
+        ]
+    )
+    tokens = output.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        index += 1
+        if not status:
+            continue
+        path_count = 2 if status[0] in {"R", "C"} else 1
+        if index + path_count > len(tokens):
+            raise RuntimeError(f"malformed git diff record for status {status!r}")
+        for path in tokens[index : index + path_count]:
+            if path and path not in paths:
+                paths.append(path)
+        index += path_count
+    return paths
