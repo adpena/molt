@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from tools import powerplay_acceptance as pa
 
@@ -34,10 +33,12 @@ def test_variant_ii_refuses_proxy_noise_regression_and_oom():
     assert any("memory-ceiling" in item for item in result.hard_errors)
 
 
-def test_existing_attestations_are_parsed_without_shape_crashes():
-    for path in Path("tools").glob("perf*attestation.json"):
-        result = pa.validate_attestation(json.loads(path.read_text(encoding="utf-8")))
-        assert isinstance(result.accepted, bool)
+def test_every_checked_in_attestation_passes_the_audit():
+    # A checked-in perf claim that fails its own audit is stale evidence (HF-188).
+    paths = sorted(Path("tools").glob("*_attestation.json"))
+    assert paths
+    hard, _advisory = pa.validate_files(paths)
+    assert hard == []
 
 
 def test_backlog_ranked_by_gain_per_validation_cost():
