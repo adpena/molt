@@ -128,45 +128,348 @@ pub fn prepare_final_backend_lowering(func: &mut TirFunction, tti: &TargetInfo) 
     changed
 }
 
-/// Remove only duplicate exception transfers whose target AND SSA payload
-/// equal the unconditional edge. Async observations and intervening releases
-/// remain observable. Source spelling cannot establish edge equivalence.
-fn canonicalize_direct_raise_edges(func: &mut TirFunction) -> bool {
-    use super::blocks::Terminator;
-    use super::ops::OpCode;
-    let labels = super::dominators::exception_label_to_block(func);
-    let mut changed = false;
-    for block in func.blocks.values_mut() {
-        let Terminator::Branch { target, args } = &block.terminator else {
-            continue;
-        };
-        let matching_check = |op: &super::ops::TirOp| {
-            op.opcode == OpCode::CheckException
-                && !op.is_async_work_poll()
-                && matches!(op.attrs.get("value"), Some(AttrValue::Int(label)) if labels.get(label) == Some(target))
-                && op.operands == *args
-                && op.results.is_empty()
-        };
-        let n = block.ops.len();
-        if n >= 2 && block.ops[n - 2].opcode == OpCode::Raise && matching_check(&block.ops[n - 1]) {
-            block.ops.pop();
-            changed = true;
+/// A transient summary of effect-free unconditional forwarding. Values remain
+/// in the source block's SSA namespace; composing an edge substitutes only the
+/// destination's block parameters. Each block chain is summarized once, so
+/// many checks sharing a long forwarding tail do not repeatedly walk that tail.
+/// Changed cached payloads are bounded by that block's parameter/edge input;
+/// unchanged payloads share storage. Queries likewise cap changed output at
+/// their own incoming width. Expected hash work and retained storage are thus
+/// linear in the traversed graph and its actual argument data, not chain length
+/// times the width of a distant handler. Wider transport remains unoptimized.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DirectRaiseEdge {
+    target: super::blocks::BlockId,
+    args: std::rc::Rc<[super::values::ValueId]>,
+}
+
+fn substitute_edge_values(
+    parameters: &[super::values::TirValue],
+    incoming: &[super::values::ValueId],
+    values: &[super::values::ValueId],
+) -> Option<Vec<super::values::ValueId>> {
+    if parameters.len() != incoming.len() {
+        return None;
+    }
+    #[cfg(test)]
+    tests::record_substitution_work(parameters.len().saturating_add(values.len()));
+    let substitutions: std::collections::HashMap<_, _> = parameters
+        .iter()
+        .zip(incoming)
+        .map(|(parameter, value)| (parameter.id, *value))
+        .collect();
+    Some(
+        values
+            .iter()
+            .map(|value| substitutions.get(value).copied().unwrap_or(*value))
+            .collect(),
+    )
+}
+
+/// Keep unchanged payloads shared. A changed composition is admitted only when
+/// its width is bounded by the input transport being processed. Expanding
+/// permutations/duplication remain real CFG edges instead of making this
+/// peephole materialize a wide payload at every narrow forwarding block.
+fn substitute_shared_edge_values(
+    parameters: &[super::values::TirValue],
+    incoming: &[super::values::ValueId],
+    values: &std::rc::Rc<[super::values::ValueId]>,
+    changed_width_budget: usize,
+) -> Option<std::rc::Rc<[super::values::ValueId]>> {
+    if parameters.len() != incoming.len() {
+        return None;
+    }
+    #[cfg(test)]
+    tests::record_substitution_work(parameters.len());
+    if parameters
+        .iter()
+        .zip(incoming)
+        .all(|(parameter, value)| parameter.id == *value)
+    {
+        return Some(std::rc::Rc::clone(values));
+    }
+    if values.len() > changed_width_budget {
+        return None;
+    }
+    substitute_edge_values(parameters, incoming, values).map(Into::into)
+}
+
+struct DirectRaiseForwarding<'a> {
+    function: &'a TirFunction,
+    summaries: std::collections::HashMap<super::blocks::BlockId, Option<DirectRaiseEdge>>,
+    resume_targets: std::collections::HashSet<super::blocks::BlockId>,
+    handlers: std::collections::HashSet<super::blocks::BlockId>,
+}
+
+impl<'a> DirectRaiseForwarding<'a> {
+    fn new(
+        function: &'a TirFunction,
+        handlers: std::collections::HashSet<super::blocks::BlockId>,
+    ) -> Self {
+        let mut resume_targets = std::collections::HashSet::new();
+        for block in function.blocks.values() {
+            if matches!(
+                block.terminator,
+                super::blocks::Terminator::StateDispatch { .. }
+            ) {
+                block.terminator.for_each_edge(|target, _| {
+                    resume_targets.insert(target);
+                });
+            }
         }
-        let n = block.ops.len();
-        if n >= 3 && block.ops[n - 1].opcode == OpCode::Raise && matching_check(&block.ops[n - 2]) {
-            let producer = &block.ops[n - 3];
-            if matches!(producer.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
-                if matches!(kind.as_str(), "exception_new_builtin" | "exception_new_builtin_empty" | "exception_new_builtin_one"))
-                && producer.results.len() == 1
-                && block.ops[n - 1].operands == producer.results
-                && !producer.is_async_work_poll()
+        Self {
+            function,
+            summaries: std::collections::HashMap::new(),
+            resume_targets,
+            handlers,
+        }
+    }
+
+    fn edge(
+        &mut self,
+        target: super::blocks::BlockId,
+        args: &[super::values::ValueId],
+    ) -> Option<DirectRaiseEdge> {
+        use super::blocks::Terminator;
+        let mut current = target;
+        let mut path = Vec::new();
+        let mut visiting = std::collections::HashSet::new();
+        while !self.summaries.contains_key(&current) {
+            if !visiting.insert(current) {
+                self.summaries.insert(current, None);
+                break;
+            }
+            let Some(block) = self.function.blocks.get(&current) else {
+                self.summaries.insert(current, None);
+                break;
+            };
+            if block.ops.is_empty()
+                && !self.handlers.contains(&current)
+                && !self.resume_targets.contains(&current)
+                && !self.function.loop_roles.contains_key(&current)
+                && let Terminator::Branch { target, .. } = &block.terminator
             {
-                block.ops.remove(n - 2);
-                changed = true;
+                path.push(current);
+                current = *target;
+            } else {
+                self.summaries.insert(
+                    current,
+                    Some(DirectRaiseEdge {
+                        target: current,
+                        args: block.args.iter().map(|value| value.id).collect(),
+                    }),
+                );
+            }
+        }
+        for block_id in path.into_iter().rev() {
+            let block = &self.function.blocks[&block_id];
+            let Terminator::Branch { target, args } = &block.terminator else {
+                unreachable!("only unconditional empty blocks enter a forwarding chain");
+            };
+            let summary =
+                self.summaries[target]
+                    .as_ref()
+                    .map(|summary| {
+                        match substitute_shared_edge_values(
+                            &self.function.blocks[target].args,
+                            args,
+                            &summary.args,
+                            block.args.len().saturating_add(args.len()),
+                        ) {
+                            Some(args) => DirectRaiseEdge {
+                                target: summary.target,
+                                args,
+                            },
+                            None => DirectRaiseEdge {
+                                target: block_id,
+                                args: block.args.iter().map(|value| value.id).collect(),
+                            },
+                        }
+                    });
+            self.summaries.insert(block_id, summary);
+        }
+        let summary = self.summaries[&target].as_ref()?;
+        Some(DirectRaiseEdge {
+            target: summary.target,
+            args: substitute_shared_edge_values(
+                &self.function.blocks.get(&target)?.args,
+                args,
+                &summary.args,
+                args.len(),
+            )?,
+        })
+    }
+
+    fn branch(&mut self, block: &super::blocks::TirBlock) -> Option<DirectRaiseEdge> {
+        let super::blocks::Terminator::Branch { target, args } = &block.terminator else {
+            return None;
+        };
+        self.edge(*target, args)
+    }
+}
+
+/// Remove duplicate exception transfers only when their unconditional path
+/// reaches the same handler with the same SSA payload. The CFG splits at each
+/// check, so the normal path may contain empty forwarding blocks. No executable
+/// operation, observation, loop/resume boundary or conditional edge is skipped.
+fn canonicalize_direct_raise_edges(func: &mut TirFunction) -> bool {
+    use super::ops::{OpCode, TirOp};
+    if !func
+        .blocks
+        .values()
+        .any(|block| block.ops.iter().any(|op| op.opcode == OpCode::Raise))
+    {
+        return false;
+    }
+    let labels = super::dominators::exception_label_to_block(func);
+    let mut forwarding = DirectRaiseForwarding::new(func, labels.values().copied().collect());
+    let check_edge = |op: &TirOp| {
+        if op.opcode != OpCode::CheckException || op.is_async_work_poll() || !op.results.is_empty()
+        {
+            return None;
+        }
+        let Some(AttrValue::Int(label)) = op.attrs.get("value") else {
+            return None;
+        };
+        Some(DirectRaiseEdge {
+            target: *labels.get(label)?,
+            args: op.operands.clone().into(),
+        })
+    };
+    let mut remove = std::collections::HashSet::new();
+    for block in func.blocks.values() {
+        let n = block.ops.len();
+        if n < 2 || block.ops[n - 2].opcode != OpCode::Raise {
+            continue;
+        }
+        if let Some(check) = check_edge(&block.ops[n - 1])
+            && forwarding.branch(block).as_ref() == Some(&check)
+        {
+            remove.insert((block.id, n - 1));
+        }
+    }
+    // A builtin exception constructor can fail by returning None with its
+    // original error pending. molt_raise(None) preserves that pending error;
+    // on success it raises the exact constructed exception. Removing the
+    // intervening check is therefore legal only along this precise raise path.
+    // Arbitrary constructors/calls and intervening operations are not admitted.
+    let mut constructor_checks = Vec::new();
+    for block in func.blocks.values() {
+        for (index, pair) in block.ops.windows(2).enumerate() {
+            let [producer, check] = pair else {
+                unreachable!()
+            };
+            if producer.opcode != OpCode::Copy
+                || !matches!(producer.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+                if matches!(kind.as_str(), "exception_new_builtin" | "exception_new_builtin_empty" | "exception_new_builtin_one"))
+                || producer.results.len() != 1
+                || producer.is_async_work_poll()
+                || producer.attrs.contains_key("runtime_symbol")
+            {
+                continue;
+            }
+            let Some(expected) = check_edge(check) else {
+                continue;
+            };
+            let mut tail = block.ops[index + 2..]
+                .iter()
+                .enumerate()
+                .filter(|(offset, _)| !remove.contains(&(block.id, index + 2 + *offset)))
+                .map(|(_, op)| op);
+            let next = tail.next();
+            if tail.next().is_some() {
+                continue;
+            }
+            let (raise, exit) = if let Some(raise) = next {
+                if raise.opcode != OpCode::Raise
+                    || raise.operands.len() != 1
+                    || raise.is_async_work_poll()
+                {
+                    continue;
+                }
+                (raise.operands.clone(), forwarding.branch(block))
+            } else {
+                let super::blocks::Terminator::Branch { args: incoming, .. } = &block.terminator
+                else {
+                    continue;
+                };
+                let Some(entry) = forwarding.branch(block) else {
+                    continue;
+                };
+                // Many constructor predecessors may share one Raise block.
+                // A shared unchanged summary can be wider than this incoming
+                // edge: refuse before building its parameter substitution map.
+                let entry_budget = incoming
+                    .len()
+                    .saturating_add(expected.args.len())
+                    .saturating_add(1);
+                if entry.args.len() > entry_budget
+                    || forwarding.resume_targets.contains(&entry.target)
+                    || func.loop_roles.contains_key(&entry.target)
+                {
+                    continue;
+                }
+                let target = &func.blocks[&entry.target];
+                let mut operations = target
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !remove.contains(&(target.id, *i)))
+                    .map(|(_, op)| op);
+                let Some(raise) = operations.next() else {
+                    continue;
+                };
+                if operations.next().is_some()
+                    || raise.opcode != OpCode::Raise
+                    || raise.operands.len() != 1
+                    || raise.is_async_work_poll()
+                {
+                    continue;
+                }
+                let Some(raised) =
+                    substitute_edge_values(&target.args, &entry.args, &raise.operands)
+                else {
+                    continue;
+                };
+                let super::blocks::Terminator::Branch { args: outgoing, .. } = &target.terminator
+                else {
+                    continue;
+                };
+                // The effectful Raise block's exit is queried for each such
+                // predecessor. Bound this query before composing a wide exit
+                // that a narrow constructor check cannot consume.
+                if outgoing.len() > expected.args.len() {
+                    continue;
+                }
+                let exit = forwarding.branch(target).and_then(|edge| {
+                    Some(DirectRaiseEdge {
+                        target: edge.target,
+                        args: substitute_shared_edge_values(
+                            &target.args,
+                            &entry.args,
+                            &edge.args,
+                            expected.args.len(),
+                        )?,
+                    })
+                });
+                (raised, exit)
+            };
+            if raise == producer.results && exit.as_ref() == Some(&expected) {
+                constructor_checks.push((block.id, index + 1));
             }
         }
     }
-    changed
+    drop(forwarding);
+    remove.extend(constructor_checks);
+    for block in func.blocks.values_mut() {
+        let mut index = 0;
+        block.ops.retain(|_| {
+            let keep = !remove.contains(&(block.id, index));
+            index += 1;
+            keep
+        });
+    }
+    !remove.is_empty()
 }
 
 /// Run the RC drop phase on a single in-TIR function — the ONE per-function entry
@@ -390,6 +693,680 @@ mod tests {
     use super::*;
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::function::TirModule;
+
+    std::thread_local! {
+        static SUBSTITUTION_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn record_substitution_work(entries: usize) {
+        SUBSTITUTION_WORK.with(|count| count.set(count.get().saturating_add(entries)));
+    }
+
+    #[test]
+    fn direct_raise_split_cfg_preserves_payload_observations_and_projection() {
+        use crate::tir::blocks::Terminator;
+        use crate::tir::ops::{Dialect, OpCode, TirOp};
+        for (case, expected_checks) in [
+            ("equivalent", 0),
+            ("different_pre_payload", 1),
+            ("different_post_payload", 2),
+            ("different_target", 2),
+            ("pre_poll", 1),
+            ("post_poll", 2),
+            ("release_before_check", 2),
+            ("release_after_check", 2),
+            ("callback_after_check", 2),
+            ("constructor_override", 1),
+            ("wrong_raised_value", 1),
+            ("cycle", 2),
+            ("conditional", 2),
+            ("state_dispatch", 2),
+        ] {
+            let operation = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
+                kind: kind.into(),
+                args: Some(args.iter().map(|name| (*name).into()).collect()),
+                out: out.map(str::to_string),
+                ..Default::default()
+            };
+            let mut constructor = operation("exception_new_builtin_empty", &[], Some("exc"));
+            constructor.value = Some(5);
+            constructor.source_line = Some(31);
+            constructor.source_op_idx = Some(700);
+            let mut check = operation("check_exception", &[], None);
+            check.value = Some(9);
+            let mut raise = operation("raise", &["exc"], None);
+            raise.source_line = Some(32);
+            raise.source_op_idx = Some(702);
+            let mut jump = operation("jump", &[], None);
+            jump.value = Some(9);
+            let mut handler = operation("label", &[], None);
+            handler.value = Some(9);
+            let mut other_handler = handler.clone();
+            other_handler.value = Some(10);
+            let source = FunctionIR {
+                name: format!("split_raise_{case}"),
+                params: vec!["payload".into(), "other".into(), "condition".into()],
+                param_types: Some(vec!["Any".into(), "Any".into(), "bool".into()]),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                ops: vec![
+                    constructor,
+                    check.clone(),
+                    raise,
+                    check,
+                    jump,
+                    handler,
+                    operation("ret", &["payload"], None),
+                    other_handler,
+                    operation("ret", &["other"], None),
+                ],
+                ..Default::default()
+            };
+            let mut typed = crate::tir::lower_from_simple::lower_to_tir(&source);
+            let entry = typed.entry_block;
+            let other = typed.blocks[&entry].args[1].id;
+            let condition = typed.blocks[&entry].args[2].id;
+            let raise_block = typed
+                .blocks
+                .values()
+                .find(|block| block.ops.iter().any(|op| op.opcode == OpCode::Raise))
+                .unwrap()
+                .id;
+            assert_ne!(
+                entry, raise_block,
+                "the real lift must split at the first check"
+            );
+            let Terminator::Branch {
+                target: forwarding_block,
+                ..
+            } = typed.blocks[&raise_block].terminator
+            else {
+                panic!("the real post-check continuation must be an unconditional block");
+            };
+            assert!(typed.blocks[&forwarding_block].ops.is_empty());
+            let effect = |opcode| TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![other],
+                results: vec![],
+                attrs: Default::default(),
+                source_span: Some((17, 23)),
+            };
+            match case {
+                "different_pre_payload" | "pre_poll" => {
+                    let check = typed
+                        .blocks
+                        .get_mut(&entry)
+                        .unwrap()
+                        .ops
+                        .last_mut()
+                        .unwrap();
+                    if case == "pre_poll" {
+                        check.mark_async_work_poll();
+                    } else {
+                        assert_eq!(check.operands.len(), 1);
+                        check.operands[0] = other;
+                    }
+                }
+                "different_post_payload" | "different_target" | "post_poll" => {
+                    let check = typed
+                        .blocks
+                        .get_mut(&raise_block)
+                        .unwrap()
+                        .ops
+                        .last_mut()
+                        .unwrap();
+                    if case == "post_poll" {
+                        check.mark_async_work_poll();
+                    } else if case == "different_target" {
+                        check.attrs.insert("value".into(), AttrValue::Int(10));
+                    } else {
+                        assert_eq!(check.operands.len(), 1);
+                        check.operands[0] = other;
+                    }
+                }
+                "release_before_check" => {
+                    let block = typed.blocks.get_mut(&raise_block).unwrap();
+                    block
+                        .ops
+                        .insert(block.ops.len() - 1, effect(OpCode::DecRef));
+                }
+                "release_after_check" | "callback_after_check" => {
+                    let mut operation = effect(if case == "release_after_check" {
+                        OpCode::DecRef
+                    } else {
+                        OpCode::CallBuiltin
+                    });
+                    if case == "callback_after_check" {
+                        operation
+                            .attrs
+                            .insert("name".into(), AttrValue::Str("user_callback".into()));
+                    }
+                    typed
+                        .blocks
+                        .get_mut(&forwarding_block)
+                        .unwrap()
+                        .ops
+                        .push(operation);
+                }
+                "constructor_override" => {
+                    typed.blocks.get_mut(&entry).unwrap().ops[0].attrs.insert(
+                        "runtime_symbol".into(),
+                        AttrValue::Str("user_constructor".into()),
+                    );
+                }
+                "wrong_raised_value" => {
+                    typed.blocks.get_mut(&raise_block).unwrap().ops[0].operands = vec![other];
+                }
+                "cycle" | "conditional" | "state_dispatch" => {
+                    let block = typed.blocks.get_mut(&forwarding_block).unwrap();
+                    let Terminator::Branch { target, args } = block.terminator.clone() else {
+                        unreachable!()
+                    };
+                    block.terminator = match case {
+                        "cycle" => Terminator::Branch {
+                            target: forwarding_block,
+                            args: block.args.iter().map(|arg| arg.id).collect(),
+                        },
+                        "conditional" => Terminator::CondBranch {
+                            cond: condition,
+                            then_block: target,
+                            then_args: args.clone(),
+                            else_block: target,
+                            else_args: args,
+                        },
+                        _ => Terminator::StateDispatch {
+                            cases: vec![(0, target, args.clone())],
+                            default: target,
+                            default_args: args,
+                        },
+                    };
+                }
+                "equivalent" => {}
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                crate::tir::verify::verify_function(&typed),
+                Ok(()),
+                "{case}: input"
+            );
+            let mut expected_survivors = typed.clone();
+            for block in expected_survivors.blocks.values_mut() {
+                block.ops.retain(|op| op.opcode != OpCode::CheckException);
+            }
+            canonicalize_direct_raise_edges(&mut typed);
+            assert_eq!(
+                crate::tir::verify::verify_function(&typed),
+                Ok(()),
+                "{case}: output"
+            );
+            let checks = typed
+                .blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::CheckException)
+                .count();
+            assert_eq!(checks, expected_checks, "{case}");
+            let projected = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
+            assert_eq!(
+                projected
+                    .iter()
+                    .filter(|op| matches!(op.kind.as_str(), "check_exception" | "async_work_poll"))
+                    .count(),
+                expected_checks,
+                "{case}: final projection must preserve the typed decision"
+            );
+            assert!(
+                projected.iter().any(|op| op.kind == "raise"
+                    && op.source_line == Some(32)
+                    && op.source_op_idx == Some(702)),
+                "{case}: raise provenance"
+            );
+            assert!(
+                projected
+                    .iter()
+                    .any(|op| op.kind == "exception_new_builtin_empty"
+                        && op.source_line == Some(31)
+                        && op.source_op_idx == Some(700)),
+                "{case}: constructor provenance"
+            );
+            for block in typed.blocks.values_mut() {
+                block.ops.retain(|op| op.opcode != OpCode::CheckException);
+            }
+            assert_eq!(
+                serde_json::to_value(&typed).unwrap(),
+                serde_json::to_value(&expected_survivors).unwrap(),
+                "{case}: only redundant checks may change; CFG payloads, types and operation metadata stay exact"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_raise_forwarding_preserves_valid_loop_and_resume_entries() {
+        use crate::tir::blocks::LoopRole;
+        use crate::tir::ops::{Dialect, OpCode, TirOp};
+        use crate::tir::{Terminator, TirBlock, TirType};
+        for boundary in ["ordinary", "loop", "resume"] {
+            let mut function = TirFunction::new(
+                format!("raise_boundary_{boundary}"),
+                vec![TirType::DynBox, TirType::Bool],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let entry = function.entry_block;
+            let exception = function.blocks[&entry].args[0].id;
+            let condition = function.blocks[&entry].args[1].id;
+            let forwarding = function.fresh_block();
+            let handler = function.fresh_block();
+            function.label_id_map.insert(handler.0, 9);
+            function.has_exception_handling = true;
+            function.blocks.get_mut(&entry).unwrap().ops = vec![
+                TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::Raise,
+                    operands: vec![exception],
+                    results: vec![],
+                    attrs: Default::default(),
+                    source_span: None,
+                },
+                TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: [("value".into(), AttrValue::Int(9))].into(),
+                    source_span: None,
+                },
+            ];
+            function.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+                target: forwarding,
+                args: vec![],
+            };
+            function.blocks.insert(
+                forwarding,
+                TirBlock {
+                    id: forwarding,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Branch {
+                        target: handler,
+                        args: vec![],
+                    },
+                },
+            );
+            function.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            if boundary == "loop" {
+                // The protected empty block is an actual header with a backedge,
+                // not just a role annotation on an acyclic malformed fixture.
+                let exit = function.fresh_block();
+                function.blocks.insert(
+                    exit,
+                    TirBlock {
+                        id: exit,
+                        args: vec![],
+                        ops: vec![],
+                        terminator: Terminator::Return { values: vec![] },
+                    },
+                );
+                function.blocks.get_mut(&handler).unwrap().terminator = Terminator::CondBranch {
+                    cond: condition,
+                    then_block: forwarding,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                };
+                function.loop_roles.insert(forwarding, LoopRole::LoopHeader);
+            } else if boundary == "resume" {
+                // Move the parameter definitions into the real dispatch entry;
+                // they still dominate both initial execution and resumed entry.
+                let dispatch = function.fresh_block();
+                let args = std::mem::take(&mut function.blocks.get_mut(&entry).unwrap().args);
+                function.blocks.insert(
+                    dispatch,
+                    TirBlock {
+                        id: dispatch,
+                        args,
+                        ops: vec![],
+                        terminator: Terminator::StateDispatch {
+                            cases: vec![(1, forwarding, vec![])],
+                            default: entry,
+                            default_args: vec![],
+                        },
+                    },
+                );
+                function.entry_block = dispatch;
+            }
+            assert_eq!(
+                crate::tir::verify::verify_function(&function),
+                Ok(()),
+                "{boundary}: input"
+            );
+            assert_eq!(
+                canonicalize_direct_raise_edges(&mut function),
+                boundary == "ordinary"
+            );
+            assert_eq!(
+                crate::tir::verify::verify_function(&function),
+                Ok(()),
+                "{boundary}: output"
+            );
+            let projected = crate::tir::lower_to_simple::lower_to_simple_ir(&function);
+            assert_eq!(
+                projected
+                    .iter()
+                    .filter(|op| op.kind == "check_exception")
+                    .count(),
+                usize::from(boundary != "ordinary"),
+                "{boundary}: the final projection must retain a protected entry check"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_raise_forwarding_does_not_expand_narrow_chains_into_wide_payloads() {
+        use crate::tir::{Terminator, TirBlock, TirType, TirValue};
+        use std::collections::{HashMap, HashSet};
+        use std::rc::Rc;
+        const CHAIN: usize = 128;
+        const WIDTH: usize = 256;
+        for transported in [false, true] {
+            let mut function = TirFunction::new(
+                "wide_forwarding".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let entry = function.entry_block;
+            let value = function.blocks[&entry].args[0].id;
+            let chain: Vec<_> = (0..CHAIN).map(|_| function.fresh_block()).collect();
+            let handler = function.fresh_block();
+            let mut parameters = Vec::new();
+            for _ in 0..WIDTH {
+                let id = function.fresh_value();
+                function.value_types.insert(id, TirType::DynBox);
+                parameters.push(TirValue {
+                    id,
+                    ty: TirType::DynBox,
+                });
+            }
+            function.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: parameters,
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            for (index, id) in chain.iter().copied().enumerate() {
+                let local = if transported {
+                    function.fresh_value()
+                } else {
+                    value
+                };
+                if transported {
+                    function.value_types.insert(local, TirType::DynBox);
+                }
+                let target = chain.get(index + 1).copied().unwrap_or(handler);
+                function.blocks.insert(
+                    id,
+                    TirBlock {
+                        id,
+                        args: if transported {
+                            vec![TirValue {
+                                id: local,
+                                ty: TirType::DynBox,
+                            }]
+                        } else {
+                            vec![]
+                        },
+                        ops: vec![],
+                        terminator: Terminator::Branch {
+                            target,
+                            args: if target == handler {
+                                vec![local; WIDTH]
+                            } else if transported {
+                                vec![local]
+                            } else {
+                                vec![]
+                            },
+                        },
+                    },
+                );
+            }
+            let incoming = if transported { vec![value] } else { vec![] };
+            function.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+                target: chain[0],
+                args: incoming.clone(),
+            };
+            assert_eq!(crate::tir::verify::verify_function(&function), Ok(()));
+            // Input size is measured independently from the summaries. A
+            // Cartesian chain-by-handler expansion violates this bound.
+            let input_values: usize = function
+                .blocks
+                .values()
+                .map(|block| {
+                    let mut count = block.args.len();
+                    block
+                        .terminator
+                        .for_each_edge(|_, args| count += args.len());
+                    count
+                })
+                .sum();
+            let mut forwarding = DirectRaiseForwarding::new(&function, HashSet::from([handler]));
+            let edge = forwarding
+                .edge(chain[0], &incoming)
+                .expect("valid transport");
+            if transported {
+                assert_ne!(
+                    edge.target, handler,
+                    "narrow changed transport must stop before expansion"
+                );
+            } else {
+                assert_eq!(edge.target, handler);
+                assert_eq!(edge.args.as_ref(), vec![value; WIDTH]);
+                for block in &chain {
+                    assert!(Rc::ptr_eq(
+                        &edge.args,
+                        &forwarding.summaries[block].as_ref().unwrap().args
+                    ));
+                }
+            }
+            let mut distinct_payloads = HashMap::new();
+            for summary in forwarding.summaries.values().flatten() {
+                distinct_payloads.insert(summary.args.as_ptr(), summary.args.len());
+            }
+            assert!(
+                distinct_payloads.values().sum::<usize>() <= input_values,
+                "retained payload storage must fit the actual CFG transport input"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_raise_shared_block_bounds_work_for_many_narrow_constructor_checks() {
+        use crate::tir::ops::{Dialect, OpCode, TirOp};
+        use crate::tir::{Terminator, TirBlock, TirType, TirValue};
+        const PREDECESSORS: usize = 128;
+        const WIDTH: usize = 256;
+        for wide_entry in [true, false] {
+            let mut function = TirFunction::new(
+                "shared_raise_work".into(),
+                vec![TirType::I64, TirType::DynBox],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let entry = function.entry_block;
+            let selector = function.blocks[&entry].args[0].id;
+            let payload = function.blocks[&entry].args[1].id;
+            let narrow_handler = function.fresh_block();
+            let wide_handler = function.fresh_block();
+            let raise_block = function.fresh_block();
+            let forwarding_block = function.fresh_block();
+            function.has_exception_handling = true;
+            function.label_id_map.insert(narrow_handler.0, 9);
+            function.label_id_map.insert(wide_handler.0, 10);
+            for (block, width) in [
+                (narrow_handler, 0),
+                (wide_handler, WIDTH),
+                (raise_block, if wide_entry { WIDTH } else { 1 }),
+                (forwarding_block, 0),
+            ] {
+                let mut args = Vec::new();
+                for _ in 0..width {
+                    let id = function.fresh_value();
+                    function.value_types.insert(id, TirType::DynBox);
+                    args.push(TirValue {
+                        id,
+                        ty: TirType::DynBox,
+                    });
+                }
+                function.blocks.insert(
+                    block,
+                    TirBlock {
+                        id: block,
+                        args,
+                        ops: vec![],
+                        terminator: Terminator::Return { values: vec![] },
+                    },
+                );
+            }
+            let operation = |opcode, operands, results, attrs| TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands,
+                results,
+                attrs,
+                source_span: None,
+            };
+            let check = |label, args| {
+                operation(
+                    OpCode::CheckException,
+                    args,
+                    vec![],
+                    [("value".into(), AttrValue::Int(label))].into(),
+                )
+            };
+            let raised = function.blocks[&raise_block].args[0].id;
+            let exit_args = if wide_entry {
+                vec![]
+            } else {
+                vec![payload; WIDTH]
+            };
+            function.blocks.get_mut(&raise_block).unwrap().ops = vec![
+                operation(OpCode::Raise, vec![raised], vec![], Default::default()),
+                check(if wide_entry { 9 } else { 10 }, exit_args.clone()),
+            ];
+            function.blocks.get_mut(&raise_block).unwrap().terminator = Terminator::Branch {
+                target: if wide_entry {
+                    narrow_handler
+                } else {
+                    wide_handler
+                },
+                args: exit_args,
+            };
+            if wide_entry {
+                // Every narrow predecessor sees the same unchanged wide entry
+                // summary; the eventual raised value is not its constructor.
+                function
+                    .blocks
+                    .get_mut(&forwarding_block)
+                    .unwrap()
+                    .terminator = Terminator::Branch {
+                    target: raise_block,
+                    args: vec![payload; WIDTH],
+                };
+            }
+            let mut cases = Vec::new();
+            for index in 0..PREDECESSORS {
+                let block = function.fresh_block();
+                let constructed = function.fresh_value();
+                function.value_types.insert(constructed, TirType::DynBox);
+                function.blocks.insert(
+                    block,
+                    TirBlock {
+                        id: block,
+                        args: vec![],
+                        ops: vec![
+                            operation(
+                                OpCode::Copy,
+                                vec![],
+                                vec![constructed],
+                                [
+                                    (
+                                        "_original_kind".into(),
+                                        AttrValue::Str("exception_new_builtin_empty".into()),
+                                    ),
+                                    ("value".into(), AttrValue::Int(5)),
+                                ]
+                                .into(),
+                            ),
+                            check(9, vec![]),
+                        ],
+                        terminator: Terminator::Branch {
+                            target: if wide_entry {
+                                forwarding_block
+                            } else {
+                                raise_block
+                            },
+                            args: if wide_entry {
+                                vec![]
+                            } else {
+                                vec![constructed]
+                            },
+                        },
+                    },
+                );
+                cases.push((index as i64, block, vec![]));
+            }
+            function.blocks.get_mut(&entry).unwrap().terminator = Terminator::Switch {
+                value: selector,
+                default: cases[0].1,
+                default_args: vec![],
+                cases,
+            };
+            assert_eq!(crate::tir::verify::verify_function(&function), Ok(()));
+            let input_entries: usize = function
+                .blocks
+                .values()
+                .map(|block| {
+                    let mut count = 1 + block.args.len() + block.ops.len();
+                    for op in &block.ops {
+                        count += op.operands.len() + op.results.len();
+                    }
+                    block
+                        .terminator
+                        .for_each_edge(|_, args| count += args.len());
+                    count
+                })
+                .sum();
+            SUBSTITUTION_WORK.with(|count| count.set(0));
+            assert!(canonicalize_direct_raise_edges(&mut function));
+            let work = SUBSTITUTION_WORK.with(std::cell::Cell::get);
+            assert!(
+                work <= 4 * input_entries,
+                "wide_entry={wide_entry}: {work} visited substitution entries exceed actual source input {input_entries}"
+            );
+            assert_eq!(crate::tir::verify::verify_function(&function), Ok(()));
+            assert_eq!(
+                function
+                    .blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .filter(|op| op.opcode == OpCode::CheckException)
+                    .count(),
+                PREDECESSORS,
+                "all narrow constructor checks remain; only the shared Raise's equal exit check is redundant"
+            );
+        }
+    }
 
     /// A function with no droppable heap temporaries still reports changed on an
     /// activated target because the full-function `drop_inserted` authority fact
