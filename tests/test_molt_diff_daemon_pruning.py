@@ -5,12 +5,12 @@ import pytest
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 from tests.process_guard_common import install_module_os_view, install_module_view
 import sys
 
 from molt import backend_daemon_custody as custody
 from molt.cli.backend_daemon_paths import _backend_daemon_paths
-import subprocess
 import os
 
 # These tests fake process data the session sentinel also reads.
@@ -114,11 +114,19 @@ def test_session_daemon_scan_finds_only_its_own_session(
 def test_molt_diff_backend_daemon_scan_failure_fails_closed(monkeypatch) -> None:
     module = _load_diff_module()
 
-    def raise_timeout(*args, **kwargs):
-        raise module.subprocess.TimeoutExpired(cmd=["ps"], timeout=2.0)
+    # Observation reads the guard's native process table, never ps text. A
+    # failed snapshot observes no daemon, so pruning signals nothing.
+    class SnapshotError(Exception):
+        pass
 
-    install_module_view(
-        monkeypatch, "subprocess", subprocess, module, run=raise_timeout
+    def unavailable():
+        raise SnapshotError("process table unavailable")
+
+    guard = SimpleNamespace(
+        sample_processes=unavailable, ProcessSnapshotError=SnapshotError
+    )
+    monkeypatch.setattr(
+        module.daemon_custody, "_load_memory_guard_module", lambda: guard
     )
 
     assert module._list_backend_daemon_processes() == []
