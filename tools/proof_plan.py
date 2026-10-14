@@ -43,6 +43,7 @@ from tools.command_execution import (  # noqa: E402
 from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
 from tools import proof_receipts  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
+from molt.process_guard import run_completed_command  # noqa: E402
 from tools.git_identity import (  # noqa: E402
     changed_paths,
     clean_checkout_status_arguments,
@@ -276,7 +277,7 @@ def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
         if entry and not Path(entry).resolve().is_relative_to(ROOT)
     ]
     try:
-        completed = subprocess.run(
+        completed = run_completed_command(
             [
                 sys.executable,
                 "-S",
@@ -292,6 +293,7 @@ def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
             capture_output=True,
             text=True,
             timeout=5,
+            memory_guard_prefix=None,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError(f"selected target-Python catalog probe failed: {exc}") from exc

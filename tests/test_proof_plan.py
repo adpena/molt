@@ -5991,7 +5991,7 @@ def test_canonical_target_python_catalog_is_stdlib_only():
     # Exercise the real authority; a constant-only catalog fixture hides eager
     # dependencies that break generation from the index.
     source = proof_plan.ROOT / "src/molt/target_python.py"
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             sys.executable,
             "-I",
