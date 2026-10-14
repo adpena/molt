@@ -56,7 +56,7 @@ static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 struct TestEnvGuard {
     // Fields drop in declaration order: restore while the mutex is still held.
-    snapshot: TestEnvSnapshot,
+    _snapshot: TestEnvSnapshot,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -91,14 +91,14 @@ impl TestEnvGuard {
         let snapshot = TestEnvSnapshot::capture(keys);
         Self {
             _lock: lock,
-            snapshot,
+            _snapshot: snapshot,
         }
     }
 
     #[cfg(any(molt_backend_daemon, feature = "native-backend"))]
     fn clear(keys: &'static [&'static str]) -> Self {
         let guard = Self::capture(keys);
-        for (key, _) in &guard.snapshot.0 {
+        for key in keys {
             unsafe { std::env::remove_var(key) };
         }
         guard
