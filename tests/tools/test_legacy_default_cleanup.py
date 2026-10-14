@@ -8,6 +8,8 @@ from types import ModuleType
 
 import pytest
 
+from molt.dx import checkout_component
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -68,8 +70,14 @@ def test_mutation_defaults_use_the_artifact_root_and_its_scratch(
     monkeypatch.setenv("MOLT_SESSION_ID", "mutation-proof")
 
     assert mod._temp_root() == ext_root.resolve() / "tmp" / "mutation_tmp"
+    # A pinned session scopes this checkout's target under the root (HF-45).
     assert mod._default_cargo_target_dir() == (
-        ext_root.resolve() / "target" / "sessions" / "mutation-proof"
+        ext_root.resolve()
+        / "target"
+        / "checkouts"
+        / checkout_component(REPO_ROOT)
+        / "sessions"
+        / "mutation-proof"
     )
 
 

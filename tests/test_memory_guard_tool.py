@@ -3383,22 +3383,39 @@ def test_actual_darwin_vm_pages_match_vm_stat() -> None:
                 reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
         return text.splitlines()[0], reported
 
-    # Counters move while a busy host runs other tests, so bracket our read
-    # between two vm_stat samples. A wrong counter mapping misses the
-    # bracket by far more than the movement inside it.
-    header, before = vm_stat()
-    page_size, pages = memory_guard.darwin_vm_pages()  # type: ignore[misc]
-    _header, after = vm_stat()
+    # Counters move while a busy host runs other tests, so bracket each read
+    # between two vm_stat samples. Pages move between buckets in bursts (a
+    # 7 GB CI runner moved "Pages free" by 2,862 pages inside one bracket), so
+    # the slack is 1% of all pages; a wrong counter mapping is a fixed offset
+    # that escapes every bracket.
+    header, sample = vm_stat()
+    rounds = []
+    for _ in range(3):
+        page_size, pages = memory_guard.darwin_vm_pages()  # type: ignore[misc]
+        _header, after = vm_stat()
+        rounds.append((sample, pages, after))
+        sample = after
     assert f"page size of {page_size} bytes" in header
-    for name, count in pages.items():
+    buckets = (
+        "Pages free",
+        "Pages active",
+        "Pages inactive",
+        "Pages speculative",
+        "Pages throttled",
+        "Pages wired down",
+        "Pages occupied by compressor",
+    )
+    slack = max(1024, sum(rounds[0][0][name] for name in buckets) // 100)
+
+    def bracketed(name: str, before: dict, count: int, after: dict) -> bool:
         low, high = sorted((before[name], after[name]))
-        slack = max(1024, high // 100)
-        assert low - slack <= count <= high + slack, (
-            name,
-            before[name],
-            count,
-            after[name],
-        )
+        return low - slack <= count <= high + slack
+
+    for name in rounds[0][1]:
+        assert any(
+            bracketed(name, before, pages[name], after)
+            for before, pages, after in rounds
+        ), (name, slack, [(b[name], p[name], a[name]) for b, p, a in rounds])
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
