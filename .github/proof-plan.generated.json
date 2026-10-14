@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "c9656bc4745352a7631f3f515b4af343e17c970dc684b3318c52d36fe2f32ee5",
+  "authority_sha256": "338c8c94f62ab1ee4d68e9f81c9f65d4f80ca3cbc47ab40ad136f88607746e10",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -550,7 +550,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 16,
+      "timeout_minutes": 24,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -4847,7 +4847,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 1320,
       "toolchains": [
         "python",
         "uv",
@@ -7608,14 +7608,14 @@
       },
       "python_unit_collection": {
         "linux-x86_64-py312-unit-collection": {
-          "budget_seconds": 960,
-          "critical_path_seconds": 900,
-          "headroom_seconds": 0,
+          "budget_seconds": 1440,
+          "critical_path_seconds": 1320,
+          "headroom_seconds": 60,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 900,
-          "required_job_seconds": 960,
+          "projected_makespan_seconds": 1320,
+          "required_job_seconds": 1380,
           "resource_capacity_floor_seconds": {
-            "python-tests": 450
+            "python-tests": 660
           }
         }
       }

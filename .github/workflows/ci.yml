@@ -295,7 +295,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.python_unit_collection == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 16
+    timeout-minutes: 24
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.python_unit_collection_matrix) }}

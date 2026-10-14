@@ -1090,7 +1090,7 @@ admission_job = "python-unit-collection"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 16
+timeout_minutes = 24
 job_reserve_seconds = 60
 resource_class = "python-tests"
 dependencies = []
@@ -2745,7 +2745,10 @@ family = "python_unit_collection"
 cell = "linux-x86_64-py312-unit-collection"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 900
+# Hosted Linux, 2026-10-14 (run 38515158046): 99% after 6.5 min, then the four
+# hashseed proofs (six fresh-process cold/warm builds each, 24 in all) need
+# about 10 min more at -n 2. 900 s killed the run with the proofs unfinished.
+timeout_seconds = 1320
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_cli_import_collection.py", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]", "--deselect", "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"]
