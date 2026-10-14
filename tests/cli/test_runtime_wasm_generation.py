@@ -770,7 +770,9 @@ def test_publication_evicts_generations_no_build_used_for_a_day(
         )
         is not None
     )
-    ledger = json.loads((tmp_path / ".runtime-wasm-store.json").read_text())
+    ledger = json.loads(
+        (tmp_path / ".runtime-wasm-store.json").read_text(encoding="utf-8")
+    )
     assert ledger["selected"] == [current.shared.name, current.reloc.name]
     assert not set(ledger["last_used"]) & (_generation_files(old) | {pinned.name})
 
@@ -801,7 +803,7 @@ def test_unknown_generation_files_start_their_window_at_first_sight(
     for path in (stray, stray_receipt):
         path.write_bytes(b"left by an older build")
     if ledger is not None:
-        (tmp_path / ".runtime-wasm-store.json").write_text(ledger)
+        (tmp_path / ".runtime-wasm-store.json").write_text(ledger, encoding="utf-8")
 
     _publish_pair(tmp_path, pair_seed="first", shared=b"f-shared", reloc=b"f-reloc")
     assert stray.is_file() and stray_receipt.is_file()
