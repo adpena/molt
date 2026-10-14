@@ -17,6 +17,7 @@ from molt.python_runtime_identity import (
 import harness_memory_guard
 from perf_scoreboard_measure import _cpython_run_env
 from perf_scoreboard_model import Cell
+from shard_partition import lpt_shards
 
 
 def _observe_cpython_runtime(cmd: tuple[str, ...]) -> dict[str, object]:
@@ -50,6 +51,52 @@ def _observe_cpython_runtime(cmd: tuple[str, ...]) -> dict[str, object]:
         raise RuntimeError(
             f"CPython runtime closure observation invalid: {exc}"
         ) from exc
+
+
+def _parse_shard(text: str) -> tuple[int, int]:
+    """Parse ``ID/COUNT`` with ``0 <= ID < COUNT``."""
+    shard_id, sep, count = text.partition("/")
+    if not sep or not shard_id.isdigit() or not count.isdigit():
+        raise argparse.ArgumentTypeError(f"--shard expects ID/COUNT, got {text!r}")
+    index, total = int(shard_id), int(count)
+    if total < 1 or index >= total:
+        raise argparse.ArgumentTypeError(
+            f"--shard {text!r} needs 0 <= ID < COUNT and COUNT >= 1"
+        )
+    return index, total
+
+
+def select_shard(
+    api: Mapping[str, Any],
+    scripts: list[Path],
+    shard: tuple[int, int],
+    *,
+    set_name: str,
+) -> tuple[list[Path], dict[str, Any]]:
+    """Select one deterministic shard of the resolved benchmark set.
+
+    The returned record travels in the board's provenance, so a merge can
+    prove that its shard boards cover the set exactly once.
+    """
+    index, count = shard
+    by_key = {
+        api["bench_suites"].canonical_benchmark_key(script): script
+        for script in scripts
+    }
+    if len(by_key) != len(scripts):
+        raise SystemExit("--shard: the benchmark set names a benchmark twice")
+    plan = lpt_shards([{"path": key, "weight": 1} for key in by_key], count)
+    members = plan[index]["entries"]
+    chosen = set(members)
+    selected = [script for key, script in by_key.items() if key in chosen]
+    record = {
+        "id": index,
+        "count": count,
+        "set": set_name,
+        "members": members,
+        "set_members": sorted(by_key),
+    }
+    return selected, record
 
 
 def main(api: Mapping[str, Any], argv: list[str]) -> int:
@@ -194,6 +241,16 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         ),
     )
     parser.add_argument(
+        "--shard",
+        type=_parse_shard,
+        default=None,
+        metavar="ID/COUNT",
+        help=(
+            "measure one deterministic shard of the benchmark set; merge the "
+            "COUNT shard boards with --merge, which requires exact coverage"
+        ),
+    )
+    parser.add_argument(
         "--out",
         default=None,
         help="output JSON path (default: bench/scoreboard/cpython_<gitrev>.json)",
@@ -301,6 +358,16 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         print("[self-test] bench_fib x native x release-fast, samples=%d" % ns.samples)
 
     scripts = api["_resolve_benchmark_set"](ns.set, ns.benchmark)
+    shard_record: dict[str, Any] | None = None
+    if ns.shard is not None:
+        if ns.self_test:
+            raise SystemExit("--shard cannot be combined with --self-test")
+        scripts, shard_record = select_shard(
+            api,
+            scripts,
+            ns.shard,
+            set_name="explicit" if ns.benchmark else ns.set,
+        )
     try:
         cpython_oracle = api["_resolve_system_cpython"](ns.cpython)
     except RuntimeError as exc:
@@ -417,6 +484,8 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         quiescence=quiescence,
         require_quiescent=ns.require_quiescent,
     )
+    if shard_record is not None:
+        provenance["shard"] = shard_record
     provenance["producer_invocations"] = [
         {
             "argv": [

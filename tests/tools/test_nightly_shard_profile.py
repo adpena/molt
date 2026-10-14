@@ -5,7 +5,12 @@ import json
 
 import pytest
 
-from tools import nightly_profile_feedback, nightly_shard_profile, nightly_sharding
+from tools import (
+    nightly_profile_feedback,
+    nightly_shard_profile,
+    nightly_sharding,
+    shard_partition,
+)
 
 
 PROGRAMS = tuple(nightly_sharding.SHARD_COUNTS)
@@ -44,7 +49,7 @@ def _training_inputs() -> tuple[dict, dict[str, dict]]:
         programs[program] = {
             "entries": entries,
             "selected": count,
-            "shards": nightly_sharding.lpt_shards(
+            "shards": shard_partition.lpt_shards(
                 entries, nightly_sharding.SHARD_COUNTS[program]
             ),
             "total_weight": sum(entry["weight"] for entry in entries),

@@ -196,3 +196,58 @@ def test_candidate_mode_cannot_steal_schedule_default_or_accept_commands(
             expected in error
             for error in _check_against(monkeypatch, _write(tmp_path, body))
         )
+
+
+def _sharded_workflow(
+    *, axis: str = "[0, 1, 2]", count: int = 3, merge: bool = True
+) -> str:
+    body = (
+        f"on:\n{CONTROLLED_EVENTS}concurrency:\n  group: perf-gate\n"
+        "  cancel-in-progress: false\njobs:\n"
+        "  shards:\n    strategy:\n      matrix:\n"
+        f"        shard: {axis}\n    steps:\n"
+        "      - run: python3 tools/perf_scoreboard.py --classify "
+        f'--shard "${{{{ matrix.shard }}}}/{count}"\n'
+    )
+    if merge:
+        body += (
+            "  aggregate:\n    needs: shards\n    if: always()\n    steps:\n"
+            "      - run: python3 tools/perf_scoreboard.py --merge shard-*.json\n"
+        )
+    return body
+
+
+def test_sharded_scoreboard_names_every_shard_and_is_merged(monkeypatch, tmp_path):
+    body = _sharded_workflow()
+    assert _check_against(monkeypatch, _write(tmp_path, body)) == []
+    # The dependency-free parser must reach the same verdict.
+    assert w._shard_problems(w._load_workflow_yaml_subset(body)) == []
+
+
+def test_shard_axis_must_match_the_shard_count(monkeypatch, tmp_path):
+    for axis in ("[0, 1]", "[1, 2, 3]", "[0, 1, 2, 3]"):
+        body = _sharded_workflow(axis=axis)
+        problems = _check_against(monkeypatch, _write(tmp_path, body))
+        assert any("matrix shard axis" in problem for problem in problems), axis
+        subset = w._shard_problems(w._load_workflow_yaml_subset(body))
+        assert any("matrix shard axis" in problem for problem in subset), axis
+
+
+def test_shards_without_a_merging_job_are_refused(monkeypatch, tmp_path):
+    body = _sharded_workflow(merge=False)
+    problems = _check_against(monkeypatch, _write(tmp_path, body))
+    assert any("merges its scoreboard shards" in problem for problem in problems)
+
+
+def test_only_an_aggregate_may_run_after_red_predecessors(monkeypatch, tmp_path):
+    admission = (
+        "github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs'"
+    )
+    body = _candidate_workflow().replace(
+        f"    if: {admission}\n", f"    if: always() && ({admission})\n"
+    )
+    problems = _check_against(monkeypatch, _write(tmp_path, body))
+    assert any("retain schedule" in problem for problem in problems)
+    with_needs = body.replace("  scoreboard:\n", "  scoreboard:\n    needs: shards\n")
+    problems = _check_against(monkeypatch, _write(tmp_path, with_needs))
+    assert not any("retain schedule" in problem for problem in problems)

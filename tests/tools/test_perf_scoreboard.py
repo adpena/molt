@@ -2380,3 +2380,133 @@ def test_capture_hot_only_refuses_when_runtime_too_short(monkeypatch) -> None:
     assert out["available"] is False
     assert out["refused"] is True
     assert "increase --inner-repeat" in out["refused_reason"]
+
+
+# --- Sharded measurement ----------------------------------------------------
+
+
+def _shard_api() -> dict:
+    return {"bench_suites": SimpleNamespace(canonical_benchmark_key=Path.as_posix)}
+
+
+@pytest.mark.parametrize("count", [1, 3, 4, 10])
+def test_shards_cover_the_benchmark_set_exactly_once(count: int) -> None:
+    import perf_scoreboard_cli as cli
+
+    scripts = [Path(f"tests/benchmarks/bench_{name}.py") for name in "abcdefghij"]
+    selections = [
+        cli.select_shard(_shard_api(), scripts, (index, count), set_name="core")
+        for index in range(count)
+    ]
+    chosen = [script for selected, _record in selections for script in selected]
+    assert sorted(chosen) == sorted(scripts)
+    assert len(chosen) == len(set(chosen))
+    for index, (selected, record) in enumerate(selections):
+        assert record["id"] == index and record["count"] == count
+        assert record["members"] == sorted(path.as_posix() for path in selected)
+        assert record["set_members"] == sorted(path.as_posix() for path in scripts)
+        assert selected == [script for script in scripts if script in set(selected)]
+    again = cli.select_shard(_shard_api(), scripts, (count - 1, count), set_name="core")
+    assert again == selections[-1]
+
+
+@pytest.mark.parametrize("spec", ["1", "1/1", "0/0", "a/2", "-1/2", "2/2"])
+def test_shard_spec_rejects_ids_outside_the_count(spec: str) -> None:
+    import argparse
+
+    import perf_scoreboard_cli as cli
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli._parse_shard(spec)
+
+
+def _shard_record(index: int, members: list[str], everything: list[str]) -> dict:
+    return {
+        "id": index,
+        "count": 2,
+        "set": "core",
+        "members": members,
+        "set_members": everything,
+    }
+
+
+def test_shard_coverage_accepts_only_a_complete_disjoint_plan() -> None:
+    everything = ["a.py", "b.py", "c.py"]
+    first = (
+        Path("s0"),
+        _shard_record(0, ["a.py", "c.py"], everything),
+        ["c.py", "a.py"],
+    )
+    second = (Path("s1"), _shard_record(1, ["b.py"], everything), ["b.py"])
+    assert ps._shard_coverage_problem([first, second]) is None
+    assert ps._shard_coverage_problem([(Path("x"), None, ["a.py"])]) is None
+    assert "missing" in ps._shard_coverage_problem([first])
+    assert "repeats" in ps._shard_coverage_problem([first, first])
+    assert "unsharded" in ps._shard_coverage_problem(
+        [first, (Path("x"), None, ["b.py"])]
+    )
+    short_run = (second[0], second[1], [])
+    assert "exactly its shard members" in ps._shard_coverage_problem([first, short_run])
+    other_plan = (
+        second[0],
+        _shard_record(1, ["b.py"], ["a.py", "b.py", "c.py", "d.py"]),
+        ["b.py"],
+    )
+    assert "different shard plan" in ps._shard_coverage_problem([first, other_plan])
+    overlapping = (
+        second[0],
+        _shard_record(1, ["a.py", "b.py"], everything),
+        ["a.py", "b.py"],
+    )
+    assert "exactly once" in ps._shard_coverage_problem([first, overlapping])
+
+
+def _shard_board(benchmark: str, record: dict) -> dict:
+    cell = _cell(
+        benchmark=benchmark,
+        warm_molt_s=0.10,
+        warm_cpython_s=0.20,
+        cold_molt_s=0.11,
+        cold_cpython_s=0.25,
+    )
+    cell.finalize(budget_ms=1000.0, authoritative=True)
+    _release_evidence(cell)
+    doc = _board(
+        [cell],
+        provenance={
+            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
+            "benchmark_tool_sha": "c" * 64,
+            "benchmark_tool_modified": False,
+            "diverges_from_origin": False,
+            "quiescent": True,
+            "require_quiescent": True,
+            "producer_invocations": [],
+            "shard": record,
+        },
+    )
+    doc["git_rev"] = doc["provenance"]["origin_sha"]
+    return doc
+
+
+def test_merge_of_shard_boards_requires_every_shard(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    everything = ["tests/benchmarks/bench_a.py", "tests/benchmarks/bench_b.py"]
+    paths = []
+    for index, benchmark in enumerate(everything):
+        doc = _shard_board(benchmark, {**_shard_record(index, [benchmark], everything)})
+        assert ps.validate_board(doc) == []
+        path = tmp_path / f"shard-{index}.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        paths.append(path)
+
+    assert ps._merge_boards(paths[:1], tmp_path / "partial.json", no_gate=True) == 3
+    assert "shards [1] of 2 are missing" in capsys.readouterr().err
+    assert not (tmp_path / "partial.json").exists()
+
+    merged_path = tmp_path / "merged.json"
+    assert ps._merge_boards(paths, merged_path, no_gate=True) == 0
+    merged = json.loads(merged_path.read_text(encoding="utf-8"))
+    assert sorted(merged["benchmarks_run"]) == everything
+    assert "shard" not in merged["provenance"]
+    assert ps.validate_board(merged) == []

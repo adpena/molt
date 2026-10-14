@@ -168,9 +168,20 @@ def _parse_jobs(lines: list[str]) -> dict:
                 steps, idx = _parse_steps(lines, idx + 1, end)
                 job["steps"] = steps
                 continue
+            if _indent(child) == 4 and child_stripped == "strategy:":
+                matrix: dict[str, object] = {}
+                idx += 1
+                while idx < end and (not lines[idx].strip() or _indent(lines[idx]) > 4):
+                    nested = lines[idx]
+                    if nested.strip() and _indent(nested) == 8:
+                        key, scalar = _split_key_value(nested.strip())
+                        matrix[key] = scalar
+                    idx += 1
+                job["strategy"] = {"matrix": matrix}
+                continue
             if _indent(child) == 4:
                 key, scalar = _split_key_value(child_stripped)
-                if key in {"if", "continue-on-error"}:
+                if key in {"if", "continue-on-error", "needs"}:
                     job[key] = scalar
             idx += 1
         jobs[job_name] = job
@@ -298,6 +309,11 @@ def _scoreboard_steps(doc: object) -> list[tuple[str, int, dict, dict]]:
     return hits
 
 
+CANONICAL_ADMISSION = (
+    "github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs'"
+)
+
+
 def _candidate_mode_problems(doc: dict) -> list[str]:
     """Keep the optional candidate lane separate from canonical acceptance."""
     jobs = doc.get("jobs", {})
@@ -344,12 +360,78 @@ def _candidate_mode_problems(doc: dict) -> list[str]:
             "candidate proof execution must propagate failure without conditional skipping"
         )
     for _name, _index, job, _step in _scoreboard_steps(doc):
-        if (
-            _expr(job.get("if"))
-            != "github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs'"
-        ):
+        admitted = {CANONICAL_ADMISSION}
+        if _job_needs(job):
+            # An aggregate must still run, and publish its evidence, after a
+            # red predecessor; it keeps the same admission otherwise.
+            admitted.add(f"always() && ({CANONICAL_ADMISSION})")
+        if _expr(job.get("if")) not in admitted:
             problems.append(
                 "canonical scoreboard must retain schedule and default manual dispatch"
+            )
+    return problems
+
+
+SHARD_ARGUMENT = re.compile(r"--shard\s+\"?\$\{\{\s*matrix\.shard\s*\}\}/(\d+)")
+
+
+def _job_needs(job: Mapping) -> set[str]:
+    needs = job.get("needs")
+    if isinstance(needs, str):
+        return {needs}
+    if isinstance(needs, list):
+        return {str(item) for item in needs}
+    return set()
+
+
+def _matrix_axis(job: Mapping, axis: str) -> object:
+    strategy = job.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, Mapping) else None
+    return matrix.get(axis) if isinstance(matrix, Mapping) else None
+
+
+def _shard_problems(doc: object) -> list[str]:
+    """A sharded scoreboard must name every shard of its count and be merged.
+
+    The merge proves exact coverage at run time; this audit refuses the
+    misconfiguration before any runner measures a partial set.
+    """
+    jobs = doc.get("jobs") if isinstance(doc, Mapping) else None
+    if not isinstance(jobs, Mapping):
+        return []
+    problems: list[str] = []
+    for job_name, _idx, job, step in _scoreboard_steps(doc):
+        run = str(step.get("run", ""))
+        if "--shard" not in run:
+            continue
+        match = SHARD_ARGUMENT.search(run)
+        if match is None:
+            problems.append(
+                f"job {job_name!r} passes --shard without ${{{{ matrix.shard }}}}/COUNT"
+            )
+            continue
+        count = int(match.group(1))
+        axis = _matrix_axis(job, "shard")
+        values = [str(value) for value in axis] if isinstance(axis, list) else None
+        if values != [str(index) for index in range(count)]:
+            problems.append(
+                f"job {job_name!r} shards its scoreboard {count} ways but its "
+                f"matrix shard axis is {axis!r}, not 0..{count - 1}"
+            )
+        merged = any(
+            job_name in _job_needs(other)
+            and any(
+                SCOREBOARD_CMD in str(s.get("run", ""))
+                and "--merge" in str(s.get("run", ""))
+                for s in other.get("steps", [])
+                if isinstance(s, Mapping)
+            )
+            for other in jobs.values()
+            if isinstance(other, Mapping)
+        )
+        if not merged:
+            problems.append(
+                f"no job needs {job_name!r} and merges its scoreboard shards"
             )
     return problems
 
@@ -365,6 +447,7 @@ def check() -> list[str]:
         return [f"perf-gate.yml does not parse as YAML: {exc}"]
 
     problems: list[str] = _candidate_mode_problems(doc)
+    problems.extend(_shard_problems(doc))
     triggers = _triggers(doc)
 
     # (1) It must invoke the REAL scoreboard in an executable workflow step,

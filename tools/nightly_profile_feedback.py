@@ -20,7 +20,7 @@ else:
 bind_repository_imports(__file__)
 
 from molt.artifact_publication import atomic_write_json  # noqa: E402
-from tools import nightly_shard_profile, nightly_sharding  # noqa: E402
+from tools import nightly_shard_profile, nightly_sharding, shard_partition  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,7 +60,7 @@ def _project(
     entries: list[dict[str, Any]], count: int, durations_us: Mapping[str, int]
 ) -> dict[str, int]:
     return _balance(
-        _measured_loads(nightly_sharding.lpt_shards(entries, count), durations_us)
+        _measured_loads(shard_partition.lpt_shards(entries, count), durations_us)
     )
 
 
