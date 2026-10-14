@@ -37,14 +37,17 @@ from molt.frontend._types import (
 )
 
 if TYPE_CHECKING:
+    from molt.frontend.lowering.builtin_guards import GuardArmKind
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
+    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
     from molt.frontend.sema import SemaResult
 
 
 class _GeneratorProtocolAttrs(Protocol):
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
     _active_midend_function_name: Any
+    _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonNodeKey]] | None
     _class_body_depth: int
     _class_ns_stack: list[_ClassNsScope]
     _deferred_runtime_warnings: list[str]
@@ -140,4 +143,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
-    imported_attr_names: dict[str, str]

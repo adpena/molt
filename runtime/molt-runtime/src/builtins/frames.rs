@@ -467,6 +467,17 @@ pub(crate) fn frame_stack_active_builtins_bits() -> u64 {
     frame_stack_active_builtins().unwrap_or(0)
 }
 
+/// The active frame's globals and builtins, the pair `molt_module_get_global`
+/// consults, read in one frame-stack access. `None` without a frame.
+pub(crate) fn frame_stack_active_namespaces() -> Option<(u64, u64)> {
+    FRAME_STACK.with(|stack| {
+        stack
+            .borrow()
+            .last()
+            .map(|entry| (entry.globals_bits, entry.builtins_bits))
+    })
+}
+
 pub(crate) fn frame_stack_set_line(line: i64) {
     FRAME_STACK.with(|stack| {
         if let Some(entry) = stack.borrow_mut().last_mut() {
