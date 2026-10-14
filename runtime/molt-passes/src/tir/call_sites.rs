@@ -82,6 +82,17 @@ impl FunctionCallSites {
         Self { sites, terminators }
     }
 
+    /// Whether this function has a synchronous Python callback edge.
+    /// Fixed runtime primitives remain CallFacts sites without such an edge;
+    /// conditional truthiness is covered even when no operation returns a value.
+    pub fn may_call_python(&self) -> bool {
+        !self.terminators.is_empty()
+            || self
+                .sites
+                .values()
+                .any(|site| site.target != CallSiteTarget::RuntimePrimitive)
+    }
+
     pub fn at(&self, position: (BlockId, usize)) -> Option<&CallSite> {
         self.sites.get(&position)
     }

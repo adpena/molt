@@ -96,6 +96,7 @@ impl SimpleBackend {
         );
         let app_callable_manifest = prepared.app_callable_manifest;
         let source_callables = prepared.source_callables;
+        let final_callbacks = prepared.final_callbacks;
         // Extern bodies are discarded by both native backends. Capture and
         // validate their complete target-neutral ABI first so no backend can
         // reconstruct a declaration from a caller after the authority is gone.
@@ -400,7 +401,7 @@ impl SimpleBackend {
         // Analyze the exact post-lifetime/post-partition bodies codegen emits.
         // Shared batch context predates worker finalization and carries no leaf
         // claims. External targets retain guards without a final-body proof.
-        let ir_analysis = analyze_native_backend_ir(&ir, source_callables);
+        let ir_analysis = analyze_native_backend_ir(&ir, source_callables, final_callbacks);
         // Compile functions into one module. Backend codegen failures are hard
         // failures: the compiler must not produce partial objects with
         // runtime-aborting placeholders for functions it could not compile.
