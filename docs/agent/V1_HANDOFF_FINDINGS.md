@@ -64,9 +64,9 @@ retain the historical repair evidence without treating it as release acceptance.
 Main contains the runtime/ABI, public-consumer and developer-cost integration
 through `0b2f013f4`, with the exact qualification boundaries below. The parent
 integrator continues to own preserved WIP reconciliation. Coordination records own active
-write scopes and private receipts; this ledger owns release status. The current
-inventory has 102 open
-finding records and no ledger identity defects. Rows are obligations, not a
+write scopes and private receipts; this ledger owns release status.
+`tools/finding_status.py` counts its open and fixed rows and reports identity
+defects; no prose here repeats that count. Rows are obligations, not a
 completion percentage. The preserved root checkout also contains separate
 unjoined SSL, source-input/custody, JSON and related work. Qualifying this
 integration does not mean all preserved WIP has landed; reconcile each family
