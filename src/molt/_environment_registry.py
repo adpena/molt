@@ -5474,8 +5474,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_SESSION_PREFIX",
-      "owner": "tools/scripts/compile-bench-wasm.sh",
-      "summary": "Prefix for the generated MOLT_SESSION_ID (<prefix>-<pid>) that the bench, parity and throughput shell scripts pass as --session-prefix to tools/run_context_env.py; unset lets each script use its own name (demo-stack, parity, compile-bench-wasm, throughput).",
+      "owner": "tools/throughput_env.sh",
+      "summary": "Prefix for the generated MOLT_SESSION_ID (<prefix>-<pid>) that the bench, parity and throughput shell scripts pass as --session-prefix to tools/run_context_env.py; unset lets each script use its own name (bench, demo-stack, parity, throughput).",
       "values": []
     },
     {
