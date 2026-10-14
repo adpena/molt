@@ -778,7 +778,8 @@ fn preloop_value_survives_exception_fallthrough_with_backend_managed_index() {
         vec![FunctionIR {
             name: "indexed_loop_exception_transport".into(),
             return_abi: molt_ir::FunctionReturnAbi::Value,
-            params: vec!["carried".into(), "limit".into()],
+            params: vec!["carried".into(), "start".into(), "keep_going".into()],
+            param_types: Some(vec!["dyn".into(), "int".into(), "bool".into()]),
             ops: vec![
                 OpIR {
                     kind: "loop_start".into(),
@@ -787,7 +788,12 @@ fn preloop_value_survives_exception_fallthrough_with_backend_managed_index() {
                 OpIR {
                     kind: "loop_index_start".into(),
                     out: Some("index".into()),
-                    args: Some(vec!["limit".into()]),
+                    args: Some(vec!["start".into()]),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "loop_break_if_false".into(),
+                    args: Some(vec!["keep_going".into()]),
                     ..Default::default()
                 },
                 OpIR {
