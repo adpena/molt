@@ -796,6 +796,9 @@ mod request_serialization_tests {
                     Err(error) => panic!("HTTP witness accept failed: {error}"),
                 }
             };
+            // The listener is non-blocking; an accepted stream inherits that on
+            // BSD and macOS but not on Linux. Set the mode this thread reads in.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

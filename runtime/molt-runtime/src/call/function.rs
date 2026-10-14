@@ -2946,17 +2946,6 @@ mod tests {
     use crate::object::builders::{alloc_dict_with_pairs, alloc_list, alloc_tuple};
     use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
     use molt_obj_model::MoltObject;
-    use std::sync::Once;
-
-    static INIT: Once = Once::new();
-
-    fn init() {
-        INIT.call_once(|| {
-            let _ = crate::lifecycle::init();
-        });
-        let _ = crate::molt_exception_clear();
-    }
-
     fn int(v: i64) -> u64 {
         MoltObject::from_int(v).bits()
     }
@@ -3133,7 +3122,6 @@ mod tests {
     #[test]
     fn public_vec_call_preserves_callee_owned_arg_alias_return() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -3163,7 +3151,6 @@ mod tests {
     #[test]
     fn fixed_arity_entry_routes_varargs_functions_through_binder() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -3248,7 +3235,6 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn trampoline_lane_dispatches_trampoline_not_fixed_arity_call_target() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init();
         crate::with_gil_entry_nopanic!(_py, {
             // `alloc_runtime_function_obj` registers the fixed-arity fn_ptr and
             // caches it in the offset-8 `call_target` slot -- exactly the state
@@ -3309,7 +3295,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn adopting_entries_own_one_reference_on_the_borrowed_and_moved_lanes() {
         use std::sync::atomic::Ordering::SeqCst;
-        init();
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -3756,7 +3742,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn an_adopted_bound_method_ends_before_its_function_runs() {
         use std::sync::atomic::Ordering::SeqCst;
-        init();
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -4030,7 +4016,6 @@ mod tests {
     #[test]
     fn fixed_arity_type_constructor_builtins_route_visible_args_through_binder() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init();
         crate::with_gil_entry_nopanic!(_py, {
             let type_new_bits = crate::builtins::methods::type_method_bits(_py, "__new__")
                 .expect("operation succeeds")
@@ -4121,7 +4106,6 @@ mod tests {
     #[test]
     fn call_func_fast1_preserves_callee_owned_arg_alias_return() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init();
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
@@ -4202,7 +4186,7 @@ mod tests {
         if std::env::var("MOLT_ASSERT_CHILD").as_deref() != Ok("1") {
             return;
         }
-        init();
+        let _test = crate::test_support::RuntimeTestTransaction::new();
         unsafe {
             std::env::set_var("MOLT_ASSERT_NO_PENDING_ON_SUCCESS", "1");
         }
