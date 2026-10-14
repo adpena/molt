@@ -282,7 +282,9 @@ pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
                 let new_handle = rc;
                 wasm_socket_meta_insert(
                     new_handle,
-                    WasmSocketMeta::new(family, libc::SOCK_STREAM, 0, timeout),
+                    // An accepted socket starts blocking; `socket.accept` applies the
+                    // default timeout, as CPython does on every OS.
+                    WasmSocketMeta::new(family, libc::SOCK_STREAM, 0, None),
                 );
                 let addr_bits = match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
                     Ok(bits) => bits,

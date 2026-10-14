@@ -499,6 +499,10 @@ class socket:
             self._require_handle()
         )
         sock = _socket_from_handle(self.family, self.type, self.proto, handle)
+        # CPython: the accepted socket takes the default timeout, never the
+        # listener's, on every OS (socket.py, bpo-7995).
+        if _DEFAULT_TIMEOUT is not None:
+            sock.settimeout(_DEFAULT_TIMEOUT)
         return sock, addr
 
     def connect(self, addr: Any) -> None:
