@@ -53,6 +53,7 @@ from molt.cli.runtime_fingerprints import (
     _write_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import _cargo_profile_dir
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.static_archive_identity import artifact_content_identity
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
@@ -395,14 +396,22 @@ def _backend_fingerprint(
 
 
 def _current_backend_fingerprint(
-    project_root: Path, *, cargo_profile: str, backend_features: tuple[str, ...]
+    project_root: Path,
+    *,
+    cargo_profile: str,
+    backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
 ) -> dict[str, Any]:
     """This checkout's backend identity, hashed in full without a receipt."""
     return _backend_fingerprint(
         project_root,
         cargo_profile=cargo_profile,
         build_admission=backend_build_admission(
-            project_root, backend_features, cargo_profile, os.environ
+            project_root,
+            backend_features,
+            cargo_profile,
+            os.environ,
+            rust_cpu=rust_cpu,
         ),
         backend_features=backend_features,
     )
@@ -414,6 +423,7 @@ def admitted_backend_binary(
     binary: Path,
     cargo_profile: str,
     backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
 ) -> tuple[Path, Path]:
     """The backend executable and receipt a build of this checkout reuses.
 
@@ -422,7 +432,10 @@ def admitted_backend_binary(
     checkout's backend identity and binds the executable's content.
     """
     fingerprint = _current_backend_fingerprint(
-        project_root, cargo_profile=cargo_profile, backend_features=backend_features
+        project_root,
+        cargo_profile=cargo_profile,
+        backend_features=backend_features,
+        rust_cpu=rust_cpu,
     )
     for candidate, receipt in (
         (binary, _backend_fingerprint_path(project_root, binary, cargo_profile)),
@@ -441,6 +454,7 @@ def import_backend_binary(
     binary: Path,
     cargo_profile: str,
     backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
     executable: Path,
     receipt: Path,
 ) -> Path:
@@ -454,7 +468,10 @@ def import_backend_binary(
     if transported is None or "artifact_content_identity" not in transported:
         raise ValueError(f"transported backend receipt is invalid: {receipt}")
     fingerprint = _current_backend_fingerprint(
-        project_root, cargo_profile=cargo_profile, backend_features=backend_features
+        project_root,
+        cargo_profile=cargo_profile,
+        backend_features=backend_features,
+        rust_cpu=rust_cpu,
     )
     if any(
         transported.get(key) != fingerprint.get(key)
@@ -503,6 +520,7 @@ def _ensure_backend_binary(
     cargo_profile: str,
     project_root: Path,
     backend_features: tuple[str, ...],
+    rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendBinaryEnsureResult:
     # Installed compilers are immutable release inputs, never Cargo outputs.
@@ -512,6 +530,11 @@ def _ensure_backend_binary(
             project_root, backend_features, cargo_profile
         )
         if installed is not None:
+            if rust_cpu is not RustCpuPolicy.BASELINE:
+                raise ValueError(
+                    "Installed Molt ships a baseline-CPU backend compiler; "
+                    "MOLT_PERF_PROFILE=native-arch needs a source checkout"
+                )
             if backend_bin != installed.compiler.binary:
                 raise ValueError(
                     "Selected compiler differs from the installed compiler"
@@ -524,7 +547,7 @@ def _ensure_backend_binary(
         return _backend_ensure_failure("installed_compiler", str(exc))
     try:
         build_admission = backend_build_admission(
-            project_root, backend_features, cargo_profile, os.environ
+            project_root, backend_features, cargo_profile, os.environ, rust_cpu=rust_cpu
         )
     except CompilerIdentityError as exc:
         return _backend_ensure_failure("backend_source_identity", str(exc))

@@ -41,6 +41,8 @@ from molt.cli.installed_runtime import (
     installed_runtime_active,
     select_installed_native_runtime,
 )
+from molt.cli.installed_runtime_contract import InstalledRuntimeError
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 
 def _initialize_runtime_artifact_state(
@@ -53,6 +55,7 @@ def _initialize_runtime_artifact_state(
     target_triple: str | None,
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     extra_runtime_features: Sequence[str] | None = None,
+    rust_cpu: RustCpuPolicy,
 ) -> _RuntimeArtifactState:
     state = _RuntimeArtifactState(
         extra_runtime_features=tuple(
@@ -61,7 +64,8 @@ def _initialize_runtime_artifact_state(
                 for feature in (extra_runtime_features or ())
                 if feature and feature.strip()
             )
-        )
+        ),
+        rust_cpu=rust_cpu,
     )
     if is_rust_transpile:
         return state
@@ -86,6 +90,11 @@ def _initialize_runtime_artifact_state(
             stdlib_profile=stdlib_profile,
             extra_runtime_features=state.extra_runtime_features,
         )
+        if installed is not None and rust_cpu is not RustCpuPolicy.BASELINE:
+            raise InstalledRuntimeError(
+                "Installed Molt ships baseline-CPU native runtime cells; "
+                "MOLT_PERF_PROFILE=native-arch needs a source checkout"
+            )
         state.runtime_lib = (
             installed.runtime_lib
             if installed is not None
@@ -167,6 +176,7 @@ def _prebuild_runtime_wasm(
         runtime_cargo_profile=cargo_profile,
         target_triple=None,
         stdlib_profile=concrete_stdlib_profile,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     if runtime_state.runtime_wasm is None or runtime_state.runtime_reloc_wasm is None:
         return fail("Runtime wasm shared/reloc artifact path is unavailable.")

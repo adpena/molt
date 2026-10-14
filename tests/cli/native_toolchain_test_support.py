@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.backend_executable_names import backend_executable_name
 from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
@@ -72,6 +73,7 @@ class Checkout:
                 cargo_profile=BACKEND_PROFILE,
                 features=BACKEND_FEATURES,
                 binary=self.session_target / BACKEND_PROFILE / name,
+                rust_cpu=RustCpuPolicy.BASELINE,
             ),
         )
 

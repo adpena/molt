@@ -289,6 +289,9 @@ uv run python tools/native_link_benchmark.py \
   --json-out <report.json>
 ```
 
+Pass `--runtime-target-cpu native` when a `MOLT_PERF_PROFILE=native-arch` build
+produced the runtime archive; the default is `baseline`.
+
 Use `--compare <baseline.json>` only for an exact-identity before/after run.
 Use `--plan-only` when the changed authority is plan construction itself; this
 keeps the attestation window short and does not manufacture unrelated linker

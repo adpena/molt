@@ -12,6 +12,7 @@ import pytest
 import molt.cli as cli
 from molt.backend_environment import CodegenSelection
 from molt.cli import factgraph as factgraph_module
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 
 def test_factgraph_cli_dispatches_typed_backend_request(
@@ -305,6 +306,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             phase_starts={},
             backend_daemon_config_digest=None,
             warnings=[],
+            rust_cpu=RustCpuPolicy.BASELINE,
         ),
         json_output=True,
         verbose=False,

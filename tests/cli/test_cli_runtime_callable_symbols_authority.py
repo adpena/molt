@@ -10,6 +10,7 @@ import pytest
 from molt.backend_environment import CodegenSelection
 import molt.cli as cli
 from molt.cli import runtime_callable_symbols, native_symbol_inspection
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import stub_native_symbol_admission
 
 _RUNTIME_CALLABLE_SYMBOL_NAMES = (
@@ -250,6 +251,7 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
                 "cargo_profile": "dev-fast",
                 "stdlib_profile": "micro",
                 "extra_runtime_features": (),
+                "rust_cpu": state.rust_cpu,
                 "build_python_admission": state.build_python_admission,
             },
         )
@@ -526,6 +528,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             backend_compiler_fingerprint="fixture-compiler",
             native_runtime_codegen_binding=binding,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
 
     def keys(setup):
@@ -557,6 +560,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             start_daemon=False,
             native_runtime_codegen_binding=binding,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert error is None and result is not None
         return result.backend_env

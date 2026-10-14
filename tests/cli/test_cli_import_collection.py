@@ -108,6 +108,7 @@ from molt.source_root import compiler_source_root
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION, TargetPythonVersion
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY,
     NativeArchiveFixtureCatalog,
@@ -3132,6 +3133,7 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert "copy" in backend_setup.stdlib_module_symbols
@@ -13086,7 +13088,9 @@ def _payload_digest_cache_key(
     digest.update(b"|")
     digest.update(suffix.encode("utf-8"))
     digest.update(b"|")
-    digest.update(CACHE_KEYS._cache_fingerprint().encode("utf-8"))
+    digest.update(
+        CACHE_KEYS._cache_fingerprint(rust_cpu=RustCpuPolicy.BASELINE).encode("utf-8")
+    )
     digest.update(b"|")
     digest.update(CACHE_KEYS._cache_tooling_fingerprint().encode("utf-8"))
     digest.update(b"|")
@@ -21175,6 +21179,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21301,6 +21306,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21427,6 +21433,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21556,6 +21563,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             resolved_modules={"__main__", "json"},
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21677,6 +21685,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             resolved_modules={"__main__"},
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
 
@@ -21704,6 +21713,7 @@ def test_initialize_runtime_artifact_state_assigns_native_object_runtime_lib(
         runtime_cargo_profile="release-fast",
         target_triple=None,
         stdlib_profile="micro",
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert state.runtime_lib == cli._runtime_lib_path(
@@ -24241,7 +24251,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         module_reasons={},
         stdlib_root=tmp_path,
         warnings=[],
-        native_arch_perf_enabled=False,
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     build_roots = cli._PreparedBuildRoots(
         cwd_root=tmp_path,
@@ -24576,6 +24586,7 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         backend_daemon_config_digest=None,
         warnings=[],
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert prepared is None
@@ -24631,6 +24642,7 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert seen_features == [("native-backend",), ("native-backend",)]
     assert build_cmds == [
@@ -24711,6 +24723,7 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert identity_path.exists()
 
@@ -24766,6 +24779,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("wasm-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert seen_features == [("wasm-backend",), ("wasm-backend",)]
     assert build_cmds == [
@@ -24855,6 +24869,7 @@ def test_ensure_backend_binary_materializes_admitted_feature_alias_without_rebui
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("wasm-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert build_cmds == []
@@ -24899,6 +24914,7 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         backend_features=("wasm-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
 
@@ -28357,22 +28373,6 @@ def test_resolve_wasm_cargo_profile_is_cached(
 
     info = RUNTIME_WASM_BUILD_POLICY._resolve_wasm_cargo_profile_cached.cache_info()
     assert first == second == "wasm-release"
-    assert info.hits >= 1
-    assert info.currsize >= 1
-
-
-def test_native_arch_perf_requested_is_cached(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cli_build_inputs._native_arch_perf_requested_cached.cache_clear()
-    monkeypatch.setenv("MOLT_PERF_PROFILE", "native")
-
-    first = cli_build_inputs._native_arch_perf_requested()
-    second = cli_build_inputs._native_arch_perf_requested()
-
-    info = cli_build_inputs._native_arch_perf_requested_cached.cache_info()
-    assert first is True
-    assert second is True
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -31945,6 +31945,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
@@ -32029,6 +32030,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert setup.cache_path is not None
@@ -32105,6 +32107,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert setup.cache_path is None
@@ -32353,6 +32356,7 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
             backend_bin=backend_bin,
             backend_compiler_fingerprint=fingerprint,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
         assert error is None
         assert prepared is not None

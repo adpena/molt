@@ -281,6 +281,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_NATIVE_CPU",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_PERF_PROFILE",
+      "retired": "2026-10-13"
+    },
+    {
       "name": "MOLT_PRESERVE_TARGET_ROOT",
       "note": "",
       "rejected_by": [],
@@ -4615,15 +4622,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_NATIVE_CPU",
-      "owner": "src/molt/cli/cargo_execution.py",
-      "summary": "Set to 1, true, or yes to add -C target-cpu=native to CARGO_BUILD_RUSTFLAGS for the Cargo build when no target-cpu flag is already present; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "",
       "kind": "path",
       "name": "MOLT_NODE_BIN",
@@ -4663,12 +4661,10 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "enum",
       "name": "MOLT_PERF_PROFILE",
-      "owner": "src/molt/cli/build_inputs.py",
-      "summary": "Perf profile for native builds; native-arch (also spelled native_arch or native) appends -C target-cpu=native to RUSTFLAGS, any other value leaves the target baseline and defers to MOLT_NATIVE_ARCH_PERF; default unset.",
+      "owner": "src/molt/cli/rust_cpu_policy.py",
+      "summary": "Rust CPU policy of a build; native-arch compiles the runtime and backend compiler of a --target native build with -C target-cpu=native and binds the flag into their identities; other targets keep the baseline and warn; installed Molt and toolchain transfer reject it; any other value is an error; default unset (baseline).",
       "values": [
-        "native-arch",
-        "native_arch",
-        "native"
+        "native-arch"
       ]
     },
     {

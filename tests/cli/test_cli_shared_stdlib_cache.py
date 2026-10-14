@@ -22,6 +22,7 @@ from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.exact_json import canonical_json_sha256
+from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.process_guard import run_cli_test_process
 from tests.cli.native_link_test_support import (
     mock_symbol_reader_admission,
@@ -661,6 +662,7 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
     )
     common = dict(
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -845,6 +847,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         stdlib_profile="micro",
         stage_timings_ms=stage_timings_ms,
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
 
     assert setup.cache_key is not None
@@ -927,6 +930,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     )
     common = dict(
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -1028,6 +1032,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     )
     common = dict(
         codegen=CodegenSelection(),
+        rust_cpu=RustCpuPolicy.BASELINE,
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -1158,6 +1163,7 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
             stdlib_profile="micro",
             backend_compiler_fingerprint=backend_compiler_fingerprint,
             codegen=CodegenSelection(),
+            rust_cpu=RustCpuPolicy.BASELINE,
         )
 
     setup_a = prepare(
@@ -1789,6 +1795,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         cargo_profile="dev-fast",
         project_root=project_root,
         backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert build_cmds == [
         [

@@ -1,9 +1,10 @@
 # Molt Cargo configuration
 # Portable baseline: no target-cpu=native by default.
 #
-# Opt-in to host-tuned builds (non-portable!):
-#   CARGO_BUILD_RUSTFLAGS="-C target-cpu=native" cargo build ...
-# Or copy .cargo/config-native.toml over this file for persistent opt-in.
+# Host-tuned (non-portable) Molt builds: set MOLT_PERF_PROFILE=native-arch.
+# Molt then adds -C target-cpu=native to the runtime and backend compiler
+# Cargo plans of a --target native build (src/molt/cli/rust_cpu_policy.py).
+# A raw Cargo command takes Cargo's own RUSTFLAGS instead.
 
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = []
