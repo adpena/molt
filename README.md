@@ -46,6 +46,9 @@ defines test selection, source-change checks, and the exact cross-target pass la
   version policy does not certify every feature on that version. The Python
   running the CLI must be at least the selected target minor; see
   [frontend selection](packaging/INSTALL.md#requirements).
+  Python 3.15 support across the release matrix is a required v1.0 exit
+  obligation; its implementation and qualification remain open in the
+  [release ledger](docs/agent/V1_HANDOFF_FINDINGS.md#open-release-requirements).
 - Compiled artifacts must work without a host Python installation.
 - CPython module names retain their standard-library role. Molt-specific
   helpers live under `moltlib`, including `moltlib.io.stream` for bounded file
