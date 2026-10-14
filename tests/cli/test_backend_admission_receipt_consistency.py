@@ -17,9 +17,24 @@ from tests.cli.test_cli_backend_prewarm import (
 
 @pytest.mark.parametrize("acquisition", [1, 2])
 def test_prewarm_lock_failure_is_structured(acquisition, tmp_path, monkeypatch, capsys):
+    from molt.cli import backend_build
+
     _isolated_molt_root(tmp_path, monkeypatch)
     _fake_backend_toolchain(monkeypatch)
     original = backend_binary._build_lock
+    original_receipts = backend_build._verified_backend_receipts
+    receipt_reads = 0
+
+    def interleaved_once(*args, **kwargs):
+        # The receipt read runs without the lock first; an interleaving lane
+        # makes it fail, so the second read takes the lock.
+        nonlocal receipt_reads
+        receipt_reads += 1
+        if receipt_reads == 1:
+            return None, "another lane interleaved"
+        return original_receipts(*args, **kwargs)
+
+    monkeypatch.setattr(backend_build, "_verified_backend_receipts", interleaved_once)
     calls = 0
 
     @contextmanager
@@ -578,3 +593,35 @@ def test_cold_backend_success_identity_is_captured_under_admission_lock(
     monkeypatch.setattr(backend_binary, "_backend_admission_lock", tracked_lock)
     monkeypatch.setattr(backend_binary, "_backend_ensure_success", checked_success)
     assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 0
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+def test_published_lane_is_admitted_while_another_lane_holds_the_lock(
+    target, tmp_path, monkeypatch, capsys
+):
+    _isolated_molt_root(tmp_path, monkeypatch)
+    _fake_backend_toolchain(monkeypatch)
+    assert _dispatch(["internal-backend-build", "--target", target, "--json"]) == 0
+    capsys.readouterr()
+
+    @contextmanager
+    def held(*args, **kwargs):
+        raise RuntimeError("held by another lane's cold build")
+        yield
+
+    # The lock guards Cargo's shared output; reusing this lane's own published,
+    # receipt-bound executable must not wait for it.
+    monkeypatch.setattr(backend_binary, "_build_lock", held)
+    assert _dispatch(["internal-backend-build", "--target", target, "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert (
+        payload["data"]["stage_timings_ms"]["backend_binary_published_admission"] >= 0
+    )
+
+    # A lane whose bytes no longer match their receipt takes the lock again.
+    binary = Path(payload["data"]["compiler"]["path"])
+    binary.write_bytes(binary.read_bytes() + b"changed")
+    assert _dispatch(["internal-backend-build", "--target", target, "--json"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["failure"]["phase"] == "backend_build_lock"
