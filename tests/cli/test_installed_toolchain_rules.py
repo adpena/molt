@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sysconfig
 
 import pytest
@@ -19,6 +20,7 @@ from molt.cli import compiler_metadata, project_roots, setup_readiness
 from molt.cli import toolchain_validation, wasm_toolchain
 from molt.cli.installation_diagnostics import installation_checks
 from tests.cli.test_installed_runtime import bundle as bundle
+from tests.process_guard_common import current_thread_only
 
 # These cases build synthetic projects and assert developer-host roots;
 # hosted custody has its own cases in tests/test_dx_run_context.py.
@@ -61,7 +63,7 @@ def _complete_toolchain_inputs(bundle: Path) -> None:
 
 
 def _refuse_rust(monkeypatch) -> None:
-    real_which = setup_readiness.shutil.which
+    real_which = shutil.which
 
     def which(name, *args, **kwargs):
         if Path(str(name)).name in _RUST_COMMANDS:
@@ -71,7 +73,9 @@ def _refuse_rust(monkeypatch) -> None:
     def refuse(*_args, **_kwargs):
         pytest.fail("installed readiness consulted the Rust toolchain contract")
 
-    monkeypatch.setattr(setup_readiness.shutil, "which", which)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(shutil, "which", current_thread_only(which, real_which))
     monkeypatch.setattr(setup_readiness, "_detect_llvm_backend_toolchain", refuse)
     monkeypatch.setattr(setup_readiness, "_required_llvm_backend_pin", refuse)
     monkeypatch.setattr(wasm_toolchain, "rust_toolchain_contract", refuse)
@@ -127,14 +131,16 @@ def test_missing_manifest_in_a_packaged_distribution_is_damage(tmp_path, monkeyp
 
 def test_installed_update_plans_no_rust_toolchain_steps(bundle, monkeypatch):
     _complete_toolchain_inputs(bundle)
-    real_which = toolchain_validation.shutil.which
+    real_which = shutil.which
 
     def which(name, *args, **kwargs):
         if name in _RUST_COMMANDS:
             pytest.fail(f"installed update probed {name}")
         return real_which(name, *args, **kwargs)
 
-    monkeypatch.setattr(toolchain_validation.shutil, "which", which)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(shutil, "which", current_thread_only(which, real_which))
     steps, warnings = toolchain_validation._planned_update_steps(
         bundle / "source",
         include_toolchains=True,

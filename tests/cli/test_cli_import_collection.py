@@ -143,7 +143,7 @@ from tests.wasm_object_fixtures import (
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import current_thread_only, install_module_view
 
 cli_deps = importlib.import_module("molt.cli.deps")
 cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
@@ -5200,7 +5200,13 @@ def test_native_archive_fixture_preserves_digest_and_cache_custody(
     def forbid_reader_execution(*args: Any, **kwargs: Any) -> None:
         pytest.fail("synthetic symbol reader executable is identity-only")
 
-    monkeypatch.setattr(subprocess, "Popen", forbid_reader_execution)
+    # A tripwire must catch this launch from any module, subprocess.run among
+    # them, so it stays process-wide. Only this thread meets the fake.
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        current_thread_only(forbid_reader_execution, subprocess.Popen),
+    )
     first = native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
     assert first.artifact_digest == hashlib.sha256(first_bytes).hexdigest()
     assert first.defined == frozenset({"PyInit__native", "state"})

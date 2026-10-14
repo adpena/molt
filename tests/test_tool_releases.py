@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 
 from molt import tool_releases
 from molt.dx import TOOLCHAINS_DIRNAME
+from tests.process_guard_common import current_thread_only
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -356,8 +358,14 @@ def _installed_demo(tmp_path, monkeypatch):
 
 def test_required_tool_ignores_ambient_path_and_never_provisions(tmp_path, monkeypatch):
     discovery = _installed_demo(tmp_path, monkeypatch)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
     monkeypatch.setattr(
-        tool_releases.shutil, "which", lambda *_a, **_k: pytest.fail("ambient PATH")
+        shutil,
+        "which",
+        current_thread_only(
+            lambda *_a, **_k: pytest.fail("ambient PATH"), shutil.which
+        ),
     )
     monkeypatch.setattr(
         tool_releases,
