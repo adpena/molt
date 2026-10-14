@@ -5,56 +5,6 @@ use crate::ir::OpIR;
 use super::cfg::CFG;
 use super::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
-/// Exact liveness over the canonical SimpleIR CFG, using its one name table.
-///
-/// Block boundaries retain compact bitsets. Operation boundaries retain sparse
-/// IDs, so long functions with few live values do not allocate a full name-width
-/// bitset per operation. Names are materialized only by diagnostic consumers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SimpleCfgLiveness {
-    pub names: SimpleNameTable,
-    pub live_in_by_block: Vec<SimpleNameSet>,
-    pub live_out_by_block: Vec<SimpleNameSet>,
-    pub live_after_op: Vec<Vec<u32>>,
-    pub op_to_block: Vec<usize>,
-}
-
-impl SimpleCfgLiveness {
-    pub fn live_after(&self, op_idx: usize) -> &[u32] {
-        self.live_after_op
-            .get(op_idx)
-            .unwrap_or_else(|| panic!("SimpleIR op index {op_idx} is outside liveness plan"))
-    }
-
-    pub fn block_for_op(&self, op_idx: usize) -> usize {
-        *self
-            .op_to_block
-            .get(op_idx)
-            .unwrap_or_else(|| panic!("SimpleIR op index {op_idx} is outside CFG"))
-    }
-}
-
-pub fn analyze_simple_cfg_liveness(ops: &[OpIR]) -> SimpleCfgLiveness {
-    analyze_simple_cfg_liveness_with_cfg(ops, &CFG::build(ops))
-}
-
-pub fn analyze_simple_cfg_liveness_with_cfg(ops: &[OpIR], cfg: &CFG) -> SimpleCfgLiveness {
-    let facts = analyze_simple_cfg_liveness_facts_with_cfg(ops, cfg);
-    let mut live_after_op = vec![Vec::new(); ops.len()];
-    for block in 0..facts.block_count() {
-        facts.visit_block_backward(ops, block, |op_idx, live| {
-            live_after_op[op_idx] = live.iter().collect();
-        });
-    }
-    SimpleCfgLiveness {
-        names: facts.names,
-        live_in_by_block: facts.live_in_by_block,
-        live_out_by_block: facts.live_out_by_block,
-        live_after_op,
-        op_to_block: facts.op_to_block,
-    }
-}
-
 /// Dense identities for every name a SimpleIR function reads or defines,
 /// assigned in first-appearance order (reads before definitions within an
 /// operation) so every projection is deterministic.
@@ -178,6 +128,13 @@ pub struct SimpleCfgLivenessFacts {
 }
 
 impl SimpleCfgLivenessFacts {
+    pub fn block_for_op(&self, op_idx: usize) -> usize {
+        *self
+            .op_to_block
+            .get(op_idx)
+            .unwrap_or_else(|| panic!("SimpleIR op index {op_idx} is outside CFG"))
+    }
+
     pub fn block_count(&self) -> usize {
         self.block_ops.len()
     }
@@ -332,6 +289,18 @@ mod tests {
         }
     }
 
+    // Materialize only the boundary under assertion. Production consumers
+    // retain block facts and replay a block when an operation view is needed.
+    fn live_after(facts: &SimpleCfgLivenessFacts, ops: &[OpIR], op_idx: usize) -> Vec<u32> {
+        let mut observed = None;
+        facts.visit_block_backward(ops, facts.block_for_op(op_idx), |idx, live| {
+            if idx == op_idx {
+                observed = Some(live.iter().collect());
+            }
+        });
+        observed.expect("operation belongs to its CFG block")
+    }
+
     #[test]
     fn branch_target_use_is_live_across_conditional_edge() {
         let mut branch = op("br_if");
@@ -345,16 +314,10 @@ mod tests {
         target_return.args = Some(vec!["carried".into()]);
         let ops = vec![branch, fallthrough_return, label, target_return];
 
-        let plan = analyze_simple_cfg_liveness(&ops);
+        let plan = analyze_simple_cfg_liveness_facts(&ops);
 
-        assert!(
-            plan.live_after(0)
-                .contains(&plan.names.id("carried").unwrap())
-        );
-        assert!(
-            plan.live_after(0)
-                .contains(&plan.names.id("fallback").unwrap())
-        );
+        assert!(live_after(&plan, &ops, 0).contains(&plan.names.id("carried").unwrap()));
+        assert!(live_after(&plan, &ops, 0).contains(&plan.names.id("fallback").unwrap()));
     }
 
     #[test]
@@ -369,16 +332,10 @@ mod tests {
         handler_return.args = Some(vec!["exception_context".into()]);
         let ops = vec![check, normal_return, handler, handler_return];
 
-        let plan = analyze_simple_cfg_liveness(&ops);
+        let plan = analyze_simple_cfg_liveness_facts(&ops);
 
-        assert!(
-            plan.live_after(0)
-                .contains(&plan.names.id("exception_context").unwrap())
-        );
-        assert!(
-            plan.live_after(0)
-                .contains(&plan.names.id("normal").unwrap())
-        );
+        assert!(live_after(&plan, &ops, 0).contains(&plan.names.id("exception_context").unwrap()));
+        assert!(live_after(&plan, &ops, 0).contains(&plan.names.id("normal").unwrap()));
     }
 
     #[test]
@@ -402,12 +359,9 @@ mod tests {
             handler_return,
         ];
 
-        let plan = analyze_simple_cfg_liveness(&ops);
+        let plan = analyze_simple_cfg_liveness_facts(&ops);
 
-        assert!(
-            plan.live_after(1)
-                .contains(&plan.names.id("carried").unwrap())
-        );
+        assert!(live_after(&plan, &ops, 1).contains(&plan.names.id("carried").unwrap()));
         assert!(
             !plan.live_in_by_block[plan.block_for_op(1)]
                 .contains(plan.names.id("carried").unwrap()),
@@ -426,7 +380,7 @@ mod tests {
         resumed_return.args = Some(vec!["frame_value".into()]);
         let ops = vec![switch, suspend, resume, resumed_return];
 
-        let plan = analyze_simple_cfg_liveness(&ops);
+        let plan = analyze_simple_cfg_liveness_facts(&ops);
 
         assert!(
             plan.live_in_by_block[plan.block_for_op(0)]
@@ -445,12 +399,9 @@ mod tests {
         jump.value = Some(1);
         let ops = vec![label, update, jump];
 
-        let plan = analyze_simple_cfg_liveness(&ops);
+        let plan = analyze_simple_cfg_liveness_facts(&ops);
 
-        assert!(
-            plan.live_after(2)
-                .contains(&plan.names.id("carried").unwrap())
-        );
+        assert!(live_after(&plan, &ops, 2).contains(&plan.names.id("carried").unwrap()));
     }
 
     #[test]
@@ -459,12 +410,10 @@ mod tests {
         define.out = Some("value".into());
         let mut ret = op("ret");
         ret.args = Some(vec!["value".into()]);
-        let plan = analyze_simple_cfg_liveness(&[define, ret]);
+        let ops = vec![define, ret];
+        let plan = analyze_simple_cfg_liveness_facts(&ops);
 
-        assert!(
-            plan.live_after(0)
-                .contains(&plan.names.id("value").unwrap())
-        );
+        assert!(live_after(&plan, &ops, 0).contains(&plan.names.id("value").unwrap()));
         assert!(!plan.live_in_by_block[0].contains(plan.names.id("value").unwrap()));
     }
 
@@ -480,18 +429,14 @@ mod tests {
         check.value = Some(5);
         let ops = vec![handler, read, define, check, op("ret_void")];
 
-        let plan = analyze_simple_cfg_liveness(&ops);
+        let plan = analyze_simple_cfg_liveness_facts(&ops);
 
         assert_eq!(plan.block_for_op(0), plan.block_for_op(3));
         assert!(
-            plan.live_after(3)
-                .contains(&plan.names.id("carried").unwrap()),
+            live_after(&plan, &ops, 3).contains(&plan.names.id("carried").unwrap()),
             "the transfer re-enters the block that reads the value"
         );
-        assert!(
-            plan.live_after(2)
-                .contains(&plan.names.id("carried").unwrap())
-        );
+        assert!(live_after(&plan, &ops, 2).contains(&plan.names.id("carried").unwrap()));
     }
 
     #[test]
@@ -552,17 +497,14 @@ mod tests {
     fn projection_matches_exhaustive_path_liveness_on_generated_control_flow() {
         for seed in 0..256 {
             let ops = generated_ops(seed);
-            let plan = analyze_simple_cfg_liveness(&ops);
+            let plan = analyze_simple_cfg_liveness_facts(&ops);
             let oracle = exhaustive_live_after(&ops);
-            let observed: Vec<BTreeSet<String>> = plan
-                .live_after_op
-                .iter()
-                .map(|ids| {
-                    ids.iter()
-                        .map(|&id| plan.names.name(id).to_owned())
-                        .collect()
-                })
-                .collect();
+            let mut observed = vec![BTreeSet::new(); ops.len()];
+            for block in 0..plan.block_count() {
+                plan.visit_block_backward(&ops, block, |op_idx, live| {
+                    observed[op_idx] = plan.names.materialize(live);
+                });
+            }
             assert_eq!(observed, oracle, "seed {seed}: {ops:?}");
             for (block, live_in) in plan.live_in_by_block.iter().enumerate() {
                 let first = plan

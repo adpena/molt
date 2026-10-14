@@ -110,6 +110,19 @@ receipts validate after that transfer.
 This qualifies queued development reuse on Linux aarch64; it adds no guest work
 and does not qualify release performance or other host cells.
 
+The demand-directed TIR preparation change is on main as `60d1d54b4`.
+Its retained comparison covers 14 cold/warm preparation coordinates with exact
+output-byte equality. On the large asyncio LLVM preparation case it removes
+117,507–117,517 allocation calls and about 49.4 MB of requested allocation;
+these are preparation measurements, not whole-program peak-memory or release
+performance acceptance. One coherent developer Cargo build at `9a3636423`
+passes all 170 selected compiler/exporter/LLVM consumer tests. The native
+live-value migration still requires the complete compact-liveness and physical
+block-sealing correction, its adversarial review, and current-main consumer
+qualification. The retained locale batch still exceeds a three-minute
+`dev-fast` observation window before native function code generation; no speedup
+or completed batch is claimed. V1-07 retains that performance obligation.
+
 ### Qualified boundaries
 
 | Boundary | Current retained evidence and limits |

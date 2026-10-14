@@ -9,7 +9,7 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     pub(in crate::native_backend::function_compiler) var_names: Vec<String>,
     pub(in crate::native_backend::function_compiler) last_use: BTreeMap<String, usize>,
     pub(in crate::native_backend::function_compiler) cfg_liveness:
-        crate::tir::cfg_liveness::SimpleCfgLiveness,
+        crate::tir::cfg_liveness::SimpleCfgLivenessFacts,
     pub(in crate::native_backend::function_compiler) ssa_values: NativeSsaValues,
     pub(in crate::native_backend::function_compiler) alias_roots: BTreeMap<String, String>,
     pub(in crate::native_backend::function_compiler) if_to_end_if: BTreeMap<usize, usize>,
@@ -659,7 +659,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     let scalar_slot_exclusion_unsafe = representation_plan.scalar_slot_exclusion_unsafe();
     let cfg = crate::tir::cfg::CFG::build(&func_ir.ops);
     let cfg_liveness =
-        crate::tir::cfg_liveness::analyze_simple_cfg_liveness_with_cfg(&func_ir.ops, &cfg);
+        crate::tir::cfg_liveness::analyze_simple_cfg_liveness_facts_with_cfg(&func_ir.ops, &cfg);
     let ssa_values = NativeSsaValues::for_function(func_ir, &cfg, stateful, &cfg_liveness.names);
 
     FunctionPreanalysis {

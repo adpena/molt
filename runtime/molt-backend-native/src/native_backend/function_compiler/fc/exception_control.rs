@@ -261,9 +261,9 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             // synthesize placeholder predecessors with zero-valued
             // block params. This remains true in exception-bearing
             // functions; exception labels are separate target blocks.
+            crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
             maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
-            crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
             // check_exception's fallthrough is always a fresh empty
             // block — force-clear is_block_filled so subsequent ops
             // (add, loop_index_next) are never incorrectly skipped by

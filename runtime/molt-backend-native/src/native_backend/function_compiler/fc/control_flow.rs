@@ -388,24 +388,17 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 .ins()
                 .brif(cond_bool, then_block, &[], false_block, &[]);
 
-            // Seal blocks now that their predecessor sets are complete.
+            // Seal the arm after materializing it. Its predecessor set is complete.
             // Structured `if` creates exactly one predecessor for each of then/else.
             //
             // Note: we deliberately do not seal `origin_block` here because it may have
             // been sealed earlier (for example the function entry block is sealed up-front).
-            if exception_label_ids.is_empty() && sealed_blocks.insert(then_block) {
+            crate::switch_to_block_tracking(&mut *builder, then_block, is_block_filled);
+            if exception_label_ids.is_empty() {
                 maybe_debug_seal("if_then", op_idx, then_block);
                 seal_block_once(&mut *builder, sealed_blocks, then_block);
             }
-            if let Some(else_block) = else_block
-                && exception_label_ids.is_empty()
-                && sealed_blocks.insert(else_block)
-            {
-                maybe_debug_seal("if_else", op_idx, else_block);
-                seal_block_once(&mut *builder, sealed_blocks, else_block);
-            }
 
-            crate::switch_to_block_tracking(&mut *builder, then_block, is_block_filled);
             if_stack.push(IfFrame {
                 else_block,
                 merge_block,
@@ -591,11 +584,12 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 }
             }
 
-            crate::switch_to_block_tracking(
-                &mut *builder,
-                frame.else_block.expect("else without placeholder block"),
-                is_block_filled,
-            );
+            let else_block = frame.else_block.expect("else without placeholder block");
+            crate::switch_to_block_tracking(&mut *builder, else_block, is_block_filled);
+            if exception_label_ids.is_empty() {
+                maybe_debug_seal("if_else", op_idx, else_block);
+                seal_block_once(&mut *builder, sealed_blocks, else_block);
+            }
             frame.has_else = true;
         }
         "end_if" => {
@@ -888,6 +882,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 
                 if let Some(else_block) = frame.else_block {
                     crate::switch_to_block_tracking(&mut *builder, else_block, is_block_filled);
+                    if exception_label_ids.is_empty() {
+                        maybe_debug_seal("if_else", op_idx, else_block);
+                        seal_block_once(&mut *builder, sealed_blocks, else_block);
+                    }
                     if *is_block_filled {
                         frame.else_terminal = true;
                         return OpFlow::Continue;
@@ -1040,11 +1038,11 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 // stream, and sealing here bakes in an incomplete
                 // predecessor set. Let `seal_all_blocks()` finalize
                 // those cases once every edge is emitted.
-                if exception_label_ids.is_empty() && sealed_blocks.insert(frame.merge_block) {
+                crate::switch_to_block_tracking(&mut *builder, frame.merge_block, is_block_filled);
+                if exception_label_ids.is_empty() {
                     maybe_debug_seal("if_merge", op_idx, frame.merge_block);
                     seal_block_once(&mut *builder, sealed_blocks, frame.merge_block);
                 }
-                crate::switch_to_block_tracking(&mut *builder, frame.merge_block, is_block_filled);
                 if !*is_block_filled
                     && frame.phi_ops.is_empty()
                     && !frame.merge_rebind_names.is_empty()

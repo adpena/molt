@@ -170,42 +170,124 @@ fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
     );
 }
 
+fn non_leaf_transport_callee(name: &str, params: Vec<String>) -> FunctionIR {
+    // A defined recursive callee cannot be classified as a leaf. The caller
+    // must therefore emit the actual recursion admission and error branches.
+    FunctionIR {
+        name: name.into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        params: params.clone(),
+        ops: vec![
+            OpIR {
+                kind: "call".into(),
+                s_value: Some(name.into()),
+                args: Some(params),
+                out: Some("recursive_result".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["recursive_result".into()]),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+fn assert_guarded_continuation_sources(compiled: &CompiledFunctionClif, parameters: &[usize]) {
+    let function = &compiled.function;
+    let enter = compiled.import_ids["molt_recursion_enter_fast"];
+    let exit = compiled.import_ids["molt_recursion_exit_fast"];
+    assert_eq!(
+        call_sites_for_import(function, enter).len(),
+        1,
+        "{}",
+        function.display()
+    );
+    let exits = call_sites_for_import(function, exit);
+    assert_eq!(exits.len(), 1, "{}", function.display());
+    let continuation = exits[0].0;
+    let entry = function.layout.entry_block().unwrap();
+    let expected: BTreeSet<_> = parameters
+        .iter()
+        .map(|&index| {
+            function
+                .dfg
+                .resolve_aliases(function.dfg.block_params(entry)[index])
+        })
+        .collect();
+    let terminal = function.layout.last_inst(continuation).unwrap();
+    let InstructionData::Jump { destination, .. } = &function.dfg.insts[terminal] else {
+        panic!(
+            "successful call arm must reach its value return: {}",
+            function.display()
+        );
+    };
+    let args: Vec<_> = destination.args(&function.dfg.value_lists).collect();
+    let [BlockArg::Value(actual)] = args.as_slice() else {
+        panic!(
+            "successful return must carry one value: {}",
+            function.display()
+        );
+    };
+    if let [parameter] = parameters {
+        assert!(
+            value_originates_only_from(
+                function,
+                *actual,
+                function.dfg.block_params(entry)[*parameter]
+            ),
+            "{}",
+            function.display()
+        );
+    } else {
+        assert_eq!(
+            canonical_value_sources(function, *actual),
+            expected,
+            "{}",
+            function.display()
+        );
+    }
+    assert!(
+        function.layout.blocks().any(|block| function
+            .layout
+            .block_insts(block)
+            .any(|inst| matches!(function.dfg.insts[inst], InstructionData::Brif { .. }))),
+        "recursion admission must split the actual CFG: {}",
+        function.display()
+    );
+}
+
 #[test]
 fn direct_call_minicfg_preserves_unrelated_live_parameter() {
     let mut params = vec!["carried".to_string()];
     params.extend((0..8).map(|idx| format!("arg{idx}")));
+    let callee_name = "non_leaf_transport";
+    let callee = non_leaf_transport_callee(callee_name, params[1..].to_vec());
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "direct_call_live_through".to_string(),
+        name: "direct_call_live_through".into(),
         params: params.clone(),
         ops: vec![
             OpIR {
-                kind: "call".to_string(),
-                s_value: Some("molt_gpu_linear_contiguous".to_string()),
+                kind: "call".into(),
+                s_value: Some(callee_name.into()),
                 args: Some(params[1..].to_vec()),
-                out: Some("ignored_result".to_string()),
-                ..OpIR::default()
+                out: Some("ignored_result".into()),
+                ..Default::default()
             },
             OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec!["carried".to_string()]),
-                ..OpIR::default()
+                kind: "ret".into(),
+                args: Some(vec!["carried".into()]),
+                ..Default::default()
             },
         ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
+        ..Default::default()
     };
-
-    let clif = compile_function_to_clif_text(vec![func], "direct_call_live_through");
-
-    assert!(
-        clif.contains("jump block1(v1)"),
-        "direct-call recursion mini-CFG must preserve the dominating carried parameter:\n{clif}"
-    );
+    let compiled =
+        compile_function_to_clif_with_imports(vec![func, callee], "direct_call_live_through");
+    assert_guarded_continuation_sources(&compiled, &[0]);
 }
 
 #[test]
@@ -589,6 +671,176 @@ fn assert_branch_preserves_parameter_without_phi(function: &Function, parameter:
 }
 
 #[test]
+fn redefined_value_survives_successive_exception_and_branch_fallthroughs() {
+    let mut ops = vec![OpIR {
+        kind: "copy".into(),
+        args: Some(vec!["initial".into()]),
+        out: Some("carried".into()),
+        ..Default::default()
+    }];
+    for (exception, branch, replacement) in [(10, 11, false), (12, 13, true)] {
+        if replacement {
+            ops.push(OpIR {
+                kind: "copy".into(),
+                args: Some(vec!["replacement".into()]),
+                out: Some("carried".into()),
+                ..Default::default()
+            });
+        }
+        ops.push(OpIR {
+            kind: "check_exception".into(),
+            value: Some(exception),
+            ..Default::default()
+        });
+        ops.push(OpIR {
+            kind: "br_if".into(),
+            value: Some(branch),
+            args: Some(vec!["condition".into()]),
+            ..Default::default()
+        });
+    }
+    ops.push(OpIR {
+        kind: "ret".into(),
+        args: Some(vec!["carried".into()]),
+        ..Default::default()
+    });
+    for label in 10..=13 {
+        ops.push(OpIR {
+            kind: "label".into(),
+            value: Some(label),
+            ..Default::default()
+        });
+        ops.push(OpIR {
+            kind: "ret".into(),
+            args: Some(vec!["carried".into()]),
+            ..Default::default()
+        });
+    }
+    let function = compile_function_to_clif(
+        vec![FunctionIR {
+            name: "redefined_fallthrough_value".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            params: vec!["initial".into(), "replacement".into(), "condition".into()],
+            ops,
+            ..Default::default()
+        }],
+        "redefined_fallthrough_value",
+    );
+    let entry = function.layout.entry_block().unwrap();
+    let initial = function.dfg.block_params(entry)[0];
+    let replacement = function.dfg.block_params(entry)[1];
+    let return_block = function
+        .layout
+        .blocks()
+        .find(|&block| {
+            function
+                .layout
+                .block_insts(block)
+                .any(|inst| function.dfg.insts[inst].opcode() == Opcode::Return)
+        })
+        .unwrap();
+    let cfg = ControlFlowGraph::with_function(&function);
+    let mut observed = [0, 0];
+    for predecessor in cfg.pred_iter(return_block) {
+        let destinations = function.dfg.insts[predecessor.inst]
+            .branch_destination(&function.dfg.jump_tables, &function.dfg.exception_tables);
+        for destination in destinations
+            .iter()
+            .filter(|edge| edge.block(&function.dfg.value_lists) == return_block)
+        {
+            let args: Vec<_> = destination.args(&function.dfg.value_lists).collect();
+            let [BlockArg::Value(actual)] = args.as_slice() else {
+                panic!("value return");
+            };
+            if value_originates_only_from(&function, *actual, initial) {
+                observed[0] += 1;
+            } else {
+                assert!(
+                    value_originates_only_from(&function, *actual, replacement),
+                    "no placeholder or stale source may reach a return: {}",
+                    function.display()
+                );
+                observed[1] += 1;
+            }
+        }
+    }
+    assert_eq!(
+        observed,
+        [2, 3],
+        "the first two exits precede redefinition; the next three follow it: {}",
+        function.display()
+    );
+}
+
+#[test]
+fn preloop_value_survives_exception_fallthrough_with_backend_managed_index() {
+    let function = compile_function_to_clif(
+        vec![FunctionIR {
+            name: "indexed_loop_exception_transport".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            params: vec!["carried".into(), "limit".into()],
+            ops: vec![
+                OpIR {
+                    kind: "loop_start".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "loop_index_start".into(),
+                    out: Some("index".into()),
+                    args: Some(vec!["limit".into()]),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "check_exception".into(),
+                    value: Some(17),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["carried".into()]),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "loop_end".into(),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["carried".into()]),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(17),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["carried".into()]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+        "indexed_loop_exception_transport",
+    );
+    // loop_index_start disables canonical direct-definition binding. Both
+    // normal and handler returns must resolve through actual lazy SSA.
+    assert_return_parameter_sources(&function, &[0]);
+    let branches = function
+        .layout
+        .blocks()
+        .flat_map(|block| function.layout.block_insts(block))
+        .filter(|&inst| matches!(function.dfg.insts[inst], InstructionData::Brif { .. }))
+        .count();
+    assert!(
+        branches >= 2,
+        "loop admission and exception split must both exist: {}",
+        function.display()
+    );
+}
+
+#[test]
 fn fast_int_overflow_result_does_not_unbox_merged_bigint_result() {
     let clif = compile_function_to_clif_text(
         vec![FunctionIR {
@@ -844,26 +1096,31 @@ fn structured_phi_actual_selected_value_survives_label_transport() {
 #[test]
 fn structured_phi_actual_selected_value_survives_internal_cfg() {
     let name = "structured_phi_live_through";
-    let function = compile_function_to_clif(
-        vec![structured_phi_transport_fixture(
-            name,
-            vec![
-                OpIR {
-                    kind: "const".into(),
-                    out: Some("unrelated".into()),
-                    value: Some(8),
-                    ..Default::default()
-                },
-                OpIR {
-                    kind: "ret".into(),
-                    args: Some(vec!["merged".into()]),
-                    ..Default::default()
-                },
-            ],
-        )],
+    let callee_name = "non_leaf_phi_transport";
+    let compiled = compile_function_to_clif_with_imports(
+        vec![
+            structured_phi_transport_fixture(
+                name,
+                vec![
+                    OpIR {
+                        kind: "call".into(),
+                        s_value: Some(callee_name.into()),
+                        args: Some(vec![]),
+                        out: Some("unrelated".into()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["merged".into()]),
+                        ..Default::default()
+                    },
+                ],
+            ),
+            non_leaf_transport_callee(callee_name, vec![]),
+        ],
         name,
     );
-    assert_return_parameter_sources(&function, &[1, 2]);
+    assert_guarded_continuation_sources(&compiled, &[1, 2]);
 }
 
 #[test]

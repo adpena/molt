@@ -904,6 +904,7 @@ impl SimpleBackend {
                 &mut self.data_pool,
                 &mut self.next_data_id,
                 &mut builder,
+                &mut sealed_blocks,
                 &vars,
                 fc::const_literals::LiteralFailureExit {
                     block: master_return_block,
@@ -955,7 +956,6 @@ impl SimpleBackend {
         };
 
         seal_block_once(&mut builder, &mut sealed_blocks, entry_block);
-        sealed_blocks.insert(entry_block);
 
         // Literal failure checks split the prologue from the Python body.
         // Entry-value tracking is rooted at the successful body entry, not the
@@ -963,7 +963,7 @@ impl SimpleBackend {
         let mut body_entry_block = builder
             .current_block()
             .expect("literal prologue has a success continuation");
-        sealed_blocks.insert(body_entry_block);
+        seal_block_once(&mut builder, &mut sealed_blocks, body_entry_block);
 
         // Keep textual control-flow labels and persisted resume states in
         // disjoint block maps. A numeric ready-continuation state may collide
@@ -2135,6 +2135,7 @@ impl SimpleBackend {
                     &mut self.data_pool,
                     &mut self.next_data_id,
                     &mut builder,
+                    &mut sealed_blocks,
                     &vars,
                     fc::const_literals::LiteralFailureExit {
                         block: master_return_block,
@@ -2144,7 +2145,7 @@ impl SimpleBackend {
                 body_entry_block = builder
                     .current_block()
                     .expect("literal prologue has a success continuation");
-                sealed_blocks.insert(body_entry_block);
+                seal_block_once(&mut builder, &mut sealed_blocks, body_entry_block);
             }
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
