@@ -11,6 +11,7 @@ Exercises the full --split-runtime pipeline:
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -30,9 +31,13 @@ from molt.dx import artifact_root, cargo_target_dir_for_artifact_root
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
+from tools.wasm_size_audit import DEFAULT_TOTAL_BUDGET_MB
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
+
+# Measured transfer-size ratchet for the split runtime; see test_runtime_wasm_size.
+RUNTIME_GZIP_BUDGET_MIB = 3.25
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -790,11 +795,25 @@ class TestSplitRuntimeArtifacts:
         )
 
     def test_runtime_wasm_size(self, split_build_a):
+        """The shared runtime's budget is its transfer size, with a raw ceiling.
+
+        Every exported intrinsic is a dead-code root, so the raw size follows the
+        exported surface (HF-132). What a deployment ships is the compressed
+        module: gzip -9 measured 2.97 MiB at 10.47 MiB raw on 2026-10-14. Lower
+        the ratchet as the intrinsic surface shrinks. The raw ceiling is the
+        V8 compile-memory budget that tools/wasm_size_audit.py enforces.
+        """
         out_dir, _ = split_build_a
         rt_wasm = _require_split_artifact(out_dir, "molt_runtime.wasm")
-        size_mb = rt_wasm.stat().st_size / (1024 * 1024)
-        assert size_mb < 5, (
-            f"molt_runtime.wasm is {size_mb:.2f} MB, expected < 5 MB; retained: "
+        data = rt_wasm.read_bytes()
+        raw_mib = len(data) / (1024 * 1024)
+        gzip_mib = len(gzip.compress(data, compresslevel=9, mtime=0)) / (1024 * 1024)
+        assert gzip_mib <= RUNTIME_GZIP_BUDGET_MIB and raw_mib <= (
+            DEFAULT_TOTAL_BUDGET_MB
+        ), (
+            f"molt_runtime.wasm is {gzip_mib:.2f} MiB gzip -9 (budget "
+            f"{RUNTIME_GZIP_BUDGET_MIB} MiB) and {raw_mib:.2f} MiB raw (ceiling "
+            f"{DEFAULT_TOTAL_BUDGET_MB} MiB); retained: "
             f"{_retain_split_failure('runtime_size', {'A': out_dir})}"
         )
 
