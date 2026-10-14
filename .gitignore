@@ -32,6 +32,11 @@ tmp/
 diff/
 dist/
 build/
+# Upstream object build modules and test sources are part of the pinned crate.
+!vendor/rust/object/src/build/
+!vendor/rust/object/src/build/**
+!vendor/rust/object/tests/build/
+!vendor/rust/object/tests/build/**
 bin/
 # Cargo binary targets are source, not generated bin directories.
 !**/src/bin/

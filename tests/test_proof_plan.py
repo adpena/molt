@@ -394,6 +394,9 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "generated_object_abi_link",
         "native_artifact_facts",
         "native_batch_worker_spawn",
+        "integration",
+        "basic",
+        "native_extern_linkage",
     }
     for command in (core, complement):
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
@@ -707,6 +710,37 @@ def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
     assert classes["rust"] is True
     assert classes["llvm"] is False
     assert classes["formal"] is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "vendor/rust/object/src/write/coff/object.rs",
+        "vendor/rust/cranelift-object/src/backend.rs",
+        "vendor/rust/cranelift-object/tests/basic.rs",
+    ],
+)
+def test_maintained_object_sources_select_owning_and_actual_consumers(path):
+    from tools import molt_dev
+
+    classes = _classes(path)
+    assert classes["rust"] is True
+    assert classes["native_integration"] is True
+    assert classes["wasm"] is False
+    assert classes["llvm"] is False
+    gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
+    rule = next(r for r in matched if r.name == "native-object-emission")
+    assert rule.require_fresh_toolchain
+    assert set(rule.gates) <= set(gates)
+    for argv in (
+        next(c.argv for c in PLAN.commands if c.id == "rust.test.compiler-authorities"),
+        tuple(rule.gates[0].split()),
+    ):
+        packages = {argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-p"}
+        targets = {argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--test"}
+        assert {"object@0.39.1", "cranelift-object@0.133.3", "molt-backend"} <= packages
+        assert {"integration", "basic", "native_extern_linkage"} <= targets
+        assert "--locked" in argv
 
 
 def test_midend_change_runs_complete_rust_llvm_formal_family() -> None:

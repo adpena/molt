@@ -50,6 +50,8 @@ members = [
     "runtime/molt-passes",
     "runtime/molt-tir",
     "runtime/molt-codegen-abi",
+    # Its upstream tests need dev-dependencies, resolved by the root lock.
+    "vendor/rust/cranelift-object",
 ]
 exclude = [
     "deploy/browser/simd-ops-rs",
@@ -61,6 +63,11 @@ exclude = [
     "runtime/molt-backend-mlir",
 ]
 resolver = "2"
+
+# Maintained ARM64 COFF relocation fixes; provenance and scope live with each crate.
+[patch.crates-io]
+object = { path = "vendor/rust/object" }
+cranelift-object = { path = "vendor/rust/cranelift-object" }
 
 [workspace.package]
 edition = "2024"
@@ -141,6 +148,10 @@ opt-level = 1
 
 [profile.dev.package.regalloc2]
 opt-level = 1
+
+# Preserve dependency debug policy for the maintained patch's test membership.
+[profile.dev.package.cranelift-object]
+debug = 0
 
 # Runtime at opt-level 2 even in dev: this code runs inside compiled
 # output, so a sluggish runtime masks the actual perf of user programs.

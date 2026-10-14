@@ -45,8 +45,28 @@ impl SimpleBackend {
     }
 
     pub fn new_with_target(target: Option<&str>) -> Self {
+        // Select the ISA once; relocation and architecture policy must use the
+        // same parsed target as object emission, including cross compilation.
+        let portable = crate::native_codegen_portable();
+        let isa_builder = configured_native_isa_builder(target, portable);
+        let triple = isa_builder.triple();
+        let targeting_aarch64 = matches!(
+            triple.architecture,
+            target_lexicon::Architecture::Aarch64(_)
+        );
         let mut flag_builder = settings::builder();
-        flag_builder.set("is_pic", "true").unwrap();
+        // Cranelift PIC uses ELF/Mach-O GOT relocations. COFF instead uses
+        // native symbol relocations, which the PE linker/loader can relocate.
+        flag_builder
+            .set(
+                "is_pic",
+                if triple.binary_format == target_lexicon::BinaryFormat::Coff {
+                    "false"
+                } else {
+                    "true"
+                },
+            )
+            .unwrap();
         // Cranelift optimization level: "none", "speed", or "speed_and_size".
         // Default to "speed" for production quality codegen.  Override with
         // MOLT_BACKEND_OPT_LEVEL=none for fast dev-loop compilation (~3-5x
@@ -122,13 +142,6 @@ impl SimpleBackend {
         // in the same link unit  colocated calls skip GOT/PLT indirection and
         // use direct PC-relative calls instead.
         flag_builder.set("use_colocated_libcalls", "true").unwrap();
-        // Detect whether we are targeting aarch64  either because we are
-        // compiling natively on aarch64, or because an explicit cross-compile
-        // target triple was supplied that contains "aarch64".
-        let targeting_aarch64 = match target {
-            Some(t) => t.contains("aarch64"),
-            None => cfg!(target_arch = "aarch64"),
-        };
         // Frame pointers: always preserve on aarch64 to ensure correct stack
         // frame layout for large functions (>16KB frames).  Cranelift 0.128 can
         // generate incorrect SP-relative accesses on aarch64 when frame pointers
@@ -177,11 +190,6 @@ impl SimpleBackend {
                 },
             )
             .unwrap();
-        // The standalone target baseline is portable. Host specialization is
-        // explicit and participates in the codegen identity of every cache.
-        let portable = crate::native_codegen_portable();
-        let isa_builder = configured_native_isa_builder(target, portable);
-
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
@@ -319,6 +327,50 @@ fn configured_native_isa_builder(target: Option<&str>, portable: bool) -> isa::B
 #[cfg(all(test, feature = "native-backend"))]
 mod host_target_identity_tests {
     use super::*;
+
+    #[test]
+    fn target_relocation_flags_survive_rebuild_and_cache_identity() {
+        for (target, expected_pic) in [
+            ("x86_64-unknown-linux-gnu", true),
+            ("aarch64-unknown-linux-gnu", true),
+            ("x86_64-apple-darwin", true),
+            ("aarch64-apple-darwin", true),
+            ("x86_64-pc-windows-msvc", false),
+            ("aarch64-pc-windows-msvc", false),
+        ] {
+            let backend = SimpleBackend::new_with_target(Some(target));
+            let original = backend.module.isa();
+            assert_eq!(original.flags().is_pic(), expected_pic, "{target}");
+            let shared_flags = |isa: &dyn isa::TargetIsa| {
+                isa.flags()
+                    .iter()
+                    .map(|value| (value.name.to_string(), value.value_string()))
+                    .collect::<BTreeMap<_, _>>()
+            };
+            let cpu_flags = |isa: &dyn isa::TargetIsa| {
+                isa.isa_flags()
+                    .into_iter()
+                    .map(|value| (value.name.to_string(), value.value_string()))
+                    .collect::<BTreeMap<_, _>>()
+            };
+            for optimization in [None, Some("none"), Some("speed_and_size")] {
+                let rebuilt = SimpleBackend::rebuild_owned_isa(original, optimization).unwrap();
+                assert_eq!(rebuilt.triple(), original.triple(), "{target}");
+                assert_eq!(cpu_flags(rebuilt.as_ref()), cpu_flags(original), "{target}");
+                let mut expected = shared_flags(original);
+                if let Some(optimization) = optimization {
+                    expected.insert("opt_level".into(), optimization.into());
+                }
+                assert_eq!(shared_flags(rebuilt.as_ref()), expected, "{target}");
+            }
+            let identity = SimpleBackend::object_codegen_identity(Some(target));
+            assert_eq!(
+                identity["shared_flags"],
+                serde_json::to_value(shared_flags(original)).unwrap(),
+                "{target}: cached objects must bind the effective relocation policy"
+            );
+        }
+    }
 
     #[test]
     fn portable_host_uses_only_the_target_baseline_flags() {
