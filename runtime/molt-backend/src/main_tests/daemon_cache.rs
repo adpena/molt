@@ -390,16 +390,16 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&root).expect("create fixture");
-    let served = [("wasm", true), ("object", false), ("archive", false)]
-        .into_iter()
-        .filter(|(_, is_wasm)| {
-            if *is_wasm {
-                cfg!(feature = "wasm-backend")
-            } else {
-                cfg!(feature = "native-backend")
-            }
-        });
-    for (kind, is_wasm) in served {
+    // The artifact kinds this build's backends serve.
+    let served: &[(&str, bool)] = &[
+        #[cfg(feature = "wasm-backend")]
+        ("wasm", true),
+        #[cfg(feature = "native-backend")]
+        ("object", false),
+        #[cfg(feature = "native-backend")]
+        ("archive", false),
+    ];
+    for &(kind, is_wasm) in served {
         for tier in ["module", "function"] {
             let mut cache = DaemonCache::new(None);
             cache.insert(

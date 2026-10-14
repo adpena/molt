@@ -750,8 +750,6 @@ mod socket_runtime_state_tests {
                             .unwrap(),
                     ),
                     libc::AF_INET,
-                    libc::SOCK_STREAM,
-                    0,
                     None,
                     false,
                 )
