@@ -884,6 +884,7 @@ fn no_willreturn_on_control_flow_functions() {
         "molt_get_attr_name",
         "molt_get_attr_object_ic",
         "molt_set_attr_name",
+        "molt_set_attr_object_ic",
         "molt_del_attr_name",
         "molt_getitem_method",
         "molt_getitem_unchecked",

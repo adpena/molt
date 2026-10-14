@@ -336,7 +336,7 @@ pub(crate) enum WasmRuntimeImport {
     HasAttrName,
     SetAttrGeneric,
     SetAttrName,
-    SetAttrObject,
+    SetAttrObjectIc,
     SetAttrPtr,
     Contains,
     DelIndex,

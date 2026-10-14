@@ -49,6 +49,7 @@ pub(super) fn emit_generic_attribute_op(
             locals,
             func_index,
             reloc_enabled,
+            op_idx,
         ),
         "del_attr_generic_ptr" | "del_attr_generic_obj" => emit_del_attr_generic_object(
             backend,
@@ -140,21 +141,30 @@ fn emit_set_attr_generic_object(
     locals: &WasmFrameLocals,
     func_index: u32,
     reloc_enabled: bool,
+    op_idx: usize,
 ) {
     // The `_generic_ptr` SETATTR form can target a tagged non-pointer receiver
     // (e.g. `typing.final(42)`). Route both generic forms through the
-    // bits-validating object runtime import for native/WASM parity.
+    // bits-validating object runtime import for native/WASM parity; the site
+    // id lets a warm site write its inferred field directly.
     let args = op.args.as_ref().unwrap();
     let obj = local_or_panic(locals, &args[0], func_ir, op);
     let val = local_or_panic(locals, &args[1], func_ir, op);
     let attr = staged_attr_name(backend, op, reloc_enabled);
+    let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+    let site_bits = box_int(stable_ic_site_id(
+        func_ir.name.as_str(),
+        source_op_idx,
+        op.kind.as_str(),
+    ));
     func.instruction(&Instruction::LocalGet(obj));
     emit_staged_attr_name(backend, func, func_index, reloc_enabled, attr);
     func.instruction(&Instruction::LocalGet(val));
+    func.instruction(&Instruction::I64Const(site_bits));
     emit_call(
         func,
         reloc_enabled,
-        import_ids[WasmRuntimeImport::SetAttrObject],
+        import_ids[WasmRuntimeImport::SetAttrObjectIc],
     );
     store_runtime_result(
         func,
@@ -162,7 +172,7 @@ fn emit_set_attr_generic_object(
         locals,
         import_ids,
         reloc_enabled,
-        WasmRuntimeImport::SetAttrObject,
+        WasmRuntimeImport::SetAttrObjectIc,
     );
 }
 

@@ -51,7 +51,7 @@ thread_local! {
 /// two MRO walks. Only callback-free, published namespace facts are cached;
 /// an undecided namespace answers false without caching, so the full
 /// transaction decides.
-unsafe fn plain_attribute_protocol(
+pub(super) unsafe fn plain_attribute_protocol(
     py: &PyToken<'_>,
     owner: *mut u8,
     default: DefaultGetattribute,

@@ -108,7 +108,7 @@ unsafe fn dispatch_custom_mutation(
 }
 
 /// A known exact namespace can classify paired defaults without callbacks.
-unsafe fn pure_mutation_default_access(
+pub(super) unsafe fn pure_mutation_default_access(
     py: &PyToken<'_>,
     class: *mut u8,
 ) -> Option<AttributeMutation> {
@@ -1655,6 +1655,60 @@ pub unsafe extern "C" fn molt_set_attr_object(
                 attr_name_len_bits,
                 DescriptorMutation::Set(val_bits),
             )
+        })
+    }
+}
+
+/// A compiled generic write site. A warm site whose receivers keep one plain
+/// class stores the inferred field directly; any other receiver takes the
+/// same transaction as `molt_set_attr_object`.
+///
+/// # Safety
+/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_set_attr_object_ic(
+    obj_bits: u64,
+    attr_name_ptr: *const u8,
+    attr_name_len_bits: u64,
+    val_bits: u64,
+    site_bits: u64,
+) -> u64 {
+    unsafe {
+        crate::with_gil_entry_nopanic!(py, {
+            let mutation = DescriptorMutation::Set(val_bits);
+            let Some(site_id) = ic_site_from_bits(site_bits) else {
+                return mutate_attr_bytes(
+                    py,
+                    obj_bits,
+                    attr_name_ptr,
+                    attr_name_len_bits,
+                    mutation,
+                );
+            };
+            if super::field_sites::write_cached_field(py, site_id, obj_bits, val_bits) {
+                return MoltObject::none().bits();
+            }
+            let Some(length) = usize_from_bits(attr_name_len_bits) else {
+                return raise_exception::<u64>(py, "OverflowError", "attribute name is too large");
+            };
+            let bytes = std::slice::from_raw_parts(attr_name_ptr, length);
+            let Some(name) = attr_name_bits_from_bytes(py, bytes) else {
+                return MoltObject::none().bits();
+            };
+            if super::field_sites::remember_field_site(
+                py,
+                super::field_sites::FieldAccess::Write,
+                site_id,
+                obj_bits,
+                name,
+                bytes,
+            )
+            .is_ok()
+            {
+                let _ = mutate_attr_name(py, obj_bits, name, mutation, AttributeMutation::Normal);
+            }
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+            MoltObject::none().bits()
         })
     }
 }

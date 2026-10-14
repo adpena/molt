@@ -54,6 +54,7 @@ static_type = [
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i32"], results = ["i32"] },
   { params = [], results = ["i32"] },
+  { params = ["i64", "i32", "i64", "i64", "i64"], results = ["i64"] },
 ]
 
 non_runtime_callable_intrinsic = [
@@ -2090,9 +2091,9 @@ runtime_name = "molt_set_attr_name"
 callable_arity = 3
 
 [[import]]
-name = "set_attr_object"
+name = "set_attr_object_ic"
 return_contract = "owned_object"
-type = 25
+type = 49
 
 [[import]]
 name = "set_attr_ptr"
@@ -5866,8 +5867,8 @@ import_name = "set_attr_name"
 boxed_operand_count = 3
 
 [[lir_runtime_call]]
-variant = "SetAttrObject"
-import_name = "set_attr_object"
+variant = "SetAttrObjectIc"
+import_name = "set_attr_object_ic"
 
 [[lir_runtime_call]]
 variant = "DelAttrName"
