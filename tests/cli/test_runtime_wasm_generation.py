@@ -121,6 +121,9 @@ def test_wasm_pair_remains_owned_through_receipt_publication(
     checked = []
 
     def publish(path, *args, **kwargs):
+        if path.name == module._STORE_LEDGER_NAME:
+            # The store ledger records usage, not the pair; it needs no handles.
+            return original_publish(path, *args, **kwargs)
         assert generation.shared in active and generation.reloc in active
         assert all(not handle.stream.closed for handle in active.values())
         checked.append(path)
@@ -696,3 +699,113 @@ def test_binding_rejects_corrupt_pinned_receipt_without_json_parse(
     )
     with pytest.raises(ValueError, match="receipt is corrupt"):
         bind_runtime_wasm_codegen(generation, None)
+
+
+class _Clock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def store_clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    from molt.cli import runtime_wasm_generation as module
+
+    clock = _Clock(1_000_000.0)
+    monkeypatch.setattr(module, "time", clock)
+    return clock
+
+
+_HOUR = 60 * 60
+
+
+def _generation_files(generation) -> set[str]:
+    return {generation.shared.name, generation.reloc.name}
+
+
+def test_publication_evicts_generations_no_build_used_for_a_day(
+    tmp_path: Path, store_clock: _Clock
+) -> None:
+    old, old_shared, old_reloc = _publish_pair(
+        tmp_path, pair_seed="old", shared=b"old-shared", reloc=b"old-reloc"
+    )
+    pinned = bind_runtime_wasm_codegen(old, None).generation.manifest
+    unrelated = [
+        tmp_path / "molt_runtime.wasm",
+        tmp_path / ".molt-artifact-publication.lock",
+        tmp_path / "notes.txt",
+    ]
+    for path in unrelated:
+        path.write_bytes(b"not a generation file")
+    store_clock.now += _HOUR
+    previous, _, _ = _publish_pair(
+        tmp_path, pair_seed="previous", shared=b"prev-shared", reloc=b"prev-reloc"
+    )
+    # The old pair left the selection an hour in; 25 hours later nothing has
+    # bound it since, while the pair just replaced keeps a full window.
+    store_clock.now += 25 * _HOUR
+    current, current_shared, current_reloc = _publish_pair(
+        tmp_path, pair_seed="current", shared=b"cur-shared", reloc=b"cur-reloc"
+    )
+
+    names = {path.name for path in tmp_path.iterdir()}
+    assert not (_generation_files(old) | {pinned.name}) & names
+    assert _generation_files(previous) | _generation_files(current) <= names
+    assert all(path.is_file() for path in unrelated)
+    assert (
+        read_runtime_wasm_generation(
+            pinned,
+            expected_shared_identity=old_shared,
+            expected_reloc_identity=old_reloc,
+        )
+        is None
+    )
+    assert (
+        read_runtime_wasm_generation(
+            current.manifest,
+            expected_shared_identity=current_shared,
+            expected_reloc_identity=current_reloc,
+        )
+        is not None
+    )
+    ledger = json.loads((tmp_path / ".runtime-wasm-store.json").read_text())
+    assert ledger["selected"] == [current.shared.name, current.reloc.name]
+    assert not set(ledger["last_used"]) & (_generation_files(old) | {pinned.name})
+
+
+def test_binding_renews_an_unselected_generation(
+    tmp_path: Path, store_clock: _Clock
+) -> None:
+    held, _, _ = _publish_pair(
+        tmp_path, pair_seed="held", shared=b"held-shared", reloc=b"held-reloc"
+    )
+    store_clock.now += _HOUR
+    _publish_pair(tmp_path, pair_seed="next", shared=b"n-shared", reloc=b"n-reloc")
+    store_clock.now += 24 * _HOUR
+    pinned = bind_runtime_wasm_codegen(held, None).generation.manifest
+    store_clock.now += 2 * _HOUR
+    _publish_pair(tmp_path, pair_seed="last", shared=b"l-shared", reloc=b"l-reloc")
+
+    names = {path.name for path in tmp_path.iterdir()}
+    assert _generation_files(held) | {pinned.name} <= names
+
+
+@pytest.mark.parametrize("ledger", [None, "{not json", '{"schema": "other"}'])
+def test_unknown_generation_files_start_their_window_at_first_sight(
+    tmp_path: Path, store_clock: _Clock, ledger: str | None
+) -> None:
+    stray = tmp_path / f"molt_runtime.wasm.{'a' * 64}.runtime-wasm-member"
+    stray_receipt = tmp_path / f"molt_runtime.{'b' * 64}.generation.json"
+    for path in (stray, stray_receipt):
+        path.write_bytes(b"left by an older build")
+    if ledger is not None:
+        (tmp_path / ".runtime-wasm-store.json").write_text(ledger)
+
+    _publish_pair(tmp_path, pair_seed="first", shared=b"f-shared", reloc=b"f-reloc")
+    assert stray.is_file() and stray_receipt.is_file()
+
+    store_clock.now += 25 * _HOUR
+    _publish_pair(tmp_path, pair_seed="later", shared=b"x-shared", reloc=b"x-reloc")
+    assert not stray.exists() and not stray_receipt.exists()

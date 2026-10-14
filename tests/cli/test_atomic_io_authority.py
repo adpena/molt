@@ -160,9 +160,10 @@ def test_every_atomic_publication_has_one_file_fsync_per_staged_file(
         shared_identity=runtime_build_identity("shared", "atomic-publication"),
         reloc_identity=runtime_build_identity("reloc", "atomic-publication"),
     )
-    # Immutable shared+reloc members plus the atomic pair pointer. Internal
-    # publication deliberately creates no fixed-name compatibility projections.
-    assert len(calls) == 3 * barriers_per_commit
+    # Immutable shared+reloc members, the atomic pair pointer and the store's
+    # usage ledger. Internal publication deliberately creates no fixed-name
+    # compatibility projections.
+    assert len(calls) == 4 * barriers_per_commit
 
     calls.clear()
     wasm = tmp_path / "publication.wasm"
