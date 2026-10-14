@@ -47,6 +47,30 @@ def _norm(path: Path | str) -> str:
     return process_image_capture._image_path_key(Path(path))
 
 
+def _event_key(candidate: Path) -> str:
+    """The custody key of an event path, including one that has vanished.
+
+    Windows custody names an actual directory entry and raises for an absent
+    one, so a renamed-away or deleted entry takes its key from its nearest
+    existing ancestor plus the names below it. POSIX custody is lexical and
+    never raises here. Raises when no ancestor has a key.
+    """
+    try:
+        return _norm(candidate)
+    except (OSError, ValueError):
+        pass
+    names: list[str] = []
+    current = candidate
+    while current.parent != current:
+        names.append(current.name)
+        current = current.parent
+        try:
+            return os.path.join(_norm(current), *reversed(names))
+        except (OSError, ValueError):
+            continue
+    raise ValueError(f"watch event has no custody key: {candidate}")
+
+
 @dataclass(frozen=True)
 class WatchSpec:
     root: Path
@@ -56,10 +80,10 @@ class WatchSpec:
         if self.paths is None:
             return True
         try:
-            normalized = _norm(candidate)
+            normalized = _event_key(candidate)
         except (OSError, ValueError):
-            # A vanished/replaced entry cannot establish exclusion from this
-            # watch. Retain its event as an input mutation, never as admission.
+            # Without any keyed ancestor the entry cannot establish exclusion
+            # from this watch. Retain its event as an input mutation.
             return True
         if normalized in self.paths:
             return True
