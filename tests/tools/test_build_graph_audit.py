@@ -333,6 +333,79 @@ def test_parse_measured_graph_drops_external_and_self_edges():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "case, expected_rc", [("clean", 0), ("recoupled", 1), ("missing-baseline", 2)]
+)
+def test_json_presentation_preserves_check_verdict(
+    tmp_path, monkeypatch, capsys, case, expected_rc
+):
+    # Substitute only measured input. The real CLI and ratchet must reject the
+    # independently forbidden upward edge even when output is machine-readable.
+    edges = _CLEAN_EDGES + ([("ir", "backend", "dev")] if case == "recoupled" else [])
+    report = bga.analyze(_declared(_CLEAN_LAYERS), _measured(_CLEAN_LAYERS, edges))
+    monkeypatch.setattr(bga, "build_report", lambda _root: report)
+    if case != "missing-baseline":
+        baseline = tmp_path / bga.BASELINE_PATH_REL
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
+            json.dumps(
+                {
+                    "metrics": {
+                        "crate_layer_backedges": 0,
+                        "max_crate_blast_radius": 5,
+                        "undeclared_crates": 0,
+                    },
+                    "blast_radius": {
+                        "ir": 5,
+                        "codegen-abi": 3,
+                        "passes": 4,
+                        "tir": 3,
+                        "native": 1,
+                        "wasm": 1,
+                        "backend": 0,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    assert bga.main(["--root", str(tmp_path), "--check", "--json"]) == expected_rc
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    if case == "recoupled":
+        assert payload["back_edges"] == [
+            {
+                "src": "ir",
+                "dst": "backend",
+                "src_layer": 0,
+                "dst_layer": 4,
+                "kind": "dev",
+            }
+        ]
+        assert "ir (L0) -> backend (L4)" in captured.err
+    elif case == "missing-baseline":
+        assert "no baseline" in captured.err
+    else:
+        assert payload["back_edges"] == []
+        assert "build-graph ratchet OK" in captured.err
+
+
+def test_json_presentation_keeps_generated_notices_off_stdout(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(bga, "build_report", lambda _root: _clean_report())
+    assert (
+        bga.main(
+            ["--root", str(tmp_path), "--json", "--write-board", "--update-baseline"]
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["back_edges"] == []
+    assert "board written:" in captured.err and "baseline updated:" in captured.err
+    assert (tmp_path / bga.BOARD_PATH_REL).is_file()
+    assert (tmp_path / bga.BASELINE_PATH_REL).is_file()
+
+
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo not available")
 def test_real_workspace_has_no_back_edges_and_baseline_matches():
     report = bga.build_report(REPO_ROOT)

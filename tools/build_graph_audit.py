@@ -604,7 +604,10 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
             newline="\n",
         )
-        print(f"baseline updated: {baseline_path}")
+        print(
+            f"baseline updated: {baseline_path}",
+            file=sys.stderr if args.json else sys.stdout,
+        )
         wrote_artifact = True
 
     if args.write_board:
@@ -615,7 +618,9 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
             newline="\n",
         )
-        print(f"board written: {board_path}")
+        print(
+            f"board written: {board_path}", file=sys.stderr if args.json else sys.stdout
+        )
         wrote_artifact = True
 
     if wrote_artifact and not args.json and not args.check:
@@ -644,7 +649,8 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True,
             )
         )
-        return 0
+        if not args.check:
+            return 0
 
     if args.check:
         if not baseline_path.is_file():
@@ -673,7 +679,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"build-graph ratchet OK ({len(report.measured.crates)} crates; "
             f"max blast radius {int(max(report.blast_radius.values(), default=0))}; "
-            f"{len(outcome.improvements)} metric(s) improved)"
+            f"{len(outcome.improvements)} metric(s) improved)",
+            file=sys.stderr if args.json else sys.stdout,
         )
         return 0
 
