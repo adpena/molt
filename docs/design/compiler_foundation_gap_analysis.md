@@ -224,6 +224,11 @@ timing need reference counts), operators only as magic-method calls (Molt's opco
 co-equal targets).
 
 ## Dependency-correct build order (the program)
+The Tier-0 substrate has landed (see `foundation/00_integrated_parallel_program.md`). The order for
+the IR boundary, the runtime boundary and typed identity is in
+`foundation/77_architecture_convergence.md`; it precedes further pass work because pass facts do
+not reach codegen intact until backends consume typed IR.
+
 1. **Tier 1 correctness first** (C1 memory-safety is non-negotiable; C2/C3 are hang/wrong-result).
    These are independent of the foundation and several are small.
 2. **Tier 0 substrate**, in order: S3 (effects oracle, small, fixes a hazard) → S1 (analysis manager)
