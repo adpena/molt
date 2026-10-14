@@ -1,5 +1,4 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerStorageFact, ContainerStorageKind};
@@ -10,87 +9,6 @@ use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 use super::{ScalarRepresentationFact, ScalarRepresentationPlan};
-
-const PLAN_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const PLAN_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-#[derive(Clone)]
-pub(super) struct PlanHasher(u64);
-
-impl Default for PlanHasher {
-    fn default() -> Self {
-        Self(PLAN_HASH_OFFSET)
-    }
-}
-
-impl PlanHasher {
-    #[inline]
-    fn mix_byte(&mut self, value: u8) {
-        self.0 ^= u64::from(value);
-        self.0 = self.0.wrapping_mul(PLAN_HASH_PRIME);
-    }
-
-    #[inline]
-    fn mix_u64(&mut self, value: u64) {
-        self.0 ^= value;
-        self.0 = self.0.wrapping_mul(PLAN_HASH_PRIME);
-    }
-}
-
-impl Hasher for PlanHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut offset = 0;
-        while offset + 8 <= bytes.len() {
-            let lane = u64::from_le_bytes(
-                bytes[offset..offset + 8]
-                    .try_into()
-                    .expect("eight-byte hash chunk"),
-            );
-            self.mix_u64(lane);
-            offset += 8;
-        }
-        while offset < bytes.len() {
-            self.mix_byte(bytes[offset]);
-            offset += 1;
-        }
-    }
-
-    fn write_u8(&mut self, value: u8) {
-        self.mix_byte(value);
-    }
-
-    fn write_u16(&mut self, value: u16) {
-        self.mix_u64(u64::from(value));
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.mix_u64(u64::from(value));
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.mix_u64(value);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.mix_u64(value as u64);
-    }
-}
-
-pub(super) type PlanBuildHasher = BuildHasherDefault<PlanHasher>;
-pub(super) type PlanHashMap<K, V> = HashMap<K, V, PlanBuildHasher>;
-pub(super) type PlanHashSet<T> = HashSet<T, PlanBuildHasher>;
-
-pub(super) fn plan_hash_map<K, V>(capacity: usize) -> PlanHashMap<K, V> {
-    HashMap::with_capacity_and_hasher(capacity, PlanBuildHasher::default())
-}
-
-pub(super) fn plan_hash_set<T>(capacity: usize) -> PlanHashSet<T> {
-    HashSet::with_capacity_and_hasher(capacity, PlanBuildHasher::default())
-}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct NameId(usize);
@@ -106,14 +24,14 @@ struct ScalarFactId(usize);
 
 #[derive(Default)]
 struct FunctionNameIndex<'a> {
-    ids_by_name: PlanHashMap<&'a str, NameId>,
+    ids_by_name: HashMap<&'a str, NameId>,
     names: Vec<&'a str>,
 }
 
 impl<'a> FunctionNameIndex<'a> {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            ids_by_name: plan_hash_map(capacity),
+            ids_by_name: HashMap::with_capacity(capacity),
             names: Vec::with_capacity(capacity),
         }
     }
@@ -218,8 +136,8 @@ pub(super) struct FunctionFactIndex<'a> {
     aliases: Vec<AliasEdge<'a>>,
     pub(super) data_ops: Vec<&'a OpIR>,
     pub(super) store_index_ops: Vec<&'a OpIR>,
-    pub(super) sentinel_outputs: PlanHashSet<String>,
-    pub(super) delete_targets: PlanHashSet<String>,
+    pub(super) sentinel_outputs: HashSet<String>,
+    pub(super) delete_targets: HashSet<String>,
 }
 
 impl<'a> FunctionFactIndex<'a> {
@@ -228,8 +146,8 @@ impl<'a> FunctionFactIndex<'a> {
         let mut aliases = Vec::new();
         let mut data_ops = Vec::with_capacity(func_ir.ops.len());
         let mut store_index_ops = Vec::new();
-        let mut sentinel_outputs = plan_hash_set(0);
-        let mut delete_targets = plan_hash_set(0);
+        let mut sentinel_outputs = HashSet::new();
+        let mut delete_targets = HashSet::new();
 
         for op in &func_ir.ops {
             if let Some(binding) = simple_ir_binding(op) {
@@ -561,7 +479,7 @@ impl IndexedStoreTargetScratch {
 struct IndexedScalarFacts {
     fact_ids_by_name: Vec<Option<ScalarFactId>>,
     facts: Vec<ScalarRepresentationFact>,
-    ids_by_fact: PlanHashMap<ScalarRepresentationFact, ScalarFactId>,
+    ids_by_fact: HashMap<ScalarRepresentationFact, ScalarFactId>,
     conflicted: Vec<bool>,
     weak: Vec<bool>,
 }
@@ -574,7 +492,7 @@ impl IndexedScalarFacts {
         let mut indexed = Self {
             fact_ids_by_name: Vec::with_capacity(index.names.len()),
             facts: Vec::new(),
-            ids_by_fact: plan_hash_map(plan.facts_by_name.len().saturating_add(1)),
+            ids_by_fact: HashMap::with_capacity(plan.facts_by_name.len().saturating_add(1)),
             conflicted: Vec::with_capacity(index.names.len()),
             weak: Vec::with_capacity(index.names.len()),
         };
@@ -1050,8 +968,8 @@ pub(super) fn store_var_targets_all_sources_where(
     fact_index: &FunctionFactIndex<'_>,
     mut source_proven: impl FnMut(&str) -> bool,
 ) -> BTreeSet<String> {
-    let mut targets: PlanHashMap<&str, bool> =
-        plan_hash_map(fact_index.stores.len().saturating_add(1));
+    let mut targets: HashMap<&str, bool> =
+        HashMap::with_capacity(fact_index.stores.len().saturating_add(1));
     for edge in &fact_index.stores {
         let source_proven = edge.source.is_some_and(&mut source_proven);
         targets
