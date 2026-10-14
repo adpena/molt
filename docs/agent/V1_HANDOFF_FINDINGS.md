@@ -116,12 +116,21 @@ output-byte equality. On the large asyncio LLVM preparation case it removes
 117,507–117,517 allocation calls and about 49.4 MB of requested allocation;
 these are preparation measurements, not whole-program peak-memory or release
 performance acceptance. One coherent developer Cargo build at `9a3636423`
-passes all 170 selected compiler/exporter/LLVM consumer tests. The native
-live-value migration still requires the complete compact-liveness and physical
-block-sealing correction, its adversarial review, and current-main consumer
-qualification. The retained locale batch still exceeds a three-minute
-`dev-fast` observation window before native function code generation; no speedup
-or completed batch is claimed. V1-07 retains that performance obligation.
+passes all 170 selected compiler/exporter/LLVM consumer tests. Native preanalysis now retains compact shared liveness facts, and all function
+compiler branches use one physical sealing owner. Composed qualification at
+`f829813d1` passes 188 distinct affected Rust controls: 10 shared CFG/liveness,
+17 cache, five exporter, 155 native/LLVM, and one generated-object linkage case.
+The repaired indexed-loop fixture is the only source change after the 154 other
+native/LLVM passes, so those unchanged controls were reused. Actual guards,
+redefinitions, literal ownership, exception labels and cleanup edges are covered.
+This is Linux aarch64 developer-profile qualification, not other target/profile
+execution or release performance acceptance. The retained locale batch still
+exceeds a three-minute `dev-fast` observation window before native function
+code generation; no speedup or completed batch is claimed. Source review also
+identifies redundant final whole-module TIR reconstruction solely for native
+leaf analysis, after final typed custody was consumed. Reuse the shared callback
+facts with complete final-drop and rewrite custody; V1-07 retains this performance
+obligation.
 Numeric-policy generation and frontend target admission now derive from the
 existing supported-target catalog. Twenty generator checks and 73 affected
 Python consumer checks pass; all three numeric Rust projections are unchanged.
