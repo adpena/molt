@@ -7,10 +7,12 @@ import hashlib
 from dataclasses import replace
 import os
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
 
+from tests.process_guard_common import current_thread_only
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission
 from tools.proof_queue_pkg import pact
@@ -391,10 +393,15 @@ def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
         return selected
 
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
     monkeypatch.setattr(
-        command_identity.shutil,
+        shutil,
         "which",
-        lambda *_a, **_k: pytest.fail("SDK role must not resolve through PATH"),
+        current_thread_only(
+            lambda *_a, **_k: pytest.fail("SDK role must not resolve through PATH"),
+            shutil.which,
+        ),
     )
     calls = []
 

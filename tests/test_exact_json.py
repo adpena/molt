@@ -3,13 +3,14 @@ from __future__ import annotations
 import math
 import hashlib
 import os
+import shutil
 from collections import UserDict
 from types import MappingProxyType
 from pathlib import Path
 
 import pytest
 
-from tests.process_guard_common import run_isolated_python_probe
+from tests.process_guard_common import current_thread_only, run_isolated_python_probe
 
 from molt import exact_json, file_deletion, file_publication
 
@@ -302,7 +303,11 @@ def test_owned_cleanup_rejects_resolved_filesystem_root(
     def refuse_delete(path: Path, **kwargs) -> None:
         raise AssertionError(f"root must be rejected before deletion: {path}")
 
-    monkeypatch.setattr(file_deletion.shutil, "rmtree", refuse_delete)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(
+        shutil, "rmtree", current_thread_only(refuse_delete, shutil.rmtree)
+    )
     with pytest.raises(ValueError, match="real owned leaf"):
         file_publication.durable_remove_path(supplied)
 

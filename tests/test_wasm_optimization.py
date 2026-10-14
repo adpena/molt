@@ -34,7 +34,7 @@ from molt.wasm_optimizer_identity import (
     wasm_optimizer_pipeline_authority_sha256,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import current_thread_only, install_module_view
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -238,12 +238,16 @@ class TestWasmOptReduction:
     def test_invalid_explicit_pin_never_falls_through_to_hostile_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import molt.wasm_optimizer_identity as identity
-
         hostile = tmp_path / ("wasm-opt.exe" if sys.platform == "win32" else "wasm-opt")
         hostile.write_bytes(b"hostile ambient optimizer")
         monkeypatch.setenv("MOLT_WASM_OPT", str(tmp_path / "missing-explicit-pin"))
-        monkeypatch.setattr(identity.shutil, "which", lambda _name: str(hostile))
+        # A tripwire must catch this call from any module, so it stays process-wide.
+        # Only this thread meets the fake; other threads reach the real function.
+        monkeypatch.setattr(
+            shutil,
+            "which",
+            current_thread_only(lambda _name: str(hostile), shutil.which),
+        )
 
         assert find_wasm_opt() is None
 
