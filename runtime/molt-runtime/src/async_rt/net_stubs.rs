@@ -33,7 +33,6 @@ impl IoPoller {
         ))
     }
     pub(crate) fn cancel_waiter(&self, _slot: *mut u8) {}
-    pub(crate) fn shutdown(&self) {}
 }
 
 pub(crate) fn io_wait_detach_resource(_future_ptr: *mut u8) -> u64 {

@@ -1,13 +1,16 @@
 use molt_runtime_core::prelude::*;
 
+#[cfg(not(feature = "stdlib_http"))]
 use super::{dec_ref_bits, exception_pending};
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn attr_name_bits_from_bytes(_py: &CoreGilToken, name: &[u8]) -> Option<u64> {
     crate::with_gil_entry_nopanic!(py, {
         crate::builtins::attr::attr_name_bits_from_bytes(py, name)
     })
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn call_callable0(_py: &CoreGilToken, call_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         unsafe { crate::call::dispatch::call_callable0(py, call_bits) }
@@ -20,12 +23,14 @@ pub fn call_callable1(_py: &CoreGilToken, call_bits: u64, arg0: u64) -> u64 {
     })
 }
 
+#[cfg(not(feature = "stdlib_itertools"))]
 pub fn call_callable2(_py: &CoreGilToken, call_bits: u64, arg0: u64, arg1: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         unsafe { crate::call::dispatch::call_callable2(py, call_bits, arg0, arg1) }
     })
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn call_class_init_with_args(_py: &CoreGilToken, class_bits: u64, args: &[u64]) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let class_ptr = obj_from_bits(class_bits)
@@ -39,10 +44,12 @@ pub fn missing_bits(_py: &CoreGilToken) -> u64 {
     crate::with_gil_entry_nopanic!(py, { crate::missing_bits(py) })
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
     crate::molt_getattr_builtin(obj_bits, name_bits, default_bits)
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn attr_optional(_py: &CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<Option<u64>, u64> {
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
@@ -64,14 +71,17 @@ pub fn attr_optional(_py: &CoreGilToken, obj_bits: u64, name: &[u8]) -> Result<O
     Ok(Some(value_bits))
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn molt_repr_from_obj(bits: u64) -> u64 {
     crate::molt_repr_from_obj(bits)
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn molt_str_from_obj(bits: u64) -> u64 {
     crate::molt_str_from_obj(bits)
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn builtin_classes(_py: &CoreGilToken, name: &str) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let classes = crate::builtin_classes(py);
@@ -82,6 +92,7 @@ pub fn builtin_classes(_py: &CoreGilToken, name: &str) -> u64 {
     })
 }
 
+#[cfg(not(feature = "stdlib_http"))]
 pub fn resolve_global_bits(_py: &CoreGilToken, module: &str, name: &str) -> Result<u64, u64> {
     crate::with_gil_entry_nopanic!(py, {
         crate::builtins::functions_pickle::pickle_resolve_global_bits(py, module, name)
