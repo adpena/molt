@@ -55,6 +55,12 @@ analysis-only values. Those names do not override explicit emitted facts.
 This is remaining fact-extraction work to measure and reconcile through the
 value-keyed authority; removing codegen re-lifting does not prove its cost is
 optimal or that all name-based analysis has retired.
+The initial native cache pipeline also requests LIR verification on cache hits
+and misses, materializing AnalysisFloor before final extraction. This is a
+separate user compile-time cost to measure. The direct typed migration must
+preserve the useful verification invariants while retiring representations that
+native codegen does not consume; disabling a check alone does not prove that
+contract.
 
 ## Representation and operation boundaries
 

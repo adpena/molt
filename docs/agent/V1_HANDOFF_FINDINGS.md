@@ -113,6 +113,19 @@ These source findings guide implementation, not support claims. Measure the
 changed actual consumers, binary reachability, compile cost and resource use;
 development audits, source capture and proof checks do not enter user binaries.
 
+The convergence decision is to qualify the bounded native deletion cut, then
+retire its remaining source boundary through the existing typed owners. Stop
+expanding the transitional bridge. Native still constructs AnalysisFloor LIR
+for initial verification and final fact extraction; clone/refinement and graph
+allocation remain compiler-user costs, with no current measured improvement
+claim. The next native contract includes typed control flow, ownership,
+reachability roots, callable metadata and partition ABI, and deletes the
+replaced source/name projection together. Complete generated enum conversion
+is an independent schema migration, not a prerequisite for typed custody.
+Freeze one complete contract before owning execution, preserve direct-codegen
+fixture inputs, establish independent semantic oracles, reuse unchanged
+evidence and land after actual consumers and measured costs qualify it.
+
 The independent developer Cargo-target migration landed on main as
 `5c1238bda`. The existing selector gives each checkout stable intermediates,
 all direct consumers and cleanup share that policy, and no runtime-binary work
