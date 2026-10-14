@@ -105,7 +105,16 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 # Invalidation removes value facts, not lexical storage. Only
                 # namespace-owned names bypass cached values for a global read;
                 # cells/locals retain their live loads and unbound guards below.
-                return self._emit_global_get(node.id)
+                value = self._emit_global_get(node.id)
+                # The live read stays the authority. A stable module function's
+                # code symbol rides along only as the CALL_GUARDED candidate,
+                # whose guard re-checks callable identity at run time. Module
+                # initialisation records hints as app bindings, so it gets none.
+                if self.current_func_name != "molt_main" and (
+                    symbol := self._stable_module_func_candidate(node.id)
+                ):
+                    value.type_hint = f"Func:{symbol}"
+                return value
             if node.id in self.nonlocal_decls and node.id not in self.free_vars:
                 raise FrontendRejection(
                     Diagnostic.SYNTAX_FORM, "nonlocal binding not found"
@@ -227,11 +236,22 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
             return self._emit_global_get(node.id)
         return node.id
 
+    def _stable_module_func_candidate(self, name: str) -> str | None:
+        """The code symbol of a stable module-level sync function, or None.
+
+        This names a guarded-dispatch candidate, not a binding fact.
+        """
+        if (
+            name in self.stable_module_funcs
+            and self.module_declared_funcs.get(name) == FunctionKind.SYNC
+        ):
+            return self._function_symbol_for_reference(name)
+        return None
+
     def _emit_stable_module_func_ref(self, name: str) -> "MoltValue":
         """Read a stable module-level sync function without erasing identity."""
         mod_attr = self._emit_module_attr_get(name)
-        if self.module_declared_funcs.get(name) == FunctionKind.SYNC:
-            symbol = self._function_symbol_for_reference(name)
+        if symbol := self._stable_module_func_candidate(name):
             mod_attr.type_hint = f"Func:{symbol}"
         return mod_attr
 
