@@ -81,6 +81,7 @@
       "call_async",
       "cbor_parse",
       "class_apply_set_name",
+      "class_layout_version",
       "class_new",
       "class_set_base",
       "context_closing",

@@ -426,7 +426,7 @@ class MidendTierClassification:
 # inside the per-round body of `_canonicalize_control_aware_ops_impl`).  Used
 # only to size the budget headroom; an exact match is not required (the growth
 # headroom multiplier absorbs drift), but keep it in the right ballpark.
-_MIDEND_DEGRADE_CHECKPOINTS = 9
+_MIDEND_DEGRADE_CHECKPOINTS = 8
 # Multiplier applied to the nominal per-round work so a function whose op count
 # stays roughly stable across its permitted rounds never degrades.  Pathological
 # op-count explosion (a pass that balloons the IR) still exceeds the budget.
@@ -451,7 +451,6 @@ class MidendFunctionPolicy:
     cse_iter_cap: int
     enable_deep_edge_thread: bool
     enable_cse: bool
-    enable_guard_hoist: bool
     budget_ms: float
     # Deterministic work-unit budget for the mid-end pass-degrade ladder.
     # The degrade ladder MUST gate on this (a pure function of the IR — op and
@@ -1309,7 +1308,6 @@ class CanonicalizationState(TypedDict):
     const_int_values: dict[str, int]
     value_type_tags: dict[str, int]
     available_values: dict[tuple[Any, ...], MoltValue]
-    guard_dict_shapes: dict[str, tuple[str, str]]
     alias_epochs: dict[str, int]
     object_epochs: dict[str, int]
     memory_epoch: int

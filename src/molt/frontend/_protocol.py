@@ -405,7 +405,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         tuple[tuple[str, int], ...],
         tuple[tuple[str, int], ...],
         tuple[tuple[tuple[Any, ...], str], ...],
-        tuple[tuple[str, tuple[str, str]], ...],
         tuple[tuple[str, int], ...],
         tuple[tuple[str, int], ...],
         int,
@@ -546,10 +545,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _clear_import_binding_origin(self, name: str) -> None: ...
 
     def _clear_imported_module_binding(self, binding_name: str) -> None: ...
-
-    def _clear_invalidated_guard_signatures(
-        self, available: set[tuple[Any, ...]], op: MoltOp
-    ) -> None: ...
 
     def _clear_scratch_cell(self, cell: ScratchCell) -> None: ...
 
@@ -797,10 +792,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> str | None: ...
 
     def _eliminate_dead_trivial_consts(self, ops: list[MoltOp]) -> list[MoltOp]: ...
-
-    def _eliminate_redundant_guards_cfg(
-        self, ops: list[MoltOp]
-    ) -> tuple[list[MoltOp], int, int, int]: ...
 
     def _emit_active_handler_name_deletes(
         self, handlers: list["ActiveException"]

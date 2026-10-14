@@ -1,4 +1,4 @@
-"""Guard motion/elision consumes whole-CFG must-facts, including callbacks."""
+"""Guard motion respects callbacks, failure order and CFG edge modes."""
 
 from __future__ import annotations
 
@@ -16,85 +16,11 @@ def guard(value: str = "value") -> MoltOp:
     return op("GUARD_TAG", MoltValue(value), MoltValue("expected"))
 
 
-def elide(ops: list[MoltOp]) -> list[MoltOp]:
-    rewritten, attempted, accepted, rejected = (
-        SimpleTIRGenerator()._eliminate_redundant_guards_cfg(ops)
-    )
-    assert attempted == accepted + rejected
-    return rewritten
-
-
-@pytest.mark.parametrize("backedge", ["LOOP_END", "LOOP_CONTINUE", "JUMP"])
-def test_guard_backedge_cannot_borrow_preloop_fact(backedge: str) -> None:
-    first, body = guard(), guard()
-    ops = [first, op("LOOP_START"), op("LABEL", "header"), body]
-    ops.append(op("CALL", MoltValue("mutate"), result="callback"))
-    if backedge == "LOOP_CONTINUE":
-        ops.append(op("LOOP_CONTINUE"))
-    elif backedge == "JUMP":
-        ops.append(op("JUMP", "header"))
-    ops.append(op("LOOP_END"))
-    result = elide(ops)
-    assert sum(item.kind == "GUARD_TAG" for item in result) == 2
-
-
-def test_runtime_guard_repetition_preserves_each_profile_event() -> None:
-    ops = [guard(), op("LOOP_START"), guard(), op("LOOP_END"), guard()]
-    assert sum(item.kind == "GUARD_TAG" for item in elide(ops)) == 3
-
-
-def test_loop_break_uses_exit_path_not_textual_suffix() -> None:
-    ops = [
-        guard(),
-        op("LOOP_START"),
-        op("CALL", MoltValue("mutate"), result="callback"),
-        op("LOOP_BREAK"),
-        guard(),
-        op("LOOP_END"),
-        guard(),
-    ]
-    result = elide(ops)
-    assert result[-1] is ops[-1]
-
-
-def test_jump_join_uses_all_predecessors() -> None:
-    ops = [
-        op("IF", MoltValue("cond")),
-        guard(),
-        op("JUMP", "join"),
-        op("ELSE"),
-        op("CALL", MoltValue("mutate"), result="callback"),
-        op("END_IF"),
-        op("LABEL", "join"),
-        guard(),
-    ]
-    assert elide(ops)[-1] is ops[-1]
-
-
-@pytest.mark.parametrize("route", ["TRY_START", "CHECK_EXCEPTION", "STATE_SWITCH"])
-def test_guard_success_does_not_flow_to_exception_or_resume_entry(route: str) -> None:
-    if route == "STATE_SWITCH":
-        ops = [guard(), op(route), op("ret_void"), op("STATE_LABEL", "resume"), guard()]
-    else:
-        ops = [guard(), op(route, "handler")]
-        if route == "TRY_START":
-            ops.extend([op("CALL", MoltValue("mutate")), op("TRY_END")])
-        ops.extend([op("ret_void"), op("LABEL", "handler"), guard()])
-    assert elide(ops)[-1] is ops[-1]
-
-
-@pytest.mark.parametrize("name", ["value", "expected"])
-def test_result_rebinding_invalidates_guard_operands(name: str) -> None:
-    ops = [guard(), op("COPY", MoltValue("replacement"), result=name), guard()]
-    assert sum(item.kind == "GUARD_TAG" for item in elide(ops)) == 2
-
-
-def test_exception_edge_coalesced_with_fallthrough_has_no_success_fact() -> None:
+def test_exception_edge_coalesced_with_fallthrough_records_both_modes() -> None:
     ops = [guard(), op("CHECK_EXCEPTION", "handler"), op("LABEL", "handler"), guard()]
     cfg = build_cfg(ops)
     edge = (cfg.index_to_block[1], cfg.index_to_block[2])
     assert cfg.edge_kinds[edge] == CFGEdgeKind.NORMAL | CFGEdgeKind.EXCEPTION
-    assert sum(item.kind == "GUARD_TAG" for item in elide(ops)) == 2
 
 
 def test_cfg_records_complete_edge_modes_at_the_edge_authority() -> None:
@@ -123,19 +49,6 @@ def test_cfg_records_complete_edge_modes_at_the_edge_authority() -> None:
         cfg.edge_kinds[cfg.index_to_block[5], cfg.index_to_block[6]]
         == CFGEdgeKind.RESUME
     )
-
-
-def test_guard_callback_admission_does_not_borrow_emitter_constant() -> None:
-    gen = SimpleTIRGenerator()
-    gen._op_by_result = {"x": op("CONST", 1, result="x")}
-    ops = [
-        op("MISSING", result="x"),
-        guard(),
-        op("BOOL", MoltValue("x"), result="predicate"),
-        guard(),
-    ]
-    rewritten, _, _, _ = gen._eliminate_redundant_guards_cfg(ops)
-    assert sum(item.kind == "GUARD_TAG" for item in rewritten) == 2
 
 
 def rewrite_branches(
@@ -185,27 +98,6 @@ def test_guard_cannot_hoist_across_dynamic_branch_truth_callback() -> None:
         exact_condition=False,
     )
     assert result[0].kind == "IF"
-
-
-@pytest.mark.parametrize(
-    ("kind", "args"),
-    [
-        (
-            "STATE_TRANSITION",
-            [MoltValue("task"), MoltValue("slot"), MoltValue("pending"), 1],
-        ),
-        ("IF", [MoltValue("condition")]),
-    ],
-)
-def test_callback_controls_invalidate_guard_availability(
-    kind: str, args: list[object]
-) -> None:
-    gen = SimpleTIRGenerator()
-    signature = gen._guard_signature(guard())
-    assert signature is not None
-    available = {signature}
-    gen._clear_invalidated_guard_signatures(available, op(kind, *args))
-    assert not available
 
 
 def test_callback_control_preserves_control_class_but_advances_heap_epoch() -> None:

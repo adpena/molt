@@ -107,18 +107,16 @@ def test_operator_callbacks_invalidate_unrelated_heap_read_cse(
 
 
 @pytest.mark.parametrize(("kind", "arity"), _CALLBACK_OPERATOR_CASES)
-def test_operator_callbacks_invalidate_type_and_shape_guards(
-    kind: str, arity: int
-) -> None:
+def test_operator_callbacks_may_access_arbitrary_heap(kind: str, arity: int) -> None:
     gen = SimpleTIRGenerator()
-    guards = {("GUARD_TAG", ("v", "captured")), ("GUARD_DICT_SHAPE", ("v", "mapping"))}
     op = MoltOp(
         kind=kind,
         args=[MoltValue("lhs"), MoltValue("rhs")][:arity],
         result=MoltValue("result"),
     )
-    gen._clear_invalidated_guard_signatures(guards, op)
-    assert not guards, f"{kind} callbacks can mutate objects beyond their operands"
+    assert gen._op_may_access_arbitrary_heap(op), (
+        f"{kind} callbacks can mutate objects beyond their operands"
+    )
 
 
 def test_generated_operator_facts_preserve_primitive_guard_and_exception_controls() -> (
@@ -131,9 +129,7 @@ def test_generated_operator_facts_preserve_primitive_guard_and_exception_control
         right.name: MoltOp(kind="CONST", args=[2], result=right),
     }
     op = MoltOp(kind="ADD", args=[left, right], result=MoltValue("result"))
-    guards = {("GUARD_TAG", ("v", "captured"))}
-    gen._clear_invalidated_guard_signatures(guards, op)
-    assert guards
+    assert not gen._op_may_access_arbitrary_heap(op)
     assert gen._op_instance_cannot_raise(op, {})
     gen._op_by_result[right.name] = MoltOp(kind="CONST_FLOAT", args=[2.0], result=right)
     assert gen._op_effect_class(op) == "pure"
@@ -216,9 +212,7 @@ def test_type_of_exact_result_does_not_imply_read_purity(
     assert gen._exact_primitive_operand_types(comparison) == ("int", "int")
     assert gen._op_effect_class(comparison) == "pure"
     assert gen._op_instance_cannot_raise(comparison, {})
-    guards = {("GUARD_TAG", (("v", "obj"), ("v", "int_tag")))}
-    gen._clear_invalidated_guard_signatures(guards, comparison)
-    assert guards
+    assert not gen._op_may_access_arbitrary_heap(comparison)
 
 
 @pytest.mark.parametrize(
@@ -263,35 +257,26 @@ def test_callback_boundary_invalidates_type_of_read_and_guard_tag_fact() -> None
         ]
     )
     assert sum(op["kind"] == "type_of" for op in lowered) == 2
-    gen = SimpleTIRGenerator()
-    guards = {("GUARD_TAG", (("v", "obj"), ("v", "tag")))}
-    gen._clear_invalidated_guard_signatures(
-        guards,
-        MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("unused")),
+    assert SimpleTIRGenerator()._op_may_access_arbitrary_heap(
+        MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("unused"))
     )
-    assert not guards
 
 
 def test_native_append_preserves_type_guard_but_generic_mutation_does_not() -> None:
     gen = SimpleTIRGenerator()
     value = MoltValue("list")
     gen._op_by_result[value.name] = MoltOp(kind="LIST_NEW", args=[], result=value)
-    guard = ("GUARD_TAG", (("v", "captured"),))
-    available = {guard}
-    gen._clear_invalidated_guard_signatures(
-        available,
+    assert not gen._op_may_access_arbitrary_heap(
         MoltOp(
             kind="LIST_APPEND",
             args=[value, MoltValue("element")],
             result=MoltValue("none"),
-        ),
+        )
     )
-    assert available == {guard}
-    gen._clear_invalidated_guard_signatures(
-        available,
-        MoltOp(kind="LIST_CLEAR", args=[value], result=MoltValue("none")),
+    # Releasing elements may invoke arbitrary finalizers.
+    assert gen._op_may_access_arbitrary_heap(
+        MoltOp(kind="LIST_CLEAR", args=[value], result=MoltValue("none"))
     )
-    assert not available  # Releasing elements may invoke arbitrary finalizers.
 
 
 @pytest.mark.parametrize("from_program_point", [False, True])
@@ -380,11 +365,6 @@ def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
         MoltOp(kind="CONST", args=[1], result=expected),
         MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
         MoltOp(
-            kind="GUARD_DICT_SHAPE",
-            args=[obj, MoltValue("dict_type"), MoltValue("version")],
-            result=MoltValue("none"),
-        ),
-        MoltOp(
             kind="IS",
             args=[MoltValue("left"), MoltValue("right")],
             result=MoltValue("condition"),
@@ -403,32 +383,6 @@ def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
     state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
     assert state["current"] is _SCCP_OVERDEFINED
     assert "__tag__:obj" not in state
-    assert "__dict_shape__:obj" not in state
-
-
-def test_sccp_region_body_invalidates_shape_facts_at_no_result_callback() -> None:
-    gen = SimpleTIRGenerator()
-    obj, dict_type = MoltValue("obj"), MoltValue("dict_type")
-    ops = [
-        MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(
-            kind="GUARD_DICT_SHAPE",
-            args=[obj, dict_type, MoltValue("old_version")],
-            result=MoltValue("none"),
-        ),
-        MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("none")),
-        MoltOp(
-            kind="GUARD_DICT_SHAPE",
-            args=[obj, dict_type, MoltValue("new_version")],
-            result=MoltValue("none"),
-        ),
-        MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
-    ]
-    cfg = build_cfg(ops)
-    sccp = gen._compute_sccp(ops, cfg)
-    callback_state = sccp.out_values[cfg.index_to_block[2]]
-    assert callback_state["__dict_shape__:obj"] == ("dict_type", "new_version")
-    assert cfg.index_to_block[4] in sccp.executable_blocks
 
 
 def test_callback_invalidates_all_heap_read_keys_and_current_type_guards() -> None:
@@ -880,9 +834,7 @@ def test_mutator_callbacks_do_not_inherit_type_local_write_precision(kind: str) 
     gen._op_by_result[obj.name] = MoltOp(kind="LIST_NEW", args=[], result=obj)
     op = MoltOp(kind=kind, args=[obj, MoltValue("arg")], result=MoltValue("none"))
     assert gen._heap_alias_classes_for_write_op(op) == set()
-    guards = {("GUARD_TAG", ("v", "unrelated"), ("v", "class"))}
-    gen._clear_invalidated_guard_signatures(guards, op)
-    assert not guards
+    assert gen._op_may_access_arbitrary_heap(op)
 
 
 def test_canonicalization_uses_current_unique_producers_and_restores_emitter_index() -> (
@@ -1943,37 +1895,6 @@ def test_cfg_preserves_repeated_runtime_guard_profile_events() -> None:
     assert len(guards) == 2
 
 
-def test_cfg_dedupes_redundant_guard_dict_shape_after_first_guard() -> None:
-    lowered = _lower_ops(
-        [
-            MoltOp(kind="DICT_NEW", args=[], result=MoltValue("obj")),
-            MoltOp(kind="MISSING", args=[], result=MoltValue("dict_type")),
-            MoltOp(kind="CONST", args=[0], result=MoltValue("shape_ver")),
-            MoltOp(
-                kind="GUARD_DICT_SHAPE",
-                args=[
-                    MoltValue("obj"),
-                    MoltValue("dict_type"),
-                    MoltValue("shape_ver"),
-                ],
-                result=MoltValue("guard_a"),
-            ),
-            MoltOp(
-                kind="GUARD_DICT_SHAPE",
-                args=[
-                    MoltValue("obj"),
-                    MoltValue("dict_type"),
-                    MoltValue("shape_ver"),
-                ],
-                result=MoltValue("guard_b"),
-            ),
-        ]
-    )
-
-    guards = [op for op in lowered if op.get("kind") == "guard_dict_shape"]
-    assert len(guards) == 1
-
-
 def test_sccp_prunes_constant_if_else_region() -> None:
     lowered = _lower_ops(
         [
@@ -2080,18 +2001,18 @@ def test_guard_hoist_moves_duplicate_branch_guards_to_dominator() -> None:
 def test_dce_lattice_keeps_guard_results_even_when_unused() -> None:
     lowered = _lower_ops(
         [
-            MoltOp(kind="DICT_NEW", args=[], result=MoltValue("obj")),
-            MoltOp(kind="MISSING", args=[], result=MoltValue("dict_type")),
-            MoltOp(kind="CONST", args=[0], result=MoltValue("shape_ver")),
+            MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
+            MoltOp(kind="MISSING", args=[], result=MoltValue("cls")),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("layout_version")),
             MoltOp(
-                kind="GUARD_DICT_SHAPE",
-                args=[MoltValue("obj"), MoltValue("dict_type"), MoltValue("shape_ver")],
+                kind="GUARD_LAYOUT",
+                args=[MoltValue("obj"), MoltValue("cls"), MoltValue("layout_version")],
                 result=MoltValue("guard_result"),
             ),
         ]
     )
 
-    assert any(op.get("kind") == "guard_dict_shape" for op in lowered)
+    assert any(op.get("kind") == "guard_layout" for op in lowered)
 
 
 def test_cfg_gvn_reuses_type_of_and_is() -> None:
@@ -2819,37 +2740,40 @@ def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
     assert any(op.kind == "JUMP" and op.args and op.args[0] == 30 for op in rewritten)
 
 
-def test_region_wide_guard_elision_preserves_post_join_profile_event() -> None:
-    ops = [
-        MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
-        MoltOp(kind="MISSING", args=[], result=MoltValue("value")),
-        MoltOp(kind="CONST", args=[1], result=MoltValue("tag")),
-        MoltOp(kind="IF", args=[MoltValue("cond")], result=MoltValue("none")),
-        MoltOp(
-            kind="GUARD_TAG",
-            args=[MoltValue("value"), MoltValue("tag")],
-            result=MoltValue("none"),
-        ),
-        MoltOp(kind="CONST", args=[1], result=MoltValue("a")),
-        MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
-        MoltOp(
-            kind="GUARD_TAG",
-            args=[MoltValue("value"), MoltValue("tag")],
-            result=MoltValue("none"),
-        ),
-        MoltOp(kind="CONST", args=[2], result=MoltValue("b")),
-        MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-        MoltOp(
-            kind="GUARD_TAG",
-            args=[MoltValue("value"), MoltValue("tag")],
-            result=MoltValue("none"),
-        ),
-    ]
-    gen = SimpleTIRGenerator()
-    rewritten, attempted, accepted, rejected = gen._eliminate_redundant_guards_cfg(ops)
-    guards = [op for op in rewritten if op.kind == "GUARD_TAG"]
-    assert len(guards) == 3
-    assert attempted == accepted == rejected == 0
+def test_midend_preserves_post_join_guard_profile_event() -> None:
+    # A runtime type-guard miss is counted on every execution, so a guard
+    # repeated after a join is not redundant with the branch guards. Every
+    # path runs two guards: the merged branch guard and the post-join guard.
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
+            MoltOp(kind="MISSING", args=[], result=MoltValue("value")),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("tag")),
+            MoltOp(kind="IF", args=[MoltValue("cond")], result=MoltValue("none")),
+            MoltOp(
+                kind="GUARD_TAG",
+                args=[MoltValue("value"), MoltValue("tag")],
+                result=MoltValue("none"),
+            ),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("a")),
+            MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
+            MoltOp(
+                kind="GUARD_TAG",
+                args=[MoltValue("value"), MoltValue("tag")],
+                result=MoltValue("none"),
+            ),
+            MoltOp(kind="CONST", args=[2], result=MoltValue("b")),
+            MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
+            MoltOp(
+                kind="GUARD_TAG",
+                args=[MoltValue("value"), MoltValue("tag")],
+                result=MoltValue("none"),
+            ),
+        ]
+    )
+    kinds = [op.get("kind") for op in lowered]
+    assert kinds.count("guard_tag") == 2
+    assert "guard_tag" in kinds[kinds.index("end_if") :]
 
 
 def test_sccp_preserves_non_raising_region_metadata_for_tir() -> None:
@@ -6102,7 +6026,6 @@ def test_midend_monolith_pressure_preserves_hot_function_aggressive_policy() -> 
     assert policy.tier == "A"
     assert policy.promoted is True
     assert policy.max_rounds == 4
-    assert policy.enable_guard_hoist is True
 
 
 def test_midend_monolith_pressure_tracks_new_ops_incrementally() -> None:

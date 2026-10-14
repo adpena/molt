@@ -110,7 +110,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             "const_int_values": {},
             "value_type_tags": {},
             "available_values": {},
-            "guard_dict_shapes": {},
             "alias_epochs": {},
             "object_epochs": {},
             "memory_epoch": 0,
@@ -124,7 +123,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             "const_int_values": state["const_int_values"].copy(),
             "value_type_tags": state["value_type_tags"].copy(),
             "available_values": state["available_values"].copy(),
-            "guard_dict_shapes": state["guard_dict_shapes"].copy(),
             "alias_epochs": state["alias_epochs"].copy(),
             "object_epochs": state["object_epochs"].copy(),
             "memory_epoch": state["memory_epoch"],
@@ -1120,15 +1118,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         for key in stale_values:
             available_values.pop(key, None)
 
-        guard_dict_shapes: dict[str, tuple[str, str]] = state["guard_dict_shapes"]
-        guard_dict_shapes.pop(name, None)
-        stale_dict_shapes = [
-            key
-            for key, (dict_type_name, version_name) in guard_dict_shapes.items()
-            if dict_type_name == name or version_name == name
-        ]
-        for key in stale_dict_shapes:
-            guard_dict_shapes.pop(key, None)
         object_epochs: dict[str, int] = state["object_epochs"]
         object_epochs.pop(name, None)
         self._invalidate_canonicalization_state_signature(state)
@@ -1166,16 +1155,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             ):
                 available_values[key] = left_value
 
-        guard_dict_shapes: dict[str, tuple[str, str]] = {}
-        for key, left_value in left["guard_dict_shapes"].items():
-            right_value = right["guard_dict_shapes"].get(key)
-            if (
-                isinstance(right_value, tuple)
-                and len(right_value) == 2
-                and right_value == left_value
-            ):
-                guard_dict_shapes[key] = left_value
-
         alias_epochs: dict[str, int] = {}
         left_alias_epochs = left["alias_epochs"]
         right_alias_epochs = right["alias_epochs"]
@@ -1199,7 +1178,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             "const_int_values": const_int_values,
             "value_type_tags": value_type_tags,
             "available_values": available_values,
-            "guard_dict_shapes": guard_dict_shapes,
             "alias_epochs": alias_epochs,
             "object_epochs": object_epochs,
             "memory_epoch": max(left["memory_epoch"], right["memory_epoch"]),
@@ -1222,7 +1200,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         tuple[tuple[str, int], ...],
         tuple[tuple[str, int], ...],
         tuple[tuple[tuple[Any, ...], str], ...],
-        tuple[tuple[str, tuple[str, str]], ...],
         tuple[tuple[str, int], ...],
         tuple[tuple[str, int], ...],
         int,
@@ -1237,7 +1214,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     tuple[tuple[str, int], ...],
                     tuple[tuple[str, int], ...],
                     tuple[tuple[tuple[Any, ...], str], ...],
-                    tuple[tuple[str, tuple[str, str]], ...],
                     tuple[tuple[str, int], ...],
                     tuple[tuple[str, int], ...],
                     int,
@@ -1254,7 +1230,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 (key, value.name) for key, value in state["available_values"].items()
             )
         )
-        dict_shape_items = tuple(sorted(state["guard_dict_shapes"].items()))
         alias_epoch_items = tuple(sorted(state["alias_epochs"].items()))
         object_epoch_items = tuple(sorted(state["object_epochs"].items()))
         memory_epoch = state["memory_epoch"]
@@ -1263,7 +1238,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             const_items,
             tag_items,
             available_items,
-            dict_shape_items,
             alias_epoch_items,
             object_epoch_items,
             memory_epoch,
@@ -1284,7 +1258,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         const_int_values: dict[str, int] = state["const_int_values"]
         value_type_tags: dict[str, int] = state["value_type_tags"]
         available_values: dict[tuple[Any, ...], MoltValue] = state["available_values"]
-        guard_dict_shapes: dict[str, tuple[str, str]] = state["guard_dict_shapes"]
         alias_epochs: dict[str, int] = state["alias_epochs"]
         object_epochs: dict[str, int] = state["object_epochs"]
         memory_epoch = state["memory_epoch"]
@@ -1323,19 +1296,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     if shared.name in value_type_tags:
                         value_type_tags[result_name] = value_type_tags[shared.name]
                     continue
-
-            if canonical_op.kind == "GUARD_DICT_SHAPE" and len(canonical_op.args) == 3:
-                guarded_obj = canonical_op.args[0]
-                dict_type = canonical_op.args[1]
-                version = canonical_op.args[2]
-                if (
-                    isinstance(guarded_obj, MoltValue)
-                    and isinstance(dict_type, MoltValue)
-                    and isinstance(version, MoltValue)
-                ):
-                    expected = (dict_type.name, version.name)
-                    if guard_dict_shapes.get(guarded_obj.name) == expected:
-                        continue
 
             if (
                 canonical_op.kind == "GUARD_TAG"
@@ -1510,17 +1470,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     if arg_const is not None:
                         const_int_values[result_name] = abs(arg_const)
                         state_dirty = True
-            elif (
-                canonical_op.kind == "GUARD_DICT_SHAPE" and len(canonical_op.args) == 3
-            ):
-                guarded_obj, dict_type, version = canonical_op.args
-                if (
-                    isinstance(guarded_obj, MoltValue)
-                    and isinstance(dict_type, MoltValue)
-                    and isinstance(version, MoltValue)
-                ):
-                    guard_dict_shapes[guarded_obj.name] = (dict_type.name, version.name)
-                    state_dirty = True
             type_tag = self._const_type_tag(canonical_op)
             if type_tag is None and result_name != "none":
                 if canonical_op.kind in {
@@ -1569,7 +1518,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 const_int_values.clear()
                 value_type_tags.clear()
                 available_values.clear()
-                guard_dict_shapes.clear()
                 state_dirty = True
 
             arbitrary_heap = self._op_may_access_arbitrary_heap(canonical_op)
@@ -1612,8 +1560,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                         value_type_tags.clear()
                         for alias_class in sorted(alias_epochs):
                             alias_epochs[alias_class] += 1
-                guard_dict_shapes.clear()
-                state_dirty = True
 
         state["alias_epochs"] = alias_epochs
         state["object_epochs"] = object_epochs

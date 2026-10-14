@@ -5,7 +5,7 @@
 // idempotence (fixed point is stable), and phase ordering independence.
 //
 // Corresponds to SimpleTIRGenerator._run_ir_midend_passes in the real compiler,
-// which runs: simplify → SCCP → join → guard_hoist → LICM → prune → DCE → CSE
+// which runs: simplify → SCCP → join → LICM → prune → DCE → CSE
 // in a fixed-point loop with deterministic work-budget-based degradation;
 // wall-clock budget_ms is telemetry-only.
 

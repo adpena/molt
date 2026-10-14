@@ -454,7 +454,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_guard_hoist": False,
                 "budget_base_ms": 60.0,
             },
             ("dev", "B"): {
@@ -463,7 +462,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "cse_iter_cap": 8,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_guard_hoist": False,
                 "budget_base_ms": 35.0,
             },
             ("dev", "C"): {
@@ -472,7 +470,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "cse_iter_cap": 4,
                 "enable_deep_edge_thread": False,
                 "enable_cse": False,
-                "enable_guard_hoist": False,
                 "budget_base_ms": 20.0,
             },
             ("release", "A"): {
@@ -481,7 +478,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "cse_iter_cap": 48,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_guard_hoist": True,
                 "budget_base_ms": 180.0,
             },
             ("release", "B"): {
@@ -490,7 +486,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "cse_iter_cap": 32,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
-                "enable_guard_hoist": True,
                 "budget_base_ms": 110.0,
             },
             ("release", "C"): {
@@ -499,7 +494,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": False,
                 "enable_cse": True,
-                "enable_guard_hoist": False,
                 "budget_base_ms": 70.0,
             },
         }
@@ -522,7 +516,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 8, int(int(selected["sccp_iter_cap"]) * 0.75)
             )
             selected["cse_iter_cap"] = max(4, int(int(selected["cse_iter_cap"]) * 0.75))
-            selected["enable_guard_hoist"] = False
             selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.8
         alpha = self.midend_env.budget_alpha
         beta = self.midend_env.budget_beta
@@ -579,7 +572,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
             cse_iter_cap=int(selected["cse_iter_cap"]),
             enable_deep_edge_thread=bool(selected["enable_deep_edge_thread"]),
             enable_cse=bool(selected["enable_cse"]),
-            enable_guard_hoist=bool(selected["enable_guard_hoist"]),
             budget_ms=float(budget_ms),
             work_budget=float(work_budget),
             allow_hot_promotion=bool(

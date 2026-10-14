@@ -325,7 +325,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
         degraded = False
         enable_deep_edge_thread = policy.enable_deep_edge_thread
         enable_cse = policy.enable_cse
-        enable_guard_hoist = policy.enable_guard_hoist
         max_rounds = max(2, policy.max_rounds)
         sccp_iter_cap = max(1, policy.sccp_iter_cap)
         cse_iter_cap = max(1, policy.cse_iter_cap)
@@ -383,12 +382,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 "policy_init",
                 "disable_cse",
             )
-        if not enable_guard_hoist:
-            add_degrade_event(
-                "policy_tier_limit",
-                "policy_init",
-                "disable_guard_hoist",
-            )
 
         def maybe_apply_budget_degrade(
             stage: str,
@@ -411,7 +404,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
             nonlocal degrade_level
             nonlocal enable_deep_edge_thread
             nonlocal enable_cse
-            nonlocal enable_guard_hoist
             nonlocal max_rounds
             nonlocal sccp_iter_cap
             nonlocal cse_iter_cap
@@ -436,9 +428,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 elif enable_deep_edge_thread:
                     enable_deep_edge_thread = False
                     action = "disable_deep_edge_thread"
-                elif enable_guard_hoist:
-                    enable_guard_hoist = False
-                    action = "disable_guard_hoist"
                 if action is None:
                     break
                 degraded = True
@@ -630,34 +619,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 accepted=try_join_threads > 0,
                 degraded=degraded,
             )
-            maybe_apply_budget_degrade(
-                f"round_{round_index}_post_join",
-                round_index - 1,
-                ops_now=len(step_ops),
-                upcoming_pass="guard_hoist",
-            )
-
-            if enable_guard_hoist:
-                pass_start = time.perf_counter()
-                step_ops, guard_attempts, guard_accepts, guard_rejects = (
-                    self._eliminate_redundant_guards_cfg(step_ops)
-                )
-                self.midend_stats["guard_hoist_attempts"] += guard_attempts
-                self.midend_stats["guard_hoist_accepted"] += guard_accepts
-                self.midend_stats["guard_hoist_rejected"] += guard_rejects
-                self._record_midend_pass_sample(
-                    "guard_hoist",
-                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
-                    accepted=guard_accepts > 0,
-                    degraded=degraded,
-                )
-            else:
-                self._record_midend_pass_sample(
-                    "guard_hoist",
-                    elapsed_ms=0.0,
-                    accepted=False,
-                    degraded=True,
-                )
             maybe_apply_budget_degrade(
                 f"round_{round_index}_pre_prune",
                 round_index - 1,
@@ -863,8 +824,6 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 "sccp_edge_thread",
                 "join_canonicalize",
             ]
-            if enable_guard_hoist:
-                round_passes_run.append("guard_hoist")
             round_passes_run.append("prune")
             round_passes_run.append("verifier")
             if not round_failures:

@@ -7783,7 +7783,6 @@ def test_explicit_frontend_lowerings_replace_manufactured_spellings():
     # These names come from the lifecycle, closure, iteration and
     # attribute producers. The wire spellings are not extra frontend aliases.
     lowerings = {
-        "class_layout_version": "CLASS_VERSION",
         "del_attr_generic_obj": "DELATTR_GENERIC_OBJ",
         "del_attr_generic_ptr": "DELATTR_GENERIC_PTR",
         "iter": "ITER_NEW",

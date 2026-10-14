@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections import deque
 from typing import Any, NoReturn
 
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend.cfg_analysis import CFGEdgeKind
 
 from molt.frontend._types import (
     CFGGraph,
@@ -21,7 +19,7 @@ from molt.frontend.lowering.midend_dataflow import current_unique_result_definit
 
 class MidendCFGMixin(GeneratorMixinBase):
     def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None:
-        if op.kind not in {"GUARD_TAG", "GUARD_DICT_SHAPE"}:
+        if op.kind != "GUARD_TAG":
             return None
         if op.result.name != "none":
             return None
@@ -32,114 +30,6 @@ class MidendCFGMixin(GeneratorMixinBase):
             else:
                 normalized_args.append(("c", arg))
         return (op.kind, tuple(normalized_args))
-
-    def _clear_invalidated_guard_signatures(
-        self, available: set[tuple[Any, ...]], op: MoltOp
-    ) -> None:
-        if not available:
-            return
-        # SimpleIR can reuse result names before SSA construction. A new
-        # binding invalidates every guard mentioning the old value.
-        if op.result.name != "none":
-            rebound = ("v", op.result.name)
-            available.difference_update([sig for sig in available if rebound in sig[1]])
-        effect_class = self._op_effect_class(op)
-        if self._op_may_access_arbitrary_heap(op):
-            available.clear()
-            return
-        if effect_class == "writes_heap":
-            stale = [
-                sig
-                for sig in available
-                if sig and isinstance(sig, tuple) and sig[0] == "GUARD_DICT_SHAPE"
-            ]
-            for sig in stale:
-                available.discard(sig)
-
-    def _eliminate_redundant_guards_cfg(
-        self, ops: list[MoltOp]
-    ) -> tuple[list[MoltOp], int, int, int]:
-        with current_unique_result_definitions(self, ops):
-            if not ops:
-                return ops, 0, 0, 0
-            # A runtime type-guard miss is non-trapping and counted on every
-            # execution. Repetition is not an idempotent success fact. Exact
-            # no-mismatch elimination belongs to canonicalization's type facts.
-            signatures = [
-                self._guard_signature(op) if op.kind == "GUARD_DICT_SHAPE" else None
-                for op in ops
-            ]
-            universe = {sig for sig in signatures if sig is not None}
-            if not universe:
-                return ops, 0, 0, 0
-            cfg = build_cfg(ops)
-
-            # Summarize transfer once. Fixed-point iterations use sets, never repeat
-            # producer/effect classification or mutate the instruction stream.
-            generated: dict[int, set[tuple[Any, ...]]] = {}
-            preserved: dict[int, set[tuple[Any, ...]]] = {}
-            for block in cfg.blocks:
-                gen: set[tuple[Any, ...]] = set()
-                keep = set(universe)
-                for idx in range(block.start, block.end):
-                    sig = signatures[idx]
-                    if sig is not None:
-                        gen.add(sig)
-                    else:
-                        self._clear_invalidated_guard_signatures(gen, ops[idx])
-                        self._clear_invalidated_guard_signatures(keep, ops[idx])
-                generated[block.id] = gen
-                preserved[block.id] = keep
-
-            # Guard success is a must-fact. Start at top away from the entry and
-            # intersect every predecessor, including backedges, before rewriting.
-            incoming = {block.id: set(universe) for block in cfg.blocks}
-            outgoing = {block.id: set(universe) for block in cfg.blocks}
-            pending = deque(sorted(cfg.reachable))
-            queued = set(pending)
-            while pending:
-                block_id = pending.popleft()
-                queued.remove(block_id)
-                preds = [
-                    pred for pred in cfg.predecessors[block_id] if pred in cfg.reachable
-                ]
-                available: set[tuple[Any, ...]] = set()
-                if block_id != 0 and preds:
-                    available = set(universe)
-                    for pred in preds:
-                        # Success facts cannot cross failure or externally
-                        # resumed execution, including coalesced normal edges.
-                        edge_kind = cfg.edge_kinds[pred, block_id]
-                        if edge_kind & (CFGEdgeKind.EXCEPTION | CFGEdgeKind.RESUME):
-                            available.clear()
-                            break
-                        available.intersection_update(outgoing[pred])
-                incoming[block_id] = available
-                result = generated[block_id] | (available & preserved[block_id])
-                if result != outgoing[block_id]:
-                    outgoing[block_id] = result
-                    for successor in cfg.successors[block_id]:
-                        if successor in cfg.reachable and successor not in queued:
-                            pending.append(successor)
-                            queued.add(successor)
-
-            removed: set[int] = set()
-            attempted = 0
-            for block in cfg.blocks:
-                available = (
-                    set(incoming[block.id]) if block.id in cfg.reachable else set()
-                )
-                for idx in range(block.start, block.end):
-                    sig = signatures[idx]
-                    if sig is not None:
-                        attempted += 1
-                        if sig in available and block.id in cfg.reachable:
-                            removed.add(idx)
-                        available.add(sig)
-                    else:
-                        self._clear_invalidated_guard_signatures(available, ops[idx])
-            rewritten = [op for idx, op in enumerate(ops) if idx not in removed]
-            return rewritten, attempted, len(removed), attempted - len(removed)
 
     def _op_equal_for_tail_merge(self, left: MoltOp, right: MoltOp) -> bool:
         return (
