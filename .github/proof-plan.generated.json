@@ -350,7 +350,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "578e3b43d348bdd9caf4a47eaef5283a2e97f5b7d1fccbcb883c598f8c7a733b",
+  "authority_sha256": "14bba0fb96d115368644a589cff1414f7f46b754260f1e5817ef9d51bcd467d1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4561,6 +4561,7 @@
         "tests/cli/test_cli_build_results_authority.py",
         "tests/cli/test_cli_cache_fingerprint.py",
         "tests/cli/test_compiler_source_root.py",
+        "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
         "tests/cli/test_llvm_wasi_tools.py",
         "tests/cli/test_cli_compiler_metadata_pathspec_state.py",
         "tests/cli/test_cli_darwin_link_flags.py",
@@ -4707,6 +4708,7 @@
         "tests/cli/test_cli_build_results_authority.py",
         "tests/cli/test_cli_cache_fingerprint.py",
         "tests/cli/test_compiler_source_root.py",
+        "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
         "tests/cli/test_llvm_wasi_tools.py",
         "tests/cli/test_cli_compiler_metadata_pathspec_state.py",
         "tests/cli/test_cli_darwin_link_flags.py",
