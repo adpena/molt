@@ -4671,10 +4671,11 @@ tiers = ["pr", "main"]
 resource_class = "python-tests"
 # The guard's Windows process model (job objects, snapshots) is the code under
 # test here; Linux and macOS run the same files in python.unit.harness (HF-49).
+# Serial: with -n auto it slowed the queue command beside it past its deadline.
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "-n", "auto", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py"]
 toolchains = ["python", "uv"]
 
 

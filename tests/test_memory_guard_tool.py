@@ -8864,9 +8864,10 @@ def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
 @pytest.mark.skipif(os.name != "nt", reason="Windows suspended job custody")
 def test_child_clock_excludes_suspended_job_assignment_delay(monkeypatch):
     original_resume = memory_guard._win_job._resume_process
+    delay_s = 0.3
 
     def delayed_resume(*args, **kwargs):
-        time.sleep(0.3)
+        time.sleep(delay_s)
         return original_resume(*args, **kwargs)
 
     monkeypatch.setattr(memory_guard._win_job, "_resume_process", delayed_resume)
@@ -8880,8 +8881,10 @@ def test_child_clock_excludes_suspended_job_assignment_delay(monkeypatch):
     )
     assert result.returncode == 0
     assert result.child_elapsed_s is not None
-    assert result.child_elapsed_s < 0.3
-    assert result.elapsed_s >= 0.3
+    # The guard clock covers the suspended assignment delay and the child clock
+    # excludes it, however long the child itself takes on a loaded host (a
+    # hosted Windows run took 0.41 s for `pass`).
+    assert result.elapsed_s - result.child_elapsed_s >= delay_s * 0.95
 
 
 @pytest.mark.skipif(
