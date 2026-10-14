@@ -1525,7 +1525,14 @@ def validate_llvm_sdk_selection(
             Path(record["prefix"]), Path(tools["llvm-config"])
         )
     }
-    if dict(tools) != canonical or tools["llvm-config"] != identity.get("path"):
+    selected_path = identity.get("path")
+    if (
+        dict(tools) != canonical
+        or not isinstance(selected_path, str)
+        # The selection reports the OS spelling; the identity path carries
+        # custody's, which lowercases a Windows drive anchor.
+        or custody_path(Path(tools["llvm-config"])) != custody_path(Path(selected_path))
+    ):
         raise ValueError("LLVM SDK tools differ from the verification selection")
     if expected is not None and {
         key: record[key]
