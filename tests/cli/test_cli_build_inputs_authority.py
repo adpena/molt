@@ -18,7 +18,6 @@ _BUILD_INPUT_NAMES = (
     "_merge_module_graph_with_reason",
     "_parse_audit_log_flag",
     "_parse_io_mode_flag",
-    "_parse_type_gate_flag",
     "_prepare_build_config",
     "_prepare_build_inputs",
     "_prepare_build_preamble",

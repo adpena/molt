@@ -1,7 +1,7 @@
 """The CLI never uses the process environment as a parameter channel (HF-60).
 
 A value the CLI resolves (``--backend``, ``--portable``, ``--wasm-profile``,
-``--type-gate``, ``--stdlib-profile``, the Luau chunk size, the runtime policy
+``--stdlib-profile``, the Luau chunk size, the runtime policy
 flags, the native-arch Rust CPU policy) travels as a typed parameter; a child
 process receives its share in an environment mapping built for that child.
 Before HF-60 the CLI wrote these to ``os.environ``: ``MOLT_BACKEND``,
@@ -58,7 +58,6 @@ _SELECTION_NAMES = (
     "MOLT_MODULE_CHUNK_OPS",
     "MOLT_PORTABLE",
     "MOLT_STDLIB_PROFILE",
-    "MOLT_TYPE_GATE",
     "MOLT_WASM_PROFILE",
 )
 
@@ -153,7 +152,6 @@ def test_build_passes_every_selection_explicitly(
         trusted=True,
         portable=True,
         wasm_profile="pure",
-        type_gate=True,
         audit_log="jsonl:stderr",
         io_mode="virtual",
         stdlib_profile="full",
@@ -165,7 +163,7 @@ def test_build_passes_every_selection_explicitly(
     assert captured["environ"] == before
     assert dict(os.environ) == before
     assert captured["codegen"] == CodegenSelection(
-        backend="llvm", portable=True, wasm_profile="pure", type_gate=True
+        backend="llvm", portable=True, wasm_profile="pure"
     )
     assert (captured["trusted"], captured["audit_log"], captured["io_mode"]) == (
         True,
@@ -194,7 +192,7 @@ def test_codegen_selection_projects_into_a_copy() -> None:
 
     default = CodegenSelection().environment(base)
     chosen = CodegenSelection(
-        backend="llvm", portable=True, wasm_profile="pure", type_gate=True
+        backend="llvm", portable=True, wasm_profile="pure"
     ).environment(base)
 
     assert base == {"MOLT_PORTABLE": "0", "MOLT_WASM_PROFILE": "full", "OTHER": "x"}
@@ -211,7 +209,6 @@ def test_codegen_selection_projects_into_a_copy() -> None:
         "MOLT_DEBUG_ARTIFACT_DIR": debug_dir,
         "MOLT_PORTABLE": "1",
         "MOLT_WASM_PROFILE": "pure",
-        "MOLT_TYPE_GATE": "1",
         "OTHER": "x",
     }
     with pytest.raises(ValueError, match="unknown codegen backend"):

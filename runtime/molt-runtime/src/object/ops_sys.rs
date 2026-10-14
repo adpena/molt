@@ -953,27 +953,6 @@ pub extern "C" fn molt_runtime_init_io_mode() {
     set_io_mode(mode);
 }
 
-/// Initialize the type gate from environment variable.
-///
-/// When MOLT_TYPE_GATE=1, the compiler rejects untyped code in
-/// capability-touching paths. Currently a no-op stub — the actual
-/// type checking is performed at compile time in the frontend.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_runtime_init_type_gate() {
-    let enabled = std::env::var("MOLT_TYPE_GATE")
-        .ok()
-        .map(|s| s == "1")
-        .unwrap_or(false);
-    if enabled {
-        // Type gate is enforced at compile time. This runtime stub exists
-        // for forward compatibility — a future version may perform runtime
-        // type narrowing checks here.
-        TYPE_GATE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-static TYPE_GATE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 #[cfg(all(target_arch = "wasm32", not(feature = "wasm_freestanding")))]
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
 unsafe extern "C" {

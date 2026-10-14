@@ -1197,13 +1197,6 @@ def _parse_io_mode_flag(value: str) -> dict[str, str]:
     return env
 
 
-def _parse_type_gate_flag(enabled: bool) -> dict[str, str]:
-    """Project --type-gate into a child process environment."""
-    if enabled:
-        return {"MOLT_TYPE_GATE": "1"}
-    return {}
-
-
 def _runtime_policy_flag_environment(
     base: Mapping[str, str],
     *,
