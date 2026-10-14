@@ -278,14 +278,11 @@ pub(super) unsafe fn function_binding_shape(
             func_ptr,
             FunctionBindingField::KeywordDefaults,
         ));
-        // The binder reads keyword defaults only for keyword-only parameters,
-        // which already require it. The dictionary stays mutable without a
-        // flag refresh, so only its type is a binder fact.
-        if !kwdefaults.is_none() {
-            full_binder |= kwdefaults
-                .as_ptr()
-                .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT);
-        }
+        // Any keyword-default mapping requires the binder, which also covers
+        // keyword-only parameters absent from recorded metadata. Presence,
+        // unlike the live dictionary's size, changes only through a metadata
+        // write that refreshes the binder flag.
+        full_binder |= !kwdefaults.is_none();
         let defaults = obj_from_bits(function_binding_meta(
             py,
             func_ptr,
