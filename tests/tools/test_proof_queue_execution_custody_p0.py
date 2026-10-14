@@ -5,6 +5,7 @@ import hashlib
 import os
 import runpy
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from tests.process_guard_common import install_module_view, run_custody_subject_
 
 from tools.proof_queue_pkg import (
     execution_custody,
+    python_child_custody,
     supervisor_custody,
     windows_createprocess,
 )
@@ -1278,3 +1280,33 @@ def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
     (replacement / "tool").write_bytes(tool.read_bytes())
     alias.symlink_to(replacement, target_is_directory=True)
     assert alias_spec.owns(alias), "same-byte alias retarget still changes selection"
+
+
+def test_popen_announcement_covers_only_its_own_createprocess() -> None:
+    # HF-138: Popen decides its launch, then calls _winapi.CreateProcess with
+    # the same application name; a direct call (multiprocessing spawn) is new.
+    announced = python_child_custody.WindowsLaunchAnnouncements()
+    assert not announced.consume("C:\\tools\\python.exe")
+    announced.announce(None)
+    assert not announced.consume("C:\\tools\\python.exe")
+    assert announced.consume(None)
+    assert not announced.consume(None)
+
+
+def test_popen_announcements_belong_to_the_announcing_thread() -> None:
+    announced = python_child_custody.WindowsLaunchAnnouncements()
+    announced.announce("C:\\tools\\python.exe")
+    other_thread: list[bool] = []
+    worker = threading.Thread(
+        target=lambda: other_thread.append(announced.consume("C:\\tools\\python.exe"))
+    )
+    worker.start()
+    worker.join()
+    assert other_thread == [False]
+    assert announced.consume("C:\\tools\\python.exe")
+
+
+def test_shell_and_startfile_launches_are_opaque_but_judged_launches_are_not() -> None:
+    opaque = python_child_custody.OPAQUE_PROCESS_EVENTS
+    assert {"os.system", "os.startfile", "os.startfile/2"} <= opaque
+    assert not {"subprocess.Popen", "_winapi.CreateProcess"} & opaque
