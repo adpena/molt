@@ -11,6 +11,7 @@ from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
     RUNTIME_STDLIB_PROFILE_TIERS,
 )
+from molt.cli.build_output_layout import _wasm_runtime_root_from_env
 from molt.default_paths import configured_artifact_root_text
 from molt.dx import project_cargo_target_dir
 
@@ -139,27 +140,6 @@ def _runtime_lib_path(
     )
 
 
-@functools.lru_cache(maxsize=256)
-def _runtime_wasm_artifact_path_cached(
-    project_root_str: str,
-    artifact_name: str,
-    wasm_runtime_dir_override: str | None,
-    ext_root_override: str | None,
-    cwd_str: str,
-) -> Path:
-    project_root = Path(project_root_str)
-    if wasm_runtime_dir_override:
-        base = Path(wasm_runtime_dir_override).expanduser()
-    else:
-        configured = ext_root_override
-        external_root = Path(configured).expanduser() if configured else Path(cwd_str)
-        if external_root.is_dir():
-            base = external_root / "wasm"
-        else:
-            base = project_root / "wasm"
-    return base / artifact_name
-
-
 def _runtime_wasm_artifact_path(project_root: Path, artifact_name: str) -> Path:
     return _runtime_wasm_artifact_path_from_env(project_root, artifact_name, os.environ)
 
@@ -169,10 +149,4 @@ def _runtime_wasm_artifact_path_from_env(
     artifact_name: str,
     env: Mapping[str, str],
 ) -> Path:
-    return _runtime_wasm_artifact_path_cached(
-        os.fspath(project_root),
-        artifact_name,
-        env.get("MOLT_WASM_RUNTIME_DIR"),
-        configured_artifact_root_text(env),
-        os.fspath(Path.cwd()),
-    )
+    return _wasm_runtime_root_from_env(project_root, env) / artifact_name

@@ -266,7 +266,6 @@ from molt.cli.runtime_paths import (
     _runtime_cargo_scratch_lib_path,
     _runtime_staticlib_target_is_windows,
     _runtime_wasm_artifact_path,
-    _runtime_wasm_artifact_path_cached,
 )
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,

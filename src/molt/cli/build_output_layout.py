@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import re
 
@@ -75,10 +76,15 @@ def _wasm_runtime_root_cached(
 
 
 def _wasm_runtime_root(project_root: Path) -> Path:
+    return _wasm_runtime_root_from_env(project_root, os.environ)
+
+
+def _wasm_runtime_root_from_env(project_root: Path, env: Mapping[str, str]) -> Path:
+    """The one root of runtime WASM artifacts: build, link and tools agree on it."""
     return _wasm_runtime_root_cached(
         os.fspath(project_root),
-        os.environ.get("MOLT_WASM_RUNTIME_DIR"),
-        configured_artifact_root_text(os.environ),
+        env.get("MOLT_WASM_RUNTIME_DIR"),
+        configured_artifact_root_text(env),
         os.fspath(Path.cwd()),
     )
 

@@ -15283,13 +15283,13 @@ def test_runtime_lib_path_includes_target_triple(
 def test_runtime_wasm_artifact_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_clear()
+    cli_build_output_layout._wasm_runtime_root_cached.cache_clear()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
 
     first = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
     second = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
 
-    info = RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_info()
+    info = cli_build_output_layout._wasm_runtime_root_cached.cache_info()
     assert first == second == (tmp_path / "wasm" / "molt_runtime.wasm")
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -15298,7 +15298,7 @@ def test_runtime_wasm_artifact_path_is_cached(
 def test_runtime_wasm_artifact_path_uses_explicit_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_clear()
+    cli_build_output_layout._wasm_runtime_root_cached.cache_clear()
     override = tmp_path / "custom-wasm"
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(override))
 
