@@ -32,11 +32,11 @@ from molt.native_target_shape import native_artifact_shape, native_object_format
 from molt.python_file_node_custody import _FileNodePool
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from molt.python_native_locations import (
-    LoadedNativeModuleSnapshot,
     _loaded_native_module_snapshot,
     _loader_name,
     _macos_dyld_cache_contract,
     _native_contract_valid,
+    native_census_disagreement,
 )
 
 
@@ -576,46 +576,6 @@ def _native_dependencies(
     )
 
 
-def _census_change(
-    before: LoadedNativeModuleSnapshot, after: LoadedNativeModuleSnapshot
-) -> str:
-    """Name what a changed loader census gained, lost, or redefined."""
-    added = sorted(map(str, set(after.paths) - set(before.paths)))
-    removed = sorted(map(str, set(before.paths) - set(after.paths)))
-    if added or removed:
-        return f"added {added or 'none'}; removed {removed or 'none'}"
-    changed = [
-        name
-        for name in ("executable", "aliases", "contracts", "macho_identities")
-        if getattr(before, name) != getattr(after, name)
-    ]
-    return f"same images, changed {', '.join(changed) or 'identity'}"
-
-
-def _census_only_lost_images(
-    before: LoadedNativeModuleSnapshot, after: LoadedNativeModuleSnapshot
-) -> bool:
-    """Whether a later census only unloaded images the capture already holds.
-
-    The closure was computed from ``before``, so an image the process unloads
-    later keeps it a sound over-approximation. On Windows, CPython's
-    ``platform`` loads the WMI providers through COM, and COM frees them while
-    the capture runs. An image gained, swapped or redefined is still a change.
-    """
-    return (
-        after.executable == before.executable
-        and set(after.paths) <= set(before.paths)
-        and all(
-            before.aliases.get(name) == path for name, path in after.aliases.items()
-        )
-        and set(after.contracts) <= set(before.contracts)
-        and all(
-            before.macho_identities.get(path) == identity
-            for path, identity in after.macho_identities.items()
-        )
-    )
-
-
 def _native_dependency_closure(
     roots: Mapping[str, Path],
     *,
@@ -836,13 +796,16 @@ def _native_dependency_closure(
     )
 
     def verify_census() -> None:
-        current = _loaded_native_module_snapshot(operating_system)
-        if current != loader_snapshot and not _census_only_lost_images(
-            loader_snapshot, current
-        ):
+        changes = native_census_disagreement(
+            loader_snapshot,
+            _loaded_native_module_snapshot(operating_system),
+            operating_system=operating_system,
+            admit_new_images=True,
+        )
+        if changes:
             raise PythonEnvironmentIdentityError(
                 "loaded native image census changed during dependency capture: "
-                + _census_change(loader_snapshot, current)
+                + "; ".join(changes)
             )
 
     verify_census()

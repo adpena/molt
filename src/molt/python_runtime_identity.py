@@ -37,7 +37,10 @@ from molt.python_native_dependency_custody import (
     _native_dependency_closure,
 )
 from molt.python_environment_location import python_startup_configuration_paths
-from molt.python_native_locations import _native_contract_valid
+from molt.python_native_locations import (
+    _native_contract_valid,
+    native_census_disagreement,
+)
 
 PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v5"
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v1"
@@ -378,43 +381,40 @@ def _runtime_import_candidates(
 
 
 def startup_selection_difference(
-    before: Mapping[str, object], after: Mapping[str, object]
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    *,
+    admit_new_images: bool,
 ) -> list[str]:
-    """Name what changed between two startup selections, bounded for messages.
+    """What makes ``after`` disagree with the admitted ``before``; empty if none.
 
-    A native census change lists the images gained and lost, so a refused
-    selection says which loader event moved it.
+    Every startup selector must match exactly. The native census binds how
+    the loader resolved the images both censuses hold: the executable, the
+    paths behind each loader name, and each shared image's identity. An
+    image ``after`` no longer holds was freed, which keeps the admitted
+    closure sound. A later census of the same process admits new images: the
+    capture loads some on first use (``kernel.appcore.dll`` on hosted
+    Windows). A fresh minimal launch does less work than the admitted
+    process, so an image only it holds is a new startup provider (HF-169).
     """
 
-    def names(paths: object) -> set[str]:
-        return {str(path) for path in paths} if isinstance(paths, list) else set()
-
-    def shown(items: set[str]) -> str:
-        listed = sorted(items)
-        return ", ".join(listed[:4]) + (
-            f" (+{len(listed) - 4} more)" if len(listed) > 4 else ""
-        )
-
-    changes: list[str] = []
-    for key in sorted(set(before) | set(after)):
-        old, new = before.get(key), after.get(key)
-        if old == new:
-            continue
-        if key == "native" and isinstance(old, Mapping) and isinstance(new, Mapping):
-            gained = names(new.get("paths")) - names(old.get("paths"))
-            lost = names(old.get("paths")) - names(new.get("paths"))
-            fields = sorted(
-                field
-                for field in set(old) | set(new)
-                if field != "paths" and old.get(field) != new.get(field)
-            )
-            parts = [f"gained {shown(gained)}"] if gained else []
-            parts += [f"lost {shown(lost)}"] if lost else []
-            parts += [f"changed {', '.join(fields)}"] if fields else []
-            changes.append("native images " + "; ".join(parts))
-        else:
-            changes.append(key)
-    return changes
+    changes = [
+        key
+        for key in sorted(set(before) | set(after))
+        if key != "native" and before.get(key) != after.get(key)
+    ]
+    old, new = before.get("native"), after.get("native")
+    if not isinstance(old, Mapping) or not isinstance(new, Mapping):
+        return changes + (["native"] if old != new else [])
+    platform_payload = before.get("platform")
+    system = (
+        str(platform_payload.get("operating_system", ""))
+        if isinstance(platform_payload, Mapping)
+        else ""
+    )
+    return changes + native_census_disagreement(
+        old, new, operating_system=system, admit_new_images=admit_new_images
+    )
 
 
 def current_python_runtime_selection() -> dict[str, object]:
@@ -554,12 +554,12 @@ def _capture_runtime_with_context(
     )
 
     def verify_runtime_selection() -> None:
-        present = startup_membership()
-        current = current_python_runtime_selection()
-        if present != startup_files or current != selection:
-            changes = startup_selection_difference(selection, current)
-            if present != startup_files:
-                changes.insert(0, "startup configuration files")
+        changes = startup_selection_difference(
+            selection, current_python_runtime_selection(), admit_new_images=True
+        )
+        if startup_membership() != startup_files:
+            changes.insert(0, "startup configuration files")
+        if changes:
             raise PythonEnvironmentIdentityError(
                 "CPython runtime/import selection changed after capture: "
                 + "; ".join(changes)
