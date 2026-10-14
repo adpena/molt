@@ -99,7 +99,6 @@ addopts = [
     "-p",
     "molt.pytest_memory_guard_config_plugin",
     "--ignore=tests/differential",
-    "--ignore=tests/molt_only",
     "--ignore=tests/compliance",
 ]
 norecursedirs = ["third_party", ".git", ".venv", ".molt-venv", ".hypothesis", "dist", "build", "logs"]

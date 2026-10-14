@@ -625,7 +625,6 @@ DIRECT_TEST_SCRIPT_EXCLUDED_PARTS = frozenset(
         "benchmarks",
         "differential",
         "fixtures",
-        "molt_only",
     }
 )
 

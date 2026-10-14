@@ -87,7 +87,6 @@ _SCAN_ROOTS = ("tools", "src/molt", "tests")
 _SKIP_PREFIXES = (
     "src/molt/stdlib/",
     "tests/differential/",
-    "tests/molt_only/",
     "tests/compliance/",
     "tests/harness/corpus/",
 )

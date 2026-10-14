@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "tools/test_ownership_baseline.json"
 SCHEMA_VERSION = 1
 # pyproject's addopts ignore these trees; their own runners own them.
-EXCLUDED_ROOTS = ("tests/differential/", "tests/molt_only/", "tests/compliance/")
+EXCLUDED_ROOTS = ("tests/differential/", "tests/compliance/")
 
 
 def test_files(root: Path) -> set[str]:

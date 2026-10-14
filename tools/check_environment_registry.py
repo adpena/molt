@@ -149,7 +149,6 @@ SKIP_DIR_NAMES = frozenset(
 SKIP_PREFIXES = (
     "tests/differential/",
     "tests/compliance/",
-    "tests/molt_only/",
     "tests/harness/corpus/",
     "tests/fixtures/",
 )
