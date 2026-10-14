@@ -39,6 +39,9 @@ impl Drop for GilGuard {
 pub(crate) struct PyToken<'gil> {
     _guard: &'gil GilGuard,
     core: molt_runtime_core::PyToken,
+    /// The runtime state this custody last resolved. `runtime_state` reuses it
+    /// only while the full resolution would still return it.
+    state: std::cell::Cell<Option<&'static crate::state::runtime_state::RuntimeState>>,
 }
 
 impl PyToken<'_> {
@@ -46,6 +49,21 @@ impl PyToken<'_> {
     #[inline(always)]
     pub(crate) fn core_token(&self) -> &molt_runtime_core::PyToken {
         &self.core
+    }
+
+    #[inline(always)]
+    pub(crate) fn resolved_runtime_state(
+        &self,
+    ) -> Option<&'static crate::state::runtime_state::RuntimeState> {
+        self.state.get()
+    }
+
+    #[inline(always)]
+    pub(crate) fn remember_runtime_state(
+        &self,
+        state: &'static crate::state::runtime_state::RuntimeState,
+    ) {
+        self.state.set(Some(state));
     }
 }
 
@@ -70,6 +88,7 @@ impl GilGuard {
             _guard: self,
             // This guard is the runtime's actual GIL custody boundary.
             core: unsafe { molt_runtime_core::PyToken::assume_gil_held() },
+            state: std::cell::Cell::new(None),
         }
     }
 
@@ -276,6 +295,7 @@ impl GilGuard {
             _guard: self,
             // This guard is the runtime's actual GIL custody boundary.
             core: unsafe { molt_runtime_core::PyToken::assume_gil_held() },
+            state: std::cell::Cell::new(None),
         }
     }
 
