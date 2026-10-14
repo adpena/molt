@@ -644,10 +644,13 @@ Everything else: parallel, lane-owned.
   was rewritten once (2026-10-06) to remove Claude attribution; translate an old
   commit ID with `docs/agent/history-rewrite-2026-10-06.commit-map`. Commit
   messages never carry Claude/AI attribution (hook + CI enforce it).
-- Land via fail-closed fast-forward: `python tools/ff_land.py` pushes HEAD to
-  `origin/main` ONLY as a clean fast-forward (refuses on a dirty tree, a
-  non-fast-forward / drifted base, or nothing-to-land), so you never trample a
-  parallel landing. It complements `tools/tree_drift_check.py` (staleness) and
+- Land via fail-closed fast-forward: `python tools/ff_land.py` captures HEAD,
+  checks that commit's generated proof plan and pushes that exact identity to
+  `origin/main` only as a fast-forward. It refuses a dirty tree unless
+  `--allow-dirty` is explicit, and refuses a drifted base or stale committed
+  projection. Nothing-to-land is a successful no-op. Unlanded source/index
+  changes and local replacement refs cannot alter the committed check. It
+  complements `tools/tree_drift_check.py` (staleness) and
   `tools/dirty_tree_landing_audit.py` (dirty-replay path coverage).
 - Run the gates you touched before landing; cite queue run IDs as evidence.
 - Compatibility floor: CPython >= 3.12 parity with explicit VERSION GATING

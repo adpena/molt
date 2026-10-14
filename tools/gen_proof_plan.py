@@ -22,35 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 JSON_OUTPUT = ROOT / ".github" / "proof-plan.generated.json"
 DOC_OUTPUT = ROOT / "docs" / "agent" / "PROOF_PLAN.generated.md"
 
-# The staged interpreter has no site imports or ambient import roots. Project
-# modules compile only their captured source, even if a staged cache or native
-# extension could otherwise take precedence over the matching .py file.
-_STAGED_SOURCE_BOOTSTRAP = """
-import importlib.machinery
-from pathlib import Path
-import sys
-_staged_root = Path(sys.argv[1]).resolve(strict=True)
-class _StagedSourceLoader(importlib.machinery.SourceFileLoader):
-    def get_code(self, fullname):
-        filename = self.get_filename(fullname)
-        return self.source_to_code(self.get_data(filename), filename)
-def _staged_source_hook(path):
-    try:
-        Path(path).resolve(strict=True).relative_to(_staged_root)
-    except (OSError, ValueError):
-        raise ImportError
-    return importlib.machinery.FileFinder(
-        path, (_StagedSourceLoader, importlib.machinery.SOURCE_SUFFIXES)
-    )
-sys.path_hooks.insert(0, _staged_source_hook)
-sys.path[:0] = [str(_staged_root / 'tools'), str(_staged_root / 'src'), str(_staged_root)]
-_staged_script = _staged_root / 'tools' / 'gen_proof_plan.py'
-sys.argv = [str(_staged_script), *sys.argv[2:]]
-__file__ = str(_staged_script)
-__spec__ = None
-exec(compile(_staged_script.read_bytes(), __file__, 'exec', dont_inherit=True), globals())
-"""
-
 
 def _index_projection(*, manifest: Path, check: bool) -> int:
     from molt.compiler_distribution import (
@@ -61,11 +32,11 @@ def _index_projection(*, manifest: Path, check: bool) -> int:
     from molt.artifact_publication import is_publication_lock_file
     from molt.temporary_artifacts import OwnedTemporaryDirectory
     from molt.toolchain_identity import capture_stable_regular_file, resolve_executable
-    from tools.command_execution import CommandExecutor
     from tools.release.git_source_snapshot import (
         capture_git_index_source_snapshot,
         fenced_git_index,
         materialize_git_source_snapshot,
+        run_git_source_python,
     )
 
     environment = dict(os.environ)
@@ -87,7 +58,6 @@ def _index_projection(*, manifest: Path, check: bool) -> int:
         max_bytes=MAX_SOURCE_BYTES,
     )
     output_paths = (JSON_OUTPUT.relative_to(ROOT), DOC_OUTPUT.relative_to(ROOT))
-    commands = CommandExecutor.for_file(__file__)
     with OwnedTemporaryDirectory(prefix="molt-staged-proof-") as temporary:
         output_root = Path(temporary) / "projections"
         staged_root = materialize_git_source_snapshot(
@@ -97,29 +67,16 @@ def _index_projection(*, manifest: Path, check: bool) -> int:
             git=git,
             environment=environment,
         )
-        argv = [
-            sys.executable,
-            "-I",
-            "-S",
-            "-B",
-            "-c",
-            _STAGED_SOURCE_BOOTSTRAP,
-            str(staged_root),
-            "--manifest",
-            str(staged_root / relative_manifest),
-        ]
+        argv = ["--manifest", str(staged_root / relative_manifest)]
         if check:
             argv.append("--check")
         else:
             argv.extend(("--write", "--output-root", str(output_root)))
-        completed = commands.run(
+        completed = run_git_source_python(
+            staged_root,
+            "tools/gen_proof_plan.py",
             argv,
-            cwd=staged_root,
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
+            environment=environment,
             timeout=120,
         )
         if completed.stdout:
@@ -343,9 +300,9 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "",
         "## Generation and partial commits",
         "",
-        "`uv run python tools/gen_proof_plan.py` projects the working source. "
+        "`uv run python tools/gen_proof_plan.py --write` projects the working source. "
         "For a partial commit, stage the complete changed authority family, run "
-        "`uv run python tools/gen_proof_plan.py --from-index`, then stage both "
+        "`uv run python tools/gen_proof_plan.py --from-index --write`, then stage both "
         "generated outputs. The pre-commit freshness hook uses "
         "`--check --from-index`.",
         "",
@@ -358,6 +315,12 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "writer, indirect output, source mutation or undeclared output rejects "
         "publication. The lock excludes cooperative Git writers; it does not "
         "establish kernel-level byte-use or process execution identity.",
+        "",
+        "Landing checks execute the generator and authority inputs captured from "
+        "the exact commit selected for push. "
+        "Uncommitted source and index changes cannot invalidate or repair that "
+        "commit's projections. The landing guard pushes the validated commit "
+        "identity even if the local branch advances during validation.",
         "",
         "## Authority compression",
         "",
