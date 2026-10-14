@@ -20,10 +20,10 @@ from tests.process_guard_common import run_guarded_test_process
 
 
 HOOKS_DIR = Path(__file__).resolve().parents[2] / ".githooks"
-HOOK = HOOKS_DIR / "pre-push"
 COMMIT_MSG_HOOK = HOOKS_DIR / "commit-msg"
 LAUNCH = HOOKS_DIR / "molt-hook-launch.sh"
-PRE_PUSH = ig.HOOKS[0]
+PRE_PUSH = next(hook for hook in ig.HOOKS if hook.name == "pre-push")
+COMMIT_MSG = next(hook for hook in ig.HOOKS if hook.name == "commit-msg")
 _HOOK_RUNNER = r"""
 case "$OSTYPE" in
   msys*|cygwin*)
@@ -61,6 +61,8 @@ def _fake_sources(tmp_path: Path) -> Path:
     directory = tmp_path / ".githooks"
     directory.mkdir(parents=True, exist_ok=True)
     for hook in ig.HOOKS:
+        if hook.retired:
+            continue
         (directory / hook.name).write_text(
             f"#!/usr/bin/env bash\n# {hook.marker} v1\necho {hook.name}; exit 0\n",
             encoding="utf-8",
@@ -80,7 +82,7 @@ def _hook_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     fake_bin = tmp_path / "fake bin"
     capture = tmp_path / "uv launch.txt"
     (worktree / "tools").mkdir(parents=True)
-    for tool in ("drift_harvest.py", "check_commit_attribution.py", "generators.py"):
+    for tool in ("check_commit_attribution.py",):
         (worktree / "tools" / tool).write_text(
             "raise AssertionError('fake uv must not execute the tool')\n",
             encoding="utf-8",
@@ -132,8 +134,8 @@ def _run_hook(
     main: Path,
     fake_bin: Path,
     capture: Path,
-    hook: Path = HOOK,
-    args: Sequence[str] = (),
+    hook: Path = COMMIT_MSG_HOOK,
+    args: Sequence[str] = (".git/COMMIT_EDITMSG",),
 ):
     bash = choose_bash()
     if bash is None:
@@ -157,15 +159,15 @@ def _run_hook(
 
 
 def test_is_molt_hook_and_chained_wrapper():
-    assert ig._is_molt_hook("# molt-drift-gate-hook v1\n", PRE_PUSH)
-    assert not ig._is_molt_hook("#!/bin/sh\necho other\n", PRE_PUSH)
+    assert ig._is_molt_hook("# molt-commit-attribution-hook v1\n", COMMIT_MSG)
+    assert not ig._is_molt_hook("#!/bin/sh\necho other\n", COMMIT_MSG)
     wrapped = ig._chained_wrapper(
-        "#!/usr/bin/env bash\n# molt-drift-gate-hook v1\nbody\n", PRE_PUSH
+        "#!/usr/bin/env bash\n# molt-commit-attribution-hook v1\nbody\n", COMMIT_MSG
     )
     # shebang stays first; the preserved foreign hook is invoked before the gate body
     assert wrapped.startswith("#!/usr/bin/env bash\n")
-    assert "pre-push.local" in wrapped
-    assert wrapped.index("pre-push.local") < wrapped.index("body")
+    assert "commit-msg.local" in wrapped
+    assert wrapped.index("commit-msg.local") < wrapped.index("body")
 
 
 def test_install_idempotent_and_check(tmp_path, monkeypatch):
@@ -179,6 +181,8 @@ def test_install_idempotent_and_check(tmp_path, monkeypatch):
     # Install every managed hook.
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
     for hook in ig.HOOKS:
+        if hook.retired:
+            continue
         target = repo / ".git" / "hooks" / hook.name
         assert ig._is_molt_hook(target.read_text(encoding="utf-8"), hook)
     # Idempotent: re-run is a no-op success, and --check now passes.
@@ -194,36 +198,36 @@ def test_foreign_hook_preserved_and_chained_then_restored(tmp_path, monkeypatch)
 
     hooks = repo / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    foreign = hooks / "pre-push"
+    foreign = hooks / "commit-msg"
     foreign.write_text("#!/bin/sh\necho FOREIGN\nexit 0\n", encoding="utf-8")
 
-    # Installing over a foreign hook preserves it as pre-push.local and chains it.
+    # Installing over a foreign hook preserves it as commit-msg.local and chains it.
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
-    installed = (hooks / "pre-push").read_text(encoding="utf-8")
-    assert ig._is_molt_hook(installed, PRE_PUSH)
-    assert "pre-push.local" in installed
-    preserved = (hooks / "pre-push.local").read_text(encoding="utf-8")
+    installed = (hooks / "commit-msg").read_text(encoding="utf-8")
+    assert ig._is_molt_hook(installed, COMMIT_MSG)
+    assert "commit-msg.local" in installed
+    preserved = (hooks / "commit-msg.local").read_text(encoding="utf-8")
     assert "FOREIGN" in preserved
 
     # Refreshes must retain the preserved hook, not replace the chain with a
-    # bare drift gate merely because the installed wrapper has our marker.
+    # bare attribution hook merely because the installed wrapper has our marker.
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 0
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
-    assert (hooks / "pre-push").read_text(encoding="utf-8") == installed
-    PRE_PUSH.source.write_text(
-        PRE_PUSH.source.read_text(encoding="utf-8") + "# revised gate\n",
+    assert (hooks / "commit-msg").read_text(encoding="utf-8") == installed
+    COMMIT_MSG.source.write_text(
+        COMMIT_MSG.source.read_text(encoding="utf-8") + "# revised gate\n",
         encoding="utf-8",
     )
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 1
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
-    refreshed = (hooks / "pre-push").read_text(encoding="utf-8")
-    assert "pre-push.local" in refreshed and "# revised gate" in refreshed
-    assert (hooks / "pre-push.local").read_text(encoding="utf-8") == preserved
+    refreshed = (hooks / "commit-msg").read_text(encoding="utf-8")
+    assert "commit-msg.local" in refreshed and "# revised gate" in refreshed
+    assert (hooks / "commit-msg.local").read_text(encoding="utf-8") == preserved
 
     # Uninstall restores the foreign hook.
     assert ig.install(check=False, uninstall=True, repo_root=repo) == 0
-    assert "FOREIGN" in (hooks / "pre-push").read_text(encoding="utf-8")
-    assert not (hooks / "pre-push.local").exists()
+    assert "FOREIGN" in (hooks / "commit-msg").read_text(encoding="utf-8")
+    assert not (hooks / "commit-msg.local").exists()
 
 
 def test_uninstall_noop_when_absent(tmp_path, monkeypatch):
@@ -257,8 +261,6 @@ def test_hooks_bind_worktree_startup_before_uv_without_project_sync() -> None:
     assert '"$repo_root/.venv/' not in launch
     # Each hook sources that launcher and starts no Python of its own.
     for hook, call in (
-        (HOOK, 'molt_hook_uv_python pre-push "$gate" --gate --no-fetch'),
-        (HOOK, 'molt_hook_uv_python pre-push "$repo_root/tools/generators.py" check'),
         (
             COMMIT_MSG_HOOK,
             'molt_hook_uv_python commit-msg "$checker" --message-file "$1"',
@@ -293,8 +295,7 @@ def test_hook_executes_uv_with_selected_worktree_startup_authority(
     )
 
     assert completed.returncode == 0, completed.stderr
-    gate_call, generators_call = _uv_calls(capture)
-    lines = gate_call
+    (lines,) = _uv_calls(capture)
     expected_root = worktree.as_posix() if os.name == "nt" else str(worktree)
     assert lines[:3] == [
         f"{expected_root}/src{path_separator}{expected_root}",
@@ -319,17 +320,9 @@ def test_hook_executes_uv_with_selected_worktree_startup_authority(
         assert argv[5] == str(native_python)
     assert argv[6:] == [
         "python",
-        f"{expected_root}/tools/drift_harvest.py",
-        "--gate",
-        "--no-fetch",
-    ]
-    # Then the generated-projection check CI would otherwise fail the push on.
-    assert generators_call[:3] == lines[:3]
-    assert generators_call[3:9] == argv[:6]
-    assert generators_call[9:] == [
-        "python",
-        f"{expected_root}/tools/generators.py",
-        "check",
+        f"{expected_root}/tools/check_commit_attribution.py",
+        "--message-file",
+        ".git/COMMIT_EDITMSG",
     ]
 
 
@@ -432,6 +425,164 @@ def test_hooks_path_warning_only_when_it_shadows_another_directory(
         check=True,
     )
     for hook in ig.HOOKS:
-        (repo / ".git" / "hooks" / hook.name).unlink()
+        if not hook.retired:
+            (repo / ".git" / "hooks" / hook.name).unlink()
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
     assert "WARNING: core.hooksPath=" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    hooks = repo / ".git" / "hooks"
+    target = hooks / "pre-push"
+    preserved = hooks / "pre-push.local"
+    # Independently authored old marker: retirement must not need deleted source.
+    _write_executable(target, "#!/bin/sh\n# molt-drift-gate-hook v2\nexit 97\n")
+    foreign_bytes = b"#!/bin/sh\ncat > foreign-hook-input.txt\nexit 0\n"
+    if foreign:
+        preserved.write_bytes(foreign_bytes)
+        preserved.chmod(0o751)
+        foreign_mode = preserved.stat().st_mode
+    before = target.read_bytes()
+    assert (
+        ig.install(check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 1
+    )
+    assert target.read_bytes() == before
+    assert (
+        ig.install(check=False, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+    )
+    if foreign:
+        assert target.read_bytes() == foreign_bytes
+        assert target.stat().st_mode == foreign_mode
+        assert not preserved.exists()
+    else:
+        assert not target.exists()
+    assert (
+        ig.install(check=False, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+    )
+    assert (
+        ig.install(check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+    )
+    assert not PRE_PUSH.source.exists()
+
+    remote = tmp_path / "remote.git"
+    run_guarded_test_process(["git", "init", "--bare", "-q", str(remote)], check=True)
+    for key, value in (("user.email", "hook@test.invalid"), ("user.name", "Hook test")):
+        run_guarded_test_process(
+            ["git", "-C", str(repo), "config", key, value], check=True
+        )
+    (repo / "payload.txt").write_text("independently complete commit\n")
+    run_guarded_test_process(["git", "-C", str(repo), "add", "payload.txt"], check=True)
+    run_guarded_test_process(
+        ["git", "-C", str(repo), "commit", "-qm", "payload"], check=True
+    )
+    run_guarded_test_process(
+        ["git", "-C", str(repo), "push", str(remote), "HEAD:refs/heads/main"],
+        check=True,
+    )
+    head = run_guarded_test_process(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    landed = run_guarded_test_process(
+        ["git", "--git-dir", str(remote), "rev-parse", "refs/heads/main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert landed == head
+    if foreign:
+        assert (
+            f" {head} refs/heads/main " in (repo / "foreign-hook-input.txt").read_text()
+        )
+
+
+@pytest.mark.parametrize("active_foreign", [False, True])
+def test_retirement_preserves_independent_foreign_and_orphaned_local(
+    tmp_path, active_foreign
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    hooks = repo / ".git" / "hooks"
+    target = hooks / "pre-push"
+    preserved = hooks / "pre-push.local"
+    saved = b"#!/bin/sh\necho preserved-owner\n"
+    current = b"#!/bin/sh\necho independently-installed-owner\n"
+    preserved.write_bytes(saved)
+    if active_foreign:
+        target.write_bytes(current)
+    assert ig.install(
+        check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)
+    ) == (0 if active_foreign else 1)
+    assert (
+        ig.install(check=False, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+    )
+    assert target.read_bytes() == (current if active_foreign else saved)
+    if active_foreign:
+        assert preserved.read_bytes() == saved
+    else:
+        assert not preserved.exists()
+
+
+def test_retirement_from_linked_worktree_uses_common_hook_directory(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    run_guarded_test_process(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        ],
+        check=True,
+    )
+    linked = tmp_path / "linked"
+    run_guarded_test_process(
+        ["git", "-C", str(repo), "worktree", "add", "--detach", str(linked)], check=True
+    )
+    hook = repo / ".git" / "hooks" / "pre-push"
+    _write_executable(hook, "#!/bin/sh\n# molt-drift-gate-hook v1\nexit 98\n")
+    assert (
+        ig.install(check=True, uninstall=False, repo_root=linked, hooks=(PRE_PUSH,))
+        == 1
+    )
+    assert hook.exists()
+    assert (
+        ig.install(check=False, uninstall=False, repo_root=linked, hooks=(PRE_PUSH,))
+        == 0
+    )
+    assert not hook.exists()
+    assert (
+        ig.install(check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+    )
+
+
+def test_active_hook_does_not_overwrite_conflicting_foreign_backup(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
+    hooks = repo / ".git" / "hooks"
+    target = hooks / "commit-msg"
+    preserved = hooks / "commit-msg.local"
+    target.write_bytes(b"#!/bin/sh\necho current\n")
+    preserved.write_bytes(b"#!/bin/sh\necho earlier\n")
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 2
+    assert target.read_bytes() == b"#!/bin/sh\necho current\n"
+    assert preserved.read_bytes() == b"#!/bin/sh\necho earlier\n"

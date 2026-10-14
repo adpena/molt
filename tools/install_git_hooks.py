@@ -4,19 +4,21 @@
 Installs each managed hook from ``.githooks/`` into the git *common* hooks dir,
 so it fires in the checkout AND every linked worktree:
 
-  * ``pre-push``   — the drift-harvest enforcement gate, then the generated-
-                     projection check CI runs as ``repository.generators``.
   * ``commit-msg`` — the commit-attribution policy (no Claude attribution);
                      CI enforces the same rule over every pushed range.
 
-Both hooks start Python through ``.githooks/molt-hook-launch.sh``.
+The attribution hook starts Python through ``.githooks/molt-hook-launch.sh``.
 
 Why not ``core.hooksPath=.githooks``? That would ALSO enable ``.githooks/pre-commit``
 (a project type-check with pre-existing diagnostics), which would block every
 commit for every agent. So this installer wires ONLY the managed hooks, straight
 into ``<git-common-dir>/hooks/``.
 
-Idempotent and non-destructive, per hook:
+The obsolete Molt pre-push hook is retired, restoring any preserved foreign
+hook. Drift maintenance stays explicit; ff_land validates its selected commit
+and CI checks generated projections. No replacement push hook is installed.
+
+Idempotent and non-destructive, per active hook:
   * Already-current Molt hook  -> no-op.
   * Stale Molt hook            -> refreshed from source.
   * Foreign (non-Molt) hook    -> preserved as ``<hook>.local`` and CHAINED
@@ -25,8 +27,8 @@ Idempotent and non-destructive, per hook:
   * No existing hook           -> installed.
 
 Usage:
-  install_git_hooks.py              install / refresh every managed hook
-  install_git_hooks.py --check      exit 1 if any hook is not installed/current
+  install_git_hooks.py              install / refresh active hooks and retire obsolete hooks
+  install_git_hooks.py --check      exit 1 if active hooks are not current or retirement is pending
   install_git_hooks.py --uninstall  remove our hooks (restore chained foreign ones)
 """
 
@@ -53,6 +55,7 @@ class ManagedHook:
     name: str
     marker: str
     purpose: str
+    retired: bool = False
 
     @property
     def source(self) -> Path:
@@ -61,7 +64,7 @@ class ManagedHook:
 
 HOOKS_SOURCE_DIR = REPO_ROOT / ".githooks"
 HOOKS: tuple[ManagedHook, ...] = (
-    ManagedHook("pre-push", "molt-drift-gate-hook", "drift gate"),
+    ManagedHook("pre-push", "molt-drift-gate-hook", "retired drift gate", retired=True),
     ManagedHook(
         "commit-msg", "molt-commit-attribution-hook", "commit attribution policy"
     ),
@@ -113,9 +116,51 @@ def _chained_wrapper(source_text: str, hook: ManagedHook) -> str:
     return f"{shebang}{chain}{rest}"
 
 
+def _remove_owned_hook(hook: ManagedHook, *, check: bool, repo_root: Path) -> int:
+    """Retire our hook without overwriting an independently installed hook."""
+    hooks = _common_hooks_dir(repo_root)
+    target = hooks / hook.name
+    preserved = hooks / f"{hook.name}.local"
+    target_present = target.exists() or target.is_symlink()
+    owned = (
+        target.is_file()
+        and not target.is_symlink()
+        and _is_molt_hook(_read(target), hook)
+    )
+    if target_present and not owned:
+        print(f"{hook.name}: foreign hook preserved; no Molt hook to remove")
+        return 0
+    preserved_present = preserved.exists() or preserved.is_symlink()
+    if not owned and not preserved_present:
+        print(f"{hook.name}: no Molt hook or preserved hook to retire")
+        return 0
+    if check:
+        print(
+            f"{hook.name}: retirement pending — run: python tools/install_git_hooks.py"
+        )
+        return 1
+    if preserved_present:
+        if preserved.is_dir() and not preserved.is_symlink():
+            print(
+                f"{hook.name}: preserved hook is a directory; left unchanged",
+                file=sys.stderr,
+            )
+            return 2
+        # Atomic replacement retains the foreign hook's exact bytes and mode.
+        # An orphaned .local is restored only when the active path is absent.
+        preserved.replace(target)
+        print(f"removed {hook.purpose}; restored preserved {preserved.name}")
+    else:
+        target.unlink()
+        print(f"removed {hook.purpose} {hook.name} hook")
+    return 0
+
+
 def _install_hook(
     hook: ManagedHook, *, check: bool, uninstall: bool, repo_root: Path
 ) -> int:
+    if hook.retired or uninstall:
+        return _remove_owned_hook(hook, check=check, repo_root=repo_root)
     source = hook.source
     if not source.exists():
         print(f"{hook.purpose} source missing: {source}", file=sys.stderr)
@@ -124,18 +169,6 @@ def _install_hook(
     target = hooks / hook.name
     preserved = hooks / f"{hook.name}.local"
     source_text = _read(source)
-
-    if uninstall:
-        if target.exists() and _is_molt_hook(_read(target), hook):
-            target.unlink()
-            if preserved.exists():
-                preserved.replace(target)
-                print(f"removed {hook.purpose}; restored preserved {preserved.name}")
-            else:
-                print(f"removed {hook.purpose} {hook.name} hook")
-        else:
-            print(f"no Molt {hook.purpose} installed; nothing to uninstall")
-        return 0
 
     existing = _read(target) if target.exists() else ""
     want = source_text
@@ -165,6 +198,12 @@ def _install_hook(
 
     hooks.mkdir(parents=True, exist_ok=True)
     if target.exists() and not _is_molt_hook(existing, hook):
+        if preserved.exists() or preserved.is_symlink():
+            print(
+                f"{hook.name}: foreign hook and preserved hook both exist; left unchanged",
+                file=sys.stderr,
+            )
+            return 2
         target.replace(preserved)
         _make_executable(preserved)
         print(f"preserved existing {hook.name} hook -> {preserved} (chained)")
@@ -209,7 +248,9 @@ def install(
 def main() -> int:
     ap = argparse.ArgumentParser(description="Install Molt's managed Git hooks.")
     ap.add_argument(
-        "--check", action="store_true", help="exit 1 if not installed/current"
+        "--check",
+        action="store_true",
+        help="exit 1 if active hooks are not current or retirement is pending",
     )
     ap.add_argument("--uninstall", action="store_true", help="remove the managed hooks")
     args = ap.parse_args()

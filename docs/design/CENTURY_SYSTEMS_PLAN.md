@@ -157,6 +157,18 @@ an ecosystem lane may not clone an upstream package.
 - Generated registries own op effects, exceptions, ownership, callability,
   layout, ABI signatures, target capabilities, and reachability. Backends do
   not carry mirrored policy tables.
+- Carry final typed identities, representation, effects and ownership through
+  codegen. A source projection cannot silently discard those facts and trigger
+  a second optimizer or SSA reconstruction. Move later semantic rewrites under
+  the same final owner before migrating all normal, skipped-pass and batch
+  consumers; retire the replaced lane together. Fresh-input phases remain
+  distinct from reconstruction of a body already owned in typed form.
+- Runtime services reuse admitted execution and object custody. A GIL token,
+  callable context and runtime attachment prove different obligations; none
+  substitutes for another. Borrowed object views are bounded by their owner
+  and execution lifetime, and mutable buffers retain export custody. Remove
+  repeated entry only with callback, isolate, shutdown and error guarantees
+  preserved. Development instrumentation must not add guest binary work.
 - Decompose by stable architectural boundaries so changing one stdlib family,
   pass family, or backend stage recompiles only that unit. No god-files or
   cyclic ownership.

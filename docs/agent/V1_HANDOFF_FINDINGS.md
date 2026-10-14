@@ -81,6 +81,37 @@ Every repair must retire its replaced implementation and move all consumers
 together. A source review, unit pass or generator check does not establish
 target execution.
 
+Structural delivery follows [Century section 4.4](../design/CENTURY_SYSTEMS_PLAN.md#44-compiler-runtime-abi-and-backends)
+and [the compiler foundation order](../design/compiler_foundation_gap_analysis.md).
+The pass/analysis manager, generated effects, module/callgraph phase,
+alias/MemorySSA and range/SCEV owners are implemented; their presence does not
+qualify all semantics, precision or target cells. Current source inspection
+identifies two convergence boundaries within the existing exit obligations:
+
+- Final typed function facts must survive through codegen. LLVM already consumes
+  owned final TIR; native/WASM discard it and later reconstruct facts from
+  SimpleIR. The first native migration must include copy-alias, split-field and
+  direct-raise transformations before exporting exact representation, identity
+  and ownership facts to every normal, skip and batch consumer. Earlier facts
+  cannot be reused across those rewrites by assumption. Delete the replaced
+  reconstruction together; WASM's later operation reachability remains a
+  separate affected consumer obligation. This is compiler-side V1-07 work.
+- Runtime optimization must reuse admitted execution and object custody.
+  Native main already attaches execution, and public C hooks expose operation
+  entry/leave. Core GIL tokens, callable contexts and runtime attachment prove
+  different contracts. Source review found safe static byte-slice APIs without
+  owner-bound lifetimes and a Tk bytearray branch calling a bytes-only provider;
+  their complete core/GPU/Tk family correction precedes spreading context
+  transport. The existing serial service table is the first complete repeated
+  entry migration, not evidence for a new universal API. Ownership, callback,
+  isolate, shutdown, error and mutable-buffer guarantees remain V1-05/V1-07
+  obligations. Quoted runtime-entry/TLS percentages and builtin multipliers lack
+  current measurement custody and are not accepted performance evidence.
+
+These source findings guide implementation, not support claims. Measure the
+changed actual consumers, binary reachability, compile cost and resource use;
+development audits, source capture and proof checks do not enter user binaries.
+
 The independent developer Cargo-target migration landed on main as
 `5c1238bda`. The existing selector gives each checkout stable intermediates,
 all direct consumers and cleanup share that policy, and no runtime-binary work
@@ -156,6 +187,29 @@ seconds, with 936.8 MB sampled peak compiler RSS. Earlier bounded observations
 produced no object. Those observations do not establish an isolated speedup
 ratio, full-program execution, other target/profile cells or release acceptance.
 Remaining analysis/allocation cost stays under V1-07.
+Strictly dominating handler/resume bindings now retain their original SSA
+identity instead of becoming fresh arguments at every cleanup suffix. One
+definition-site census and the existing augmented dominator tree own placement;
+mutable, self-edge, early-undefined and disconnected protocols remain explicit.
+At `1271925f6`, one 71.1-second compatible compiler build passes all 336 selected
+SSA/CFG, allocation, async, representation, native/LLVM, WASM-host and exporter
+controls. The same retained batch emits a validated object in 4.27 seconds with
+209.3 MB sampled peak compiler RSS and 1,334,536 object bytes. These are single
+same-input developer observations against the earlier 14.63-second/936.8-MB
+run, not a multi-sample release benchmark or isolated attribution across every
+received source change. The CPython binding fixture passes; compiled full-program
+differential execution and other target/profile cells remain unqualified.
+Dense liveness and remaining final-fact reconstruction remain V1-07 work.
+
+Development landing now validates and pushes the same immutable commit; dirty
+source/index state and Git replacement refs cannot substitute its authority.
+The obsolete global-hygiene/live-tree pre-push hook is retired through the
+existing installer, preserving foreign hooks and commit attribution. Exact Git
+consumer controls, including hook restoration and failed-push diagnostics, pass
+32 focused tests. Explicit drift maintenance and canonical CI generator checks
+remain. This repairs development custody and removes redundant push work; it
+adds no end-user binary work and does not close release acceptance.
+
 Numeric-policy generation and frontend target admission now derive from the
 existing supported-target catalog. Twenty generator checks and 73 affected
 Python consumer checks pass; all three numeric Rust projections are unchanged.

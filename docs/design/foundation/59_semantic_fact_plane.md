@@ -13,27 +13,17 @@ is the first 53-69 doc, taking 59 per the assignment (50-69 band, 59 requested +
 
 # 59 — The Semantic Fact Plane: one generated authority per invariant
 
-> **Status: EXECUTABLE PLAN; Phase 0 + Phase 4 fact-migration LANDED (verified 2026-06-27);
-> Phases 1-3 (generator manifest + meta-gate) still to build.** This is the
-> meta-architecture doc 51 §1 calls the cure ("a SEMANTIC FACT PLANE") and doc 52 §C.3 #13
-> calls the 50-year institution ("every IR fact has a generated producer/consumer/transport
-> contract with drift detection — the op_kinds model extended to all fact families"). It does
-> not introduce a *new* fact family; it makes the *machinery* for fact families a
-> first-class, generated, CI-gated, idempotent institution, and it fixes the one
-> structural defect in that machinery discovered in execution: the
-> `structural_audit` Phase 0 now uses kitchen-sink and undecomposed metrics so correct
-> decomposition is credited.
->
-> **What is DONE (re-verified against the worktree, 2026-06-27):** Phase 0 (the metric
-> correction, §6) and the Phase 4 fact-migration ladder (§8) — every hand-classified opcode
-> fact is now in `op_kinds.toml` and read through a generated predicate. The §0 ratchet rows
-> `hand_classified_matches`, `handset_classifications`, and `critical_hand_classifications`
-> are all at the end-state target **0** (`tools/structural_audit.py --check` GREEN;
-> `gen_op_kinds.py --check` in sync; `cargo check -p molt-ir` clean). **What REMAINS:**
-> Phases 1-3 — `tools/generator_manifest.toml`, `tools/check_generator_manifest.py`, and the
-> reusable closed-domain exhaustiveness auditor do **not** exist yet; the generator-gating
-> holes catalogued in §4 are still open (only `gen_op_kinds.py` is CI `--check` gated). Those
-> phases are the next structural unit for this arc.
+> **Current source note (2026-10-14):** The semantic fact-plane doctrine remains
+> active. `tools/generator_manifest.toml`, `tools/check_generator_manifest.py`
+> and `tools/generators.py` now exist; the manifest owns generated-family
+> registration and the shared runner checks/writes its projections. Do not
+> build a second manifest or meta-gate from the June absence claims below.
+> Those inventories, measurements and phase receipts are dated historical
+> evidence, not current completeness or release acceptance. Reconcile each
+> remaining fact family through its actual producer, transport and consumers.
+> [Century section 4.4](../CENTURY_SYSTEMS_PLAN.md#44-compiler-runtime-abi-and-backends)
+> anchors convergence; [the findings ledger](../../agent/V1_HANDOFF_FINDINGS.md)
+> owns current exit status.
 
 ---
 

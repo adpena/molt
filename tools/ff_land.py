@@ -250,7 +250,13 @@ def main(argv: list[str] | None = None) -> int:
         root, "push", args.remote, f"{source_commit}:{args.branch}", check=False
     )
     if push.returncode != 0:
-        print(f"FF-LAND ERROR: push rejected (race?): {push.stderr.strip()}")
+        print("FF-LAND ERROR: push rejected")
+        # Hooks may explain rejection on either stream. Preserve both instead
+        # of reducing the failure to Git's generic stderr summary.
+        if push.stdout:
+            print(push.stdout, end="" if push.stdout.endswith("\n") else "\n")
+        if push.stderr:
+            print(push.stderr, end="" if push.stderr.endswith("\n") else "\n")
         return 1
     new_remote = _out(root, "rev-parse", "--short", target)
     print(
