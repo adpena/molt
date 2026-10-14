@@ -106,7 +106,6 @@
   "tests/test_wasm_socket_sendmsg_recvmsg.py",
   "tests/test_wasm_split_runtime.py",
   "tests/test_wasm_split_runtime_imported_module.py",
-  "tests/test_wasm_threading_gate.py",
-  "tests/tools/test_perf_history.py"
+  "tests/test_wasm_threading_gate.py"
  ]
 }
