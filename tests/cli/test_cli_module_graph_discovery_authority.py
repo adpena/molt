@@ -187,10 +187,7 @@ def test_core_initialization_does_not_activate_undemanded_class_methods(
             {"entry", "api", "helperdep"},
         ),
         ("import api\nf = api.helper\nf = lambda: None\nf()\n", {"entry", "api"}),
-        (
-            "from api import *\nhelper()\n",
-            {"entry", "api", "heap", "classdep", "helperdep", "deaddep", "callbackdep"},
-        ),
+        ("from api import *\nhelper()\n", {"entry", "api", "helperdep"}),
         ("import api\napi.factory()()\n", {"entry", "api", "callbackdep"}),
     ],
 )
@@ -211,6 +208,97 @@ def test_deferred_source_demand_closes_only_live_source_owners(
     )
     for name in ("heap", "classdep", "helperdep", "deaddep", "callbackdep"):
         (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert set(result.graph) == expected
+
+
+@pytest.mark.parametrize(
+    ("entry_source", "expected"),
+    [
+        ("import api\n", {"entry", "api", "impl"}),
+        ("import api\napi.helper()\n", {"entry", "api", "impl", "helperdep"}),
+        ("from api import helper\nhelper()\n", {"entry", "api", "impl", "helperdep"}),
+        (
+            "import chain\nchain.helper()\n",
+            {"entry", "chain", "api", "impl", "helperdep"},
+        ),
+        ("import runner\nrunner.run()\n", {"entry", "runner", "impl", "helperdep"}),
+        (
+            "import api\nprint(api)\n",
+            {"entry", "api", "impl", "helperdep", "deaddep"},
+        ),
+        ("import cyc_a\ncyc_a.b_helper()\n", {"entry", "cyc_a", "cyc_b", "bdep"}),
+    ],
+)
+def test_star_import_selects_star_bound_names_on_demand(
+    tmp_path: Path, entry_source: str, expected: set[str]
+) -> None:
+    # CPython copies the exported names at the star import. A read selects one
+    # name; only an escaped importing namespace exposes the whole source.
+    sources = {
+        "impl": "def helper():\n    import helperdep\ndef unused():\n    import deaddep\n",
+        "api": "from impl import *\n",
+        "chain": "from api import *\n",
+        "runner": "from impl import *\ndef run():\n    helper()\n",
+        "cyc_a": "from cyc_b import *\ndef a_helper():\n    import adep\n",
+        "cyc_b": "from cyc_a import *\ndef b_helper():\n    import bdep\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    for name in ("helperdep", "deaddep", "adep", "bdep"):
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert set(result.graph) == expected
+
+
+@pytest.mark.parametrize(
+    ("entry_source", "expected"),
+    [
+        ("import importlib\nimportlib.import_module('plain')\n", {"entry", "plain"}),
+        (
+            "import importlib\nimportlib.import_module('plain').helper()\n",
+            {"entry", "plain", "helperdep"},
+        ),
+        ("__import__('plain').helper()\n", {"entry", "plain", "helperdep"}),
+        (
+            "import importlib\nprint(importlib.import_module('plain'))\n",
+            {"entry", "plain", "helperdep", "deaddep"},
+        ),
+    ],
+)
+def test_import_call_result_selects_members_like_an_import_alias(
+    tmp_path: Path, entry_source: str, expected: set[str]
+) -> None:
+    # An import call returns a module. Its member reads select that module's
+    # members; passing it to unknown code exposes the module whole.
+    (tmp_path / "plain.py").write_text(
+        "def helper():\n    import helperdep\ndef unused():\n    import deaddep\n",
+        encoding="utf-8",
+    )
+    for name in ("helperdep", "deaddep"):
+        (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(

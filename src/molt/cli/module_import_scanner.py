@@ -1508,7 +1508,18 @@ def _collect_imports(
         assert target is not None
         payload = _static_import_call_payload(node, target)
         if payload is not None:
-            imports.extend(_resolve_static_import_call(payload, source_bindings))
+            modules = _resolve_static_import_call(payload, source_bindings)
+            imports.extend(modules)
+            if modules and _source_bindings is not None:
+                # The returned module is one of those the call imports; uses of
+                # the result select from them, as uses of an import alias do.
+                _source_bindings.append(
+                    _SourceImportBinding(
+                        python_node_source_key(node),
+                        tuple(dict.fromkeys(modules)),
+                        None,
+                    )
+                )
 
     def publishes_binding(node: ast.AST, name: str) -> bool:
         fact = (
@@ -1609,8 +1620,7 @@ def _collect_imports(
                     _SourceValueDemand(
                         python_node_source_key(alias),
                         "escape"
-                        if alias.name == "*"
-                        or publishes_binding(node, alias.asname or alias.name)
+                        if publishes_binding(node, alias.asname or alias.name)
                         else "read",
                     )
                     for alias in node.names

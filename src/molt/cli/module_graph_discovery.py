@@ -480,6 +480,11 @@ def _discover_module_graph_from_paths(
         tuple[str, PythonSourceKey | None], set[tuple[str, tuple[str, ...]]]
     ] = {}
     pending_modules: dict[str, set[tuple[str, PythonSourceKey | None]]] = {}
+    # Star-import aliases per importing module, and the modules whose namespace
+    # escaped. A star import copies names; it exposes nothing until a read or
+    # the importing namespace itself selects them.
+    star_aliases: dict[str, set[PythonSourceKey]] = {}
+    escaped_modules: set[str] = set()
     namespaces = {}
     attributes = {}
     import_bindings = {}
@@ -553,7 +558,7 @@ def _discover_module_graph_from_paths(
                     queued_entries.add(entry)
                     queue.append((resolved, admitted_name))
 
-    def select_member(owner, name, user, *, from_import=False):
+    def select_member(owner, name, user, *, from_import=False, visiting=frozenset()):
         owner_module, owner_source = owner
         result = set()
         pending_modules.setdefault(owner_module, set()).add(user)
@@ -581,6 +586,16 @@ def _discover_module_graph_from_paths(
                         demand(candidate, "escape")
         else:
             demand(owner, "escape")
+        if owner_source is None:
+            # No namespace summary spells a star-bound name; select it from each
+            # star-imported module. Star-import cycles stop at a visited module.
+            visiting = visiting | {owner_module}
+            for alias in tuple(star_aliases.get(owner_module, ())):
+                for candidate in tuple(watch((owner_module, alias), user)):
+                    if candidate[0] not in visiting:
+                        result.update(
+                            select_member(candidate, name, user, visiting=visiting)
+                        )
         return result
 
     def activate(origin, phase, arguments=()):
@@ -597,6 +612,11 @@ def _discover_module_graph_from_paths(
                     demand((module_name, value), "escape")
             for value in bases:
                 demand((module_name, value), "escape")
+            if owner is None:
+                # An escaped namespace exposes its star-bound names as well.
+                escaped_modules.add(module_name)
+                for alias in tuple(star_aliases.get(module_name, ())):
+                    demand((module_name, alias), "escape")
         elif owner[-1] in {"FunctionDef", "AsyncFunctionDef", "Lambda", "TypeAlias"}:
             if (
                 scan_sources[module_name].mode != "full"
@@ -631,10 +651,8 @@ def _discover_module_graph_from_paths(
             binding = import_bindings[value]
             for imported in binding.modules:
                 for candidate in tuple(watch((imported, None), value)):
-                    if binding.attribute is None:
+                    if binding.attribute in {None, "*"}:
                         candidates.add(candidate)
-                    elif binding.attribute == "*":
-                        demand(candidate, "escape")
                     else:
                         candidates.update(
                             select_member(
@@ -667,6 +685,10 @@ def _discover_module_graph_from_paths(
             key = (module_name, binding.source)
             import_bindings[key] = binding
             queue_value(key)
+            if binding.attribute == "*":
+                star_aliases.setdefault(module_name, set()).add(binding.source)
+                if module_name in escaped_modules:
+                    demand(key, "escape")
         for request in scan.source_demands:
             demand((module_name, request.source), request.phase)
         if scan.source_values.namespaces or scan.source_values.attributes:

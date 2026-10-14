@@ -2344,6 +2344,10 @@ class _Analyzer:
         self.source_namespace_exposure: dict[
             PythonSourceKey, frozenset[PythonSourceKey]
         ] = {}
+        # Star-import aliases of this module. A star import binds names that no
+        # source node spells, so a module-namespace read selects its name from
+        # each star-imported module instead of exposing those modules whole.
+        self._star_import_origins: frozenset[PythonSourceKey] = frozenset()
         # Builtin-name reads in an activation scope; the guard bit is projected
         # once the module's final bindings are known (HF-79).
         self._builtin_guard_reads: dict[PythonNodeKey, str] = {}
@@ -3072,6 +3076,21 @@ class _Analyzer:
                     and node.id in BUILTIN_BINDING_GUARD_BITS
                 ):
                     self._builtin_guard_reads[key] = node.id
+            if (
+                self._star_import_origins
+                and isinstance(node.ctx, ast.Load)
+                and name_lookup in {"global", "class_global"}
+            ):
+                # The read may find a star-bound name: it selects that name
+                # from the star-imported modules, as an attribute read would.
+                source_key = python_node_source_key(node)
+                result = replace(
+                    result, source_origins=result.source_origins | {source_key}
+                )
+                self.source_attributes[source_key] = (
+                    node.id,
+                    self._star_import_origins,
+                )
         previous = self.expressions.get(key)
         self.expressions[key] = PythonExpressionFact(
             key,
@@ -3881,6 +3900,14 @@ class _Analyzer:
             if callee_result.result.source_origins:
                 result_override = replace(
                     result_override, source_origins=callee_result.result.source_origins
+                )
+            if callee_result.identities & _DYNAMIC_IMPORT_CALL_IDENTITIES:
+                # An import call returns a module, as an import statement binds
+                # one: the call itself is the source the module value flows from.
+                result_override = replace(
+                    result_override,
+                    source_origins=result_override.source_origins
+                    | {python_node_source_key(node)},
                 )
             # Exact builtins follow their invocation effects: copying retains
             # deferred values; hashing/repr/index protocols can reach elements.
@@ -6832,6 +6859,13 @@ class _Analyzer:
         self._dependency_authority = PythonDependencyAuthority(
             eager_annotations=self._eager_annotations,
             future_annotations=self._future_annotations,
+        )
+        self._star_import_origins = frozenset(
+            python_node_source_key(alias)
+            for statement in ast.walk(tree)
+            if isinstance(statement, ast.ImportFrom)
+            for alias in statement.names
+            if alias.name == "*"
         )
         declarations = python_scope_declarations(
             tree.body, eager_annotations=self._eager_annotations
