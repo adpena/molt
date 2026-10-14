@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 #[cfg(target_arch = "wasm32")]
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;

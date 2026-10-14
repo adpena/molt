@@ -19,13 +19,9 @@ pub use crate::ir::{
     validate_simple_ir,
 };
 pub use crate::passes::{
-    apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
-    compute_app_callable_manifest, compute_app_callable_manifest_checked, elide_dead_struct_allocs,
-    elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_functions_with_roots,
-    eliminate_dead_imports, eliminate_dead_ops, eliminate_redundant_guard_tags,
-    eliminate_unbound_local_checks, escape_analysis, fold_constants, fold_constants_cross_block,
-    fuse_method_dispatch, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
-    split_megafunctions,
+    compute_app_callable_manifest_checked, eliminate_dead_functions,
+    eliminate_dead_functions_with_roots, eliminate_dead_imports, eliminate_dead_ops,
+    inject_runtime_exit, run_simple_ir_pipeline,
 };
 #[cfg(feature = "llvm")]
 pub use molt_backend_native::llvm_backend;

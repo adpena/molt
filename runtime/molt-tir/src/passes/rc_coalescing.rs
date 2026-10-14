@@ -12,10 +12,6 @@ use std::collections::{BTreeMap, HashSet};
 // definitions must never acquire a function-wide constant from one producer.
 // ---------------------------------------------------------------------------
 
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn build_const_int_map(function: &FunctionIR) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
     let mut defined: HashSet<&str> = function.params.iter().map(String::as_str).collect();
@@ -153,10 +149,6 @@ pub fn compute_rc_coalesce_skips(
 
 /// Build a last-use map: for each variable name, the index of the last op that
 /// references it (via `var`, `args`, or `out`).
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
     let mut last_use = BTreeMap::new();
     for (i, op) in ops.iter().enumerate() {
@@ -191,10 +183,6 @@ pub fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
 /// This is the IR-level counterpart of `compute_rc_coalesce_skips`, which is
 /// applied at codegen time.  Running it as an early pass shrinks the op stream
 /// for all downstream analyses and backends.
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub fn rc_coalescing(func_ir: &mut FunctionIR) {
     if std::env::var("MOLT_DISABLE_RC_COALESCE").is_ok() {
         return;

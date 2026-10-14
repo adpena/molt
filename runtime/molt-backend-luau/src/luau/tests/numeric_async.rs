@@ -408,7 +408,7 @@ fn test_compile_checked_lowers_labeled_branch_ops() {
 }
 
 #[test]
-fn test_compile_via_ir_rejects_unsupported_output() {
+fn test_compile_checked_rejects_unsupported_output() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -430,8 +430,8 @@ fn test_compile_via_ir_rejects_unsupported_output() {
     };
     let mut backend = LuauBackend::new();
     let err = backend
-        .compile_via_ir(&ir)
-        .expect_err("preview/IR path must reject unsupported output");
+        .compile_checked(&ir)
+        .expect_err("compile_checked must reject unsupported output");
     assert!(
         err.contains("unregistered op kind")
             && err.contains("`unknown_luau_op`")
@@ -443,7 +443,7 @@ fn test_compile_via_ir_rejects_unsupported_output() {
 /// Unsupported sink operations fail at the same Result boundary as operations
 /// with outputs; neither path emits a substitute value.
 #[test]
-fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
+fn test_compile_checked_fails_closed_without_emitted_value_line() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -465,7 +465,7 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
     };
     let mut backend = LuauBackend::new();
     let err = backend
-        .compile_via_ir(&ir)
+        .compile_checked(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
     assert!(
         err.contains("unregistered op kind") && err.contains("function `molt_main` op#0"),

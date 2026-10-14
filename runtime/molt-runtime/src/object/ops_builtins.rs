@@ -1117,66 +1117,6 @@ unsafe fn direct_call_0(call_target: *const ()) -> u64 {
     }
 }
 
-/// Direct fn_ptr call for exactly 1 arg — fully inlined, no match dispatch.
-///
-/// # Safety
-///
-/// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64) -> u64`.
-/// Caller ensures arity match via `probe_simple_func`.
-#[allow(dead_code)]
-#[inline(always)]
-unsafe fn direct_call_1(call_target: *const (), a0: u64) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { molt_call_indirect1(call_target as usize as u64, a0) as u64 }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe {
-        let f: extern "C" fn(u64) -> u64 = std::mem::transmute(call_target);
-        f(a0)
-    }
-}
-
-/// Direct fn_ptr call for exactly 2 args — fully inlined, no match dispatch.
-///
-/// # Safety
-///
-/// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64, u64) -> u64`.
-/// Caller ensures arity match via `probe_simple_func`.
-#[allow(dead_code)]
-#[inline(always)]
-unsafe fn direct_call_2(call_target: *const (), a0: u64, a1: u64) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { molt_call_indirect2(call_target as usize as u64, a0, a1) as u64 }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe {
-        let f: extern "C" fn(u64, u64) -> u64 = std::mem::transmute(call_target);
-        f(a0, a1)
-    }
-}
-
-/// Direct fn_ptr call for exactly 3 args — fully inlined, no match dispatch.
-///
-/// # Safety
-///
-/// Same as `direct_call_0`: `fn_ptr` must point to an `extern "C" fn(u64, u64, u64) -> u64`.
-/// Caller ensures arity match via `probe_simple_func`.
-#[allow(dead_code)]
-#[inline(always)]
-unsafe fn direct_call_3(call_target: *const (), a0: u64, a1: u64, a2: u64) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { molt_call_indirect3(call_target as usize as u64, a0, a1, a2) as u64 }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe {
-        let f: extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(call_target);
-        f(a0, a1, a2)
-    }
-}
-
 /// Probe the callable: if it's a non-closure function with matching arity and
 /// a materialized call target, return its identity and executable target.
 #[inline(always)]

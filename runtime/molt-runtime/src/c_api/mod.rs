@@ -1,10 +1,12 @@
 // Boxed-handle Py* helpers serve internal runtime callers and their tests.
 // The C linker symbols are owned by the molt-cpython-abi crate.
-#![allow(dead_code, non_snake_case, unused_imports)]
+#![allow(non_snake_case)]
 
 #[cfg(target_arch = "wasm32")]
 mod cpython_abi_wasm_exports;
 mod cpython_compat;
+#[cfg(test)]
+mod cpython_compat_test_support;
 mod molt_api;
 
 // Re-export Rust-callable helpers inside the runtime crate on every target.
@@ -12,6 +14,8 @@ mod molt_api;
 // and the split molt-cpython-abi archive; these helpers are not no_mangle ABI
 // definitions.
 pub use cpython_compat::*;
+#[cfg(test)]
+pub use cpython_compat_test_support::*;
 pub use molt_api::*;
 
 use self::molt_api::molt_capi_method_dispatch;

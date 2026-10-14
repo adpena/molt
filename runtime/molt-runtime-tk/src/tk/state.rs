@@ -768,7 +768,7 @@ pub(super) fn wm_state_for_path<'a>(app: &'a TkAppState, toplevel: &str) -> Opti
         .and_then(|widget| widget.wm.as_ref())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(super) fn wm_state_for_path_mut<'a>(
     app: &'a mut TkAppState,
     toplevel: &str,

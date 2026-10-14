@@ -1,8 +1,8 @@
-use molt_backend::SimpleIR;
+use molt_backend::BackendIrDocument;
 use std::io;
 
-use super::cli_args::WasmCliOptions;
-use super::io_limits::{BackendOutputKind, ensure_output_parent_dir, resolve_backend_output_path};
+use super::cli_args::BackendTarget;
+use super::io_limits::ensure_output_parent_dir;
 
 #[cfg(feature = "luau-backend")]
 mod luau;
@@ -27,129 +27,53 @@ use rust::emit_rust_target;
 pub(crate) use rust::rust_source_for_ir;
 #[cfg(feature = "wasm-backend")]
 use wasm::emit_wasm_target;
-#[cfg(all(any(unix, test), feature = "wasm-backend"))]
+#[cfg(all(molt_backend_daemon, feature = "wasm-backend"))]
 pub(crate) use wasm::validate_wasm_module_catalog;
 
+/// One admitted document to compile for one target; see
+/// `BackendTarget::admit_document`.
 pub(crate) struct BackendTargetEmitRequest<'a> {
-    pub(crate) ir: SimpleIR,
-    pub(crate) code_slots: molt_ir::code_slots::CodeSlotBindings,
-    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
-    pub(crate) module_registry: Option<molt_backend::ModuleRegistryIR>,
+    pub(crate) document: BackendIrDocument,
     pub(crate) output_path: Option<&'a str>,
-    pub(crate) output_kind: BackendOutputKind,
-    #[cfg_attr(not(feature = "luau-backend"), allow(dead_code))]
-    pub(crate) use_ir_pipeline: bool,
-    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
-    pub(crate) target_triple: Option<&'a str>,
-    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
-    pub(crate) native_output_kind: super::NativeArtifactKind,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) wasm_options: WasmCliOptions,
+    pub(crate) target: BackendTarget,
 }
 
 pub(crate) fn emit_backend_target(request: BackendTargetEmitRequest<'_>) -> io::Result<()> {
-    let output_file = if request.output_kind == BackendOutputKind::Native
-        && request.native_output_kind == super::NativeArtifactKind::Archive
-    {
-        request.output_path.unwrap_or("dist/output.a")
-    } else {
-        resolve_backend_output_path(request.output_path, request.output_kind)
-    };
+    let BackendTargetEmitRequest {
+        document,
+        output_path,
+        target,
+    } = request;
+    let output_file = output_path.unwrap_or(target.default_output_path());
     ensure_output_parent_dir(output_file).map_err(|err| {
         io::Error::new(
             err.kind(),
-            format!(
-                "failed to create backend output parent for '{}': {}",
-                output_file, err
-            ),
+            format!("failed to create backend output parent for '{output_file}': {err}"),
         )
     })?;
 
-    match request.output_kind {
-        BackendOutputKind::Luau => {
-            #[cfg(feature = "luau-backend")]
-            {
-                let mut ir = request.ir;
-                emit_luau_target(
-                    &mut ir,
-                    request.code_slots,
-                    request.module_registry,
-                    output_file,
-                    request.use_ir_pipeline,
-                )?;
-                Ok(())
-            }
-            #[cfg(not(feature = "luau-backend"))]
-            {
-                drop(request.ir);
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "backend binary was built without luau-backend support; rebuild with: cargo build -p molt-backend --features luau-backend",
-                ))
-            }
-        }
-        BackendOutputKind::Rust => {
-            #[cfg(feature = "rust-backend")]
-            {
-                emit_rust_target(
-                    &request.ir,
-                    request.code_slots,
-                    request.module_registry,
-                    output_file,
-                )?;
-                Ok(())
-            }
-            #[cfg(not(feature = "rust-backend"))]
-            {
-                drop(request.ir);
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "backend binary was built without rust-backend support; rebuild with: cargo build -p molt-backend --features rust-backend",
-                ))
-            }
-        }
-        BackendOutputKind::Wasm => {
-            #[cfg(feature = "wasm-backend")]
-            {
-                emit_wasm_target(
-                    request.ir,
-                    request.module_registry,
-                    request.code_slots,
-                    output_file,
-                    request.wasm_options,
-                )?;
-                Ok(())
-            }
-            #[cfg(not(feature = "wasm-backend"))]
-            {
-                drop(request.ir);
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "backend binary was built without wasm-backend support; rebuild with: cargo build -p molt-backend --features wasm-backend",
-                ))
-            }
-        }
-        BackendOutputKind::Native => {
-            #[cfg(feature = "native-backend")]
-            {
-                emit_native_target(
-                    request.ir,
-                    request.module_registry,
-                    request.code_slots,
-                    output_file,
-                    request.target_triple,
-                    request.native_output_kind,
-                )?;
-                Ok(())
-            }
-            #[cfg(not(feature = "native-backend"))]
-            {
-                drop(request.ir);
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "backend binary was built without native-backend support; rebuild with: cargo build -p molt-backend --features native-backend",
-                ))
-            }
-        }
+    match target {
+        #[cfg(feature = "native-backend")]
+        BackendTarget::Native(options) => emit_native_target(
+            document.ir,
+            document.module_registry,
+            document.code_slots,
+            output_file,
+            options.target_triple.as_deref(),
+            options.output_kind,
+        ),
+        #[cfg(feature = "wasm-backend")]
+        BackendTarget::Wasm(options) => emit_wasm_target(
+            document.ir,
+            document.module_registry,
+            document.code_slots,
+            output_file,
+            options,
+        ),
+        // Admission refused a module catalog for the source emitters.
+        #[cfg(feature = "luau-backend")]
+        BackendTarget::Luau => emit_luau_target(document.ir, document.code_slots, output_file),
+        #[cfg(feature = "rust-backend")]
+        BackendTarget::Rust => emit_rust_target(&document.ir, document.code_slots, output_file),
     }
 }

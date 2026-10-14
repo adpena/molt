@@ -1,6 +1,4 @@
 mod json;
 mod model;
 
-#[cfg(unix)]
-pub(crate) use model::DaemonHealthResponse;
-pub(crate) use model::{DaemonJobResponse, DaemonResponse};
+pub(crate) use model::{DaemonHealthResponse, DaemonJobResponse, DaemonResponse};

@@ -87,10 +87,8 @@ pub(crate) mod payload_refs;
 pub(crate) mod refcount_opt;
 pub(crate) mod seq_access;
 pub(crate) mod sequence_index;
-#[allow(dead_code)]
 pub mod string_intern;
 pub(crate) mod tuple_storage;
-#[allow(dead_code)]
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
 pub(crate) mod weak_container;
@@ -1021,14 +1019,12 @@ pub(crate) struct MoltFileHandle {
     pub(crate) readable: bool,
     pub(crate) writable: bool,
     pub(crate) text: bool,
-    #[allow(dead_code)]
     pub(crate) closefd: bool,
     pub(crate) owns_fd: bool,
     pub(crate) closed: bool,
     pub(crate) detached: bool,
     pub(crate) line_buffering: bool,
     pub(crate) write_through: bool,
-    #[allow(dead_code)]
     pub(crate) buffer_size: i64,
     pub(crate) name_bits: u64,
     pub(crate) mode: String,

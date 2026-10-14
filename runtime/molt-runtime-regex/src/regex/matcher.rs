@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Phase-1b: Backtracking match engine
@@ -17,8 +16,6 @@ pub(super) struct MatchState {
     pub(super) flags: i64,
     /// End of the search window (char index, exclusive).
     pub(super) end: usize,
-    /// Start of the search window (char index). Used for \A anchor.
-    pub(super) search_start: usize,
     /// Group captures: index 0 is unused (group 0 is the whole match).
     /// Each entry is Some((start, end)) or None if the group was not
     /// captured.  Indexed by group number (1-based).
@@ -31,20 +28,13 @@ pub(super) struct MatchState {
 pub(super) const MAX_RECURSION_DEPTH: usize = 5000;
 
 impl MatchState {
-    pub(super) fn new(
-        text: &str,
-        flags: i64,
-        group_count: u32,
-        search_start: usize,
-        end: usize,
-    ) -> Self {
+    pub(super) fn new(text: &str, flags: i64, group_count: u32, end: usize) -> Self {
         let chars: Vec<char> = text.chars().collect();
         let groups = vec![None; (group_count + 1) as usize];
         Self {
             chars,
             flags,
             end,
-            search_start,
             groups,
             depth: 0,
         }

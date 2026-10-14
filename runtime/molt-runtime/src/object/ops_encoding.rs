@@ -80,30 +80,6 @@ fn push_u32(out: &mut Vec<u8>, val: u32, endian: Endian) {
     }
 }
 
-#[allow(dead_code)]
-fn encode_utf16(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len().saturating_mul(2) + if with_bom { 2 } else { 0 });
-    if with_bom {
-        push_u16(&mut out, 0xFEFF, endian);
-    }
-    for code in text.encode_utf16() {
-        push_u16(&mut out, code, endian);
-    }
-    out
-}
-
-#[allow(dead_code)]
-fn encode_utf32(text: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len().saturating_mul(4) + if with_bom { 4 } else { 0 });
-    if with_bom {
-        push_u32(&mut out, 0x0000_FEFF, endian);
-    }
-    for ch in text.chars() {
-        push_u32(&mut out, ch as u32, endian);
-    }
-    out
-}
-
 pub(crate) fn is_surrogate(code: u32) -> bool {
     (0xD800..=0xDFFF).contains(&code)
 }
@@ -130,17 +106,6 @@ pub(crate) fn unicode_name_escape(code: u32) -> String {
 
 pub(crate) fn unicode_escape(ch: char) -> String {
     unicode_escape_codepoint(ch as u32)
-}
-
-#[allow(dead_code)]
-fn push_backslash_bytes(out: &mut String, bytes: &[u8]) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for &byte in bytes {
-        out.push('\\');
-        out.push('x');
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
 }
 
 fn push_hex_escape(out: &mut Vec<u8>, prefix: u8, code: u32, width: usize) {

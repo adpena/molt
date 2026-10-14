@@ -4,8 +4,6 @@
 //! `#[path]`. Those files depend on a `crate::bridge` access layer; this facade
 //! preserves that API while routing helper families to focused submodules.
 
-#![allow(dead_code)]
-
 mod attrs;
 mod core;
 mod ext_state;

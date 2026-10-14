@@ -1,22 +1,12 @@
+#[cfg(feature = "native-backend")]
+use crate::backend_process::NativeTargetOptions;
+#[cfg(feature = "wasm-backend")]
+use crate::backend_process::WasmTargetOptions;
+
 #[derive(Debug)]
-#[cfg_attr(
-    not(any(feature = "native-backend", feature = "wasm-backend")),
-    allow(dead_code)
-)]
 pub(crate) struct DaemonJobRequest {
     pub(crate) id: String,
-    pub(crate) is_wasm: bool,
-    #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
-    pub(crate) target_triple: Option<String>,
-    pub(crate) native_output_kind: crate::backend_process::NativeArtifactKind,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) wasm_link: bool,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) wasm_data_base: Option<u32>,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) wasm_table_base: Option<u32>,
-    #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) wasm_split_runtime_app_table_base: Option<u32>,
+    pub(crate) target: DaemonJobTarget,
     pub(crate) output: String,
     pub(crate) cache_key: String,
     pub(crate) function_cache_key: Option<String>,
@@ -25,6 +15,16 @@ pub(crate) struct DaemonJobRequest {
     pub(crate) probe_cache_only: bool,
     pub(crate) ir: Option<molt_backend::BackendIrDocument>,
     pub(crate) ir_path: Option<String>,
+}
+
+/// The artifact a daemon job builds. The daemon serves native and WASM jobs
+/// for the backends this binary contains; the request parser refuses others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DaemonJobTarget {
+    #[cfg(feature = "native-backend")]
+    Native(NativeTargetOptions),
+    #[cfg(feature = "wasm-backend")]
+    Wasm(WasmTargetOptions),
 }
 
 #[derive(Debug)]

@@ -1,18 +1,11 @@
-#[cfg(unix)]
 use std::env;
-#[cfg(unix)]
 use std::time::Instant;
 
-#[cfg(any(unix, test))]
 use super::super::super::config::MIB;
-#[cfg(unix)]
 use super::super::super::config::{BACKEND_DAEMON_PROTOCOL_VERSION, detect_physical_memory_bytes};
-#[cfg(unix)]
 use super::super::protocol::DaemonHealthResponse;
-#[cfg(unix)]
 use super::state::DaemonCache;
 
-#[cfg(unix)]
 #[derive(Default)]
 pub(crate) struct DaemonStats {
     pub(crate) requests_total: u64,
@@ -21,7 +14,6 @@ pub(crate) struct DaemonStats {
     pub(crate) cache_misses: u64,
 }
 
-#[cfg(any(unix, test))]
 pub(crate) fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u64>) -> usize {
     let default = bytes
         .and_then(|raw| usize::try_from(raw / 64).ok())
@@ -29,7 +21,6 @@ pub(crate) fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u
     default.clamp(128 * MIB, 2 * 1024 * MIB)
 }
 
-#[cfg(unix)]
 pub(crate) fn daemon_cache_limit_bytes() -> usize {
     env::var("MOLT_BACKEND_DAEMON_CACHE_MB")
         .ok()
@@ -41,7 +32,6 @@ pub(crate) fn daemon_cache_limit_bytes() -> usize {
         })
 }
 
-#[cfg(unix)]
 pub(crate) fn daemon_health(
     cache: &DaemonCache,
     stats: &DaemonStats,
