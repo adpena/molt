@@ -49,18 +49,26 @@ pub(crate) fn runtime_fn_key(named_key: Option<u64>, raw_ptr: *const ()) -> u64 
 }
 
 /// Resolve identity and publish its executable target for callable construction.
-/// The generated table owns the target of every named key, so only address
-/// keys enter the registry.
 pub(crate) fn runtime_fn_publish(named_key: Option<u64>, raw_ptr: *const ()) -> u64 {
-    if let Some(key) = named_key {
-        return key;
-    }
-    let key = crate::provenance::abi::expose_function_address(raw_ptr);
-    if !raw_ptr.is_null() {
-        let mut guard = native_callable_targets().lock().unwrap();
-        guard.entry(key).or_insert(NativeCallableTarget(raw_ptr));
-    }
+    let key = runtime_fn_key(named_key, raw_ptr);
+    register_address_target(key, raw_ptr);
     key
+}
+
+/// Named keys sit in a reserved range above every function address. The
+/// generated table owns their targets.
+fn runtime_callable_key_is_named(key: u64) -> bool {
+    key >= wasm_callables::RUNTIME_CALLABLE_KEY_BASE
+}
+
+/// The registry's one writer. It admits address keys only: a named key's
+/// value is not an address, so it must never become a call target.
+fn register_address_target(key: u64, raw_target: *const ()) {
+    if raw_target.is_null() || runtime_callable_key_is_named(key) {
+        return;
+    }
+    let mut guard = native_callable_targets().lock().unwrap();
+    guard.entry(key).or_insert(NativeCallableTarget(raw_target));
 }
 
 /// Generated intrinsic resolvers name their symbol at run time.
@@ -250,15 +258,14 @@ pub(crate) fn runtime_callable_represents_symbol(
 }
 
 pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
-    if let Some(target) = native_callable_targets()
+    if runtime_callable_key_is_named(fn_ptr) {
+        return wasm_callables::runtime_callable_target_ptr(fn_ptr);
+    }
+    native_callable_targets()
         .lock()
         .unwrap()
         .get(&fn_ptr)
-        .copied()
-    {
-        return Some(target.0);
-    }
-    wasm_callables::runtime_callable_target_ptr(fn_ptr)
+        .map(|target| target.0)
 }
 
 #[inline]
@@ -371,14 +378,8 @@ pub(crate) fn alloc_runtime_function_obj(
 ) -> *mut u8 {
     let fn_key = canonicalize_runtime_callable_key(fn_ptr);
     #[cfg(not(miri))]
-    if fn_key == fn_ptr
-        && fn_ptr != 0
-        && let Some(raw_target) = crate::provenance::abi::function_ptr(fn_ptr)
-    {
-        let mut guard = native_callable_targets().lock().unwrap();
-        guard
-            .entry(fn_key)
-            .or_insert(NativeCallableTarget(raw_target));
+    if let Some(raw_target) = crate::provenance::abi::function_ptr(fn_key) {
+        register_address_target(fn_key, raw_target);
     }
     let ptr = alloc_function_obj(_py, fn_key, arity);
     if ptr.is_null() {
@@ -461,14 +462,8 @@ fn molt_func_new_builtin_raw_impl(
 ) -> u64 {
     let fn_key = canonicalize_runtime_callable_key(fn_ptr);
     #[cfg(not(miri))]
-    if fn_key == fn_ptr
-        && fn_ptr != 0
-        && let Some(raw_target) = crate::provenance::abi::function_ptr(fn_ptr)
-    {
-        let mut guard = native_callable_targets().lock().unwrap();
-        guard
-            .entry(fn_key)
-            .or_insert(NativeCallableTarget(raw_target));
+    if let Some(raw_target) = crate::provenance::abi::function_ptr(fn_key) {
+        register_address_target(fn_key, raw_target);
     }
     let trace = matches!(
         std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
@@ -2530,6 +2525,26 @@ mod wasm_runtime_callable_tests {
                 crate::call::type_policy::InitArgPolicy::RejectConstructorArgs
             );
             assert!(matches.into_iter().all(|matched| matched));
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn named_key_construction_never_registers_the_key_as_an_address() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let target = crate::molt_type_init as *const ();
+            let key = fn_addr!(crate::molt_type_init);
+            let ptr = alloc_runtime_function_obj(py, key, 3);
+            assert!(!ptr.is_null());
+            // A named key is not an address: both the registry route and the
+            // object's stored target must name the generated table's function.
+            assert_eq!(runtime_callable_target_ptr(key), Some(target));
+            assert_eq!(
+                unsafe { crate::object::layout::function_call_target_ptr(ptr) },
+                target
+            );
+            crate::dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
         });
     }
 
