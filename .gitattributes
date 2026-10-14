@@ -3,6 +3,9 @@
 # Windows, macOS, and Linux regardless of the user's core.autocrlf setting.
 * text=auto eol=lf
 
+# Preserve the complete upstream license, including its final blank line.
+vendor/rust/cranelift-object/LICENSE whitespace=-blank-at-eof
+
 # Native command scripts are the only text family whose consumer requires the
 # Windows line-ending convention.
 *.bat text eol=crlf

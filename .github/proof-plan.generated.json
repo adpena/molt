@@ -593,7 +593,9 @@
         "tools/proof_queue_pkg/**",
         "tools/proof_supervisor/**",
         "runtime/**",
-        "tests/proof_queue_owned_roots.py"
+        "tests/proof_queue_owned_roots.py",
+        "vendor/rust/object/**",
+        "vendor/rust/cranelift-object/**"
       ],
       "job": "native-integration",
       "job_reserve_seconds": 180,
@@ -633,7 +635,9 @@
         "tests/tools/test_cargo_test_binary_discovery.py",
         "tools/runtime_descendant_receipts.py",
         "tests/tools/test_runtime_descendant_receipts.py",
-        "tests/runtime_descendant_test_support.py"
+        "tests/runtime_descendant_test_support.py",
+        "vendor/rust/object/**",
+        "vendor/rust/cranelift-object/**"
       ],
       "job": "rust-build-unit-smoke",
       "job_reserve_seconds": 240,
@@ -6251,6 +6255,16 @@
         "native_artifact_facts",
         "--test",
         "native_batch_worker_spawn",
+        "--test",
+        "integration",
+        "--test",
+        "basic",
+        "--test",
+        "native_extern_linkage",
+        "-p",
+        "object@0.39.1",
+        "-p",
+        "cranelift-object@0.133.3",
         "-p",
         "molt-artifact-publish",
         "-p",
@@ -7951,6 +7965,7 @@
       "local.native-callable-abi.2": "cargo test --locked -p molt-ir --lib native_callable_abi",
       "local.native-callable-abi.3": "cargo test --locked -p molt-backend-native --lib native_callable",
       "local.native-callable-abi.4": "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
+      "local.native-object-emission.0": "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast",
       "local.op-kind-registry.0": "python3 tools/gen_op_kinds.py --check",
       "local.op-kind-registry.1": "python3 tools/audit_op_kinds.py --check",
       "local.op-kind-registry.2": "python3 -m pytest -q tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
@@ -8015,6 +8030,29 @@
           "runtime/molt-artifact-publish/Cargo.toml"
         ],
         "name": "backend-native",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.native-object-emission.0"
+        ],
+        "description": "Maintained object emitters: upstream writer tests and actual native objects share one locked graph.",
+        "gates": [
+          "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast"
+        ],
+        "globs": [
+          "vendor/rust/object/**",
+          "vendor/rust/cranelift-object/**",
+          "runtime/molt-backend-native/src/native_backend/mod.rs",
+          "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
+          "runtime/molt-backend/tests/native_extern_linkage.rs"
+        ],
+        "name": "native-object-emission",
         "require_fresh_toolchain": true,
         "toolchains": [
           "python",
@@ -9660,6 +9698,12 @@
         "cargo",
         "git",
         "rustfmt"
+      ],
+      "local.native-object-emission.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.op-kind-registry.0": [
         "python",

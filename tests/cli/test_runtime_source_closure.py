@@ -102,3 +102,192 @@ def test_repeated_directory_closure_observes_added_rust_module(
     assert cached_paths == paths
     assert after["digest"] != before["digest"]
     assert after["file_count"] == before["file_count"] + 1
+
+
+def _patched_cargo_tree(root: Path) -> tuple[Path, Path, Path]:
+    compiler = root / "runtime/compiler"
+    runtime = root / "runtime/runtime"
+    patched = root / "vendor/patched"
+    leaf = root / "vendor/leaf"
+    for crate, name, version in [
+        (compiler, "compiler", "0.1.0"),
+        (runtime, "runtime", "0.1.0"),
+        (patched, "object", "0.39.1"),
+        (leaf, "leaf", "1.0.0"),
+    ]:
+        (crate / "src").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            f'[package]\nname="{name}"\nversion="{version}"\n', encoding="utf-8"
+        )
+        (crate / "src/lib.rs").write_text("pub fn value() {}\n", encoding="utf-8")
+    with (compiler / "Cargo.toml").open("a") as stream:
+        stream.write('[dependencies]\nbridge="1.0"\n')
+    with (runtime / "Cargo.toml").open("a") as stream:
+        stream.write('[dependencies]\nobject="0.40"\n')
+    with (patched / "Cargo.toml").open("a") as stream:
+        stream.write(
+            "[target.'cfg(windows)'.dependencies]\nleaf={path=\"../leaf\", optional=true}\n"
+        )
+    (root / "Cargo.toml").write_text(
+        '[workspace]\nmembers=["runtime/compiler", "runtime/runtime"]\n'
+        '[patch.crates-io]\nrenamed={package="object",path="vendor/patched"}\n',
+        encoding="utf-8",
+    )
+    (root / "Cargo.lock").write_text(
+        "version=4\n"
+        '[[package]]\nname="compiler"\nversion="0.1.0"\ndependencies=["bridge"]\n'
+        '[[package]]\nname="bridge"\nversion="1.0.0"\n'
+        'source="registry+https://github.com/rust-lang/crates.io-index"\n'
+        'dependencies=["object 0.39.1"]\n'
+        '[[package]]\nname="object"\nversion="0.39.1"\ndependencies=["leaf"]\n'
+        '[[package]]\nname="leaf"\nversion="1.0.0"\n'
+        '[[package]]\nname="runtime"\nversion="0.1.0"\ndependencies=["object 0.40.0"]\n'
+        '[[package]]\nname="object"\nversion="0.40.0"\n'
+        'source="registry+https://github.com/rust-lang/crates.io-index"\n',
+        encoding="utf-8",
+    )
+    return compiler, runtime, patched
+
+
+def _patched_source_digest(root: Path, crate: Path) -> tuple[list[Path], str]:
+    paths = _cargo_crate_source_closure(
+        project_root=root, crate_root=crate, crate_features=()
+    )
+    identity = _tree_identity(
+        tuple((str(path.relative_to(root)), path) for path in paths), require_all=True
+    )
+    return paths, identity["digest"]
+
+
+def test_selected_patch_bytes_and_transitive_paths_change_compiler_identity(
+    tmp_path: Path,
+) -> None:
+    compiler, runtime, patched = _patched_cargo_tree(tmp_path)
+    compiler_paths, before = _patched_source_digest(tmp_path, compiler)
+    runtime_paths, runtime_before = _patched_source_digest(tmp_path, runtime)
+    assert set(compiler_paths) == {compiler, patched, tmp_path / "vendor/leaf"}
+    assert runtime_paths == [runtime]
+    # Registry->patched edges must be followed even though neither compiler's
+    # local manifest nor its feature graph names the patched crate directly.
+    (patched / "src/lib.rs").write_text(
+        "pub fn fixed_relocation() {}\n", encoding="utf-8"
+    )
+    assert _patched_source_digest(tmp_path, compiler)[1] != before
+    assert _patched_source_digest(tmp_path, runtime)[1] == runtime_before
+    before_leaf = _patched_source_digest(tmp_path, compiler)[1]
+    (tmp_path / "vendor/leaf/src/lib.rs").write_text(
+        "pub fn changed() {}\n", encoding="utf-8"
+    )
+    assert _patched_source_digest(tmp_path, compiler)[1] != before_leaf
+    assert _patched_source_digest(tmp_path, runtime)[1] == runtime_before
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["missing", "outside", "identity", "stale-lock", "stale-version", "bad-path"],
+)
+def test_path_patch_admission_fails_closed(tmp_path: Path, defect: str) -> None:
+    compiler, _, patched = _patched_cargo_tree(tmp_path)
+    if defect == "missing":
+        (patched / "Cargo.toml").unlink()
+    elif defect == "outside":
+        (tmp_path / "Cargo.toml").write_text(
+            '[workspace]\n[patch.crates-io]\nobject={path="../outside"}\n',
+            encoding="utf-8",
+        )
+    elif defect == "identity":
+        manifest = patched / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text().replace('name="object"', 'name="impostor"')
+        )
+    elif defect == "stale-version":
+        manifest = patched / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text().replace('version="0.39.1"', 'version="0.39.2"')
+        )
+    elif defect == "bad-path":
+        manifest = tmp_path / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text().replace('path="vendor/patched"', "path=7")
+        )
+    else:
+        lock = tmp_path / "Cargo.lock"
+        lock.write_text(
+            lock.read_text().replace(
+                'name="object"\nversion="0.39.1"\n',
+                'name="object"\nversion="0.39.1"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n',
+            )
+        )
+    with pytest.raises((OSError, ValueError)):
+        _patched_source_digest(tmp_path, compiler)
+
+
+def test_patch_symlink_escape_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    compiler, _, patched = _patched_cargo_tree(root)
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "Cargo.toml").write_text('[package]\nname="object"\nversion="0.39.1"\n')
+    alias = root / "vendor/escape"
+    try:
+        alias.symlink_to(external, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"Host cannot create directory symlinks: {error}")
+    manifest = root / "Cargo.toml"
+    manifest.write_text(manifest.read_text().replace("vendor/patched", "vendor/escape"))
+    with pytest.raises(ValueError, match="escapes"):
+        _patched_source_digest(root, compiler)
+
+
+def test_cargo_unused_patch_record_does_not_claim_registry_package_bytes(
+    tmp_path: Path,
+) -> None:
+    compiler, _, patched = _patched_cargo_tree(tmp_path)
+    lock = tmp_path / "Cargo.lock"
+    lock.write_text(
+        lock.read_text().replace(
+            'name="object"\nversion="0.39.1"\n',
+            'name="object"\nversion="0.39.1"\nsource="registry+https://other.invalid/index"\n',
+        )
+        + '\n[[patch.unused]]\nname="object"\nversion="0.39.1"\n'
+    )
+    paths, before = _patched_source_digest(tmp_path, compiler)
+    assert paths == [compiler]
+    (patched / "src/lib.rs").write_text("pub fn unused_edit() {}\n")
+    assert _patched_source_digest(tmp_path, compiler)[1] == before
+
+
+def test_selected_patch_follows_workspace_inherited_local_dependency(
+    tmp_path: Path,
+) -> None:
+    compiler, _, patched = _patched_cargo_tree(tmp_path)
+    workspace = tmp_path / "Cargo.toml"
+    workspace.write_text(
+        workspace.read_text()
+        + '\n[workspace.dependencies]\nleaf={path="vendor/leaf"}\n'
+    )
+    manifest = patched / "Cargo.toml"
+    manifest.write_text(
+        manifest.read_text().replace('path="../leaf"', "workspace=true")
+    )
+    paths, before = _patched_source_digest(tmp_path, compiler)
+    assert tmp_path / "vendor/leaf" in paths
+    (tmp_path / "vendor/leaf/src/lib.rs").write_text("pub fn changed_inherited() {}\n")
+    assert _patched_source_digest(tmp_path, compiler)[1] != before
+
+
+def test_workspace_inherited_patch_dependency_rejects_invalid_features(
+    tmp_path: Path,
+) -> None:
+    compiler, _, patched = _patched_cargo_tree(tmp_path)
+    workspace = tmp_path / "Cargo.toml"
+    workspace.write_text(
+        workspace.read_text()
+        + '\n[workspace.dependencies]\nleaf={path="vendor/leaf", features="invalid"}\n'
+    )
+    manifest = patched / "Cargo.toml"
+    manifest.write_text(
+        manifest.read_text().replace('path="../leaf"', "workspace=true")
+    )
+    with pytest.raises(ValueError, match="Invalid Cargo dependency features"):
+        _patched_source_digest(tmp_path, compiler)

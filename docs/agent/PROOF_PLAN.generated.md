@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 359 |
-| Local path rules | 35 | 44 |
-| Unique local commands | 73 | 110 |
+| Local path rules | 35 | 45 |
+| Unique local commands | 73 | 111 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -50,8 +50,8 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
-| `native_integration` | pr, main | yes | `github-job` | 53 min | 3000 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 20 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 308 min | 18240 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
+| `native_integration` | pr, main | yes | `github-job` | 53 min | 3000 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 22 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 308 min | 18240 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 19 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
@@ -321,6 +321,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | Rule | Input globs | Commands | Fresh toolchain |
 |---|---:|---:|---:|
 | `backend-native` | 8 | 2 | yes |
+| `native-object-emission` | 5 | 1 | yes |
 | `backend-llvm` | 2 | 1 | yes |
 | `tir-midend` | 9 | 2 | yes |
 | `wasm-host` | 5 | 2 | yes |

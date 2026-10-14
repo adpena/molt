@@ -757,7 +757,17 @@ def _fake_binary(path: Path, prints: str) -> None:
     path.chmod(0o755)
 
 
-def test_verify_toolchain_flags_stale_binary(drv, origin_and_clone, tmp_path):
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "runtime/molt-backend/src/x.rs",
+        "vendor/rust/object/src/write/coff/object.rs",
+        "vendor/rust/cranelift-object/Cargo.toml",
+    ],
+)
+def test_verify_toolchain_flags_stale_binary(
+    drv, origin_and_clone, tmp_path, source_path
+):
     origin, work = origin_and_clone
     git = drv.Git(work)
     # Make a binary, then make a NEWER Rust-source commit so the binary is stale.
@@ -765,7 +775,7 @@ def test_verify_toolchain_flags_stale_binary(drv, origin_and_clone, tmp_path):
     _fake_binary(binary, "SETATTR marker present")
     old = binary.stat().st_mtime
     os.utime(binary, (old - 10_000, old - 10_000))  # backdate the binary
-    _commit_file(work, "runtime/molt-backend/src/x.rs", "// change\n", "rt: change")
+    _commit_file(work, source_path, "// change\n", "rt: change")
 
     report = drv.verify_toolchain(
         git, binary, marker=None, probe_args=[], rss_mb=256, timeout=10

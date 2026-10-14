@@ -54,9 +54,16 @@ def _read_cargo_document(path: Path) -> dict[str, Any]:
     return document
 
 
-def _manifest_dependency_tables(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _manifest_dependency_tables(
+    data: dict[str, Any], *, include_dev: bool = False
+) -> list[dict[str, Any]]:
     tables: list[dict[str, Any]] = []
-    for key in ("dependencies", "build-dependencies"):
+    kinds = (
+        ("dependencies", "build-dependencies", "dev-dependencies")
+        if include_dev
+        else ("dependencies", "build-dependencies")
+    )
+    for key in kinds:
         table = data.get(key)
         if isinstance(table, dict):
             tables.append(table)
@@ -65,7 +72,7 @@ def _manifest_dependency_tables(data: dict[str, Any]) -> list[dict[str, Any]]:
         for target_table in target.values():
             if not isinstance(target_table, dict):
                 continue
-            for key in ("dependencies", "build-dependencies"):
+            for key in kinds:
                 table = target_table.get(key)
                 if isinstance(table, dict):
                     tables.append(table)
@@ -75,20 +82,43 @@ def _manifest_dependency_tables(data: dict[str, Any]) -> list[dict[str, Any]]:
 def _local_path_dependencies(
     *,
     crate_root: Path,
+    project_root: Path,
     data: dict[str, Any],
+    workspace_dependencies: dict[str, Any],
     selected_optional_deps: set[str],
     child_features: dict[str, set[str]],
+    conservative: bool = False,
 ) -> list[tuple[str, Path, tuple[str, ...]]]:
     deps: list[tuple[str, Path, tuple[str, ...]]] = []
-    for table in _manifest_dependency_tables(data):
+    for table in _manifest_dependency_tables(data, include_dev=conservative):
         for dep_name, spec in table.items():
             if not isinstance(spec, dict):
                 continue
-            dep_path = spec.get("path")
-            if not isinstance(dep_path, str) or not dep_path:
+            dependency_base = crate_root
+            if spec.get("workspace") is True:
+                inherited = workspace_dependencies.get(dep_name)
+                if isinstance(inherited, str):
+                    continue  # Registry version, with no local source bytes.
+                if not isinstance(inherited, dict):
+                    raise ValueError(f"Missing Cargo workspace dependency: {dep_name}")
+                inherited_features = inherited.get("features", [])
+                local_features = spec.get("features", [])
+                if any(
+                    not isinstance(features, list)
+                    or any(not isinstance(feature, str) for feature in features)
+                    for features in (inherited_features, local_features)
+                ):
+                    raise ValueError(f"Invalid Cargo dependency features: {dep_name}")
+                features = inherited_features + local_features
+                spec = {**inherited, **spec, "features": features}
+                dependency_base = project_root
+            if "path" not in spec:
                 continue
+            dep_path = spec["path"]
+            if not isinstance(dep_path, str) or not dep_path:
+                raise ValueError(f"Invalid Cargo dependency path: {dep_name}")
             optional = bool(spec.get("optional", False))
-            if optional and dep_name not in selected_optional_deps:
+            if optional and not conservative and dep_name not in selected_optional_deps:
                 continue
             features = set(child_features.get(dep_name, set()))
             spec_features = spec.get("features", [])
@@ -96,7 +126,7 @@ def _local_path_dependencies(
                 features.update(
                     feature for feature in spec_features if isinstance(feature, str)
                 )
-            dep_root = (crate_root / dep_path).resolve()
+            dep_root = (dependency_base / dep_path).resolve()
             deps.append((dep_name, dep_root, tuple(sorted(features))))
     return deps
 
@@ -142,6 +172,108 @@ def _feature_dependency_selection(
     return selected_optional_deps, child_features
 
 
+def _selected_cargo_path_patches(
+    project_root: Path, crate_root: Path, workspace: dict[str, Any]
+) -> list[Path]:
+    """Bind local overrides to Cargo's resolved package identities, not semver guesses.
+
+    The lock closure is deliberately conservative over features and targets,
+    just like the compiler dependency digest. Unreachable patches are validated
+    as manifests but their source bytes are not inputs to this package.
+    """
+    patches = workspace.get("patch", {})
+    if not isinstance(patches, dict):
+        raise ValueError("Invalid Cargo patch table")
+    local: dict[tuple[str, str], Path] = {}
+    for registry, entries in patches.items():
+        if not isinstance(registry, str) or not isinstance(entries, dict):
+            raise ValueError("Invalid Cargo patch registry")
+        for alias, spec in entries.items():
+            if not isinstance(spec, dict):
+                raise ValueError(f"Invalid Cargo patch: {alias}")
+            if "path" not in spec:
+                # Registry/git overrides have no local bytes; Cargo.lock binds
+                # their selected source/checksum/revision through the same graph.
+                continue
+            path = spec["path"]
+            if not isinstance(path, str) or not path or "git" in spec:
+                raise ValueError(f"Invalid Cargo patch path: {alias}")
+            patch_root = (project_root / path).resolve()
+            if (
+                not patch_root.is_relative_to(project_root)
+                or patch_root == project_root
+            ):
+                raise ValueError(f"Cargo patch escapes the source root: {alias}")
+            manifest = _read_cargo_document(patch_root / "Cargo.toml")
+            package = manifest.get("package")
+            if not isinstance(package, dict):
+                raise ValueError(f"Cargo patch has no package: {alias}")
+            name, version = package.get("name"), package.get("version")
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(version, str)
+                or not version
+                or name != spec.get("package", alias)
+            ):
+                raise ValueError(f"Cargo patch package identity mismatch: {alias}")
+            key = (name, version)
+            if key in local and local[key] != patch_root:
+                raise ValueError(f"Ambiguous Cargo path patch: {key}")
+            local[key] = patch_root
+    if not local:
+        return []
+    lock = _read_cargo_document(project_root / "Cargo.lock")
+    resolved = _cargo_locked_dependency_projection(project_root, crate_root, lock=lock)
+    # Cargo explicitly records unused overrides. The same name/version may
+    # legitimately remain selected from another registry; do not infer registry
+    # scope or version preference ourselves.
+    patch_state = lock.get("patch", {})
+    unused_records = (
+        patch_state.get("unused", []) if isinstance(patch_state, dict) else None
+    )
+    if not isinstance(unused_records, list) or any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("name"), str)
+        or not isinstance(row.get("version"), str)
+        for row in unused_records
+    ):
+        raise ValueError("Invalid Cargo.lock unused patch inventory")
+    unused = {
+        (row["name"], row["version"]) for row in unused_records if not row.get("source")
+    }
+    # An edited patch manifest can change its version while the old source-less
+    # lock row remains. Require Cargo to classify every override as selected
+    # somewhere in the workspace or explicitly unused before trusting the graph.
+    locked_local = {
+        (row.get("name"), row.get("version"))
+        for row in lock["package"]
+        if isinstance(row, dict)
+        and isinstance(row.get("name"), str)
+        and isinstance(row.get("version"), str)
+        and "source" not in row
+    }
+    for key in local:
+        if key not in locked_local and key not in unused:
+            raise ValueError(f"Cargo.lock has not resolved the local patch: {key}")
+    selected: list[Path] = []
+    for package in resolved["packages"]:
+        key = (package["name"], package["version"])
+        patch_root = local.get(key)
+        if patch_root is None:
+            continue
+        if package.get("source"):
+            if key in unused:
+                continue
+            raise ValueError(f"Cargo.lock has not selected the local patch: {key}")
+        if key in unused:
+            raise ValueError(
+                f"Cargo.lock both selects and excludes a local patch: {key}"
+            )
+        selected.append(patch_root)
+    return selected
+
+
 def _cargo_crate_source_closure(
     *,
     project_root: Path,
@@ -151,11 +283,31 @@ def _cargo_crate_source_closure(
 ) -> list[Path]:
     source_paths: list[Path] = []
     project_root_resolved = project_root.resolve()
-    pending: list[tuple[Path, tuple[str, ...]]] = [(crate_root, crate_features)]
-    seen: set[tuple[Path, tuple[str, ...]]] = set()
+    workspace_manifest = project_root_resolved / "Cargo.toml"
+    # Standalone crate callers need no workspace override discovery.
+    workspace = (
+        _read_cargo_document(workspace_manifest) if workspace_manifest.exists() else {}
+    )
+    workspace_table = workspace.get("workspace", {})
+    workspace_dependencies = (
+        workspace_table.get("dependencies", {})
+        if isinstance(workspace_table, dict)
+        else {}
+    )
+    if not isinstance(workspace_dependencies, dict):
+        raise ValueError("Invalid Cargo workspace dependencies")
+    # Path patches may be reached through registry packages, so discover them
+    # from the already-resolved lock graph, not just local manifest edges.
+    pending = [(crate_root, crate_features, False)] + [
+        (root, (), True)
+        for root in _selected_cargo_path_patches(
+            project_root_resolved, crate_root, workspace
+        )
+    ]
+    seen: set[tuple[Path, tuple[str, ...], bool]] = set()
     while pending:
-        current_root, current_features = pending.pop()
-        key = (current_root, current_features)
+        current_root, current_features, conservative = pending.pop()
+        key = (current_root, current_features, conservative)
         if key in seen:
             continue
         seen.add(key)
@@ -166,15 +318,18 @@ def _cargo_crate_source_closure(
         )
         for _dep_name, dep_root, dep_features in _local_path_dependencies(
             crate_root=current_root,
+            project_root=project_root_resolved,
             data=data,
+            workspace_dependencies=workspace_dependencies,
             selected_optional_deps=selected_optional_deps,
             child_features=child_features,
+            conservative=conservative,
         ):
-            if (
-                project_root_resolved in dep_root.parents
-                or dep_root == project_root_resolved
-            ):
-                pending.append((dep_root, dep_features))
+            if not dep_root.is_relative_to(project_root_resolved):
+                raise ValueError(
+                    f"Cargo path dependency escapes the source root: {dep_root}"
+                )
+            pending.append((dep_root, dep_features, conservative))
     source_paths.extend(extra_source_paths)
     return _dedupe_source_paths(source_paths)
 
@@ -189,6 +344,16 @@ def _cargo_locked_dependency_digest(project_root: Path, crate_root: Path) -> str
 
 
 def _project_cargo_locked_dependencies(project_root: Path, crate_root: Path) -> str:
+    from molt.exact_json import canonical_json_sha256
+
+    return canonical_json_sha256(
+        _cargo_locked_dependency_projection(project_root, crate_root)
+    )
+
+
+def _cargo_locked_dependency_projection(
+    project_root: Path, crate_root: Path, *, lock: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Content identity of the root package's conservative Cargo.lock closure.
 
     Cargo remains the dependency resolver. Follow every recorded dependency,
@@ -196,8 +361,6 @@ def _project_cargo_locked_dependencies(project_root: Path, crate_root: Path) -> 
     features from the lockfile. Unrelated workspace roots are not compiler inputs.
     """
     import re
-
-    from molt.exact_json import canonical_json_sha256
 
     manifest = _read_cargo_document(crate_root / "Cargo.toml")
     root_package = manifest.get("package")
@@ -207,7 +370,8 @@ def _project_cargo_locked_dependencies(project_root: Path, crate_root: Path) -> 
     if not isinstance(name, str) or not isinstance(version, str):
         raise ValueError("Cargo dependency root requires an explicit name and version")
     root_key = (name, version, "")
-    lock = _read_cargo_document(project_root / "Cargo.lock")
+    if lock is None:
+        lock = _read_cargo_document(project_root / "Cargo.lock")
     if type(lock.get("version")) is not int or lock["version"] not in {3, 4}:
         raise ValueError("Unsupported Cargo.lock version")
     packages = lock.get("package")
@@ -297,11 +461,9 @@ def _project_cargo_locked_dependencies(project_root: Path, crate_root: Path) -> 
             pending.append(package["replace"])
         reached[key] = package
     projected = [reached[key] for key in sorted(reached)]
-    return canonical_json_sha256(
-        {
-            "schema": "molt.cargo-locked-dependency-closure.v2",
-            "root": root_key,
-            "lock_version": lock["version"],
-            "packages": projected,
-        }
-    )
+    return {
+        "schema": "molt.cargo-locked-dependency-closure.v2",
+        "root": root_key,
+        "lock_version": lock["version"],
+        "packages": projected,
+    }

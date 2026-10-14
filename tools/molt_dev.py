@@ -532,6 +532,8 @@ class GateConfig:
 RUST_SOURCE_GLOBS = (
     "runtime/**/*.rs",
     "runtime/**/Cargo.toml",
+    "vendor/rust/**/*.rs",
+    "vendor/rust/**/Cargo.toml",
     "Cargo.toml",
     "Cargo.lock",
 )

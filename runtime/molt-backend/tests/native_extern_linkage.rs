@@ -275,26 +275,106 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
         ("x86_64-pc-windows-msvc", object::BinaryFormat::Coff),
         ("aarch64-pc-windows-msvc", object::BinaryFormat::Coff),
     ] {
+        // Exercise local literal addresses, local function/trampoline addresses
+        // and the resolver's two local data addresses, as well as imports. An
+        // empty function would miss COFF's distinct Near relocation family.
         let ir = SimpleIR {
-            functions: vec![FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Void,
-                name: "molt_main".to_string(),
-                params: Vec::new(),
-                ops: vec![op("ret_void")],
-                param_types: None,
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                parameter_custody: Vec::new(),
-                execution_context: Default::default(),
-            }],
+            functions: vec![
+                FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    name: "molt_main".into(),
+                    ops: vec![
+                        OpIR {
+                            kind: "const_str".into(),
+                            out: Some("literal".into()),
+                            s_value: Some("cross-format literal".into()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "func_new".into(),
+                            out: Some("callable".into()),
+                            s_value: Some("cross_format_callable".into()),
+                            value: Some(0),
+                            args: Some(vec![]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "tuple_new".into(),
+                            out: Some("result".into()),
+                            args: Some(vec!["literal".into(), "callable".into()]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".into(),
+                            args: Some(vec!["result".into()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                    ..FunctionIR::default()
+                },
+                FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    name: "cross_format_callable".into(),
+                    ops: vec![
+                        OpIR {
+                            kind: "const".into(),
+                            out: Some("answer".into()),
+                            value: Some(42),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".into(),
+                            args: Some(vec!["answer".into()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                    ..FunctionIR::default()
+                },
+            ],
             profile: None,
         };
         let mut backend = SimpleBackend::new_with_target(Some(target));
-        backend.emit_app_callable_resolver = false;
+        backend.app_callable_manifest =
+            Some(std::collections::BTreeSet::from(
+                ["molt_sys_version".into()],
+            ));
         let output = backend.compile(ir);
         let file = object::File::parse(&*output.bytes).expect("parse cross-format object");
         assert_eq!(file.format(), expected_format);
+        for name in [
+            "cross_format_callable",
+            "molt_app_callable_names",
+            "molt_app_callable_table",
+        ] {
+            assert!(
+                file.symbols()
+                    .any(|symbol| object_symbol_matches(&symbol, name) && !symbol.is_undefined()),
+                "{target}: missing emitted {name}"
+            );
+        }
+        if expected_format == object::BinaryFormat::Coff
+            && file.architecture() == object::Architecture::Aarch64
+        {
+            let relocations: Vec<_> = file
+                .sections()
+                .filter(|section| section.kind() == object::SectionKind::Text)
+                .flat_map(|section| {
+                    section
+                        .relocations()
+                        .map(|(_, relocation)| relocation.flags())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            for typ in [
+                object::pe::IMAGE_REL_ARM64_PAGEBASE_REL21,
+                object::pe::IMAGE_REL_ARM64_PAGEOFFSET_12A,
+            ] {
+                assert!(
+                    relocations.contains(&object::RelocationFlags::Coff { typ }),
+                    "{target}: local addresses must retain native page relocations"
+                );
+            }
+        }
         let anchor = file
             .symbols()
             .find(|symbol| object_symbol_matches(symbol, "__molt_generated_object_abi_anchor"))
