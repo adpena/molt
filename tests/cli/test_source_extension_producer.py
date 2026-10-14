@@ -79,6 +79,7 @@ from tests.python_environment_test_support import (
     realized_environment_manifest as _realized_environment_manifest,
     runtime_identity_manifest as _runtime_identity_manifest,
 )
+from tests.process_guard_common import ModuleView, install_module_view
 
 
 _MODULES = (
@@ -554,9 +555,10 @@ def test_ninja_driver_executes_attested_distribution_command(
             argv, 0, stdout="1.13.0.git.kitware.jobserver-pipe-1\n", stderr=""
         )
 
-    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(producer, "_run_process", run)
-    driver = producer._source_ninja_driver(tmp_path, _source_environment(payload))
+    driver = producer._source_ninja_driver(
+        tmp_path, _source_environment(payload, prefix=tmp_path)
+    )
     assert calls == [((str(binary), "--version"), tmp_path)]
     assert driver.command == (str(binary),)
     assert driver.manifest_payload() == {
@@ -582,7 +584,6 @@ def test_ninja_rejects_image_replacement_after_selection(
         distribution="ninja",
         console_script=False,
     )
-    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
 
     def run(argv, *, cwd):
         if stage == "version":
@@ -591,7 +592,9 @@ def test_ninja_rejects_image_replacement_after_selection(
 
     monkeypatch.setattr(producer, "_run_process", run)
     with pytest.raises(ValueError, match="changed"):
-        driver = producer._source_ninja_driver(tmp_path, _source_environment(payload))
+        driver = producer._source_ninja_driver(
+            tmp_path, _source_environment(payload, prefix=tmp_path)
+        )
         binary.write_bytes(b"replaced image")
         if stage == "command":
             _ = driver.command
@@ -601,6 +604,8 @@ def test_ninja_rejects_image_replacement_after_selection(
 
 def _source_environment(
     payload: dict[str, Any] | None = None,
+    *,
+    prefix: Path | None = None,
 ) -> producer._SourceBuildEnvironment:
     payload = _build_environment_manifest() if payload is None else payload
     return producer._SourceBuildEnvironment(
@@ -612,7 +617,9 @@ def _source_environment(
             producer.ResolvedBuildRequirement(**row) for row in payload["resolved"]
         ),
         custody=payload["custody"],
-        inventory=producer.SourceBuildInventory(payload["custody"], Path(sys.prefix)),
+        inventory=producer.SourceBuildInventory(
+            payload["custody"], Path(sys.prefix) if prefix is None else prefix
+        ),
     )
 
 
@@ -731,7 +738,6 @@ def test_inventory_rejects_unattested_executable(
             binary.write_bytes(b"unattested replacement")
         elif defect == "removed":
             binary.unlink()
-    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(
         producer,
         "_run_process",
@@ -745,7 +751,9 @@ def test_inventory_rejects_unattested_executable(
         "removed": None,
     }[defect]
     with pytest.raises((ValueError, FileNotFoundError), match=message):
-        producer._source_ninja_driver(tmp_path, _source_environment(payload))
+        producer._source_ninja_driver(
+            tmp_path, _source_environment(payload, prefix=tmp_path)
+        )
 
 
 def test_produce_set_parser_has_no_partial_or_nondeterministic_lane() -> None:
@@ -1783,7 +1791,7 @@ def test_active_source_build_environment_rejects_mutated_ambient_content(
     monkeypatch.setattr(
         build_environment, "_environment_spec", lambda *_args, **_kwargs: spec
     )
-    monkeypatch.setattr(build_environment.sys, "prefix", str(spec[0]))
+    install_module_view(monkeypatch, "sys", sys, build_environment, prefix=str(spec[0]))
     monkeypatch.setattr(
         build_environment,
         "_probe_environment_identity",
@@ -1825,8 +1833,14 @@ def active_source_namespace_case(
         probes.append((python, root))
         return realized
 
-    monkeypatch.setattr(build_environment.sys, "prefix", str(active_root))
-    monkeypatch.setattr(build_environment.sys, "executable", str(executable))
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        build_environment,
+        prefix=str(active_root),
+        executable=str(executable),
+    )
     monkeypatch.setattr(
         build_environment, "_source_build_custody_root", lambda _repo: namespace
     )
@@ -1872,7 +1886,7 @@ def test_active_namespace_lookup_captures_once_and_derives_one_recipe(
     assert result.active is True
     assert result.root == active_root
     assert result.custody == payload["custody"]
-    assert probes == [(Path(sys.executable), active_root)]
+    assert probes == [(Path(build_environment.sys.executable), active_root)]
 
 
 @pytest.mark.parametrize("corruption", ["missing", "recipe", "realized"])
@@ -1895,7 +1909,9 @@ def test_active_namespace_single_capture_rejects_manifest_drift(
     with pytest.raises(build_environment_schema.SourceBuildEnvironmentError):
         build_environment.source_build_environment(tmp_path, "source-build-numpy")
     assert probes == (
-        [] if corruption == "missing" else [(Path(sys.executable), active_root)]
+        []
+        if corruption == "missing"
+        else [(Path(build_environment.sys.executable), active_root)]
     )
 
 
@@ -1918,11 +1934,14 @@ def test_active_namespace_rejects_same_group_recipe_or_path_drift(
         (
             wrong_root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
         ).write_text(json.dumps(payload["custody"]), encoding="utf-8")
-        monkeypatch.setattr(build_environment.sys, "prefix", str(wrong_root))
+        # The fixture gave build_environment a private sys view.
+        sys_view = build_environment.sys
+        assert isinstance(sys_view, ModuleView)
+        monkeypatch.setattr(sys_view, "prefix", str(wrong_root))
         active_root = wrong_root
     with pytest.raises(build_environment_schema.SourceBuildEnvironmentError):
         build_environment.source_build_environment(tmp_path, "source-build-numpy")
-    assert probes == [(Path(sys.executable), active_root)]
+    assert probes == [(Path(build_environment.sys.executable), active_root)]
 
 
 def test_active_namespace_different_group_remains_a_distinct_inactive_selection(
@@ -1945,7 +1964,7 @@ def test_active_namespace_different_group_remains_a_distinct_inactive_selection(
     assert result.active is False
     assert result.root != active_root
     assert result.custody["dependency_group"] == "source-build-scipy"
-    assert probes == [(Path(sys.executable), active_root)]
+    assert probes == [(Path(build_environment.sys.executable), active_root)]
 
 
 def test_source_build_reexec_uses_typed_args_and_invoking_worktree_src(
@@ -2732,7 +2751,6 @@ def test_meson_pkg_config_is_pinned_and_attested(
         distribution="pkgconf",
         console_script=console_script,
     )
-    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(
         producer,
         "_run_process",
@@ -2740,7 +2758,7 @@ def test_meson_pkg_config_is_pinned_and_attested(
             args=list(argv), returncode=0, stdout="3.0.1\n", stderr=""
         ),
     )
-    environment = _source_environment(payload)
+    environment = _source_environment(payload, prefix=tmp_path)
 
     config_tool = producer._ensure_meson_pkg_config(tmp_path, environment)
 
@@ -2762,7 +2780,6 @@ def test_meson_pkg_config_rejects_mutated_realized_tool(
     tool = _install_realized_tool(
         payload, tmp_path, "pkg-config", distribution="pkgconf"
     )
-    monkeypatch.setattr(producer.sys, "prefix", str(tmp_path))
     tool.write_bytes(b"mutated-unattested-tool")
     monkeypatch.setattr(
         producer,
@@ -2770,7 +2787,9 @@ def test_meson_pkg_config_rejects_mutated_realized_tool(
         lambda *_args, **_kwargs: pytest.fail("mutated tool must not execute"),
     )
     with pytest.raises(ValueError, match="content differs"):
-        producer._ensure_meson_pkg_config(tmp_path, _source_environment(payload))
+        producer._ensure_meson_pkg_config(
+            tmp_path, _source_environment(payload, prefix=tmp_path)
+        )
 
 
 def test_realized_inventory_public_projections_are_immutable(tmp_path: Path) -> None:

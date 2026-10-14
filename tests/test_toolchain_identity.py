@@ -255,10 +255,12 @@ def test_capture_rejects_write_and_restored_timestamp_during_read(
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
         return result
 
-    monkeypatch.setattr(
-        identity.hashlib,
-        "sha256",
-        same_thread_probe(identity.hashlib.sha256, mutate_after_read),
+    install_module_view(
+        monkeypatch,
+        "hashlib",
+        hashlib,
+        identity,
+        sha256=same_thread_probe(hashlib.sha256, mutate_after_read),
     )
     with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
         identity.capture_stable_regular_file(path, label="fixture")

@@ -66,6 +66,7 @@ from molt.cli.runtime_wasm_generation import (
     runtime_wasm_generation_path,
 )
 from tests.executable_test_support import write_mock_executable
+from tests.process_guard_common import current_thread_only
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     mock_wasm_optimizer_cache_fact,
@@ -443,7 +444,13 @@ def test_synthetic_tools_do_not_mutate_read_only_source_root(
     def forbid_tool_execution(*_args, **_kwargs):
         raise AssertionError("identity-only native fixture must not launch tools")
 
-    monkeypatch.setattr(subprocess, "Popen", forbid_tool_execution)
+    # A tripwire must catch this launch from any module, subprocess.run among
+    # them, so it stays process-wide. Only this thread meets the fake.
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        current_thread_only(forbid_tool_execution, subprocess.Popen),
+    )
     source = tmp_path / "read-only-source"
     source.mkdir()
     manifest = source / "Cargo.toml"

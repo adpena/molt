@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import signal
 import subprocess
@@ -34,6 +35,7 @@ import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
     check_output_guarded_test_process,
+    current_thread_only,
     guard_custody_env,
     install_module_os_view,
     install_module_view,
@@ -7152,7 +7154,13 @@ def test_repro_context_platform_detail_does_not_spawn_subprocess(
     def forbidden_platform_detail() -> str:
         raise AssertionError("platform.platform must not run in summary emission")
 
-    monkeypatch.setattr(memory_guard.platform, "platform", forbidden_platform_detail)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(
+        platform,
+        "platform",
+        current_thread_only(forbidden_platform_detail, platform.platform),
+    )
 
     repro = memory_guard.repro_context_payload(
         command=[sys.executable, "-c", "pass"],

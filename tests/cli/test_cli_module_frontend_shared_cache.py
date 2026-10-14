@@ -32,6 +32,7 @@ import pytest
 from molt.cli import module_cache as MC
 from molt.cli import module_frontend_cache as MFC
 from molt.cli.module_source import PythonSourceSnapshot
+from tests.process_guard_common import current_thread_only
 
 
 # --------------------------------------------------------------------------
@@ -686,7 +687,9 @@ def test_publish_and_hydrate_never_use_os_link(
         link_calls.append((str(src), str(dst)))
         return real_link(src, dst, *a, **k)
 
-    monkeypatch.setattr(os, "link", _tracking_link)
+    # A tripwire must catch this call from any module, so it stays process-wide.
+    # Only this thread meets the fake; other threads reach the real function.
+    monkeypatch.setattr(os, "link", current_thread_only(_tracking_link, real_link))
 
     _use_session(monkeypatch, "A")
     MC._write_persisted_module_lowering(

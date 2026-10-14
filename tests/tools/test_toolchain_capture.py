@@ -20,8 +20,9 @@ from tests.executable_test_support import (
 )
 import pytest
 
-from tests.process_guard_common import run_isolated_python_probe
+from tests.process_guard_common import install_module_view, run_isolated_python_probe
 
+from molt import file_publication
 from molt.exact_json import canonical_json_sha256
 from tools.proof_queue_pkg import (
     custody_cas,
@@ -765,7 +766,8 @@ def test_custody_cas_recursively_fsyncs_new_directories(
             directory_fsyncs.append("directory")
         real_fsync(descriptor)
 
-    monkeypatch.setattr(custody_cas.os, "fsync", observed_fsync)
+    # The CAS issues every directory barrier through file publication.
+    install_module_view(monkeypatch, "os", os, file_publication, fsync=observed_fsync)
     reference = custody_cas.put_json(
         tmp_path / "new" / "nested" / "cas",
         {"schema": custody_cas.ARTIFACT_SCHEMA, "kind": "durable-directories"},
@@ -1981,7 +1983,9 @@ def test_process_image_revalidation_rejects_mutation(tmp_path: Path) -> None:
 def test_platform_auxiliary_images_are_absent_off_windows_or_for_leaf_custody(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(process_image_capture.sys, "platform", "linux")
+    install_module_view(
+        monkeypatch, "sys", sys, process_image_capture, platform="linux"
+    )
     assert process_image_capture.platform_auxiliary_images("declared-toolchains") == []
 
     monkeypatch.setattr(process_image_capture.sys, "platform", "win32")

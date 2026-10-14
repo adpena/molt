@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -142,7 +143,7 @@ from tests.wasm_object_fixtures import (
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import current_thread_only, install_module_view
 
 cli_deps = importlib.import_module("molt.cli.deps")
 cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
@@ -5199,7 +5200,13 @@ def test_native_archive_fixture_preserves_digest_and_cache_custody(
     def forbid_reader_execution(*args: Any, **kwargs: Any) -> None:
         pytest.fail("synthetic symbol reader executable is identity-only")
 
-    monkeypatch.setattr(subprocess, "Popen", forbid_reader_execution)
+    # A tripwire must catch this launch from any module, subprocess.run among
+    # them, so it stays process-wide. Only this thread meets the fake.
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        current_thread_only(forbid_reader_execution, subprocess.Popen),
+    )
     first = native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
     assert first.artifact_digest == hashlib.sha256(first_bytes).hexdigest()
     assert first.defined == frozenset({"PyInit__native", "state"})
@@ -14879,10 +14886,12 @@ def test_verify_cargo_lock_uses_workspace_member_manifests_only(
 
     captured: dict[str, list[Path]] = {}
 
-    monkeypatch.setattr(
-        LOCKFILES.shutil,
-        "which",
-        lambda name: "/usr/bin/cargo" if name == "cargo" else None,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        LOCKFILES,
+        which=lambda name: "/usr/bin/cargo" if name == "cargo" else None,
     )
     monkeypatch.setattr(
         LOCKFILES,
@@ -26394,11 +26403,13 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     monkeypatch.setattr(
         cli_commands, "_run_completed_command", fake_run_completed_command
     )
-    original_which = cli_commands.shutil.which
-    monkeypatch.setattr(
-        cli_commands.shutil,
-        "which",
-        lambda name, *, path=None: (
+    original_which = shutil.which
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        cli_commands,
+        which=lambda name, *, path=None: (
             f"/usr/bin/{name}" if name == "lune" else original_which(name, path=path)
         ),
     )
@@ -26787,11 +26798,13 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
-    original_which = cli_commands.shutil.which
-    monkeypatch.setattr(
-        cli_commands.shutil,
-        "which",
-        lambda name, *, path=None: (
+    original_which = shutil.which
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        cli_commands,
+        which=lambda name, *, path=None: (
             f"/usr/bin/{name}"
             if name == "wrangler"
             else original_which(name, path=path)
@@ -30688,7 +30701,9 @@ def test_replace_directory_tree_from_source_restores_previous_tree_on_publish_fa
             raise OSError("publish failed")
         original_replace(src_arg, dst_arg)
 
-    monkeypatch.setattr(os, "replace", fail_temp_publish)
+    install_module_view(
+        monkeypatch, "os", os, cli_non_native_output, replace=fail_temp_publish
+    )
 
     with pytest.raises(OSError, match="publish failed"):
         cli_non_native_output._replace_directory_tree_from_source(src, dest)
