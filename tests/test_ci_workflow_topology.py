@@ -524,6 +524,7 @@ def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> N
             "proof-receipts/evidence/runtime-gate-runs/",
             "proof-receipts/evidence/runtime-extension-admission/",
             "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
+            "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/cargo-timings/cargo-timing-*.html', env.CARGO_TARGET_DIR) || '' }}",
         ]
     else:
         assert job["env"]["MOLT_DEBUG_ARTIFACT_DIR"] == (

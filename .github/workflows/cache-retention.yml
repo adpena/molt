@@ -16,8 +16,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: read
+  actions: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 concurrency:
   group: cache-retention
