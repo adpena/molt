@@ -2390,7 +2390,7 @@ timeout_seconds = 120
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = []
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication", "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence"]
 toolchains = ["python", "uv", "node"]
 
 [[command]]
