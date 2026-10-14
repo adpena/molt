@@ -149,17 +149,6 @@ pub enum MoltOptLevel {
     Aggressive,
 }
 
-/// LTO (Link-Time Optimization) mode.
-#[cfg(feature = "llvm")]
-pub enum LtoMode {
-    /// No LTO. Each module is compiled independently.
-    None,
-    /// Thin LTO — parallel, scalable, default for `--release`.
-    Thin,
-    /// Full LTO — maximum inter-procedural optimization, slowest link.
-    Full,
-}
-
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
     /// Initialize Polly polyhedral optimization via LLVM command-line flags.
@@ -314,15 +303,6 @@ impl<'ctx> LlvmBackend<'ctx> {
         inkwell::targets::RelocMode::PIC
     }
 
-    /// Emit LLVM bitcode to a file (used for LTO pipelines).
-    ///
-    /// Returns `true` on success. The emitted `.bc` file can be passed to
-    /// `llvm-lto` or the linker's LTO plugin for cross-module optimization.
-    pub fn emit_bitcode(&self, path: &std::path::Path) -> bool {
-        self.ensure_generated_object_abi_anchor();
-        self.module.write_bitcode_to_path(path)
-    }
-
     /// Emit a native object file (`.o`) at the given optimization level.
     pub fn emit_object(
         &self,
@@ -379,29 +359,6 @@ mod tests {
             ir.contains("test_module"),
             "IR should contain the module name, got: {ir}"
         );
-    }
-
-    #[test]
-    fn direct_bitcode_emitter_retains_generated_object_abi_witness() {
-        let ctx = Context::create();
-        let backend = LlvmBackend::new(&ctx, "direct_bitcode_abi");
-        let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-bitcode-abi")
-            .expect("create LLVM bitcode outputs within Cargo image custody");
-        let artifact = artifacts.path().join("backend.bc");
-        assert!(backend.emit_bitcode(&artifact));
-        // The reader accepts raw bitcode and target-specific bitcode wrappers.
-        let parsed = inkwell::module::Module::parse_bitcode_from_path(&artifact, &ctx)
-            .expect("parse emitted LLVM bitcode");
-        let ir = parsed.print_to_string().to_string();
-        assert!(ir.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL));
-        let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
-            molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
-        } else {
-            molt_codegen_abi::GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
-        };
-        assert!(!ir.contains(opposite));
-        assert!(ir.contains(crate::GENERATED_OBJECT_ABI_ANCHOR_SYMBOL));
-        assert!(ir.contains("llvm.used"));
     }
 
     #[test]

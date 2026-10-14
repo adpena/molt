@@ -159,8 +159,10 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   devirt. Build a type-hierarchy graph → resolve `x.foo()` to concrete impls → speculative inline.
 - **W3. Dead-field elim / per-attribute DCE** — the real <2MB + startup lever (make_function is an
   unconditional DCE root, cli.py:17043). Prune never-read module attrs from the static graph.
-- **W4. LTO wiring** — LtoMode::{Thin,Full} declared but never wired (llvm_backend/mod.rs:79); emit_bitcode
-  exists, uncalled. Cross-module inlining for the LLVM target.
+- **W4. LTO wiring** — not started. An unwired `LtoMode` declaration and an uncalled
+  `LlvmBackend::emit_bitcode` were deleted on 2026-10-14; the lane builds bitcode emission with
+  its first caller, and keeps the generated-object ABI witness in it. Cross-module inlining for the
+  LLVM target, including the runtime's hot helpers.
 
 ---
 
@@ -175,6 +177,51 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   fullPipeline); extend to the new Tier-0/2 passes as they land.
 
 ---
+
+## Codon CIR comparison (2026-10-14)
+
+Source: Codon `develop` at 45261e03, read against Molt at e578a709d. Codon is fast for one reason:
+every fact it needs is proven at compile time, so it emits direct calls, fixed field offsets, raw
+loop counters and no exception checks outside `try`. It gets those proofs by excluding Python
+dynamism (64-bit `int`, fixed fields, compile-time `__getattr__`, no rebinding). Molt keeps CPython
+semantics, so it cannot exclude the dynamism. It can give every fact three tiers instead:
+
+- **Proven:** emit Codon-style code (direct call, fixed offset, unboxed I64/F64, no check).
+- **Guarded:** one inline version compare at region entry; on failure, exit to a generic block
+  version (`block_versioning.rs` already versions blocks; Molt has no interpreter to deopt to).
+- **Unknown:** the full dynamic protocol, with a per-site inline cache as its fast path.
+
+Each guard names the effects that invalidate it (class layout and the global type version today),
+so a call whose summary may mutate types forces a re-check.
+
+Adopt, in order of expected gain:
+1. Direct calls for module functions that are never rebound, decided as a TIR call fact, with a
+   module-dictionary version guard when not proven. The LLVM backend never takes a direct path for
+   `call_guarded` (`llvm_backend/lowering/call_lowering.rs`), and the native guard makes five
+   runtime calls per Python call (HF-185).
+2. Typed field ops (`FieldLoad{class, slot}`, `FieldStore`, `ClassVersionGuard`) from a
+   class-hierarchy analysis that proves the receiver class and the absence of `__getattr__`,
+   `__getattribute__` and data-descriptor overrides (design 68). The per-site field cache in
+   `builtins/attributes/field_sites.rs` is the unknown-tier fast path.
+3. Guarded specialization of `call_internal` callees per proven argument-type tuple (Codon's
+   realization), keeping the generic body.
+4. Exception checks as a generated "may raise" op fact, lowered to an inline sentinel compare on the
+   returned bits; the pending flag is read only at handler entry.
+5. A counted-loop region carried through TIR (Codon's `ImperativeForFlow`) instead of re-detected
+   twice, with the induction value in a register and no per-iteration frame-home store unless an op
+   that may raise needs the line.
+6. Purity and per-argument capture summaries in `FunctionSummary`, generated from the intrinsics
+   manifest.
+7. Runtime hot helpers shipped as bitcode for ThinLTO (W4), so LLVM can inline tag checks, field
+   access, reference counting and the pending-exception check.
+8. Typed op identity: TIR folds about 20 spellings into one `OpCode` and keeps the spelling only as
+   the `_original_kind` string, so every backend re-matches strings for the same decision.
+
+Reject, because Molt keeps CPython semantics: wrapping 64-bit `int`, fixed fields with compile
+errors for unknown attributes, compile-time-only `__getattr__`, Boehm GC (`__del__` and weakref
+timing need reference counts), operators only as magic-method calls (Molt's opcodes encode the
+`__radd__`/`NotImplemented` protocol), and Itanium unwinding everywhere (WASM and Luau are
+co-equal targets).
 
 ## Dependency-correct build order (the program)
 1. **Tier 1 correctness first** (C1 memory-safety is non-negotiable; C2/C3 are hang/wrong-result).
