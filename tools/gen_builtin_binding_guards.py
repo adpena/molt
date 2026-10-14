@@ -101,7 +101,7 @@ def render_python(schema: Schema) -> str:
     lines += [
         "    }\n",
         ")\n",
-        f"BUILTIN_BINDING_GUARD_ALL_MASK: Final[int] = {schema.all_mask:#x}\n",
+        f"BUILTIN_BINDING_GUARD_ALL_MASK: Final[int] = 0x{schema.all_mask:X}\n",
         "\n",
         "__all__ = [\n",
         '    "BUILTIN_BINDING_GUARD_ALL_MASK",\n',

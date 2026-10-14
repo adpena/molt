@@ -52,7 +52,7 @@ BUILTIN_BINDING_GUARD_BITS: Final[Mapping[str, int]] = MappingProxyType(
         "zip": 1 << 40,
     }
 )
-BUILTIN_BINDING_GUARD_ALL_MASK: Final[int] = 0x1ffffffffff
+BUILTIN_BINDING_GUARD_ALL_MASK: Final[int] = 0x1FFFFFFFFFF
 
 __all__ = [
     "BUILTIN_BINDING_GUARD_ALL_MASK",
