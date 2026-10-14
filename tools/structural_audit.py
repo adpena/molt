@@ -39,12 +39,13 @@ import argparse
 import ast
 import io
 import json
+import os
 import re
 import sys
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict, field as dataclass_field
-from functools import wraps
+from functools import lru_cache, wraps
 from threading import local
 from pathlib import Path
 import tokenize
@@ -107,18 +108,34 @@ _EXCLUDE_PATH_FRAGMENTS = ("memory/recovery/", "memory/index_snapshots")
 _SOURCE_ROOTS = ("runtime", "src", "tools")
 
 
-def _is_excluded(path: Path, root: Path) -> bool:
+@lru_cache(maxsize=1 << 16)
+def _relative_posix(path: Path, root: Path) -> str | None:
+    """``path.relative_to(root).as_posix()``, or None when path is outside root.
+
+    The probes ask about the same walked paths many times, and a prefix test
+    answers the common case without ``relative_to``'s per-parent iteration.
+    """
+    path_text, root_text = str(path), str(root)
+    if path_text == root_text:
+        return "."
+    prefix = root_text if root_text.endswith(os.sep) else root_text + os.sep
+    if path_text.startswith(prefix):
+        return path_text[len(prefix) :].replace(os.sep, "/")
     try:
-        rel = path.relative_to(root)
+        return path.relative_to(root).as_posix()
     except ValueError:
+        return None
+
+
+def _is_excluded(path: Path, root: Path) -> bool:
+    rel_str = _relative_posix(path, root)
+    if rel_str is None:
         return True
-    parts = rel.parts
-    for seg in parts:
+    for seg in rel_str.split("/"):
         if seg in _EXCLUDE_SEGMENTS:
             return True
         if seg.startswith(_EXCLUDE_PREFIXES):
             return True
-    rel_str = rel.as_posix()
     return any(frag in rel_str for frag in _EXCLUDE_PATH_FRAGMENTS)
 
 
@@ -165,10 +182,10 @@ def _is_generated(path: Path, root: Path) -> bool:
     # Authoritative manifest list (doc 59 F1) — a declared generated output is
     # generated even if its @generated header were ever stripped.
     try:
-        rel = _resolved(path).relative_to(_resolved(root)).as_posix()
-        if rel in _manifest_declared_outputs(root):
+        rel = _relative_posix(_resolved(path), _resolved(root))
+        if rel is not None and rel in _manifest_declared_outputs(root):
             return True
-    except (ValueError, OSError):
+    except OSError:
         pass
     try:
         head = _source_text(path)[:400]
@@ -298,7 +315,7 @@ def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
         if not base.is_dir():
             continue
         out.extend(_iter_pruned_files(base, root, suffixes))
-    return sorted(out, key=lambda path: path.relative_to(root).as_posix())
+    return sorted(out, key=lambda path: _relative_posix(path, root) or "")
 
 
 def _is_project_source_file(root: Path, path: Path) -> bool:
@@ -2750,7 +2767,7 @@ def _iter_test_files(root: Path) -> list[Path]:
         return []
     return sorted(
         _iter_pruned_files(base, root, (".py",)),
-        key=lambda path: path.relative_to(root).as_posix(),
+        key=lambda path: _relative_posix(path, root) or "",
     )
 
 
@@ -3230,11 +3247,11 @@ def _iter_scratch_authority_files(root: Path) -> list[Path]:
             for path in candidates
             if path.is_file()
             and not _is_excluded(path, root)
-            and not path.relative_to(root)
-            .as_posix()
-            .startswith(_SCRATCH_AUTHORITY_SKIP_PREFIXES)
+            and not (_relative_posix(path, root) or "").startswith(
+                _SCRATCH_AUTHORITY_SKIP_PREFIXES
+            )
         ),
-        key=lambda path: path.relative_to(root).as_posix(),
+        key=lambda path: _relative_posix(path, root) or "",
     )
 
 
@@ -3266,8 +3283,8 @@ def probe_scratch_authority_bypasses(root: Path) -> list[Finding]:
             and _ARTIFACT_ROOT_CONSTANT not in text
             and (
                 "tmp" not in text
-                if path.suffix == ".rs"
-                else _PY_TMP_LITERAL_RE.search(text) is None
+                or path.suffix != ".rs"
+                and _PY_TMP_LITERAL_RE.search(text) is None
             )
         ):
             continue
