@@ -1251,6 +1251,30 @@ def test_environment_rust_proxy_component_reaches_both_custody_consumers(
         supervisor_custody._supervisor_fixed_images({}, incomplete, [sys.executable])
 
 
+def test_vanished_watch_entries_keep_their_own_key(tmp_path, monkeypatch):
+    # HF-169: Windows custody raises for an absent entry, and the watcher
+    # reports the whole subtree, so a staging file renamed away under a watched
+    # directory once counted as an input mutation. Emulate that lookup here.
+    real_norm = execution_custody._norm
+
+    def windows_norm(path):
+        if not Path(path).exists():
+            raise FileNotFoundError(path)
+        return real_norm(path)
+
+    monkeypatch.setattr(execution_custody, "_norm", windows_norm)
+    watched = tmp_path / "pyproject.toml"
+    watched.write_text("[project]\n", encoding="utf-8")
+    spec = execution_custody.WatchSpec(tmp_path, frozenset({real_norm(watched)}))
+    staged = tmp_path / "proof-receipts" / ".molt-stage-0.tmp"
+    staged.parent.mkdir()
+    staged.write_text("receipt", encoding="utf-8")
+    staged.rename(staged.with_name("receipt.json"))
+    assert not spec.owns(staged)
+    watched.unlink()
+    assert spec.owns(watched), "a removed watched file must remain an input event"
+
+
 def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
