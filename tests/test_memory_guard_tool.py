@@ -3369,22 +3369,36 @@ def test_available_memory_bytes_reads_darwin_vm_pages_without_a_subprocess(
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin Mach VM statistics")
 def test_actual_darwin_vm_pages_match_vm_stat() -> None:
     """vm_stat formats the same Mach counters through its own code path."""
-    text = str(
-        check_output_guarded_test_process(
-            ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
+
+    def vm_stat() -> tuple[str, dict[str, int]]:
+        text = str(
+            check_output_guarded_test_process(
+                ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
+            )
         )
-    )
+        reported: dict[str, int] = {}
+        for line in text.splitlines()[1:]:
+            name, _, value = line.partition(":")
+            if value.strip().rstrip(".").isdigit():
+                reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
+        return text.splitlines()[0], reported
+
+    # Counters move while a busy host runs other tests, so bracket our read
+    # between two vm_stat samples. A wrong counter mapping misses the
+    # bracket by far more than the movement inside it.
+    header, before = vm_stat()
     page_size, pages = memory_guard.darwin_vm_pages()  # type: ignore[misc]
-    header = text.splitlines()[0]
+    _header, after = vm_stat()
     assert f"page size of {page_size} bytes" in header
-    reported: dict[str, int] = {}
-    for line in text.splitlines()[1:]:
-        name, _, value = line.partition(":")
-        if value.strip().rstrip(".").isdigit():
-            reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
     for name, count in pages.items():
-        # The two reads are microseconds apart; a busy host moves a few pages.
-        assert abs(reported[name] - count) <= max(4096, reported[name] // 50), name
+        low, high = sorted((before[name], after[name]))
+        slack = max(1024, high // 100)
+        assert low - slack <= count <= high + slack, (
+            name,
+            before[name],
+            count,
+            after[name],
+        )
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
