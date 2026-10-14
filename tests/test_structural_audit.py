@@ -2941,6 +2941,24 @@ def test_scratch_probe_flags_every_producer_derivation(tmp_path: Path):
     assert _scratch_bypass_count(tmp_path, "tools/tool.py", body) == 10
 
 
+@pytest.mark.parametrize(
+    "literal",
+    ['r"tmp"', '"""tmp/x"""', "U'tmp'", '"" "tmp"', "('tmp')", '"tmp"'],
+)
+def test_scratch_probe_text_filter_keeps_every_tmp_literal_spelling(
+    tmp_path: Path, literal: str
+):
+    # One spelling per file and no artifact-root name, so only the
+    # tmp-literal text filter can admit the file.
+    body = f"from pathlib import Path\nROOT = Path(__file__).parent\na = ROOT / {literal}\n"
+    assert _scratch_bypass_count(tmp_path, "tools/tool.py", body) == 1
+
+
+def test_scratch_probe_text_filter_skips_tmp_names(tmp_path: Path):
+    body = "x = tmp_path / 'a'\ny = gettmp()\n"
+    assert _scratch_bypass_count(tmp_path, "tools/tool.py", body) == 0
+
+
 def test_scratch_probe_ignores_sets_other_names_and_lookalikes(tmp_path: Path):
     body = (
         "import os\n"
