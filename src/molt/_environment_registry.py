@@ -6331,7 +6331,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_GET_ATTR",
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Any set value, even an empty string, makes the runtime print module_get_attr: mod=<bits> attr=<bits> name=<attr> on stderr for every module attribute lookup (MOLT_TRACE_MODULE_ATTRS=all or verbose prints the same line); read on every lookup, and unset prints nothing.",
+      "summary": "Any set value, even an empty string, makes the runtime print module_get_attr: mod=<bits> attr=<bits> name=<attr> on stderr for every module attribute lookup (MOLT_TRACE_MODULE_ATTRS=all or verbose prints the same line); read once per process and cached, and unset prints nothing.",
       "values": []
     },
     {

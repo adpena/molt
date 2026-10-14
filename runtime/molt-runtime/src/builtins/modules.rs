@@ -67,24 +67,61 @@ fn trace_name_error() -> bool {
     })
 }
 
-fn trace_module_attrs() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_MODULE_ATTRS").ok().as_deref(),
-            Some("1")
-        )
-    })
+/// Diagnostic level shared by `MOLT_TRACE_MODULE_ATTRS` and
+/// `MOLT_TRACE_MODULE_GLOBALS`: `1` traces a filtered set of names, `all` or
+/// `verbose` traces every operation. Each flag is read once per process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TraceMode {
+    Off,
+    Filtered,
+    Verbose,
 }
 
-fn trace_module_attrs_verbose() -> bool {
+fn trace_mode(raw: Option<&str>) -> TraceMode {
+    match raw {
+        Some("all") | Some("verbose") => TraceMode::Verbose,
+        Some("1") => TraceMode::Filtered,
+        _ => TraceMode::Off,
+    }
+}
+
+fn trace_module_attrs_mode() -> TraceMode {
+    static MODE: OnceLock<TraceMode> = OnceLock::new();
+    *MODE.get_or_init(|| trace_mode(std::env::var("MOLT_TRACE_MODULE_ATTRS").ok().as_deref()))
+}
+
+/// Whether `mode` traces an access to `attr_name` on `module_name`. Verbose
+/// traces every access; the filtered mode names `_sys` and importlib modules.
+fn module_attr_trace_selected(mode: TraceMode, module_name: &str, attr_name: &str) -> bool {
+    match mode {
+        TraceMode::Off => false,
+        TraceMode::Verbose => true,
+        TraceMode::Filtered => attr_name == "_sys" || module_name.contains("importlib"),
+    }
+}
+
+/// The module and attribute names when `MOLT_TRACE_MODULE_ATTRS` traces this
+/// get or set.
+unsafe fn traced_module_attr(module_ptr: *mut u8, attr_bits: u64) -> Option<(String, String)> {
+    let mode = trace_module_attrs_mode();
+    if mode == TraceMode::Off {
+        return None;
+    }
+    let module_name = string_obj_to_owned(obj_from_bits(unsafe { module_name_bits(module_ptr) }))
+        .unwrap_or_else(|| "<module>".to_string());
+    let attr_name =
+        string_obj_to_owned(obj_from_bits(attr_bits)).unwrap_or_else(|| "<attr>".to_string());
+    module_attr_trace_selected(mode, &module_name, &attr_name).then_some((module_name, attr_name))
+}
+
+fn trace_get_attr() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_MODULE_ATTRS").ok().as_deref(),
-            Some("all" | "verbose")
-        )
-    })
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_GET_ATTR").is_ok())
+}
+
+fn debug_module_get_attr() -> bool {
+    static DEBUG: OnceLock<bool> = OnceLock::new();
+    *DEBUG.get_or_init(|| std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1"))
 }
 
 fn trace_sys_module() -> bool {
@@ -118,33 +155,23 @@ fn trace_op_sigtrap_enabled() -> bool {
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TraceModuleGlobalsMode {
-    Off,
-    Filtered,
-    Verbose,
+fn trace_module_globals_mode() -> TraceMode {
+    static MODE: OnceLock<TraceMode> = OnceLock::new();
+    *MODE.get_or_init(|| trace_mode(std::env::var("MOLT_TRACE_MODULE_GLOBALS").ok().as_deref()))
 }
 
-fn trace_module_globals_mode_raw(raw: Option<&str>) -> TraceModuleGlobalsMode {
-    match raw {
-        Some("all") | Some("verbose") => TraceModuleGlobalsMode::Verbose,
-        Some("1") => TraceModuleGlobalsMode::Filtered,
-        _ => TraceModuleGlobalsMode::Off,
-    }
+fn trace_bad_module_name() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_BAD_MODULE_NAME").as_deref() == Ok("1"))
 }
 
-fn trace_module_globals_mode() -> TraceModuleGlobalsMode {
-    static TRACE: OnceLock<TraceModuleGlobalsMode> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        trace_module_globals_mode_raw(std::env::var("MOLT_TRACE_MODULE_GLOBALS").ok().as_deref())
-    })
+fn trace_bad_module_name_backtrace() -> bool {
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_BAD_MODULE_NAME_BT").as_deref() == Ok("1"))
 }
 
 fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {
-    if !matches!(
-        std::env::var("MOLT_TRACE_BAD_MODULE_NAME").ok().as_deref(),
-        Some("1")
-    ) {
+    if !trace_bad_module_name() {
         return;
     }
     let obj = obj_from_bits(bits);
@@ -161,12 +188,7 @@ fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {
             where_, type_name, rendered
         );
     }
-    if matches!(
-        std::env::var("MOLT_TRACE_BAD_MODULE_NAME_BT")
-            .ok()
-            .as_deref(),
-        Some("1")
-    ) {
+    if trace_bad_module_name_backtrace() {
         let bt = std::backtrace::Backtrace::force_capture();
         eprintln!("{bt}");
     }
@@ -2261,9 +2283,7 @@ pub(crate) fn module_cache_publish(
                     if sys_populate_argv_executable(_py, sys_ptr).is_err() {
                         return MoltObject::none().bits();
                     }
-                    if std::env::var("MOLT_TRACE_SYS_MODULE").as_deref() == Ok("1")
-                        && exception_pending(_py)
-                    {
+                    if trace_sys_module() && exception_pending(_py) {
                         let exc_bits = molt_exception_last_pending();
                         let kind_bits = molt_exception_kind(exc_bits);
                         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -2277,9 +2297,7 @@ pub(crate) fn module_cache_publish(
                     if sys_populate_bootstrap_metadata(_py, sys_ptr).is_err() {
                         return MoltObject::none().bits();
                     }
-                    if std::env::var("MOLT_TRACE_SYS_MODULE").as_deref() == Ok("1")
-                        && exception_pending(_py)
-                    {
+                    if trace_sys_module() && exception_pending(_py) {
                         let exc_bits = molt_exception_last_pending();
                         let kind_bits = molt_exception_kind(exc_bits);
                         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
@@ -2453,10 +2471,8 @@ pub extern "C" fn molt_debug_trace(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let debug_attr = std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1");
-        let trace_attrs = trace_module_attrs();
-        let trace_attrs_verbose = trace_module_attrs_verbose();
-        if std::env::var("MOLT_TRACE_GET_ATTR").is_ok() || trace_attrs_verbose {
+        let debug_attr = debug_module_get_attr();
+        if trace_get_attr() || trace_module_attrs_mode() == TraceMode::Verbose {
             let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
             eprintln!(
@@ -2513,21 +2529,8 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                     Err(()) => return MoltObject::none().bits(),
                 };
             if let Some(val) = found {
-                if trace_attrs || trace_attrs_verbose {
-                    let module_name =
-                        string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                            .unwrap_or_else(|| "<module>".to_string());
-                    let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                        .unwrap_or_else(|| "<attr>".to_string());
-                    if trace_attrs_verbose
-                        || attr_name == "_sys"
-                        || module_name.contains("importlib")
-                    {
-                        eprintln!(
-                            "molt module attr get module={} attr={}",
-                            module_name, attr_name
-                        );
-                    }
+                if let Some((module_name, attr_name)) = traced_module_attr(module_ptr, attr_bits) {
+                    eprintln!("molt module attr get module={module_name} attr={attr_name}");
                 }
                 return val;
             }
@@ -3075,9 +3078,9 @@ fn global_name_text(name_bits: u64) -> String {
 /// names two sys flag globals.
 fn traces_module_global(name_bits: u64) -> bool {
     match trace_module_globals_mode() {
-        TraceModuleGlobalsMode::Off => false,
-        TraceModuleGlobalsMode::Verbose => true,
-        TraceModuleGlobalsMode::Filtered => matches!(
+        TraceMode::Off => false,
+        TraceMode::Verbose => true,
+        TraceMode::Filtered => matches!(
             global_name_text(name_bits).as_str(),
             "_SYS_FLAGS_SEQUENCE_FIELDS" | "_FlagsTuple"
         ),
@@ -3364,8 +3367,6 @@ pub(crate) fn module_set_attr(
     attr_bits: u64,
     val_bits: u64,
 ) -> Result<(), ()> {
-    let trace_attrs = trace_module_attrs();
-    let trace_attrs_verbose = trace_module_attrs_verbose();
     let module_obj = obj_from_bits(module_bits);
     let Some(module_ptr) = module_obj.as_ptr() else {
         raise_exception::<()>(_py, "TypeError", "module attribute set expects module");
@@ -3385,17 +3386,8 @@ pub(crate) fn module_set_attr(
                 return Err(());
             }
         };
-        if trace_attrs {
-            let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                .unwrap_or_else(|| "<module>".to_string());
-            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                .unwrap_or_else(|| "<attr>".to_string());
-            if trace_attrs_verbose || attr_name == "_sys" || module_name.contains("importlib") {
-                eprintln!(
-                    "molt module attr set module={} attr={}",
-                    module_name, attr_name
-                );
-            }
+        if let Some((module_name, attr_name)) = traced_module_attr(module_ptr, attr_bits) {
+            eprintln!("molt module attr set module={module_name} attr={attr_name}");
         }
         let annotations_bits = intern_static_name(
             _py,
@@ -3491,6 +3483,32 @@ mod namespace_lookup_tests;
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn module_trace_modes_share_one_grammar_and_verbose_traces_every_access() {
+        assert_eq!(trace_mode(None), TraceMode::Off);
+        assert_eq!(trace_mode(Some("0")), TraceMode::Off);
+        assert_eq!(trace_mode(Some("1")), TraceMode::Filtered);
+        assert_eq!(trace_mode(Some("all")), TraceMode::Verbose);
+        assert_eq!(trace_mode(Some("verbose")), TraceMode::Verbose);
+        // Verbose includes the filtered accesses; module stores were silent
+        // under it while the setter required the `1` spelling as well.
+        for (module, attr) in [("app", "x"), ("app", "_sys"), ("importlib._bootstrap", "x")] {
+            assert!(module_attr_trace_selected(TraceMode::Verbose, module, attr));
+            assert!(!module_attr_trace_selected(TraceMode::Off, module, attr));
+        }
+        assert!(!module_attr_trace_selected(TraceMode::Filtered, "app", "x"));
+        assert!(module_attr_trace_selected(
+            TraceMode::Filtered,
+            "app",
+            "_sys"
+        ));
+        assert!(module_attr_trace_selected(
+            TraceMode::Filtered,
+            "importlib._bootstrap",
+            "x"
+        ));
+    }
 
     #[test]
     fn copyreg_reads_foreign_integer_storage_without_losing_range_policy() {
