@@ -1197,7 +1197,7 @@ def test_cargo_document_capture_bounds_actual_growth_before_parse(
     from dataclasses import replace
     from molt import toolchain_identity
     from molt.cli.cargo_source_closure import _read_cargo_document
-    from tests.operation_probe import same_thread_probe
+    from tests.process_guard_common import current_thread_only
 
     path = tmp_path / "Cargo.toml"
     raw = b'[package]\nname = "fixture"\nversion = "0.1.0"\n'
@@ -1229,7 +1229,7 @@ def test_cargo_document_capture_bounds_actual_growth_before_parse(
     monkeypatch.setattr(
         toolchain_identity,
         "open_stable_regular_file",
-        same_thread_probe(original, growing_open),
+        current_thread_only(growing_open, original),
     )
     with pytest.raises(
         toolchain_identity.StableRegularFileChangedError, match="changed"

@@ -12,11 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.process_guard_common import run_isolated_python_probe
+from tests.process_guard_common import current_thread_only, run_isolated_python_probe
 from molt import default_paths
 
 from molt import toolchain_identity as identity
-from tests.operation_probe import same_thread_probe
 from tests.process_guard_common import install_module_view
 
 
@@ -45,7 +44,7 @@ def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch)
     monkeypatch.setattr(
         identity,
         "open_stable_regular_file",
-        same_thread_probe(identity.open_stable_regular_file, counted_open),
+        current_thread_only(counted_open, identity.open_stable_regular_file),
     )
     captured, raw = identity.capture_stable_regular_file(path, label="fixture")
     assert raw == data
@@ -129,7 +128,7 @@ def test_mutation_version_avoids_hashing_and_detects_changed_size(
     monkeypatch.setattr(
         identity,
         "_sha256_stream",
-        same_thread_probe(identity._sha256_stream, forbid_hash),
+        current_thread_only(forbid_hash, identity._sha256_stream),
     )
     version = identity.stable_regular_file_version(path, label="payload")
     identity.verify_stable_regular_file_identity(version, label="payload")
@@ -210,7 +209,7 @@ def test_expected_path_stat_keeps_the_handle_mutation_fence(tmp_path, monkeypatc
     monkeypatch.setattr(
         identity,
         "_sha256_stream",
-        same_thread_probe(identity._sha256_stream, mutate_after_hash),
+        current_thread_only(mutate_after_hash, identity._sha256_stream),
     )
     with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
         identity.stable_regular_file_identity(
@@ -231,7 +230,7 @@ def test_capture_rejects_short_source_read(tmp_path, monkeypatch):
     monkeypatch.setattr(
         identity,
         "open_stable_regular_file",
-        same_thread_probe(identity.open_stable_regular_file, incorrect_length),
+        current_thread_only(incorrect_length, identity.open_stable_regular_file),
     )
     with pytest.raises(identity.StableRegularFileChangedError, match="size changed"):
         identity.capture_stable_regular_file(path, label="fixture")
@@ -260,7 +259,7 @@ def test_capture_rejects_write_and_restored_timestamp_during_read(
         "hashlib",
         hashlib,
         identity,
-        sha256=same_thread_probe(hashlib.sha256, mutate_after_read),
+        sha256=current_thread_only(mutate_after_read, hashlib.sha256),
     )
     with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
         identity.capture_stable_regular_file(path, label="fixture")
@@ -511,7 +510,7 @@ def test_content_consumers_reject_write_restore_during_hash(
         scoped.setattr(
             identity,
             "_sha256_stream",
-            same_thread_probe(identity._sha256_stream, mutate),
+            current_thread_only(mutate, identity._sha256_stream),
         )
         with pytest.raises(ValueError, match="changed"):
             consumer(path, label="fixture")
@@ -532,7 +531,7 @@ def test_executable_digest_and_header_share_one_owned_descriptor(tmp_path, monke
     monkeypatch.setattr(
         identity,
         "open_stable_read_descriptor",
-        same_thread_probe(identity.open_stable_read_descriptor, open_descriptor),
+        current_thread_only(open_descriptor, identity.open_stable_read_descriptor),
     )
     lexical, resolved, size, digest, header = identity._stable_file_content(
         path, label="fixture"
@@ -571,14 +570,14 @@ def test_version_probe_hashes_once_and_closes_generation_fence(
     monkeypatch.setattr(
         identity,
         "stable_regular_file_handle_identity",
-        same_thread_probe(identity.stable_regular_file_handle_identity, counted),
+        current_thread_only(counted, identity.stable_regular_file_handle_identity),
     )
     install_module_view(
         monkeypatch,
         "subprocess",
         subprocess,
         identity,
-        run=same_thread_probe(identity.subprocess.run, run),
+        run=current_thread_only(run, identity.subprocess.run),
     )
     if mutate:
         with pytest.raises(ValueError, match="changed"):
@@ -615,7 +614,7 @@ def test_native_content_and_cargo_custody_share_one_hash_authority(
     monkeypatch.setattr(
         identity,
         "stable_regular_file_handle_identity",
-        same_thread_probe(identity.stable_regular_file_handle_identity, counted),
+        current_thread_only(counted, identity.stable_regular_file_handle_identity),
     )
     content = identity.native_executable_content_identity(path, label="fixture")
     assert calls == [path]
@@ -646,7 +645,7 @@ def test_native_consumers_reject_scripts_before_execution(
         "subprocess",
         subprocess,
         identity,
-        run=same_thread_probe(identity.subprocess.run, unexpected_execution),
+        run=current_thread_only(unexpected_execution, identity.subprocess.run),
     )
     with pytest.raises(ValueError, match="native executable, not a script"):
         if consumer == "content":
@@ -824,7 +823,7 @@ def test_attested_read_checks_content_with_one_owned_read(
     monkeypatch.setattr(
         identity,
         "open_stable_regular_file",
-        same_thread_probe(identity.open_stable_regular_file, counted_open),
+        current_thread_only(counted_open, identity.open_stable_regular_file),
     )
     if mutate:
         with pytest.raises(
@@ -857,7 +856,7 @@ def test_bounded_capture_never_issues_an_unbounded_read(tmp_path, monkeypatch):
     monkeypatch.setattr(
         identity,
         "open_stable_regular_file",
-        same_thread_probe(identity.open_stable_regular_file, growing_open),
+        current_thread_only(growing_open, identity.open_stable_regular_file),
     )
     with pytest.raises(ValueError, match="size changed"):
         identity.capture_stable_regular_file(path, label="fixture", max_bytes=8)
@@ -985,12 +984,12 @@ def test_snapshot_growth_cannot_write_beyond_pinned_byte_allowance(
     monkeypatch.setattr(
         identity,
         "open_stable_regular_file",
-        same_thread_probe(identity.open_stable_regular_file, growing_open),
+        current_thread_only(growing_open, identity.open_stable_regular_file),
     )
     monkeypatch.setattr(
         identity,
         "_unlink_owned_file",
-        same_thread_probe(identity._unlink_owned_file, observe_cleanup),
+        current_thread_only(observe_cleanup, identity._unlink_owned_file),
     )
     # Windows may deny the attempted conflicting append before any bytes change;
     # either real OS denial or the finite stream limit must leave no snapshot.
@@ -1189,7 +1188,7 @@ def test_retained_file_consumers_bound_growth_before_acceptance(
     monkeypatch.setattr(
         owner,
         "open_stable_regular_file",
-        same_thread_probe(original_open, growing_open),
+        current_thread_only(growing_open, original_open),
     )
     error_type = (
         backend_artifact_contract.BackendArtifactValidationError

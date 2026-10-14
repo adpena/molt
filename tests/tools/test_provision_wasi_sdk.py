@@ -568,7 +568,7 @@ def test_receipt_facts_use_captured_tree_without_reopening_members(
 @pytest.mark.parametrize("mode", ["version", "tree-version", "tree-file"])
 def test_sdk_identity_reads_only_its_initial_extent(tmp_path, monkeypatch, mode):
     from contextlib import contextmanager
-    from tests.operation_probe import same_thread_probe
+    from tests.process_guard_common import current_thread_only
 
     sdk = tmp_path / "sdk"
     sdk.mkdir()
@@ -637,7 +637,7 @@ def test_sdk_identity_reads_only_its_initial_extent(tmp_path, monkeypatch, mode)
     monkeypatch.setattr(
         wasi_sdk_identity,
         "open_stable_regular_file",
-        same_thread_probe(original, growing_open),
+        current_thread_only(growing_open, original),
     )
     with pytest.raises(wasi_sdk_identity.WasiSdkIdentityError) as failure:
         read()

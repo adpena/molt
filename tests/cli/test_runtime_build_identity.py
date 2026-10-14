@@ -23,8 +23,7 @@ from molt.cli.runtime_artifact_selection import (
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
-from tests.operation_probe import same_thread_probe
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import current_thread_only, install_module_view
 from tests.runtime_build_identity_helper import (
     build_python_identity_fixture,
     RuntimeFixtureRoot,
@@ -970,7 +969,7 @@ def test_flag_projection_resolves_roots_once_not_per_export(
         resolved.append(path)
         return original(path, strict=strict)
 
-    monkeypatch.setattr(Path, "resolve", same_thread_probe(original, resolve))
+    monkeypatch.setattr(Path, "resolve", current_thread_only(resolve, original))
     projection = identity._RuntimeFlagProjection.capture(roots)
     assert resolved == [path for _label, path in roots]
     exports = tuple(

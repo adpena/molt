@@ -131,7 +131,6 @@ from tests.native_artifact_fixtures import (
     NativeSymbolFixture,
     native_relocatable_object,
 )
-from tests.operation_probe import same_thread_probe
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     mock_wasm_optimizer_cache_fact,
@@ -13378,7 +13377,7 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
         return original_resolve(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        Path, "resolve", same_thread_probe(original_resolve, wrapped_resolve)
+        Path, "resolve", current_thread_only(wrapped_resolve, original_resolve)
     )
 
     cache = cli_module_resolution._ModuleResolutionCache()
@@ -13407,7 +13406,7 @@ def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_pa
         raise AssertionError(f"resolve() should not run for {self}")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(Path, "resolve", same_thread_probe(Path.resolve, fail_resolve))
+        scoped.setattr(Path, "resolve", current_thread_only(fail_resolve, Path.resolve))
         assert cache.resolved_path(path) == path
 
 
@@ -13428,7 +13427,7 @@ def test_shared_module_resolution_cache_resolves_relative_paths(
         return original_resolve(self, *args, **kwargs)
 
     monkeypatch.setattr(
-        Path, "resolve", same_thread_probe(original_resolve, wrapped_resolve)
+        Path, "resolve", current_thread_only(wrapped_resolve, original_resolve)
     )
     assert cache.resolved_path(rel_path) == resolved_path
     assert calls == 1
