@@ -278,11 +278,13 @@ pub(super) unsafe fn function_binding_shape(
             func_ptr,
             FunctionBindingField::KeywordDefaults,
         ));
+        // The binder reads keyword defaults only for keyword-only parameters,
+        // which already require it. The dictionary stays mutable without a
+        // flag refresh, so only its type is a binder fact.
         if !kwdefaults.is_none() {
-            full_binder |= match kwdefaults.as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => dict_len(ptr) != 0,
-                _ => true,
-            };
+            full_binder |= kwdefaults
+                .as_ptr()
+                .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT);
         }
         let defaults = obj_from_bits(function_binding_meta(
             py,
@@ -343,6 +345,8 @@ pub(crate) unsafe fn function_requires_binder_flag(func_ptr: *mut u8) -> bool {
     }
 }
 
+/// Every construction and metadata write refreshes the binder flag, so the
+/// flag is exact in both states and an exact-arity call reads only the header.
 pub(crate) unsafe fn function_raw_positional_call_needs_binding(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
@@ -352,10 +356,10 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
         if function_requires_binder_flag(func_ptr) {
             return true;
         }
-        let shape = function_binding_shape(_py, func_ptr);
-        if shape.full_binder {
-            return true;
-        }
+        debug_assert!(
+            !function_needs_full_binder(_py, func_ptr),
+            "binder flag is stale: a construction or metadata write skipped its refresh"
+        );
         let Some(arity) = function_arity_usize(func_ptr) else {
             let _ = raise_exception::<u64>(
                 _py,
@@ -369,7 +373,9 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
         }
         // Wrong Python arity belongs to frame binding even without defaults.
         // Native callables without a Python signature keep their own admission.
-        shape.positional_defaults != 0
+        let shape = function_binding_shape(_py, func_ptr);
+        shape.full_binder
+            || shape.positional_defaults != 0
             || !obj_from_bits(function_binding_meta(
                 _py,
                 func_ptr,

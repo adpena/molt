@@ -386,6 +386,8 @@ pub(crate) fn alloc_runtime_function_obj(
     }
     unsafe {
         init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, 0, false);
+        // The call path trusts the binder flag in both states.
+        crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
     }
     ptr
 }
@@ -490,6 +492,9 @@ fn molt_func_new_builtin_raw_impl(
     }
     unsafe {
         init_runtime_callable_function_obj(ptr, fn_key, fn_ptr, trampoline_ptr, false);
+        // Compiled code can name any runtime symbol, including one that binds
+        // its own arguments; the call path trusts the binder flag.
+        crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
         if !object_init_class_edge_unpublished(_py, ptr, builtin_bits, ClassEdgeOwnership::Owned) {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());

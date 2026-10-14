@@ -568,8 +568,8 @@ pub(crate) unsafe fn function_has_variadic_trampoline(func_ptr: *mut u8) -> bool
 }
 
 /// Binder metadata shared by mutation admission and callable-shape guards.
-/// Dictionary writes can bypass attribute setters, so a mutation stamp alone
-/// does not establish that these fields still have their published values.
+/// The fields live in typed slots, not `__dict__`, and every write refreshes
+/// the function's binder flag through `commit_function_metadata_change`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FunctionBindingField {
     Defaults,
