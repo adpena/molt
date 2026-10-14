@@ -37,15 +37,30 @@ pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // Read-only semantic identity. Callable construction uses fn_addr! below to
 // publish the executable target; metadata and dispatch predicates must not.
+// Both resolve the symbol's named key at compile time.
 macro_rules! fn_key {
     ($func:path) => {
-        $crate::builtins::functions::runtime_fn_key(stringify!($func), $func as *const ())
+        $crate::builtins::functions::runtime_fn_key(
+            const {
+                $crate::builtins::functions::runtime_callable_key_from_symbol_path(stringify!(
+                    $func
+                ))
+            },
+            $func as *const (),
+        )
     };
 }
 
 macro_rules! fn_addr {
     ($func:path) => {
-        $crate::builtins::functions::runtime_fn_addr(stringify!($func), $func as *const ())
+        $crate::builtins::functions::runtime_fn_publish(
+            const {
+                $crate::builtins::functions::runtime_callable_key_from_symbol_path(stringify!(
+                    $func
+                ))
+            },
+            $func as *const (),
+        )
     };
 }
 

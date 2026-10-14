@@ -21,19 +21,41 @@ fn native_callable_targets() -> &'static Mutex<HashMap<u64, NativeCallableTarget
     TARGETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn runtime_callable_name_suffix(symbol_path: &str) -> &str {
-    symbol_path.rsplit("::").next().unwrap_or(symbol_path)
+/// The named key of a `stringify!` symbol path: its name after the last `::`.
+/// `fn_key!` and `fn_addr!` evaluate this in a `const` block, so identity
+/// predicates on the call path compare constants instead of scanning names.
+pub(crate) const fn runtime_callable_key_from_symbol_path(symbol_path: &str) -> Option<u64> {
+    let path = symbol_path.as_bytes();
+    let mut start = path.len();
+    while start >= 2 {
+        if path[start - 2] == b':' && path[start - 1] == b':' {
+            break;
+        }
+        start -= 1;
+    }
+    let name = if start >= 2 {
+        path.split_at(start).1
+    } else {
+        path
+    };
+    wasm_callables::runtime_callable_key_from_symbol_name(name)
 }
 
 /// Resolve semantic callable identity without registering a native call target.
 /// Metadata readers use this path without allocation or registry side effects.
-pub(crate) fn runtime_fn_key(symbol_path: &str, raw_ptr: *const ()) -> u64 {
-    runtime_callable_key_from_symbol_name(runtime_callable_name_suffix(symbol_path))
-        .unwrap_or_else(|| crate::provenance::abi::expose_function_address(raw_ptr))
+#[inline]
+pub(crate) fn runtime_fn_key(named_key: Option<u64>, raw_ptr: *const ()) -> u64 {
+    named_key.unwrap_or_else(|| crate::provenance::abi::expose_function_address(raw_ptr))
 }
 
-pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
-    let key = runtime_fn_key(symbol_path, raw_ptr);
+/// Resolve identity and publish its executable target for callable construction.
+/// The generated table owns the target of every named key, so only address
+/// keys enter the registry.
+pub(crate) fn runtime_fn_publish(named_key: Option<u64>, raw_ptr: *const ()) -> u64 {
+    if let Some(key) = named_key {
+        return key;
+    }
+    let key = crate::provenance::abi::expose_function_address(raw_ptr);
     if !raw_ptr.is_null() {
         let mut guard = native_callable_targets().lock().unwrap();
         guard.entry(key).or_insert(NativeCallableTarget(raw_ptr));
@@ -41,8 +63,9 @@ pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
     key
 }
 
-fn runtime_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
-    wasm_callables::runtime_callable_key_from_symbol_name(symbol_name)
+/// Generated intrinsic resolvers name their symbol at run time.
+pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
+    runtime_fn_publish(runtime_callable_key_from_symbol_path(symbol_path), raw_ptr)
 }
 
 pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {

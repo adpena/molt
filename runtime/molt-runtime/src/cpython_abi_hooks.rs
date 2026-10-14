@@ -4229,16 +4229,11 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
     )
 }
 
-const CEXT_TRAMPOLINE_SYMBOL: &str = "crate::molt_cpython_abi_cext_call_trampoline_admitted";
-
 fn cext_trampoline_key() -> u64 {
     // Recognition is a read, including for non-C-extension functions. Only
     // construction registers executable targets; the binder must not lock and
     // mutate that registry just to compare callable identity.
-    crate::builtins::functions::runtime_fn_key(
-        CEXT_TRAMPOLINE_SYMBOL,
-        molt_cpython_abi_cext_call_trampoline_admitted as *const (),
-    )
+    fn_key!(molt_cpython_abi_cext_call_trampoline_admitted)
 }
 
 /// Recognize a published C wrapper by its canonical executable identity.
@@ -4605,9 +4600,9 @@ unsafe extern "C" fn hook_register_c_function(
             );
             return 0;
         }
+        #[cfg(not(target_arch = "wasm32"))]
         let raw_trampoline = molt_cpython_abi_cext_call_trampoline_admitted as *const ();
-        let fn_ptr_value =
-            crate::builtins::functions::runtime_fn_addr(CEXT_TRAMPOLINE_SYMBOL, raw_trampoline);
+        let fn_ptr_value = fn_addr!(molt_cpython_abi_cext_call_trampoline_admitted);
         let func_ptr = alloc_function_obj(&_py, fn_ptr_value, dispatch_kind.arity());
         if func_ptr.is_null() {
             return 0;

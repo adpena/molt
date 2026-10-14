@@ -540,12 +540,7 @@ pub extern "C" fn molt_io_member_get(descriptor: u64, instance: u64) -> u64 {
             else {
                 return raise_exception::<_>(py, "TypeError", "invalid IO member descriptor");
             };
-            if function_fn_ptr(getter)
-                != crate::builtins::functions::runtime_fn_key(
-                    "molt_io_member_get",
-                    molt_io_member_get as *const (),
-                )
-            {
+            if function_fn_ptr(getter) != fn_key!(molt_io_member_get) {
                 return raise_exception::<_>(py, "TypeError", "invalid IO member descriptor");
             }
             let actual = type_of_bits(py, instance);
