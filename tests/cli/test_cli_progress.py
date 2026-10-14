@@ -117,6 +117,44 @@ def test_json_is_the_only_stdout_and_has_no_status(capsys, live_calls):
     assert live_calls == []
 
 
+def test_json_readers_round_trip_the_printed_payload(capsys):
+    assert output.fail("bad input", True, code=2, command="build") == 2
+    printed = "an earlier progress line\n" + capsys.readouterr().out
+    assert output.read_json_payload(printed)["errors"] == ["bad input"]
+    # The payload's message wins over a stderr that starts with a banner.
+    assert output.json_command_failure(printed, "[molt sccache] enabled\n") == (
+        "bad input"
+    )
+    ok = json.dumps(output.json_payload("build", "ok", data={"output": "app"}))
+    assert output.build_output_path(output.read_json_payload(ok)) == "app"
+
+
+@pytest.mark.parametrize("stdout", ["", "[]", '{"output": "app"}', "{not json"])
+def test_json_reader_refuses_output_without_a_payload(stdout):
+    with pytest.raises(ValueError, match="no molt JSON payload"):
+        output.read_json_payload(stdout)
+
+
+def test_json_command_failure_keeps_the_end_of_unstructured_stderr():
+    stderr = "[molt sccache] enabled\n" + "x" * 5000 + "\nerror: link failed"
+    detail = output.json_command_failure("", stderr, limit=100)
+    assert detail == "..." + stderr[-100:]
+    assert detail.endswith("error: link failed")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        output.json_payload("build", "error", data={"output": "app"}),
+        output.json_payload("build", "ok", data={}),
+        output.json_payload("build", "ok", data={"output": 23}),
+    ],
+)
+def test_build_output_path_requires_an_ok_payload_with_a_string_output(payload):
+    with pytest.raises(ValueError):
+        output.build_output_path(payload)
+
+
 def test_renderer_stops_before_success_and_on_exception(live_calls, capsys):
     with progress.BuildProgress(stream=Terminal()):
         output.success("built", file=sys.stderr)
