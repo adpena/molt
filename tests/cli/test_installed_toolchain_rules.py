@@ -197,15 +197,24 @@ def test_packaged_distribution_is_found_only_in_the_owning_install_scheme(
     }
     monkeypatch.setattr(sysconfig, "get_scheme_names", lambda: tuple(schemes))
     monkeypatch.setattr(sysconfig, "get_paths", lambda scheme: schemes[scheme])
-    assert source_root.packaged_distribution_root() == (
-        data / "share" / "molt" / "distribution"
-    )
-    monkeypatch.delenv("MOLT_SOURCE_ROOT", raising=False)
-    assert source_root.compiler_source_root() == (
-        data / "share" / "molt" / "distribution" / "source"
-    )
-    del schemes["owner"]
-    assert source_root.packaged_distribution_root() is None
+    # The answer is a process constant; this test changes the process layout.
+    source_root.packaged_distribution_root.cache_clear()
+    try:
+        assert source_root.packaged_distribution_root() == (
+            data / "share" / "molt" / "distribution"
+        )
+        monkeypatch.delenv("MOLT_SOURCE_ROOT", raising=False)
+        assert source_root.compiler_source_root() == (
+            data / "share" / "molt" / "distribution" / "source"
+        )
+        del schemes["owner"]
+        assert source_root.packaged_distribution_root() == (
+            data / "share" / "molt" / "distribution"
+        )
+        source_root.packaged_distribution_root.cache_clear()
+        assert source_root.packaged_distribution_root() is None
+    finally:
+        source_root.packaged_distribution_root.cache_clear()
 
 
 @pytest.mark.parametrize("packaged_install", [False, True])
