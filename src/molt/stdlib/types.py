@@ -45,7 +45,7 @@ new_class = _PAYLOAD["new_class"]
 prepare_class = _PAYLOAD["prepare_class"]
 resolve_bases = _PAYLOAD["resolve_bases"]
 _coroutine_intrinsic = _PAYLOAD["coroutine"]
-del _PAYLOAD
+del _PAYLOAD, _require_intrinsic
 
 __all__ = [
     "AsyncGeneratorType",
