@@ -591,6 +591,14 @@ pub(crate) unsafe fn with_string_bytes<R>(
     }
 }
 
+/// Whether `obj` is a string whose storage is exactly `expected`. Compares in
+/// place; a name check must never copy the string to test one spelling.
+#[inline]
+pub(crate) fn string_obj_matches_bytes(obj: MoltObject, expected: &[u8]) -> bool {
+    // SAFETY: the comparison neither calls back nor retires a reference.
+    unsafe { with_string_bytes(obj, |bytes| bytes == expected) }.unwrap_or(false)
+}
+
 /// Copy Python string storage without imposing Rust's Unicode scalar restriction.
 pub(crate) fn string_obj_bytes(obj: MoltObject) -> Option<Vec<u8>> {
     unsafe { with_string_bytes(obj, <[u8]>::to_vec) }

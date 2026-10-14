@@ -268,9 +268,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 class,
                 attr_bits,
                 if type_id == TYPE_ID_MODULE {
-                    builtin_class_method_bits(_py, builtin_classes(_py).module, "__getattribute__")?
+                    class_lookup::DefaultGetattribute::Module
                 } else {
-                    object_method_bits(_py, "__getattribute__")?
+                    class_lookup::DefaultGetattribute::Object
                 },
                 || {
                     if type_id == TYPE_ID_MODULE {

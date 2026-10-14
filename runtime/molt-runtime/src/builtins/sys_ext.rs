@@ -1516,7 +1516,10 @@ mod tests {
 
     extern "C" fn audit_gate(event: u64, _args: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            if string_obj_to_owned(obj_from_bits(event)).as_deref() == Some("sys.addaudithook") {
+            if crate::object::ops_format::string_obj_matches_bytes(
+                obj_from_bits(event),
+                b"sys.addaudithook",
+            ) {
                 match AUDIT_VETO.load(AtomicOrdering::Relaxed) {
                     1 => return raise_exception::<u64>(py, "ValueError", "veto"),
                     2 => return raise_exception::<u64>(py, "KeyboardInterrupt", "veto"),

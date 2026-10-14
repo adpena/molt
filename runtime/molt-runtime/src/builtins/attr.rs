@@ -1423,37 +1423,44 @@ unsafe fn class_namespace_lookup_stage(
             return Ok(Some(value));
         }
         let bits = MoltObject::from_ptr(class).bits();
-        let Some(spelling) = string_obj_to_owned(obj_from_bits(name)) else {
-            return Ok(None);
-        };
-        if bits == builtin_classes(py).function {
-            let value = match spelling.as_str() {
-                "__code__" => Some(function_code_descriptor_bits(py)),
-                "__globals__" => Some(function_globals_descriptor_bits(py)),
-                _ => None,
-            };
-            if let Some(value) = value {
-                return if value == 0 {
-                    Err(ClassNamespaceFailure::Preparation)
-                } else {
-                    Ok(Some(value))
-                };
-            }
-        }
-        if crate::object::class_storage::class_declares(
+        let is_function = bits == builtin_classes(py).function;
+        let builtin_namespace = !crate::object::class_storage::class_declares(
             class,
             crate::object::class_storage::ClassDeclaration::NativeNamespacePublished,
-        ) {
+        ) && (is_builtin_class_bits(py, bits)
+            || crate::builtins::exceptions::is_builtin_exception_class_bits(py, bits));
+        // Only the function class and unpublished builtin namespaces resolve
+        // a dictionary miss by spelling; every other class misses here. Their
+        // names are ASCII, so a name that is not UTF-8 matches none of them,
+        // and the spelling is read in place rather than copied per lookup.
+        if !is_function && !builtin_namespace {
             return Ok(None);
         }
-        if is_builtin_class_bits(py, bits)
-            || crate::builtins::exceptions::is_builtin_exception_class_bits(py, bits)
-        {
-            builtin_class_method_bits(py, bits, &spelling)
+        crate::object::ops_format::with_string_bytes(obj_from_bits(name), |bytes| {
+            let Ok(spelling) = std::str::from_utf8(bytes) else {
+                return Ok(None);
+            };
+            if is_function {
+                let value = match spelling {
+                    "__code__" => Some(function_code_descriptor_bits(py)),
+                    "__globals__" => Some(function_globals_descriptor_bits(py)),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    return if value == 0 {
+                        Err(ClassNamespaceFailure::Preparation)
+                    } else {
+                        Ok(Some(value))
+                    };
+                }
+            }
+            if !builtin_namespace {
+                return Ok(None);
+            }
+            builtin_class_method_bits(py, bits, spelling)
                 .map_err(|()| ClassNamespaceFailure::Preparation)
-        } else {
-            Ok(None)
-        }
+        })
+        .unwrap_or(Ok(None))
     }
 }
 
@@ -1578,7 +1585,7 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
 ) -> Result<Option<u64>, ()> {
     unsafe {
         Ok(class_namespace_lookup_mro(py, class, name)?.or_else(|| {
-            (string_obj_to_owned(obj_from_bits(name)).as_deref() == Some("__doc__"))
+            crate::object::ops_format::string_obj_matches_bytes(obj_from_bits(name), b"__doc__")
                 .then(|| MoltObject::none().bits())
         }))
     }
@@ -3228,10 +3235,11 @@ pub(crate) unsafe fn super_attr_lookup(
     name: u64,
 ) -> Result<Option<u64>, ()> {
     unsafe {
-        let spelling = string_obj_to_owned(obj_from_bits(name));
+        let names_class =
+            crate::object::ops_format::string_obj_matches_bytes(obj_from_bits(name), b"__class__");
         let receiver = crate::super_obj_bits(proxy);
         let receiver_class = crate::object::layout::super_receiver_class_bits(proxy);
-        if spelling.as_deref() != Some("__class__")
+        if !names_class
             && let Some((_, selected)) =
                 super_attribute_owned(py, crate::super_type_bits(proxy), receiver_class, name)?
         {
@@ -3262,7 +3270,10 @@ pub(crate) unsafe fn super_resolve_method_unbound(
             return Ok(None);
         };
         if object_type_id(self_ptr) == TYPE_ID_TYPE
-            || string_obj_to_owned(obj_from_bits(attr_bits)).as_deref() == Some("__class__")
+            || crate::object::ops_format::string_obj_matches_bytes(
+                obj_from_bits(attr_bits),
+                b"__class__",
+            )
         {
             return Ok(None);
         }
