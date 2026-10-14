@@ -559,7 +559,10 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
                     }
                     continue;
                 }
-                let socket_ptr = socket_alloc(accepted_kind, family, timeout, false);
+                // CPython gives an accepted socket the default timeout, never
+                // the listener's (socket.py `accept`, the same on every OS).
+                // The handle starts blocking; `socket.accept` applies the default.
+                let socket_ptr = socket_alloc(accepted_kind, family, None, false);
                 let handle_bits = opaque_handle_bits(socket_ptr);
                 let tuple_ptr = alloc_tuple(_py, &[handle_bits, addr_bits]);
                 if tuple_ptr.is_null() {
