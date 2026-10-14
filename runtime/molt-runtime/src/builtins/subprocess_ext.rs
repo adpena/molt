@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/subprocess_ext.rs ===
 //
 // High-level subprocess helpers: run, check_output, check_call, and the
@@ -176,55 +175,6 @@ fn extract_env_dict(_py: &PyToken<'_>, env_bits: u64) -> Result<Vec<(String, Str
             out.push((k, v));
         }
         Ok(out)
-    }
-}
-
-/// Apply a PIPE/DEVNULL/INHERIT constant to a Command's stdio.
-#[cfg(not(target_arch = "wasm32"))]
-fn apply_stdio_in(cmd: &mut std::process::Command, mode: i32, input: Option<Vec<u8>>) {
-    match mode {
-        SUBPROCESS_PIPE if input.is_some() => {
-            cmd.stdin(std::process::Stdio::piped());
-        }
-        SUBPROCESS_PIPE => {
-            cmd.stdin(std::process::Stdio::piped());
-        }
-        SUBPROCESS_DEVNULL => {
-            cmd.stdin(std::process::Stdio::null());
-        }
-        _ => {
-            cmd.stdin(std::process::Stdio::inherit());
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn apply_stdio_out(cmd: &mut std::process::Command, mode: i32, is_stderr: bool) {
-    match mode {
-        SUBPROCESS_PIPE => {
-            if is_stderr {
-                cmd.stderr(std::process::Stdio::piped());
-            } else {
-                cmd.stdout(std::process::Stdio::piped());
-            }
-        }
-        SUBPROCESS_DEVNULL => {
-            if is_stderr {
-                cmd.stderr(std::process::Stdio::null());
-            } else {
-                cmd.stdout(std::process::Stdio::null());
-            }
-        }
-        SUBPROCESS_STDOUT if is_stderr => {
-            // stderr → stdout; handled by caller using try_wait + read
-        }
-        _ => {
-            if is_stderr {
-                cmd.stderr(std::process::Stdio::inherit());
-            } else {
-                cmd.stdout(std::process::Stdio::inherit());
-            }
-        }
     }
 }
 

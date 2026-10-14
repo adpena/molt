@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // `while_let_loop`: the satellite consumes the bridge's `Option`-returning
 // `molt_iter_next` in `loop { let Some(..) = next() else { break }; .. }` form to
 // stay control-flow-identical to the in-tree copy (builtins/regex.rs), which

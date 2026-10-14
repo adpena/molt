@@ -1,33 +1,20 @@
 use std::io;
 
-#[cfg(unix)]
 mod connection;
-#[cfg(unix)]
 mod context;
-#[cfg(unix)]
 mod dispatch;
-#[cfg(unix)]
 mod responses;
-#[cfg(unix)]
 mod wire;
 
-#[cfg(unix)]
 use std::env;
-#[cfg(unix)]
 use std::path::Path;
-#[cfg(unix)]
 use std::time::Instant;
 
-#[cfg(unix)]
 use super::super::io_limits::{daemon_max_jobs, daemon_request_limit_bytes};
-#[cfg(unix)]
 use super::cache::{DaemonCache, DaemonStats, daemon_cache_limit_bytes};
-#[cfg(unix)]
 use connection::handle_daemon_connection;
-#[cfg(unix)]
 use context::DaemonConnectionContext;
 
-#[cfg(unix)]
 pub(crate) fn run_daemon(socket_path: &str) -> io::Result<()> {
     use std::os::unix::net::UnixListener;
 
@@ -76,12 +63,4 @@ pub(crate) fn run_daemon(socket_path: &str) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn run_daemon(_socket_path: &str) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "daemon mode requires unix domain sockets",
-    ))
 }

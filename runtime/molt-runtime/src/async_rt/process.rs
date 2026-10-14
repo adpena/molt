@@ -284,8 +284,6 @@ pub unsafe extern "C" fn molt_process_spawn(
         }
         #[cfg(unix)]
         let owns_process_group = configure_unix_owned_process_group(&mut cmd, false, None);
-        #[cfg(not(unix))]
-        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(&mut cmd);
         let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
@@ -441,8 +439,6 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         #[cfg(unix)]
         let owns_process_group =
             configure_unix_owned_process_group(&mut cmd, new_session, process_group_val);
-        #[cfg(not(unix))]
-        let owns_process_group = false;
         #[cfg(unix)]
         apply_child_memory_rlimit(&mut cmd);
 
@@ -720,7 +716,7 @@ pub(crate) struct ProcessState {
     origin_runtime: usize,
     child: Mutex<std::process::Child>,
     pub(crate) pid: u32,
-    #[cfg_attr(not(unix), allow(dead_code))]
+    #[cfg(unix)]
     owned_process_group: Option<i32>,
     completion: ProcessCompletionState,
     kill_requested: AtomicBool,
@@ -855,6 +851,9 @@ impl ProcessRegistry {
         mut stdio: stdio::NativeProcessStdio,
         owns_process_group: bool,
     ) -> std::io::Result<Arc<ProcessState>> {
+        // Only a Unix child can own a process group.
+        #[cfg(not(unix))]
+        debug_assert!(!owns_process_group);
         self.reap_finished();
         // Admission and publication share the registry mutex. Teardown cannot
         // observe an empty registry while an admitted child is being spawned.
@@ -891,6 +890,7 @@ impl ProcessRegistry {
             origin_runtime: (runtime_state(py) as *const RuntimeState).expose_provenance(),
             child: Mutex::new(child),
             pid,
+            #[cfg(unix)]
             owned_process_group: owns_process_group.then_some(pid as i32),
             completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
@@ -1859,6 +1859,7 @@ mod process_wait_state_tests {
             origin_runtime: 0,
             pid: child.id(),
             child: Mutex::new(child),
+            #[cfg(unix)]
             owned_process_group: None,
             completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
@@ -2070,6 +2071,7 @@ mod process_worker_lifetime_tests {
             origin_runtime: (runtime_state(py) as *const RuntimeState).expose_provenance(),
             pid: child.id(),
             child: Mutex::new(child),
+            #[cfg(unix)]
             owned_process_group: None,
             completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),
@@ -2158,6 +2160,7 @@ mod process_worker_lifetime_tests {
             origin_runtime: runtime_state(&py).identity(),
             pid: child.id(),
             child: Mutex::new(child),
+            #[cfg(unix)]
             owned_process_group: None,
             completion: ProcessCompletionState::pending(),
             kill_requested: AtomicBool::new(false),

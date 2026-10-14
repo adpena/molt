@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime-collections/src/collections_ext.rs ===
 //
 // Intrinsic implementations for the stateful collections runtime primitives.
@@ -17,10 +16,10 @@ use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
-    ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
-    call_callable0, compare_eq, dec_ref_bits, dict_snapshot, exception_pending, inc_ref_bits,
-    index_i64_with_overflow, is_truthy, object_type_id, raise_exception, raise_key_error_with_key,
-    seq_snapshot, string_obj_to_owned, to_i64, type_name,
+    alloc_list, alloc_string, alloc_tuple, call_callable0, compare_eq, dec_ref_bits, dict_snapshot,
+    exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy, object_type_id,
+    raise_exception, raise_key_error_with_key, seq_snapshot, string_obj_to_owned, to_i64,
+    type_name,
 };
 
 use std::collections::{HashMap, VecDeque};
@@ -664,10 +663,6 @@ impl DequeState {
         snapshot
     }
 
-    fn retain_snapshot_with_version(&self, _py: &CoreGilToken) -> (Vec<u64>, u64) {
-        (self.retain_snapshot(_py), self.mutation_version)
-    }
-
     fn mark_size_or_order_mutation(&mut self) {
         self.mutation_version = self.mutation_version.wrapping_add(1);
     }
@@ -687,29 +682,6 @@ impl DequeState {
     }
 }
 
-struct RetainedDequeSnapshot<'py> {
-    py: &'py CoreGilToken,
-    items: Vec<u64>,
-}
-
-impl<'py> RetainedDequeSnapshot<'py> {
-    fn new(py: &'py CoreGilToken, items: Vec<u64>) -> Self {
-        Self { py, items }
-    }
-
-    fn as_slice(&self) -> &[u64] {
-        &self.items
-    }
-}
-
-impl Drop for RetainedDequeSnapshot<'_> {
-    fn drop(&mut self) {
-        for bits in self.items.drain(..) {
-            release_handle_value(self.py, bits);
-        }
-    }
-}
-
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 fn deque_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
@@ -719,16 +691,6 @@ fn deque_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
         return None;
     };
     Some(id)
-}
-
-fn retained_deque_snapshot_with_version(_py: &CoreGilToken, id: i64) -> (Vec<u64>, u64) {
-    collections_state()
-        .deque_registry
-        .lock()
-        .unwrap()
-        .get(&id)
-        .map(|s| s.retain_snapshot_with_version(_py))
-        .unwrap_or_default()
 }
 
 /// Comparison cursors hold no registry guard across a Python callback. Element

@@ -9,5 +9,5 @@ pub(crate) const GIB: u64 = 1024 * 1024 * 1024;
 pub(crate) const DEFAULT_DAEMON_REQUEST_LIMIT_BYTES: usize = 512 * MIB;
 pub(crate) const DEFAULT_STDIN_REQUEST_LIMIT_BYTES: usize = DEFAULT_DAEMON_REQUEST_LIMIT_BYTES;
 
-#[cfg(any(unix, test))]
+#[cfg(molt_backend_daemon)]
 pub(crate) const DEFAULT_DAEMON_MAX_JOBS: usize = 512;

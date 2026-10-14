@@ -97,6 +97,7 @@ fn make_ref_op(kind: &str, arg: &str) -> OpIR {
 mod control_and_dead_ops;
 mod deforest_dispatch;
 mod manifest;
+mod pipeline;
 mod rc_and_dead_functions;
 mod splitting;
 mod splitting_control;

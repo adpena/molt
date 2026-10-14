@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! Intrinsics for the `logging` stdlib module.
 //!
 //! Implements LogRecord, Formatter, Handler, StreamHandler, Logger, Manager,
@@ -8,7 +7,7 @@
 //! runtime extension-state bridge, so nested runtimes do not share or leak
 //! logging state.
 
-use crate::bridge::{alloc_string, dec_ref_bits, raise_exception, string_obj_to_owned, to_i64};
+use crate::bridge::{alloc_string, raise_exception, string_obj_to_owned, to_i64};
 use molt_runtime_core::prelude::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -318,7 +317,6 @@ struct FormatterState {
     datefmt: Option<String>,
     style: FormatStyle,
     default_time_format: String,
-    default_msec_format: String,
 }
 
 impl FormatterState {
@@ -717,7 +715,6 @@ pub extern "C" fn molt_logging_formatter_new(
             datefmt,
             style,
             default_time_format: "%Y-%m-%d %H:%M:%S".to_string(),
-            default_msec_format: "%s,%03d".to_string(),
         };
 
         let id = next_formatter_handle();
@@ -986,21 +983,17 @@ pub extern "C" fn molt_logging_handler_drop(handler_bits: u64) -> u64 {
 // ── Logger ───────────────────────────────────────────────────────────────────
 
 struct LoggerState {
-    name: String,
     level: i64,
     handlers: Vec<i64>,
-    propagate: bool,
     disabled: bool,
     parent: Option<i64>,
 }
 
 impl LoggerState {
-    fn new(name: String, level: i64) -> Self {
+    fn new(level: i64) -> Self {
         Self {
-            name,
             level,
             handlers: Vec::new(),
-            propagate: true,
             disabled: false,
             parent: None,
         }
@@ -1108,11 +1101,11 @@ fn logging_state() -> &'static LoggingRuntimeState {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_logging_logger_new(name_bits: u64, level_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+        if string_obj_to_owned(obj_from_bits(name_bits)).is_none() {
             return raise_exception::<u64>(_py, "TypeError", "Logger name must be str");
-        };
+        }
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(NOTSET);
-        let logger = LoggerState::new(name, level);
+        let logger = LoggerState::new(level);
         let id = next_logger_handle();
         logging_state()
             .logger_registry

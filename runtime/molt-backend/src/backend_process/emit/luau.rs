@@ -8,38 +8,30 @@ use super::luau_pipeline::run_luau_tir_module_pipeline;
 use molt_artifact_publish::write_text_atomically;
 
 pub(super) fn emit_luau_target(
-    ir: &mut SimpleIR,
+    mut ir: SimpleIR,
     code_slots: molt_ir::code_slots::CodeSlotBindings,
-    module_registry: Option<molt_ir::ModuleRegistryIR>,
     output_file: &str,
-    use_ir_pipeline: bool,
 ) -> io::Result<()> {
+    let luau_target = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
+    molt_backend::run_simple_ir_pipeline(&mut ir, &luau_target);
     let tir_start = Instant::now();
-    let module_stats = run_luau_tir_module_pipeline(ir)?;
+    let module_stats = run_luau_tir_module_pipeline(&mut ir)?;
     let tir_elapsed = tir_start.elapsed();
     eprintln!(
         "[molt-luau] TIR module pipeline: {} functions, {} module-changed in {tir_elapsed:.2?}",
         module_stats.functions, module_stats.module_changed
     );
-    molt_backend::eliminate_dead_ops(
-        ir,
-        &molt_backend::tir::target_info::TargetInfo::luau_release_fast(),
-    );
+    molt_backend::eliminate_dead_ops(&mut ir, &luau_target);
 
-    let mut backend = LuauBackend::new()
+    let source = LuauBackend::new()
         .with_code_slots(code_slots)
-        .with_module_registry(module_registry);
-    let source = if use_ir_pipeline {
-        backend.compile_via_ir(ir)
-    } else {
-        backend.compile_checked(ir)
-    }
-    .map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Luau validation failed for '{}': {}", output_file, err),
-        )
-    })?;
+        .compile_checked(&ir)
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Luau validation failed for '{}': {}", output_file, err),
+            )
+        })?;
     write_text_atomically(Path::new(output_file), &source).map_err(|error| {
         io::Error::new(
             error.kind(),

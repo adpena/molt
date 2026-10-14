@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! `molt-stdlib-text` — text and encoding intrinsics for the Molt stdlib layer.
 //!
 //! Isolates text codec facts plus the unicodedata and html intrinsics into a

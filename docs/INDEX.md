@@ -69,6 +69,7 @@ the source of truth.
 - Codebase decomposition program: [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md), including the crate-graph per-move execution spec [21f](design/foundation/21f_crate_graph_smove_execution_specs.md)
 - Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [design/parallel_build_architecture.md](design/parallel_build_architecture.md), [architecture/compilation-model.md](architecture/compilation-model.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
+- One SimpleIR optimization pipeline for every target: [design/foundation/76_simple_ir_pass_pipeline.md](design/foundation/76_simple_ir_pass_pipeline.md)
 - Generator fusion and deforestation routing: [design/generator_fusion.md](design/generator_fusion.md)
 - Frontend hot-pass profiling contract and first Rust candidate:
   [design/foundation/44b_frontend_hot_pass_profile.md](design/foundation/44b_frontend_hot_pass_profile.md)

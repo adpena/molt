@@ -1,10 +1,8 @@
 use std::env;
 
-#[cfg(any(unix, test))]
-use super::super::config::DEFAULT_DAEMON_MAX_JOBS;
-#[cfg(any(unix, test))]
-use super::super::config::DEFAULT_DAEMON_REQUEST_LIMIT_BYTES;
 use super::super::config::DEFAULT_STDIN_REQUEST_LIMIT_BYTES;
+#[cfg(molt_backend_daemon)]
+use super::super::config::{DEFAULT_DAEMON_MAX_JOBS, DEFAULT_DAEMON_REQUEST_LIMIT_BYTES};
 
 fn env_usize_limit(name: &str, default: usize, min_value: usize) -> usize {
     env::var(name)
@@ -14,7 +12,7 @@ fn env_usize_limit(name: &str, default: usize, min_value: usize) -> usize {
         .unwrap_or(default)
 }
 
-#[cfg(any(unix, test))]
+#[cfg(molt_backend_daemon)]
 pub(crate) fn daemon_request_limit_bytes() -> usize {
     env_usize_limit(
         "MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES",
@@ -31,7 +29,7 @@ pub(crate) fn stdin_request_limit_bytes() -> usize {
     )
 }
 
-#[cfg(any(unix, test))]
+#[cfg(molt_backend_daemon)]
 pub(crate) fn daemon_max_jobs() -> usize {
     env_usize_limit("MOLT_BACKEND_DAEMON_MAX_JOBS", DEFAULT_DAEMON_MAX_JOBS, 1)
 }

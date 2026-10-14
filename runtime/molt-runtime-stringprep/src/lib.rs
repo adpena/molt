@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! `molt-runtime-stringprep` — RFC 3454 StringPrep intrinsics for the Molt runtime.
 //!
 //! Isolates the stringprep table membership and mapping intrinsics into a

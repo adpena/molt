@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 // === FILE: runtime/molt-runtime/src/builtins/signal_ext.rs ===
 //! Signal authority: the `signal`/`_signal` intrinsics, the raw OS handler,
 //! Python-handler dispatch, and the CPython signal C-API projections.
@@ -144,6 +143,7 @@ impl SignalRuntimeState {
         self.wakeup_fd.swap(new_fd, Ordering::SeqCst)
     }
 
+    #[cfg(test)]
     fn wakeup_fd(&self) -> i32 {
         self.wakeup_fd.load(Ordering::Relaxed)
     }

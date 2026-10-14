@@ -7,6 +7,7 @@ use crate::bridge::{
     alloc_list, alloc_string, alloc_tuple, int_bits_from_i64, raise_exception, string_obj_to_owned,
     to_i64,
 };
+use crate::entities::unescape_xml;
 use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;
 use std::cell::RefCell;
@@ -65,14 +66,6 @@ enum SaxEvent {
         target: String,
         data: String,
     },
-}
-
-fn unescape_xml(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&apos;", "'")
-        .replace("&quot;", "\"")
 }
 
 fn skip_ws(data: &[u8], mut pos: usize) -> usize {
