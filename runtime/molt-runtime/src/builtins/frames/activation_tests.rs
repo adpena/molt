@@ -1,6 +1,5 @@
 //! Activation locals and pre-entry frames project one registered layout.
 use super::*;
-use crate::object::layout::code_set_frame_slot_id;
 
 const GEN_POLL: u64 = 0x5eed_0001;
 const CORO_POLL: u64 = 0x5eed_0002;
@@ -137,8 +136,8 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         ];
         let [x, c, body, boxed, free] = names;
         let (code_ptr, code) = activation_code(py, &[x, c, body, boxed], &[c, boxed], &[free], 2);
-        unsafe { code_set_frame_slot_id(code_ptr, 0) };
         let globals = dict(py);
+        let slot = crate::test_support::publish_test_code_slot(py, code, globals);
         let builtins = dict(py);
         // Payload: closure tuple, parameters `x` and cell parameter `c`, body
         // local `body` and body cell `boxed`; free variable `free`.
@@ -219,7 +218,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
             assert_eq!(lookup(py, live, x), Some(int(19)));
             assert_eq!(lookup(py, live, body), None);
             dec_ref_bits(py, live);
-            assert!(take_invocation_namespace(0).is_none());
+            assert!(take_invocation_namespace(slot).is_none());
             let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
             drop(scope);
             payload
@@ -411,9 +410,9 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let body = string(py, b"body");
                 // Live projection reads the activation layout; retirement moves
                 // those bindings into the code object's matching localsplus slots.
-                let (code_ptr, code) = activation_code(py, &[x, body], &[x, body], &[], 1);
-                unsafe { code_set_frame_slot_id(code_ptr, 0) };
+                let (_, code) = activation_code(py, &[x, body], &[x, body], &[], 1);
                 let globals = dict(py);
+                let slot = crate::test_support::publish_test_code_slot(py, code, globals);
                 let builtins = dict(py);
                 let task =
                     crate::molt_task_new(GEN_POLL, (BASE + 16) as u64, crate::TASK_KIND_GENERATOR);
@@ -448,9 +447,9 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 )
                 .unwrap();
                 assert_eq!(refs(task), baseline + 1);
-                crate::molt_trace_enter_slot(0);
+                crate::molt_trace_enter_slot(slot);
                 assert_eq!(frame_stack_active_activation_bits(), task);
-                assert!(take_invocation_namespace(0).is_none());
+                assert!(take_invocation_namespace(slot).is_none());
                 let before = unsafe { activation_locals_bits(py, ptr) }.unwrap();
                 assert_eq!(lookup(py, before, x), Some(raw_cell));
                 assert_eq!(lookup(py, before, body), None);
