@@ -161,8 +161,12 @@ def test_memoryview_contains_streams_shared_iterator_and_scalar_access() -> None
     assert "OwnedIterator::new(_py, container_bits)" in search_body
     assert "match iter.next()" in search_body
     assert "compare_object_eq_bool(_py, obj_from_bits(value), item)" in search_body
+    # molt_iter_next delegates native iterators to the shared dispatch.
+    assert "native_iteration_pair(_py, iter_bits)" in _rust_function_body(
+        iter_source, "molt_iter_next"
+    )
     step_body = _rust_block_body(
-        _rust_function_body(iter_source, "molt_iter_next"),
+        _rust_function_body(iter_source, "native_iteration_pair"),
         "if target_type == TYPE_ID_MEMORYVIEW",
     )
     assert "molt_getitem_builtin(" in step_body

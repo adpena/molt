@@ -53,6 +53,8 @@ def _has_unknown_shape(result: StaticExpressionResult) -> bool:
             result,
             identities=UNKNOWN_EXPRESSION_RESULT.identities,
             exposes_module_globals=False,
+            source_origins=UNKNOWN_EXPRESSION_RESULT.source_origins,
+            exposed_source_origins=UNKNOWN_EXPRESSION_RESULT.exposed_source_origins,
         )
         == UNKNOWN_EXPRESSION_RESULT
     )
