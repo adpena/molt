@@ -417,12 +417,11 @@ fn format_qualified_type_name_in_context(
         let qualname =
             string_obj_bytes(obj_from_bits(class_qualname_bits(type_ptr))).unwrap_or(name);
         let mut module_name: Option<Vec<u8>> = None;
-        if !exception_pending(_py) {
-            if let Some(value) =
+        if !exception_pending(_py)
+            && let Some(value) =
                 crate::object::class_storage::class_module_bits(_py, type_ptr).ok()?
-            {
-                module_name = string_obj_bytes(obj_from_bits(value));
-            }
+        {
+            module_name = string_obj_bytes(obj_from_bits(value));
         }
         if let Some(module) = module_name
             && (!module.is_empty() || context == QualifiedTypeNameContext::Diagnostic)
@@ -3547,9 +3546,8 @@ pub(crate) fn format_with_spec(
             )
         })
     });
-    let native_integer = native.is_some_and(|value| unsafe {
-        molt_cpython_abi::api::numbers::PyLong_Check(value) != 0
-    });
+    let native_integer = native
+        .is_some_and(|value| unsafe { molt_cpython_abi::api::numbers::PyLong_Check(value) != 0 });
     let is_integral = integer.is_some() || native_integer;
     let is_float = as_float_extended(obj).is_some()
         || native.is_some_and(|value| unsafe {
