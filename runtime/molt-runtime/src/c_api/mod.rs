@@ -105,6 +105,18 @@ fn c_api_module_state(_py: &PyToken<'_>) -> MutexGuard<'static, CApiModuleRuntim
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Whether C-API module metadata or a PyState root remains for this exact
+/// module object or definition. Tests attribute retirement with it: the
+/// runtime-wide clear also retires other modules' legitimate runtime roots.
+#[cfg(test)]
+pub(crate) fn c_api_module_registered(py: &PyToken<'_>, module_ptr: *mut u8, def: usize) -> bool {
+    let state = c_api_module_state(py);
+    let module = module_ptr_key(module_ptr);
+    state.metadata.contains_key(&module)
+        || state.state_registry.by_module.contains_key(&module)
+        || state.state_registry.by_def.contains_key(&def)
+}
+
 pub(crate) fn c_api_module_clear_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     let (modules, by_def, by_module) = {
         let mut guard = state

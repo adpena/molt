@@ -4488,39 +4488,22 @@ fn call_cext_context(closure_bits: u64, arguments: CExtCallArguments<'_, '_, '_>
         )
     };
 
-    let result_pyobj = unsafe { operands.complete_result(result_pyobj, "C extension function") };
+    // A C function is a callable: the shared callable completion authority
+    // applies CPython's _Py_CheckFunctionResult, as for physical PyCFunction,
+    // method-descriptor and slot-wrapper calls. NULL always carries an
+    // exception, and a result returned with an exception set becomes a
+    // SystemError whose cause and context are that exception.
+    let result_pyobj =
+        unsafe { operands.complete_callable_result(result_pyobj, "C extension function") };
     drop(operands);
 
-    let returned_null = result_pyobj.is_null();
     let pending = take_native_pending_snapshot();
-    let call_left_error = pending.has_error();
-    if !returned_null && call_left_error {
-        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result_pyobj) };
-    }
+    debug_assert_eq!(result_pyobj.is_null(), pending.has_error());
     drop(ingress);
     restore_native_pending_snapshot(pending);
-    match (returned_null, call_left_error) {
-        (true, true) => {
-            let _ = transfer_pending_cpython_exception();
-            return 0;
-        }
-        (true, false) => {
-            return with_gil(|_py| {
-                let msg = format!(
-                    "C extension function returned NULL without setting an exception (convention flags 0x{:x})",
-                    entry.flags
-                );
-                crate::raise_exception::<i64>(&_py, "SystemError", &msg)
-            });
-        }
-        (false, true) => {
-            let msg = format!(
-                "C extension function returned a result with an exception set (convention flags 0x{:x})",
-                entry.flags
-            );
-            return raise_native_result_with_error(&msg);
-        }
-        (false, false) => {}
+    if result_pyobj.is_null() {
+        let _ = transfer_pending_cpython_exception();
+        return 0;
     }
 
     let result_bits =
@@ -10701,6 +10684,20 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    unsafe extern "C" fn fastcall_result_with_exception(
+        _self_obj: *mut PyObject,
+        _args: *mut *mut PyObject,
+        _nargs: Py_ssize_t,
+    ) -> *mut PyObject {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_ValueError).cast::<PyObject>(),
+                c"callee failed after producing a result".as_ptr(),
+            );
+            molt_cpython_abi::api::object::Py_NewRef(&raw mut molt_cpython_abi::abi_types::Py_None)
+        }
+    }
+
     #[test]
     fn c_api_cfunction_module_metadata_tracks_assignment_and_deletion() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -10989,6 +10986,82 @@ mod tests {
             "{message}"
         );
         unsafe { hook_dec_ref(method_bits) };
+    }
+
+    /// CPython's `_Py_CheckFunctionResult`: a C function that returns an
+    /// object with an exception set raises SystemError, whose `__cause__`
+    /// and `__context__` are that exception. The oracle is the public C API,
+    /// so it does not depend on how either exception is stored.
+    #[test]
+    fn cext_result_with_exception_raises_system_error_from_that_exception() {
+        use molt_cpython_abi::abi_types::PyExc_SystemError;
+        use molt_cpython_abi::api::{errors, object, strings, typeobj};
+        // Owners release every reference even when an assertion fails, so a
+        // failure here cannot leave live owners for a later lifecycle test.
+        struct Callable(u64);
+        impl Drop for Callable {
+            fn drop(&mut self) {
+                unsafe { hook_dec_ref(self.0) };
+            }
+        }
+        unsafe fn text(value: *mut PyObject) -> String {
+            let value = unsafe { OwnedPyObject::from_owned(value) };
+            assert!(!value.as_ptr().is_null(), "str() failed");
+            let utf8 = unsafe { strings::PyUnicode_AsUTF8(value.as_ptr()) };
+            assert!(!utf8.is_null());
+            unsafe { std::ffi::CStr::from_ptr(utf8) }
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
+        unsafe { errors::PyErr_Clear() };
+        let _ = crate::molt_exception_clear();
+        let callable = Callable(unsafe {
+            hook_register_c_function(
+                crate::provenance::abi::expose_function_address(
+                    fastcall_result_with_exception as *const (),
+                ),
+                METH_FASTCALL,
+                MoltObject::none().bits(),
+                true,
+                MoltObject::none().bits(),
+                b"result_with_error".as_ptr(),
+                b"result_with_error".len(),
+            )
+        });
+
+        let execution = RuntimeExecutionGuard::enter();
+        let out_bits = unsafe {
+            crate::call::function::call_function_obj_bound_vec(&execution.token(), callable.0, &[])
+        };
+        assert_eq!(out_bits, 0);
+        with_gil(|_py| unsafe {
+            let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!raised.as_ptr().is_null(), "the call must raise");
+            assert!(errors::PyErr_Occurred().is_null());
+            assert_eq!(object::Py_TYPE(raised.as_ptr()), &raw mut PyExc_SystemError);
+            assert_eq!(
+                text(typeobj::PyObject_Str(raised.as_ptr())),
+                "C extension function returned a result with an exception set"
+            );
+            let cause = OwnedPyObject::from_owned(errors::PyException_GetCause(raised.as_ptr()));
+            let context =
+                OwnedPyObject::from_owned(errors::PyException_GetContext(raised.as_ptr()));
+            assert!(!cause.as_ptr().is_null(), "SystemError has a __cause__");
+            assert_eq!(
+                context.as_ptr(),
+                cause.as_ptr(),
+                "__context__ is the same exception"
+            );
+            assert_eq!(object::Py_TYPE(cause.as_ptr()), &raw mut PyExc_ValueError);
+            assert_eq!(
+                text(typeobj::PyObject_Str(cause.as_ptr())),
+                "callee failed after producing a result"
+            );
+            assert!(errors::PyErr_Occurred().is_null());
+        });
     }
 
     #[test]
