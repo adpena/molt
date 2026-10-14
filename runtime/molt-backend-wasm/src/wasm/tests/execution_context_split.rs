@@ -177,10 +177,11 @@ for (const [name, message] of [
   assert.throws(() => verifyOwner(malformed, name, [], 0), message, name);
 }
 for (const test of config.return_modules) {
-  reset('value-ABI return ' + test.lane);
+  reset('boxed user-ABI return ' + test.lane);
   const app = instantiate(test.module);
   state.expectsTask = test.stateful;
-  const result = test.stateful ? app.molt_main(64n) : app.molt_main();
+  const entry = app[test.export_name ?? 'molt_main'];
+  const result = test.stateful ? entry(64n) : entry();
   assert.equal(result, BigInt(test.expected), state.label);
   assert.equal(state.taskReads, test.stateful ? 1 : 0, state.label);
   ensure(state.enters === 0 && state.exits === 0, 'frame-free return changed lifecycle');
@@ -534,6 +535,61 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             return_modules
                 .push(json!({"lane": lane, "module": module, "expected": expected.to_string(), "stateful": mode == "stateful"}));
         }
+    }
+    // Exercise the public compiler and actual name-selected plan consumer.
+    // The existing return observer supplies the executable boxed-value oracle;
+    // private plan tests separately establish admission and exact rejection.
+    for return_abi in [
+        molt_ir::FunctionReturnAbi::Value,
+        molt_ir::FunctionReturnAbi::Void,
+    ] {
+        let returns_value = return_abi == molt_ir::FunctionReturnAbi::Value;
+        let export_name = "molt_test_return_abi____molt_globals_builtin__";
+        let wasm = WasmBackend::new().compile(SimpleIR {
+            functions: vec![FunctionIR {
+                name: export_name.into(),
+                return_abi,
+                ops: vec![
+                    OpIR {
+                        kind: "const".into(),
+                        value: Some(42),
+                        out: Some("result".into()),
+                        ..Default::default()
+                    },
+                    wasm_test_op(
+                        if returns_value { "ret" } else { "ret_void" },
+                        None,
+                        if returns_value {
+                            vec!["result"]
+                        } else {
+                            vec![]
+                        },
+                    ),
+                ],
+                ..Default::default()
+            }],
+            profile: None,
+        });
+        wasmparser::Validator::new().validate_all(&wasm).unwrap();
+        let (pages, entries) = wasm_import_minimums(&wasm);
+        memory_pages = memory_pages.max(pages);
+        table_entries = table_entries.max(entries);
+        let lane = if returns_value {
+            "proven-const-value"
+        } else {
+            "authored-void"
+        };
+        let module = temp.join(format!("return_{lane}.wasm"));
+        fs::write(&module, wasm).expect("write public compiler return module");
+        let expected = if returns_value {
+            molt_codegen_abi::box_int_bits(42)
+        } else {
+            molt_codegen_abi::box_none_bits()
+        };
+        return_modules.push(
+            json!({"lane": lane, "module": module, "export_name": export_name,
+            "expected": expected.to_string(), "stateful": false}),
+        );
     }
     let mut activation_modules = Vec::new();
     for mode in ["ordinary", "dispatch", "stateful", "yield", "await"] {

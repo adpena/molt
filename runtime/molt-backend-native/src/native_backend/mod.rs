@@ -19,7 +19,7 @@ use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{DataDescription, Linkage, Module};
-use cranelift_object::{ObjectBuilder, ObjectModule};
+use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -64,6 +64,54 @@ fn emit_generated_object_abi_anchor(module: &mut ObjectModule) {
     module
         .define_data(anchor, &description)
         .expect("define generated-object ABI anchor");
+}
+
+/// Finish the target object's link-admission metadata before serializing it.
+/// `set_used` supplies the ELF/Mach-O retention flags; ELF additionally needs
+/// the GNU extension namespace and COFF needs a linker root directive.
+fn finalize_native_object(mut product: ObjectProduct) -> ObjectProduct {
+    use cranelift_object::object::{BinaryFormat, FileFlags, SectionKind, elf};
+    match product.object.format() {
+        BinaryFormat::Elf => {
+            // Match LLVM's ELFObjectWriter: GNU features upgrade only an
+            // unspecified OSABI. GNU denotes ELF extensions, not a host/Linux
+            // target substitution. Keep explicit OSABI, ABI version and flags.
+            match &mut product.object.flags {
+                FileFlags::None => {
+                    product.object.flags = FileFlags::Elf {
+                        os_abi: elf::ELFOSABI_GNU,
+                        abi_version: 0,
+                        e_flags: 0,
+                    };
+                }
+                FileFlags::Elf { os_abi, .. } if *os_abi == elf::ELFOSABI_NONE => {
+                    *os_abi = elf::ELFOSABI_GNU;
+                }
+                _ => {}
+            }
+        }
+        BinaryFormat::Coff => {
+            // Object's symbol owner already applied target decoration (e.g.
+            // i386's leading underscore). Root that exact emitted spelling.
+            let witness = product
+                .object
+                .symbol_id(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL.as_bytes())
+                .expect("generated-object ABI witness must precede finalization");
+            let mut directives = b" /INCLUDE:".to_vec();
+            directives.extend_from_slice(&product.object.symbol(witness).name);
+            let section =
+                product
+                    .object
+                    .add_section(Vec::new(), b".drectve".to_vec(), SectionKind::Linker);
+            product.object.append_section_data(section, &directives, 1);
+        }
+        // Cranelift already derives LC_BUILD_VERSION from the actual Apple
+        // target, including platform and explicit deployment version. Preserve
+        // it instead of overwriting cross-target metadata from the build host.
+        BinaryFormat::MachO => {}
+        format => panic!("unsupported native object format: {format:?}"),
+    }
+    product
 }
 
 /// Load MoltHeader's shared flag word under the selected execution contract.
@@ -209,9 +257,35 @@ mod header_flags_tests {
             let backend = SimpleBackend::new_with_target(Some(target));
             let mut module = backend.module;
             emit_generated_object_abi_anchor(&mut module);
-            let bytes = module.finish().emit().expect("emit ABI witness object");
+            let product = module.finish();
+            let macho_before = (product.object.format()
+                == cranelift_object::object::BinaryFormat::MachO)
+                .then(|| product.object.write().unwrap());
+            let bytes = finalize_native_object(product)
+                .emit()
+                .expect("emit ABI witness object");
+            if let Some(before) = macho_before {
+                assert_eq!(bytes, before, "{target}: preserve target Mach-O metadata");
+            }
             let object =
                 cranelift_object::object::File::parse(&*bytes).expect("parse ABI witness object");
+            match object.format() {
+                cranelift_object::object::BinaryFormat::Elf => assert!(matches!(
+                    object.flags(),
+                    cranelift_object::object::FileFlags::Elf { os_abi, .. }
+                        if os_abi == cranelift_object::object::elf::ELFOSABI_GNU
+                )),
+                cranelift_object::object::BinaryFormat::Coff => assert_eq!(
+                    object.section_by_name(".drectve").unwrap().data().unwrap(),
+                    format!(
+                        " /INCLUDE:{}",
+                        molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+                    )
+                    .as_bytes(),
+                    "{target}: target COFF retention cannot depend on the host"
+                ),
+                _ => {}
+            }
             let pointer_bytes = if object.is_64() { 8 } else { 4 };
             let anchor = object
                 .symbols()
@@ -269,5 +343,75 @@ mod header_flags_tests {
                 "{target}: exactly one ABI witness relocation"
             );
         }
+    }
+
+    #[test]
+    fn retained_elf_finalization_preserves_explicit_header_facts() {
+        use cranelift_object::object::{FileFlags, elf};
+        for (os_abi, expected) in [
+            (elf::ELFOSABI_NONE, elf::ELFOSABI_GNU),
+            (elf::ELFOSABI_GNU, elf::ELFOSABI_GNU),
+            (elf::ELFOSABI_FREEBSD, elf::ELFOSABI_FREEBSD),
+        ] {
+            let mut module =
+                SimpleBackend::new_with_target(Some("x86_64-unknown-linux-gnu")).module;
+            emit_generated_object_abi_anchor(&mut module);
+            let mut product = module.finish();
+            product.object.flags = FileFlags::Elf {
+                os_abi,
+                abi_version: 7,
+                e_flags: 0x1020,
+            };
+            let bytes = finalize_native_object(product).emit().unwrap();
+            let object = cranelift_object::object::File::parse(&*bytes).unwrap();
+            assert_eq!(
+                object.flags(),
+                FileFlags::Elf {
+                    os_abi: expected,
+                    abi_version: 7,
+                    e_flags: 0x1020,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn coff_retention_roots_the_target_decorated_import() {
+        use cranelift_object::object::{self, ObjectSection, ObjectSymbol};
+        // Exercise object metadata independently of Cranelift's supported ISAs;
+        // this does not claim native i386 code generation or linker support.
+        let mut object = object::write::Object::new(
+            object::BinaryFormat::Coff,
+            object::Architecture::I386,
+            object::Endianness::Little,
+        );
+        object.add_symbol(object::write::Symbol {
+            name: molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+                .as_bytes()
+                .to_vec(),
+            value: 0,
+            size: 0,
+            kind: object::SymbolKind::Data,
+            scope: object::SymbolScope::Unknown,
+            weak: false,
+            section: object::write::SymbolSection::Undefined,
+            flags: object::SymbolFlags::None,
+        });
+        let bytes = finalize_native_object(ObjectProduct {
+            object,
+            functions: Default::default(),
+            data_objects: Default::default(),
+        })
+        .emit()
+        .unwrap();
+        let file = object::File::parse(&*bytes).unwrap();
+        let expected = format!("_{}", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL);
+        assert!(file.symbols().any(
+            |symbol| symbol.is_undefined() && symbol.name().is_ok_and(|name| name == expected)
+        ));
+        assert_eq!(
+            file.section_by_name(".drectve").unwrap().data().unwrap(),
+            format!(" /INCLUDE:{expected}").as_bytes()
+        );
     }
 }
