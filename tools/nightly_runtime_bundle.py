@@ -47,7 +47,10 @@ from molt.cli.native_toolchain_transfer import (  # noqa: E402
     export_native_toolchain,
     import_native_toolchain,
 )
-from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
+from molt.cli.runtime_identity_schema import (  # noqa: E402
+    RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+    RuntimeBuildIdentity,
+)
 from molt.exact_json import dumps_exact, encode_exact, loads_exact  # noqa: E402
 from molt.portable_paths import (  # noqa: E402
     portable_path_component,
@@ -69,7 +72,10 @@ SCHEMA_VERSION = 4
 KIND = "molt_nightly_runtime_bundle"
 MANIFEST_NAME = "nightly-runtime-manifest.json"
 _ROLES = (*REQUIRED_ROLES, *OPTIONAL_ROLES)
-_MAX_MANIFEST_BYTES = 1024 * 1024
+# The manifest embeds one full runtime build identity, whose source and
+# toolchain closure alone encodes to about 1.9 MB today (Nightly 38242671150
+# failed a 1 MiB cap); runtime metadata shares one bound.
+_MAX_MANIFEST_BYTES = RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 _MAX_BUNDLE_PAYLOAD_BYTES = 2 * 1024 * 1024 * 1024
 # Each permitted USTAR member adds a header and at most one padding block;
 # reserve the final record for end markers and record-alignment padding.
