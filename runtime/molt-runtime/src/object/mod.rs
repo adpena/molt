@@ -2044,6 +2044,27 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
     }
 }
 
+/// Atomically OR `bits` into the state lane without changing the published
+/// aux kind/address, and return the previous state. A word of monotone flags
+/// uses this, not a load and a store: under free-threaded execution two
+/// writers that each load and then store can lose one writer's bit.
+pub(crate) fn object_state_fetch_or(data_ptr: *mut u8, bits: i64) -> i64 {
+    let snapshot = unsafe { object_aux_snapshot(data_ptr) };
+    match snapshot.kind {
+        HEADER_AUX_KIND_STATE_INLINE => unsafe {
+            (*header_from_obj_ptr(data_ptr))
+                .aux
+                .fetch_or(bits as u64, AtomicOrdering::AcqRel) as i64
+        },
+        HEADER_AUX_KIND_SIDECAR => unsafe {
+            sidecar_from_snapshot(snapshot)
+                .state
+                .fetch_or(bits as u64, AtomicOrdering::AcqRel) as i64
+        },
+        _ => panic!("published object state requires preselected state or sidecar aux storage"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // C API wrappers for aux state access (used by the native JIT backend). The
 // helper preserves one ABI across inline-state and stable-sidecar objects.

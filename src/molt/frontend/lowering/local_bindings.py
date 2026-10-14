@@ -22,6 +22,7 @@ from typing import (
 )
 
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
@@ -131,6 +132,12 @@ class LocalBindingMixin(GeneratorMixinBase):
 
     def _specializable_builtin_name(self, node: ast.AST) -> str | None:
         """Shared identity/lifetime authorization for call and fused consumers."""
+        if isinstance(node, ast.Call) and self._builtin_guard_covers(node.func):
+            # The enclosing guard proved the binding where Python loads it, and
+            # a builtin callable's lifetime is unobservable (HF-79).
+            assert isinstance(node.func, ast.Name)
+            name = node.func.id
+            return name if name in BUILTIN_SHAPE_NAMES else None
         if not isinstance(node, ast.Call) or self.python_binding_index is None:
             return None
         fact = self.python_binding_index.call_fact(node)
@@ -148,6 +155,8 @@ class LocalBindingMixin(GeneratorMixinBase):
         """
         while isinstance(node, ast.Attribute):
             node = node.value
+        if self._builtin_guard_covers(node):
+            return False
         if not isinstance(node, ast.Name) or self.python_binding_index is None:
             return None
         fact = self.python_binding_index.expression_fact(node)

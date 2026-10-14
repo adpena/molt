@@ -1128,6 +1128,12 @@ runtime_name = "molt_cell_ge"
 callable_arity = 2
 
 [[import]]
+name = "guard_builtin_bindings"
+type = 2
+runtime_name = "molt_guard_builtin_bindings"
+callable_arity = 1
+
+[[import]]
 name = "types_cell_contents_get"
 type = 3
 runtime_name = "molt_types_cell_contents_get"

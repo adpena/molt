@@ -16,6 +16,7 @@ from typing import Literal
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import MoltOp, MoltValue, ScratchCell
+from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
@@ -231,6 +232,9 @@ class ConditionFlowMixin(GeneratorMixinBase):
             # conditional-expression boundaries did not.
             value = self._emit_expression_flow_prepared(node, "value")[0]
             return self._condition_result(value, mode)
+        if mode == "condition" and isinstance(node, MoltBuiltinGuardTest):
+            # The binding guard returns an exact bool; no truth conversion.
+            return (self.visit(node),)
         if (
             mode == "condition"
             and isinstance(node, ast.UnaryOp)
