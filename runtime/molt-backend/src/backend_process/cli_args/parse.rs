@@ -347,6 +347,7 @@ mod tests {
         })
     }
 
+    #[cfg(any(feature = "wasm-backend", feature = "rust-backend"))]
     fn compile_target(args: &[&str]) -> BackendTarget {
         with_parsed(args, |parsed| match parsed.expect("compile request") {
             BackendCommand::Compile(request) => request.target,

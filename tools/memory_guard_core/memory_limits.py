@@ -266,6 +266,9 @@ def darwin_vm_pages() -> tuple[int, dict[str, int]] | None:
     One ``host_statistics64(HOST_VM_INFO64)`` call reads the counters vm_stat
     prints, derived the way vm_stat derives them (its "Pages free" excludes
     the speculative pages the kernel counts as free), without a subprocess.
+    The kernel rate-limits this call for non-platform binaries: in each
+    one-second window a process gets 2-10 fresh reads, then the cached
+    counters, so a caller sees memory at most about a second old.
     """
 
     binding = _darwin_host_vm()

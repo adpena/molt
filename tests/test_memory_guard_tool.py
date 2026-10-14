@@ -3383,15 +3383,36 @@ def test_actual_darwin_vm_pages_match_vm_stat() -> None:
                 reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
         return text.splitlines()[0], reported
 
+    repo_root = Path(__file__).resolve().parents[1]
+
+    def fresh_read() -> tuple[int, dict[str, int]]:
+        # macOS rate-limits host_statistics64 for non-platform binaries and
+        # answers a process's excess calls in one window with cached counters:
+        # in CI this process read "Pages free" as 41,711 in three rounds while
+        # vm_stat moved from 55,942 to 54,811. vm_stat is a platform binary and
+        # exempt, and a new process's first call is never rate-limited.
+        text = check_output_guarded_test_process(
+            [
+                sys.executable,
+                "-c",
+                "import json, tools.memory_guard as m; "
+                "print(json.dumps(m.darwin_vm_pages()))",
+            ],
+            cwd=repo_root,
+            env={**os.environ, "PYTHONPATH": str(repo_root / "src")},
+            timeout=60.0,
+        )
+        page_size, pages = json.loads(str(text))
+        return int(page_size), {str(k): int(v) for k, v in pages.items()}
+
     # Counters move while a busy host runs other tests, so bracket each read
-    # between two vm_stat samples. Pages move between buckets in bursts (a
-    # 7 GB CI runner moved "Pages free" by 2,862 pages inside one bracket), so
+    # between two vm_stat samples. Pages move between buckets in bursts, so
     # the slack is 1% of all pages; a wrong counter mapping is a fixed offset
     # that escapes every bracket.
     header, sample = vm_stat()
     rounds = []
     for _ in range(3):
-        page_size, pages = memory_guard.darwin_vm_pages()  # type: ignore[misc]
+        page_size, pages = fresh_read()
         _header, after = vm_stat()
         rounds.append((sample, pages, after))
         sample = after
