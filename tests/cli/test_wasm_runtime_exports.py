@@ -441,7 +441,7 @@ def test_dynamic_intrinsic_aliases_export_one_canonical_executable(
     source = tmp_path / "src/molt/alias_probe.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        'from _intrinsics import require_intrinsic\n'
+        "from _intrinsics import require_intrinsic\n"
         'invert = require_intrinsic("molt_operator_invert")\n'
         'inv = require_intrinsic("molt_operator_inv")\n'
         'hexlify = require_intrinsic("molt_binascii_hexlify")\n'
@@ -450,7 +450,8 @@ def test_dynamic_intrinsic_aliases_export_one_canonical_executable(
     )
     monkeypatch.setattr(exports, "compiler_source_root", lambda: tmp_path)
     assert exports.wasm_runtime_dynamic_export_names({"molt.alias_probe"}) == (
-        "molt_binascii_b2a_hex", "molt_operator_invert"
+        "molt_binascii_b2a_hex",
+        "molt_operator_invert",
     )
 
 

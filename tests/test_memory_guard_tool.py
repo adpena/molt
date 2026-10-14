@@ -8770,7 +8770,13 @@ def test_child_clock_is_independent_of_guard_setup_and_sampler(
 ):
     def run(sampler):
         return memory_guard.run_guarded(
-            [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
+            [
+                getattr(sys, "_base_executable", sys.executable),
+                "-I",
+                "-S",
+                "-c",
+                "pass",
+            ],
             max_rss_kb=1024 * 1024,
             max_total_rss_kb=2 * 1024 * 1024,
             capture_output=True,

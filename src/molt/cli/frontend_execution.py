@@ -162,13 +162,15 @@ def _lower_entry_module_as_main(
         lower_s=main_lower_s,
         total_s=time.perf_counter() - main_frontend_start,
     )
-    integration_error = _frontend_integration._integrate_module_frontend_result_with_state(
-        integration_state,
-        "__main__",
-        ir_functions=main_ir["functions"],
-        func_code_ids=main_gen.func_code_ids,
-        local_class_names=[],
-        local_classes={},
+    integration_error = (
+        _frontend_integration._integrate_module_frontend_result_with_state(
+            integration_state,
+            "__main__",
+            ir_functions=main_ir["functions"],
+            func_code_ids=main_gen.func_code_ids,
+            local_class_names=[],
+            local_classes={},
+        )
     )
     if integration_error is not None:
         return fail(integration_error, json_output, command="build")

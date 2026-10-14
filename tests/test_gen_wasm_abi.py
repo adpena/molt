@@ -1860,7 +1860,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "pub(crate) const fn runtime_callable_key_from_symbol_name("
         "symbol_name: &[u8]) -> Option<u64> {"
     ) in rendered_runtime_rs
-    assert "return Some(RUNTIME_CALLABLE_KEY_BASE + entry.index);" in rendered_runtime_rs
+    assert (
+        "return Some(RUNTIME_CALLABLE_KEY_BASE + entry.index);" in rendered_runtime_rs
+    )
     assert (
         "assert_runtime_symbol_key(fn_key!(crate::molt_async_sleep_poll), "
         "RUNTIME_POLL_CALLABLE_KEY_BASE, 1, crate::molt_async_sleep_poll as *const ());"
