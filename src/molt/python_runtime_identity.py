@@ -44,6 +44,9 @@ from molt.python_native_locations import (
 
 PYTHON_RUNTIME_IDENTITY_SCHEMA = "molt.python-runtime-closure.v5"
 PYTHON_RUNTIME_CAPABILITY_SCHEMA = "molt.cpython-runtime-capabilities.v1"
+# The build Python identity that runtime build receipts record; admission
+# produces it and the runtime identity schema validates it.
+BUILD_PYTHON_IDENTITY_SCHEMA = "molt.runtime-build-python.v1"
 _NATIVE_DEPENDENCY_POLICIES = {
     "windows": "pe-loaded-import-closure-v3",
     "macos": "mach-o-loaded-dylib-closure-v4",

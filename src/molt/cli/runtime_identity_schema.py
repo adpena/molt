@@ -24,8 +24,10 @@ from molt.exact_json import (
     string_keyed_mapping,
 )
 from molt.python_identity_common import PythonEnvironmentIdentityError, _valid_sha256
-from molt.python_runtime_identity import validate_python_runtime_identity
-from molt.python_runtime_admission import _BUILD_PYTHON_SCHEMA
+from molt.python_runtime_identity import (
+    BUILD_PYTHON_IDENTITY_SCHEMA,
+    validate_python_runtime_identity,
+)
 
 _SCHEMA = "molt.runtime-build-member-identity.v3"
 RUNTIME_ARTIFACT_METADATA_MAX_BYTES = 16 * 1024 * 1024
@@ -440,7 +442,7 @@ def _validated_executable_content_identity(
 
 
 def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
-    admission = (_BUILD_PYTHON_SCHEMA,)
+    admission = (BUILD_PYTHON_IDENTITY_SCHEMA,)
     if _has_schema_admission(payload, admission):
         return cast(Mapping[str, object], payload)
     value = string_keyed_mapping(payload)
@@ -464,7 +466,7 @@ def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
     content_filename = selected.get("content_filename")
     size = selected.get("size")
     if (
-        value.get("schema") != _BUILD_PYTHON_SCHEMA
+        value.get("schema") != BUILD_PYTHON_IDENTITY_SCHEMA
         or value.get("logical_name") != "build_python"
         or not isinstance(entrypoint, str)
         or not entrypoint
