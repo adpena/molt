@@ -621,6 +621,114 @@ def test_run_shard_drives_the_real_guarded_executor(tmp_path: Path) -> None:
     assert 0 < len(raw["stdout_tail"]) <= 16_000
 
 
+def _differential_repo(tmp_path: Path) -> Path:
+    """A fixture with several differential files per shard."""
+    root = _repo(tmp_path)
+    for index in range(16, 64):
+        family = "basic" if index % 2 == 0 else "stdlib"
+        _write(
+            root / "tests/differential" / family / f"differential_{index:02d}.py",
+            "x = " + "1" * (index + 1) + "\n",
+        )
+    return root
+
+
+def test_killed_differential_shard_keeps_the_items_it_finished(
+    tmp_path: Path,
+) -> None:
+    # The child appends each finished test to the result log, as molt_diff
+    # does, then hangs past the shard deadline.
+    root = _differential_repo(tmp_path)
+    plan = _plan(root)
+    entries = nightly_sharding.shard_entries(plan, "differential", 0)
+    assert len(entries) >= 3
+    script = (
+        "import json, os, sys, time\n"
+        "entries = open(sys.argv[1], encoding='utf-8').read().split()\n"
+        "rows = [\n"
+        " {'record_type': 'test', 'file': entries[0], 'raw_status': 'pass',\n"
+        "  'resolved_status': 'pass', 'reason_tag': None, 'duration_s': 0.5},\n"
+        " {'record_type': 'backend', 'file': entries[1], 'raw_status': 'fail',\n"
+        "  'build_failed': True, 'timed_out': False, 'detail': 'link failed'},\n"
+        " {'record_type': 'test', 'file': entries[1], 'raw_status': 'fail',\n"
+        "  'resolved_status': 'fail', 'reason_tag': None, 'duration_s': 0.7},\n"
+        "]\n"
+        "with open(os.environ['MOLT_DIFF_RESULTS_JSONL'], 'a', encoding='utf-8') as log:\n"
+        "    log.write(''.join(json.dumps(row) + '\\n' for row in rows))\n"
+        "time.sleep(60)\n"
+    )
+    evidence = tmp_path / "evidence"
+    raw = nightly_sharding.run_shard(
+        plan,
+        root=root,
+        program="differential",
+        shard_id=0,
+        raw_out=evidence / "shard-00.raw.json",
+        checkpoint_out=evidence / "shard-00.checkpoint.json",
+        command=[sys.executable, "-c", script, "{selection}", "{summary}"],
+        timeout=5,
+    )
+
+    assert raw["returncode"] == 124
+    rows = {row["path"]: row for row in raw["item_results"]}
+    assert rows[entries[0]] == {
+        "path": entries[0],
+        "status": "passed",
+        "duration_s": 0.5,
+        "reason": "",
+    }
+    assert rows[entries[1]]["status"] == "failed"
+    assert rows[entries[1]]["reason"] == "build"
+    assert rows[entries[1]]["detail"] == "link failed"
+    assert {rows[path]["status"] for path in entries[2:]} == {"not_run"}
+    assert {rows[path]["reason"] for path in entries[2:]} == {"shard deadline"}
+    assert (raw["selected"], raw["passed"], raw["failed"], raw["not_run"]) == (
+        len(entries),
+        1,
+        1,
+        len(entries) - 2,
+    )
+    report = "\n".join(nightly_sharding.shard_report(raw))
+    assert f"not_run/shard deadline: {len(entries) - 2}" in report
+    assert "failed/build: 1" in report
+
+
+def test_skipped_differential_items_count_toward_the_selection(
+    tmp_path: Path,
+) -> None:
+    # molt_diff's summary total leaves skipped files out; the plan selects them.
+    root = _differential_repo(tmp_path)
+    plan = _plan(root)
+    entries = nightly_sharding.shard_entries(plan, "differential", 0)
+    script = (
+        "import json, sys\n"
+        "entries = open(sys.argv[1], encoding='utf-8').read().split()\n"
+        "rows = [{'path': p, 'status': 'pass', 'duration_s': 0.1} for p in entries[1:]]\n"
+        "rows.append({'path': entries[0], 'status': 'skip', 'duration_s': 0.1})\n"
+        "summary = {'total': len(entries) - 1, 'passed': len(entries) - 1,\n"
+        "           'failed': 0, 'skipped': 1, 'item_results': rows}\n"
+        "json.dump(summary, open(sys.argv[2], 'w', encoding='utf-8'))\n"
+    )
+    evidence = tmp_path / "evidence"
+    raw = nightly_sharding.run_shard(
+        plan,
+        root=root,
+        program="differential",
+        shard_id=0,
+        raw_out=evidence / "shard-00.raw.json",
+        checkpoint_out=evidence / "shard-00.checkpoint.json",
+        command=[sys.executable, "-c", script, "{selection}", "{summary}"],
+    )
+    assert raw["summary_error"] is None
+    assert (raw["selected"], raw["passed"], raw["skipped"]) == (
+        len(entries),
+        len(entries) - 1,
+        1,
+    )
+    skipped = next(row for row in raw["item_results"] if row["status"] == "skipped")
+    assert skipped["reason"] == "skip"
+
+
 def test_shard_deadline_is_the_proof_plan_budget_less_its_overhead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -695,7 +803,7 @@ def test_missing_shard_evidence_is_a_named_failure_not_a_contract_error(
     with pytest.raises(RuntimeError, match="nightly conformance failed"):
         nightly_sharding.validate_aggregate(plan, aggregate)
     with pytest.raises(ValueError, match="item telemetry is incomplete"):
-        nightly_sharding.validate_aggregate(plan, aggregate, require_complete=True)
+        nightly_sharding.validate_aggregate(plan, aggregate, telemetry_only=True)
 
     hidden = copy.deepcopy(aggregate)
     hidden["ok"] = True

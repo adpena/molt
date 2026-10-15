@@ -102,7 +102,7 @@ else:
 ROOT = bind_repository_imports(__file__)
 
 from tools import harness_memory_guard  # noqa: E402
-from tools.compat import test_policy  # noqa: E402
+from tools.compat import diff_results, test_policy  # noqa: E402
 from molt.verified_subset import load_verified_subset_policy  # noqa: E402
 
 HONESTY_DIR = Path(__file__).resolve().parent / "suite_honesty"
@@ -446,16 +446,11 @@ def load_results(path: Path) -> dict[str, dict]:
         )
     severity = {"error": 4, "oom": 3, "fail": 2, "pass": 1, "skip": 0}
     out: dict[str, dict] = {}
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise GuardError(
-                f"calibration results line {lineno} is not valid JSON: {exc}"
-            ) from exc
+    try:
+        rows = diff_results.load_rows(path)
+    except ValueError as exc:
+        raise GuardError(f"calibration results: {exc}") from exc
+    for row in rows:
         f = row.get("file")
         raw = row.get("raw_status")
         if not isinstance(f, str) or not isinstance(raw, str):
