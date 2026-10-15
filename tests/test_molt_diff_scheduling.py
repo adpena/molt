@@ -213,6 +213,65 @@ def test_deadline_admits_only_tests_that_can_finish(suite, tmp_path, monkeypatch
     assert (summary["passed"], summary["not_run"]) == (len(suite.files), 0)
 
 
+@pytest.mark.parametrize(
+    ("cutoff_phase", "expected_retries"),
+    [("parallel-drain", 0), ("first-retry", 1), ("never", 2)],
+)
+def test_oom_retries_share_the_run_admission_deadline(
+    suite, tmp_path, monkeypatch, capsys, cutoff_phase, expected_retries
+):
+    suite.files[:] = suite.files[:2]
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(molt_diff, "_PROCESS_STARTED", 0.0)
+    monkeypatch.setattr(molt_diff.time, "monotonic", lambda: clock.now)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "10")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "30")
+    # The real admission policy reserves 30 s build + 10 s run + 10 s CPython.
+    # Advancing to 50 s exhausts a 100 s run's remaining test budget.
+    retries = []
+
+    def payload(path, status):
+        return {
+            "path": str(path),
+            "status": status,
+            "guard_signal": None,
+            "duration_s": 0.25,
+            "stdout": "",
+            "stderr": "",
+        }
+
+    def parallel(_executor, files, *args, **kwargs):
+        for path in files:
+            assert kwargs["admits"]()
+            suite.calls.append(str(path))
+            yield payload(path, "oom")
+        if cutoff_phase == "parallel-drain":
+            clock.now = 50.0
+
+    def retry(path, *args):
+        retries.append(path)
+        if cutoff_phase == "first-retry":
+            clock.now = 50.0
+        return payload(path, "pass")
+
+    monkeypatch.setattr(molt_diff, "_parallel_diff_results", parallel)
+    monkeypatch.setattr(molt_diff, "_diff_run_single", retry)
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=2,
+        retry_oom=True,
+        deadline_s=100,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert retries == [str(path) for path in suite.files[:expected_retries]]
+    assert summary["discovered"] == 2 and summary["not_run"] == 0
+    assert summary["passed"] == expected_retries
+    assert summary["failed"] == 2 - expected_retries
+    assert summary["oom"] == 2 - expected_retries
+    assert ("[RETRY-OOM]" in capsys.readouterr().out) is bool(expected_retries)
+
+
 def test_deadline_requires_a_per_test_bound(suite, tmp_path, monkeypatch):
     monkeypatch.delenv("MOLT_DIFF_TIMEOUT", raising=False)
     with pytest.raises(ValueError, match="requires MOLT_DIFF_TIMEOUT"):
