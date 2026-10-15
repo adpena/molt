@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from textwrap import indent
 
 import pytest
 
@@ -252,6 +253,123 @@ def test_context_exit_suppresses_only_pending_raise(incoming: Completion) -> Non
     assert result.raised == 3
     assert (result.normal is not None) == (
         incoming in {Completion.NORMAL, Completion.RAISE}
+    )
+
+
+_COMPLETION_STATEMENTS = {
+    Completion.NORMAL: "pass",
+    Completion.RETURN: "return 'returned'",
+    Completion.RAISE: "raise LookupError('pending')",
+    Completion.BREAK: "break",
+    Completion.CONTINUE: "continue",
+}
+
+
+def _cpython_observed_completion(body: str) -> tuple[Completion, list[str]]:
+    # The one-iteration loop makes break and continue independently observable:
+    # only continue exhausts it without reaching the post-body marker.
+    source = (
+        "def observe(events):\n"
+        "    for once in (0,):\n"
+        + indent(body, "        ")
+        + "\n        events.append('after-body')\n"
+        "    else:\n"
+        "        events.append('exhausted')\n"
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<completion-oracle>", "exec"), namespace)
+    events: list[str] = []
+    try:
+        result = namespace["observe"](events)
+    except LookupError as error:
+        assert str(error) in {"pending", "exit"}
+        return Completion.RAISE, events
+    if result == "returned":
+        return Completion.RETURN, events
+    assert result is None
+    if "after-body" in events:
+        return Completion.NORMAL, events
+    if "exhausted" in events:
+        return Completion.CONTINUE, events
+    return Completion.BREAK, events
+
+
+def _join_identical_traces(
+    left: tuple[str, ...], right: tuple[str, ...]
+) -> tuple[str, ...]:
+    assert left == right
+    return left
+
+
+@pytest.mark.filterwarnings("ignore:.*finally.*:SyntaxWarning")
+@pytest.mark.parametrize("incoming", list(Completion))
+@pytest.mark.parametrize("inner", list(Completion))
+@pytest.mark.parametrize("outer", list(Completion))
+def test_nested_cleanup_transitions_match_cpython_execution(
+    incoming: Completion, inner: Completion, outer: Completion
+) -> None:
+    # CPython executes the source independently; the oracle never applies the
+    # completion routing formula used by the implementation/table test above.
+    body = "events.append('body')\n" + _COMPLETION_STATEMENTS[incoming]
+    flow = Flow.single(incoming, ("body",))
+    visited: list[str] = []
+    for label, completion in (("inner", inner), ("outer", outer)):
+        body = (
+            "try:\n"
+            + indent(body, "    ")
+            + "\nfinally:\n"
+            + indent(
+                f"events.append({label!r})\n" + _COMPLETION_STATEMENTS[completion],
+                "    ",
+            )
+        )
+
+        def execute(state: tuple[str, ...]) -> Flow[tuple[str, ...]]:
+            visited.append(label)
+            return Flow.single(completion, (*state, label))
+
+        flow = flow.apply_finally(execute, join_states=_join_identical_traces)
+    observed, events = _cpython_observed_completion(body)
+    assert flow.completions == observed
+    assert flow.successors() == ((observed, ("body", "inner", "outer")),)
+    assert visited == [event for event in events if event in {"inner", "outer"}]
+
+
+@pytest.mark.parametrize("incoming", list(Completion))
+@pytest.mark.parametrize("exit_raises", [False, True])
+def test_context_exit_transitions_match_cpython_execution(
+    incoming: Completion, exit_raises: bool
+) -> None:
+    observed = Completion.NONE
+    traces: list[list[str]] = []
+    for suppress in (False, True):
+        body = (
+            "class Manager:\n"
+            "    def __enter__(self):\n"
+            "        events.append('enter')\n"
+            "    def __exit__(self, kind, value, traceback):\n"
+            "        events.append('exception' if kind is not None else 'ordinary')\n"
+            + (
+                "        raise LookupError('exit')\n"
+                if exit_raises
+                else f"        return {suppress!r}\n"
+            )
+            + "with Manager():\n"
+            + indent(_COMPLETION_STATEMENTS[incoming], "    ")
+        )
+        completion, events = _cpython_observed_completion(body)
+        observed |= completion
+        traces.append(events[:2])
+    flow = Flow.single(incoming, 1).unwind_context(
+        lambda state: Flow.single(
+            Completion.RAISE if exit_raises else Completion.NORMAL, state + 1
+        ),
+        join_states=max,
+    )
+    assert flow.completions == observed
+    assert (
+        traces
+        == [["enter", "exception" if incoming == Completion.RAISE else "ordinary"]] * 2
     )
 
 

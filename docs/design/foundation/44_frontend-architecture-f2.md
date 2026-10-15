@@ -147,6 +147,77 @@ facts, not scanner/lowering-local classifiers. Focused regression homes are
 `tests/cli/test_cli_python_import_authority.py`; these unit consumers do not prove
 native/WASM emitted-program matrix cells.
 
+### Completion transitions and lifetime states
+
+Use explicit control transitions at protocol boundaries. The existing
+`PythonCompletionFlow` is the authority for source execution; extending it and
+its source-point projections takes precedence over adding a second AST flow
+classifier or a generic state-machine framework. Python has nested cleanup and
+recursive calls: finite control states need continuation stacks, rather than a
+flat enumeration of every possible program state.
+
+The completion kind and the payload have separate roles. `NORMAL`, `RETURN`,
+`RAISE`, `BREAK` and `CONTINUE` route control; payloads retain the binding,
+ownership and pending-value facts for that route. `NONE` means that analysis
+proved no successor. Missing analysis means unknown and cannot establish an
+unreachable or transparent path. Joins must be monotone and revisit consumers
+only when facts change. Keep distinct completion channels through cleanup;
+joining them first loses which transfer a normal cleanup must resume.
+
+| Transition | Required behavior |
+| --- | --- |
+| Sequence | Execute the next statement only from `NORMAL`; preserve other exits. |
+| Normal `finally` | Resume the incoming completion with the cleanup's state. |
+| Abrupt `finally` | Replace the pending completion with the cleanup's completion. |
+| Context exit returning normally | Only a pending `RAISE` may additionally become `NORMAL`; return, break and continue retain their routes. |
+| Context exit raising | Propagate the new exception to the enclosing continuation. |
+| Suspension | Retain the pending completion, live owners and resume position; creation, resumption, throw and close are distinct operations. |
+
+For the multi-manager `with` protocol, the suppression boundary is the stack of
+managers whose entry completed. A manager's expression, special-method lookup
+and entry are outside its own boundary. Assignment to its `as` target is inside;
+later managers' evaluation and entry are inside earlier managers' boundaries.
+On exit, remove that manager before invoking its exit protocol: a failure in its
+exit can reach an earlier manager, but cannot be suppressed by itself. Generator
+or coroutine suspension retains this stack; it does not mark cleanup complete.
+These facts must originate in the existing execution transfers and reach import
+admission, source-effect policy and lowering through typed source identities.
+A lexical `with` or `try` flag cannot express the contract.
+
+This follows CPython's
+[instruction-to-handler table](https://github.com/python/cpython/blob/d220409a13b77de7a6c30abe16ea90db01528edc/InternalDocs/exception_handling.md),
+the [PEP 343](https://peps.python.org/pep-0343/) context protocol and
+[PEP 342](https://peps.python.org/pep-0342/) suspension operations. Compiler
+precedents support the same separation: rustc MIR gives calls and drops explicit
+[normal and unwind successors](https://doc.rust-lang.org/stable/nightly-rustc/rustc_middle/mir/syntax/enum.TerminatorKind.html),
+and its [coroutine transform](https://doc.rust-lang.org/beta/nightly-rustc/rustc_mir_transform/coroutine/index.html)
+stores the control state and only the locals live across suspension. MLIR
+[control-flow interfaces](https://github.com/llvm/llvm-project/blob/main/mlir/include/mlir/Interfaces/ControlFlowInterfaces.td)
+describe successors separately from the
+[dataflow lattice](https://mlir.llvm.org/docs/Tutorials/DataFlowAnalysis/).
+Rust's panic, cleanup and poisoned-coroutine rules are precedents for explicit
+modeling, not substitutes for Python semantics.
+
+The independent oracle is CPython executing the same source transitions.
+`tests/test_python_binding_completion_flow.py` checks nested cleanup across all
+five completion kinds, and context exit with normal and raising exits. The
+existing source/binding proof cell owns these tests. This proves the abstract
+cleanup scheduler only: source-policy continuation projections, pending values
+and exception identity, live-frame publication, suspension layouts and emitted
+native/WASM behavior still require their respective consumer proofs.
+
+Keep analysis state on the development/compiler side. A release binary needs
+only control, ownership and suspension state required by Python execution;
+analysis graphs, source traces, transition enumerators and proof receipts must
+not be retained. Reachability and liveness should eliminate impossible states
+and dead storage before code generation. The same principle applies to build
+and cache protocols: use their existing receipt and custody authorities to make
+publication and terminal transitions explicit, rather than introduce a second
+state registry. Measure visited transitions, changed facts, peak live state and
+generated bytes; state count alone cannot establish compile-time or runtime
+optimality. Do not enumerate call paths or construct an eager product of
+independent protocol states.
+
 Static graph identity is separate from mandatory runtime import execution. An
 exact explicit package remains the successful-resolution anchor even when
 `spec.parent` is unknown: CPython captures the package before consulting that
