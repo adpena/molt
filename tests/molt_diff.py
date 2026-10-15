@@ -1964,13 +1964,9 @@ def _order_test_files(files: list[Path], jobs: int) -> list[Path]:
 
 
 def _log_path_for_test(log_dir: Path, file_path: str) -> Path:
-    path = Path(file_path)
-    try:
-        rel = path.relative_to(Path.cwd())
-    except ValueError:
-        rel = path
-    safe = "__".join(rel.parts)
-    return log_dir / f"{safe}.log"
+    identity = test_policy.normalize_repo_relative(file_path, repo_root=_repo_root())
+    digest = hashlib.sha256(identity.encode("utf-8", "surrogatepass")).hexdigest()
+    return log_dir / f"{digest}.log"
 
 
 def _write_test_log(log_dir: Path, file_path: str, stdout: str, stderr: str) -> Path:
@@ -5092,12 +5088,8 @@ def run_diff(
                 except OSError as exc:
                     print(f"Warning: failed to create log dir {log_dir}: {exc}")
                     log_dir = None
-            requested_live = live
             if not live:
                 live = True
-            outputs: dict[str, dict[str, object]] = {}
-            keep_full_payloads = (not requested_live) and log_dir is None
-            keep_retry_payloads = retry_oom
             prune_every = _diff_prune_every()
             completed = 0
             with _open_log_file(log_file) as log_handle:
@@ -5140,10 +5132,6 @@ def run_diff(
                             assert isinstance(path, str) and isinstance(status, str)
                             duration_by_path[path] = float(result["duration_s"])
                             completed += 1
-                            if keep_full_payloads or (
-                                keep_retry_payloads and status == "oom"
-                            ):
-                                outputs[path] = result
                             results.append((path, status))
                             log_path = None
                             if log_dir is not None:
@@ -5176,19 +5164,27 @@ def run_diff(
                                     result["stdout"],
                                     result["stderr"],
                                 )
+                            # Workers capture diagnostics; unlike the serial Tee,
+                            # they cannot print them live. Publish each failed
+                            # completion unless a detail sink already owns it.
+                            if (
+                                status in _FAILURE_STATUSES
+                                and log_path is None
+                                and aggregate_handle is None
+                            ):
+                                if result["stdout"]:
+                                    print(result["stdout"], end="", flush=True)
+                                if result["stderr"]:
+                                    print(
+                                        result["stderr"],
+                                        end="",
+                                        file=sys.stderr,
+                                        flush=True,
+                                    )
                             if prune_every > 0 and completed % prune_every == 0:
                                 _prune_orphan_diff_workers()
                                 _prune_orphan_build_helpers()
                                 _prune_backend_daemons()
-            if not live and log_dir is None:
-                for file_path in test_files:
-                    payload = outputs.get(str(file_path))
-                    if payload is None:
-                        continue
-                    if payload["stdout"]:
-                        print(payload["stdout"], end="")
-                    if payload["stderr"]:
-                        print(payload["stderr"], end="", file=sys.stderr)
         _prune_orphan_diff_workers()
         _prune_orphan_build_helpers()
         _prune_backend_daemons()
@@ -5225,7 +5221,6 @@ def run_diff(
                 assert isinstance(retry_status, str)
                 status_by_path[path] = retry_status
                 duration_by_path[path] = float(retry_payload["duration_s"])
-                outputs[path] = retry_payload
         guard_trip_outcome = suite_trip_outcome()
         guard_trip_message = (
             None
