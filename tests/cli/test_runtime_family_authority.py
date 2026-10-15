@@ -1994,18 +1994,22 @@ def test_pure_freestanding_rust_does_not_select_c_sdk(plan_root, monkeypatch):
 def test_sdk_members_use_receipt_without_mutable_resource_capture(
     plan_root, monkeypatch
 ):
+    from molt import toolchain_identity
+
     captured = []
-    original = plans.CargoFileCustody.capture.__func__
+    original = toolchain_identity.FileDigestCache.identity
 
-    def capture(cls, label, path):
-        captured.append(path)
-        return original(cls, label, path)
+    def identity(self, path, *, label):
+        captured.append(Path(path).resolve())
+        return original(self, path, label=label)
 
-    monkeypatch.setattr(plans.CargoFileCustody, "capture", classmethod(capture))
+    monkeypatch.setattr(toolchain_identity.FileDigestCache, "identity", identity)
     plan = _plan(plan_root, target="wasm32-wasip1", args=("--target", "wasm32-wasip1"))
     assert plan.wasi_c_abi is not None
+    # The spy sees every mutable resource capture, so its silence is evidence.
+    assert captured
     for _role, path, size, digest in plan.wasi_c_abi.files:
-        assert captured.count(path) == 0
+        assert captured.count(Path(path).resolve()) == 0
         assert not any(item.entrypoint == path for item in plan.rust_resources.files)
         fact = plan.wasi_sdk.facts["members"][_role]
         assert (fact["size"], fact["sha256"]) == (size, digest)
@@ -2080,16 +2084,16 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     )
     installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
     captured = []
-    original = plans.CargoResourceRoot.files
+    original = plans.CargoResourceRoot.walk
 
-    def files(resource):
+    def walk(resource):
         assert not resource.path.is_relative_to(installation.sdk), (
             "managed SDK recursively recaptured"
         )
         captured.append(resource.path)
         return original(resource)
 
-    monkeypatch.setattr(plans.CargoResourceRoot, "files", files)
+    monkeypatch.setattr(plans.CargoResourceRoot, "walk", walk)
     plan = _plan(
         plan_root,
         target="wasm32-wasip1",

@@ -765,3 +765,29 @@ def test_bootstrap_scan_accepts_only_the_canonical_binding(tmp_path: Path) -> No
         _bootstrap_failure(script, root=tmp_path.parent)
         == "line 1: import before the repository binding"
     )
+
+
+def test_loading_the_harness_guard_keeps_tools_off_sys_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt import process_guard
+
+    tools_root = (ROOT / "tools").resolve()
+
+    def inside_tools(item: str) -> bool:
+        return Path(item or ".").resolve().is_relative_to(tools_root)
+
+    monkeypatch.setattr(
+        sys, "path", [item for item in sys.path if not inside_tools(item)]
+    )
+    process_guard.load_harness_memory_guard(None)
+
+    # tools/profile.py on sys.path would shadow the stdlib `profile` (cProfile).
+    assert [item for item in sys.path if inside_tools(item)] == []
+
+
+def test_the_cleanup_tool_loads_under_its_one_identity() -> None:
+    from molt.cli import maintenance
+    from tools import artifact_cleanup
+
+    assert maintenance._load_artifact_cleanup_module(ROOT) is artifact_cleanup

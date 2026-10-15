@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 import hashlib
 from io import BufferedReader
@@ -11,8 +11,10 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import stat
 import subprocess
+import time
 from typing import BinaryIO
 
 from molt.default_paths import executable_environment_value, expand_user_path
@@ -104,7 +106,10 @@ def _portable_filename(value: str) -> str:
     return value.casefold() if os.name == "nt" else value
 
 
-def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+_StatToken = tuple[int, int, int, int, int, int]
+
+
+def _stat_identity(value: os.stat_result) -> _StatToken:
     return (
         value.st_dev,
         value.st_ino,
@@ -783,6 +788,129 @@ def stable_regular_file_identity(
     return _regular_file_identity(lexical, file_stat, change_time_ns, digest)
 
 
+# A digest recorded within this window of a timestamp tick could miss a write
+# landing in the same tick (the racy-git rule), so such files are rehashed.
+DIGEST_RACY_WINDOW_NS = 2_000_000_000
+
+
+class FileDigestCache:
+    """Stat-keyed SHA-256 digests that processes on one host reuse.
+
+    A recorded digest is reused only for a file whose (device, inode, mode,
+    size, mtime_ns, ctime_ns) equals the observation it was recorded with, and
+    only digests of files whose timestamps were already older than the racy
+    window are recorded. POSIX kernels update ctime on every write and callers
+    cannot set it, so an equal token cannot hide a write. Windows ChangeTime
+    can repeat within one clock tick, so Windows never consults the cache.
+    Rows unused for the cache's age budget are deleted.
+    """
+
+    def __init__(self, store: Path, *, max_age_ns: int) -> None:
+        self.store = store
+        self._max_age_ns = max_age_ns
+        self._started_ns = time.time_ns()
+        self._recorded: dict[str, tuple[_StatToken, str, int]] | None = None
+        self._pending: dict[str, tuple[_StatToken, str]] = {}
+
+    def _connect(self) -> sqlite3.Connection:
+        self.store.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.store, timeout=60)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS digests (path TEXT PRIMARY KEY,"
+            " dev INTEGER NOT NULL, ino INTEGER NOT NULL, mode INTEGER NOT NULL,"
+            " size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,"
+            " ctime_ns INTEGER NOT NULL, sha256 TEXT NOT NULL,"
+            " recorded_ns INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS digests_recorded ON digests (recorded_ns)"
+        )
+        return connection
+
+    def _rows(self) -> dict[str, tuple[_StatToken, str, int]]:
+        if self._recorded is None:
+            with closing(self._connect()) as connection:
+                self._recorded = {
+                    row[0]: (
+                        (row[1], row[2], row[3], row[4], row[5], row[6]),
+                        row[7],
+                        row[8],
+                    )
+                    for row in connection.execute(
+                        "SELECT path, dev, ino, mode, size, mtime_ns, ctime_ns,"
+                        " sha256, recorded_ns FROM digests"
+                    )
+                }
+        return self._recorded
+
+    def identity(self, path: Path, *, label: str) -> StableRegularFileIdentity:
+        """This file's stable identity; hash only without a current digest."""
+        if os.name == "nt":
+            return stable_regular_file_identity(path, label=label)
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise StableRegularFileError(f"{label} is unavailable: {path}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise StableRegularFileError(
+                f"{label} is not one stable regular file: {path}"
+            )
+        key = os.fspath(path)
+        token = _stat_identity(metadata)
+        recorded = self._rows().get(key)
+        if recorded is not None and recorded[0] == token:
+            if recorded[2] < self._started_ns - self._max_age_ns // 2:
+                self._pending[key] = (token, recorded[1])
+            return _regular_file_identity(
+                path, metadata, metadata.st_ctime_ns, recorded[1]
+            )
+        identity = stable_regular_file_identity(
+            path, label=label, expected_path_stat=metadata
+        )
+        if identity._stat_identity == token and (
+            max(metadata.st_mtime_ns, metadata.st_ctime_ns)
+            < self._started_ns - DIGEST_RACY_WINDOW_NS
+        ):
+            self._pending[key] = (token, identity.sha256)
+        return identity
+
+    def flush(self) -> None:
+        """Record this process's new digests and drop rows past the age budget."""
+        if not self._pending:
+            return
+        rows = [
+            (path, *token, sha256, self._started_ns)
+            for path, (token, sha256) in self._pending.items()
+        ]
+        with closing(self._connect()) as connection, connection:
+            connection.executemany(
+                "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            connection.execute(
+                "DELETE FROM digests WHERE recorded_ns < ?",
+                (self._started_ns - self._max_age_ns,),
+            )
+        recorded = self._rows()
+        for path, (token, sha256) in self._pending.items():
+            recorded[path] = (token, sha256, self._started_ns)
+        self._pending.clear()
+
+
+_FILE_DIGEST_CACHES: dict[Path, FileDigestCache] = {}
+
+
+def file_digest_cache(store: Path, *, max_age_ns: int) -> FileDigestCache:
+    """This process's digest cache over one store."""
+    cache = _FILE_DIGEST_CACHES.get(store)
+    if cache is None:
+        cache = _FILE_DIGEST_CACHES[store] = FileDigestCache(
+            store, max_age_ns=max_age_ns
+        )
+    return cache
+
+
 def stable_regular_file_version(path: Path, *, label: str) -> StableRegularFileVersion:
     """Capture the shared no-follow handle/mutation token without reading bytes."""
     lexical, metadata, change_time_ns, _ = _stable_regular_file_snapshot(
@@ -934,6 +1062,28 @@ def verify_stable_regular_file_identity(
         verify_stable_regular_file_content(
             identity, sha256=digest, size=file_stat.st_size, label=label
         )
+
+
+def verify_stable_regular_file_metadata(
+    identity: StableRegularFileVersion, *, label: str
+) -> None:
+    """Compare one POSIX path stat with a captured generation.
+
+    On POSIX the path's stat carries the same (device, inode, mode, size,
+    mtime, ctime) a fresh handle would report, so no open is needed. Windows
+    needs the handle's ChangeTime: use verify_stable_regular_file_identity.
+    """
+    if os.name == "nt":
+        raise ValueError("Windows file metadata needs a handle ChangeTime query")
+    try:
+        metadata = identity.path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable: {identity.path}") from exc
+    if (
+        _stat_identity(metadata) != identity._stat_identity
+        or metadata.st_ctime_ns != identity._content_change_time_ns
+    ):
+        raise ValueError(f"{label} changed since identity capture: {identity.path}")
 
 
 def read_stable_regular_file(

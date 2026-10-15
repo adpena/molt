@@ -56,27 +56,27 @@ def _emit_json(*args: Any, **kwargs: Any) -> Any:
 
 
 def _load_artifact_cleanup_module(root: Path) -> Any:
+    """This checkout's `tools.artifact_cleanup`, under its one import identity."""
     tool_path = root / "tools" / "artifact_cleanup.py"
     if not tool_path.is_file():
         raise FileNotFoundError(f"missing canonical cleanup tool: {tool_path}")
-    spec = importlib.util.spec_from_file_location(
-        "_molt_repo_artifact_cleanup",
-        tool_path,
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load canonical cleanup tool: {tool_path}")
-    module = importlib.util.module_from_spec(spec)
     root_text = str(root)
     inserted_root = False
     if root_text not in sys.path:
         sys.path.insert(0, root_text)
         inserted_root = True
     try:
-        spec.loader.exec_module(module)
+        module = importlib.import_module("tools.artifact_cleanup")
     finally:
         if inserted_root:
             with contextlib.suppress(ValueError):
                 sys.path.remove(root_text)
+    loaded = Path(getattr(module, "__file__", "") or "").resolve()
+    if loaded != tool_path.resolve():
+        raise ImportError(
+            f"tools.artifact_cleanup is loaded from {loaded}, not this checkout's "
+            f"{tool_path}"
+        )
     return module
 
 

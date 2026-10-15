@@ -223,6 +223,11 @@ def cache_control_root(cache_root: Path) -> Path:
     return cache_root / "locks"
 
 
+def file_digest_cache_path(cache_root: Path) -> Path:
+    """The host's stat-keyed file digest store within one cache namespace."""
+    return cache_root / "file-digests" / "v1.sqlite"
+
+
 def shared_cache_lock_path(cache_root: Path, name: str) -> Path:
     """Project the shared producer/reader/evictor lock in durable control state."""
     return cache_control_root(cache_root) / f"{name}.lock"

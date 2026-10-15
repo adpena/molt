@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -20,6 +23,26 @@ from molt.environment_registry import (
 )
 from molt.process_guard import GuardInfrastructureError, guard_infrastructure_exit_code
 from molt.target_python import require_frontend_python
+
+
+@contextmanager
+def _cli_profile() -> Generator[None]:
+    """Profile this command when MOLT_CLI_PROFILE names a stats file."""
+    target = os.environ.get("MOLT_CLI_PROFILE", "").strip()
+    if not target:
+        yield
+        return
+    import cProfile
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        yield
+    finally:
+        profiler.disable()
+        path = Path(target.replace("{pid}", str(os.getpid())))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        profiler.dump_stats(path)
 
 
 def main(build_fn: Callable[..., int] | None = None) -> int:
@@ -61,21 +84,22 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
     cfg_capabilities = _resolve_capabilities_config(config)
 
     try:
-        return _dispatch_entrypoint_command(
-            args,
-            parser=parser,
-            build_fn=build_fn,
-            config_root=config_root,
-            config=config,
-            build_cfg=build_cfg,
-            run_cfg=run_cfg,
-            compare_cfg=compare_cfg,
-            test_cfg=test_cfg,
-            diff_cfg=diff_cfg,
-            extension_cfg=extension_cfg,
-            publish_cfg=publish_cfg,
-            cfg_capabilities=cfg_capabilities,
-        )
+        with _cli_profile():
+            return _dispatch_entrypoint_command(
+                args,
+                parser=parser,
+                build_fn=build_fn,
+                config_root=config_root,
+                config=config,
+                build_cfg=build_cfg,
+                run_cfg=run_cfg,
+                compare_cfg=compare_cfg,
+                test_cfg=test_cfg,
+                diff_cfg=diff_cfg,
+                extension_cfg=extension_cfg,
+                publish_cfg=publish_cfg,
+                cfg_capabilities=cfg_capabilities,
+            )
     except GuardInfrastructureError as exc:
         # The guard failed, not the command it ran: report it as such, with
         # the guard's own exit code, wherever the failure surfaced.

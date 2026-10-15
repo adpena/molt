@@ -93,8 +93,8 @@ tests, measurements, and explicit user direction over stale prose.
 - Optimize per platform and architecture through typed capability and target plans. Do not use
   post-failure retries or silent fallback as feature detection.
 - Build missing telemetry, profilers, benchmarks, or inspection tools when they materially shorten
-  the path to a correct decision. Reuse one instrumentation authority across targets wherever
-  possible.
+  the path to a correct decision; reuse one instrumentation authority. Measure a slow build first:
+  `MOLT_BUILD_DIAGNOSTICS(_FILE)`, `MOLT_CLI_PROFILE` (`docs/OPERATIONS.md`, "Build time").
 - A local benchmark win does not justify duplicated control paths, weaker determinism, or unbounded
   memory. Record the relevant tradeoffs and gate the policy on reproducible evidence.
 - Before deleting an implementation, learn why it existed and measure what it was worth. Removing a

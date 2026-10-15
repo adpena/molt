@@ -274,3 +274,27 @@ def test_entrypoint_reports_a_guard_failure_with_the_guard_exit_code(
         assert payload["data"]["returncode"] == 125
     else:
         assert captured.err.strip() == str(error)
+
+
+def test_cli_profile_writes_one_stats_file_per_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import pstats
+
+    def profiled_dispatch(*_args: Any, **_kwargs: Any) -> int:
+        return 0
+
+    entry = tmp_path / "app.py"
+    entry.write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(entrypoint, "check_process_environment", lambda: None)
+    monkeypatch.setattr(entrypoint, "_dispatch_entrypoint_command", profiled_dispatch)
+    monkeypatch.setattr(sys, "argv", ["molt", "build", str(entry)])
+    monkeypatch.setenv("MOLT_CLI_PROFILE", str(tmp_path / "profiles" / "{pid}.prof"))
+
+    assert entrypoint.main(build_fn=lambda *_a, **_k: 0) == 0
+
+    written = tmp_path / "profiles" / f"{os.getpid()}.prof"
+    functions = {name for _file, _line, name in pstats.Stats(str(written)).stats}
+    assert "profiled_dispatch" in functions

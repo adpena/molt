@@ -118,9 +118,10 @@ def _molt_repo_root() -> Path:
 def load_harness_memory_guard(cwd: Path | None) -> Any:
     del cwd  # A command directory cannot authorize a different guard module.
     root = _molt_repo_root()
-    for path in (root, root / "tools"):
-        if str(path) not in sys.path:
-            sys.path.insert(0, str(path))
+    # Tools import as `tools.<module>` (HF-F217); `tools/` itself never joins
+    # sys.path, where tools/profile.py would shadow the stdlib `profile`.
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
     try:
         from tools import harness_memory_guard
     except ModuleNotFoundError as exc:
