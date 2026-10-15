@@ -60,6 +60,7 @@ from molt.metric_ratios import (  # noqa: E402
 )
 import perf_schema as perf_schema  # noqa: E402
 import bench_suites as bench_suites  # noqa: E402
+from git_identity import is_git_object_id  # noqa: E402
 
 __all__ = [
     "CANONICAL_GATE",
@@ -808,8 +809,6 @@ def release_scoreboard_problems(
     elif age > max_age_days:
         problems.append(f"{label} generated_at is {age:.0f}d old (>{max_age_days:g}d)")
 
-    from tools.git_identity import is_git_object_id
-
     if not is_git_object_id(expected_source_sha):
         raise ValueError("expected_source_sha must be lowercase Git object hex")
     revision_fields = dict(scoreboard_revision_fields(doc))
@@ -1027,8 +1026,6 @@ def scoreboard_observed_toolchain_problems(doc: Mapping[str, Any]) -> list[str]:
 
 def scoreboard_release_eligibility(doc: Mapping[str, Any]) -> dict[str, Any]:
     """Report canonical-core E2 eligibility, never complete release readiness."""
-    from tools.git_identity import is_git_object_id
-
     revision = doc.get("git_rev")
     if not is_git_object_id(revision):
         problems = ["scoreboard lacks an exact source revision"]

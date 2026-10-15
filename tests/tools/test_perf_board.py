@@ -9,6 +9,7 @@ projection of one canonical cell stream. SYNTHETIC cells only — no molt rebuil
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import perf_board as pb  # noqa: E402
 import perf_schema as schema  # noqa: E402
+from tests.process_guard_common import run_guarded_test_process  # noqa: E402
 
 
 def _cell(**overrides: object) -> dict[str, object]:
@@ -271,3 +273,32 @@ def _walk_leaves(node: object) -> list[dict]:
             for child in node.values():
                 out.extend(_walk_leaves(child))
     return out
+
+
+def test_board_cli_runs_when_launched_by_path_outside_the_checkout(
+    tmp_path: Path,
+) -> None:
+    # CI runs `python tools/perf_board.py` with only tools/ on sys.path; pytest
+    # also has the repository root, which hides an unbound `tools.` import.
+    source = tmp_path / "scoreboard.json"
+    source.write_text(json.dumps(_source_doc([_cell()])), encoding="utf-8")
+    out_dir = tmp_path / "boards"
+    env = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            str(TOOLS_ROOT / "perf_board.py"),
+            str(source),
+            "--out-dir",
+            str(out_dir),
+            "--no-gate",
+            "--quiet",
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    board = json.loads(
+        (out_dir / f"cpython_{'a' * 12}.json").read_text(encoding="utf-8")
+    )
+    assert board["e2_eligibility"]["scope"] == "canonical-core-E2"
