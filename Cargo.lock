@@ -1072,13 +1072,14 @@ checksum = "2a2f30ea3fd5a11f7d3473976d3b62b5b3f2b62fa943c85e0331d88bf505082c"
 
 [[package]]
 name = "cranelift-module"
-version = "0.133.3"
+version = "0.136.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d169439e152238c300df1704bff6bdcef51e02ea756369688f3adec1097de97"
+checksum = "382105ee9ba862bbca7f7b7119ef507125309764a0ee6cbcf46d1e0958e1dafc"
 dependencies = [
  "anyhow",
- "cranelift-codegen 0.133.3",
- "cranelift-control 0.133.3",
+ "cranelift-codegen 0.136.2",
+ "cranelift-control 0.136.2",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -4776,7 +4777,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

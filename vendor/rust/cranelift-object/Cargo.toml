@@ -60,7 +60,7 @@ version = "0.133.3"
 default-features = false
 
 [dependencies.cranelift-module]
-version = "0.133.3"
+version = "0.136.2"
 
 [dependencies.gimli]
 version = "0.33.0"
