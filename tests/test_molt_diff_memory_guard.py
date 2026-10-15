@@ -52,7 +52,9 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
         infrastructure_failure=failure,
         child_stderr="",
     )
-    monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda: None)
+    monkeypatch.setattr(
+        module, "_memory_guard_trip_outcome", lambda *, environment=None: None
+    )
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
     monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
     monkeypatch.setattr(
@@ -708,6 +710,7 @@ def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
     module = _load_diff_module()
     marker = tmp_path / "trip.json"
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
     requests = []
     shutdown = []
     child = module.memory_guard.GuardedChildProcess(
@@ -771,7 +774,7 @@ def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
     )
     monkeypatch.setattr(module, "_batch_compile_server_reset_disabled", lambda: None)
     result = module._run_batch_compile_build(
-        env={},
+        env={module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV: str(marker)},
         file_path="fixture.py",
         output_root=tmp_path,
         output_binary=tmp_path / "fixture",
@@ -781,6 +784,9 @@ def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
         rebuild=False,
         request_timeout=2.0,
         strict_mode=strict,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     matched = case in {"server", "descendant"}
     assert result.rss_limit_exceeded is matched
@@ -814,13 +820,14 @@ def test_batch_admission_preserves_prior_suite_trip_without_launch(
     marker = tmp_path / "trip.json"
     module.harness_outcomes.publish_suite_trip(marker, _suite_trip_entry())
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
 
     def forbidden(*args, **kwargs):
         raise AssertionError("suite trip must stop a new batch request")
 
     monkeypatch.setattr(module, "_batch_compile_server_client", forbidden)
     result = module._run_batch_compile_build(
-        env={},
+        env={module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV: str(marker)},
         file_path="fixture.py",
         output_root=tmp_path,
         output_binary=tmp_path / "fixture",
@@ -830,6 +837,9 @@ def test_batch_admission_preserves_prior_suite_trip_without_launch(
         rebuild=False,
         request_timeout=2.0,
         strict_mode=True,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     assert result.rss_limit_exceeded and result.build_failed
     assert result.child_returncode is None
@@ -922,6 +932,35 @@ def _suite_trip_entry(pid=11, born=1000):
     }
 
 
+@pytest.mark.parametrize("selected_has_marker", [False, True])
+def test_suite_trip_uses_only_supplied_environment(
+    tmp_path, monkeypatch, selected_has_marker
+):
+    module = _load_diff_module()
+    ambient = tmp_path / "ambient.json"
+    ambient.write_text("invalid ambient evidence", encoding="utf-8")
+    selected = tmp_path / "selected.json"
+    module.harness_outcomes.publish_suite_trip(selected, _suite_trip_entry())
+    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(ambient))
+
+    def forbidden():
+        pytest.fail("suite evidence read invented a default artifact location")
+
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", forbidden)
+    environment = (
+        {module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV: str(selected)}
+        if selected_has_marker
+        else {}
+    )
+    actual = module._memory_guard_trip_outcome(environment=environment)
+    if selected_has_marker:
+        assert actual.rss_limit_exceeded
+        assert actual.infrastructure_failure is None
+    else:
+        assert actual is None
+    assert module._memory_guard_trip_outcome().infrastructure_failure is not None
+
+
 @pytest.mark.parametrize("valid", [False, True])
 def test_suite_trip_requires_recorded_rss_and_identity_evidence(
     tmp_path, monkeypatch, valid
@@ -931,6 +970,7 @@ def test_suite_trip_requires_recorded_rss_and_identity_evidence(
     module = _load_diff_module()
     marker = tmp_path / "trip.json"
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
     assert module._memory_guard_trip_outcome() is None
     payload = (
         {"event": "guard_tripped", "trips": [_suite_trip_entry()]}
@@ -955,6 +995,7 @@ def test_sentinel_failure_reaches_parent_without_trip_file(
     module = _load_diff_module()
     marker = tmp_path / "trip.json"
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
 
     def fail_callback(*args):
         if failure_kind == "publication":
@@ -994,6 +1035,7 @@ def test_sentinel_retains_primary_and_stage_cleanup_failure(
     marker = tmp_path / "trip.json"
     stage = tmp_path / ".molt-fixture.tmp"
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
     monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
     original_unlink = Path.unlink
 
@@ -1035,6 +1077,97 @@ def test_sentinel_retains_primary_and_stage_cleanup_failure(
         assert "primary marker publication failed" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "kind", ["rss", "allocator", "signal", "infrastructure", "timeout"]
+)
+def test_terminal_batch_result_survives_deadline_during_cleanup(
+    tmp_path, monkeypatch, kind
+):
+    module = _load_diff_module()
+    source = tmp_path / "fixture.py"
+    source.write_text("print('guest')\n", encoding="utf-8")
+    backends = module.compat_backends
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    budget = backends.ItemBudget(backends.TimeoutPolicy.from_environment({}), 10.0)
+    failure = module.memory_guard.GuardInfrastructureFailure(
+        phase="temporary_artifact_custody", details=("batch cleanup failed",)
+    )
+    diagnostic = (
+        "MemoryError: allocator exhausted"
+        if kind == "allocator"
+        else "preserved child diagnostic"
+    )
+    terminal = backends.BackendResult(
+        None,
+        diagnostic,
+        {
+            "rss": 125,
+            "allocator": 137,
+            "signal": 143,
+            "infrastructure": 126,
+            "timeout": 124,
+        }[kind],
+        build_failed=True,
+        rss_limit_exceeded=kind == "rss",
+        guard_signal=15 if kind == "signal" else None,
+        infrastructure_failure=failure if kind == "infrastructure" else None,
+        timed_out=kind == "timeout",
+        detail="original terminal outcome",
+        child_stderr=diagnostic,
+        child_returncode=-9,
+    )
+    layout = SimpleNamespace(
+        repo_root=tmp_path,
+        cargo_target_root=tmp_path / "target",
+        diff_root=tmp_path / "diff",
+        cache_root=tmp_path / "cache",
+    )
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: True)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: True)
+    monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
+    metadata_calls = []
+    resolve = module._resolve_molt_cli_python
+
+    def metadata(*, budget=None):
+        metadata_calls.append("cli_python")
+        return resolve(budget=budget)
+
+    def batch(**kwargs):
+        assert kwargs["budget"] is budget
+        clock.now = 10.0
+        return terminal
+
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", metadata)
+    monkeypatch.setattr(module, "_run_batch_compile_build", batch)
+    actual = module._run_molt_owned(
+        str(source),
+        build_only=False,
+        build_profile="dev",
+        daemon_enabled=False,
+        no_cache=False,
+        rebuild=False,
+        extra_env=None,
+        execution_context=None,
+        output_root=tmp_path,
+        environment={},
+        budget=budget,
+    )
+    assert actual == terminal
+    assert actual.resource_failure == (
+        "rss_limit_exceeded"
+        if kind == "rss"
+        else "allocation_failed"
+        if kind == "allocator"
+        else None
+    )
+    assert metadata_calls == []
+
+
 @pytest.mark.parametrize("phase", ["build", "run"])
 @pytest.mark.parametrize("source", ["guard", "metrics", "batch"])
 def test_native_resource_evidence_survives_build_and_run(
@@ -1055,8 +1188,10 @@ def test_native_resource_evidence_survives_build_and_run(
         module, "_diff_batch_compile_server_enabled", lambda: source == "batch"
     )
     monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: False)
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda _: None)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: "fixture-python"
+    )
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
     monkeypatch.setattr(
         module,
@@ -1096,6 +1231,9 @@ def test_native_resource_evidence_survives_build_and_run(
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     actual = module._run_molt_owned(
         "fixture.py",
@@ -1108,6 +1246,9 @@ def test_native_resource_evidence_survives_build_and_run(
         execution_context=context,
         output_root=tmp_path,
         environment={},
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     assert actual.rss_limit_exceeded and actual.resource_failure == "rss_limit_exceeded"
     assert actual.build_failed is (phase == "build")
@@ -1133,9 +1274,13 @@ def test_native_timeout_preserves_guard_outcome_and_raw_streams(
     monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda _: None)
-    monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda: None)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: "fixture-python"
+    )
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
+    monkeypatch.setattr(
+        module, "_memory_guard_trip_outcome", lambda *, environment=None: None
+    )
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
     monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: None)
@@ -1177,6 +1322,9 @@ def test_native_timeout_preserves_guard_outcome_and_raw_streams(
         execution_context=None,
         output_root=tmp_path,
         environment={},
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     assert actual.timed_out and actual.returncode == 124
     assert actual.child_returncode == -9 and actual.guard_signal == 9

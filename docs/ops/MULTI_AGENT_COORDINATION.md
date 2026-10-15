@@ -322,7 +322,22 @@ Differential and conformance lanes are shared resources.
 stdlib profile and capability/environment policy across native, WASM, LLVM and
 Luau. CLI, metadata and environment selectors are resolved before dispatch;
 native subprocess/batch and cross-backend argv consume the same stdlib-profile
-parser. Per-backend result rows retain the selected profiles. Requested JSONL
+parser. The context also carries one immutable `ItemBudget`, pinned before
+serial or process-pool dispatch. Its target-specific `TimeoutPolicy` supplies
+both admission reservation and actual phase caps. CPython, interpreter metadata,
+LLVM provenance probes, startup ping, strict batch retries, native recoveries and
+subprocess fallback consume its remaining time; worker startup and queue delay
+never renew it. A standalone case creates that budget once, and warm-cache work
+uses the same policy's native build-only bound. Suite preflight consumes the
+absolute suite deadline and retains a normal not-run summary on exhaustion.
+Successful probe facts remain cacheable independently of a deadline. These are
+process-dispatch and guarded child execution bounds: mandatory child/lease
+cleanup, filesystem calls and summary publication still require the outer guard's
+headroom. Completed outcomes retain their typed failure precedence; exhaustion
+during backend evaluation retains the selected backend rows. Suite evidence consumes
+the actual execution environment’s explicitly selected marker through the shared
+reader; an ambient artifact location cannot override an explicit context.
+Per-backend result rows retain the selected profiles. Requested JSONL
 receipt writes fail loudly; an unwritable evidence sink is not a passing run.
 
 `BackendResult` preserves build/run timeout facts through every adapter. A guard

@@ -10,6 +10,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from types import ModuleType
 
 import pytest
@@ -62,9 +63,11 @@ def _configure_fixture_cpython_runner(
     monkeypatch.setattr(
         module, "_diff_tmp_root", lambda _environment=None: tmp_path / "diff-tmp"
     )
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 30.0)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "30")
     monkeypatch.setattr(
-        module, "_resolve_python_command", lambda _python: [sys.executable]
+        module,
+        "_resolve_python_command",
+        lambda _python, *, budget=None: [sys.executable],
     )
     monkeypatch.setattr(module, "_run_subprocess", run_from_fixture_cwd)
 
@@ -81,11 +84,11 @@ def _declare_cpython_oracle(
     oracle = TargetPythonVersion(3, 12 if sys.version_info[:2] == (3, 13) else 13, 0)
     command = module._resolve_python_command(python_exe)
 
-    def version(probed: tuple[str, ...]) -> tuple[int, int]:
+    def version(probed: tuple[str, ...], *, budget=None) -> tuple[int, int]:
         assert probed == command, f"probed {probed}, not the oracle {command}"
         return oracle.feature_version
 
-    def sys_env(probed: tuple[str, ...]) -> dict[str, str]:
+    def sys_env(probed: tuple[str, ...], *, budget=None) -> dict[str, str]:
         assert probed == command, f"probed {probed}, not the oracle {command}"
         return {
             "MOLT_PYTHON_VERSION": oracle.short,
@@ -300,6 +303,12 @@ def test_deterministic_compiler_panic_does_not_trigger_backend_retry(
         build_profile="dev",
         capabilities="",
         environment={"MOLT_CAPABILITY_TIER": "none"},
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment(
+                {"MOLT_CAPABILITY_TIER": "none"}
+            ),
+            None,
+        ),
     )
     assert module._run_native_backend(
         "case.py", context
@@ -313,14 +322,18 @@ def test_molt_target_python_must_match_cpython_oracle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_diff_module()
-    monkeypatch.setattr(module, "_python_exe_version", lambda _python: (3, 14))
+    monkeypatch.setattr(
+        module, "_python_exe_version", lambda _python, *, budget=None: (3, 14)
+    )
 
     assert module._resolve_molt_target_python("python", None).short == "3.14"
     assert module._resolve_molt_target_python("python", "3.14").short == "3.14"
     with pytest.raises(ValueError, match="does not match the CPython oracle"):
         module._resolve_molt_target_python("python", "3.13")
     # An unknown oracle fails closed; an explicit target cannot stand in for it.
-    monkeypatch.setattr(module, "_python_exe_version", lambda _python: None)
+    monkeypatch.setattr(
+        module, "_python_exe_version", lambda _python, *, budget=None: None
+    )
     for explicit in (None, "3.14"):
         with pytest.raises(ValueError, match="cannot derive Molt target Python"):
             module._resolve_molt_target_python("python", explicit)
@@ -355,6 +368,12 @@ def test_timeout_preserves_original_failure_without_cold_rebuild(
         build_profile="dev",
         capabilities="",
         environment={"MOLT_CAPABILITY_TIER": "none"},
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment(
+                {"MOLT_CAPABILITY_TIER": "none"}
+            ),
+            None,
+        ),
     )
     assert module._run_native_backend("case.py", context) == failure
     assert calls == [{"execution_context": context}]
@@ -562,7 +581,9 @@ def test_run_diff_serial_emits_run_line_before_file_work(
 
     monkeypatch.setattr(module, "_diff_run_single", _fake_run_single)
     monkeypatch.setattr(
-        module, "_memory_guard_trip_outcome", lambda sentinel=None: None
+        module,
+        "_memory_guard_trip_outcome",
+        lambda sentinel=None, *, environment=None: None,
     )
     monkeypatch.setattr(module, "_top_rss_entries", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(module, "_aggregate_rss_metrics", lambda _run_id: {})
@@ -858,7 +879,7 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     events: list[tuple[str, bool | float | None | str]] = []
 
     class _FakeClient:
-        def __init__(self, _env) -> None:
+        def __init__(self, _env, *, budget) -> None:
             events.append(("init", None))
 
         def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
@@ -874,7 +895,13 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     monkeypatch.setattr(module, "_BATCH_COMPILE_SERVER_CLIENT_PID", 0)
     module._batch_compile_server_reset_disabled()
 
-    client, error = module._batch_compile_server_client({}, request_timeout=0.1)
+    client, error = module._batch_compile_server_client(
+        {},
+        request_timeout=0.1,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
+    )
     assert client is None
     assert error is not None
     assert "ping timeout" in str(error)
@@ -883,6 +910,9 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     client_retry, retry_error = module._batch_compile_server_client(
         {},
         request_timeout=0.1,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     assert client_retry is None
     assert retry_error is not None
@@ -891,6 +921,9 @@ def test_batch_compile_server_ping_failure_requires_repeated_failures_before_coo
     client_cooldown, cooldown_error = module._batch_compile_server_client(
         {},
         request_timeout=0.1,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     assert client_cooldown is None
     assert cooldown_error is not None
@@ -917,7 +950,7 @@ def test_run_batch_compile_build_success_resets_failure_budget(
                 "stderr": "",
             }
 
-    def _fake_client_factory(_env, *, request_timeout: float):
+    def _fake_client_factory(_env, *, request_timeout: float, budget):
         return _Client(), None
 
     def _fake_reset_disabled() -> None:
@@ -939,6 +972,9 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         rebuild=False,
         request_timeout=8.0,
         strict_mode=False,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
 
     assert result == module.compat_backends.BackendResult("ok", "", 0)
@@ -957,6 +993,9 @@ def test_run_batch_compile_build_success_resets_failure_budget(
         rebuild=False,
         request_timeout=8.0,
         strict_mode=False,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
 
     assert result == module.compat_backends.BackendResult("ok", "", 0)
@@ -984,7 +1023,7 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
                 "stderr": "",
             }
 
-    def _fake_client_factory(_env, *, request_timeout: float):
+    def _fake_client_factory(_env, *, request_timeout: float, budget):
         assert request_timeout == 12.0
         attempts["count"] += 1
         if attempts["count"] == 1:
@@ -1010,6 +1049,9 @@ def test_run_batch_compile_build_strict_mode_retries_once_on_start_error(
         rebuild=False,
         request_timeout=12.0,
         strict_mode=True,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
 
     assert result == module.compat_backends.BackendResult("ok", "", 0)
@@ -1033,7 +1075,7 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
             assert op == "build"
             raise TimeoutError("build timed out")
 
-    def _fake_client_factory(_env, *, request_timeout: float):
+    def _fake_client_factory(_env, *, request_timeout: float, budget):
         assert request_timeout == 8.0
         return _FailingClient(), None
 
@@ -1060,6 +1102,9 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
         rebuild=False,
         request_timeout=8.0,
         strict_mode=strict_mode,
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
 
     assert result.timed_out and result.build_failed
@@ -1095,8 +1140,8 @@ def test_run_molt_does_not_fallback_after_batch_deadline(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: True)
     monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: False)
@@ -1125,6 +1170,15 @@ def test_run_molt_does_not_fallback_after_batch_deadline(
             "MOLT_CAPABILITY_TIER": "none",
             "MOLT_CACHE": str(tmp_path / "molt-cache"),
         },
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment(
+                {
+                    "MOLT_CAPABILITY_TIER": "none",
+                    "MOLT_CACHE": str(tmp_path / "molt-cache"),
+                }
+            ),
+            None,
+        ),
     )
     result = module.run_molt_build_only(
         "tests/differential/basic/arith.py",
@@ -1167,13 +1221,15 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
+    )
 
     context = module.compat_backends.BackendExecutionContext(
         target_python=module.TargetPythonVersion(3, 14, 0),
@@ -1185,6 +1241,15 @@ def test_run_molt_build_only_uses_build_profile_flag(
             "MOLT_CAPABILITY_TIER": "none",
             "MOLT_CACHE": str(tmp_path / "molt-cache"),
         },
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment(
+                {
+                    "MOLT_CAPABILITY_TIER": "none",
+                    "MOLT_CACHE": str(tmp_path / "molt-cache"),
+                }
+            ),
+            None,
+        ),
     )
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1249,13 +1314,15 @@ def test_run_molt_preserves_explicit_runtime_diagnostics_file(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
+    )
 
     result = module.run_molt(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1299,13 +1366,15 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
+    )
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1346,18 +1415,20 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
     monkeypatch.setattr(
         module.test_policy,
         "parse_metadata",
         lambda file_path: test_policy.TestMetadata(stdlib_profile="full"),
     )
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
+    )
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/stringprep_semantics.py",
@@ -1445,13 +1516,15 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
+    )
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1498,13 +1571,15 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+    monkeypatch.setattr(
+        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
+    )
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1697,6 +1772,7 @@ def test_guest_backends_preserve_primary_and_cleanup_failure(
         build_profile="dev",
         capabilities="",
         environment=env,
+        budget=backends.ItemBudget(backends.TimeoutPolicy.from_environment(env), None),
     )
     seen = []
     primary = LookupError("primary guest failure")
@@ -2140,11 +2216,11 @@ def test_run_diff_warm_cache_defaults_molt_cache_from_ext_root(
     monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
     monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
     monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
-    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
-    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "60")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "60")
     monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
-    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_diff_log_passes", lambda: False)
 
     @contextmanager
@@ -2300,3 +2376,90 @@ def test_queued_target_relocation_refuses_before_any_mutation(
                     forbidden, local_tmp=kind.endswith("local"), environment=before
                 )
     assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("exhaust_at", ["startup", "request"])
+def test_batch_startup_and_strict_recovery_share_one_item_budget(
+    monkeypatch, tmp_path, exhaust_at
+):
+    module = _load_diff_module()
+    backends = module.compat_backends
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    policy = backends.TimeoutPolicy.from_environment(
+        {"MOLT_DIFF_TIMEOUT": "2", "MOLT_DIFF_BUILD_TIMEOUT": "6"}
+    )
+    budget = backends.ItemBudget.start(policy, ("native",))
+    calls = []
+
+    class Client:
+        def request(self, op, *, params, timeout):
+            calls.append((op, timeout))
+            clock.now = 10.0
+            raise RuntimeError("recoverable batch transport failure")
+
+    def start(env, *, request_timeout, budget):
+        calls.append(("startup", request_timeout))
+        clock.now = 10.0 if exhaust_at == "startup" else 9.0
+        return (
+            (None, RuntimeError("startup failure"))
+            if exhaust_at == "startup"
+            else (Client(), None)
+        )
+
+    monkeypatch.setattr(module, "_batch_compile_server_client", start)
+    monkeypatch.setattr(
+        module,
+        "_batch_compile_server_reset_disabled",
+        lambda: calls.append(("reset", None)),
+    )
+    monkeypatch.setattr(
+        module, "_batch_compile_server_mark_disabled", lambda reason: None
+    )
+    monkeypatch.setattr(module, "_shutdown_batch_compile_server", lambda *, force: None)
+    monkeypatch.setattr(
+        module.harness_outcomes, "read_suite_trip", lambda *a, **k: None
+    )
+    result = module._run_batch_compile_build(
+        env={},
+        file_path="case.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "case",
+        build_profile="dev",
+        target_python=None,
+        no_cache=False,
+        rebuild=False,
+        request_timeout=30,
+        strict_mode=True,
+        budget=budget,
+    )
+    assert result.timed_out and result.build_failed
+    assert calls == (
+        [("startup", 6)] if exhaust_at == "startup" else [("startup", 6), ("build", 1)]
+    )
+
+
+def test_metadata_success_cache_excludes_item_deadlines(monkeypatch):
+    module = _load_diff_module()
+    backends = module.compat_backends
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    policy = backends.TimeoutPolicy.from_environment(
+        {"MOLT_DIFF_TIMEOUT": "1", "MOLT_DIFF_BUILD_TIMEOUT": "1"}
+    )
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="(3, 12)\n", stderr="")
+
+    monkeypatch.setattr(module.process_guard_common, "run_guarded_test_process", probe)
+    first = backends.ItemBudget.start(policy, ("native",))
+    assert module._python_command_version(("fixture-python",), budget=first) == (3, 12)
+    clock.now = 4.0
+    second = backends.ItemBudget.start(policy, ("native",))
+    assert module._python_command_version(("fixture-python",), budget=second) == (3, 12)
+    assert calls == [3]
+    with pytest.raises(backends.ItemBudgetExpired):
+        module._python_command_version(("fixture-python",), budget=first)
+    assert calls == [3]

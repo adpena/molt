@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -1244,8 +1246,10 @@ def llvm_config_names(pin: LlvmBackendPin) -> tuple[str, ...]:
     return tuple(f"{stem}.exe" for stem in stems) + stems
 
 
-def _llvm_config_prefix(executable: Path) -> Path:
-    rendered = _run_llvm_config(executable, "--prefix")
+def _llvm_config_prefix(
+    executable: Path, *, probe_timeout: Callable[[float], float] | None = None
+) -> Path:
+    rendered = _run_llvm_config(executable, "--prefix", probe_timeout=probe_timeout)
     if not rendered:
         raise LlvmToolchainConfigError(
             f"llvm-config returned an empty SDK prefix: {executable}"
@@ -1315,6 +1319,7 @@ def discover_llvm_toolchain(
     *,
     environ: dict[str, str] | None = None,
     cwd: Path | None = None,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmToolchainDiscovery | None:
     """Discover one version-correct LLVM executable/prefix identity.
 
@@ -1360,8 +1365,12 @@ def discover_llvm_toolchain(
             continue
         try:
             resolved_candidate = candidate.resolve()
-            _major, _minor, version = _llvm_config_version(str(resolved_candidate))
-            reported_prefix = _llvm_config_prefix(resolved_candidate)
+            _major, _minor, version = _llvm_config_version(
+                str(resolved_candidate), probe_timeout=probe_timeout
+            )
+            reported_prefix = _llvm_config_prefix(
+                resolved_candidate, probe_timeout=probe_timeout
+            )
         except LlvmToolchainConfigError as exc:
             rejected.append(str(exc))
             continue
@@ -1409,14 +1418,17 @@ def discover_llvm_toolchain(
     return None
 
 
-def _run_llvm_config(executable: Path, *args: str) -> str:
+def _run_llvm_config(
+    executable: Path, *args: str, probe_timeout: Callable[[float], float] | None = None
+) -> str:
+    timeout = 30 if probe_timeout is None else probe_timeout(30)
     try:
         result = subprocess.run(
             [str(executable), *args],
             check=True,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
             encoding="utf-8",
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -1483,9 +1495,14 @@ def _llvm_config_tokens(output: str) -> tuple[str, ...]:
 def _llvm_link_closure(
     prefix: Path,
     llvm_config: Path,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> tuple[tuple[str, ...], tuple[Path, ...]]:
-    local_output = _run_llvm_config(llvm_config, "--libnames", "--link-static")
-    system_output = _run_llvm_config(llvm_config, "--system-libs", "--link-static")
+    local_output = _run_llvm_config(
+        llvm_config, "--libnames", "--link-static", probe_timeout=probe_timeout
+    )
+    system_output = _run_llvm_config(
+        llvm_config, "--system-libs", "--link-static", probe_timeout=probe_timeout
+    )
     lib_dir = prefix / "lib"
     # llvm-sys consumes these exact roots. A coincidental same-name archive or
     # header in prefix/lib or prefix/include is not proof of that selection.
@@ -1493,7 +1510,7 @@ def _llvm_link_closure(
         ("--libdir", lib_dir),
         ("--includedir", prefix / "include"),
     ):
-        selected = _run_llvm_config(llvm_config, option)
+        selected = _run_llvm_config(llvm_config, option, probe_timeout=probe_timeout)
         if (
             not selected
             or "\n" in selected
@@ -1590,9 +1607,12 @@ def _compile_link_probe(
     link_closure: tuple[str, ...],
     *,
     environ: Mapping[str, str] | None = None,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> tuple[str, ...]:
     """Compile and link the SDK headers and authoritative llvm-config closure."""
 
+    if probe_timeout is not None:
+        probe_timeout(120.0)
     with tempfile.TemporaryDirectory(prefix="molt-llvm-sdk-probe-") as temp:
         temp_root = Path(temp)
         source = temp_root / "sdk_probe.cpp"
@@ -1611,6 +1631,7 @@ def _compile_link_probe(
         command = llvm_sdk_probe_command(
             prefix, clangxx, host_linker, link_closure, source, output
         )
+        timeout = 120 if probe_timeout is None else probe_timeout(120)
         try:
             probe_env = llvm_sdk_probe_environment(
                 os.environ if environ is None else environ
@@ -1620,7 +1641,7 @@ def _compile_link_probe(
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=timeout,
                 encoding="utf-8",
                 env=probe_env,
             )
@@ -1773,11 +1794,14 @@ def _tool_version_fact_and_identity(
     *,
     expected_version: str,
     exact_version: bool,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> tuple[LlvmToolVersionFact, StableRegularFileIdentity]:
     if is_llvm_linker_role(role) and not executable_selects_linker_role(path, role):
         raise LlvmToolchainConfigError(
             f"required LLVM linker role {role} cannot use entrypoint {path}"
         )
+    # The external limiter's exception belongs to its caller, not tool discovery.
+    timeout = 30 if probe_timeout is None else probe_timeout(30)
     try:
         with stable_executable_probe(path, label=f"LLVM tool {role}") as (
             entrypoint,
@@ -1788,7 +1812,7 @@ def _tool_version_fact_and_identity(
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=timeout if probe_timeout is None else probe_timeout(30),
                 encoding="utf-8",
             )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -1842,6 +1866,7 @@ def _tool_version_fact(
     *,
     expected_version: str,
     exact_version: bool,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmToolVersionFact:
     fact, _identity = _tool_version_fact_and_identity(
         prefix,
@@ -1849,6 +1874,7 @@ def _tool_version_fact(
         path,
         expected_version=expected_version,
         exact_version=exact_version,
+        probe_timeout=probe_timeout,
     )
     return fact
 
@@ -1951,6 +1977,7 @@ def verify_llvm_toolchain_prefix(
     llvm_config_override: Path | None = None,
     content_policy: Literal["cached", "full"] = "cached",
     environ: Mapping[str, str] | None = None,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmPrefixVerification:
     """Verify the complete compiler/linker/MLIR prefix consumed by Molt."""
 
@@ -1980,7 +2007,9 @@ def verify_llvm_toolchain_prefix(
         or _llvm_attestation_custody(root, resolved, release, environ=environ)
         == "canonical-managed-release"
     )
-    actual_version = _run_llvm_config(llvm_config, "--version")
+    actual_version = _run_llvm_config(
+        llvm_config, "--version", probe_timeout=probe_timeout
+    )
     if canonical_contract and release is None:
         raise LlvmToolchainConfigError(
             f"canonical LLVM/MLIR prefix requires a pinned release: {expected_version}"
@@ -1991,7 +2020,11 @@ def verify_llvm_toolchain_prefix(
             f"expected exactly {expected_version}, found {actual_version} at {llvm_config}"
         )
     built_targets = tuple(
-        sorted(_run_llvm_config(llvm_config, "--targets-built").split())
+        sorted(
+            _run_llvm_config(
+                llvm_config, "--targets-built", probe_timeout=probe_timeout
+            ).split()
+        )
     )
     required_targets = set(expected_targets or contract.required_targets)
     missing_targets = sorted(required_targets.difference(built_targets))
@@ -2016,7 +2049,9 @@ def verify_llvm_toolchain_prefix(
         _required_file(resolved, "include/mlir-c/IR.h"),
         _clang_resource_header(resolved, int(expected_version.split(".")[0])),
     )
-    link_closure, link_libraries = _llvm_link_closure(resolved, llvm_config)
+    link_closure, link_libraries = _llvm_link_closure(
+        resolved, llvm_config, probe_timeout=probe_timeout
+    )
     host_linker_path = tools[3][1]
     link_probe = _link_probe_identity(resolved, host_linker_path, link_closure)
     if not (require_attestation and content_policy == "cached"):
@@ -2026,6 +2061,7 @@ def verify_llvm_toolchain_prefix(
             host_linker_path,
             link_closure,
             environ=environ,
+            probe_timeout=probe_timeout,
         )
     lib_dir = resolved / "lib"
     library_files = tuple(path for path in lib_dir.iterdir() if path.is_file())
@@ -2071,6 +2107,7 @@ def verify_llvm_toolchain_prefix(
             path,
             expected_version=expected_version,
             exact_version=True,
+            probe_timeout=probe_timeout,
         )
 
     with ThreadPoolExecutor(max_workers=len(tools)) as executor:
@@ -2380,14 +2417,17 @@ def write_llvm_toolchain_attestation(
     return path
 
 
-def _llvm_config_version(executable: str) -> tuple[int, int, str]:
+def _llvm_config_version(
+    executable: str, *, probe_timeout: Callable[[float], float] | None = None
+) -> tuple[int, int, str]:
+    timeout = 15 if probe_timeout is None else probe_timeout(15)
     try:
         result = subprocess.run(
             [executable, "--version"],
             check=True,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=timeout,
             encoding="utf-8",
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -2431,10 +2471,13 @@ def verify_available_llvm_toolchain(
     *,
     environ: dict[str, str] | None = None,
     content_policy: Literal["cached", "full"] = "cached",
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmPrefixVerification | None:
     """Discover and verify the complete host LLVM/MLIR/LLD/Polly SDK."""
 
-    discovery = discover_llvm_toolchain(root, environ=environ)
+    discovery = discover_llvm_toolchain(
+        root, environ=environ, probe_timeout=probe_timeout
+    )
     if discovery is None:
         return None
     pin = required_llvm_backend_pin(root)
@@ -2453,6 +2496,7 @@ def verify_available_llvm_toolchain(
         llvm_config_override=discovery.llvm_config,
         content_policy=content_policy,
         environ=environ,
+        probe_timeout=probe_timeout,
     )
 
 
