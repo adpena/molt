@@ -362,7 +362,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4d9ba3ba263b108d3f71c39317ebdcee01bc4c71af0a43b9e4a74bb202fe8955",
+  "authority_sha256": "fe0aba3966879e8188458a8cc4cc243097047484f1ab76162c74f16a29ad9a1a",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8025,223 +8025,6 @@
     "rules": [
       {
         "command_ids": [
-          "local.backend-native.0",
-          "local.backend-native.1"
-        ],
-        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary.",
-        "gates": [
-          "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-          "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast"
-        ],
-        "globs": [
-          "runtime/molt-backend/**/*.rs",
-          "runtime/molt-backend/**/Cargo.toml",
-          "runtime/molt-backend-native/Cargo.toml",
-          "runtime/molt-backend-native/src/*.rs",
-          "runtime/molt-backend-native/src/native_backend/**/*.rs",
-          "runtime/molt-backend-native/src/simple_backend/**/*.rs",
-          "runtime/molt-artifact-publish/**/*.rs",
-          "runtime/molt-artifact-publish/Cargo.toml"
-        ],
-        "name": "backend-native",
-        "require_fresh_toolchain": true,
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.native-object-emission.0"
-        ],
-        "description": "Maintained object emitters: upstream writer tests and actual native objects share one locked graph.",
-        "gates": [
-          "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho"
-        ],
-        "globs": [
-          "vendor/rust/object/**",
-          "vendor/rust/cranelift-object/**",
-          "runtime/molt-backend-native/src/native_backend/mod.rs",
-          "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
-          "runtime/molt-backend/tests/native_extern_linkage.rs"
-        ],
-        "name": "native-object-emission",
-        "require_fresh_toolchain": true,
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.backend-llvm.0"
-        ],
-        "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
-        "gates": [
-          "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
-        ],
-        "globs": [
-          "runtime/molt-backend-native/Cargo.toml",
-          "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
-        ],
-        "name": "backend-llvm",
-        "require_fresh_toolchain": true,
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo",
-          "llvm-sdk"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.tir-midend.0",
-          "local.tir-midend.1"
-        ],
-        "description": "TIR midend Rust: all-target clippy + feature-complete tests.",
-        "gates": [
-          "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
-          "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast"
-        ],
-        "globs": [
-          "runtime/molt-ir/**/*.rs",
-          "runtime/molt-ir/**/*.toml",
-          "runtime/molt-ir/Cargo.toml",
-          "runtime/molt-passes/**/*.rs",
-          "runtime/molt-passes/**/*.toml",
-          "runtime/molt-passes/Cargo.toml",
-          "runtime/molt-tir/**/*.rs",
-          "runtime/molt-tir/**/*.toml",
-          "runtime/molt-tir/Cargo.toml"
-        ],
-        "name": "tir-midend",
-        "require_fresh_toolchain": true,
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.wasm-host.0",
-          "local.wasm-host.1"
-        ],
-        "description": "Wasmtime host Rust: warning-free clippy + release-fast link build.",
-        "gates": [
-          "cargo clippy --locked -p molt-wasm-host -- -D warnings",
-          "cargo build --locked --profile release-fast -p molt-wasm-host"
-        ],
-        "globs": [
-          "runtime/molt-wasm-host/**/*.rs",
-          "runtime/molt-wasm-host/**/*.toml",
-          "runtime/molt-wasm-host/Cargo.toml",
-          "runtime/molt-artifact-publish/**/*.rs",
-          "runtime/molt-artifact-publish/Cargo.toml"
-        ],
-        "name": "wasm-host",
-        "require_fresh_toolchain": true,
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.gpu-core.0"
-        ],
-        "description": "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling.",
-        "gates": [
-          "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings"
-        ],
-        "globs": [
-          "runtime/molt-gpu/**/*.rs",
-          "runtime/molt-gpu/**/*.toml",
-          "runtime/molt-gpu/Cargo.toml"
-        ],
-        "name": "gpu-core",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.gpu-runtime.0",
-          "local.gpu-runtime.1"
-        ],
-        "description": "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests.",
-        "gates": [
-          "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
-          "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast"
-        ],
-        "globs": [
-          "runtime/molt-gpu-runtime/**/*.rs",
-          "runtime/molt-gpu-runtime/**/*.toml",
-          "runtime/molt-gpu-runtime/Cargo.toml"
-        ],
-        "name": "gpu-runtime",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.runtime-vfs.0",
-          "local.runtime-vfs.1",
-          "local.runtime-vfs.2"
-        ],
-        "description": "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke.",
-        "gates": [
-          "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
-          "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
-          "python3 -m pytest tests/test_browser_vfs.py -q"
-        ],
-        "globs": [
-          "runtime/molt-runtime-vfs/**/*.rs",
-          "runtime/molt-runtime-vfs/Cargo.toml",
-          "tests/test_browser_vfs.py",
-          "wasm/molt_vfs_browser.js"
-        ],
-        "name": "runtime-vfs",
-        "require_fresh_toolchain": true,
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.runtime-lib.0",
-          "local.runtime-lib.1"
-        ],
-        "description": "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary.",
-        "gates": [
-          "cargo test --locked --profile release-fast -p molt-runtime --lib",
-          "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings"
-        ],
-        "globs": [
-          "runtime/molt-runtime/**/*.rs",
-          "runtime/molt-obj-model/**/*.rs",
-          "runtime/**/Cargo.toml"
-        ],
-        "name": "runtime-lib",
-        "require_fresh_toolchain": true,
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
-        ]
-      },
-      {
-        "command_ids": [
           "local.frontend-python.0",
           "local.frontend-python.1",
           "local.frontend-python.2"
@@ -8309,65 +8092,6 @@
       },
       {
         "command_ids": [
-          "local.python-effect-capability-authority.0",
-          "local.python-effect-capability-authority.1",
-          "local.python-effect-capability-authority.2"
-        ],
-        "description": "Python and Rust analyses share one dense generated effect lattice and fail-closed capability projections.",
-        "gates": [
-          "python3 tools/gen_python_effects.py --check",
-          "python3 -m pytest -q tests/test_gen_python_effects.py",
-          "cargo test --locked -p molt-ir --lib python_effects_generated"
-        ],
-        "globs": [
-          "runtime/python_effects.toml",
-          "tools/gen_python_effects.py",
-          "src/molt/compiler_analysis/python_effects_generated.py",
-          "runtime/molt-ir/src/python_effects_generated.rs",
-          "runtime/molt-ir/src/lib.rs",
-          "tests/test_gen_python_effects.py"
-        ],
-        "name": "python-effect-capability-authority",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo",
-          "rustfmt"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.builtin-binding-guard-authority.0",
-          "local.builtin-binding-guard-authority.1",
-          "local.builtin-binding-guard-authority.2"
-        ],
-        "description": "The compiler's guarded builtin specializations and the runtime's namespace guard bits share one generated name table (HF-79).",
-        "gates": [
-          "python3 tools/gen_builtin_binding_guards.py --check",
-          "python3 -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
-          "cargo test --locked -p molt-runtime --lib binding_guards"
-        ],
-        "globs": [
-          "runtime/builtin_binding_guards.toml",
-          "tools/gen_builtin_binding_guards.py",
-          "src/molt/compiler_analysis/builtin_binding_guards_generated.py",
-          "runtime/molt-runtime/src/builtins/binding_guards_generated.rs",
-          "runtime/molt-runtime/src/builtins/binding_guards.rs",
-          "runtime/molt-runtime/src/builtins/binding_guards_tests.rs",
-          "src/molt/frontend/lowering/builtin_guards.py",
-          "tests/test_gen_builtin_binding_guards.py",
-          "tests/test_frontend_builtin_binding_guards.py"
-        ],
-        "name": "builtin-binding-guard-authority",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo",
-          "rustfmt"
-        ]
-      },
-      {
-        "command_ids": [
           "local.host-capability-authority.0",
           "local.host-capability-authority.1"
         ],
@@ -8413,51 +8137,6 @@
         "name": "runtime-profile-schema-authority",
         "toolchains": [
           "python",
-          "rustfmt"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.native-callable-abi.0",
-          "local.native-callable-abi.1",
-          "local.native-callable-abi.2",
-          "local.native-callable-abi.3",
-          "local.native-callable-abi.4"
-        ],
-        "description": "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification.",
-        "gates": [
-          "python3 tools/gen_native_callable_abi.py --check",
-          "python3 -m pytest -q tests/test_gen_native_callable_abi.py",
-          "cargo test --locked -p molt-ir --lib native_callable_abi",
-          "cargo test --locked -p molt-backend-native --lib native_callable",
-          "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable"
-        ],
-        "globs": [
-          "runtime/native_callable_abi.toml",
-          "tools/gen_native_callable_abi.py",
-          "src/molt/native_callable_abi.py",
-          "src/molt/browser_asset_graph.toml",
-          "src/molt/frontend/visitors/call_module_dispatch.py",
-          "docs/spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md",
-          "runtime/molt-ir/src/native_callable_abi.rs",
-          "runtime/molt-ir/src/ir.rs",
-          "runtime/molt-ir/src/ir_schema.rs",
-          "runtime/molt-ir/src/tir/verify.rs",
-          "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs",
-          "runtime/molt-backend-native/src/native_backend/function_compiler/tests/native_callable_dispatch.rs",
-          "runtime/molt-backend-wasm/src/wasm/module_abi/native_callables.rs",
-          "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs",
-          "runtime/molt-backend-wasm/src/wasm/function_frame/planning/requirements.rs",
-          "runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs",
-          "wasm/browser_embed.js",
-          "wasm/native_callable_abi_generated.js",
-          "tests/test_gen_native_callable_abi.py"
-        ],
-        "name": "native-callable-abi",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo",
           "rustfmt"
         ]
       },
@@ -8632,25 +8311,6 @@
           "python",
           "uv",
           "rustfmt"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.stringprep-leaf.0"
-        ],
-        "description": "StringPrep Rust leaf crate: build health for extracted runtime code.",
-        "gates": [
-          "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib"
-        ],
-        "globs": [
-          "runtime/molt-runtime-stringprep/**/*.rs",
-          "runtime/molt-runtime-stringprep/Cargo.toml"
-        ],
-        "name": "stringprep-leaf",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
         ]
       },
       {
@@ -9284,6 +8944,346 @@
         "name": "public-contract",
         "toolchains": [
           "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.backend-native.0",
+          "local.backend-native.1"
+        ],
+        "description": "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary.",
+        "gates": [
+          "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+          "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-backend/**/*.rs",
+          "runtime/molt-backend/**/Cargo.toml",
+          "runtime/molt-backend-native/Cargo.toml",
+          "runtime/molt-backend-native/src/*.rs",
+          "runtime/molt-backend-native/src/native_backend/**/*.rs",
+          "runtime/molt-backend-native/src/simple_backend/**/*.rs",
+          "runtime/molt-artifact-publish/**/*.rs",
+          "runtime/molt-artifact-publish/Cargo.toml"
+        ],
+        "name": "backend-native",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.native-object-emission.0"
+        ],
+        "description": "Maintained object emitters: upstream writer tests and actual native objects share one locked graph.",
+        "gates": [
+          "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho"
+        ],
+        "globs": [
+          "vendor/rust/object/**",
+          "vendor/rust/cranelift-object/**",
+          "runtime/molt-backend-native/src/native_backend/mod.rs",
+          "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
+          "runtime/molt-backend/tests/native_extern_linkage.rs"
+        ],
+        "name": "native-object-emission",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.backend-llvm.0"
+        ],
+        "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
+        "gates": [
+          "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
+        ],
+        "globs": [
+          "runtime/molt-backend-native/Cargo.toml",
+          "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
+        ],
+        "name": "backend-llvm",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "llvm-sdk"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.tir-midend.0",
+          "local.tir-midend.1"
+        ],
+        "description": "TIR midend Rust: all-target clippy + feature-complete tests.",
+        "gates": [
+          "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
+          "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-ir/**/*.rs",
+          "runtime/molt-ir/**/*.toml",
+          "runtime/molt-ir/Cargo.toml",
+          "runtime/molt-passes/**/*.rs",
+          "runtime/molt-passes/**/*.toml",
+          "runtime/molt-passes/Cargo.toml",
+          "runtime/molt-tir/**/*.rs",
+          "runtime/molt-tir/**/*.toml",
+          "runtime/molt-tir/Cargo.toml"
+        ],
+        "name": "tir-midend",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.wasm-host.0",
+          "local.wasm-host.1"
+        ],
+        "description": "Wasmtime host Rust: warning-free clippy + release-fast link build.",
+        "gates": [
+          "cargo clippy --locked -p molt-wasm-host -- -D warnings",
+          "cargo build --locked --profile release-fast -p molt-wasm-host"
+        ],
+        "globs": [
+          "runtime/molt-wasm-host/**/*.rs",
+          "runtime/molt-wasm-host/**/*.toml",
+          "runtime/molt-wasm-host/Cargo.toml",
+          "runtime/molt-artifact-publish/**/*.rs",
+          "runtime/molt-artifact-publish/Cargo.toml"
+        ],
+        "name": "wasm-host",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.gpu-core.0"
+        ],
+        "description": "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling.",
+        "gates": [
+          "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings"
+        ],
+        "globs": [
+          "runtime/molt-gpu/**/*.rs",
+          "runtime/molt-gpu/**/*.toml",
+          "runtime/molt-gpu/Cargo.toml"
+        ],
+        "name": "gpu-core",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.gpu-runtime.0",
+          "local.gpu-runtime.1"
+        ],
+        "description": "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests.",
+        "gates": [
+          "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
+          "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-gpu-runtime/**/*.rs",
+          "runtime/molt-gpu-runtime/**/*.toml",
+          "runtime/molt-gpu-runtime/Cargo.toml"
+        ],
+        "name": "gpu-runtime",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.runtime-vfs.0",
+          "local.runtime-vfs.1",
+          "local.runtime-vfs.2"
+        ],
+        "description": "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke.",
+        "gates": [
+          "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+          "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
+          "python3 -m pytest tests/test_browser_vfs.py -q"
+        ],
+        "globs": [
+          "runtime/molt-runtime-vfs/**/*.rs",
+          "runtime/molt-runtime-vfs/Cargo.toml",
+          "tests/test_browser_vfs.py",
+          "wasm/molt_vfs_browser.js"
+        ],
+        "name": "runtime-vfs",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.runtime-lib.0",
+          "local.runtime-lib.1"
+        ],
+        "description": "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary.",
+        "gates": [
+          "cargo test --locked --profile release-fast -p molt-runtime --lib",
+          "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings"
+        ],
+        "globs": [
+          "runtime/molt-runtime/**/*.rs",
+          "runtime/molt-obj-model/**/*.rs",
+          "runtime/**/Cargo.toml"
+        ],
+        "name": "runtime-lib",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.python-effect-capability-authority.0",
+          "local.python-effect-capability-authority.1",
+          "local.python-effect-capability-authority.2"
+        ],
+        "description": "Python and Rust analyses share one dense generated effect lattice and fail-closed capability projections.",
+        "gates": [
+          "python3 tools/gen_python_effects.py --check",
+          "python3 -m pytest -q tests/test_gen_python_effects.py",
+          "cargo test --locked -p molt-ir --lib python_effects_generated"
+        ],
+        "globs": [
+          "runtime/python_effects.toml",
+          "tools/gen_python_effects.py",
+          "src/molt/compiler_analysis/python_effects_generated.py",
+          "runtime/molt-ir/src/python_effects_generated.rs",
+          "runtime/molt-ir/src/lib.rs",
+          "tests/test_gen_python_effects.py"
+        ],
+        "name": "python-effect-capability-authority",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "rustfmt"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.builtin-binding-guard-authority.0",
+          "local.builtin-binding-guard-authority.1",
+          "local.builtin-binding-guard-authority.2"
+        ],
+        "description": "The compiler's guarded builtin specializations and the runtime's namespace guard bits share one generated name table (HF-79).",
+        "gates": [
+          "python3 tools/gen_builtin_binding_guards.py --check",
+          "python3 -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
+          "cargo test --locked -p molt-runtime --lib binding_guards"
+        ],
+        "globs": [
+          "runtime/builtin_binding_guards.toml",
+          "tools/gen_builtin_binding_guards.py",
+          "src/molt/compiler_analysis/builtin_binding_guards_generated.py",
+          "runtime/molt-runtime/src/builtins/binding_guards_generated.rs",
+          "runtime/molt-runtime/src/builtins/binding_guards.rs",
+          "runtime/molt-runtime/src/builtins/binding_guards_tests.rs",
+          "src/molt/frontend/lowering/builtin_guards.py",
+          "tests/test_gen_builtin_binding_guards.py",
+          "tests/test_frontend_builtin_binding_guards.py"
+        ],
+        "name": "builtin-binding-guard-authority",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "rustfmt"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.native-callable-abi.0",
+          "local.native-callable-abi.1",
+          "local.native-callable-abi.2",
+          "local.native-callable-abi.3",
+          "local.native-callable-abi.4"
+        ],
+        "description": "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification.",
+        "gates": [
+          "python3 tools/gen_native_callable_abi.py --check",
+          "python3 -m pytest -q tests/test_gen_native_callable_abi.py",
+          "cargo test --locked -p molt-ir --lib native_callable_abi",
+          "cargo test --locked -p molt-backend-native --lib native_callable",
+          "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable"
+        ],
+        "globs": [
+          "runtime/native_callable_abi.toml",
+          "tools/gen_native_callable_abi.py",
+          "src/molt/native_callable_abi.py",
+          "src/molt/browser_asset_graph.toml",
+          "src/molt/frontend/visitors/call_module_dispatch.py",
+          "docs/spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md",
+          "runtime/molt-ir/src/native_callable_abi.rs",
+          "runtime/molt-ir/src/ir.rs",
+          "runtime/molt-ir/src/ir_schema.rs",
+          "runtime/molt-ir/src/tir/verify.rs",
+          "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs",
+          "runtime/molt-backend-native/src/native_backend/function_compiler/tests/native_callable_dispatch.rs",
+          "runtime/molt-backend-wasm/src/wasm/module_abi/native_callables.rs",
+          "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs",
+          "runtime/molt-backend-wasm/src/wasm/function_frame/planning/requirements.rs",
+          "runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs",
+          "wasm/browser_embed.js",
+          "wasm/native_callable_abi_generated.js",
+          "tests/test_gen_native_callable_abi.py"
+        ],
+        "name": "native-callable-abi",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "rustfmt"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.stringprep-leaf.0"
+        ],
+        "description": "StringPrep Rust leaf crate: build health for extracted runtime code.",
+        "gates": [
+          "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib"
+        ],
+        "globs": [
+          "runtime/molt-runtime-stringprep/**/*.rs",
+          "runtime/molt-runtime-stringprep/Cargo.toml"
+        ],
+        "name": "stringprep-leaf",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
         ]
       }
     ],

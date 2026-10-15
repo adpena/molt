@@ -3447,7 +3447,10 @@ toolchains = ["python"]
 # a rule matches when ANY touched path matches ANY of its globs, and its `gates`
 # are added to the run. `always` gates run for every non-empty change. Gates are
 # de-duplicated preserving first-seen order, so a gate listed by two rules runs
-# once. `integrate --extra-gate` appends arc-specific gates.
+# once. Source/tooling-only rules precede build-bearing and mixed rules so
+# their failures stop integration before the build-bearing families. Each rule retains its
+# internal command order; mixed rules keep their complete consumer checks.
+# `integrate --extra-gate` appends arc-specific gates.
 #
 # This is the canonical mapping rustc's x.py / Go's dist embody: a change's
 # class determines exactly which checks must be green BEFORE push. It is NOT a
@@ -3466,170 +3469,6 @@ toolchains = ["python"]
 # demand a fresh built binary (hazard 6) when --toolchain-binary is supplied —
 # so a Rust change is never integrated against a stale artifact's gate result.
 
-# --- Native (Cranelift) backend Rust -------------------------------------
-[[rule]]
-name = "backend-native"
-toolchains = ["python", "rustc", "cargo"]
-description = "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary."
-require_fresh_toolchain = true
-globs = [
-  "runtime/molt-backend/**/*.rs",
-  "runtime/molt-backend/**/Cargo.toml",
-  "runtime/molt-backend-native/Cargo.toml",
-  "runtime/molt-backend-native/src/*.rs",
-  "runtime/molt-backend-native/src/native_backend/**/*.rs",
-  "runtime/molt-backend-native/src/simple_backend/**/*.rs",
-  "runtime/molt-artifact-publish/**/*.rs",
-  "runtime/molt-artifact-publish/Cargo.toml",
-]
-gates = [
-  "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-  "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
-]
-
-# --- Maintained native object emitter and actual target consumers --------
-# The published object crate excludes external reader-fixture data. These
-# six unchanged integration cases are outside this writer repair. Self-contained
-# library reader tests, writer round-trip, Cranelift and Molt consumers execute.
-[[rule]]
-name = "native-object-emission"
-toolchains = ["python", "rustc", "cargo"]
-description = "Maintained object emitters: upstream writer tests and actual native objects share one locked graph."
-require_fresh_toolchain = true
-globs = [
-  "vendor/rust/object/**",
-  "vendor/rust/cranelift-object/**",
-  "runtime/molt-backend-native/src/native_backend/mod.rs",
-  "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
-  "runtime/molt-backend/tests/native_extern_linkage.rs",
-]
-gates = [
-  "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho",
-]
-
-# --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
-[[rule]]
-name = "backend-llvm"
-toolchains = ["python", "rustc", "cargo", "llvm-sdk"]
-description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
-require_fresh_toolchain = true
-globs = [
-  "runtime/molt-backend-native/Cargo.toml",
-  "runtime/molt-backend-native/src/llvm_backend/**/*.rs",
-]
-gates = [
-  "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
-]
-
-# --- TIR midend Rust ------------------------------------------------------
-[[rule]]
-name = "tir-midend"
-toolchains = ["python", "rustc", "cargo"]
-description = "TIR midend Rust: all-target clippy + feature-complete tests."
-require_fresh_toolchain = true
-globs = [
-  "runtime/molt-ir/**/*.rs",
-  "runtime/molt-ir/**/*.toml",
-  "runtime/molt-ir/Cargo.toml",
-  "runtime/molt-passes/**/*.rs",
-  "runtime/molt-passes/**/*.toml",
-  "runtime/molt-passes/Cargo.toml",
-  "runtime/molt-tir/**/*.rs",
-  "runtime/molt-tir/**/*.toml",
-  "runtime/molt-tir/Cargo.toml",
-]
-# One feature-complete development graph, including the owning IR tests.
-# Shipped-profile acceptance remains in its target/profile proof authorities.
-gates = [
-  "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
-  "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast",
-]
-
-# --- WASM host Rust -------------------------------------------------------
-[[rule]]
-name = "wasm-host"
-toolchains = ["python", "rustc", "cargo"]
-description = "Wasmtime host Rust: warning-free clippy + release-fast link build."
-require_fresh_toolchain = true
-globs = [
-  "runtime/molt-wasm-host/**/*.rs",
-  "runtime/molt-wasm-host/**/*.toml",
-  "runtime/molt-wasm-host/Cargo.toml",
-  "runtime/molt-artifact-publish/**/*.rs",
-  "runtime/molt-artifact-publish/Cargo.toml",
-]
-gates = [
-  "cargo clippy --locked -p molt-wasm-host -- -D warnings",
-  "cargo build --locked --profile release-fast -p molt-wasm-host",
-]
-
-# --- GPU compute/render primitive ----------------------------------------
-[[rule]]
-name = "gpu-core"
-toolchains = ["python", "rustc", "cargo"]
-description = "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling."
-globs = [
-  "runtime/molt-gpu/**/*.rs",
-  "runtime/molt-gpu/**/*.toml",
-  "runtime/molt-gpu/Cargo.toml",
-]
-gates = [
-  "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings",
-]
-
-# --- GPU object-runtime integration --------------------------------------
-[[rule]]
-name = "gpu-runtime"
-toolchains = ["python", "rustc", "cargo"]
-description = "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests."
-globs = [
-  "runtime/molt-gpu-runtime/**/*.rs",
-  "runtime/molt-gpu-runtime/**/*.toml",
-  "runtime/molt-gpu-runtime/Cargo.toml",
-]
-gates = [
-  "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
-  "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
-]
-
-# --- Runtime crate Rust (object model / runtime library) -----------------
-[[rule]]
-name = "runtime-vfs"
-toolchains = ["python", "rustc", "cargo"]
-description = "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke."
-require_fresh_toolchain = true
-globs = [
-  "runtime/molt-runtime-vfs/**/*.rs",
-  "runtime/molt-runtime-vfs/Cargo.toml",
-  "tests/test_browser_vfs.py",
-  "wasm/molt_vfs_browser.js",
-]
-gates = [
-  "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
-  "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
-  "python3 -m pytest tests/test_browser_vfs.py -q",
-]
-
-[[rule]]
-name = "runtime-lib"
-toolchains = ["python", "rustc", "cargo"]
-description = "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary."
-require_fresh_toolchain = true
-globs = [
-  "runtime/molt-runtime/**/*.rs",
-  "runtime/molt-obj-model/**/*.rs",
-  "runtime/**/Cargo.toml",
-]
-gates = [
-  "cargo test --locked --profile release-fast -p molt-runtime --lib",
-  # Mirror CI (ci.yml:159): lib-scoped clippy. --all-targets pulls in the
-  # documented pre-existing TEST-target debt (38+9 errors) — adding it is the
-  # clippy-test-debt ratchet arc, not this manifest's job.
-  "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
-  # NOTE: molt-runtime lib has 32 pre-existing clippy warnings (documented
-  # baseline); CI does not -D-warnings-gate it. The runtime-clippy ratchet arc
-  # = clear the 32, then add the gate here + CI in one change.
-]
 
 # --- Frontend / stdlib Python (bootstrap-critical) -----------------------
 [[rule]]
@@ -3684,45 +3523,6 @@ gates = [
 ]
 
 [[rule]]
-name = "python-effect-capability-authority"
-toolchains = ["python", "rustc", "cargo", "rustfmt"]
-description = "Python and Rust analyses share one dense generated effect lattice and fail-closed capability projections."
-globs = [
-  "runtime/python_effects.toml",
-  "tools/gen_python_effects.py",
-  "src/molt/compiler_analysis/python_effects_generated.py",
-  "runtime/molt-ir/src/python_effects_generated.rs",
-  "runtime/molt-ir/src/lib.rs",
-  "tests/test_gen_python_effects.py",
-]
-gates = [
-  "python3 tools/gen_python_effects.py --check",
-  "python3 -m pytest -q tests/test_gen_python_effects.py",
-  "cargo test --locked -p molt-ir --lib python_effects_generated",
-]
-
-[[rule]]
-name = "builtin-binding-guard-authority"
-toolchains = ["python", "rustc", "cargo", "rustfmt"]
-description = "The compiler's guarded builtin specializations and the runtime's namespace guard bits share one generated name table (HF-79)."
-globs = [
-  "runtime/builtin_binding_guards.toml",
-  "tools/gen_builtin_binding_guards.py",
-  "src/molt/compiler_analysis/builtin_binding_guards_generated.py",
-  "runtime/molt-runtime/src/builtins/binding_guards_generated.rs",
-  "runtime/molt-runtime/src/builtins/binding_guards.rs",
-  "runtime/molt-runtime/src/builtins/binding_guards_tests.rs",
-  "src/molt/frontend/lowering/builtin_guards.py",
-  "tests/test_gen_builtin_binding_guards.py",
-  "tests/test_frontend_builtin_binding_guards.py",
-]
-gates = [
-  "python3 tools/gen_builtin_binding_guards.py --check",
-  "python3 -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
-  "cargo test --locked -p molt-runtime --lib binding_guards",
-]
-
-[[rule]]
 name = "host-capability-authority"
 toolchains = ["python", "uv", "rustfmt"]
 description = "CLI profiles plus native, CPython fallback, and WASM runtime tiers share one generated host-permission authority."
@@ -3755,40 +3555,6 @@ globs = [
 gates = [
   "python3 tools/gen_runtime_profile_schema.py --check",
   "python3 -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
-]
-
-# --- Native-callable ABI authority --------------------------------------
-[[rule]]
-name = "native-callable-abi"
-toolchains = ["python", "rustc", "cargo", "rustfmt"]
-description = "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification."
-globs = [
-  "runtime/native_callable_abi.toml",
-  "tools/gen_native_callable_abi.py",
-  "src/molt/native_callable_abi.py",
-  "src/molt/browser_asset_graph.toml",
-  "src/molt/frontend/visitors/call_module_dispatch.py",
-  "docs/spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md",
-  "runtime/molt-ir/src/native_callable_abi.rs",
-  "runtime/molt-ir/src/ir.rs",
-  "runtime/molt-ir/src/ir_schema.rs",
-  "runtime/molt-ir/src/tir/verify.rs",
-  "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs",
-  "runtime/molt-backend-native/src/native_backend/function_compiler/tests/native_callable_dispatch.rs",
-  "runtime/molt-backend-wasm/src/wasm/module_abi/native_callables.rs",
-  "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs",
-  "runtime/molt-backend-wasm/src/wasm/function_frame/planning/requirements.rs",
-  "runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs",
-  "wasm/browser_embed.js",
-  "wasm/native_callable_abi_generated.js",
-  "tests/test_gen_native_callable_abi.py",
-]
-gates = [
-  "python3 tools/gen_native_callable_abi.py --check",
-  "python3 -m pytest -q tests/test_gen_native_callable_abi.py",
-  "cargo test --locked -p molt-ir --lib native_callable_abi",
-  "cargo test --locked -p molt-backend-native --lib native_callable",
-  "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
 ]
 
 # --- Op-kind registry (generated files + emitter/registry drift) ---------
@@ -3927,19 +3693,6 @@ globs = [
 gates = [
   "python3 tools/gen_codecs.py --check",
   "uv run python -m pytest -q tests/test_gen_codecs.py",
-]
-
-# --- StringPrep runtime leaf crate ---------------------------------------
-[[rule]]
-name = "stringprep-leaf"
-toolchains = ["python", "rustc", "cargo"]
-description = "StringPrep Rust leaf crate: build health for extracted runtime code."
-globs = [
-  "runtime/molt-runtime-stringprep/**/*.rs",
-  "runtime/molt-runtime-stringprep/Cargo.toml",
-]
-gates = [
-  "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
 ]
 
 # --- StringPrep generated tables -----------------------------------------
@@ -4464,6 +4217,256 @@ gates = [
   "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_public_contract_gate.py",
 ]
 
+# --- Native (Cranelift) backend Rust -------------------------------------
+[[rule]]
+name = "backend-native"
+toolchains = ["python", "rustc", "cargo"]
+description = "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-backend/**/*.rs",
+  "runtime/molt-backend/**/Cargo.toml",
+  "runtime/molt-backend-native/Cargo.toml",
+  "runtime/molt-backend-native/src/*.rs",
+  "runtime/molt-backend-native/src/native_backend/**/*.rs",
+  "runtime/molt-backend-native/src/simple_backend/**/*.rs",
+  "runtime/molt-artifact-publish/**/*.rs",
+  "runtime/molt-artifact-publish/Cargo.toml",
+]
+gates = [
+  "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
+  "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
+]
+
+# --- Maintained native object emitter and actual target consumers --------
+# The published object crate excludes external reader-fixture data. These
+# six unchanged integration cases are outside this writer repair. Self-contained
+# library reader tests, writer round-trip, Cranelift and Molt consumers execute.
+[[rule]]
+name = "native-object-emission"
+toolchains = ["python", "rustc", "cargo"]
+description = "Maintained object emitters: upstream writer tests and actual native objects share one locked graph."
+require_fresh_toolchain = true
+globs = [
+  "vendor/rust/object/**",
+  "vendor/rust/cranelift-object/**",
+  "runtime/molt-backend-native/src/native_backend/mod.rs",
+  "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
+  "runtime/molt-backend/tests/native_extern_linkage.rs",
+]
+gates = [
+  "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho",
+]
+
+# --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
+[[rule]]
+name = "backend-llvm"
+toolchains = ["python", "rustc", "cargo", "llvm-sdk"]
+description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-backend-native/Cargo.toml",
+  "runtime/molt-backend-native/src/llvm_backend/**/*.rs",
+]
+gates = [
+  "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
+]
+
+# --- TIR midend Rust ------------------------------------------------------
+[[rule]]
+name = "tir-midend"
+toolchains = ["python", "rustc", "cargo"]
+description = "TIR midend Rust: all-target clippy + feature-complete tests."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-ir/**/*.rs",
+  "runtime/molt-ir/**/*.toml",
+  "runtime/molt-ir/Cargo.toml",
+  "runtime/molt-passes/**/*.rs",
+  "runtime/molt-passes/**/*.toml",
+  "runtime/molt-passes/Cargo.toml",
+  "runtime/molt-tir/**/*.rs",
+  "runtime/molt-tir/**/*.toml",
+  "runtime/molt-tir/Cargo.toml",
+]
+# One feature-complete development graph, including the owning IR tests.
+# Shipped-profile acceptance remains in its target/profile proof authorities.
+gates = [
+  "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-targets --all-features -- -D warnings",
+  "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir --all-features --no-fail-fast",
+]
+
+# --- WASM host Rust -------------------------------------------------------
+[[rule]]
+name = "wasm-host"
+toolchains = ["python", "rustc", "cargo"]
+description = "Wasmtime host Rust: warning-free clippy + release-fast link build."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-wasm-host/**/*.rs",
+  "runtime/molt-wasm-host/**/*.toml",
+  "runtime/molt-wasm-host/Cargo.toml",
+  "runtime/molt-artifact-publish/**/*.rs",
+  "runtime/molt-artifact-publish/Cargo.toml",
+]
+gates = [
+  "cargo clippy --locked -p molt-wasm-host -- -D warnings",
+  "cargo build --locked --profile release-fast -p molt-wasm-host",
+]
+
+# --- GPU compute/render primitive ----------------------------------------
+[[rule]]
+name = "gpu-core"
+toolchains = ["python", "rustc", "cargo"]
+description = "GPU compute/render primitive: all-target/all-feature clippy without Python runtime coupling."
+globs = [
+  "runtime/molt-gpu/**/*.rs",
+  "runtime/molt-gpu/**/*.toml",
+  "runtime/molt-gpu/Cargo.toml",
+]
+gates = [
+  "cargo clippy --locked -p molt-gpu --all-targets --all-features -- -D warnings",
+]
+
+# --- GPU object-runtime integration --------------------------------------
+[[rule]]
+name = "gpu-runtime"
+toolchains = ["python", "rustc", "cargo"]
+description = "GPU Python-object runtime integration: all-target/all-feature clippy and runtime contract tests."
+globs = [
+  "runtime/molt-gpu-runtime/**/*.rs",
+  "runtime/molt-gpu-runtime/**/*.toml",
+  "runtime/molt-gpu-runtime/Cargo.toml",
+]
+gates = [
+  "cargo clippy --locked -p molt-gpu-runtime --all-targets --all-features -- -D warnings",
+  "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
+]
+
+# --- Runtime crate Rust (object model / runtime library) -----------------
+[[rule]]
+name = "runtime-vfs"
+toolchains = ["python", "rustc", "cargo"]
+description = "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-runtime-vfs/**/*.rs",
+  "runtime/molt-runtime-vfs/Cargo.toml",
+  "tests/test_browser_vfs.py",
+  "wasm/molt_vfs_browser.js",
+]
+gates = [
+  "cargo clippy --locked -p molt-runtime-vfs --all-targets --all-features -- -D warnings",
+  "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
+  "python3 -m pytest tests/test_browser_vfs.py -q",
+]
+
+[[rule]]
+name = "runtime-lib"
+toolchains = ["python", "rustc", "cargo"]
+description = "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-runtime/**/*.rs",
+  "runtime/molt-obj-model/**/*.rs",
+  "runtime/**/Cargo.toml",
+]
+gates = [
+  "cargo test --locked --profile release-fast -p molt-runtime --lib",
+  # Mirror CI (ci.yml:159): lib-scoped clippy. --all-targets pulls in the
+  # documented pre-existing TEST-target debt (38+9 errors) — adding it is the
+  # clippy-test-debt ratchet arc, not this manifest's job.
+  "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
+  # NOTE: molt-runtime lib has 32 pre-existing clippy warnings (documented
+  # baseline); CI does not -D-warnings-gate it. The runtime-clippy ratchet arc
+  # = clear the 32, then add the gate here + CI in one change.
+]
+
+[[rule]]
+name = "python-effect-capability-authority"
+toolchains = ["python", "rustc", "cargo", "rustfmt"]
+description = "Python and Rust analyses share one dense generated effect lattice and fail-closed capability projections."
+globs = [
+  "runtime/python_effects.toml",
+  "tools/gen_python_effects.py",
+  "src/molt/compiler_analysis/python_effects_generated.py",
+  "runtime/molt-ir/src/python_effects_generated.rs",
+  "runtime/molt-ir/src/lib.rs",
+  "tests/test_gen_python_effects.py",
+]
+gates = [
+  "python3 tools/gen_python_effects.py --check",
+  "python3 -m pytest -q tests/test_gen_python_effects.py",
+  "cargo test --locked -p molt-ir --lib python_effects_generated",
+]
+
+[[rule]]
+name = "builtin-binding-guard-authority"
+toolchains = ["python", "rustc", "cargo", "rustfmt"]
+description = "The compiler's guarded builtin specializations and the runtime's namespace guard bits share one generated name table (HF-79)."
+globs = [
+  "runtime/builtin_binding_guards.toml",
+  "tools/gen_builtin_binding_guards.py",
+  "src/molt/compiler_analysis/builtin_binding_guards_generated.py",
+  "runtime/molt-runtime/src/builtins/binding_guards_generated.rs",
+  "runtime/molt-runtime/src/builtins/binding_guards.rs",
+  "runtime/molt-runtime/src/builtins/binding_guards_tests.rs",
+  "src/molt/frontend/lowering/builtin_guards.py",
+  "tests/test_gen_builtin_binding_guards.py",
+  "tests/test_frontend_builtin_binding_guards.py",
+]
+gates = [
+  "python3 tools/gen_builtin_binding_guards.py --check",
+  "python3 -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
+  "cargo test --locked -p molt-runtime --lib binding_guards",
+]
+
+# --- Native-callable ABI authority --------------------------------------
+[[rule]]
+name = "native-callable-abi"
+toolchains = ["python", "rustc", "cargo", "rustfmt"]
+description = "Native-callable ABI registry: generated Python/Rust projections, transport arity, and native/WASM consumer classification."
+globs = [
+  "runtime/native_callable_abi.toml",
+  "tools/gen_native_callable_abi.py",
+  "src/molt/native_callable_abi.py",
+  "src/molt/browser_asset_graph.toml",
+  "src/molt/frontend/visitors/call_module_dispatch.py",
+  "docs/spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md",
+  "runtime/molt-ir/src/native_callable_abi.rs",
+  "runtime/molt-ir/src/ir.rs",
+  "runtime/molt-ir/src/ir_schema.rs",
+  "runtime/molt-ir/src/tir/verify.rs",
+  "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs",
+  "runtime/molt-backend-native/src/native_backend/function_compiler/tests/native_callable_dispatch.rs",
+  "runtime/molt-backend-wasm/src/wasm/module_abi/native_callables.rs",
+  "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs",
+  "runtime/molt-backend-wasm/src/wasm/function_frame/planning/requirements.rs",
+  "runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs",
+  "wasm/browser_embed.js",
+  "wasm/native_callable_abi_generated.js",
+  "tests/test_gen_native_callable_abi.py",
+]
+gates = [
+  "python3 tools/gen_native_callable_abi.py --check",
+  "python3 -m pytest -q tests/test_gen_native_callable_abi.py",
+  "cargo test --locked -p molt-ir --lib native_callable_abi",
+  "cargo test --locked -p molt-backend-native --lib native_callable",
+  "cargo test --locked -p molt-backend-wasm --features test-util --lib native_callable",
+]
+
+# --- StringPrep runtime leaf crate ---------------------------------------
+[[rule]]
+name = "stringprep-leaf"
+toolchains = ["python", "rustc", "cargo"]
+description = "StringPrep Rust leaf crate: build health for extracted runtime code."
+globs = [
+  "runtime/molt-runtime-stringprep/**/*.rs",
+  "runtime/molt-runtime-stringprep/Cargo.toml",
+]
+gates = [
+  "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
+]
 # =========================================================================
 # NAMED LANES: queue-owned proofs that run under host custody, not CI families.
 #

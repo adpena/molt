@@ -54,6 +54,7 @@ from molt.python_identity_common import (
 from molt.python_runtime_identity import (
     _capture_runtime_with_context,
     _platform_identity,
+    _stdlib_archive_name,
     runtime_explicit_file_content,
     validate_python_runtime_identity,
 )
@@ -672,6 +673,7 @@ def _active_environment_import_roots(
             "Python environment identity requires -I isolated interpreter operation"
         )
     runtime_imports = cast(list[Mapping[str, object]], runtime["import_roots"])
+    expected_archive = _stdlib_archive_name(runtime).casefold()
     site_by_path = {
         os.path.normcase(str(path)): f"site-root-{index}"
         for index, path in enumerate(site_roots)
@@ -773,11 +775,7 @@ def _active_environment_import_roots(
             raise PythonEnvironmentIdentityError(
                 f"isolated Python import archive is outside runtime custody: {lexical}"
             )
-        expected_archive = f"python{sys.version_info.major}{sys.version_info.minor}.zip"
-        if (
-            not lexical.exists()
-            and lexical.name.casefold() == expected_archive.casefold()
-        ):
+        if not lexical.exists() and lexical.name.casefold() == expected_archive:
             candidate = {"kind": "absent-archive", "filename": lexical.name}
             if candidate in runtime_imports:
                 append(

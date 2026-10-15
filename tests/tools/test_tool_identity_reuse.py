@@ -1285,7 +1285,7 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
         executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         library = root / "fixture-stdlib"
         library.mkdir()
-        (library / "input.py").write_text("answer = 42\n")
+        (library / "input.py").write_text("answer = 42\n", encoding="utf-8")
         # Standalone CPython may build Unicode into its executable. The finite
         # provider cell uses a real native image in either host configuration;
         # it declares that file through the actual dynamic-provider boundary.
@@ -1347,7 +1347,7 @@ def selected_runtime_fixture(tmp_path, monkeypatch):
                 scope.setattr(
                     runtime,
                     "_runtime_import_candidates",
-                    lambda _base: ([("import-directory-0", library, 0)], []),
+                    lambda _base, _platform: ([("import-directory-0", library, 0)], []),
                 )
                 if self.captured is None:
                     capture = runtime.capture_current_python_runtime(

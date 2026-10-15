@@ -791,6 +791,7 @@ def test_ungated_generator_is_flagged(tmp_path: Path):
         'tool = "tools/gen_op_kinds.py"\n'
         'outputs = ["runtime/molt-ir/src/tir/op_kinds_generated.rs"]\n'
         'source = "x"\n'
+        "toolchains = []\n"
         "check_mode = true\n"
         'check_command = "tools/gen_op_kinds.py --check"\n'
         'sync_test_reason = "stub"\n'
@@ -822,6 +823,7 @@ def test_phantom_sync_test_fails_loud(tmp_path: Path):
         'tool = "tools/gen_x.py"\n'
         'outputs = ["a"]\n'
         'source = "s"\n'
+        "toolchains = []\n"
         "check_mode = true\n"
         'check_command = "tools/gen_x.py --check"\n'
         'sync_test = "tests/test_does_not_exist.py"\n'
@@ -829,7 +831,7 @@ def test_phantom_sync_test_fails_loud(tmp_path: Path):
         "discovery_only = false\n",
         encoding="utf-8",
     )
-    with pytest.raises(CGM.ManifestError):
+    with pytest.raises(CGM.ManifestError, match="sync_test .* does not exist"):
         CGM.load_manifest(tmp_path)
 
 
@@ -859,6 +861,7 @@ def test_generator_declares_fixed_outputs_or_an_output_family(
         f"outputs = {outputs}\n"
         + ("" if family is None else f"output_family = {family}\n")
         + 'source = "s"\n'
+        "toolchains = []\n"
         "check_mode = true\n"
         'sync_test = "tests/test_x.py"\n'
         "closed_domains = []\n"
@@ -886,8 +889,9 @@ def test_malformed_manifest_temp(tmp_path: Path):
         'tool = "tools/gen_x.py"\n'
         'outputs = ["a"]\n'
         'source = "s"\n'
+        "toolchains = []\n"
         "check_mode = true\n"
-        'sync_test = "t"\n'
+        'sync_test_reason = "synthetic domain-ownership fixture"\n'
         "closed_domains = []\n"
         "discovery_only = false\n"
         "[[closed_domain]]\n"
@@ -897,7 +901,7 @@ def test_malformed_manifest_temp(tmp_path: Path):
         'owned_by = "tools/gen_x.py"\n',
         encoding="utf-8",
     )
-    with pytest.raises(CGM.ManifestError):
+    with pytest.raises(CGM.ManifestError, match="closed_domain OpCode not listed"):
         CGM.load_manifest(tmp_path)
 
 
@@ -949,9 +953,12 @@ def test_generator_selected_preflight_reports_all_before_any_render(
 
     source = tmp_path / "src/molt/target_python.py"
     source.parent.mkdir(parents=True)
-    source.write_text("SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.13', '3.14')\n")
+    source.write_text(
+        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.13', '3.14')\n", encoding="utf-8"
+    )
     (tmp_path / "tools").mkdir()
-    (tmp_path / "tools/proof_plan.toml").write_text("""
+    (tmp_path / "tools/proof_plan.toml").write_text(
+        """
 [[toolchain_policy]]
 name = "uv"
 executable = "uv"
@@ -968,7 +975,9 @@ name = "acorn"
 executable = "node"
 version_pattern = '^ok$'
 dependencies = ["node"]
-""")
+""",
+        encoding="utf-8",
+    )
     rows = [
         generators.Generator("unicode", (), True, ("target-pythons",)),
         generators.Generator("browser", (), True, ("acorn",)),
@@ -1025,12 +1034,15 @@ def test_generator_only_avoids_unrelated_tools_and_policy_materialization(
     from tools import generators, proof_plan
 
     (tmp_path / "tools").mkdir()
-    (tmp_path / "tools/proof_plan.toml").write_text("""
+    (tmp_path / "tools/proof_plan.toml").write_text(
+        """
 [[toolchain_policy]]
 name = "unrelated"
 node_package = "missing"
 package_lock = "missing/lock"
-""")
+""",
+        encoding="utf-8",
+    )
     rows = [
         generators.Generator("simple", (), True, ()),
         generators.Generator("browser", (), True, ("unrelated",)),
@@ -1061,12 +1073,12 @@ package_lock = "missing/lock"
 
 def test_generator_manifest_refuses_undeclared_prerequisites(tmp_path):
     (tmp_path / "tools").mkdir()
-    source = (ROOT / "tools/generator_manifest.toml").read_text()
+    source = (ROOT / "tools/generator_manifest.toml").read_text(encoding="utf-8")
     import re
 
     source, count = re.subn(r"(?m)^toolchains = .*\n", "", source, count=1)
     assert count == 1
-    (tmp_path / "tools/generator_manifest.toml").write_text(source)
+    (tmp_path / "tools/generator_manifest.toml").write_text(source, encoding="utf-8")
     with pytest.raises(CGM.ManifestError, match="missing explicit toolchains"):
         CGM.load_manifest(tmp_path)
 
@@ -1086,10 +1098,12 @@ def test_all_missing_selected_unicode_providers_refuse_before_any_generator_impo
     source = tmp_path / "src/molt/target_python.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        f"SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ({current!r}, {other!r})\n"
+        f"SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ({current!r}, {other!r})\n",
+        encoding="utf-8",
     )
     (tmp_path / "tools").mkdir()
-    (tmp_path / "tools/proof_plan.toml").write_text("""
+    (tmp_path / "tools/proof_plan.toml").write_text(
+        """
 [[toolchain_policy]]
 name = "uv"
 executable = "uv"
@@ -1098,7 +1112,9 @@ version_pattern = '^uv 0.13.1$'
 [[toolchain_policy]]
 name = "target-pythons"
 python_versions = "supported-targets"
-""")
+""",
+        encoding="utf-8",
+    )
     installed = list(fixture.installations)
     for _library, unicode_file in fixture.installations.values():
         unicode_file.unlink()

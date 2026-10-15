@@ -181,7 +181,11 @@ Each step is a complete migration of one contract, measured before and after.
    reconstruction. Qualify this bounded deletion cut, then stop extending its
    source bridge. The next native cut carries typed CFG, ownership, module
    roots, callable metadata and partition ABI into actual codegen and deletes
-   source projection and name-based plans together. Reuse LLVM's direct typed
+   source projection and name-based plans together. Move the post-cache physical
+   splitter under that typed owner before terminal ownership: preserve its
+   growth bound, continuation/frame transport, error and finalizer protocol.
+   Reusing optimized source and re-lifting its chunks would leave the same
+   boundary in place. Reuse LLVM's direct typed
    custody and the existing analysis owners. WASM's operation-reachability
    boundary and the genuine source backends retain their complete migrations.
    Completing the generated enum vocabulary need not block typed transport:
