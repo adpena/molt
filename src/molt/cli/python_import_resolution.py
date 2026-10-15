@@ -13,7 +13,8 @@ from threading import RLock
 from typing import Literal
 
 from molt.cli.module_source import PythonSourceSnapshot
-from molt.compiler_analysis import python_binding_flow
+from molt.compiler_analysis import python_binding_flow, python_namespace_writes
+from molt.compiler_analysis.python_binding_facts import MemberMask
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     PythonBindingIndex,
@@ -81,6 +82,21 @@ class PythonImportPolicy:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class LocalPythonNamespacePremise:
+    """One module's namespace premise, verified over a closed graph (HF-226).
+
+    ``foreign_writes`` lists, sorted, the names graph code outside the module
+    writes into its namespace: named writes and submodule bindings; ``None``
+    when a written name is computed. ``member_writes`` lists the canonical
+    members code anywhere in the graph writes. The binding flow keeps every
+    other global and member fact across callbacks.
+    """
+
+    foreign_writes: tuple[str, ...] | None
+    member_writes: MemberMask
+
+
 def _local_import_binding_policy() -> PythonBindingPolicy:
     """Compiler/tool Python source executes on the parser's host interpreter."""
     return PythonBindingPolicy(target_python=(sys.version_info[0], sys.version_info[1]))
@@ -92,6 +108,7 @@ def local_import_analysis_identity() -> tuple[object, ...]:
         sys.implementation.name,
         tuple(sys.version_info),
         python_binding_flow._ANALYSIS_SCHEMA,
+        python_namespace_writes.SUMMARY_SCHEMA,
         asdict(_local_import_binding_policy()),
     )
 
@@ -678,6 +695,7 @@ def analyze_local_imports(
     *,
     expected_nonliteral_dynamic_imports: int | None = None,
     nonliteral_dynamic_import_targets: tuple[str, ...] = (),
+    namespace_premise: LocalPythonNamespacePremise | None = None,
 ) -> LocalPythonImportAnalysis:
     """Project source requests; demand binding facts only for semantic queries.
 
@@ -685,6 +703,8 @@ def analyze_local_imports(
     identity. Relative statements and sources with dynamic identity origins continue to
     use the canonical binding/import-flow authority, including deferred aliases.
     This is a conservative dependency graph, not an execution-reachability proof.
+    A closed-graph caller supplies ``namespace_premise``; without one any
+    callback may rebind any global.
     """
 
     path = source.path
@@ -715,6 +735,12 @@ def analyze_local_imports(
                     module_execution_kind="imported",
                     analyze_deferred_bodies=not policy.module_level_only,
                     include_import_discovery=policy.purpose == "source_dependency",
+                    foreign_namespace_writes=namespace_premise.foreign_writes
+                    if namespace_premise is not None
+                    else None,
+                    callback_member_writes=namespace_premise.member_writes
+                    if namespace_premise is not None
+                    else binding_policy.callback_member_writes,
                 ),
             )
         return binding_index
@@ -769,13 +795,19 @@ def analyze_local_imports(
             fromlist=tuple(python_source_field(alias, "name") for alias in node.names),
         )
         projection_errors: list[ValueError] = []
-        contexts = contexts_for(node) if node.level else (base_context,)
+        # A statement the flow proves never runs executes under no metadata.
+        # The lexical graph still resolves it, from the module's own identity,
+        # exactly as it keeps a dead absolute import.
+        executed = bool(node.level) and not (
+            bindings().module_import_flow.proven_unreachable(node)
+        )
+        contexts = contexts_for(node) if executed else (base_context,)
         source_contexts = (
             contexts_for(node, source_discovery=True)
-            if node.level and policy.purpose == "source_dependency"
+            if executed and policy.purpose == "source_dependency"
             else contexts
         )
-        if node.level:
+        if executed:
             statement_fact = bindings().statement_fact(node)
             contexts = tuple(
                 module_import_context_with_metadata_proof(

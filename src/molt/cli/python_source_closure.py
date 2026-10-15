@@ -19,12 +19,20 @@ from typing import Literal, cast
 from molt.cli.atomic_io import _atomic_write_text
 from molt.default_paths import _default_molt_cache
 from molt.cli.module_source import PythonSourceSnapshot
+from molt.compiler_analysis.python_binding_facts import NO_INVALID_MEMBERS, MemberMask
+from molt.compiler_analysis.python_binding_flow import python_canonical_member_writes
+from molt.compiler_analysis.python_namespace_writes import (
+    PythonNamespaceWrite,
+    python_namespace_summary,
+    python_package_name,
+)
 from molt.cli.python_import_resolution import (
     LocalPythonModuleResolver,
     LocalPythonModuleSource,
     LocalPythonImportAnalysis,
     LocalPythonImportDiagnostic,
     LocalPythonImportRequest,
+    LocalPythonNamespacePremise,
     LocalPythonRelativeImportObligation,
     PythonImportPolicy,
     analyze_local_imports,
@@ -42,7 +50,7 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
     unknown_relative_sources="local_inventory",
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
-_GRAPH_CACHE_SCHEMA_VERSION = 19
+_GRAPH_CACHE_SCHEMA_VERSION = 20
 _GraphQuery = tuple[
     Path, tuple[Path, ...], tuple[Path, ...], tuple[Path, ...], PythonImportPolicy
 ]
@@ -209,12 +217,14 @@ def _analysis_policy_digest(
     module: str,
     is_package: bool,
     policy: PythonImportPolicy,
+    premise: LocalPythonNamespacePremise,
 ) -> str:
     payload = json.dumps(
         {
             "module": module,
             "is_package": is_package,
             "policy": asdict(policy),
+            "namespace_premise": asdict(premise),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -227,8 +237,13 @@ def _dynamic_contract_digest(expected: int | None, targets: tuple[str, ...]) -> 
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _analysis_payload(analysis: LocalPythonImportAnalysis) -> dict[str, object]:
+def _analysis_payload(
+    analysis: LocalPythonImportAnalysis, writes: tuple[PythonNamespaceWrite, ...]
+) -> dict[str, object]:
     return {
+        "namespace_writes": [
+            [write.module, write.name, write.construct, write.line] for write in writes
+        ],
         "requests": [
             {**asdict(request), "candidates": list(request.candidates)}
             for request in analysis.requests
@@ -247,15 +262,38 @@ def _analysis_payload(analysis: LocalPythonImportAnalysis) -> dict[str, object]:
     }
 
 
+def _cached_namespace_writes(rows: object) -> tuple[PythonNamespaceWrite, ...] | None:
+    if not isinstance(rows, list):
+        return None
+    writes: list[PythonNamespaceWrite] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 4:
+            return None
+        module, name, construct, line = row
+        if (
+            not (module is None or isinstance(module, str) and module)
+            or not (name is None or isinstance(name, str) and name)
+            or construct not in ("attribute", "setattr", "namespace", "import_hooks")
+            or type(line) is not int
+            or line < 0
+        ):
+            return None
+        writes.append(PythonNamespaceWrite(module, name, construct, line))
+    return tuple(writes)
+
+
 def _cached_analysis(
     value: object, source_digest: str, contract_digest: str, analysis_digest: str
-) -> LocalPythonImportAnalysis | None:
+) -> tuple[LocalPythonImportAnalysis, tuple[PythonNamespaceWrite, ...]] | None:
     if (
         not isinstance(value, dict)
         or value.get("source_sha256") != source_digest
         or value.get("dynamic_contract_sha256") != contract_digest
         or value.get("analysis_authority_sha256") != analysis_digest
     ):
+        return None
+    writes = _cached_namespace_writes(value.get("namespace_writes"))
+    if writes is None:
         return None
     rows = value.get("requests")
     discovery_rows = value.get("discovery_requests")
@@ -337,11 +375,94 @@ def _cached_analysis(
                 column,
             )
         )
-    return LocalPythonImportAnalysis(
-        tuple(requests[: len(rows)]),
-        tuple(unresolved),
-        tuple(requests[len(rows) :]),
-        tuple(relative_obligations),
+    return (
+        LocalPythonImportAnalysis(
+            tuple(requests[: len(rows)]),
+            tuple(unresolved),
+            tuple(requests[len(rows) :]),
+            tuple(relative_obligations),
+        ),
+        writes,
+    )
+
+
+def _package_child_names(init: Path) -> frozenset[str]:
+    """Names the import system can bind on a regular package: its children.
+
+    Every entry that can import as a submodule counts, reached or not, so the
+    premise never depends on which children this graph happens to import.
+    """
+    try:
+        entries = tuple(init.parent.iterdir())
+    except OSError as exc:
+        raise ValueError(f"cannot list Python package {init.parent}: {exc}") from exc
+    names: set[str] = set()
+    for entry in entries:
+        name = entry.name if entry.is_dir() else entry.name.partition(".")[0]
+        if name.isidentifier() and name != "__init__":
+            names.add(name)
+    return frozenset(names)
+
+
+@dataclass(frozen=True, slots=True)
+class _GraphNamespaceWrites:
+    """Named namespace writes found in one walk of a closed graph."""
+
+    # Target source -> names written into it; None when a name is computed.
+    by_source: Mapping[Path, frozenset[str] | None]
+    # Names written into a namespace reached by a computed ``sys.modules`` key.
+    any_module: frozenset[str] | None
+    members: MemberMask
+
+    def premise(
+        self, source: Path, children: frozenset[str]
+    ) -> LocalPythonNamespacePremise:
+        named = self.by_source.get(source, frozenset())
+        if named is None or self.any_module is None:
+            return LocalPythonNamespacePremise(None, self.members)
+        return LocalPythonNamespacePremise(
+            tuple(sorted(children | named | self.any_module)), self.members
+        )
+
+
+_NO_GRAPH_NAMESPACE_WRITES = _GraphNamespaceWrites(
+    MappingProxyType({}), frozenset(), NO_INVALID_MEMBERS
+)
+
+
+def _graph_namespace_writes(
+    writes: Iterable[PythonNamespaceWrite], resolver: LocalPythonModuleResolver
+) -> _GraphNamespaceWrites:
+    by_source: dict[Path, set[str] | None] = {}
+    any_module: set[str] | None = set()
+    members = NO_INVALID_MEMBERS
+    for write in writes:
+        members |= python_canonical_member_writes(write.module, write.name)
+        if write.module is None:
+            if write.name is None or any_module is None:
+                any_module = None
+            else:
+                any_module.add(write.name)
+            continue
+        target = resolver.source_for_module(write.module)
+        if target is None:
+            # Not a local module: an attribute of some object, or a module
+            # outside this graph's sources.
+            continue
+        names = by_source.setdefault(target, set())
+        if write.name is None or names is None:
+            by_source[target] = None
+        else:
+            names.add(write.name)
+    return _GraphNamespaceWrites(
+        MappingProxyType(
+            {
+                source: None if names is None else frozenset(names)
+                for source, names in by_source.items()
+            }
+        ),
+        None if any_module is None else frozenset(any_module),
+        members,
     )
 
 
@@ -582,8 +703,6 @@ def local_python_import_closure(
         return transaction[query]
     resolver = LocalPythonModuleResolver(roots, source_roots=source_roots)
     snapshots: dict[Path, PythonSourceSnapshot] = {}
-    covered_sources: set[Path] = set()
-    topology_digest = ""
 
     def capture(path: Path) -> PythonSourceSnapshot:
         if path not in snapshots:
@@ -604,111 +723,172 @@ def local_python_import_closure(
     # replaces its byte generation; aliases share a snapshot, never an execution
     # context. Merging next_entries below retains every alias seen in this walk.
     next_entries = dict(cached_entries)
-    pending: list[LocalPythonModuleSource] = []
+    seed_sources: list[LocalPythonModuleSource] = []
     for seed in seed_paths:
         for path in seed.rglob("*.py") if seed.is_dir() else (seed,):
             if path != seed:
                 path = path.resolve()
-            pending.append(
+            seed_sources.append(
                 LocalPythonModuleSource(resolver.module_identity(path)[0], path)
             )
-    visited: set[LocalPythonModuleSource] = set()
-    reached: set[Path] = set()
-    while pending:
-        module_source = pending.pop()
-        if module_source in visited:
-            continue
-        source = module_source.path
-        if not source.is_file():
-            raise FileNotFoundError(f"missing Python tooling source: {source}")
-        visited.add(module_source)
-        module = module_source.name
-        reached.add(source)
-        try:
-            expected_dynamic_imports, dynamic_targets = dynamic_import_overrides.get(
-                source,
-                (None, ()),
-            )
-            cache_key = _relative_cache_key(root, source)
-            snapshot = capture(source)
-            policy_digest = _analysis_policy_digest(
-                module,
-                source.name == "__init__.py",
-                policy,
-            )
-            contract_digest = _dynamic_contract_digest(
-                expected_dynamic_imports, dynamic_targets
-            )
-            variants = next_entries.get(cache_key)
-            analysis = _cached_analysis(
-                variants.get(policy_digest) if variants is not None else None,
-                snapshot.sha256,
-                contract_digest,
-                analysis_digest,
-            )
-            analysis_missed = analysis is None
-            if analysis is None:
-                analysis = analyze_local_imports(
+    package_children: dict[Path, frozenset[str]] = {}
+
+    # Content-keyed, so one summary serves every premise round.
+    writes_by_source: dict[
+        LocalPythonModuleSource, tuple[PythonNamespaceWrite, ...]
+    ] = {}
+
+    def walk(
+        graph_writes: _GraphNamespaceWrites,
+    ) -> tuple[set[LocalPythonModuleSource], set[Path], str]:
+        """Reach the graph under one namespace premise."""
+        covered_sources: set[Path] = set()
+        topology_digest = ""
+        pending = list(seed_sources)
+        visited: set[LocalPythonModuleSource] = set()
+        while pending:
+            module_source = pending.pop()
+            if module_source in visited:
+                continue
+            source = module_source.path
+            if not source.is_file():
+                raise FileNotFoundError(f"missing Python tooling source: {source}")
+            visited.add(module_source)
+            module = module_source.name
+            is_package = source.name == "__init__.py"
+            try:
+                expected_dynamic_imports, dynamic_targets = (
+                    dynamic_import_overrides.get(source, (None, ()))
+                )
+                if is_package and source not in package_children:
+                    package_children[source] = _package_child_names(source)
+                premise = graph_writes.premise(
+                    source, package_children.get(source, frozenset())
+                )
+                cache_key = _relative_cache_key(root, source)
+                snapshot = capture(source)
+                policy_digest = _analysis_policy_digest(
+                    module, is_package, policy, premise
+                )
+                contract_digest = _dynamic_contract_digest(
+                    expected_dynamic_imports, dynamic_targets
+                )
+                variants = next_entries.get(cache_key)
+                cached = _cached_analysis(
+                    variants.get(policy_digest) if variants is not None else None,
+                    snapshot.sha256,
+                    contract_digest,
+                    analysis_digest,
+                )
+                analysis_missed = cached is None
+                if cached is not None:
+                    analysis, writes = cached
+                else:
                     # Share captured bytes without retaining the analysis AST
                     # (or decoded text) in the walk's byte-identity owner.
-                    PythonSourceSnapshot(snapshot.path, snapshot.content),
-                    module_source,
+                    parsed = PythonSourceSnapshot(snapshot.path, snapshot.content)
+                    analysis = analyze_local_imports(
+                        parsed,
+                        module_source,
+                        policy,
+                        expected_nonliteral_dynamic_imports=expected_dynamic_imports,
+                        nonliteral_dynamic_import_targets=dynamic_targets,
+                        namespace_premise=premise,
+                    )
+                    # The analysis parsed this snapshot; summarize the same AST.
+                    writes = writes_by_source.get(module_source)
+                    if writes is None:
+                        writes = python_namespace_summary(
+                            parsed.tree,
+                            package=python_package_name(module, is_package=is_package),
+                        ).foreign_writes
+                    del parsed
+                writes_by_source[module_source] = writes
+                # Reapply the contract even on a cache hit; accepted unresolved
+                # sites are retained, never silently converted into a complete
+                # analysis.
+                analysis.validate_dynamic_contract(
+                    source, policy, expected_dynamic_imports
+                )
+                if analysis_missed:
+                    # A validated hit already owns its serialized storage.
+                    # Rebuild only misses, merging aliases without mutating
+                    # cached_entries.
+                    variants = dict(variants or {})
+                    variants[policy_digest] = {
+                        "source_sha256": snapshot.sha256,
+                        "dynamic_contract_sha256": contract_digest,
+                        "analysis_authority_sha256": analysis_digest,
+                        **_analysis_payload(analysis, writes),
+                    }
+                    next_entries[cache_key] = variants
+                dependencies = resolve_local_import_requests(
+                    analysis,
+                    resolver,
                     policy,
-                    expected_nonliteral_dynamic_imports=expected_dynamic_imports,
-                    nonliteral_dynamic_import_targets=dynamic_targets,
                 )
-            # Reapply the contract even on a cache hit; accepted unresolved sites
-            # are retained, never silently converted into a complete analysis.
-            analysis.validate_dynamic_contract(source, policy, expected_dynamic_imports)
-            if analysis_missed:
-                # A validated hit already owns its serialized storage. Rebuild
-                # only misses, merging aliases without mutating cached_entries.
-                variants = dict(variants or {})
-                variants[policy_digest] = {
-                    "source_sha256": snapshot.sha256,
-                    "dynamic_contract_sha256": contract_digest,
-                    "analysis_authority_sha256": analysis_digest,
-                    **_analysis_payload(analysis),
-                }
-                next_entries[cache_key] = variants
-            dependencies = resolve_local_import_requests(
-                analysis,
-                resolver,
-                policy,
-            )
-            if analysis.relative_source_obligations and not topology_digest:
-                inventory = resolver.source_inventory(
-                    allowed_prefix=policy.allowed_prefix,
-                    include_parent_packages=policy.include_parent_packages,
+                if analysis.relative_source_obligations and not topology_digest:
+                    inventory = resolver.source_inventory(
+                        allowed_prefix=policy.allowed_prefix,
+                        include_parent_packages=policy.include_parent_packages,
+                    )
+                    # Inventory members are byte dependencies, not executable
+                    # graph requests. Complete coverage requires no recursive
+                    # AST analysis of these speculative owners. Ordinary reached
+                    # sources still follow their graph and validate all exact
+                    # manifest obligations.
+                    for item in inventory.sources:
+                        capture(item.path)
+                        covered_sources.add(item.path)
+                    topology = {
+                        "roots": [_relative_cache_key(root, path) for path in roots],
+                        "sources": [
+                            [item.name, _relative_cache_key(root, item.path)]
+                            for item in inventory.sources
+                        ],
+                        "packages": [
+                            [
+                                name,
+                                [_relative_cache_key(root, path) for path in locations],
+                            ]
+                            for name, locations in inventory.packages
+                        ],
+                    }
+                    topology_digest = hashlib.sha256(
+                        json.dumps(
+                            topology, sort_keys=True, separators=(",", ":")
+                        ).encode()
+                    ).hexdigest()
+            except ValueError as exc:
+                raise ValueError(
+                    f"cannot derive Python tooling import closure for {source}: {exc}"
+                ) from exc
+            for dependency in dependencies:
+                if dependency not in visited:
+                    pending.append(dependency)
+        return visited, covered_sources, topology_digest
+
+    # Spec 0216 admits only named namespace writes, so the reached graph's
+    # summaries bound what a callback can rebind. Start from no named write and
+    # walk again until the premise the walk assumed is the one it found; writes
+    # only add names, so the premise grows monotonically to its fixpoint.
+    graph_writes = _NO_GRAPH_NAMESPACE_WRITES
+    while True:
+        visited, covered_sources, topology_digest = walk(graph_writes)
+        found = _graph_namespace_writes(
+            (
+                write
+                for module_source in sorted(
+                    visited, key=lambda item: (item.name, item.path.as_posix())
                 )
-                # Inventory members are byte dependencies, not executable graph
-                # requests. Complete coverage requires no recursive AST analysis
-                # of these speculative owners. Ordinary reached sources still
-                # follow their graph and validate all exact manifest obligations.
-                for item in inventory.sources:
-                    capture(item.path)
-                    covered_sources.add(item.path)
-                topology = {
-                    "roots": [_relative_cache_key(root, path) for path in roots],
-                    "sources": [
-                        [item.name, _relative_cache_key(root, item.path)]
-                        for item in inventory.sources
-                    ],
-                    "packages": [
-                        [name, [_relative_cache_key(root, path) for path in locations]]
-                        for name, locations in inventory.packages
-                    ],
-                }
-                topology_digest = hashlib.sha256(
-                    json.dumps(topology, sort_keys=True, separators=(",", ":")).encode()
-                ).hexdigest()
-        except ValueError as exc:
-            raise ValueError(
-                f"cannot derive Python tooling import closure for {source}: {exc}"
-            ) from exc
-        for dependency in dependencies:
-            if dependency not in visited:
-                pending.append(dependency)
+                for write in writes_by_source[module_source]
+            ),
+            resolver,
+        )
+        if found == graph_writes:
+            break
+        graph_writes = found
+    reached = {module_source.path for module_source in visited}
     if cache_pruned or next_entries != persisted_entries:
         _write_graph_cache(root, next_entries)
     _remember_process_graph_entries(root, next_entries)

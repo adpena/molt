@@ -319,7 +319,10 @@ def test_partial_source_cache_retains_candidates_and_diagnostics(
                     tmp_path, (seed,), policy=policy
                 ).paths
             )
-            assert (child in paths) is (policy.purpose == "source_dependency")
+            # No callback can rebind __package__ in this graph (HF-226), so the
+            # literal branch is a definite edge for both purposes; the computed
+            # branch stays a diagnostic. A lexical twin is never an operand.
+            assert child in paths
             assert lexical not in paths
 
     check()
@@ -327,8 +330,11 @@ def test_partial_source_cache_retains_candidates_and_diagnostics(
         closure.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
     )
     variants = cache["entries"]["src/pkg/entry.py"]
-    source_key = closure._analysis_policy_digest("pkg.entry", False, source)
-    semantic_key = closure._analysis_policy_digest("pkg.entry", False, semantic)
+    premise = resolution.LocalPythonNamespacePremise((), 0)
+    source_key = closure._analysis_policy_digest("pkg.entry", False, source, premise)
+    semantic_key = closure._analysis_policy_digest(
+        "pkg.entry", False, semantic, premise
+    )
     assert variants[source_key]["discovery_requests"]
     assert variants[semantic_key]["discovery_requests"] == []
     assert len(variants[source_key]["unresolved_dynamic_imports"]) == 1

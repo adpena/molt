@@ -4170,3 +4170,154 @@ def test_deferred_kind_uses_cached_lexical_body_summary():
     for _ in range(50):
         assert authority.summary(definition) is summary
     assert authority.node_visits == visits
+
+
+# HF-226: a closed graph's namespace premise bounds what a callback rebinds.
+_NO_FOREIGN_WRITES = {"foreign_namespace_writes": (), "callback_member_writes": 0}
+
+
+def _module_facts(
+    source: str, **premise: object
+) -> python_binding_flow.PythonBindingIndex:
+    return analyze_python_source_bindings(
+        source,
+        policy=PythonBindingPolicy(
+            module_name="pkg.mod",
+            module_spec_name="pkg.mod",
+            include_import_discovery=True,
+            **premise,  # type: ignore[arg-type]
+        ),
+    )
+
+
+def _last_test_truth(source: str, **premise: object) -> bool | None:
+    statement = ast.parse(source).body[-1]
+    assert isinstance(statement, ast.If)
+    return _module_facts(source, **premise).expression_result(statement.test).truth
+
+
+def _metadata_clean_at_last_statement(source: str, **premise: object) -> bool:
+    fact = _module_facts(source, **premise).statement_fact(ast.parse(source).body[-1])
+    assert fact is not None
+    return fact.module_metadata_at_entry.callback_clean
+
+
+_TYPE_CHECKING_AFTER_CALL = "from typing import TYPE_CHECKING\nx = load()\nif TYPE_CHECKING:\n    import decimal\n"
+_TYPE_CHECKING_AFTER_IMPORT = (
+    "import logging\nfrom typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+    "    import decimal\n"
+)
+
+
+@pytest.mark.parametrize(
+    "source", [_TYPE_CHECKING_AFTER_CALL, _TYPE_CHECKING_AFTER_IMPORT]
+)
+def test_namespace_premise_keeps_type_checking_across_callbacks(source: str) -> None:
+    # Without a graph any callback may rebind any global or canonical member.
+    assert _last_test_truth(source) is None
+    assert _last_test_truth(source, **_NO_FOREIGN_WRITES) is False
+
+
+@pytest.mark.parametrize(
+    "separator", ["x = load()\n", "import os\n", "for item in items:\n    use(item)\n"]
+)
+def test_namespace_premise_keeps_module_metadata_for_relative_imports(
+    separator: str,
+) -> None:
+    source = f"from . import first\n{separator}from . import second\n"
+    assert not _metadata_clean_at_last_statement(source)
+    assert _metadata_clean_at_last_statement(source, **_NO_FOREIGN_WRITES)
+
+
+@pytest.mark.parametrize(
+    ("source", "premise"),
+    [
+        # Own deferred code a callback can run rebinds what it declares global.
+        (
+            "from typing import TYPE_CHECKING\n"
+            "def flip():\n    global TYPE_CHECKING\n    TYPE_CHECKING = True\n"
+            "register(flip)\nload()\nif TYPE_CHECKING:\n    import decimal\n",
+            _NO_FOREIGN_WRITES,
+        ),
+        # A module that hands its namespace on can have any name rebound.
+        (
+            "from typing import TYPE_CHECKING\nregister(globals())\nload()\n"
+            "if TYPE_CHECKING:\n    import decimal\n",
+            _NO_FOREIGN_WRITES,
+        ),
+        # Another module's named write of this name.
+        (
+            _TYPE_CHECKING_AFTER_CALL,
+            {
+                "foreign_namespace_writes": ("TYPE_CHECKING",),
+                "callback_member_writes": 0,
+            },
+        ),
+        # An import hook can redirect the later canonical import.
+        (
+            _TYPE_CHECKING_AFTER_IMPORT,
+            {
+                "foreign_namespace_writes": (),
+                "callback_member_writes": int(PythonMember.IMPORT_HOOKS),
+            },
+        ),
+        # A named write of typing.TYPE_CHECKING changes the member read.
+        (
+            "import typing\nload()\nif typing.TYPE_CHECKING:\n    import decimal\n",
+            {
+                "foreign_namespace_writes": (),
+                "callback_member_writes": int(PythonMember.TYPING_TYPE_CHECKING),
+            },
+        ),
+    ],
+)
+def test_namespace_premise_keeps_every_rebinding_the_graph_admits(
+    source: str, premise: dict[str, object]
+) -> None:
+    assert _last_test_truth(source, **premise) is None
+
+
+def test_namespace_premise_names_other_writers_without_widening_others() -> None:
+    source = "from . import first\nload()\nfrom . import second\n"
+    other = {"foreign_namespace_writes": ("unrelated",), "callback_member_writes": 0}
+    assert _metadata_clean_at_last_statement(source, **other)
+    package = {
+        "foreign_namespace_writes": ("__package__",),
+        "callback_member_writes": 0,
+    }
+    assert not _metadata_clean_at_last_statement(source, **package)
+
+
+@pytest.mark.parametrize(
+    ("module", "name", "members"),
+    [
+        ("typing", "TYPE_CHECKING", PythonMember.TYPING_TYPE_CHECKING),
+        ("typing_extensions", "TYPE_CHECKING", PythonMember.TYPING_TYPE_CHECKING),
+        ("sys", "modules", PythonMember.SYS_MODULES | PythonMember.IMPORT_HOOKS),
+        ("sys", "meta_path", PythonMember.IMPORT_HOOKS),
+        ("sys", "path_importer_cache", PythonMember.IMPORT_HOOKS),
+        (
+            "builtins",
+            "__import__",
+            PythonMember.BUILTINS_IMPORT | PythonMember.IMPORT_HOOKS,
+        ),
+        ("sys", "platform", PythonMember.SYS_PLATFORM),
+        ("importlib.machinery.ModuleSpec", "loader", PythonMember.MODULE_SPEC_CLASS),
+        (None, "TYPE_CHECKING", PythonMember.TYPING_TYPE_CHECKING),
+        ("logging", "raiseExceptions", 0),
+        ("sys", "stdout", 0),
+        ("pkg.mod", None, 0),
+    ],
+)
+def test_canonical_member_writes_share_the_direct_store_authority(
+    module: str | None, name: str | None, members: int
+) -> None:
+    assert python_binding_flow.python_canonical_member_writes(module, name) == int(
+        members
+    )
+
+
+def test_canonical_member_writes_of_a_computed_name_change_every_member() -> None:
+    every = python_binding_flow.ALL_INVALID_MEMBERS
+    assert python_binding_flow.python_canonical_member_writes("typing", None) == every
+    assert python_binding_flow.python_canonical_member_writes(None, None) == every

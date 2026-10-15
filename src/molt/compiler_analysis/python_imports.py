@@ -287,6 +287,17 @@ class ModuleImportFlow:
         # conservative runtime anchor until that phase has an explicit event.
         return self.states_by_node.get(python_node_source_key(node), self.all_states)
 
+    def proven_unreachable(self, node: ast.AST) -> bool:
+        """Whether a projection recorded this site's explicit absence.
+
+        An unrecorded site is an unobserved phase, never proven absent.
+        """
+        key = python_node_source_key(node)
+        return self.states_by_node.get(key) == () or (
+            self.source_states_by_node is not None
+            and self.source_states_by_node.get(key) == ()
+        )
+
     def source_states_for(self, node: ast.AST) -> tuple[ModuleImportState, ...]:
         """Source candidates are never execution metadata or storage custody."""
         if self.source_states_by_node is None:
@@ -892,12 +903,16 @@ def _analyze_module_import_flow_uncached(
     assignment_effects: Mapping[PythonNodeKey, int],
     call_facts: Mapping[PythonNodeKey, PythonCallSiteFact],
     source_discovery: bool = False,
+    callbacks_rewrite_metadata: bool = True,
 ) -> ModuleImportFlow:
     """Project one requested metadata view through canonical completion facts.
 
     Source discovery retains explicit candidates beside unknown callback
     alternatives. Unknown source writes and completion partitions still apply.
     Semantic projection keeps every callback invalidation unchanged.
+    ``callbacks_rewrite_metadata`` is the binding authority's answer to whether
+    any callback can rebind this module's metadata; without it callback
+    summaries leave the metadata states unchanged.
     """
 
     from molt.compiler_analysis.python_binding_facts import (
@@ -1069,6 +1084,8 @@ def _analyze_module_import_flow_uncached(
         # visible source. Every such summary uses this projection: semantics
         # loses the anchor, discovery retains candidates beside uncertainty.
         # Explicit opaque metadata replacement instead uses unknown_states.
+        if not callbacks_rewrite_metadata:
+            return states
         unknown = unknown_states(states)
         return _merge_states(states, unknown) if source_discovery else unknown
 
