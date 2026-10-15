@@ -93,9 +93,18 @@ _DIFF_MEMORY_GUARD_HARD_GLOBAL_KB = memory_guard.max_rss_kb_from_gb(
 PythonCommand = str | Sequence[str]
 
 
-def _resolve_python_command(python_exe: PythonCommand) -> tuple[str, ...]:
+def _resolve_python_command(
+    python_exe: PythonCommand, *, budget: compat_backends.ItemBudget | None = None
+) -> tuple[str, ...]:
     if isinstance(python_exe, str):
-        return python_interpreter.resolve_python_selector(python_exe)
+        try:
+            return python_interpreter.resolve_python_selector(
+                python_exe,
+                probe_timeout=None if budget is None else budget.probe_timeout,
+            )
+        finally:
+            if budget is not None:
+                budget.check()
     command = tuple(str(part) for part in python_exe if str(part))
     return command or (sys.executable,)
 
@@ -104,7 +113,9 @@ def _python_command_display(python_exe: PythonCommand) -> str:
     return " ".join(_resolve_python_command(python_exe))
 
 
-def _resolve_diff_python_command(python_version: str | None) -> tuple[str, ...]:
+def _resolve_diff_python_command(
+    python_version: str | None, *, budget: compat_backends.ItemBudget | None = None
+) -> tuple[str, ...]:
     if not python_version:
         return (sys.executable,)
     target_python = python_interpreter.parse_target_python_version(python_version)
@@ -113,6 +124,7 @@ def _resolve_diff_python_command(python_version: str | None) -> tuple[str, ...]:
             target_python,
             override=os.environ.get("MOLT_DIFF_PYTHON", "").strip() or None,
             cwd=_repo_root(),
+            probe_timeout=None if budget is None else budget.probe_timeout,
         )
     )
 
@@ -126,21 +138,56 @@ def _metadata_probe_timeout_sec() -> float:
     return value if value > 0 else 5.0
 
 
-def _run_metadata_probe(cmd: Sequence[str]) -> subprocess.CompletedProcess[str] | None:
+# Successful probe facts retain their existing command identity. Deadlines are
+# per-call inputs, never cache keys; an exhausted item cannot poison later facts.
+_METADATA_PROBE_CACHE: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
+
+
+def _run_metadata_probe(
+    cmd: Sequence[str],
+    *,
+    budget: compat_backends.ItemBudget | None = None,
+    build_failed: bool = False,
+) -> subprocess.CompletedProcess[str] | None:
+    if budget is not None:
+        budget.check(build_failed=build_failed)
+    key = tuple(cmd)
+    if key in _METADATA_PROBE_CACHE:
+        return _METADATA_PROBE_CACHE[key]
+    timeout = _metadata_probe_timeout_sec()
+    if budget is not None:
+        timeout = budget.limit(timeout)
+        if timeout == 0:
+            raise compat_backends.ItemBudgetExpired(build_failed=build_failed)
     try:
-        return process_guard_common.run_guarded_test_process(
+        result = process_guard_common.run_guarded_test_process(
             cmd,
             prefix="MOLT_DIFF",
             capture_output=True,
             text=True,
-            timeout=_metadata_probe_timeout_sec(),
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
+        if budget is not None:
+            budget.check(build_failed=build_failed)
         return None
+    if budget is not None:
+        budget.check(build_failed=build_failed)
+    # Probe facts are small, successful immutable command results. Bound retained
+    # payloads as well as entries; never retain an arbitrary interpreter banner.
+    if (
+        result.returncode == 0
+        and len(result.stdout or "") + len(result.stderr or "") <= 65536
+    ):
+        if len(_METADATA_PROBE_CACHE) >= 32:
+            del _METADATA_PROBE_CACHE[next(iter(_METADATA_PROBE_CACHE))]
+        _METADATA_PROBE_CACHE[key] = result
+    return result
 
 
-@lru_cache(maxsize=1)
-def _resolve_molt_cli_python() -> str:
+def _resolve_molt_cli_python(
+    *, budget: compat_backends.ItemBudget | None = None
+) -> str:
     override = os.environ.get("MOLT_DIFF_MOLT_PYTHON", "").strip()
     if override:
         command = python_interpreter.explicit_python_command(override)
@@ -168,7 +215,9 @@ def _resolve_molt_cli_python() -> str:
                 str(candidate),
                 "-c",
                 "import packaging.markers, packaging.requirements",
-            ]
+            ],
+            budget=budget,
+            build_failed=True,
         )
         if probe is None:
             continue
@@ -255,10 +304,11 @@ def _apply_metadata_env_overrides(
     return None
 
 
-@lru_cache(maxsize=None)
-def _python_command_version(command: tuple[str, ...]) -> tuple[int, int] | None:
+def _python_command_version(
+    command: tuple[str, ...], *, budget: compat_backends.ItemBudget | None = None
+) -> tuple[int, int] | None:
     result = _run_metadata_probe(
-        [*command, "-c", "import sys; print(sys.version_info[:2])"]
+        [*command, "-c", "import sys; print(sys.version_info[:2])"], budget=budget
     )
     if result is None:
         return None
@@ -276,8 +326,9 @@ def _python_command_version(command: tuple[str, ...]) -> tuple[int, int] | None:
         return None
 
 
-@lru_cache(maxsize=None)
-def _molt_sys_env_for_python_command(command: tuple[str, ...]) -> dict[str, str]:
+def _molt_sys_env_for_python_command(
+    command: tuple[str, ...], *, budget: compat_backends.ItemBudget | None = None
+) -> dict[str, str]:
     """Derive Molt sys/version environment from the CPython under test.
 
     Differential runs compare Molt output against a chosen CPython version
@@ -296,7 +347,7 @@ def _molt_sys_env_for_python_command(command: tuple[str, ...]) -> dict[str, str]
         "'version_info':[vi.major,vi.minor,vi.micro,vi.releaselevel,vi.serial]"
         "}))"
     )
-    result = _run_metadata_probe([*command, "-c", code])
+    result = _run_metadata_probe([*command, "-c", code], budget=budget)
     if result is None:
         return {}
     if result.returncode != 0:
@@ -335,19 +386,31 @@ def _molt_sys_env_for_python_command(command: tuple[str, ...]) -> dict[str, str]
     return env
 
 
-def _python_exe_version(python_exe: PythonCommand) -> tuple[int, int] | None:
-    return _python_command_version(_resolve_python_command(python_exe))
+def _python_exe_version(
+    python_exe: PythonCommand, *, budget: compat_backends.ItemBudget | None = None
+) -> tuple[int, int] | None:
+    return _python_command_version(
+        _resolve_python_command(python_exe, budget=budget), budget=budget
+    )
 
 
 def _resolve_molt_target_python(
     python_exe: PythonCommand,
     explicit: str | TargetPythonVersion | None,
+    *,
+    budget: compat_backends.ItemBudget | None = None,
 ) -> TargetPythonVersion:
-    return resolve_target_python_for_oracle(_python_exe_version(python_exe), explicit)
+    return resolve_target_python_for_oracle(
+        _python_exe_version(python_exe, budget=budget), explicit
+    )
 
 
-def _molt_sys_env_for_python_exe(python_exe: PythonCommand) -> dict[str, str]:
-    return _molt_sys_env_for_python_command(_resolve_python_command(python_exe))
+def _molt_sys_env_for_python_exe(
+    python_exe: PythonCommand, *, budget: compat_backends.ItemBudget | None = None
+) -> dict[str, str]:
+    return _molt_sys_env_for_python_command(
+        _resolve_python_command(python_exe, budget=budget), budget=budget
+    )
 
 
 # The CPython-parity comparison law lives in ONE place: tools/compat/comparison.py
@@ -361,60 +424,41 @@ _extract_exception_signature = compat_comparison.extract_exception_signature
 _stderr_matches = compat_comparison.stderr_matches
 
 
-def _diff_timeout() -> float | None:
-    raw = os.environ.get("MOLT_DIFF_TIMEOUT", "")
-    if not raw:
-        return None
-    try:
-        val = float(raw)
-    except ValueError:
-        return None
-    return val if val > 0 else None
-
-
 @dataclass(frozen=True, slots=True)
 class _AdmissionDeadline:
-    """Admit a test only if it can finish before the run's wall-clock deadline.
-
-    A test is bounded by its own timeouts: each target's build and run, plus the
-    CPython run. Admitting no test after ``deadline - worst case`` lets a run
-    with a deadline always finish and write its summary instead of being killed.
-    """
+    """Reserve the same bounded item policy that execution actually consumes."""
 
     cutoff: float | None
+    deadline: float | None
+    policy: compat_backends.TimeoutPolicy
+    targets: tuple[str, ...]
 
     @classmethod
-    def for_run(cls, deadline_s: float | None, targets: int) -> "_AdmissionDeadline":
-        if deadline_s is None:
-            return cls(None)
-        run_timeout = _diff_timeout()
-        build_timeout = _diff_build_timeout(run_timeout)
-        if run_timeout is None or build_timeout is None:
+    def for_run(
+        cls, deadline_s: float | None, targets: tuple[str, ...]
+    ) -> "_AdmissionDeadline":
+        policy = compat_backends.TimeoutPolicy.from_environment(os.environ)
+        worst = policy.reservation(targets)
+        if deadline_s is not None and worst is None:
             raise ValueError(
-                "--deadline-s requires MOLT_DIFF_TIMEOUT: a test without a time "
-                "bound cannot be fitted to a deadline"
+                "--deadline-s requires MOLT_DIFF_TIMEOUT and finite per-target phase bounds"
             )
-        worst = targets * (build_timeout + run_timeout) + run_timeout
-        return cls(_PROCESS_STARTED + deadline_s - worst)
+        deadline = None if deadline_s is None else _PROCESS_STARTED + deadline_s
+        return cls(
+            None if deadline is None else deadline - worst, deadline, policy, targets
+        )
 
     def admits(self) -> bool:
         return self.cutoff is None or time.monotonic() < self.cutoff
 
-
-def _diff_build_timeout(run_timeout: float | None) -> float | None:
-    raw = os.environ.get("MOLT_DIFF_BUILD_TIMEOUT", "").strip()
-    if raw:
-        try:
-            val = float(raw)
-        except ValueError:
-            val = 0.0
-        if val > 0:
-            return val
-    if run_timeout is None:
-        return None
-    # Build can include queued runtime/backend work under shared locks, but
-    # defaulting too high can leave deadlocked helpers alive for too long.
-    return max(run_timeout * 2.0, 300.0)
+    def new_budget(self, *, build_only: bool = False) -> compat_backends.ItemBudget:
+        return compat_backends.ItemBudget.start(
+            self.policy,
+            ("native",) if build_only else self.targets,
+            cpython=not build_only,
+            build_only=build_only,
+            suite_deadline=self.deadline,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1163,8 +1207,11 @@ def _backend_execution_context(
     target_python: str | TargetPythonVersion | None,
     *,
     metadata: test_policy.TestMetadata | None = None,
+    budget: compat_backends.ItemBudget,
 ) -> compat_backends.BackendExecutionContext:
-    resolved_target = _resolve_molt_target_python(python_exe, target_python)
+    resolved_target = _resolve_molt_target_python(
+        python_exe, target_python, budget=budget
+    )
     env = os.environ.copy()
     # Diff runs start at the explicit tier; a test that needs capabilities
     # declares them in its metadata, so local runs match CI.
@@ -1177,13 +1224,14 @@ def _backend_execution_context(
     )
     if metadata_error is not None:
         raise ValueError(metadata_error)
-    env.update(_molt_sys_env_for_python_exe(python_exe))
+    env.update(_molt_sys_env_for_python_exe(python_exe, budget=budget))
     diff_output_layout.enforce_child(env, repo_root=_repo_root())
     return compat_backends.BackendExecutionContext(
         target_python=resolved_target,
         build_profile=build_profile,
         capabilities=_diff_capabilities(env),
         environment=env,
+        budget=budget,
     )
 
 
@@ -1557,11 +1605,16 @@ def _diff_keep_isolated_retry_dirs(environment: Mapping[str, str]) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _dyld_preflight_error(binary_path: Path) -> str | None:
+def _dyld_preflight_error(
+    binary_path: Path, *, budget: compat_backends.ItemBudget
+) -> str | None:
     if not _diff_dyld_preflight_default() or sys.platform != "darwin":
         return None
     otool = shutil.which("otool")
     if not otool:
+        return None
+    timeout = budget.limit(20.0)
+    if timeout == 0:
         return None
     try:
         probe = subprocess.run(
@@ -1569,7 +1622,7 @@ def _dyld_preflight_error(binary_path: Path) -> str | None:
             capture_output=True,
             text=True,
             check=False,
-            timeout=20,
+            timeout=timeout,
             encoding="utf-8",
         )
     except OSError:
@@ -1971,6 +2024,7 @@ def _diff_worker(
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
     target_python: str | TargetPythonVersion | None = None,
+    item_budget: compat_backends.ItemBudget | None = None,
 ) -> dict[str, object]:
     _install_worker_orphan_guard()
     started = time.monotonic()
@@ -1983,6 +2037,7 @@ def _diff_worker(
             build_profile=build_profile,
             targets=targets,
             target_python=target_python,
+            item_budget=item_budget,
         )
     return {
         "path": file_path,
@@ -2036,6 +2091,7 @@ def _diff_run_single(
     build_profile: str,
     targets: tuple[str, ...] = ("native",),
     target_python: str | TargetPythonVersion | None = None,
+    item_budget: compat_backends.ItemBudget | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     buffer_out = io.StringIO()
@@ -2049,6 +2105,7 @@ def _diff_run_single(
             build_profile=build_profile,
             targets=targets,
             target_python=target_python,
+            item_budget=item_budget,
         )
     return {
         "path": file_path,
@@ -2330,13 +2387,15 @@ def _mark_memory_guard_tripped(payload: dict[str, object]) -> None:
 
 def _memory_guard_trip_outcome(
     sentinel: harness_memory_guard.RepoProcessMemorySentinel | None = None,
+    *,
+    environment: Mapping[str, str] | None = None,
 ) -> compat_backends.BackendResult | None:
     failure = getattr(sentinel, "infrastructure_failure", None)
     evidence = (
         harness_outcomes.SuiteTripEvidence(infrastructure_failure=failure)
         if failure is not None
         else harness_outcomes.read_suite_trip(
-            os.environ, path=_diff_memory_guard_trip_file()
+            os.environ if environment is None else environment
         )
     )
     if evidence is None and getattr(sentinel, "tripped", False):
@@ -2517,7 +2576,7 @@ def _force_close_diff_process_group(proc: subprocess.Popen[str]) -> None:
 def _run_subprocess(
     cmd: list[str], *, env: dict[str, str], timeout: float | None
 ) -> compat_backends.BackendResult:
-    trip = _memory_guard_trip_outcome()
+    trip = _memory_guard_trip_outcome(environment=env)
     if trip is not None:
         return trip
 
@@ -2525,7 +2584,9 @@ def _run_subprocess(
         "MOLT_DIFF",
         env,
         repo_root=Path(_repo_root()),
-        artifact_root=_diff_root(),
+        artifact_root=_materialize_artifact_root(
+            _diff_artifact_layout(environment=env).diff_root
+        ),
         limits=_diff_memory_guard_limits(env),
     )
     result = guard_context.run(
@@ -2538,7 +2599,7 @@ def _run_subprocess(
     outcome = compat_backends.merge_suite_trip_result(
         compat_backends.BackendResult.from_process(result),
         result,
-        harness_outcomes.read_suite_trip(env, path=_diff_memory_guard_trip_file()),
+        harness_outcomes.read_suite_trip(env),
     )
     if getattr(result, "violation", None) is not None:
         guard_message = (
@@ -2607,9 +2668,11 @@ def _record_rss_metrics(
 
 
 class _BatchCompileServerClient(BatchCompileServerClient):
-    def __init__(self, env: dict[str, str]) -> None:
+    def __init__(
+        self, env: dict[str, str], *, budget: compat_backends.ItemBudget
+    ) -> None:
         cmd = [
-            _resolve_molt_cli_python(),
+            _resolve_molt_cli_python(budget=budget),
             "-m",
             "molt.cli",
             "internal-batch-build-server",
@@ -2620,6 +2683,7 @@ class _BatchCompileServerClient(BatchCompileServerClient):
             repo_root=Path(_repo_root()),
             limits=_diff_memory_guard_limits(env),
         )
+        budget.check(build_failed=True)
         super().__init__(
             cmd,
             cwd=Path(_repo_root()),
@@ -2651,6 +2715,7 @@ def _batch_compile_server_client(
     env: dict[str, str],
     *,
     request_timeout: float,
+    budget: compat_backends.ItemBudget,
 ) -> tuple[_BatchCompileServerClient | None, Exception | None]:
     global _BATCH_COMPILE_SERVER_CLIENT
     global _BATCH_COMPILE_SERVER_CLIENT_PID
@@ -2664,7 +2729,14 @@ def _batch_compile_server_client(
         return _BATCH_COMPILE_SERVER_CLIENT, None
     client: _BatchCompileServerClient | None = None
     try:
-        client = _BatchCompileServerClient(env)
+        if budget.expired():
+            raise TimeoutError(
+                "differential item budget exhausted before batch startup"
+            )
+        client = _BatchCompileServerClient(env, budget=budget)
+        request_timeout = budget.limit(request_timeout)
+        if request_timeout == 0:
+            raise TimeoutError("differential item budget exhausted before batch ping")
         response = client.request(
             "ping",
             timeout=request_timeout,
@@ -2696,6 +2768,7 @@ def _run_batch_compile_build(
     rebuild: bool,
     request_timeout: float,
     strict_mode: bool,
+    budget: compat_backends.ItemBudget,
     extra_params: dict[str, object] | None = None,
 ) -> compat_backends.BackendResult:
     diff_caps = _diff_capabilities(env)
@@ -2723,36 +2796,44 @@ def _run_batch_compile_build(
         params["capabilities"] = diff_caps
     if extra_params:
         params.update(extra_params)
+    build_cap = budget.policy.phase("native", "build")
+    if build_cap is not None:
+        request_timeout = (
+            build_cap if request_timeout is None else min(request_timeout, build_cap)
+        )
     attempts = 2 if strict_mode else 1
     last_error: Exception = RuntimeError("batch compile server request failed")
     for attempt in range(attempts):
         admission = compat_backends.suite_trip_outcome(
-            harness_outcomes.read_suite_trip(env, path=_diff_memory_guard_trip_file())
+            harness_outcomes.read_suite_trip(env)
         )
         if admission is not None:
             return admission.as_build_failure(
                 detail="suite guard stopped batch admission",
                 fallback="suite guard tripped",
             )
+        if budget.expired():
+            return budget.exhausted_result(build_failed=True)
         if strict_mode and attempt > 0:
             _batch_compile_server_reset_disabled()
         client, start_error = _batch_compile_server_client(
             env,
-            request_timeout=request_timeout,
+            request_timeout=budget.limit(request_timeout),
+            budget=budget,
         )
         if client is None:
             if start_error is not None:
                 last_error = start_error
-            if isinstance(last_error, TimeoutError):
+            if isinstance(
+                last_error, (TimeoutError, compat_backends.ItemBudgetExpired)
+            ):
                 return compat_backends.BackendResult.from_deadline(
                     timeout=request_timeout,
                     stderr=str(last_error),
                     build_failed=True,
                 )
             admission = compat_backends.suite_trip_outcome(
-                harness_outcomes.read_suite_trip(
-                    env, path=_diff_memory_guard_trip_file()
-                )
+                harness_outcomes.read_suite_trip(env)
             )
             if admission is not None:
                 return admission.as_build_failure(
@@ -2762,6 +2843,9 @@ def _run_batch_compile_build(
             if strict_mode and attempt + 1 < attempts:
                 continue
             raise last_error
+        request_timeout = budget.limit(request_timeout)
+        if request_timeout == 0:
+            return budget.exhausted_result(build_failed=True)
         try:
             response = client.request(
                 "build",
@@ -2775,23 +2859,23 @@ def _run_batch_compile_build(
             failure = compat_backends.BackendResult(
                 None, str(exc), 127, build_failed=True
             )
-            evidence = harness_outcomes.read_suite_trip(
-                env, path=_diff_memory_guard_trip_file()
-            )
+            evidence = harness_outcomes.read_suite_trip(env)
             failure = (
                 compat_backends.merge_suite_trip_result(
                     failure,
                     getattr(exc, "batch_request_custody", None),
                     evidence,
                 )
-                if not isinstance(exc, TimeoutError)
+                if not isinstance(
+                    exc, (TimeoutError, compat_backends.ItemBudgetExpired)
+                )
                 else failure
             )
             _batch_compile_server_mark_disabled(str(last_error))
             _shutdown_batch_compile_server(force=True)
             if failure.rss_limit_exceeded:
                 return failure
-            if isinstance(exc, TimeoutError):
+            if isinstance(exc, (TimeoutError, compat_backends.ItemBudgetExpired)):
                 return compat_backends.BackendResult.from_deadline(
                     timeout=request_timeout,
                     stderr=str(exc),
@@ -2830,9 +2914,7 @@ def _run_batch_compile_build(
             result = compat_backends.merge_suite_trip_result(
                 result,
                 response.custody,
-                harness_outcomes.read_suite_trip(
-                    env, path=_diff_memory_guard_trip_file()
-                ),
+                harness_outcomes.read_suite_trip(env),
             )
         if returncode != 0:
             return result.as_build_failure(
@@ -2843,8 +2925,22 @@ def _run_batch_compile_build(
     raise last_error
 
 
-def run_cpython(file_path, python_exe=sys.executable) -> compat_backends.BackendResult:
+def run_cpython(
+    file_path,
+    python_exe=sys.executable,
+    *,
+    budget: compat_backends.ItemBudget | None = None,
+) -> compat_backends.BackendResult:
     environment = os.environ.copy()
+    if budget is None:
+        budget = compat_backends.ItemBudget.start(
+            compat_backends.TimeoutPolicy.from_environment(environment), ()
+        )
+    trip = _memory_guard_trip_outcome(environment=environment)
+    if trip is not None:
+        return trip
+    if budget.expired():
+        return budget.exhausted_result()
     tmp_root = _diff_tmp_root(environment)
     lease = diff_output_layout.new_guest_leaf(
         tmp_root,
@@ -2860,6 +2956,7 @@ def run_cpython(file_path, python_exe=sys.executable) -> compat_backends.Backend
             python_exe=python_exe,
             cpython_tmp=lease.path,
             environment=environment,
+            budget=budget,
         ),
         environment=environment,
         repo_root=_repo_root(),
@@ -2867,9 +2964,14 @@ def run_cpython(file_path, python_exe=sys.executable) -> compat_backends.Backend
 
 
 def _run_cpython_owned(
-    file_path, *, python_exe, cpython_tmp: Path, environment: Mapping[str, str]
+    file_path,
+    *,
+    python_exe,
+    cpython_tmp: Path,
+    environment: Mapping[str, str],
+    budget: compat_backends.ItemBudget,
 ) -> compat_backends.BackendResult:
-    python_command = _resolve_python_command(python_exe)
+    python_command = _resolve_python_command(python_exe, budget=budget)
     _apply_memory_limit()
     env = dict(environment)
     # Keep CPython baseline path resolution aligned with the Molt build/run env.
@@ -3044,7 +3146,9 @@ def _molt_diff_execute_script():
 
 _molt_diff_execute_script()
 """
-    timeout = _diff_timeout()
+    timeout = budget.limit(budget.policy.cpython)
+    if timeout == 0:
+        return budget.exhausted_result()
     result = _run_subprocess(
         [*python_command, "-c", bootstrap, file_path],
         env=env,
@@ -3108,6 +3212,16 @@ def _run_molt(
     extra_env: dict[str, str] | None,
     execution_context: compat_backends.BackendExecutionContext | None,
 ) -> compat_backends.BackendResult:
+    budget = (
+        execution_context.budget
+        if execution_context is not None
+        else compat_backends.ItemBudget.start(
+            compat_backends.TimeoutPolicy.from_environment(os.environ),
+            ("native",),
+            cpython=False,
+            build_only=build_only,
+        )
+    )
     environment = (
         dict(execution_context.environment)
         if execution_context is not None
@@ -3115,6 +3229,11 @@ def _run_molt(
     )
     if extra_env:
         environment.update(extra_env)
+    trip = _memory_guard_trip_outcome(environment=environment)
+    if trip is not None:
+        return trip
+    if budget.expired():
+        return budget.exhausted_result(build_failed=True)
     tmp_root = _diff_tmp_root(environment)
     lease = diff_output_layout.new_guest_leaf(
         tmp_root,
@@ -3134,6 +3253,7 @@ def _run_molt(
             rebuild=rebuild,
             extra_env=extra_env,
             execution_context=execution_context,
+            budget=budget,
             output_root=lease.path,
             environment=environment,
         ),
@@ -3154,6 +3274,7 @@ def _run_molt_owned(
     execution_context: compat_backends.BackendExecutionContext | None,
     output_root: Path,
     environment: Mapping[str, str],
+    budget: compat_backends.ItemBudget,
 ) -> compat_backends.BackendResult:
     _apply_memory_limit()
     tmp_root = output_root / "tmp"
@@ -3277,8 +3398,8 @@ def _run_molt_owned(
         f"{ver.major},{ver.minor},{ver.micro},{ver.releaselevel},{ver.serial}",
     )
     env.setdefault("MOLT_SYS_VERSION", sys.version)
-    timeout = _diff_timeout()
-    build_timeout = _diff_build_timeout(timeout)
+    timeout = budget.policy.phase("native", "run")
+    build_timeout = budget.policy.phase("native", "build")
     rss_limit_kb = _diff_fail_rss_kb()
     build_rc = 0
     build_via_batch_server = False
@@ -3302,6 +3423,7 @@ def _run_molt_owned(
                 rebuild=rebuild,
                 request_timeout=batch_request_timeout,
                 strict_mode=batch_strict,
+                budget=budget,
             )
         except Exception as exc:
             if batch_strict:
@@ -3341,39 +3463,44 @@ def _run_molt_owned(
             build_rc = batch_result.returncode
             build_outcome = batch_result
 
-    build_cmd = [
-        _resolve_molt_cli_python(),
-        "-m",
-        "molt.cli",
-        "build",
-        file_path,
-        "--build-profile",
-        build_profile,
-        "--respect-pythonpath",
-        "--out-dir",
-        str(output_root),
-        "--output",
-        str(output_binary),
-    ]
-    if execution_context is not None:
-        build_cmd.extend(["--python-version", execution_context.target_python.short])
-    # Grant standard capabilities for CPython parity in differential tests.
-    # Without these, compiled binaries cannot access the filesystem (tempfile,
-    # pathlib, os.path), environment variables, or time functions — causing
-    # spurious failures unrelated to the tested semantics.
-    diff_caps = _diff_capabilities(env)
-    if diff_caps:
-        build_cmd.extend(["--capabilities", diff_caps])
-    if no_cache:
-        build_cmd.append("--no-cache")
-    if rebuild:
-        build_cmd.append("--rebuild")
-    if stdlib_profile is not None:
-        build_cmd.extend(["--stdlib-profile", stdlib_profile])
-    codec = env.get("MOLT_CODEC")
-    if codec:
-        build_cmd.extend(["--codec", codec])
     if not build_via_batch_server:
+        build_cmd = [
+            _resolve_molt_cli_python(budget=budget),
+            "-m",
+            "molt.cli",
+            "build",
+            file_path,
+            "--build-profile",
+            build_profile,
+            "--respect-pythonpath",
+            "--out-dir",
+            str(output_root),
+            "--output",
+            str(output_binary),
+        ]
+        if execution_context is not None:
+            build_cmd.extend(
+                ["--python-version", execution_context.target_python.short]
+            )
+        # Grant standard capabilities for CPython parity in differential tests.
+        # Without these, compiled binaries cannot access the filesystem (tempfile,
+        # pathlib, os.path), environment variables, or time functions — causing
+        # spurious failures unrelated to the tested semantics.
+        diff_caps = _diff_capabilities(env)
+        if diff_caps:
+            build_cmd.extend(["--capabilities", diff_caps])
+        if no_cache:
+            build_cmd.append("--no-cache")
+        if rebuild:
+            build_cmd.append("--rebuild")
+        if stdlib_profile is not None:
+            build_cmd.extend(["--stdlib-profile", stdlib_profile])
+        codec = env.get("MOLT_CODEC")
+        if codec:
+            build_cmd.extend(["--codec", codec])
+        build_timeout = budget.limit(build_timeout)
+        if build_timeout == 0:
+            return budget.exhausted_result(build_failed=True)
         build_res = _run_with_optional_time(
             build_cmd,
             env=env,
@@ -3436,7 +3563,9 @@ def _run_molt_owned(
             detail=build_outcome.detail, fallback="build failed"
         )
 
-    preflight_err = _dyld_preflight_error(output_binary)
+    if budget.expired():
+        return budget.exhausted_result(build_failed=build_only)
+    preflight_err = _dyld_preflight_error(output_binary, budget=budget)
     if preflight_err is not None:
         _record_rss_metrics(
             file_path,
@@ -3462,6 +3591,9 @@ def _run_molt_owned(
         return compat_backends.BackendResult("", "", 0)
 
     # Run
+    timeout = budget.limit(timeout)
+    if timeout == 0:
+        return budget.exhausted_result()
     run_res = _run_with_optional_time(
         [str(output_binary)],
         env=env,
@@ -3919,6 +4051,8 @@ def _run_native_backend(
     if _diff_retry_dyld_default() and _is_dyld_unknown_imports(
         outcome.child_stderr or ""
     ):
+        if context.budget.expired():
+            return context.budget.exhausted_result(build_failed=True)
         _mark_dyld_guard(file_path)
         saw_dyld_retry = True
         print(
@@ -3936,6 +4070,8 @@ def _run_native_backend(
         if not outcome.blocks_build_recovery and _is_dyld_unknown_imports(
             outcome.child_stderr or ""
         ):
+            if context.budget.expired():
+                return context.budget.exhausted_result(build_failed=True)
             print(
                 "[RETRY] "
                 f"{file_path} persistent dyld failure; retrying with "
@@ -3953,6 +4089,8 @@ def _run_native_backend(
             and _is_dyld_unknown_imports(outcome.child_stderr or "")
             and _diff_force_rebuild_on_dyld()
         ):
+            if context.budget.expired():
+                return context.budget.exhausted_result(build_failed=True)
             print(
                 "[RETRY] "
                 f"{file_path} persistent dyld failure; retrying with "
@@ -3971,6 +4109,8 @@ def _run_native_backend(
             and _is_dyld_unknown_imports(outcome.child_stderr or "")
             and _diff_retry_isolated_default()
         ):
+            if context.budget.expired():
+                return context.budget.exhausted_result(build_failed=True)
             use_local_retry = _diff_dyld_local_fallback()
             print(
                 "[RETRY] "
@@ -3993,7 +4133,11 @@ def _run_native_backend(
             )
     if outcome.blocks_build_recovery:
         return outcome
-    if saw_dyld_retry and _diff_disable_daemon_on_dyld():
+    if (
+        not context.budget.expired()
+        and saw_dyld_retry
+        and _diff_disable_daemon_on_dyld()
+    ):
         os.environ["MOLT_BACKEND_DAEMON"] = "0"
         os.environ["MOLT_DIFF_FORCE_NO_CACHE"] = "1"
         if _diff_force_rebuild_on_dyld():
@@ -4021,6 +4165,8 @@ def _run_native_backend(
         and outcome.stdout is None
         and _is_backend_daemon_build_error(outcome.child_stderr or "")
     ):
+        if context.budget.expired():
+            return context.budget.exhausted_result(build_failed=True)
         print(
             "[RETRY] "
             f"{file_path} backend daemon/cache build failure; retrying with "
@@ -4039,6 +4185,8 @@ def _run_native_backend(
             and _is_backend_daemon_build_error(outcome.child_stderr or "")
             and _diff_retry_isolated_default()
         ):
+            if context.budget.expired():
+                return context.budget.exhausted_result(build_failed=True)
             print(
                 "[RETRY] "
                 f"{file_path} persistent backend daemon/cache failure; retrying with "
@@ -4060,6 +4208,8 @@ def _run_native_backend(
             and outcome.stdout is None
             and _is_backend_daemon_build_error(outcome.child_stderr or "")
         ):
+            if context.budget.expired():
+                return context.budget.exhausted_result(build_failed=True)
             os.environ["MOLT_BACKEND_DAEMON"] = "0"
             print(
                 "[WARN] Persistent backend daemon/cache failure detected; "
@@ -4075,26 +4225,32 @@ def _run_backend_for_diff(
     context: compat_backends.BackendExecutionContext,
 ) -> compat_backends.BackendResult | compat_backends.BackendAvailability:
     """Keep the adapter's complete outcome, including resource failure facts."""
-    if backend == "native":
-        result = _run_native_backend(file_path, context)
-        # Pass the native outcome through the SAME fault-injection seam the other
-        # backends use, so the synthetic-divergence proof works uniformly on
-        # every backend (the seam is inert unless MOLT_COMPAT_FAULT_INJECT names
-        # this backend). Native keeps its rich retry pipeline above; only the
-        # final outcome is routed through the seam, symmetric with the adapters.
-    else:
-        registry = _compat_backend_registry()
-        adapter = registry.get(backend)
-        if adapter is None:
-            raise ValueError(f"unknown differential backend {backend!r}")
-        avail = adapter.availability()
-        if not avail.available:
-            print(f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})")
-            return avail
-        result = adapter.build_and_run(
-            file_path,
-            context=context,
-        )
+    if context.budget.expired():
+        return context.budget.exhausted_result(build_failed=True)
+    try:
+        if backend == "native":
+            result = _run_native_backend(file_path, context)
+            # Pass the native outcome through the SAME fault-injection seam the other
+            # backends use, so the synthetic-divergence proof works uniformly on
+            # every backend (the seam is inert unless MOLT_COMPAT_FAULT_INJECT names
+            # this backend). Native keeps its rich retry pipeline above; only the
+            # final outcome is routed through the seam, symmetric with the adapters.
+        else:
+            registry = _compat_backend_registry()
+            adapter = registry.get(backend)
+            if adapter is None:
+                raise ValueError(f"unknown differential backend {backend!r}")
+            avail = adapter.availability(context.budget)
+            context.budget.check(build_failed=True)
+            if not avail.available:
+                print(f"[UNCALIBRATED] {file_path} ({backend}: {avail.reason})")
+                return avail
+            result = adapter.build_and_run(
+                file_path,
+                context=context,
+            )
+    except compat_backends.ItemBudgetExpired as error:
+        return error.result()
     # Apply the fault-injection seam once, preserving all execution metadata.
     return compat_backends._apply_fault_injection(backend, result)
 
@@ -4252,6 +4408,7 @@ def diff_test(
     build_profile: str = "dev",
     targets: tuple[str, ...] = ("native",),
     target_python: str | TargetPythonVersion | None = None,
+    item_budget: compat_backends.ItemBudget | None = None,
 ) -> dict[str, object]:
     """Run one differential test across `targets` and return its outcome record.
 
@@ -4275,7 +4432,11 @@ def diff_test(
     OR any two backends disagree with each other — so a backend-specific
     divergence that was previously invisible (single-backend native) is caught.
     """
-    if os.environ.get(diff_output_layout.ROOT_ENV):
+    if item_budget is None:
+        item_budget = compat_backends.ItemBudget.start(
+            compat_backends.TimeoutPolicy.from_environment(os.environ), targets
+        )
+    if not item_budget.expired() and os.environ.get(diff_output_layout.ROOT_ENV):
         if diff_output_layout.IDENTITY_ENV not in os.environ:
             diff_output_layout.admit(
                 os.environ,
@@ -4300,18 +4461,22 @@ def diff_test(
     }
 
     def _impl() -> None:
+        nonlocal python_exe
+        item_budget.check()
+        python_exe = _resolve_python_command(python_exe, budget=item_budget)
         meta = test_policy.parse_metadata(file_path)
         expect_molt_fail = meta.expect_molt_fail
         expect_fail_reason = meta.expected_failure_reason
         record["expect_molt_fail"] = expect_molt_fail
         record["expected_failure_reason"] = expect_fail_reason
-        python_version = _python_exe_version(python_exe)
+        python_version = _python_exe_version(python_exe, budget=item_budget)
         execution_context = _backend_execution_context(
             file_path,
             python_exe,
             build_profile,
             target_python,
             metadata=meta,
+            budget=item_budget,
         )
         record["compiler_target_python"] = execution_context.target_python.short
         host_tags = test_policy.current_platform_tags()
@@ -4351,7 +4516,7 @@ def diff_test(
         stderr_mode = meta.stderr_mode
 
         print(f"Testing {file_path} against {_python_command_display(python_exe)}...")
-        cpython = run_cpython(file_path, python_exe)
+        cpython = run_cpython(file_path, python_exe, budget=item_budget)
         cp_out, cp_err, cp_ret = (
             cpython.stdout or "",
             cpython.child_stderr or "",
@@ -4585,7 +4750,12 @@ def diff_test(
         return _finalize_status("pass")
 
     try:
-        _impl()
+        try:
+            _impl()
+        except compat_backends.ItemBudgetExpired as error:
+            print(f"[FAIL] {file_path} ({error})")
+            record["raw_status"] = record["resolved_status"] = "fail"
+            record["reason_tag"] = "timeout"
         return record
     finally:
         record["duration_s"] = round(time.monotonic() - started, 6)
@@ -4603,6 +4773,7 @@ def _parallel_diff_results(
     jobs: int,
     fail_fast: bool,
     trip_outcome: Callable[[], compat_backends.BackendResult | None] | None = None,
+    new_budget: Callable[[], compat_backends.ItemBudget],
     admits: Callable[[], bool] = lambda: True,
 ) -> Iterator[dict[str, object]]:
     """Bound admission, stop replenishing on failure, and retain running results."""
@@ -4627,6 +4798,7 @@ def _parallel_diff_results(
                 build_profile,
                 targets,
                 target_python,
+                new_budget(),
             )
             pending[future] = str(file_path)
         if not pending:
@@ -4676,8 +4848,9 @@ def run_diff(
     warm_cache: bool = False,
     retry_oom: bool = False,
     deadline_s: float | None = None,
+    oracle_version: str | None = None,
 ) -> dict:
-    admission = _AdmissionDeadline.for_run(deadline_s, len(targets))
+    admission = _AdmissionDeadline.for_run(deadline_s, targets)
     diff_output_layout.admit(
         os.environ,
         repo_root=_repo_root(),
@@ -4685,15 +4858,33 @@ def run_diff(
             os.environ, repo_root=_repo_root()
         ),
     )
-    compiler_target_python = _resolve_molt_target_python(
-        python_exe,
-        target_python,
-    )
-    _ensure_diff_run_lock()
-    _prune_orphan_diff_workers()
-    _prune_orphan_build_helpers()
-    _prune_backend_daemons()
-    _prune_stale_build_locks()
+    preflight_timed_out = False
+    preflight_budget = compat_backends.ItemBudget(admission.policy, admission.deadline)
+    try:
+        try:
+            python_exe = (
+                _resolve_diff_python_command(oracle_version, budget=preflight_budget)
+                if oracle_version is not None
+                else _resolve_python_command(python_exe, budget=preflight_budget)
+            )
+        finally:
+            preflight_budget.check()
+        compiler_target_python = _resolve_molt_target_python(
+            python_exe,
+            target_python,
+            budget=preflight_budget,
+        )
+    except compat_backends.ItemBudgetExpired:
+        # Preserve the ordinary all-selected/not-run summary even when startup
+        # consumed the suite's remaining time before the first item dispatch.
+        compiler_target_python = None
+        preflight_timed_out = True
+    if not preflight_timed_out:
+        _ensure_diff_run_lock()
+        _prune_orphan_diff_workers()
+        _prune_orphan_build_helpers()
+        _prune_backend_daemons()
+        _prune_stale_build_locks()
     results: list[tuple[str, str]] = []
     duration_by_path: dict[str, float] = {}
     selected_targets = (target,) if isinstance(target, Path) else tuple(target)
@@ -4780,7 +4971,11 @@ def run_diff(
         if suite_sentinel is not None:
             os.environ[sentinel_env_key] = "1"
             atexit.register(close_suite_sentinel)
-        if _should_preemptive_dyld_quarantine() and _diff_disable_daemon_on_dyld():
+        if (
+            admission.admits()
+            and _should_preemptive_dyld_quarantine()
+            and _diff_disable_daemon_on_dyld()
+        ):
             remaining = _consume_dyld_guard_run()
             remaining_suffix = (
                 f" remaining_guard_runs={remaining}." if remaining is not None else "."
@@ -4818,17 +5013,21 @@ def run_diff(
             for file_path in test_files:
                 if suite_trip_outcome() is not None or not admission.admits():
                     break
-                context = _backend_execution_context(
-                    str(file_path),
-                    python_exe,
-                    build_profile,
-                    compiler_target_python,
-                )
-                build_result = run_molt_build_only(
-                    str(file_path),
-                    build_profile,
-                    execution_context=context,
-                )
+                try:
+                    context = _backend_execution_context(
+                        str(file_path),
+                        python_exe,
+                        build_profile,
+                        compiler_target_python,
+                        budget=admission.new_budget(build_only=True),
+                    )
+                    build_result = run_molt_build_only(
+                        str(file_path),
+                        build_profile,
+                        execution_context=context,
+                    )
+                except compat_backends.ItemBudgetExpired as error:
+                    build_result = error.result()
                 if build_result.guard_signal is not None:
                     defer_suite_signal(build_result.guard_signal, None)
                     print(build_result.stderr)
@@ -4856,6 +5055,7 @@ def run_diff(
                             build_profile,
                             targets,
                             compiler_target_python,
+                            admission.new_budget(),
                         )
                         if payload["guard_signal"] is not None:
                             defer_suite_signal(payload["guard_signal"], None)
@@ -4930,6 +5130,7 @@ def run_diff(
                             fail_fast=fail_fast,
                             trip_outcome=suite_trip_outcome,
                             admits=admission.admits,
+                            new_budget=admission.new_budget,
                         ):
                             if result["guard_signal"] is not None:
                                 defer_suite_signal(result["guard_signal"], None)
@@ -5015,6 +5216,7 @@ def run_diff(
                     build_profile,
                     targets,
                     compiler_target_python,
+                    admission.new_budget(),
                 )
                 if retry_payload["guard_signal"] is not None:
                     defer_suite_signal(retry_payload["guard_signal"], None)
@@ -5135,7 +5337,9 @@ def run_diff(
                 }
                 for path in not_run_files
             ],
-            "python_exe": _python_command_display(python_exe),
+            "python_exe": python_exe
+            if isinstance(python_exe, str)
+            else " ".join(python_exe),
             "jobs": jobs,
             "run_id": run_id,
             "config": {
@@ -5145,7 +5349,12 @@ def run_diff(
                 "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
                 "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
                 "build_profile": build_profile,
-                "compiler_target_python": compiler_target_python.short,
+                "compiler_target_python": (
+                    None
+                    if compiler_target_python is None
+                    else compiler_target_python.short
+                ),
+                "preflight_timed_out": preflight_timed_out,
                 "stdlib_profile": compat_backends.stdlib_profile_from_environment(
                     os.environ
                 )
@@ -5347,7 +5556,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    python_exe = _resolve_diff_python_command(args.python_version)
+    python_exe = (sys.executable,)
     if args.stdlib_profile is not None:
         os.environ["MOLT_DIFF_STDLIB_PROFILE"] = args.stdlib_profile
     build_profile = args.build_profile or _diff_build_profile()
@@ -5403,6 +5612,7 @@ if __name__ == "__main__":
                 warm_cache=args.warm_cache or _diff_warm_cache(),
                 retry_oom=retry_oom,
                 deadline_s=args.deadline_s,
+                oracle_version=args.python_version,
             )
         except RuntimeError as exc:
             print(f"[LOCK] {exc}", file=sys.stderr)
@@ -5434,6 +5644,8 @@ if __name__ == "__main__":
             failures_output=failures_output,
             warm_cache=args.warm_cache or _diff_warm_cache(),
             retry_oom=_diff_retry_oom_default(),
+            deadline_s=args.deadline_s,
+            oracle_version=args.python_version,
         )
     except RuntimeError as exc:
         print(f"[LOCK] {exc}", file=sys.stderr)

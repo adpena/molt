@@ -68,7 +68,7 @@ def suite(tmp_path, monkeypatch):
     monkeypatch.setattr(
         molt_diff,
         "_memory_guard_trip_outcome",
-        lambda sentinel=None: (
+        lambda sentinel=None, *, environment=None: (
             molt_diff.compat_backends.BackendResult(
                 "",
                 "tripped",
@@ -435,15 +435,16 @@ def test_parent_trip_infrastructure_stops_admission_without_oom(
     )
     marker = tmp_path / "trip.json"
     monkeypatch.setattr(molt_diff, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setenv(molt_diff._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
     if origin == "marker":
         original = molt_diff._memory_guard_trip_outcome
 
-        def read_marker(sentinel=None):
+        def read_marker(sentinel=None, *, environment=None):
             if suite.guard_trip:
                 marker.write_text(
                     '{"event":"guard_tripped","violation":null}', encoding="utf-8"
                 )
-            return original(None)
+            return original(None, environment=environment)
 
         monkeypatch.setattr(molt_diff, "_memory_guard_trip_outcome", read_marker)
     summary = molt_diff.run_diff(
@@ -525,7 +526,9 @@ def test_signal_during_warmup_stops_case_and_further_warmup_admission(
     guarded_suite, tmp_path, monkeypatch
 ):
     warmups = []
-    monkeypatch.setattr(molt_diff, "_backend_execution_context", lambda *a: object())
+    monkeypatch.setattr(
+        molt_diff, "_backend_execution_context", lambda *a, budget: object()
+    )
 
     def warmup(path, *args, **kwargs):
         warmups.append(path)
@@ -609,3 +612,146 @@ def test_ordinary_failure_without_operator_signal_keeps_admitting(
     assert summary["passed"] == len(suite.files) - 1
     assert summary["failed"] == 1
     assert not summary["config"]["memory_guard"]["admission_stopped"]
+
+
+def test_item_reservation_uses_actual_mixed_backend_caps(monkeypatch):
+    backends = molt_diff.compat_backends
+    policy = backends.TimeoutPolicy.from_environment(
+        {
+            "MOLT_DIFF_TIMEOUT": "10",
+            "MOLT_DIFF_BUILD_TIMEOUT": "30",
+            "MOLT_COMPAT_LLVM_BUILD_TIMEOUT_SEC": "17",
+            "MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC": "3",
+        }
+    )
+    assert policy.reservation(("native", "wasm", "llvm", "luau")) == 1390
+    assert policy.phase("wasm", "build") == 600
+    assert policy.phase("llvm", "run") == 60
+    assert policy.phase("luau", "build") == 600
+    assert policy.reservation(("native",), cpython=False, build_only=True) == 30
+    disabled = backends.TimeoutPolicy.from_environment(
+        {
+            "MOLT_DIFF_TIMEOUT": "10",
+            "MOLT_COMPAT_LLVM_BUILD_TIMEOUT_SEC": "off",
+        }
+    )
+    assert disabled.reservation(("llvm",)) is None
+
+
+def test_delayed_worker_spends_dispatch_budget_before_any_case_side_effect(monkeypatch):
+    backends = molt_diff.compat_backends
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    policy = backends.TimeoutPolicy.from_environment(
+        {
+            "MOLT_DIFF_TIMEOUT": "10",
+            "MOLT_DIFF_BUILD_TIMEOUT": "30",
+        }
+    )
+    captured = []
+    monkeypatch.setattr(molt_diff, "_install_worker_orphan_guard", lambda: None)
+    monkeypatch.setattr(molt_diff, "_record_diff_result", captured.append)
+    monkeypatch.setattr(
+        molt_diff.test_policy,
+        "parse_metadata",
+        lambda path: pytest.fail("expired worker parsed case metadata"),
+    )
+    monkeypatch.setattr(
+        molt_diff.diff_output_layout,
+        "admit",
+        lambda *a, **k: pytest.fail("expired worker acquired artifact roots"),
+    )
+
+    class DelayedExecutor:
+        def submit(self, worker, *args):
+            assert args[-1].deadline == 150.0
+            clock.now = 151.0
+            future = concurrent.futures.Future()
+            future.set_result(worker(*args))
+            return future
+
+    result = list(
+        molt_diff._parallel_diff_results(
+            DelayedExecutor(),
+            [Path("case.py")],
+            sys.executable,
+            "dev",
+            ("native",),
+            molt_diff.TargetPythonVersion(3, 12, 0),
+            jobs=1,
+            fail_fast=False,
+            trip_outcome=lambda: None,
+            new_budget=lambda: backends.ItemBudget.start(policy, ("native",)),
+        )
+    )
+    assert len(result) == 1 and result[0]["status"] == "fail"
+    assert captured[0]["reason_tag"] == "timeout"
+
+
+def test_warm_cache_uses_dispatch_pinned_build_only_budget(
+    suite, tmp_path, monkeypatch
+):
+    backends = molt_diff.compat_backends
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "10")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "30")
+    budgets = []
+
+    def context(file, python, profile, target, *, budget):
+        budgets.append(budget)
+        return SimpleNamespace(budget=budget)
+
+    def warm(file, profile, *, execution_context):
+        assert execution_context.budget.deadline == clock.now + 30
+        clock.now += 1
+        return backends.BackendResult("", "", 0)
+
+    monkeypatch.setattr(molt_diff, "_backend_execution_context", context)
+    monkeypatch.setattr(molt_diff, "run_molt_build_only", warm)
+    molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=1,
+        warm_cache=True,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert len(budgets) == len(suite.files)
+    assert [item.deadline for item in budgets] == [30, 31, 32, 33, 34]
+
+
+def test_suite_preflight_consumes_deadline_and_keeps_not_run_summary(
+    suite, tmp_path, monkeypatch
+):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(molt_diff, "_PROCESS_STARTED", 0.0)
+    monkeypatch.setattr(molt_diff.time, "monotonic", lambda: clock.now)
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "1")
+    monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "1")
+    observed = []
+
+    def resolve(version, *, budget):
+        observed.append(budget.probe_timeout(10))
+        clock.now = 5.0
+        budget.check()
+
+    monkeypatch.setattr(molt_diff, "_resolve_diff_python_command", resolve)
+    monkeypatch.setattr(
+        molt_diff,
+        "_ensure_diff_run_lock",
+        lambda: pytest.fail("expired preflight acquired run lock"),
+    )
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        oracle_version="3.13",
+        deadline_s=5,
+        jobs=1,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert observed == [5]
+    assert suite.calls == []
+    assert summary["not_run"] == 5
+    assert summary["config"]["preflight_timed_out"] is True
+    assert summary["config"]["compiler_target_python"] is None
+    assert {row["reason"] for row in summary["item_results"]} == {"deadline"}

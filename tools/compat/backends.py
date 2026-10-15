@@ -40,6 +40,8 @@ law or the real backends' codegen.
 from __future__ import annotations
 
 import os
+import math
+import time
 import re
 import shutil
 import subprocess
@@ -259,6 +261,133 @@ def stdlib_profile_from_environment(
 
 
 @dataclass(frozen=True, slots=True)
+class TimeoutPolicy:
+    """Resolved phase caps shared by reservation and every execution transport."""
+
+    cpython: float | None
+    backends: tuple[tuple[str, float | None, float | None], ...]
+
+    @classmethod
+    def from_environment(cls, env: Mapping[str, str]) -> "TimeoutPolicy":
+        from tools import harness_memory_guard
+
+        def positive(name: str) -> float | None:
+            try:
+                value = float(env.get(name, ""))
+            except ValueError:
+                return None
+            return value if math.isfinite(value) and value > 0 else None
+
+        run = positive("MOLT_DIFF_TIMEOUT")
+        build = positive("MOLT_DIFF_BUILD_TIMEOUT")
+        if build is None and run is not None:
+            build = max(run * 2.0, 300.0)
+        phases = [("native", build, run)]
+        for backend, default_build in (
+            ("wasm", 600.0),
+            ("llvm", 900.0),
+            ("luau", 600.0),
+        ):
+            values = []
+            for phase, default in (("BUILD", default_build), ("RUN", 60.0)):
+                value = harness_memory_guard.timeout_from_env(
+                    f"MOLT_COMPAT_{backend.upper()}_{phase}", env, default=default
+                )
+                values.append(value if value is None or math.isfinite(value) else None)
+            phases.append((backend, *values))
+        return cls(run, tuple(phases))
+
+    def phase(self, backend: str, phase: Literal["build", "run"]) -> float | None:
+        for name, build, run in self.backends:
+            if name == backend:
+                return build if phase == "build" else run
+        raise ValueError(f"unknown differential backend {backend!r}")
+
+    def reservation(
+        self, targets: Sequence[str], *, cpython: bool = True, build_only: bool = False
+    ) -> float | None:
+        caps = [self.cpython] if cpython else []
+        for backend in targets:
+            caps.append(self.phase(backend, "build"))
+            if not build_only:
+                caps.append(self.phase(backend, "run"))
+        if any(cap is None for cap in caps):
+            return None
+        total = sum(cap for cap in caps if cap is not None)
+        return total if math.isfinite(total) else None
+
+
+class ItemBudgetExpired(RuntimeError):
+    """No child was dispatched; preserved as a typed harness timeout."""
+
+    def __init__(self, *, build_failed: bool = False):
+        self.build_failed = build_failed
+        super().__init__("differential item budget exhausted before dispatch")
+
+    def result(self) -> BackendResult:
+        return BackendResult.from_deadline(
+            timeout=0, stderr=str(self), build_failed=self.build_failed
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ItemBudget:
+    """One dispatch-pinned monotonic deadline, including queued/startup time.
+
+    It is plain typed worker data, never an environment variable. Recovery,
+    startup ping and subprocess fallback spend the same remaining time.
+    """
+
+    policy: TimeoutPolicy
+    deadline: float | None
+
+    @classmethod
+    def start(
+        cls,
+        policy: TimeoutPolicy,
+        targets: Sequence[str],
+        *,
+        cpython: bool = True,
+        build_only: bool = False,
+        suite_deadline: float | None = None,
+    ) -> "ItemBudget":
+        duration = policy.reservation(targets, cpython=cpython, build_only=build_only)
+        deadline = None if duration is None else time.monotonic() + duration
+        if suite_deadline is not None:
+            deadline = (
+                suite_deadline if deadline is None else min(deadline, suite_deadline)
+            )
+        return cls(policy, deadline)
+
+    def limit(self, cap: float | None) -> float | None:
+        if self.deadline is None:
+            return cap
+        remaining = max(0.0, self.deadline - time.monotonic())
+        return remaining if cap is None else min(cap, remaining)
+
+    def expired(self) -> bool:
+        return self.deadline is not None and time.monotonic() >= self.deadline
+
+    def probe_timeout(self, cap: float) -> float:
+        value = self.limit(cap)
+        if value == 0:
+            raise ItemBudgetExpired(build_failed=True)
+        assert value is not None
+        return value
+
+    def check(self, *, build_failed: bool = False) -> None:
+        if self.expired():
+            raise ItemBudgetExpired(build_failed=build_failed)
+
+    def exhausted_result(self, *, build_failed: bool = False) -> BackendResult:
+        return BackendResult.from_deadline(
+            timeout=0,
+            stderr="differential item budget exhausted before dispatch",
+            build_failed=build_failed,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BackendExecutionContext:
     """One immutable compiler/runtime policy shared by every backend."""
 
@@ -266,6 +395,7 @@ class BackendExecutionContext:
     build_profile: str
     capabilities: str
     environment: Mapping[str, str]
+    budget: ItemBudget
     stdlib_profile: Literal["micro", "full"] | None = field(init=False)
 
     def __post_init__(self) -> None:
@@ -294,7 +424,7 @@ class BackendAdapter(Protocol):
 
     name: str
 
-    def availability(self) -> BackendAvailability: ...
+    def availability(self, budget: ItemBudget | None = None) -> BackendAvailability: ...
 
     def build_and_run(
         self,
@@ -368,7 +498,7 @@ class NativeAdapter:
     run_molt: RunMoltCallable
     name: str = "native"
 
-    def availability(self) -> BackendAvailability:
+    def availability(self, budget: ItemBudget | None = None) -> BackendAvailability:
         # Native is always available in the differential harness — it is the
         # backend molt_diff has always driven.
         return BackendAvailability(available=True)
@@ -391,10 +521,10 @@ class NativeAdapter:
 # ---------------------------------------------------------------------------
 
 
-def _molt_cli_python() -> str:
+def _molt_cli_python(budget: ItemBudget) -> str:
     import molt_diff  # bootstrapped by the harness before adapters run
 
-    return molt_diff._resolve_molt_cli_python()
+    return molt_diff._resolve_molt_cli_python(budget=budget)
 
 
 def suite_trip_outcome(
@@ -467,7 +597,9 @@ def _guarded_run(
     *,
     prefix: str,
     env: dict[str, str],
-    timeout_default: float,
+    budget: ItemBudget,
+    backend: str,
+    phase: Literal["build", "run"],
     cwd: str | None = None,
 ) -> BackendResult:
     """Run every cross-backend build/artifact under the shared typed guard."""
@@ -476,9 +608,9 @@ def _guarded_run(
     trip = suite_trip_outcome(harness_outcomes.read_suite_trip(env))
     if trip is not None:
         return trip
-    timeout = harness_memory_guard.timeout_from_env(
-        prefix, env, default=timeout_default
-    )
+    timeout = budget.limit(budget.policy.phase(backend, phase))
+    if timeout == 0:
+        return budget.exhausted_result(build_failed=phase == "build")
     proc = harness_memory_guard.guarded_completed_process(
         cmd,
         prefix=prefix,
@@ -518,7 +650,7 @@ def _build_cmd(
     extra_build_args: list[str] | None = None,
 ) -> list[str]:
     cmd = [
-        _molt_cli_python(),
+        _molt_cli_python(context.budget),
         "-m",
         "molt.cli",
         "build",
@@ -597,6 +729,8 @@ def run_with_guest_outputs(
 
     try:
         result = run()
+    except ItemBudgetExpired as error:
+        result = error.result()
     except BaseException as error:
         for diagnostic in retire():
             error.add_note(diagnostic)
@@ -649,7 +783,7 @@ def _is_compile_error(err: str) -> bool:
 class WasmAdapter:
     name: str = "wasm"
 
-    def availability(self) -> BackendAvailability:
+    def availability(self, budget: ItemBudget | None = None) -> BackendAvailability:
         if shutil.which("node") is None:
             return BackendAvailability(
                 available=False,
@@ -668,6 +802,8 @@ class WasmAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
+        if context.budget.expired():
+            return context.budget.exhausted_result(build_failed=True)
         return _with_adapter_scratch(
             self.name,
             file_path,
@@ -694,7 +830,9 @@ class WasmAdapter:
             cmd,
             prefix="MOLT_COMPAT_WASM_BUILD",
             env=env,
-            timeout_default=600.0,
+            budget=context.budget,
+            backend=self.name,
+            phase="build",
             cwd=str(_REPO_ROOT),
         )
         linked = out_dir / "output_linked.wasm"
@@ -718,7 +856,9 @@ class WasmAdapter:
             ],
             prefix="MOLT_COMPAT_WASM_RUN",
             env=run_env,
-            timeout_default=60.0,
+            budget=context.budget,
+            backend=self.name,
+            phase="run",
             # WASI preopens dot. Guest-relative writes and tempfile's valid
             # cwd fallback belong to this existing per-case output lease.
             cwd=str(out_dir),
@@ -762,10 +902,15 @@ class WasmAdapter:
 class LlvmAdapter:
     name: str = "llvm"
 
-    def availability(self) -> BackendAvailability:
+    def availability(self, budget: ItemBudget | None = None) -> BackendAvailability:
         try:
-            verification = verify_available_llvm_toolchain(_REPO_ROOT)
+            verification = verify_available_llvm_toolchain(
+                _REPO_ROOT,
+                probe_timeout=None if budget is None else budget.probe_timeout,
+            )
         except LlvmToolchainConfigError as exc:
+            if budget is not None:
+                budget.check(build_failed=True)
             return BackendAvailability(available=False, reason=str(exc))
         if verification is not None:
             return BackendAvailability(available=True)
@@ -780,6 +925,8 @@ class LlvmAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
+        if context.budget.expired():
+            return context.budget.exhausted_result(build_failed=True)
         return _with_adapter_scratch(
             self.name,
             file_path,
@@ -807,7 +954,9 @@ class LlvmAdapter:
             cmd,
             prefix="MOLT_COMPAT_LLVM_BUILD",
             env=env,
-            timeout_default=900.0,
+            budget=context.budget,
+            backend=self.name,
+            phase="build",
             cwd=str(_REPO_ROOT),
         )
         binary = output_binary
@@ -822,7 +971,9 @@ class LlvmAdapter:
             [str(binary)],
             prefix="MOLT_COMPAT_LLVM_RUN",
             env=env,
-            timeout_default=60.0,
+            budget=context.budget,
+            backend=self.name,
+            phase="run",
             cwd=str(_REPO_ROOT),
         )
 
@@ -836,7 +987,7 @@ class LlvmAdapter:
 class LuauAdapter:
     name: str = "luau"
 
-    def availability(self) -> BackendAvailability:
+    def availability(self, budget: ItemBudget | None = None) -> BackendAvailability:
         if shutil.which("lune") is None:
             return BackendAvailability(
                 available=False,
@@ -851,6 +1002,8 @@ class LuauAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
+        if context.budget.expired():
+            return context.budget.exhausted_result(build_failed=True)
         return _with_adapter_scratch(
             self.name,
             file_path,
@@ -870,7 +1023,9 @@ class LuauAdapter:
             cmd,
             prefix="MOLT_COMPAT_LUAU_BUILD",
             env=env,
-            timeout_default=600.0,
+            budget=context.budget,
+            backend=self.name,
+            phase="build",
             cwd=str(_REPO_ROOT),
         )
         luau_out = out_dir / f"{stem}.luau"
@@ -888,7 +1043,9 @@ class LuauAdapter:
             [shutil.which("lune") or "lune", "run", str(luau_out)],
             prefix="MOLT_COMPAT_LUAU_RUN",
             env=env,
-            timeout_default=60.0,
+            budget=context.budget,
+            backend=self.name,
+            phase="run",
             cwd=str(_REPO_ROOT),
         )
 

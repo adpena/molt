@@ -9,7 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -149,6 +149,7 @@ def probe_python_command(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     timeout: float = 10.0,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> PythonInterpreter:
     """Run one identity probe and require a real CPython interpreter."""
 
@@ -160,7 +161,7 @@ def probe_python_command(
     probe_cwd = Path.cwd() if cwd is None else cwd
     stdout, stderr, rc = _run_command(
         [*normalized, "-c", _IDENTITY_PROBE],
-        timeout=timeout,
+        timeout=timeout if probe_timeout is None else probe_timeout(timeout),
         env=probe_env,
         cwd=probe_cwd,
     )
@@ -240,6 +241,7 @@ def resolve_target_python(
     cwd: Path | None = None,
     prefer_current: bool = False,
     prefer_uv: bool = True,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> PythonInterpreter:
     """Resolve and identity-probe an exact supported CPython minor once."""
 
@@ -254,7 +256,12 @@ def resolve_target_python(
         and current == target_python.short
     ):
         try:
-            return probe_python_command((sys.executable,), env=probe_env, cwd=probe_cwd)
+            return probe_python_command(
+                (sys.executable,),
+                env=probe_env,
+                cwd=probe_cwd,
+                probe_timeout=probe_timeout,
+            )
         except PythonInterpreterError as exc:
             failures.append(f"{sys.executable}: {exc}")
     if override is None or not override.strip():
@@ -262,7 +269,7 @@ def resolve_target_python(
         if uv is not None:
             stdout, stderr, rc = _run_command(
                 [uv, "python", "find", target_python.short],
-                timeout=10.0,
+                timeout=10.0 if probe_timeout is None else probe_timeout(10.0),
                 env=probe_env,
                 cwd=probe_cwd,
             )
@@ -270,7 +277,10 @@ def resolve_target_python(
                 candidate = (stdout.splitlines()[0].strip(),)
                 try:
                     interpreter = probe_python_command(
-                        candidate, env=probe_env, cwd=probe_cwd
+                        candidate,
+                        env=probe_env,
+                        cwd=probe_cwd,
+                        probe_timeout=probe_timeout,
                     )
                 except PythonInterpreterError as exc:
                     failures.append(f"{format_python_command(candidate)}: {exc}")
@@ -288,7 +298,9 @@ def resolve_target_python(
         target_python, override=override, prefer_current=False
     ):
         try:
-            interpreter = probe_python_command(candidate, env=probe_env, cwd=probe_cwd)
+            interpreter = probe_python_command(
+                candidate, env=probe_env, cwd=probe_cwd, probe_timeout=probe_timeout
+            )
         except PythonInterpreterError as exc:
             failures.append(f"{format_python_command(candidate)}: {exc}")
             continue
@@ -311,6 +323,7 @@ def resolve_target_python_command(
     cwd: Path | None = None,
     prefer_current: bool = False,
     prefer_uv: bool = True,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> tuple[str, ...]:
     """Resolve an exact supported CPython minor and return its launch command."""
 
@@ -321,6 +334,7 @@ def resolve_target_python_command(
         cwd=cwd,
         prefer_current=prefer_current,
         prefer_uv=prefer_uv,
+        probe_timeout=probe_timeout,
     ).command
 
 
@@ -329,6 +343,7 @@ def resolve_python_selector(
     *,
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
+    probe_timeout: Callable[[float], float] | None = None,
 ) -> tuple[str, ...]:
     """Resolve a CLI selector: default interpreter, exact version, path, or command."""
 
@@ -337,10 +352,7 @@ def resolve_python_selector(
     if _looks_like_version_selector(selector):
         target = parse_target_python_version(selector)
         return resolve_target_python_command(
-            target,
-            env=env,
-            cwd=cwd,
-            prefer_current=True,
+            target, env=env, cwd=cwd, prefer_current=True, probe_timeout=probe_timeout
         )
     return explicit_python_command(selector)
 

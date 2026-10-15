@@ -135,7 +135,9 @@ def _write_wasi_sdk_installation(
 
 
 def _recording_tool_versions(seen: list[tuple[str, Path, str, bool]]):
-    def verify(_prefix, role, path, *, expected_version, exact_version):
+    def verify(
+        _prefix, role, path, *, expected_version, exact_version, probe_timeout=None
+    ):
         seen.append((role, path, expected_version, exact_version))
         return (
             llvm_toolchain.LlvmToolVersionFact(
@@ -322,12 +324,12 @@ def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
     monkeypatch.setattr(
         llvm_toolchain,
         "_llvm_config_version",
-        lambda _path: (22, 1, "22.1.8"),
+        lambda _path, *, probe_timeout=None: (22, 1, "22.1.8"),
     )
     monkeypatch.setattr(
         llvm_toolchain,
         "_llvm_config_prefix",
-        lambda _path: prefix.resolve(),
+        lambda _path, *, probe_timeout=None: prefix.resolve(),
     )
 
     discovery = llvm_toolchain.discover_llvm_toolchain(
@@ -365,12 +367,12 @@ def test_discovery_rejects_unrelated_llvm_sys_search_root(
     monkeypatch.setattr(
         llvm_toolchain,
         "_llvm_config_version",
-        lambda _path: (22, 1, "22.1.8"),
+        lambda _path, *, probe_timeout=None: (22, 1, "22.1.8"),
     )
     monkeypatch.setattr(
         llvm_toolchain,
         "_llvm_config_prefix",
-        lambda _path: other.resolve(),
+        lambda _path, *, probe_timeout=None: other.resolve(),
     )
 
     with pytest.raises(LlvmToolchainConfigError, match="is neither the SDK prefix"):
@@ -485,7 +487,7 @@ def _mock_llvm_config(
     version: str = "22.1.8",
     targets: str = "X86 WebAssembly",
 ) -> None:
-    def run(_executable: Path, *arguments: str) -> str:
+    def run(_executable: Path, *arguments: str, probe_timeout=None) -> str:
         if arguments == ("--version",):
             return version
         if arguments == ("--targets-built",):
@@ -1116,7 +1118,9 @@ def test_wasm_llvm_nm_explicit_override_uses_manifest_version_verifier(
     _write(override, "override")
     seen: list[tuple[Path, str, Path, str, bool]] = []
 
-    def verify(prefix_arg, role, path, *, expected_version, exact_version):
+    def verify(
+        prefix_arg, role, path, *, expected_version, exact_version, probe_timeout=None
+    ):
         seen.append((prefix_arg, role, path, expected_version, exact_version))
         return (
             llvm_toolchain.LlvmToolVersionFact(
@@ -1687,7 +1691,7 @@ def test_windows_style_llvm_config_link_closure_resolves_dot_lib(
     library = prefix / "lib" / "LLVMCore.lib"
     _write(library, "library")
 
-    def run(_executable: Path, *arguments: str) -> str:
+    def run(_executable: Path, *arguments: str, probe_timeout=None) -> str:
         if arguments == ("--libdir",):
             return str(prefix / "lib")
         if arguments == ("--includedir",):
@@ -1714,7 +1718,7 @@ def test_windows_llvm_config_link_closure_preserves_quoted_absolute_paths(
     library = prefix / "lib" / "LLVMCore.lib"
     _write(library, "library")
 
-    def run(_executable: Path, *arguments: str) -> str:
+    def run(_executable: Path, *arguments: str, probe_timeout=None) -> str:
         if arguments == ("--libdir",):
             return str(prefix / "lib")
         if arguments == ("--includedir",):
@@ -2286,7 +2290,7 @@ def test_sdk_link_closure_captures_codegen_archives_and_static_system_flags(
         _write(prefix / "lib" / name, "archive")
     calls = []
 
-    def query(_executable, *arguments):
+    def query(_executable, *arguments, probe_timeout=None):
         calls.append(arguments)
         if arguments == ("--libdir",):
             return str(prefix / "lib")
@@ -2328,7 +2332,7 @@ def test_sdk_static_admission_never_substitutes_shared_library(
     _write(prefix / "lib/libLLVM.so", "shared")
     _write(prefix / "lib/libLLVM.dylib", "shared")
 
-    def query(_path, *args):
+    def query(_path, *args, probe_timeout=None):
         if args == ("--libnames", "--link-static"):
             return library
         if args == ("--libdir",):
@@ -2351,8 +2355,8 @@ def test_sdk_verification_keeps_one_config_image_across_all_answers(
     _mock_llvm_config(prefix, monkeypatch)
     original = llvm_toolchain._run_llvm_config
 
-    def replace_after_version(path, *args):
-        result = original(path, *args)
+    def replace_after_version(path, *args, probe_timeout=None):
+        result = original(path, *args, probe_timeout=probe_timeout)
         if args == ("--version",):
             path.write_bytes(b"different executable with same reported version")
         return result
@@ -2371,7 +2375,7 @@ def test_sdk_config_must_select_the_captured_library_and_header_roots(
     prefix = tmp_path / "sdk"
     _write(prefix / "lib/libLLVMCore.a", "archive")
 
-    def query(_path, *args):
+    def query(_path, *args, probe_timeout=None):
         if args == (option,):
             return str(tmp_path / "uncaptured")
         return {
@@ -2551,3 +2555,50 @@ def test_sdk_generation_capture_uses_the_selected_request_cwd(tmp_path, monkeypa
     assert selected.parent == Path(captured["sdk"]) / "bin"
     assert Path(captured["receipt"]["path"]).parent == prefix
     assert not (ambient / "relative-tools").exists()
+
+
+def test_llvm_existing_probe_apis_consume_one_external_budget(monkeypatch):
+    # This is the existing probe authority; the caller owns elapsed-time policy.
+    remaining = [2.0]
+    calls = []
+
+    def limit(cap):
+        if remaining[0] <= 0:
+            raise TimeoutError("item exhausted")
+        return min(cap, remaining[0])
+
+    def run(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        remaining[0] -= 1
+        return SimpleNamespace(stdout="22.1.8", stderr="", returncode=0)
+
+    monkeypatch.setattr(llvm_toolchain.subprocess, "run", run)
+    assert (
+        llvm_toolchain._run_llvm_config(
+            Path("fixture"), "--version", probe_timeout=limit
+        )
+        == "22.1.8"
+    )
+    assert llvm_toolchain._llvm_config_version("fixture", probe_timeout=limit) == (
+        22,
+        1,
+        "22.1.8",
+    )
+    with pytest.raises(TimeoutError, match="item exhausted"):
+        llvm_toolchain._run_llvm_config(Path("never"), "--version", probe_timeout=limit)
+    assert calls == [2, 1]
+
+
+def test_expired_llvm_link_probe_does_not_allocate_scratch(monkeypatch):
+    def expired(cap):
+        raise TimeoutError("item exhausted")
+
+    monkeypatch.setattr(
+        llvm_toolchain.tempfile,
+        "TemporaryDirectory",
+        lambda **kwargs: pytest.fail("expired probe allocated scratch"),
+    )
+    with pytest.raises(TimeoutError, match="item exhausted"):
+        llvm_toolchain._compile_link_probe(
+            Path("sdk"), Path("clang++"), Path("lld"), (), probe_timeout=expired
+        )

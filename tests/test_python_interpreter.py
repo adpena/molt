@@ -167,9 +167,9 @@ def test_molt_diff_python_version_uses_shared_multi_token_resolver(monkeypatch):
 
 def test_molt_diff_metadata_probe_preserves_multi_token_python_command(monkeypatch):
     commands: list[list[str]] = []
-    molt_diff._python_command_version.cache_clear()
+    molt_diff._METADATA_PROBE_CACHE.clear()
 
-    def fake_probe(command):
+    def fake_probe(command, *, budget=None):
         commands.append(command)
         return subprocess.CompletedProcess(command, 0, "(3, 13)\n", "")
 
@@ -200,3 +200,28 @@ def test_python_explicit_command_preserves_parser_failure_contract(monkeypatch):
         python_interpreter.PythonInterpreterError, match="native parser refused command"
     ):
         python_interpreter.explicit_python_command("selected-python --invalid")
+
+
+def test_interpreter_candidates_share_callers_remaining_probe_budget(monkeypatch):
+    remaining = [2.0]
+    caps = []
+    exhausted = RuntimeError("caller budget exhausted")
+
+    def limit(cap):
+        if remaining[0] == 0:
+            raise exhausted
+        return min(cap, remaining[0])
+
+    def run(command, *, timeout, env, cwd):
+        caps.append(timeout)
+        remaining[0] -= 1
+        return "", "missing", 127
+
+    monkeypatch.setattr(python_interpreter, "_run_command", run)
+    monkeypatch.setattr(python_interpreter.shutil, "which", lambda name: "uv")
+    with pytest.raises(RuntimeError) as error:
+        python_interpreter.resolve_target_python_command(
+            python_interpreter.parse_target_python_version("3.13"), probe_timeout=limit
+        )
+    assert error.value is exhausted
+    assert caps == [2, 1]

@@ -60,7 +60,14 @@ def test_guarded_capture_preserves_observable_bytes(runner, tmp_path, monkeypatc
             command,
             prefix="MOLT_COMPAT_WASM_RUN",
             env=environment,
-            timeout_default=30,
+            budget=compat_backends.ItemBudget(
+                compat_backends.TimeoutPolicy.from_environment(
+                    {"MOLT_TEST_PROCESS_TIMEOUT_SEC": str(30), **environment}
+                ),
+                None,
+            ),
+            backend="wasm",
+            phase="run",
         )
     assert result.returncode == 0
     assert result.infrastructure_failure is None
@@ -76,6 +83,9 @@ def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     stderr = "\r\nExperimentalWarning: guest\n(node:7) guest\n\nno final newline"
     observed = compat_backends.BackendResult("output\r\n", stderr, 0)
@@ -125,6 +135,9 @@ def test_wasm_runtime_cwd_uses_owned_leaf_without_rebasing_inputs(
         build_profile="dev",
         capabilities="",
         environment=environment,
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(environment), None
+        ),
     )
     real_guarded_run = compat_backends._guarded_run
     leaves = []
@@ -215,6 +228,9 @@ def test_adapter_child_receives_atomic_selected_capabilities(
         build_profile="dev",
         capabilities=declared,
         environment=environment,
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(environment), None
+        ),
     )
     real_guarded_run = compat_backends._guarded_run
 
@@ -269,6 +285,9 @@ def test_wasm_host_warnings_are_retained_without_filtering_child_stderr(
         build_profile="dev",
         capabilities="",
         environment=environment,
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(environment), None
+        ),
     )
     guest_stderr = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail"
     real_guarded_run = compat_backends._guarded_run
@@ -308,6 +327,9 @@ def test_wasm_host_warning_read_failure_cannot_pass(tmp_path, monkeypatch):
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
 
     def guarded(command, **kwargs):
@@ -358,6 +380,9 @@ def test_backend_receipt_hashes_exact_child_bytes():
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     result = compat_backends.BackendResult(
         stdout.decode("utf-8", errors="surrogateescape"),
@@ -455,6 +480,9 @@ def test_adapter_test_supplied_directory_is_not_retired(tmp_path, monkeypatch):
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     monkeypatch.setattr(
         compat_backends.WasmAdapter,
@@ -501,7 +529,17 @@ def test_compat_backend_timeouts_use_shared_guard_authority(
         ["noop"],
         prefix=prefix,
         env={f"{prefix}_TIMEOUT_SEC": "1234"},
-        timeout_default=60.0,
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(
+                {
+                    "MOLT_TEST_PROCESS_TIMEOUT_SEC": str(60.0),
+                    **{f"{prefix}_TIMEOUT_SEC": "1234"},
+                }
+            ),
+            None,
+        ),
+        backend=prefix.split("_")[2].lower(),
+        phase=prefix.split("_")[-1].lower(),
     )
     assert captured["prefix"] == prefix
     assert captured["timeout"] == 1234.0
@@ -534,7 +572,17 @@ def test_compat_backend_timeout_accepts_shared_process_fallback(
         ["noop"],
         prefix="MOLT_COMPAT_WASM_BUILD",
         env={"MOLT_TEST_PROCESS_TIMEOUT_SEC": "1800"},
-        timeout_default=600.0,
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(
+                {
+                    "MOLT_TEST_PROCESS_TIMEOUT_SEC": str(600.0),
+                    **{"MOLT_TEST_PROCESS_TIMEOUT_SEC": "1800"},
+                }
+            ),
+            None,
+        ),
+        backend="wasm",
+        phase="build",
     )
     assert captured["timeout"] == 1800.0
 
@@ -550,7 +598,7 @@ class _FakeAdapter:
         self._result = result
         self.contexts: list[compat_backends.BackendExecutionContext] = []
 
-    def availability(self) -> compat_backends.BackendAvailability:
+    def availability(self, budget=None) -> compat_backends.BackendAvailability:
         return compat_backends.BackendAvailability(available=True)
 
     def build_and_run(
@@ -571,6 +619,9 @@ def test_backend_execution_context_requires_canonical_target_authority() -> None
             build_profile="dev",
             capabilities="",
             environment={},
+            budget=compat_backends.ItemBudget(
+                compat_backends.TimeoutPolicy.from_environment({}), None
+            ),
         )
     with pytest.raises(ValueError, match="must be canonical"):
         compat_backends.BackendExecutionContext(
@@ -578,6 +629,9 @@ def test_backend_execution_context_requires_canonical_target_authority() -> None
             build_profile="dev",
             capabilities="",
             environment={},
+            budget=compat_backends.ItemBudget(
+                compat_backends.TimeoutPolicy.from_environment({}), None
+            ),
         )
 
 
@@ -591,7 +645,7 @@ def test_cross_backend_build_command_binds_target_python(
     backend: str,
     stdlib_profile: str | None,
 ) -> None:
-    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
+    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda budget: "python")
     context = compat_backends.BackendExecutionContext(
         target_python=TargetPythonVersion(3, int(target_python.split(".")[1]), 0),
         build_profile="release",
@@ -600,6 +654,15 @@ def test_cross_backend_build_command_binds_target_python(
             "MOLT_CAPABILITY_TIER": "none",
             "MOLT_DIFF_STDLIB_PROFILE": stdlib_profile or "",
         },
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(
+                {
+                    "MOLT_CAPABILITY_TIER": "none",
+                    "MOLT_DIFF_STDLIB_PROFILE": stdlib_profile or "",
+                }
+            ),
+            None,
+        ),
     )
 
     command = compat_backends._build_cmd(
@@ -628,6 +691,12 @@ def test_backend_execution_context_rejects_invalid_stdlib_profile() -> None:
             build_profile="dev",
             capabilities="",
             environment={"MOLT_DIFF_STDLIB_PROFILE": "wide"},
+            budget=compat_backends.ItemBudget(
+                compat_backends.TimeoutPolicy.from_environment(
+                    {"MOLT_DIFF_STDLIB_PROFILE": "wide"}
+                ),
+                None,
+            ),
         )
 
 
@@ -666,6 +735,60 @@ def _infrastructure_outcome(*, child_returncode=0, build_failed=False):
     )
 
 
+@pytest.mark.parametrize("expires_during", ["availability", "build"])
+@pytest.mark.parametrize("probe_raises", [False, True])
+def test_backend_budget_exhaustion_preserves_prior_infrastructure_and_all_rows(
+    fake_test_file, install_fake_registry, monkeypatch, expires_during, probe_raises
+):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        compat_backends, "time", SimpleNamespace(monotonic=lambda: clock.now)
+    )
+    policy = compat_backends.TimeoutPolicy.from_environment({})
+    budget = compat_backends.ItemBudget(policy, 10.0)
+    original = _infrastructure_outcome(build_failed=True)
+    registry, _ = install_fake_registry(
+        {"native": original, "llvm": _outcome("42\n"), "luau": _outcome("42\n")}
+    )
+    calls = []
+
+    def exhaust(phase, supplied_budget):
+        assert supplied_budget is budget
+        calls.append(phase)
+        if phase == expires_during:
+            clock.now = 10.0
+            if probe_raises:
+                supplied_budget.check(build_failed=True)
+
+    def availability(supplied_budget):
+        exhaust("availability", supplied_budget)
+        return compat_backends.BackendAvailability(True)
+
+    def build(file_path, *, context):
+        exhaust("build", context.budget)
+        return budget.exhausted_result(build_failed=True)
+
+    monkeypatch.setattr(registry["llvm"], "availability", availability)
+    monkeypatch.setattr(registry["llvm"], "build_and_run", build)
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    actual = molt_diff.diff_test(
+        str(fake_test_file), targets=("native", "llvm", "luau"), item_budget=budget
+    )
+    assert actual["resolved_status"] == "uncalibrated"
+    assert actual["reason_tag"] == "infrastructure_error"
+    rows = records[0]["backend_rows"]
+    assert [row["backend"] for row in rows] == ["native", "llvm", "luau"]
+    assert rows[0]["infrastructure_failure"] is not None
+    assert rows[0]["raw_status"] == "uncalibrated"
+    assert all(row["timed_out"] and row["build_failed"] for row in rows[1:])
+    assert calls == (
+        ["availability"]
+        if expires_during == "availability"
+        else ["availability", "build"]
+    )
+
+
 @pytest.mark.parametrize("child_returncode", [0, 7, 137])
 def test_guarded_adapter_keeps_child_and_infrastructure_failure(
     monkeypatch, child_returncode
@@ -677,7 +800,17 @@ def test_guarded_adapter_keeps_child_and_infrastructure_failure(
         lambda *_args, **_kwargs: expected,
     )
     actual = compat_backends._guarded_run(
-        ["fixture"], prefix="MOLT_COMPAT_WASM_RUN", env={}, timeout_default=60
+        ["fixture"],
+        prefix="MOLT_COMPAT_WASM_RUN",
+        env={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(
+                {"MOLT_TEST_PROCESS_TIMEOUT_SEC": str(60), **{}}
+            ),
+            None,
+        ),
+        backend="wasm",
+        phase="run",
     )
     assert actual == expected
     assert (
@@ -776,11 +909,11 @@ def cpython_oracle(monkeypatch) -> TargetPythonVersion:
     oracle = TargetPythonVersion(3, 12 if sys.version_info[:2] == (3, 13) else 13, 0)
     command = molt_diff._resolve_python_command(sys.executable)
 
-    def version(probed: tuple[str, ...]) -> tuple[int, int]:
+    def version(probed: tuple[str, ...], *, budget=None) -> tuple[int, int]:
         assert probed == command, f"probed {probed}, not the oracle {command}"
         return oracle.feature_version
 
-    def sys_env(probed: tuple[str, ...]) -> dict[str, str]:
+    def sys_env(probed: tuple[str, ...], *, budget=None) -> dict[str, str]:
         assert probed == command, f"probed {probed}, not the oracle {command}"
         return {
             "MOLT_PYTHON_VERSION": oracle.short,
@@ -1097,7 +1230,7 @@ def test_uncalibrated_when_no_backend_available(fake_test_file, monkeypatch) -> 
     class _Unavailable:
         name = "luau"
 
-        def availability(self):
+        def availability(self, budget=None):
             return compat_backends.BackendAvailability(
                 available=False, reason="lune not on PATH"
             )
@@ -1133,7 +1266,17 @@ def test_timeout_preserves_diagnostic_and_is_never_oom(prefix, monkeypatch) -> N
 
     monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", finish)
     result = compat_backends._guarded_run(
-        ["noop"], prefix=prefix, env={}, timeout_default=60.0
+        ["noop"],
+        prefix=prefix,
+        env={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(
+                {"MOLT_TEST_PROCESS_TIMEOUT_SEC": str(60.0), **{}}
+            ),
+            None,
+        ),
+        backend=prefix.split("_")[2].lower(),
+        phase=prefix.split("_")[-1].lower(),
     )
     assert result.stdout.encode("utf-8", errors="surrogateescape") == b"partial\r\n\xff"
     assert (
@@ -1158,12 +1301,15 @@ def test_all_adapters_preserve_phase_failure(
         "_with_adapter_scratch",
         lambda _backend, _file, run, **_kwargs: run(tmp_path),
     )
-    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
+    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda budget: "python")
     context = compat_backends.BackendExecutionContext(
         target_python=TargetPythonVersion(3, 12, 0),
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     calls = []
 
@@ -1224,6 +1370,9 @@ def test_native_adapter_preserves_timeout():
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     adapter = compat_backends.NativeAdapter(
         lambda *a, **k: compat_backends.BackendResult(
@@ -1317,7 +1466,9 @@ def test_missing_target_is_not_pass_or_expected_semantic_failure(
     monkeypatch.setattr(
         registry["luau"],
         "availability",
-        lambda: compat_backends.BackendAvailability(False, "runner missing"),
+        lambda budget=None: compat_backends.BackendAvailability(
+            False, "runner missing"
+        ),
     )
     records = []
     monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
@@ -1524,6 +1675,9 @@ def test_native_infrastructure_failure_never_triggers_another_retry_or_quarantin
         build_profile="dev",
         capabilities="",
         environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
     )
     assert molt_diff._run_native_backend("fixture.py", context) is failure
     assert len(calls) == (1 if entry == "initial" else 2)
@@ -1598,7 +1752,17 @@ def test_guard_resource_facts_survive_adapter_and_build_conversion(
     )
     monkeypatch.setattr(guard, "guarded_completed_process", lambda *a, **k: result)
     actual = compat_backends._guarded_run(
-        ["fixture"], prefix=prefix, env={}, timeout_default=5
+        ["fixture"],
+        prefix=prefix,
+        env={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(
+                {"MOLT_TEST_PROCESS_TIMEOUT_SEC": str(5), **{}}
+            ),
+            None,
+        ),
+        backend=prefix.split("_")[2].lower(),
+        phase=prefix.split("_")[-1].lower(),
     )
     for converted in [
         actual,
@@ -1766,7 +1930,17 @@ def test_suite_rss_transport_matches_captured_process_instance(
     else:
         monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", launch)
         result = compat_backends._guarded_run(
-            ["fixture"], prefix="MOLT_" + adapter.upper(), env=env, timeout_default=5
+            ["fixture"],
+            prefix="MOLT_" + adapter.upper(),
+            env=env,
+            budget=compat_backends.ItemBudget(
+                compat_backends.TimeoutPolicy.from_environment(
+                    {"MOLT_TEST_PROCESS_TIMEOUT_SEC": str(5), **env}
+                ),
+                None,
+            ),
+            backend="wasm",
+            phase="run",
         )
     expected = case in {"victim", "descendant", "descendant_unknown_root"}
     assert result.rss_limit_exceeded is (expected or case == "infrastructure")
@@ -1857,3 +2031,116 @@ def test_child_exit_matching_signal_status_does_not_cancel(
     assert result["resolved_status"] == "pass"
     assert result["guard_signal"] is None
     assert len(result["backend_rows"]) == 2
+
+
+def test_shared_item_budget_caps_successive_guarded_phases(monkeypatch):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        compat_backends, "time", SimpleNamespace(monotonic=lambda: clock.now)
+    )
+    policy = compat_backends.TimeoutPolicy.from_environment(
+        {"MOLT_DIFF_TIMEOUT": "2", "MOLT_DIFF_BUILD_TIMEOUT": "6"}
+    )
+    budget = compat_backends.ItemBudget.start(policy, ("native",))
+    observed = []
+
+    def guarded(command, **kwargs):
+        observed.append(kwargs["timeout"])
+        clock.now += 4
+        return SimpleNamespace(stdout="ok", stderr="", returncode=0, timed_out=False)
+
+    monkeypatch.setattr(
+        molt_diff.harness_memory_guard, "guarded_completed_process", guarded
+    )
+    for _ in range(3):
+        result = compat_backends._guarded_run(
+            ["fixture"],
+            prefix="MOLT_DIFF",
+            env={},
+            budget=budget,
+            backend="native",
+            phase="build",
+        )
+    assert observed == [6, 6, 2]
+    assert result.returncode == 0
+    refused = compat_backends._guarded_run(
+        ["never"],
+        prefix="MOLT_DIFF",
+        env={},
+        budget=budget,
+        backend="native",
+        phase="run",
+    )
+    assert refused.timed_out and refused.child_returncode is None
+    assert observed == [6, 6, 2]
+
+
+@pytest.mark.parametrize("remaining", [0.0, 2.0])
+def test_native_recovery_cannot_renew_item_deadline(monkeypatch, remaining):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        compat_backends, "time", SimpleNamespace(monotonic=lambda: clock.now)
+    )
+    policy = compat_backends.TimeoutPolicy.from_environment(
+        {"MOLT_DIFF_TIMEOUT": "2", "MOLT_DIFF_BUILD_TIMEOUT": "6"}
+    )
+    budget = compat_backends.ItemBudget.start(policy, ("native",))
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+        budget=budget,
+    )
+    calls = []
+    markers = []
+
+    def native(
+        file, profile, *, execution_context, daemon_enabled=None, no_cache=False
+    ):
+        assert execution_context.budget is budget
+        calls.append(budget.limit(policy.phase("native", "build")))
+        if len(calls) == 1:
+            clock.now = 10.0 - remaining
+            return compat_backends.BackendResult(
+                None, "dyld: unknown imports format", 1, build_failed=True
+            )
+        return compat_backends.BackendResult("recovered", "", 0)
+
+    monkeypatch.setattr(molt_diff, "run_molt", native)
+    monkeypatch.setattr(molt_diff, "_diff_retry_dyld_default", lambda: True)
+    monkeypatch.setattr(molt_diff, "_mark_dyld_guard", markers.append)
+    monkeypatch.setattr(molt_diff, "_diff_disable_daemon_on_dyld", lambda: False)
+    result = molt_diff._run_native_backend("case.py", context)
+    assert calls == ([6] if remaining == 0 else [6, 2])
+    assert markers == ([] if remaining == 0 else ["case.py"])
+    assert result.timed_out is (remaining == 0)
+    if remaining:
+        assert result.stdout == "recovered"
+
+
+def test_item_deadline_reaches_actual_sleeping_child(monkeypatch, tmp_path):
+    # Parent executes this real process control: no compiler or target program.
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))
+    env = dict(os.environ)
+    budget = compat_backends.ItemBudget(
+        compat_backends.TimeoutPolicy.from_environment({}),
+        compat_backends.time.monotonic() + 0.5,
+    )
+    result = compat_backends._guarded_run(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "import time; print('started'); time.sleep(2); print('late')",
+        ],
+        prefix="MOLT_COMPAT_WASM_RUN",
+        env=env,
+        budget=budget,
+        backend="wasm",
+        phase="run",
+    )
+    assert result.timed_out
+    assert result.infrastructure_failure is None
+    assert "started" in (result.stdout or "") and "late" not in (result.stdout or "")
