@@ -371,26 +371,63 @@ fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
 }
 
 /// A source call's typed operand custody survives the lift and the lowering
-/// position by position: a `super()` method call borrows its class and adopts
-/// its `self` and argument, and an unmarked call borrows every operand.
+/// position by position: a `call_guarded` adopts its callable and arguments
+/// except a borrowed one, a loaded method call adopts its loaded pair and its
+/// argument, and an unmarked call borrows every operand.
 #[test]
 fn source_call_argument_custody_survives_tir_roundtrip() {
     use molt_ir::ParameterCustody::{Borrowed, Transferred};
-    let call = |out: &str, custody: Option<Vec<molt_ir::ParameterCustody>>| OpIR {
-        kind: "call_super_method_ic".into(),
-        args: Some(vec!["class".into(), "receiver".into(), "argument".into()]),
-        s_value: Some("method".into()),
+    let guarded = |out: &str, custody: Option<Vec<molt_ir::ParameterCustody>>| OpIR {
+        kind: "call_guarded".into(),
+        args: Some(vec![
+            "callable".into(),
+            "receiver".into(),
+            "argument".into(),
+        ]),
+        s_value: Some("target".into()),
         argument_custody: custody,
         out: Some(out.into()),
         ..OpIR::default()
     };
+    let load = |callable: &str, self_or_null: &str| OpIR {
+        kind: "load_method".into(),
+        args: Some(vec!["receiver".into()]),
+        s_value: Some("method".into()),
+        var: Some(callable.into()),
+        out: Some(self_or_null.into()),
+        ..OpIR::default()
+    };
+    let loaded_call =
+        |callable: &str, self_or_null: &str, out: &str, custody: Option<Vec<_>>| OpIR {
+            kind: "call_loaded_method".into(),
+            args: Some(vec![
+                callable.into(),
+                self_or_null.into(),
+                "argument".into(),
+            ]),
+            argument_custody: custody,
+            out: Some(out.into()),
+            ..OpIR::default()
+        };
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".into(),
-        params: vec!["class".into(), "receiver".into(), "argument".into()],
+        params: vec!["callable".into(), "receiver".into(), "argument".into()],
         ops: vec![
-            call("adopting", Some(vec![Borrowed, Transferred, Transferred])),
-            call("borrowing", None),
+            guarded(
+                "guarded_mixed",
+                Some(vec![Transferred, Borrowed, Transferred]),
+            ),
+            guarded("guarded_borrowing", None),
+            load("adopted_callable", "adopted_self"),
+            loaded_call(
+                "adopted_callable",
+                "adopted_self",
+                "adopting",
+                Some(vec![Transferred, Transferred, Transferred]),
+            ),
+            load("borrowed_callable", "borrowed_self"),
+            loaded_call("borrowed_callable", "borrowed_self", "borrowing", None),
             OpIR {
                 kind: "ret_void".into(),
                 ..OpIR::default()
@@ -398,20 +435,28 @@ fn source_call_argument_custody_survives_tir_roundtrip() {
         ],
         ..FunctionIR::default()
     };
-    let expected = [Some(vec![Borrowed, Transferred, Transferred]), None];
+    let expected = [
+        Some(vec![Transferred, Borrowed, Transferred]),
+        None,
+        Some(vec![Transferred, Transferred, Transferred]),
+        None,
+    ];
 
     let tir = lower_to_tir(&func);
     let lifted = tir.blocks[&tir.entry_block]
         .ops
         .iter()
-        .filter(|op| op.opcode == OpCode::CallSuperMethodIc)
+        .filter(|op| {
+            op.opcode == OpCode::CallLoadedMethod
+                || op.attrs.get("_original_kind") == Some(&AttrValue::Str("call_guarded".into()))
+        })
         .map(TirOp::argument_custody)
         .collect::<Vec<_>>();
     assert_eq!(lifted, expected);
 
     let lowered = lower_to_simple_ir(&tir)
         .into_iter()
-        .filter(|op| op.kind == "call_super_method_ic")
+        .filter(|op| matches!(op.kind.as_str(), "call_guarded" | "call_loaded_method"))
         .map(|op| op.argument_custody)
         .collect::<Vec<_>>();
     assert_eq!(lowered, expected);

@@ -308,8 +308,9 @@ pub(super) unsafe fn function_binding_shape(
     }
 }
 
-/// Positional defaults can be padded by the fused direct path; every other
-/// binder requirement, including malformed defaults, comes from the same shape.
+/// Positional defaults can be padded by the direct path of
+/// `call_owned_function`; every other binder requirement, including malformed
+/// defaults, comes from the same shape.
 pub(super) unsafe fn function_requires_full_binding(py: &PyToken<'_>, func_ptr: *mut u8) -> bool {
     let shape = unsafe { function_binding_shape(py, func_ptr) };
     shape.full_binder || shape.positional_defaults != 0
@@ -1082,9 +1083,57 @@ pub(super) unsafe fn takes_positional_arguments_over(
         })
 }
 
+/// Largest positional arity a direct call passes from a stack vector.
+const DIRECT_ARGV_MAX: usize = 16;
+
+/// Fill the trailing parameters `argv[supplied..]` of a plain adopting
+/// function from its live positional defaults, each with a reference of its
+/// own for the frame, and return the function's positional arity. `None`
+/// when the call needs the binder: keyword-only parameters, `*args`,
+/// `**kwargs`, too many arguments, or defaults that do not cover the gap.
+/// Defaults are read at call time, so a reassigned `__defaults__` applies.
+unsafe fn pad_positional_defaults(
+    py: &PyToken<'_>,
+    func_bits: u64,
+    supplied: usize,
+    argv: &mut [u64; DIRECT_ARGV_MAX],
+) -> Option<usize> {
+    unsafe {
+        let func_ptr = obj_from_bits(func_bits).as_ptr()?;
+        if object_type_id(func_ptr) != TYPE_ID_FUNCTION
+            || !function_bits_adopt_arguments(func_bits)
+            || function_trampoline_ptr(func_ptr) == 0
+            || function_requires_binder_flag(func_ptr)
+        {
+            return None;
+        }
+        let arity = function_arity_usize(func_ptr)?;
+        if arity <= supplied || arity > DIRECT_ARGV_MAX {
+            return None;
+        }
+        // The binder flag is exact, so the defaults are None or a tuple.
+        let defaults = obj_from_bits(function_binding_meta(
+            py,
+            func_ptr,
+            FunctionBindingField::Defaults,
+        ))
+        .as_ptr()?;
+        crate::object::seq_access::with_immutable_tuple_slice(defaults, |items| {
+            // Defaults align to the end of the positional parameters.
+            let start = items.len().checked_sub(arity - supplied)?;
+            argv[supplied..arity].copy_from_slice(&items[start..]);
+            for &bits in &argv[supplied..arity] {
+                inc_ref_bits(py, bits);
+            }
+            Some(arity)
+        })?
+    }
+}
+
 /// Call `func_bits`, which the caller keeps alive, with a call instruction's
-/// adopted `receiver` and `args`. A plain adopting function of exact
-/// positional arity takes them over directly; anything else binds them as the
+/// adopted `receiver` and `args`. A plain adopting function takes them over
+/// directly when they fill its positional parameters, exactly or with its
+/// trailing positional defaults; anything else binds them as the
 /// instruction's argument vector, which moves them into an adopting frame or
 /// ends them after a borrowing callee returns.
 pub(super) unsafe fn call_owned_function(
@@ -1095,15 +1144,19 @@ pub(super) unsafe fn call_owned_function(
 ) -> u64 {
     unsafe {
         let supplied = usize::from(receiver.is_some()) + args.len();
-        const DIRECT_ARGV_MAX: usize = 16;
-        if supplied <= DIRECT_ARGV_MAX && takes_positional_arguments_over(py, func_bits, supplied) {
+        if supplied <= DIRECT_ARGV_MAX {
             let mut argv = [0u64; DIRECT_ARGV_MAX];
             let skip = usize::from(receiver.is_some());
             if let Some(receiver) = receiver {
                 argv[0] = receiver;
             }
             argv[skip..supplied].copy_from_slice(args);
-            return call_function_obj_moved(py, func_bits, &argv[..supplied]);
+            if takes_positional_arguments_over(py, func_bits, supplied) {
+                return call_function_obj_moved(py, func_bits, &argv[..supplied]);
+            }
+            if let Some(arity) = pad_positional_defaults(py, func_bits, supplied, &mut argv) {
+                return call_function_obj_moved(py, func_bits, &argv[..arity]);
+            }
         }
         match CallArguments::moved(py, receiver, args) {
             Ok(arguments) => call_bind_with_arguments(py, func_bits, arguments),

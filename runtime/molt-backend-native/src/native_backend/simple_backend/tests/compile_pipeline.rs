@@ -213,18 +213,10 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
             true,
         ),
         (
-            "call_method_ic",
-            1,
-            Some("method"),
-            Some("molt_call_method_ic0"),
-            true,
-            true,
-        ),
-        (
-            "call_super_method_ic",
+            "call_loaded_method",
             2,
-            Some("method"),
-            Some("molt_call_super_method_ic0"),
+            None,
+            Some("molt_call_loaded_method0"),
             true,
             true,
         ),
@@ -290,6 +282,9 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                             OpIR {
                                 kind: kind.into(),
                                 args: Some(vec!["value".into(); argc]),
+                                // CALL after a method load always adopts.
+                                argument_custody: (kind == "call_loaded_method")
+                                    .then(|| vec![molt_ir::ParameterCustody::Transferred; argc]),
                                 out: bound.then(|| "result".into()),
                                 s_value: target.map(str::to_string),
                                 native_callable_export: native_abi.map(|_| "native.probe".into()),

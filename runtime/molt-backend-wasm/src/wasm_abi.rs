@@ -147,7 +147,7 @@ mod tests {
             (WasmRuntimeImport::ArenaAllocObject, 2),
             (WasmRuntimeImport::ArenaFree, 1),
             (WasmRuntimeImport::HandleResolve, 1),
-            (WasmRuntimeImport::CallMethodIc0, 4),
+            (WasmRuntimeImport::LoadMethod, 5),
         ] {
             assert!(
                 std::panic::catch_unwind(|| super::assert_runtime_i64_call(import, arity)).is_err()
@@ -405,10 +405,8 @@ mod tests {
             (8, (0, 0)),   // () -> ()
             (31, (9, 1)),  // high arity
             (34, (12, 1)), // high arity
-            (37, (4, 1)),  // call_method_ic0
-            (41, (8, 1)),  // call_method_ic4
-            (42, (5, 1)),  // call_super_method_ic0
-            (46, (9, 1)),  // call_super_method_ic4
+            (37, (5, 1)),  // load_method
+            (38, (6, 1)),  // load_super_method
         ];
         for &(idx, expected) in pinned {
             assert_eq!(

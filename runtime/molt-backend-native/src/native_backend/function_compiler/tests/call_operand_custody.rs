@@ -39,28 +39,11 @@ fn fixture(name: &str, kind: &str) -> FunctionIR {
             ],
             Some("custody_target"),
         ),
-        "call_super_method_ic" => (
-            vec![
-                "wide", "existing", "wide", "wide", "wider", "existing", "other",
-            ],
-            vec![
-                Borrowed,
-                Transferred,
-                Transferred,
-                Transferred,
-                Transferred,
-                Transferred,
-                Transferred,
-            ],
-            Some("owned"),
-        ),
         _ => (
             vec!["existing", "wide", "wide", "wider", "existing", "other"],
             vec![Transferred; 6],
             if kind == "call_guarded" {
                 Some("custody_guard_target")
-            } else if kind == "call_method_ic" {
-                Some("owned")
             } else {
                 None
             },
@@ -319,8 +302,7 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
         ("custody_guarded", "call_guarded"),
         ("custody_dynamic", "call_func"),
         ("custody_method", "call_method"),
-        ("custody_method_ic", "call_method_ic"),
-        ("custody_super", "call_super_method_ic"),
+        ("custody_loaded_method", "call_loaded_method"),
     ];
     let mut functions: Vec<_> = cases
         .iter()
@@ -479,9 +461,8 @@ fn enter(first:u64,second:u64){assert_eq!(ERROR.load(SeqCst),0,"consumer after f
 #[no_mangle] pub extern "C" fn molt_call_func_owned(callable:u64,p:u64,n:u64,_:u64)->u64{
  assert_eq!(callable,0x501);let args=unsafe{words(p,n)};assert_eq!(args,&[0x101,0x101,0x102,0x501,0x502]);enter(2,1);release(args);molt_dec_ref_obj(callable);result()
 }
-#[no_mangle] pub extern "C" fn molt_call_method_ic_owned(_:u64,receiver:u64,_:u64,_:u64,p:u64,n:u64)->u64{molt_call_func_owned(receiver,p,n,0)}
-#[no_mangle] pub extern "C" fn molt_call_super_method_ic_owned(_:u64,class:u64,receiver:u64,_:u64,_:u64,p:u64,n:u64)->u64{
- assert_eq!(class,0x101);assert_eq!(receiver,0x501);let args=unsafe{words(p,n)};assert_eq!(args,&[0x101,0x101,0x102,0x501,0x502]);enter(3,1);release(args);molt_dec_ref_obj(receiver);assert_eq!(FIRST.load(SeqCst),1);result()
+#[no_mangle] pub extern "C" fn molt_call_loaded_method4(callable:u64,self_or_null:u64,a:u64,b:u64,c:u64,d:u64)->u64{
+ assert_eq!(callable,0x501);let args=[self_or_null,a,b,c,d];assert_eq!(args,[0x101,0x101,0x102,0x501,0x502]);enter(2,1);release(&args);molt_dec_ref_obj(callable);result()
 }
 fn bind(callable:u64,builder:u64,owned:bool)->u64{assert_eq!(ERROR.load(SeqCst),0);assert_eq!(callable,0x101);assert_eq!(builder,0x501);assert_eq!(FIRST.load(SeqCst),1);assert_eq!(EXISTING.load(SeqCst),1);molt_dec_ref_obj(builder);if owned{molt_dec_ref_obj(callable);}result()}
 #[no_mangle] pub extern "C" fn molt_call_bind_ic_owned(_:u64,c:u64,b:u64)->u64{bind(c,b,true)}
@@ -566,8 +547,8 @@ const NONE:u64=@NONE@;
 extern "C" {
  fn custody_direct(a:u64,b:u64)->u64; fn custody_internal(a:u64,b:u64)->u64;
  fn custody_guarded(a:u64,b:u64)->u64; fn custody_dynamic(a:u64,b:u64)->u64;
- fn custody_method(a:u64,b:u64)->u64; fn custody_method_ic(a:u64,b:u64)->u64;
- fn custody_super(a:u64,b:u64)->u64; fn custody_bind(builder:u64)->u64;
+ fn custody_method(a:u64,b:u64)->u64; fn custody_loaded_method(a:u64,b:u64)->u64;
+ fn custody_bind(builder:u64)->u64;
  fn custody_indirect(builder:u64)->u64;
  fn custody_loop()->u64; fn custody_loop_check(fail:u64);
  fn custody_reset(mode:u64,fail:u64,guard:u64); fn custody_check(fail:u64,boxes:u64,guard:u64);
@@ -575,7 +556,7 @@ extern "C" {
  fn molt_dec_ref_obj(value:u64);
 }
 fn main(){unsafe{
- for (mode,run) in [(0,custody_direct as unsafe extern "C" fn(u64,u64)->u64),(0,custody_internal),(1,custody_guarded),(1,custody_dynamic),(1,custody_method),(0,custody_method_ic),(0,custody_super)]{
+ for (mode,run) in [(0,custody_direct as unsafe extern "C" fn(u64,u64)->u64),(0,custody_internal),(1,custody_guarded),(1,custody_dynamic),(1,custody_method),(1,custody_loaded_method)]{
   for _ in 0..2{for fail in [0,1,2]{custody_reset(mode,fail,0);let word=run(0x501,0x502);assert_eq!(word,if fail==0{0x200}else{NONE});molt_dec_ref_obj(word);custody_check(fail,2,0);}}
  }
  for run in [custody_bind as unsafe extern "C" fn(u64)->u64,custody_indirect]{for fail in [0,1]{custody_reset(2,fail,0);let word=run(0x501);assert_eq!(word,if fail==0{0x200}else{NONE});molt_dec_ref_obj(word);custody_check(fail,1,0);}}

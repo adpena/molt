@@ -931,31 +931,33 @@ fn dynamic_calls_release_discarded_owned_results() {
         ("call_method", 2, Some("BoundMethod:str:join")),
         ("call_method", 2, Some("BoundMethod:str:startswith")),
         ("call_method", 3, Some("BoundMethod:dict:get")),
-        ("call_method_ic", 1, Some("method")),
-        ("call_super_method_ic", 2, Some("method")),
+        ("call_loaded_method", 2, None),
         ("invoke_ffi", 1, None),
     ] {
         for result in [None, Some("none"), Some("result")] {
             let bound = result == Some("result");
             let mut call = wasm_test_op(kind, result, vec!["value"; argc]);
             call.s_value = target.map(str::to_string);
+            let mut body = Vec::new();
+            if kind == "call_loaded_method" {
+                // CALL after a method load is always a source call: it adopts
+                // every operand, so the final IR is drop-inserted and retains
+                // the borrowed parameter once per adopting position.
+                call.argument_custody = Some(vec![molt_ir::ParameterCustody::Transferred; argc]);
+                body.push(wasm_test_op("drop_inserted", None, vec![]));
+                for _ in 0..argc {
+                    body.push(wasm_test_op("inc_ref", None, vec!["value"]));
+                }
+            }
+            body.extend([
+                call,
+                wasm_test_op("const_none", Some("nothing"), vec![]),
+                wasm_test_op("ret", None, vec![if bound { "result" } else { "nothing" }]),
+            ]);
             let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
                 SimpleIR {
                     functions: vec![
-                        wasm_test_function(
-                            "molt_main",
-                            vec!["value"],
-                            None,
-                            vec![
-                                call,
-                                wasm_test_op("const_none", Some("nothing"), vec![]),
-                                wasm_test_op(
-                                    "ret",
-                                    None,
-                                    vec![if bound { "result" } else { "nothing" }],
-                                ),
-                            ],
-                        ),
+                        wasm_test_function("molt_main", vec!["value"], None, body),
                         wasm_test_function(
                             "owned_call_target",
                             vec!["arg"],

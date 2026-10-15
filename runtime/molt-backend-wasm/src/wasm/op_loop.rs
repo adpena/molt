@@ -19,6 +19,7 @@ mod local_slot_ops;
 mod local_state_ops;
 mod numeric_ops;
 mod object_attr_ops;
+mod out_param;
 mod result_sink;
 mod runtime_service_ops;
 

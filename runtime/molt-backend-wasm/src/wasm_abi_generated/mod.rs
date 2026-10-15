@@ -12,7 +12,6 @@ mod import_metadata;
 mod import_registry;
 mod import_tokens;
 mod lir_runtime_calls;
-mod method_ic_selector;
 mod numeric_runtime_selector;
 mod pure_profile;
 mod runtime_callables;
@@ -39,9 +38,6 @@ pub(crate) use import_tokens::WasmRuntimeImport;
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,
     lir_fixed_runtime_call, op_loop_runtime_call,
-};
-pub(crate) use method_ic_selector::{
-    WasmMethodIcFamily, WasmMethodIcSelection, wasm_method_ic_selection,
 };
 #[cfg(test)]
 pub(crate) use numeric_runtime_selector::WASM_NUMERIC_RUNTIME_SELECTORS;

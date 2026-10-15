@@ -3432,15 +3432,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "",
       "kind": "bool",
-      "name": "MOLT_DISABLE_METHOD_FUSION",
-      "owner": "runtime/molt-tir/src/passes/method_fusion.rs",
-      "summary": "Skips method-dispatch fusion in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and the value is part of the backend codegen environment digest.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
       "name": "MOLT_DISABLE_RC_COALESCE",
       "owner": "runtime/molt-tir/src/passes/rc_coalescing.rs",
       "summary": "Skips reference-count coalescing in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and presence is forwarded to the backend daemon and the codegen environment digest.",

@@ -301,197 +301,148 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         trampoline_fn
     }
 
-    pub(super) fn method_dispatch_name(op: &TirOp) -> Option<String> {
-        op.attrs
-            .get("method")
-            .or_else(|| op.attrs.get("s_value"))
-            .and_then(|v| match v {
-                AttrValue::Str(s) => Some(s.clone()),
-                _ => None,
-            })
-    }
-
-    /// A fused method call instruction that adopted its receiver (or `self`)
-    /// and its arguments: `molt_call_method_ic_owned(site, receiver, name,
-    /// len, args, nargs)`, or the super form, whose class stays borrowed. The
-    /// owned entry takes every adopted word over, ending the receiver at
-    /// attribute resolution when the attribute does not bind it as `self`.
-    fn lower_owned_method_ic(&mut self, op: &TirOp, method_name: &str, super_form: bool) -> bool {
-        let (lane, symbol, first_arg) = if super_form {
-            ("call_super_method_ic", "molt_call_super_method_ic_owned", 2)
+    /// CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form:
+    /// `molt_load_method(site, receiver, name, len, self_out)` or
+    /// `molt_load_super_method(site, class, first_arg, name, len, self_out)`.
+    /// The runtime returns the callable and writes `self_or_null` (the
+    /// receiver or the null sentinel) to an entry-block slot. Operands are
+    /// borrowed; both results are owned.
+    pub(super) fn emit_load_method(&mut self, op: &TirOp) {
+        let (symbol, lane, operand_count) = if op.opcode == OpCode::LoadSuperMethod {
+            ("molt_load_super_method", "load_super_method", 2)
         } else {
-            ("call_method_ic", "molt_call_method_ic_owned", 1)
+            ("molt_load_method", "load_method", 1)
         };
-        if op.operands.len() < first_arg {
-            return false;
+        let Some(AttrValue::Str(name)) = op.attrs.get("name") else {
+            self.record_fatal(format!(
+                "malformed {op:?}: a method load names its attribute"
+            ));
+            return;
+        };
+        let &[callable_id, self_id] = op.results.as_slice() else {
+            self.record_fatal(format!("malformed {op:?}: a method load has two results"));
+            return;
+        };
+        if op.operands.len() != operand_count {
+            self.record_fatal(format!(
+                "malformed {op:?}: {operand_count} operand(s) expected"
+            ));
+            return;
         }
+        let i64_ty = self.backend.context.i64_type();
+        let null = i64_ty.const_int(molt_codegen_abi::loaded_method_null_bits() as u64, false);
+        let self_slot = self.build_entry_i64_alloca(&format!("{lane}_self"));
         let call_fn =
             declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
                 .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
         let site_bits = self.next_call_site_bits(lane);
-        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(method_name);
+        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(name);
+        let mut custody = self.begin_borrowed_operands(&op.operands, lane);
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             vec![site_bits.into()];
-        let adopted = &op.operands[first_arg - 1..];
-        let borrowed = &op.operands[..first_arg - 1];
-        let mut custody = self.begin_call_operands(&op.operands, adopted, None, lane);
-        if super_form {
-            call_args.push(self.borrowed_operand(&mut custody, op.operands[0]).into());
+        for &operand in &op.operands {
+            call_args.push(self.borrowed_operand(&mut custody, operand).into());
         }
-        let receiver = self.borrowed_operand(&mut custody, op.operands[first_arg - 1]);
-        let args: Vec<inkwell::values::IntValue<'ctx>> = op.operands[first_arg..]
-            .iter()
-            .map(|&arg| self.borrowed_operand(&mut custody, arg))
-            .collect();
-        let (args_ptr, nargs) = self.spill_call_words(&args, &format!("{lane}_owned_args"));
-        call_args.extend_from_slice(&[
-            receiver.into(),
+        let self_out = self
+            .backend
+            .builder
+            .build_ptr_to_int(self_slot, i64_ty, &format!("{lane}_self_ptr"))
+            .unwrap();
+        call_args.extend::<[inkwell::values::BasicMetadataValueEnum<'ctx>; 3]>([
             name_ptr.into(),
             name_len_bits.into(),
-            args_ptr.into(),
-            nargs.into(),
+            self_out.into(),
         ]);
-        self.surrender_borrowed_owners(&custody, adopted, borrowed);
+        let callable = self
+            .backend
+            .builder
+            .build_call(call_fn, &call_args, lane)
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        // A receiver that could not be boxed was never loaded: its pair is
+        // None and the null sentinel, never a previous load's words.
+        let callable =
+            self.finish_borrowed_operands(custody, callable, &format!("{lane}_callable"), |this| {
+                this.backend.builder.build_store(self_slot, null).unwrap();
+            });
+        let self_or_null = self
+            .backend
+            .builder
+            .build_load(i64_ty, self_slot, &format!("{lane}_self_or_null"))
+            .unwrap();
+        self.values.insert(callable_id, callable.into());
+        self.value_types.insert(callable_id, TirType::DynBox);
+        self.values.insert(self_id, self_or_null);
+        self.value_types.insert(self_id, TirType::DynBox);
+    }
+
+    /// CPython's CALL after a method load: `[callable, self_or_null, args...]`,
+    /// a source call that adopts every operand. `molt_call_loaded_method{N}`
+    /// (or the spilled entry above four arguments) takes every word over: it
+    /// enters the selected function with `self` prepended, or calls the
+    /// attribute when `self_or_null` is the null sentinel. Failed boxing skips
+    /// the entry and releases the instruction's inputs.
+    pub(super) fn emit_call_loaded_method(&mut self, op: &TirOp) {
+        const CALLS: [&str; 5] = [
+            "molt_call_loaded_method0",
+            "molt_call_loaded_method1",
+            "molt_call_loaded_method2",
+            "molt_call_loaded_method3",
+            "molt_call_loaded_method4",
+        ];
+        let adopts_all = op.argument_custody().is_some_and(|custody| {
+            custody
+                .iter()
+                .all(|&position| position == crate::ir::ParameterCustody::Transferred)
+        });
+        if op.operands.len() < 2 || !adopts_all {
+            self.record_fatal(format!(
+                "malformed {op:?}: a loaded method call adopts its pair and every argument"
+            ));
+            return;
+        }
+        let lane = "call_loaded_method";
+        let mut custody =
+            self.begin_call_operands(&op.operands, &op.operands[1..], Some(op.operands[0]), lane);
+        let words: Vec<inkwell::values::IntValue<'ctx>> = op
+            .operands
+            .iter()
+            .map(|&operand| self.borrowed_operand(&mut custody, operand))
+            .collect();
+        let (symbol, call_args): (&str, Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>) =
+            match CALLS.get(words.len() - 2) {
+                Some(&symbol) => (symbol, words.iter().map(|&word| word.into()).collect()),
+                None => {
+                    let (args_ptr, nargs) =
+                        self.spill_call_words(&words[2..], "call_loaded_method_args");
+                    (
+                        "molt_call_loaded_method_spilled",
+                        vec![
+                            words[0].into(),
+                            words[1].into(),
+                            args_ptr.into(),
+                            nargs.into(),
+                        ],
+                    )
+                }
+            };
+        let call_fn =
+            declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
+                .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
+        self.surrender_borrowed_owners(&custody, &op.operands, &[]);
         let result = self
             .backend
             .builder
-            .build_call(call_fn, &call_args, symbol)
+            .build_call(call_fn, &call_args, lane)
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value();
         let result =
-            self.finish_borrowed_operands(custody, result, &format!("{lane}_result"), |_| {});
+            self.finish_borrowed_operands(custody, result, "call_loaded_method_result", |_| {});
         self.bind_owned_runtime_result(op, result.into());
-        true
-    }
-
-    pub(super) fn lower_call_method_ic_op(&mut self, op: &TirOp) -> bool {
-        if op.operands.is_empty() {
-            return false;
-        }
-        let Some(method_name) = Self::method_dispatch_name(op) else {
-            return false;
-        };
-        if op.argument_custody().is_some() {
-            return self.lower_owned_method_ic(op, &method_name, false);
-        }
-        let extra = op.operands.len() - 1;
-        let symbol = match extra {
-            0 => "molt_call_method_ic0",
-            1 => "molt_call_method_ic1",
-            2 => "molt_call_method_ic2",
-            3 => "molt_call_method_ic3",
-            4 => "molt_call_method_ic4",
-            n => panic!(
-                "call_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
-            ),
-        };
-        let i64_ty = self.backend.context.i64_type();
-        let ptr_ty = self
-            .backend
-            .context
-            .ptr_type(inkwell::AddressSpace::default());
-        let mut param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            vec![i64_ty.into(), i64_ty.into(), ptr_ty.into(), i64_ty.into()];
-        param_types.extend(
-            (0..extra).map(|_| -> inkwell::types::BasicMetadataTypeEnum<'ctx> { i64_ty.into() }),
-        );
-        let fn_ty = i64_ty.fn_type(&param_types, false);
-        let call_fn =
-            declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
-                .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
-        let call_fn = require_llvm_function_type(symbol, call_fn, fn_ty);
-        let site_bits = self.next_call_site_bits("call_method_ic");
-        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(&method_name);
-        // The receiver and positional arguments are borrowed by the fast path
-        // and retained into CallArgs by the slow path (`call_method_ic_dispatch`).
-        let mut args = vec![
-            RuntimeArg::Word(site_bits.into()),
-            RuntimeArg::Operand(op.operands[0]),
-            RuntimeArg::Word(name_ptr.into()),
-            RuntimeArg::Word(name_len_bits.into()),
-        ];
-        args.extend(
-            op.operands[1..]
-                .iter()
-                .map(|&operand| RuntimeArg::Operand(operand)),
-        );
-        self.emit_borrowed_runtime_call(
-            op,
-            call_fn,
-            &args,
-            RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-            "call_method_ic",
-            symbol,
-        );
-        true
-    }
-
-    pub(super) fn lower_call_super_method_ic_op(&mut self, op: &TirOp) -> bool {
-        if op.operands.len() < 2 {
-            return false;
-        }
-        let Some(method_name) = Self::method_dispatch_name(op) else {
-            return false;
-        };
-        if op.argument_custody().is_some() {
-            return self.lower_owned_method_ic(op, &method_name, true);
-        }
-        let extra = op.operands.len() - 2;
-        let symbol = match extra {
-            0 => "molt_call_super_method_ic0",
-            1 => "molt_call_super_method_ic1",
-            2 => "molt_call_super_method_ic2",
-            3 => "molt_call_super_method_ic3",
-            4 => "molt_call_super_method_ic4",
-            n => panic!(
-                "call_super_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
-            ),
-        };
-        let i64_ty = self.backend.context.i64_type();
-        let ptr_ty = self
-            .backend
-            .context
-            .ptr_type(inkwell::AddressSpace::default());
-        let mut param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = vec![
-            i64_ty.into(),
-            i64_ty.into(),
-            i64_ty.into(),
-            ptr_ty.into(),
-            i64_ty.into(),
-        ];
-        param_types.extend(
-            (0..extra).map(|_| -> inkwell::types::BasicMetadataTypeEnum<'ctx> { i64_ty.into() }),
-        );
-        let fn_ty = i64_ty.fn_type(&param_types, false);
-        let call_fn =
-            declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
-                .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));
-        let call_fn = require_llvm_function_type(symbol, call_fn, fn_ty);
-        let site_bits = self.next_call_site_bits("call_super_method_ic");
-        let (name_ptr, name_len_bits) = self.raw_string_const_ptr_and_len(&method_name);
-        let mut args = vec![
-            RuntimeArg::Word(site_bits.into()),
-            RuntimeArg::Operand(op.operands[0]),
-            RuntimeArg::Operand(op.operands[1]),
-            RuntimeArg::Word(name_ptr.into()),
-            RuntimeArg::Word(name_len_bits.into()),
-        ];
-        args.extend(
-            op.operands[2..]
-                .iter()
-                .map(|&operand| RuntimeArg::Operand(operand)),
-        );
-        self.emit_borrowed_runtime_call(
-            op,
-            call_fn,
-            &args,
-            RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-            "call_super_method_ic",
-            symbol,
-        );
-        true
     }
 
     pub(super) fn emit_call(&mut self, op: &TirOp) {
@@ -922,22 +873,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         });
         let result = self.finish_borrowed_operands(custody, bound, "call_method_result", |_| {});
         self.bind_owned_runtime_result(op, result.into());
-    }
-
-    pub(super) fn emit_call_method_ic(&mut self, op: &TirOp) {
-        if !self.lower_call_method_ic_op(op) {
-            self.record_fatal(
-                "malformed CallMethodIc op: expected receiver operand and method attr",
-            );
-        }
-    }
-
-    pub(super) fn emit_call_super_method_ic(&mut self, op: &TirOp) {
-        if !self.lower_call_super_method_ic_op(op) {
-            self.record_fatal(
-                "malformed CallSuperMethodIc op: expected class/self operands and method attr",
-            );
-        }
     }
 
     pub(super) fn emit_call_builtin(&mut self, op: &TirOp) {

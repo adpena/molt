@@ -75,8 +75,10 @@ def test_typed_runtime_spellings_require_their_actual_semantic_family():
             "build_slice",
             "object_new_bound",
             "function_defaults_version",
+            "load_method",
+            "load_super_method",
         ],
-        "FALLIBLE_PROTOCOL": ["call_builtin", "call_method_ic", "call_super_method_ic"],
+        "FALLIBLE_PROTOCOL": ["call_builtin", "call_loaded_method"],
         "ASYNC_RUNTIME": [
             "yield",
             "yield_from",

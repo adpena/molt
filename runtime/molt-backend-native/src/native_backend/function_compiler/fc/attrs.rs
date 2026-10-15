@@ -21,6 +21,8 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "get_attr_generic_ptr",
     "get_attr_generic_obj",
     "get_attr_special_obj",
+    "load_method",
+    "load_super_method",
     "get_attr_name",
     "get_attr_name_default",
     "has_attr_name",
@@ -156,6 +158,114 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             // result on success for every spelling in this branch.
             if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
+            }
+        }
+        "load_method" | "load_super_method" => {
+            // CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form. The runtime
+            // returns the callable and writes `self_or_null` (the receiver or
+            // the null sentinel) to a frame slot after every callback it ran.
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let mut operands = Vec::with_capacity(args.len());
+            for name in args {
+                operands.push(
+                    *var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        name,
+                        representation_plan,
+                    )
+                    .unwrap_or_else(|| {
+                        panic!("{} operand {name} not found in {func_name}", op.kind)
+                    }),
+                );
+            }
+            let (symbol, operand_count) = if op.kind == "load_method" {
+                ("molt_load_method", 1)
+            } else {
+                ("molt_load_super_method", 2)
+            };
+            assert_eq!(operands.len(), operand_count, "{} operands", op.kind);
+            let attr_name = op
+                .s_value
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} has no attribute name", op.kind));
+            let data_id = module
+                .declare_data(
+                    &format!("mname_{}_{}", func_name, op_idx),
+                    Linkage::Local,
+                    false,
+                    false,
+                )
+                .unwrap();
+            let mut data_ctx = DataDescription::new();
+            data_ctx.define(attr_name.as_bytes().to_vec().into_boxed_slice());
+            module.define_data(data_id, &data_ctx).unwrap();
+            let global_ptr = module.declare_data_in_func(data_id, builder.func);
+            let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
+            let name_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
+            let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+            let site_bits = builder.ins().iconst(
+                types::I64,
+                box_int(stable_ic_site_id(
+                    func_name,
+                    source_op_idx,
+                    op.kind.as_str(),
+                )),
+            );
+            let self_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                8,
+                3,
+            ));
+            let self_out = builder.ins().stack_addr(types::I64, self_slot, 0);
+            let mut call_args = vec![site_bits];
+            call_args.extend_from_slice(&operands);
+            call_args.extend_from_slice(&[name_ptr, name_len, self_out]);
+            let callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                symbol,
+                &vec![types::I64; call_args.len()],
+                &[types::I64],
+            );
+            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let call = builder.ins().call(local_callee, &call_args);
+            let callable = builder.inst_results(call)[0];
+            let self_or_null = builder.ins().stack_load(types::I64, self_slot, 0);
+            use crate::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
+            let mut results = [None, None];
+            visit_simple_ir_results(op, |result| match result.field {
+                SimpleIrResultField::Var => results[0] = result.name,
+                SimpleIrResultField::Out => results[1] = result.name,
+                SimpleIrResultField::Arg(_) => unreachable!("a method load has fixed result roles"),
+            });
+            for (name, bits) in results.into_iter().zip([callable, self_or_null]) {
+                match name {
+                    Some(name) => def_var_from_boxed_transport(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        vars,
+                        representation_plan,
+                        nbc,
+                        name,
+                        bits,
+                    ),
+                    // A discarded word is owned; releasing the null sentinel is a no-op.
+                    None => bind_owned_runtime_result_name(
+                        None,
+                        bits,
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        vars,
+                    ),
+                }
             }
         }
         "get_attr_special_obj" => {

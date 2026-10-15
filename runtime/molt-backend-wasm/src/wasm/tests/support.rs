@@ -119,30 +119,49 @@ pub(super) fn wasm_object_new_bound_ir(kind: &str, payload_size: Option<i64>) ->
     }
 }
 
-pub(super) fn wasm_method_ic_ir(kind: &str, extra_arg_count: usize) -> SimpleIR {
-    let mut args = match kind {
-        "call_method_ic" => vec!["recv".to_string()],
-        "call_super_method_ic" => vec!["cls".to_string(), "self_obj".to_string()],
-        _ => panic!("unsupported method IC kind {kind}"),
+/// `load_kind` (`load_method` or `load_super_method`) of `selected_method`,
+/// then the loaded call with `extra_arg_count` positional arguments.
+pub(super) fn wasm_loaded_method_ir(load_kind: &str, extra_arg_count: usize) -> SimpleIR {
+    let load_args = match load_kind {
+        "load_method" => vec!["recv".to_string()],
+        "load_super_method" => vec!["cls".to_string(), "self_obj".to_string()],
+        _ => panic!("unsupported method load kind {load_kind}"),
     };
-    for idx in 0..extra_arg_count {
-        args.push(format!("arg{idx}"));
-    }
-    let call = OpIR {
-        kind: kind.to_string(),
-        out: Some("out".to_string()),
-        args: Some(args.clone()),
+    let call_args: Vec<String> = ["callable".to_string(), "self_or_null".to_string()]
+        .into_iter()
+        .chain((0..extra_arg_count).map(|idx| format!("arg{idx}")))
+        .collect();
+    let load = OpIR {
+        kind: load_kind.to_string(),
+        var: Some("callable".to_string()),
+        out: Some("self_or_null".to_string()),
+        args: Some(load_args.clone()),
         s_value: Some("selected_method".to_string()),
+        source_op_idx: Some(0),
+        ..OpIR::default()
+    };
+    let call = OpIR {
+        kind: "call_loaded_method".to_string(),
+        out: Some("out".to_string()),
+        argument_custody: Some(vec![
+            molt_ir::ParameterCustody::Transferred;
+            call_args.len()
+        ]),
+        args: Some(call_args.clone()),
         ..OpIR::default()
     };
     let mut ret = wasm_test_op("ret", None, vec!["out"]);
     ret.args = Some(vec!["out".to_string()]);
+    let params = load_args
+        .into_iter()
+        .chain(call_args.into_iter().skip(2))
+        .collect();
     SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
-            params: args,
-            ops: vec![call, ret],
+            params,
+            ops: vec![load, call, ret],
             param_types: None,
             source_file: None,
             is_extern: false,

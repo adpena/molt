@@ -47,6 +47,24 @@ impl RustBackend {
         }
     }
 
+    /// CPython's CALL after a method load. This target's method load always
+    /// yields the attribute and no `self`, so the call is an ordinary call of
+    /// args[0] with args[2..].
+    pub(super) fn emit_op_call_loaded_method(&mut self, op: &OpIR) {
+        let args = op.args.as_deref().unwrap_or(&[]);
+        if args.len() < 2 {
+            self.emit_unsupported_op(op, "a loaded method call takes its loaded pair");
+            return;
+        }
+        let call = OpIR {
+            kind: "call_func".to_string(),
+            args: Some([&args[..1], &args[2..]].concat()),
+            out: op.out.clone(),
+            ..OpIR::default()
+        };
+        self.emit_op_dynamic_call(&call);
+    }
+
     /// Call args[0] with args[1..]. A guarded call lowers here too: its
     /// identity guard only selects a faster entry for the same callee.
     pub(super) fn emit_op_dynamic_call(&mut self, op: &OpIR) {

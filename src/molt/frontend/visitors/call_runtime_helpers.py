@@ -9,9 +9,11 @@ from molt.compiler_analysis.python_call_arguments import (
     call_form,
 )
 from molt.frontend._types import (
+    ClassId,
     MoltOp,
     MoltValue,
     TypeHint,
+    loaded_method_self_name,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -393,6 +395,53 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         if node.args:
             return node.args[0]
         return kw_object
+
+    def _emit_attribute_method_call(
+        self,
+        node: ast.Call,
+        attr_node: ast.Attribute,
+        receiver: MoltValue,
+        obj_name: str | None,
+        exact_class: ClassId | None,
+    ) -> MoltValue:
+        """CPython's method-form LOAD_ATTR and CALL for ``receiver.attr(...)``.
+
+        The lookup runs before the arguments, as in CPython. A positional call
+        whose lookup is a generic attribute load takes the (callable,
+        self_or_null) pair and calls it without a bound method. Keyword or
+        starred syntax binds through a builder, and a call whose arguments can
+        suspend keeps the attribute value: a suspension spills live values to
+        frame storage, and the pair's null word is not a Python value.
+        """
+        method_form = not self._call_needs_bind(node) and not any(
+            self._expr_may_yield(argument) for argument in node.args
+        )
+        callee = self._emit_attribute_load(
+            attr_node, receiver, obj_name, exact_class, method_load=method_form
+        )
+        load = self._op_by_result.get(callee.name)
+        if load is None or load.kind != "LOAD_METHOD":
+            return self._emit_dynamic_call(node, callee)
+        return self._emit_loaded_method_call(node, callee, load)
+
+    def _emit_loaded_method_call(
+        self, node: ast.Call, pair: MoltValue, load: MoltOp
+    ) -> MoltValue:
+        """CPython's CALL after a method load: the positional arguments, then
+        one call that adopts the loaded pair and the arguments."""
+        args = self._emit_call_args(node.args)
+        res = MoltValue(
+            self.next_var(), type_hint=self._builtin_exact_type_from_expr(node) or "Any"
+        )
+        self.emit(
+            MoltOp(
+                kind="CALL_LOADED_METHOD",
+                args=[pair, *args],
+                result=res,
+                metadata={"self_or_null": loaded_method_self_name(load)},
+            )
+        )
+        return res
 
     def _emit_dynamic_call(self, node: ast.Call, callee: MoltValue) -> MoltValue:
         # The result authority already proves exactness at this source point.

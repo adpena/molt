@@ -73,10 +73,10 @@ pub(super) fn source_call(
     custody: &[ParameterCustody],
 ) -> TirOp {
     use molt_passes::tir::op_kinds_generated::{
-        SimpleIrCallTargetRole, kind_source_call_first_adopted_operand, kind_to_opcode_table,
+        SimpleIrCallTargetRole, kind_is_source_call, kind_to_opcode_table,
         simpleir_call_target_role,
     };
-    assert!(kind_source_call_first_adopted_operand(kind).is_some());
+    assert!(kind_is_source_call(kind));
     let mut call = match simpleir_call_target_role(kind) {
         Some(
             SimpleIrCallTargetRole::InternalRequired | SimpleIrCallTargetRole::ExternalOrRuntime,

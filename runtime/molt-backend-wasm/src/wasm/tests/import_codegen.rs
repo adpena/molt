@@ -68,99 +68,44 @@ fn object_new_bound_import_demand_uses_class_owned_layout_size() {
 }
 
 #[test]
-fn method_ic_import_demand_and_codegen_follow_generated_arity_selector() {
-    let cases = [
-        (
-            "call_method_ic",
-            0,
-            "call_method_ic0",
-            [
-                "call_method_ic0",
-                "call_method_ic1",
-                "call_method_ic2",
-                "call_method_ic3",
-                "call_method_ic4",
-            ],
-        ),
-        (
-            "call_method_ic",
-            2,
-            "call_method_ic2",
-            [
-                "call_method_ic0",
-                "call_method_ic1",
-                "call_method_ic2",
-                "call_method_ic3",
-                "call_method_ic4",
-            ],
-        ),
-        (
-            "call_method_ic",
-            5,
-            "call_method_ic4",
-            [
-                "call_method_ic0",
-                "call_method_ic1",
-                "call_method_ic2",
-                "call_method_ic3",
-                "call_method_ic4",
-            ],
-        ),
-        (
-            "call_super_method_ic",
-            0,
-            "call_super_method_ic0",
-            [
-                "call_super_method_ic0",
-                "call_super_method_ic1",
-                "call_super_method_ic2",
-                "call_super_method_ic3",
-                "call_super_method_ic4",
-            ],
-        ),
-        (
-            "call_super_method_ic",
-            2,
-            "call_super_method_ic2",
-            [
-                "call_super_method_ic0",
-                "call_super_method_ic1",
-                "call_super_method_ic2",
-                "call_super_method_ic3",
-                "call_super_method_ic4",
-            ],
-        ),
-        (
-            "call_super_method_ic",
-            5,
-            "call_super_method_ic4",
-            [
-                "call_super_method_ic0",
-                "call_super_method_ic1",
-                "call_super_method_ic2",
-                "call_super_method_ic3",
-                "call_super_method_ic4",
-            ],
-        ),
+fn method_load_import_demand_and_codegen_select_the_call_arity() {
+    const CALLS: [&str; 6] = [
+        "call_loaded_method0",
+        "call_loaded_method1",
+        "call_loaded_method2",
+        "call_loaded_method3",
+        "call_loaded_method4",
+        "call_loaded_method_spilled",
     ];
-    for (kind, extra_arg_count, expected_import, family_imports) in cases {
+    for (load_kind, extra_arg_count, expected_call) in [
+        ("load_method", 0, "call_loaded_method0"),
+        ("load_method", 2, "call_loaded_method2"),
+        ("load_method", 4, "call_loaded_method4"),
+        ("load_method", 5, "call_loaded_method_spilled"),
+        ("load_super_method", 0, "call_loaded_method0"),
+        ("load_super_method", 2, "call_loaded_method2"),
+        ("load_super_method", 5, "call_loaded_method_spilled"),
+    ] {
+        let case = format!("{load_kind}/{extra_arg_count}");
         let reloc_wasm = WasmBackend::with_options(WasmCompileOptions {
             native_eh_enabled: false,
             reloc_enabled: true,
             wasm_profile: WasmProfile::Auto,
             ..WasmCompileOptions::default()
         })
-        .compile(wasm_method_ic_ir(kind, extra_arg_count));
+        .compile(wasm_loaded_method_ir(load_kind, extra_arg_count));
         let reloc_imports = wasm_function_import_names(&reloc_wasm);
-        assert!(
-            reloc_imports.iter().any(|name| name == expected_import),
-            "{kind}/{extra_arg_count} must retain selected import {expected_import}; imports={reloc_imports:?}"
-        );
-        for import_name in family_imports {
-            if import_name != expected_import {
+        for import_name in [load_kind, expected_call] {
+            assert!(
+                reloc_imports.iter().any(|name| name == import_name),
+                "{case} must retain {import_name}; imports={reloc_imports:?}"
+            );
+        }
+        for import_name in CALLS {
+            if import_name != expected_call {
                 assert!(
                     !reloc_imports.iter().any(|name| name == import_name),
-                    "{kind}/{extra_arg_count} must not retain unselected import {import_name}; imports={reloc_imports:?}"
+                    "{case} must not retain unselected import {import_name}; imports={reloc_imports:?}"
                 );
             }
         }
@@ -171,33 +116,80 @@ fn method_ic_import_demand_and_codegen_follow_generated_arity_selector() {
             wasm_profile: WasmProfile::Auto,
             ..WasmCompileOptions::default()
         })
-        .compile(wasm_method_ic_ir(kind, extra_arg_count));
+        .compile(wasm_loaded_method_ir(load_kind, extra_arg_count));
         let import_indices = wasm_function_import_indices(&direct_wasm);
         let call_indices = wasm_direct_call_indices_for_export(&direct_wasm, "molt_main");
-        let expected_index = *import_indices
-            .get(expected_import)
-            .unwrap_or_else(|| panic!("{expected_import} import must exist"));
-        assert!(
-            call_indices.contains(&expected_index),
-            "{kind}/{extra_arg_count} must directly call {expected_import}; calls={call_indices:?}"
-        );
-        for import_name in family_imports {
-            if let Some(unselected_index) = import_indices.get(import_name)
-                && import_name != expected_import
-            {
-                assert!(
-                    !call_indices.contains(unselected_index),
-                    "{kind}/{extra_arg_count} must not directly call {import_name}; calls={call_indices:?}"
-                );
-            }
+        for import_name in [load_kind, expected_call] {
+            let index = *import_indices
+                .get(import_name)
+                .unwrap_or_else(|| panic!("{case}: {import_name} import must exist"));
+            assert!(
+                call_indices.contains(&index),
+                "{case} must directly call {import_name}; calls={call_indices:?}"
+            );
         }
         assert!(
             wasm_data_segment_payloads(&direct_wasm)
                 .iter()
                 .any(|payload| payload.as_slice() == b"selected_method"),
-            "{kind}/{extra_arg_count} must materialize the selected method name"
+            "{case} must materialize the method name"
         );
     }
+}
+
+/// An unboxed iterator step is one `molt_iter_next_unboxed` call whose value
+/// comes back through the scratch word (HF-217): no `(value, done)` tuple
+/// from `iter_next` and no `index` calls to take it apart.
+#[test]
+fn iterator_step_calls_iter_next_unboxed_with_an_out_word() {
+    let mut next = wasm_test_op("iter_next_unboxed", Some("done"), vec!["iterator"]);
+    next.var = Some("value".into());
+    let ir = SimpleIR {
+        functions: vec![wasm_test_function(
+            "molt_main",
+            vec!["iterator"],
+            None,
+            vec![next, wasm_test_op("ret", None, vec!["value"])],
+        )],
+        profile: None,
+    };
+    let wasm = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: false,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .compile(ir);
+    let import_indices = wasm_function_import_indices(&wasm);
+    let calls = wasm_direct_call_indices_for_export(&wasm, "molt_main");
+    let step = *import_indices
+        .get("iter_next_unboxed")
+        .expect("iter_next_unboxed import must exist");
+    assert!(calls.contains(&step), "calls={calls:?}");
+    for retired in ["iter_next", "index"] {
+        if let Some(index) = import_indices.get(retired) {
+            assert!(
+                !calls.contains(index),
+                "the step must not call {retired}; calls={calls:?}"
+            );
+        }
+    }
+    let operators = wasm_operator_debug_for_export(&wasm, "molt_main");
+    let call = format!("Call {{ function_index: {step} }}");
+    let call_pos = operators
+        .iter()
+        .position(|operator| operator == &call)
+        .unwrap_or_else(|| panic!("missing {call}; operators={operators:?}"));
+    assert!(
+        operators[call_pos - 1].starts_with("I64Const {"),
+        "the second argument is the scratch word's address; operators={operators:?}"
+    );
+    assert!(
+        operators[call_pos + 1..]
+            .iter()
+            .any(|operator| operator.starts_with("I64Load {")),
+        "the value is loaded from the scratch word; operators={operators:?}"
+    );
 }
 
 #[test]

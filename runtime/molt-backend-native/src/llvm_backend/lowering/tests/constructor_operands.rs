@@ -1149,7 +1149,7 @@ pub extern "C" fn molt_call_inputs_release(callable: u64, pointer: u64, count: u
     assert_eq!(EXTRACTS.load(SeqCst), 0, "failed boxing skips later raw extraction");
     ABORTS.fetch_add(1, SeqCst);
     let (expected_callable, expected): (u64, &[u64]) = match OWNED_CASE.load(SeqCst) {
-        0 | 2 | 3 | 4 | 8 => (0, &[EXISTING, EXISTING, OTHER]),
+        0 | 4 | 8 => (0, &[EXISTING, EXISTING, OTHER]),
         1 => (EXISTING, &[EXISTING, OTHER]),
         5 | 6 => (0, &[BUILDER]),
         7 => (0, &[NONE, NONE, NONE]),
@@ -1222,26 +1222,17 @@ pub extern "C" fn molt_call_func_owned(callable: u64, pointer: u64, count: u64, 
     assert_eq!(FIRST.load(SeqCst), 0, "no borrowed owner remains on this call form");
     owned_result()
 }
-fn owned_method(class: Option<u64>, receiver: u64, name: u64, len: u64, pointer: u64, count: u64) -> u64 {
-    assert_eq!(receiver, EXISTING);
-    assert_eq!(unsafe { core::slice::from_raw_parts(name as *const u8, len as usize) }, b"owned");
-    let words = unsafe { argument_words(pointer, count) };
-    assert_eq!(words, &[0x101, 0x101, 0x102, EXISTING, OTHER]);
-    check_adopted_refs(if class.is_some() { 3 } else { 2 }, 1);
-    if let Some(class) = class { assert_eq!(class, 0x101); }
-    // Self is the first positional owner; a super class remains borrowed.
-    molt_dec_ref_obj(receiver);
-    release_words(words);
-    assert_eq!(FIRST.load(SeqCst), u64::from(class.is_some()), "borrowed class lives through the runtime call");
+#[no_mangle]
+pub extern "C" fn molt_call_loaded_method4(callable: u64, self_or_null: u64, a: u64, b: u64, c: u64, d: u64) -> u64 {
+    // The loaded call adopts its pair and every argument, as an ordinary CALL.
+    assert_eq!(callable, EXISTING);
+    let words = [self_or_null, a, b, c, d];
+    assert_eq!(words, [0x101, 0x101, 0x102, EXISTING, OTHER]);
+    check_adopted_refs(2, 1);
+    release_words(&words);
+    molt_dec_ref_obj(callable);
+    assert_eq!(FIRST.load(SeqCst), 0, "no borrowed owner remains on this call form");
     owned_result()
-}
-#[no_mangle]
-pub extern "C" fn molt_call_method_ic_owned(_site: u64, receiver: u64, name: u64, len: u64, pointer: u64, count: u64) -> u64 {
-    owned_method(None, receiver, name, len, pointer, count)
-}
-#[no_mangle]
-pub extern "C" fn molt_call_super_method_ic_owned(_site: u64, class: u64, receiver: u64, name: u64, len: u64, pointer: u64, count: u64) -> u64 {
-    owned_method(Some(class), receiver, name, len, pointer, count)
 }
 #[no_mangle]
 pub extern "C" fn molt_isinstance(object: u64, class: u64) -> u64 {
@@ -1525,10 +1516,8 @@ extern "C" {
     fn fam_adopt_guarded_discard(a: u64, b: u64);
     fn fam_adopt_method(a: u64, b: u64) -> u64;
     fn fam_adopt_method_discard(a: u64, b: u64);
-    fn fam_adopt_method_ic(a: u64, b: u64) -> u64;
-    fn fam_adopt_method_ic_discard(a: u64, b: u64);
-    fn fam_adopt_super_ic(a: u64, b: u64) -> u64;
-    fn fam_adopt_super_ic_discard(a: u64, b: u64);
+    fn fam_adopt_loaded_method(a: u64, b: u64) -> u64;
+    fn fam_adopt_loaded_method_discard(a: u64, b: u64);
     fn fam_adopt_callable_alias(a: u64, b: u64) -> u64;
     fn fam_adopt_callable_alias_discard(a: u64, b: u64);
     fn fam_borrow_builder_bind(a: u64, b: u64) -> u64;
@@ -1734,8 +1723,7 @@ fn main() {
             (1, "call_func", fam_adopt_func, fam_adopt_func_discard),
             (1, "call_guarded", fam_adopt_guarded, fam_adopt_guarded_discard),
             (1, "call_method", fam_adopt_method, fam_adopt_method_discard),
-            (2, "method IC", fam_adopt_method_ic, fam_adopt_method_ic_discard),
-            (3, "super IC", fam_adopt_super_ic, fam_adopt_super_ic_discard),
+            (1, "loaded method", fam_adopt_loaded_method, fam_adopt_loaded_method_discard),
             (4, "callable/argument alias", fam_adopt_callable_alias, fam_adopt_callable_alias_discard),
         ];
         for &(mode, label, invoke, discard) in adopted {
@@ -2137,23 +2125,7 @@ fn adopted_call_op(
             results,
             &[kind(shape)],
         ),
-        "call_method_ic" | "call_super_method_ic" => {
-            let super_form = shape == "call_super_method_ic";
-            family_op(
-                if super_form {
-                    OpCode::CallSuperMethodIc
-                } else {
-                    OpCode::CallMethodIc
-                },
-                if super_form {
-                    [vec![first], args].concat()
-                } else {
-                    args
-                },
-                results,
-                &[kind(shape), ("method", AttrValue::Str("owned".into()))],
-            )
-        }
+        "call_loaded_method" => family_op(OpCode::CallLoadedMethod, args, results, &[kind(shape)]),
         "callable_alias" => family_op(
             OpCode::Call,
             vec![first, first, first, second, existing, existing, other],
@@ -2186,7 +2158,7 @@ fn adopted_call_op(
                 Borrowed,
             ];
         }
-        "direct_extracted" | "call_super_method_ic" | "call_bind" | "call_indirect" => {
+        "direct_extracted" | "call_bind" | "call_indirect" => {
             custody[0] = Borrowed;
         }
         _ => {}
@@ -2439,8 +2411,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         ("fam_adopt_func", "call_func"),
         ("fam_adopt_guarded", "call_guarded"),
         ("fam_adopt_method", "call_method"),
-        ("fam_adopt_method_ic", "call_method_ic"),
-        ("fam_adopt_super_ic", "call_super_method_ic"),
+        ("fam_adopt_loaded_method", "call_loaded_method"),
         ("fam_adopt_callable_alias", "callable_alias"),
         ("fam_borrow_builder_bind", "call_bind"),
         ("fam_borrow_builder_indirect", "call_indirect"),

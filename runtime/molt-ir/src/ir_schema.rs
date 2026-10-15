@@ -1,8 +1,8 @@
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements,
-    SimpleIrVarFieldRole, kind_consumed_operand_table, kind_source_call_callable_operand,
-    kind_source_call_first_adopted_operand, kind_to_opcode_table, simpleir_backend_private_owner,
+    SimpleIrVarFieldRole, kind_consumed_operand_table, kind_is_source_call,
+    kind_source_call_callable_operand, kind_to_opcode_table, simpleir_backend_private_owner,
     simpleir_backend_service_kind, simpleir_call_target_role,
     simpleir_kind_carries_class_definition, simpleir_kind_has_function_reference_s_value,
     simpleir_kind_is_registered, simpleir_kind_may_carry_async_work_poll_marker,
@@ -870,17 +870,16 @@ pub(crate) fn validate_custody_projection(
 /// spelling with a generated `[[source_call_kind]]` row. A raw direct call
 /// carries its target's parameter custody, which the whole-document check
 /// compares. A dynamic source call adopts every argument, as CPython's CALL
-/// does, but never an operand before the row's first adopted one (a `super()`
-/// class). Its callable goes with its call form: a builder call's form is its
+/// does. Its callable goes with its call form: a builder call's form is its
 /// builder's, checked against the builder's `callargs_new`, and every other
 /// callable belongs to an ordinary call, which adopts it.
 fn validate_argument_custody(op: &OpIR) -> Result<(), String> {
     let Some(custody) = op.argument_custody.as_deref() else {
         return Ok(());
     };
-    let Some(first_adopted) = kind_source_call_first_adopted_operand(&op.kind) else {
+    if !kind_is_source_call(&op.kind) {
         return Err(format!("op `{}` cannot carry argument_custody", op.kind));
-    };
+    }
     validate_custody_projection(
         custody,
         op.args.as_ref().map_or(0, Vec::len),
@@ -895,22 +894,13 @@ fn validate_argument_custody(op: &OpIR) -> Result<(), String> {
     let callable = kind_source_call_callable_operand(&op.kind);
     let builder_call = kind_consumed_operand_table(&op.kind, custody.len()).is_some();
     for (position, &actual) in custody.iter().enumerate() {
-        let expected = if position < first_adopted {
-            ParameterCustody::Borrowed
-        } else if builder_call && Some(position) == callable {
+        if builder_call && Some(position) == callable {
             continue;
-        } else {
-            ParameterCustody::Transferred
-        };
-        if actual != expected {
+        }
+        if actual != ParameterCustody::Transferred {
             return Err(format!(
-                "op `{}` operand {position} custody {actual:?} disagrees with its source call, which {} it",
+                "op `{}` operand {position} custody {actual:?} disagrees with its source call, which adopts it",
                 op.kind,
-                if expected == ParameterCustody::Transferred {
-                    "adopts"
-                } else {
-                    "borrows"
-                },
             ));
         }
     }

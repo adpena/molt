@@ -720,7 +720,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // `molt_get_attr_special(obj, name_ptr, name_len)`. The attribute
             // name is a compile-time string carried in `s_value`, materialized as
             // a private constant (the label-carrying convention, identical to the
-            // native handler and the `call_method_ic` arm above).
+            // native handler and the method-load lowering).
             //
             // OWNERSHIP: `molt_get_attr_special` returns one owned reference on
             // every successful path, matching the other canonical getattr

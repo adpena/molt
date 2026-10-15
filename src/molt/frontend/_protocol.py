@@ -299,6 +299,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _async_spill_slot(self, value_name: str) -> AsyncFrameSlot: ...
 
+    def _attribute_receiver(
+        self, node: ast.Attribute
+    ) -> tuple[MoltValue, str | None, ClassId | None]: ...
+
     def _augassign_op_kind(self, op: ast.operator) -> str: ...
 
     def _base_class_reference(self, node: ast.expr) -> ClassRef | None: ...
@@ -838,6 +842,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         exact_class: ClassId | None,
         *,
         generic: bool = ...,
+        method_load: bool = ...,
     ) -> MoltValue: ...
 
     def _emit_attribute_load_inner(
@@ -848,6 +853,16 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         exact_class: ClassId | None,
         *,
         generic: bool = ...,
+        method_load: bool = ...,
+    ) -> MoltValue: ...
+
+    def _emit_attribute_method_call(
+        self,
+        node: ast.Call,
+        attr_node: ast.Attribute,
+        receiver: MoltValue,
+        obj_name: str | None,
+        exact_class: ClassId | None,
     ) -> MoltValue: ...
 
     def _emit_attribute_store(
@@ -1166,6 +1181,16 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         delta_expr: ast.expr,
     ) -> None: ...
 
+    def _emit_generic_attribute_load(
+        self,
+        obj: MoltValue,
+        attr: str,
+        kind: str,
+        *,
+        method_load: bool,
+        type_hint: TypeHint = ...,
+    ) -> MoltValue: ...
+
     def _emit_getattr_name_default(
         self,
         obj: MoltValue,
@@ -1324,6 +1349,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_list_int_filled(self, count: MoltValue, fill: MoltValue) -> MoltValue: ...
 
+    def _emit_loaded_method_call(
+        self, node: ast.Call, pair: MoltValue, load: MoltOp
+    ) -> MoltValue: ...
+
     def _emit_locals_dict(self) -> MoltValue: ...
 
     def _emit_loop_exit(self, scope: LoopScope) -> None: ...
@@ -1400,6 +1429,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         result_op: str,
         emit_result_values: Callable[[MoltValue, list[MoltValue]], None],
     ) -> MoltValue: ...
+
+    def _emit_method_load(self, obj: MoltValue, attr: str) -> MoltValue: ...
 
     def _emit_missing_value(self) -> MoltValue: ...
 
@@ -1592,6 +1623,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue: ...
 
     def _emit_sum_genexpr_add(self, acc_slot: str, value: MoltValue) -> None: ...
+
+    def _emit_super_method_call(self, node: ast.Call) -> MoltValue: ...
 
     def _emit_sync_try_except_split(
         self,
@@ -2666,6 +2699,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _try_emit_builtin_guarded_range_loop(self, node: ast.For) -> bool: ...
 
+    def _try_emit_guarded_super_method_call(self, node: ast.Call) -> Any: ...
+
     def _try_emit_imported_attribute_call(
         self, node: ast.Call, needs_bind: bool
     ) -> Any: ...
@@ -2833,6 +2868,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     @staticmethod
     def _wire_type_hint(hint: TypeHint) -> str | None: ...
+
+    def _zero_argument_super_receiver(self, node: ast.Call) -> ast.Call | None: ...
 
     def emit(self, op: MoltOp) -> None: ...
 

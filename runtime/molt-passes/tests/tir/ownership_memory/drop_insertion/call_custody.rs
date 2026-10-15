@@ -171,37 +171,6 @@ fn owner_read_after_the_call_is_retained_for_it() {
     assert_eq!(trace(&func, 0, &[]), [Event::Marker, Event::Freed(0)]);
 }
 
-/// An op that borrows a root and adopts it too, like a `super()` method call
-/// whose class is also its argument, keeps the root's own reference through the
-/// op: the adoption takes a retained one. The dead receiver moves.
-#[test]
-fn owner_borrowed_by_its_adopting_call_is_retained() {
-    let mut func = function("borrowed_and_adopted", &[]);
-    let value = owned(&mut func);
-    let receiver = owned(&mut func);
-    body(
-        &mut func,
-        vec![
-            produce(value),
-            produce(receiver),
-            source_call(
-                "call_super_method_ic",
-                None,
-                vec![value, receiver, value],
-                vec![],
-                &[BORROWED, TRANSFERRED, TRANSFERRED],
-            ),
-            marker(),
-        ],
-        done(vec![]),
-    );
-    insert(&mut func);
-    assert_eq!(
-        trace(&func, 0, &[]),
-        [Event::Freed(1), Event::Freed(0), Event::Marker]
-    );
-}
-
 /// An ordinary source call (CALL) adopts its temporary callable, so the
 /// invocation releases it at the call, as it releases a bound method before
 /// the callee runs. An expanded call (CALL_FUNCTION_EX) borrows its callable
@@ -320,6 +289,82 @@ fn moved_owner_is_released_by_neither_continuation() {
     for raises in [false, true] {
         assert_eq!(trace(&func, 0, &[raises]), [Event::Freed(0), Event::Marker]);
     }
+}
+
+/// CPython's method form (`LoadMethod` then `CallLoadedMethod`): the load
+/// borrows its receiver and returns two owned words, the callable and
+/// `self_or_null`. On the normal path both move into the call that adopts
+/// them with its argument. An argument that raises between the load and the
+/// call releases both on the way to the handler, exactly once.
+#[test]
+fn loaded_method_pair_moves_into_its_call_or_ends_at_a_raise() {
+    let build = || {
+        let mut func = function("loaded_method_call", &[]);
+        let receiver = owned(&mut func);
+        let callable = owned(&mut func);
+        let self_or_null = owned(&mut func);
+        let argument = owned(&mut func);
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 45);
+        let mut load = op(
+            OpCode::LoadMethod,
+            vec![receiver],
+            vec![callable, self_or_null],
+        );
+        load.attrs.insert("name".into(), AttrValue::Str("m".into()));
+        body(
+            &mut func,
+            vec![
+                produce(receiver),
+                load,
+                observe(45),
+                produce(argument),
+                observe(45),
+                source_call(
+                    "call_loaded_method",
+                    None,
+                    vec![callable, self_or_null, argument],
+                    vec![],
+                    &[TRANSFERRED; 3],
+                ),
+                marker(),
+            ],
+            done(vec![]),
+        );
+        func.blocks
+            .insert(handler, block(handler, vec![marker()], done(vec![])));
+        insert(&mut func);
+        func
+    };
+    let func = build();
+    // receiver 0, callable 1, self_or_null 2, argument 3; the second raise
+    // happens after the argument exists.
+    for (choices, freed) in [
+        (&[][..], &[0, 1, 2, 3][..]),
+        (&[true][..], &[0, 1, 2][..]),
+        (&[false, true][..], &[0, 1, 2, 3][..]),
+    ] {
+        let events = trace(&func, 0, choices);
+        assert_eq!(
+            events.last(),
+            Some(&Event::Marker),
+            "{choices:?}: {events:?}"
+        );
+        let mut released: Vec<usize> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Freed(object) => Some(*object),
+                Event::Marker => None,
+            })
+            .collect();
+        released.sort_unstable();
+        assert_eq!(released, freed, "{choices:?}: {events:?}");
+    }
+    assert_eq!(
+        count_increfs(&func),
+        0,
+        "the pair and the argument move into the call; nothing is retained"
+    );
 }
 
 /// An owner that the handler still reads cannot move into a call that may

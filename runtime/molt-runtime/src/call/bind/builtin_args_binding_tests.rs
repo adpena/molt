@@ -1,5 +1,4 @@
 use super::*;
-use crate::call::bind::inline_cache::method_ic_call_plan;
 use crate::call::bind::test_support::*;
 use crate::object::builders::{alloc_list, alloc_tuple};
 
@@ -157,7 +156,10 @@ fn specialized_builtin_binding_owns_raw_admission_with_or_without_trampolines() 
                             ptr,
                             arity as usize
                         ));
-                    assert!(method_ic_call_plan(py, bits).unwrap().needs_binder);
+                    assert!(
+                        crate::call::bind::frame_binding::function_binding_shape(py, ptr)
+                            .full_binder
+                    );
                     let result = crate::call::bind::molt_call_bind(
                         bits,
                         crate::call::bind::arguments::molt_callargs_new(0, 0),
@@ -239,7 +241,10 @@ fn published_native_constructors_own_raw_admission_and_argument_custody() {
                         py, pointer, supplied
                     ), "{name}.__new__ raw arguments must be normalized");
                 }
-                assert!(method_ic_call_plan(py, function).unwrap().needs_binder);
+                assert!(
+                    crate::call::bind::frame_binding::function_binding_shape(py, pointer)
+                        .full_binder
+                );
                 // Keep the real entry/trampoline: variadic packing precedes
                 // the constructor's missing/non-type receiver admission.
                 for arguments in [&[][..], &[receiver][..]] {

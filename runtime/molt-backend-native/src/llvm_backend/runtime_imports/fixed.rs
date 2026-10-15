@@ -156,13 +156,6 @@ const I64_PTR_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
     FixedRuntimeParamAbi::I64,
 ];
 #[cfg(feature = "llvm")]
-const I64_I64_PTR_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
 const I64_I64_PTR_I64_I64: &[FixedRuntimeParamAbi] = &[
     FixedRuntimeParamAbi::I64,
     FixedRuntimeParamAbi::I64,
@@ -171,82 +164,11 @@ const I64_I64_PTR_I64_I64: &[FixedRuntimeParamAbi] = &[
     FixedRuntimeParamAbi::I64,
 ];
 #[cfg(feature = "llvm")]
-const I64_I64_PTR_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
-const I64_I64_PTR_I64_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
-const I64_I64_PTR_I64_I64_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
-const I64_I64_I64_PTR_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
 const I64_I64_I64_PTR_I64_I64: &[FixedRuntimeParamAbi] = &[
     FixedRuntimeParamAbi::I64,
     FixedRuntimeParamAbi::I64,
     FixedRuntimeParamAbi::I64,
     FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
-const I64_I64_I64_PTR_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
-const I64_I64_I64_PTR_I64_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-];
-#[cfg(feature = "llvm")]
-const I64_I64_I64_PTR_I64_I64_I64_I64_I64: &[FixedRuntimeParamAbi] = &[
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::Ptr,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
-    FixedRuntimeParamAbi::I64,
     FixedRuntimeParamAbi::I64,
     FixedRuntimeParamAbi::I64,
 ];
@@ -399,80 +321,30 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     // finalizers may run Python code.
     i64_ret("molt_locals_builtin", 0, ATTR_NONE),
     i64_ret("molt_function_defaults_version", 1, ATTR_WILLRETURN),
+    // CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form: (site, receiver |
+    // class and first argument, name, name length, self-or-null out address).
+    // Lookup runs descriptors and `__getattr__`.
     custom(
-        "molt_call_method_ic0",
-        I64_I64_PTR_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    custom(
-        "molt_call_method_ic1",
+        "molt_load_method",
         I64_I64_PTR_I64_I64,
         FixedRuntimeReturnAbi::I64,
         ATTR_NONE,
     ),
     custom(
-        "molt_call_method_ic2",
-        I64_I64_PTR_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    custom(
-        "molt_call_method_ic3",
-        I64_I64_PTR_I64_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    custom(
-        "molt_call_method_ic4",
-        I64_I64_PTR_I64_I64_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    // (site, receiver, name, name length, spilled arguments, count)
-    custom(
-        "molt_call_method_ic_owned",
-        I64_I64_PTR_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    custom(
-        "molt_call_super_method_ic0",
-        I64_I64_I64_PTR_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    custom(
-        "molt_call_super_method_ic1",
+        "molt_load_super_method",
         I64_I64_I64_PTR_I64_I64,
         FixedRuntimeReturnAbi::I64,
         ATTR_NONE,
     ),
-    custom(
-        "molt_call_super_method_ic2",
-        I64_I64_I64_PTR_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    custom(
-        "molt_call_super_method_ic3",
-        I64_I64_I64_PTR_I64_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    custom(
-        "molt_call_super_method_ic4",
-        I64_I64_I64_PTR_I64_I64_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
-    // (site, class, self, name, name length, spilled arguments, count)
-    custom(
-        "molt_call_super_method_ic_owned",
-        I64_I64_I64_PTR_I64_I64_I64,
-        FixedRuntimeReturnAbi::I64,
-        ATTR_NONE,
-    ),
+    // CPython's CALL after a method load: (callable, self_or_null, arguments
+    // ...), or (callable, self_or_null, spilled arguments, count) above four.
+    // The call adopts every word and runs arbitrary code.
+    i64_ret("molt_call_loaded_method0", 2, ATTR_NONE),
+    i64_ret("molt_call_loaded_method1", 3, ATTR_NONE),
+    i64_ret("molt_call_loaded_method2", 4, ATTR_NONE),
+    i64_ret("molt_call_loaded_method3", 5, ATTR_NONE),
+    i64_ret("molt_call_loaded_method4", 6, ATTR_NONE),
+    i64_ret("molt_call_loaded_method_spilled", 4, ATTR_NONE),
     i64_ret("molt_dict_new", 1, ATTR_WILLRETURN),
     i64_ret("molt_set_new", 1, ATTR_WILLRETURN),
     // Module publication, namespace access, and replacement share callback-

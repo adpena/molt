@@ -287,50 +287,56 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
         },
     ));
 
-    // ----- `call_method_ic` (fused instance-method dispatch).
+    // ----- `load_method` / `load_super_method` and the loaded call
+    // (CPython's method-form LOAD_ATTR / LOAD_SUPER_ATTR, then CALL).
+    let loaded_call = |args: Vec<&str>| OpIR {
+        kind: "call_loaded_method".to_string(),
+        argument_custody: Some(vec![molt_ir::ParameterCustody::Transferred; args.len()]),
+        args: Some(args.into_iter().map(str::to_string).collect()),
+        out: Some("r".to_string()),
+        ..OpIR::default()
+    };
     progs.push((
-        "call_method_ic",
+        "load_method",
         SimpleIR {
             functions: vec![func(
-                "caller_method_ic",
+                "caller_load_method",
                 vec![
                     const_str("recv", "obj"),
-                    const_int("a", 11),
                     OpIR {
-                        kind: "call_method_ic".to_string(),
+                        kind: "load_method".to_string(),
                         s_value: Some("do_thing".to_string()),
-                        args: Some(vec!["recv".to_string(), "a".to_string()]),
-                        out: Some("r".to_string()),
+                        args: Some(vec!["recv".to_string()]),
+                        var: Some("callable".to_string()),
+                        out: Some("self_or_null".to_string()),
                         ..OpIR::default()
                     },
+                    const_int("a", 11),
+                    loaded_call(vec!["callable", "self_or_null", "a"]),
                     ret("r"),
                 ],
             )],
             profile: None,
         },
     ));
-
-    // ----- `call_super_method_ic` (fused super().method()).
     progs.push((
-        "call_super_method_ic",
+        "load_super_method",
         SimpleIR {
             functions: vec![func(
-                "caller_super_method_ic",
+                "caller_load_super_method",
                 vec![
                     const_str("cls", "C"),
                     const_str("selfv", "inst"),
-                    const_int("a", 13),
                     OpIR {
-                        kind: "call_super_method_ic".to_string(),
+                        kind: "load_super_method".to_string(),
                         s_value: Some("do_thing".to_string()),
-                        args: Some(vec![
-                            "cls".to_string(),
-                            "selfv".to_string(),
-                            "a".to_string(),
-                        ]),
-                        out: Some("r".to_string()),
+                        args: Some(vec!["cls".to_string(), "selfv".to_string()]),
+                        var: Some("callable".to_string()),
+                        out: Some("self_or_null".to_string()),
                         ..OpIR::default()
                     },
+                    const_int("a", 13),
+                    loaded_call(vec!["callable", "self_or_null", "a"]),
                     ret("r"),
                 ],
             )],

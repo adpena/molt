@@ -50,6 +50,71 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             return ".".join((imported_target, *receiver_parts[1:]))
         return None
 
+    def _zero_argument_super_receiver(self, node: ast.Call) -> ast.Call | None:
+        """The ``super()`` of ``super().name(*args)`` when CPython would load
+        the method with LOAD_SUPER_ATTR, else None.
+
+        CPython specializes zero-argument ``super()`` as a method receiver when
+        the enclosing function has a ``__class__`` cell and a first positional
+        argument. Molt also requires positional arguments that cannot suspend:
+        keyword and starred calls bind through a builder, and a suspension
+        would carry the pair's null word through frame storage.
+        """
+        func = node.func
+        if (
+            not isinstance(func, ast.Attribute)
+            or func.attr == "__class__"
+            or self._call_needs_bind(node)
+        ):
+            return None
+        receiver = func.value
+        if not (
+            isinstance(receiver, ast.Call)
+            and isinstance(receiver.func, ast.Name)
+            and receiver.func.id == "super"
+            and not receiver.args
+            and not receiver.keywords
+        ):
+            return None
+        if (
+            self.python_class_body_context
+            or "__class__" not in self.free_vars
+            or not isinstance(self.current_python_first_arg, str)
+            or any(self._expr_may_yield(argument) for argument in node.args)
+        ):
+            return None
+        return receiver
+
+    def _emit_super_method_call(self, node: ast.Call) -> MoltValue:
+        """CPython's LOAD_SUPER_ATTR in method form, then CALL.
+
+        The operands are the ``__class__`` cell and the function's first
+        argument. The first argument keeps its own unbound-local error; the
+        method load reads the cell as LOAD_DEREF does, so an empty cell raises
+        NameError there. The load selects the function after ``__class__`` in
+        ``type(first)``'s MRO without a super object.
+        """
+        assert isinstance(node.func, ast.Attribute)
+        first_arg = self.current_python_first_arg
+        assert isinstance(first_arg, str)
+        class_cell = self._load_free_var_cell("__class__")
+        if first_arg in self.unbound_check_names:
+            # CPython loads __class__ before the first argument: an empty
+            # cell's NameError precedes the argument's UnboundLocalError.
+            self._emit_free_var_load("__class__")
+        receiver = self._load_local_value(first_arg)
+        if class_cell is None or receiver is None:
+            raise AssertionError("zero-argument super() operands must be loadable")
+        pair = MoltValue(self.next_var())
+        load = MoltOp(
+            kind="LOAD_SUPER_METHOD",
+            args=[class_cell, receiver, node.func.attr],
+            result=pair,
+            metadata={"self_or_null": self.next_var()},
+        )
+        self.emit(load)
+        return self._emit_loaded_method_call(node, pair, load)
+
     def _try_emit_attribute_receiver_call(self, node: ast.Call) -> Any:
         if isinstance(node.func, ast.Attribute):
             attr_node = node.func
@@ -74,6 +139,12 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     attr_node, receiver, obj_name, exact_class
                 )
 
+            def emit_method_call() -> MoltValue:
+                # The generic call: CPython's method-form LOAD_ATTR and CALL.
+                return self._emit_attribute_method_call(
+                    node, attr_node, receiver, obj_name, exact_class
+                )
+
             receiver_kind = self._builtin_exact_type_from_expr(attr_node.value)
             if receiver_kind is not None:
                 # A source-point result is exact. Do not require agreement from
@@ -83,7 +154,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             elif receiver.type_hint in BUILTIN_SHAPE_NAMES:
                 # Every builtin method family shares this admission boundary.
                 # An annotation or stale frontend cache is not exact-class proof.
-                return self._emit_dynamic_call(node, load_attr_callee())
+                return emit_method_call()
 
             method = attr_node.attr
             if receiver.type_hint == "bytearray" and method in {
@@ -105,11 +176,11 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 # Positional primitives cannot consume or discard keywords and
                 # expansions. Capture the real callable before their effects.
                 # str.replace's explicit count-keyword path is version-owned.
-                return self._emit_dynamic_call(node, load_attr_callee())
+                return emit_method_call()
             if receiver.type_hint == "generator":
                 if method == "send":
                     if len(node.args) != 1:
-                        return self._emit_dynamic_call(node, load_attr_callee())
+                        return emit_method_call()
                     arg = self.visit(node.args[0])
                     pair = MoltValue(self.next_var(), type_hint="tuple")
                     self.emit(
@@ -129,7 +200,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return value
                 if method == "throw":
                     if len(node.args) not in {1, 2, 3}:
-                        return self._emit_dynamic_call(node, load_attr_callee())
+                        return emit_method_call()
                     exc_type = self.visit(node.args[0])
                     if exc_type is None:
                         raise FrontendRejection(
@@ -184,7 +255,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
                 if method == "close":
                     if node.args:
-                        return self._emit_dynamic_call(node, load_attr_callee())
+                        return emit_method_call()
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="GEN_CLOSE", args=[receiver], result=res))
                     return res
@@ -198,29 +269,24 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             if method_info:
                 # Attribute lookup owns descriptor binding; the actual callable
                 # owns defaults, implicit receiver arguments, and variadic shape.
-                callee = load_attr_callee()
-                if callee is None:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_TARGET, "Unsupported call target"
-                    )
-                return self._emit_dynamic_call(node, callee)
+                return emit_method_call()
             if method == "add" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_ADD", args=[receiver, arg], result=res))
                 return res
             if method == "discard" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_DISCARD", args=[receiver, arg], result=res))
                 return res
             if method == "remove" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_REMOVE", args=[receiver, arg], result=res))
@@ -238,7 +304,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 and not any(isinstance(a, ast.Starred) for a in node.args)
             ):
                 if method == "symmetric_difference" and len(node.args) != 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 if method == "symmetric_difference":
                     (other,) = arguments
@@ -299,7 +365,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             ):
                 if method == "symmetric_difference_update":
                     if len(node.args) != 1:
-                        return self._emit_dynamic_call(node, load_attr_callee())
+                        return emit_method_call()
                 if len(node.args) == 0:
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
@@ -339,7 +405,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "append" and receiver.type_hint == "list":
                 if len(node.args) != 1 or self._call_needs_bind(node):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 (arg,) = arguments
                 self._record_list_element_write(receiver, obj_name, arg.type_hint)
@@ -348,7 +414,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "extend" and receiver.type_hint == "list":
                 if len(node.args) != 1 or self._call_needs_bind(node):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 (other,) = arguments
                 self._record_list_element_write(
@@ -363,7 +429,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "insert" and receiver.type_hint == "list":
                 if len(node.args) != 2 or self._call_needs_bind(node):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 idx, val = arguments
                 self._record_list_element_write(receiver, obj_name, val.type_hint)
@@ -374,7 +440,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "remove" and receiver.type_hint == "list":
                 if len(node.args) != 1 or self._call_needs_bind(node):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 (val,) = arguments
                 res = MoltValue(self.next_var(), type_hint="None")
@@ -382,32 +448,32 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "clear" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_CLEAR", args=[receiver], result=res))
                 return res
             if method == "copy" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="list")
                 self.emit(MoltOp(kind="LIST_COPY", args=[receiver], result=res))
                 return res
             if method == "reverse" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_REVERSE", args=[receiver], result=res))
                 return res
             if method == "count" and receiver.type_hint == "list":
                 if len(node.args) != 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 val = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LIST_COUNT", args=[receiver, val], result=res))
                 return res
             if method == "index" and receiver.type_hint == "list":
                 if len(node.args) not in (1, 2, 3):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 val = self.visit(node.args[0])
                 start = None
                 end = None
@@ -450,7 +516,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "pop" and receiver.type_hint == "dict":
                 if len(node.args) not in (1, 2):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 key = self.visit(node.args[0])
                 if len(node.args) == 2:
                     default = self.visit(node.args[1])
@@ -477,13 +543,13 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "pop" and receiver.type_hint == "set":
                 if node.args:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="SET_POP", args=[receiver], result=res))
                 return res
             if method == "pop" and receiver.type_hint == "list":
                 if len(node.args) > 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 if node.args:
                     idx = self.visit(node.args[0])
                 else:
@@ -494,7 +560,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "get" and receiver.type_hint == "dict":
                 if len(node.args) not in (1, 2):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 key = self.visit(node.args[0])
                 if len(node.args) == 2:
                     default = self.visit(node.args[1])
@@ -513,7 +579,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "setdefault" and receiver.type_hint == "dict":
                 if node.keywords or len(node.args) not in (1, 2):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 key = self.visit(node.args[0])
                 if (
                     len(node.args) == 2
@@ -580,19 +646,19 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "clear" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="DICT_CLEAR", args=[receiver], result=res))
                 return res
             if method == "copy" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="DICT_COPY", args=[receiver], result=res))
                 return res
             if method == "popitem" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="DICT_POPITEM", args=[receiver], result=res))
                 return res
@@ -610,7 +676,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "count" and receiver.type_hint == "tuple":
                 if len(node.args) != 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 val = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="TUPLE_COUNT", args=[receiver, val], result=res))
@@ -627,7 +693,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 # The descriptor owns order, keyword and arity validation. A
                 # transport hint cannot discard argument expressions or a
                 # user object's actual attribute lookup.
-                return self._emit_dynamic_call(node, load_attr_callee())
+                return emit_method_call()
             if method == "count":
                 if receiver.type_hint in {"str", "bytes", "bytearray"}:
                     if len(node.args) not in (1, 2, 3):
@@ -815,7 +881,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 "bytearray",
             }:
                 if len(node.args) not in (1, 2, 3):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
@@ -926,7 +992,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 "bytearray",
             }:
                 if len(node.args) not in (1, 2, 3):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
@@ -1033,8 +1099,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
             if method == "join" and receiver.type_hint == "str":
                 if len(node.args) != 1:
-                    callee = load_attr_callee()
-                    return self._emit_dynamic_call(node, callee)
+                    return emit_method_call()
                 items = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="str")
                 if receiver.type_hint == "str":
@@ -1044,25 +1109,25 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
             if method == "lower" and receiver.type_hint == "str":
                 if node.args:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_LOWER", args=[receiver], result=res))
                 return res
             if method == "upper" and receiver.type_hint == "str":
                 if node.args:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_UPPER", args=[receiver], result=res))
                 return res
             if method == "capitalize" and receiver.type_hint == "str":
                 if node.args:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_CAPITALIZE", args=[receiver], result=res))
                 return res
             if method == "strip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1076,7 +1141,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
             if method == "lstrip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1090,7 +1155,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
             if method == "rstrip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1164,7 +1229,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                                     return res
             if method == "find" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) not in (1, 2, 3):
-                    return self._emit_dynamic_call(node, load_attr_callee())
+                    return emit_method_call()
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 if receiver.type_hint == "bytes":
@@ -1269,8 +1334,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 self._imported_module_binding_target(obj_name) if obj_name else None
             )
             if module_name is None:
-                callee = load_attr_callee()
                 # Object dispatch binds the actual descriptor result; only the
                 # argument syntax determines whether a builder is necessary.
-                return self._emit_dynamic_call(node, callee)
+                return emit_method_call()
         return CALL_NOT_HANDLED

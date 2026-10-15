@@ -19,8 +19,6 @@ use crate::{FunctionIR, SimpleIR};
 /// A backend lowering feature a pass's output relies on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimpleIrLowering {
-    /// The backend lowers `call_method_ic` and `call_super_method_ic`.
-    MethodInlineCaches,
     /// The backend scalarizes tuples escape analysis marks `stack_eligible`.
     NonEscapingTupleScalarization,
 }
@@ -43,7 +41,6 @@ impl SimpleIrPass {
     pub fn applies_to(&self, target: &TargetInfo) -> bool {
         let lowered = match self.lowering {
             None => true,
-            Some(SimpleIrLowering::MethodInlineCaches) => target.lowering.method_inline_caches,
             Some(SimpleIrLowering::NonEscapingTupleScalarization) => {
                 target.lowering.non_escaping_tuple_scalarization
             }
@@ -140,12 +137,6 @@ pub const SIMPLE_IR_FUNCTION_PASSES: &[SimpleIrPass] = &[
         introduces: &[],
         lowering: None,
         run: super::elide_safe_exception_checks,
-    },
-    SimpleIrPass {
-        name: "fuse_method_dispatch",
-        introduces: &["call_method_ic", "call_super_method_ic"],
-        lowering: Some(SimpleIrLowering::MethodInlineCaches),
-        run: super::fuse_method_dispatch,
     },
 ];
 

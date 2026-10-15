@@ -10,23 +10,20 @@ fn op(kind: &str, out: Option<&str>, s_value: Option<&str>, args: &[&str]) -> Op
     }
 }
 
-/// `recv.compute(x)` in the getattr/callargs/call_bind form method fusion rewrites.
-fn method_call_program(is_extern: bool) -> SimpleIR {
+/// `return 2 + 3` in the form `fold_constants` rewrites to one constant.
+fn constant_sum_program(is_extern: bool) -> SimpleIR {
+    let constant = |out: &str, value: i64| OpIR {
+        value: Some(value),
+        ..op("const", Some(out), None, &[])
+    };
     let function = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "f".to_string(),
-        params: vec!["recv".to_string(), "x".to_string()],
+        params: Vec::new(),
         ops: vec![
-            op(
-                "get_attr_generic_ptr",
-                Some("t"),
-                Some("compute"),
-                &["recv"],
-            ),
-            op("check_exception", None, None, &[]),
-            op("callargs_new", Some("ca"), None, &[]),
-            op("callargs_push_pos", Some("_p"), None, &["ca", "x"]),
-            op("call_bind", Some("r"), None, &["t", "ca"]),
+            constant("a", 2),
+            constant("b", 3),
+            op("add", Some("r"), None, &["a", "b"]),
             op("ret", None, None, &["r"]),
         ],
         param_types: None,
@@ -72,8 +69,8 @@ const TARGET_NEUTRAL: [&str; 7] = [
 fn pipeline_gates_follow_each_targets_contract() {
     // Design 76: native Cranelift lowers every shape; WASM and LLVM run all
     // but escape analysis, whose marks only Cranelift scalarizes; source
-    // targets without an async runtime or inline caches run the passes that
-    // only remove ops or fold them to constants.
+    // targets without an async runtime run the passes that only remove ops or
+    // fold them to constants.
     let all: Vec<&str> = SIMPLE_IR_FUNCTION_PASSES
         .iter()
         .map(|pass| pass.name)
@@ -107,28 +104,12 @@ fn every_pass_classifies_the_op_kinds_it_introduces() {
 }
 
 #[test]
-fn method_fusion_runs_only_where_the_backend_lowers_inline_caches() {
-    let mut native = method_call_program(false);
-    run_simple_ir_pipeline(&mut native, &TargetInfo::native_release_fast());
-    assert!(
-        kinds(&native).contains(&"call_method_ic"),
-        "{:?}",
-        kinds(&native)
-    );
-
-    let mut luau = method_call_program(false);
-    run_simple_ir_pipeline(&mut luau, &TargetInfo::luau_release_fast());
-    assert!(
-        !kinds(&luau).contains(&"call_method_ic"),
-        "{:?}",
-        kinds(&luau)
-    );
-    assert!(kinds(&luau).contains(&"call_bind"), "{:?}", kinds(&luau));
-}
-
-#[test]
 fn pipeline_leaves_extern_functions_untouched() {
-    let original = method_call_program(true);
+    let mut defined = constant_sum_program(false);
+    run_simple_ir_pipeline(&mut defined, &TargetInfo::native_release_fast());
+    assert_eq!(kinds(&defined), ["const", "const", "const", "ret"]);
+
+    let original = constant_sum_program(true);
     let mut ir = original.clone();
     run_simple_ir_pipeline(&mut ir, &TargetInfo::native_release_fast());
     assert_eq!(kinds(&ir), kinds(&original));

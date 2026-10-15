@@ -394,16 +394,10 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
         (OpCode::Call, "call", 1, "call_result"),
         (OpCode::CallMethod, "call_method", 1, "call_method_bind"),
         (
-            OpCode::CallMethodIc,
-            "call_method_ic",
-            1,
-            "molt_call_method_ic0",
-        ),
-        (
-            OpCode::CallSuperMethodIc,
-            "call_super_method_ic",
+            OpCode::CallLoadedMethod,
+            "call_loaded_method",
             2,
-            "molt_call_super_method_ic0",
+            "call_loaded_method",
         ),
         (OpCode::CallBuiltin, "call_builtin", 2, "call_builtin"),
         (OpCode::CallBuiltin, "named_builtin", 1, "owned_name_result"),
@@ -431,14 +425,38 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             if kind == "named_builtin" {
                 attrs.insert("name".into(), AttrValue::Str("len".into()));
             }
-            entry.ops.push(TirOp {
+            let operands = if opcode == OpCode::CallLoadedMethod {
+                // CPython's CALL takes the pair its method load produced.
+                let pair = vec![func.fresh_value(), func.fresh_value()];
+                func.blocks
+                    .get_mut(&func.entry_block)
+                    .unwrap()
+                    .ops
+                    .push(TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::LoadMethod,
+                        operands: vec![input],
+                        results: pair.clone(),
+                        attrs: AttrDict::from([("name".into(), AttrValue::Str("m".into()))]),
+                        source_span: None,
+                    });
+                pair
+            } else {
+                vec![input; argc]
+            };
+            let mut call = TirOp {
                 dialect: Dialect::Molt,
                 opcode,
-                operands: vec![input; argc],
+                operands,
                 results: if bound { vec![result] } else { vec![] },
                 attrs,
                 source_span: None,
-            });
+            };
+            if opcode == OpCode::CallLoadedMethod {
+                call.set_argument_custody(&[molt_ir::ParameterCustody::Transferred; 2]);
+            }
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(call);
             entry.terminator = Terminator::Return {
                 values: vec![if bound { result } else { input }],
             };
@@ -1369,134 +1387,94 @@ fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
     }
 }
 
-#[test]
-#[should_panic(expected = "call_method_ic supports at most 4 positional args")]
-fn lower_call_method_ic_rejects_over_ic4_arity() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
+/// A method load and its call: `m` loaded from a None receiver, then a call
+/// with `argc` positional arguments.
+fn loaded_method_call_function(argc: usize) -> TirFunction {
     let mut func = TirFunction::new(
-        "call_method_ic_too_many_args".into(),
+        "loaded_method_call".into(),
         vec![],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let mut operands = Vec::new();
-    for _ in 0..6 {
-        let value = func.fresh_value();
-        func.blocks
-            .get_mut(&func.entry_block)
-            .unwrap()
-            .ops
-            .push(const_none_def(value));
-        operands.push(value);
-    }
+    let receiver = func.fresh_value();
+    let pair = vec![func.fresh_value(), func.fresh_value()];
+    let arguments: Vec<_> = (0..argc).map(|_| func.fresh_value()).collect();
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_none_def(receiver));
     entry.ops.push(TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::CallMethodIc,
-        operands,
-        results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("method".into(), AttrValue::Str("m".into()));
-            attrs
-        },
+        opcode: OpCode::LoadMethod,
+        operands: vec![receiver],
+        results: pair.clone(),
+        attrs: AttrDict::from([("name".into(), AttrValue::Str("m".into()))]),
         source_span: None,
     });
+    for &argument in &arguments {
+        entry.ops.push(const_none_def(argument));
+    }
+    let operands: Vec<_> = pair.into_iter().chain(arguments).collect();
+    let mut call = TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::CallLoadedMethod,
+        operands,
+        results: vec![result],
+        attrs: AttrDict::new(),
+        source_span: None,
+    };
+    call.set_argument_custody(&vec![molt_ir::ParameterCustody::Transferred; argc + 2]);
+    entry.ops.push(call);
     entry.terminator = Terminator::Return {
         values: vec![result],
     };
-
-    let _ = lower_tir_to_llvm(&func, &backend);
+    func
 }
 
 #[test]
-fn lower_call_method_ic_preserves_central_no_willreturn_declaration() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let mut func = TirFunction::new(
-        "call_method_ic_attr_reuse".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let recv = func.fresh_value();
-    let arg = func.fresh_value();
-    let result = func.fresh_value();
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(const_none_def(recv));
-    entry.ops.push(const_none_def(arg));
-    entry.ops.push(TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::CallMethodIc,
-        operands: vec![recv, arg],
-        results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("method".into(), AttrValue::Str("m".into()));
-            attrs
-        },
-        source_span: None,
-    });
-    entry.terminator = Terminator::Return {
-        values: vec![result],
-    };
-
-    let llvm_fn = lower_tir_to_llvm(&func, &backend);
-    let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_call_method_ic1"), "{ir}");
-    let runtime_fn = backend
-        .module
-        .get_function("molt_call_method_ic1")
-        .expect("central method IC runtime import should exist");
-    assert!(has_fn_attr(runtime_fn, "nounwind"));
-    assert!(
-        lacks_fn_attr(runtime_fn, "willreturn"),
-        "method IC dispatch executes arbitrary user code"
-    );
+fn lower_loaded_method_call_selects_its_arity_entry_and_spills_above_four() {
+    for (argc, symbol) in [
+        (0, "molt_call_loaded_method0"),
+        (1, "molt_call_loaded_method1"),
+        (4, "molt_call_loaded_method4"),
+        (5, "molt_call_loaded_method_spilled"),
+        (7, "molt_call_loaded_method_spilled"),
+    ] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let ir = lower_tir_to_llvm(&loaded_method_call_function(argc), &backend)
+            .print_to_string()
+            .to_string();
+        backend
+            .module
+            .verify()
+            .unwrap_or_else(|error| panic!("{argc}: {error}"));
+        assert!(ir.contains("@molt_load_method("), "{argc}: {ir}");
+        assert!(ir.contains(&format!("@{symbol}(")), "{argc}: {ir}");
+        if argc > 4 {
+            assert!(ir.contains("call_loaded_method_args"), "{argc}: {ir}");
+        }
+    }
 }
 
 #[test]
-#[should_panic(expected = "call_super_method_ic supports at most 4 positional args")]
-fn lower_call_super_method_ic_rejects_over_ic4_arity() {
+fn method_load_runtime_imports_keep_the_no_willreturn_declaration() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let mut func = TirFunction::new(
-        "call_super_method_ic_too_many_args".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let mut operands = Vec::new();
-    for _ in 0..7 {
-        let value = func.fresh_value();
-        func.blocks
-            .get_mut(&func.entry_block)
-            .unwrap()
-            .ops
-            .push(const_none_def(value));
-        operands.push(value);
+    let ir = lower_tir_to_llvm(&loaded_method_call_function(1), &backend)
+        .print_to_string()
+        .to_string();
+    for symbol in ["molt_load_method", "molt_call_loaded_method1"] {
+        assert!(ir.contains(symbol), "{ir}");
+        let runtime_fn = backend
+            .module
+            .get_function(symbol)
+            .unwrap_or_else(|| panic!("central {symbol} runtime import should exist"));
+        assert!(has_fn_attr(runtime_fn, "nounwind"));
+        assert!(
+            lacks_fn_attr(runtime_fn, "willreturn"),
+            "{symbol} runs arbitrary user code"
+        );
     }
-    let result = func.fresh_value();
-    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::CallSuperMethodIc,
-        operands,
-        results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("method".into(), AttrValue::Str("m".into()));
-            attrs
-        },
-        source_span: None,
-    });
-    entry.terminator = Terminator::Return {
-        values: vec![result],
-    };
-
-    let _ = lower_tir_to_llvm(&func, &backend);
 }
 
 #[test]

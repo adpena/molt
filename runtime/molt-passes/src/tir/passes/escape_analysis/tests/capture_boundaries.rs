@@ -77,11 +77,7 @@ fn callable_spelling_and_method_encodings_never_prove_noncapture() {
             AttrDict::from([("name".into(), AttrValue::Str(name.into()))]),
         );
     }
-    for opcode in [
-        OpCode::CallMethod,
-        OpCode::CallMethodIc,
-        OpCode::CallSuperMethodIc,
-    ] {
+    for opcode in [OpCode::CallMethod, OpCode::CallLoadedMethod] {
         for method in [
             "upper",
             "join",
@@ -101,6 +97,16 @@ fn callable_spelling_and_method_encodings_never_prove_noncapture() {
         }
     }
     assert_opaque_use_preserves_allocation(OpCode::Call, 2, 1, AttrDict::new());
+    // A method load returns its receiver as `self_or_null`, and its lookup
+    // can run Python code: the receiver escapes like a call operand.
+    for (opcode, arity) in [(OpCode::LoadMethod, 1), (OpCode::LoadSuperMethod, 2)] {
+        assert_opaque_use_preserves_allocation(
+            opcode,
+            arity,
+            2,
+            AttrDict::from([("name".into(), AttrValue::Str("upper".into()))]),
+        );
+    }
 }
 
 #[test]

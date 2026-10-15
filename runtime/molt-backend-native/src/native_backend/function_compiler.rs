@@ -2196,7 +2196,8 @@ impl SimpleBackend {
                 && builder.current_block() == Some(body_entry_block)
             {
                 let cleanup_skip = match op.kind.as_str() {
-                    "call_func" | "call_bind" | "call_indirect" | "invoke_ffi" => op
+                    "call_func" | "call_loaded_method" | "call_bind" | "call_indirect"
+                    | "invoke_ffi" => op
                         .args
                         .as_ref()
                         .and_then(|args| args.first())

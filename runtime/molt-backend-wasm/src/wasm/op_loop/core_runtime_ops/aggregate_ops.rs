@@ -1,4 +1,5 @@
 use super::super::call_emit::OpLoopRuntimeCallContext;
+use super::super::out_param::WasmOutParam;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -23,6 +24,8 @@ pub(super) struct AggregateRuntimeContext<'a> {
     pub(super) scalar_plan: &'a ScalarRepresentationPlan,
     pub(super) reloc_enabled: bool,
     pub(super) op_idx: usize,
+    /// The scratch word a runtime entry writes its second result to.
+    pub(super) out_param: WasmOutParam,
 }
 
 impl AggregateRuntimeContext<'_> {
@@ -47,6 +50,7 @@ pub(super) fn emit_aggregate_runtime_op(
     reloc_enabled: bool,
     ops: &[OpIR],
     op_idx: usize,
+    out_param: WasmOutParam,
 ) -> bool {
     let ctx = AggregateRuntimeContext {
         func_ir,
@@ -55,6 +59,7 @@ pub(super) fn emit_aggregate_runtime_op(
         scalar_plan,
         reloc_enabled,
         op_idx,
+        out_param,
     };
 
     if callargs_ops::emit_callargs_op(func, op, &ctx) {

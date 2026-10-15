@@ -8,6 +8,7 @@ use super::local_slot_ops::emit_local_slot_op;
 use super::local_state_ops::emit_local_state_op;
 use super::numeric_ops::emit_numeric_op;
 use super::object_attr_ops::emit_object_attr_op;
+use super::out_param::WasmOutParam;
 use super::runtime_service_ops::{RuntimeServiceOpContext, emit_runtime_service_op};
 use crate::OpIR;
 use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_split_barrier;
@@ -98,6 +99,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 ops,
                 op_idx,
                 self.frame.guard_profile_local(op),
+                WasmOutParam::at(ctx.call_site_abi.call_func_spill_offset()),
             ) {
                 continue;
             }

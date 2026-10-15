@@ -368,6 +368,30 @@ impl RustBackend {
         }
     }
 
+    /// CPython's method-form LOAD_ATTR, lowered as its generic form: `var`
+    /// receives the attribute and `out` no `self`, so the loaded call is an
+    /// ordinary call.
+    pub(super) fn emit_op_load_method(&mut self, op: &OpIR) {
+        let attribute = OpIR {
+            kind: "get_attr".to_string(),
+            args: op.args.clone(),
+            s_value: op.s_value.clone(),
+            out: op.var.clone(),
+            ..OpIR::default()
+        };
+        self.emit_op_get_attr(&attribute);
+        let self_or_null = out_var(op);
+        if self_or_null != "_" && self_or_null != "none" {
+            if self.hoisted_vars.contains(&self_or_null) {
+                self.emit_line(&format!("{self_or_null} = MoltValue::None;"));
+            } else {
+                self.emit_line(&format!(
+                    "let mut {self_or_null}: MoltValue = MoltValue::None;"
+                ));
+            }
+        }
+    }
+
     pub(super) fn emit_op_get_attr(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {

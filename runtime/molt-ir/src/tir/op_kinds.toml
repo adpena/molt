@@ -323,12 +323,11 @@ pass_delta_unbox_opcodes = ["UnboxVal"]
 pass_delta_generic_call_opcodes = [
     "Call",
     "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
+    "CallLoadedMethod",
     "CallBuiltin",
 ]
 pass_delta_direct_call_opcodes = ["Call"]
-pass_delta_method_call_opcodes = ["CallMethod", "CallMethodIc", "CallSuperMethodIc"]
+pass_delta_method_call_opcodes = ["CallMethod", "CallLoadedMethod"]
 pass_delta_runtime_helper_call_opcodes = ["CallBuiltin"]
 pass_delta_rc_event_opcodes = ["IncRef", "DecRef", "DelBoundary"]
 pass_delta_inc_ref_opcodes = ["IncRef"]
@@ -560,7 +559,9 @@ simpleir_out_metadata_kinds = [
     "delete_var",
 ]
 simpleir_var_definition_kinds = ["delete_var", "store_fast", "store_var"]
-simpleir_var_result_kinds = ["checked_add", "checked_mul", "iter_next_unboxed"]
+simpleir_var_result_kinds = [
+    "checked_add", "checked_mul", "iter_next_unboxed", "load_method", "load_super_method",
+]
 simpleir_var_metadata_when_args_kinds = ["copy_var", "load_var"]
 # Canonical shaped kinds whose args are their sole input carrier. Aliases
 # inherit this field role; return-family roles remain owned by return_shape.
@@ -587,7 +588,7 @@ simpleir_object_model_semantics_kinds = [
     "set_item", "store_subscript", "store_index", "dict_set", "del_index",
     "dict_update", "dict_update_missing", "dict_update_kwstar", "dict_popitem",
     "get_attr", "load_attr", "get_attr_name", "get_attr_name_default",
-    "get_attr_generic_obj", "get_attr_generic_ptr",
+    "get_attr_generic_obj", "get_attr_generic_ptr", "load_method", "load_super_method",
     "set_attr", "store_attr", "set_attr_name", "set_attr_generic_obj", "set_attr_generic_ptr",
     "del_attr_name", "del_attr_generic_obj", "del_attr_generic_ptr",
     "zip", "sorted", "builtin_sorted", "reversed", "builtin_reversed",
@@ -632,7 +633,7 @@ simpleir_fallible_protocol_semantics_kinds = [
     "len", "builtin_len", "float", "cast_float", "builtin_float", "float_from_obj",
     "str", "cast_str", "builtin_str", "str_from_obj", "repr_from_obj", "ascii_from_obj",
     "chr", "ord", "ord_at", "print", "builtin_print",
-    "call_builtin", "call_method_ic", "call_super_method_ic",
+    "call_builtin", "call_loaded_method",
 ]
 simpleir_async_runtime_semantics_kinds = [
     "alloc_task", "call_async", "is_native_awaitable",
@@ -703,8 +704,8 @@ ssa_s_value_attr_keys = [
     { opcode = "DelAttr", attr = "name" },
     { opcode = "CallBuiltin", attr = "name" },
     { opcode = "CallMethod", attr = "method" },
-    { opcode = "CallMethodIc", attr = "method" },
-    { opcode = "CallSuperMethodIc", attr = "method" },
+    { opcode = "LoadMethod", attr = "name" },
+    { opcode = "LoadSuperMethod", attr = "name" },
 ]
 
 ssa_original_kind_preserving_kinds = [
@@ -1108,8 +1109,7 @@ classifier_owned_value = [
 async_work_poll_after_opcodes = [
     "Call",
     "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
+    "CallLoadedMethod",
     "CallBuiltin",
 ]
 exception_check_kinds = ["check_exception", "async_work_poll"]
@@ -1218,9 +1218,8 @@ opcode_has_local_only_operands_opcodes = [
 alias_rc_barrier_opcodes = [
     "Call",
     "CallBuiltin",
+    "CallLoadedMethod",
     "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
     "CheckException",
     "ClosureLoad",
     "ClosureStore",
@@ -1390,8 +1389,8 @@ tir_verify_attr_rules = [
     { opcode = "Call", rule = "call_callee" },
     { opcode = "CallBuiltin", rule = "call_callee" },
     { opcode = "CallMethod", rule = "call_method" },
-    { opcode = "CallMethodIc", rule = "call_method" },
-    { opcode = "CallSuperMethodIc", rule = "call_method" },
+    { opcode = "LoadMethod", rule = "method_load" },
+    { opcode = "LoadSuperMethod", rule = "method_load" },
     { opcode = "UnpackSequence", rule = "unpack_sequence_shape" },
 ]
 
@@ -1586,8 +1585,7 @@ type_refine_attr_result_type_rules = [
     { opcode = "ObjectNewBound", rule = "object_type_hint" },
     { opcode = "Call", rule = "call_return_type" },
     { opcode = "CallMethod", rule = "call_return_type" },
-    { opcode = "CallMethodIc", rule = "call_return_type" },
-    { opcode = "CallSuperMethodIc", rule = "call_return_type" },
+    { opcode = "CallLoadedMethod", rule = "call_return_type" },
     { opcode = "TypeGuard", rule = "type_guard" },
     { opcode = "Copy", rule = "copy_original_kind" },
 ]
@@ -1916,11 +1914,12 @@ alias_slot_direct_observer_opcodes = [
     "BuildTuple",
     "Call",
     "CallBuiltin",
+    "CallLoadedMethod",
     "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
     "Index",
     "LoadAttr",
+    "LoadMethod",
+    "LoadSuperMethod",
     "Raise",
     "StoreIndex",
     "Yield",
@@ -3466,18 +3465,43 @@ result_arity = "variable"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
+# CPython's LOAD_ATTR in method form: [receiver] -> (callable, self_or_null).
+# A plain function found on the receiver's type yields the function and a new
+# reference to the receiver; any other attribute yields the attribute and the
+# null sentinel, a non-object word that reference counting ignores. Only
+# operand 1 of one CallLoadedMethod may consume `self_or_null`.
 [[opcode]]
-name = "CallMethodIc"
+name = "LoadMethod"
 may_call_python = true
+operand_arity = 1
+operand_independent_result_types = ["dynbox", "dynbox"]
 may_throw = true
 side_effecting = true
 purity = "impure"
-result_arity = "variable"
+result_arity = "two"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
+# CPython's LOAD_DEREF __class__ and LOAD_SUPER_ATTR in method form for
+# zero-argument `super()`: [class_cell, first_arg] -> (callable, self_or_null),
+# without a super object. An empty cell raises LOAD_DEREF's NameError.
 [[opcode]]
-name = "CallSuperMethodIc"
+name = "LoadSuperMethod"
+may_call_python = true
+operand_arity = 2
+operand_independent_result_types = ["dynbox", "dynbox"]
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "two"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# CPython's CALL after a method load: [callable, self_or_null, args...]. With
+# a receiver it calls `callable(self, *args)`; with the null sentinel it calls
+# `callable(*args)`. It is always a source call that adopts every operand.
+[[opcode]]
+name = "CallLoadedMethod"
 may_call_python = true
 may_throw = true
 side_effecting = true
@@ -4488,14 +4512,19 @@ aliases = []
 mapper_opcode = "CallMethod"
 
 [[kind]]
-canonical = "call_method_ic"
+canonical = "load_method"
 aliases = []
-mapper_opcode = "CallMethodIc"
+mapper_opcode = "LoadMethod"
 
 [[kind]]
-canonical = "call_super_method_ic"
+canonical = "load_super_method"
 aliases = []
-mapper_opcode = "CallSuperMethodIc"
+mapper_opcode = "LoadSuperMethod"
+
+[[kind]]
+canonical = "call_loaded_method"
+aliases = []
+mapper_opcode = "CallLoadedMethod"
 
 [[kind]]
 canonical = "call_builtin"
@@ -4916,64 +4945,49 @@ consumed_operand = 0
 # invocation. A raw direct call (`call`, `call_internal`) carries exactly its
 # target's parameter custody.
 #
-# Drives `kind_source_call_first_adopted_operand` and
-# `kind_source_call_callable_operand`, which SimpleIR admission (ir_schema.rs,
-# ir.rs) reads. Method fusion reads the first to project a source call's
-# adoption onto the fused IC call.
+# Drives `kind_is_source_call` and `kind_source_call_callable_operand`, which
+# SimpleIR admission (ir_schema.rs, ir.rs) reads. Every operand of a source call
+# may be `Transferred`: CALL takes its whole value stack.
 #
-#   kind                 : the wire-kind SPELLING (canonical or alias).
-#   first_adopted_operand: 0 or 1, the first operand position that may be
-#                          `Transferred`; an earlier operand (a `super()`
-#                          class) always stays borrowed.
-#   callable_operand     : optional, the position of the callable, whose custody
-#                          follows the call form rather than the arguments'.
+#   kind            : the wire-kind SPELLING (canonical or alias).
+#   callable_operand: optional, the position of the callable, whose custody
+#                     follows the call form rather than the arguments'.
 # ===========================================================================
 
 [[source_call_kind]]
 kind = "call"
-first_adopted_operand = 0
 
 [[source_call_kind]]
 kind = "call_internal"
-first_adopted_operand = 0
 
 [[source_call_kind]]
 # [callable, args...]: the resolved and fallback legs adopt identically.
 kind = "call_guarded"
-first_adopted_operand = 0
 callable_operand = 0
 
 [[source_call_kind]]
 kind = "call_func"
-first_adopted_operand = 0
 callable_operand = 0
 
 [[source_call_kind]]
 # [bound callable, args...]: the receiver lives in the bound method.
 kind = "call_method"
-first_adopted_operand = 0
 callable_operand = 0
 
 [[source_call_kind]]
-# [receiver, args...]: the receiver is `self`, adopted like an argument.
-kind = "call_method_ic"
-first_adopted_operand = 0
-
-[[source_call_kind]]
-# [class, self, args...]
-kind = "call_super_method_ic"
-first_adopted_operand = 1
+# [callable, self_or_null, args...]: CALL after a method load adopts the
+# loaded pair with its arguments.
+kind = "call_loaded_method"
+callable_operand = 0
 
 [[source_call_kind]]
 # [callee, builder]: the `[[consuming_kind]]` row frees the builder, and the
 # builder's call form decides the callee's custody.
 kind = "call_bind"
-first_adopted_operand = 0
 callable_operand = 0
 
 [[source_call_kind]]
 kind = "call_indirect"
-first_adopted_operand = 0
 callable_operand = 0
 
 # ===========================================================================
@@ -5240,6 +5254,18 @@ opcode = "Call"
 [[frontend_raising_kind]]
 kind = "CALL_METHOD"
 opcode = "CallMethod"
+
+[[frontend_raising_kind]]
+kind = "LOAD_METHOD"
+opcode = "LoadMethod"
+
+[[frontend_raising_kind]]
+kind = "LOAD_SUPER_METHOD"
+opcode = "LoadSuperMethod"
+
+[[frontend_raising_kind]]
+kind = "CALL_LOADED_METHOD"
+opcode = "CallLoadedMethod"
 
 [[frontend_raising_kind]]
 kind = "CALL_BUILTIN"

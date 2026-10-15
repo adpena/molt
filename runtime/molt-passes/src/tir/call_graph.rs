@@ -27,8 +27,9 @@
 //! * **[`CallEdge::Opaque`]** — every other call: a [`OpCode::Call`] with no
 //!   `s_value` (indirect / computed callee), a `Str(name)` that names a function
 //!   *not* in this module (extern / cross-batch), any dynamic-method opcode
-//!   such as [`OpCode::CallMethod`] / [`OpCode::CallMethodIc`] /
-//!   [`OpCode::CallSuperMethodIc`] (Python dynamic method dispatch), or a `Copy`
+//!   such as [`OpCode::CallMethod`] / [`OpCode::CallLoadedMethod`] (Python
+//!   dynamic method dispatch), a method load ([`OpCode::LoadMethod`] /
+//!   [`OpCode::LoadSuperMethod`], whose lookup can run Python code), or a `Copy`
 //!   op carrying a call-kind
 //!   `_original_kind` (the SSA-lift fallback spelling of `call_func` /
 //!   `call_indirect` / `call_bind` / `invoke_ffi` etc. — see

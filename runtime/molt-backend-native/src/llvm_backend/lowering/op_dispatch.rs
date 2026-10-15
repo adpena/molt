@@ -339,9 +339,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Calls --
             OpCode::CallMethod => self.emit_call_method(op),
 
-            OpCode::CallMethodIc => self.emit_call_method_ic(op),
+            OpCode::LoadMethod | OpCode::LoadSuperMethod => self.emit_load_method(op),
 
-            OpCode::CallSuperMethodIc => self.emit_call_super_method_ic(op),
+            OpCode::CallLoadedMethod => self.emit_call_loaded_method(op),
 
             OpCode::CallBuiltin => self.emit_call_builtin(op),
 

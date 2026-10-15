@@ -1,4 +1,5 @@
 use super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_runtime_call};
+use super::out_param::WasmOutParam;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::op_loop_runtime_call;
@@ -32,6 +33,7 @@ pub(super) fn emit_core_runtime_op(
     ops: &[OpIR],
     op_idx: usize,
     guard_profile_local: Option<u32>,
+    out_param: WasmOutParam,
 ) -> bool {
     let call_context = OpLoopRuntimeCallContext {
         import_ids,
@@ -54,6 +56,7 @@ pub(super) fn emit_core_runtime_op(
         reloc_enabled,
         ops,
         op_idx,
+        out_param,
     ) {
         return true;
     }

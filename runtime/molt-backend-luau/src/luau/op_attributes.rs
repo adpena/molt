@@ -1,4 +1,5 @@
 use super::*;
+use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 
 impl LuauBackend {
     pub(super) fn emit_attribute_op(&mut self, op: &OpIR) -> bool {
@@ -49,6 +50,35 @@ impl LuauBackend {
                         ));
                     }
                 }
+            }
+            "load_method" => {
+                // CPython's method-form LOAD_ATTR, lowered as its generic form:
+                // the attribute (a bound method for a class function) and no
+                // `self`, so the call that follows is an ordinary call.
+                let mut pair = [None, None];
+                visit_simple_ir_results(op, |result| match result.field {
+                    SimpleIrResultField::Var => pair[0] = result.name,
+                    SimpleIrResultField::Out => pair[1] = result.name,
+                    SimpleIrResultField::Arg(_) => {}
+                });
+                let attribute = OpIR {
+                    kind: "get_attr_generic_obj".to_string(),
+                    args: op.args.clone(),
+                    s_value: op.s_value.clone(),
+                    out: pair[0].map(str::to_string),
+                    ..OpIR::default()
+                };
+                self.emit_attribute_op(&attribute);
+                if let Some(self_or_null) = pair[1] {
+                    let self_or_null = sanitize_ident(self_or_null);
+                    self.emit_line(&format!("local {self_or_null} = nil"));
+                }
+            }
+            "load_super_method" => {
+                self.emit_unsupported_op_with_reason(
+                    op,
+                    "zero-argument super() needs the CPython super object protocol",
+                );
             }
             "get_attr_name" => {
                 let out = self.out_var(op);

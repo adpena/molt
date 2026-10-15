@@ -25,6 +25,7 @@ from molt.frontend._types import (
     _INLINE_INT_MIN,
     BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
+    ClassId,
     MoltOp,
     MoltValue,
 )
@@ -869,7 +870,11 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="SLICE_NEW", args=[start, stop, step], result=res))
         return res
 
-    def visit_Attribute(self, node: ast.Attribute) -> Any:
+    def _attribute_receiver(
+        self, node: ast.Attribute
+    ) -> tuple[MoltValue, str | None, ClassId | None]:
+        """Evaluate an attribute's receiver with its source-point name and
+        exact-class facts."""
         obj = self.visit(node.value)
         if obj is None:
             raise FrontendRejection(
@@ -884,7 +889,10 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
             node.value.target, ast.Name
         ):
             obj_name = node.value.target.id
-        exact_class = self._exact_class_for_value(obj, obj_name)
+        return obj, obj_name, self._exact_class_for_value(obj, obj_name)
+
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        obj, obj_name, exact_class = self._attribute_receiver(node)
         return self._emit_attribute_load(node, obj, obj_name, exact_class)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:

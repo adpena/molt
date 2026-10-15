@@ -284,6 +284,50 @@ pub(super) fn emit_dynamic_call_op(
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, dispatch);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
+        "call_loaded_method" => {
+            // CPython's CALL after a method load: [callable, self_or_null,
+            // args...]. The instruction adopts every operand; the runtime
+            // enters the selected function with `self` prepended, or calls the
+            // attribute when `self_or_null` is the null sentinel.
+            let args_names = op.args.as_ref().unwrap();
+            assert!(
+                args_names.len() >= 2
+                    && (0..args_names.len()).all(|position| operand_adopted(op, position)),
+                "call_loaded_method adopts its loaded pair and every argument"
+            );
+            let live_object_locals = collect_live_object_locals_for_call(
+                locals,
+                call_liveness,
+                call_live_idx,
+                op.out.as_ref(),
+            );
+            retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+            let import = match args_names.len() - 2 {
+                0 => WasmRuntimeImport::CallLoadedMethod0,
+                1 => WasmRuntimeImport::CallLoadedMethod1,
+                2 => WasmRuntimeImport::CallLoadedMethod2,
+                3 => WasmRuntimeImport::CallLoadedMethod3,
+                4 => WasmRuntimeImport::CallLoadedMethod4,
+                _ => WasmRuntimeImport::CallLoadedMethodSpilled,
+            };
+            if import == WasmRuntimeImport::CallLoadedMethodSpilled {
+                func.instruction(&Instruction::LocalGet(locals[&args_names[0]]));
+                func.instruction(&Instruction::LocalGet(locals[&args_names[1]]));
+                push_spilled_arguments(
+                    func,
+                    locals,
+                    call_site_abi.call_func_spill_offset(),
+                    &args_names[2..],
+                );
+            } else {
+                for name in args_names {
+                    func.instruction(&Instruction::LocalGet(locals[name]));
+                }
+            }
+            emit_call(func, reloc_enabled, import_ids[import]);
+            store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
+            release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+        }
         "invoke_ffi" => {
             if let Some(export_name) = op.native_callable_export.as_deref() {
                 if op.native_callable_binding.as_deref() == Some("module_attr") {

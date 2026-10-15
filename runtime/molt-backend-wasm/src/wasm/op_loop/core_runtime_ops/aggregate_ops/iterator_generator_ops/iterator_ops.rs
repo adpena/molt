@@ -1,8 +1,8 @@
+use super::super::super::super::result_sink::store_owned_value;
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
-use crate::wasm::WasmFrameSyntheticLocal;
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
-use crate::wasm_values::box_int;
 use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 use wasm_encoder::{Function, Instruction};
 
@@ -16,6 +16,9 @@ pub(super) fn emit_iterator_op(
     let reloc_enabled = ctx.reloc_enabled;
 
     match op.kind.as_str() {
+        // `molt_iter_next_unboxed(iterator, value_out)` returns the done flag
+        // and writes the owned value (or None) to the out word as its last
+        // action, so the shared scratch word is safe across generator code.
         "iter_next_unboxed" => {
             let args = op.args.as_ref().unwrap();
             let mut value_name = None;
@@ -25,40 +28,25 @@ pub(super) fn emit_iterator_op(
                 SimpleIrResultField::Out => done_name = result.name,
                 SimpleIrResultField::Arg(_) => unreachable!("iterator has no trailing results"),
             });
-            let iter = locals[&args[0]];
-            let pair = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
-            func.instruction(&Instruction::LocalGet(iter));
+            func.instruction(&Instruction::LocalGet(locals[&args[0]]));
+            ctx.out_param.push_address(func);
             emit_call(
                 func,
                 reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IterNext],
+                import_ids[WasmRuntimeImport::IterNextUnboxed],
             );
-            func.instruction(&Instruction::LocalSet(pair));
-            if let Some(done_slot) = locals.bound_result_slot(done_name) {
-                func.instruction(&Instruction::LocalGet(pair));
-                func.instruction(&Instruction::I64Const(box_int(1)));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Index],
-                );
-                func.instruction(&Instruction::LocalSet(done_slot));
-            }
-            if let Some(value_slot) = locals.bound_result_slot(value_name) {
-                func.instruction(&Instruction::LocalGet(pair));
-                func.instruction(&Instruction::I64Const(box_int(0)));
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[crate::wasm_abi_generated::WasmRuntimeImport::Index],
-                );
-                func.instruction(&Instruction::LocalSet(value_slot));
-            }
-            func.instruction(&Instruction::LocalGet(pair));
-            emit_call(
+            // The done flag is a bool, or None with an exception pending: it
+            // holds no reference.
+            match locals.bound_result_slot(done_name) {
+                Some(done_slot) => func.instruction(&Instruction::LocalSet(done_slot)),
+                None => func.instruction(&Instruction::Drop),
+            };
+            ctx.out_param.load(func);
+            store_owned_value(
                 func,
+                locals.bound_result_slot(value_name),
+                import_ids,
                 reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
             );
         }
         _ => return false,

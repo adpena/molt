@@ -42,16 +42,8 @@ static_type = [
   { params = ["i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i32", "i64"], results = [] },
   { params = ["i64", "i32", "i64", "i32", "i64", "i64", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i32", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i32", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i32", "i64", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i32", "i64", "i64", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i64", "i32", "i64"], results = ["i64"] },
   { params = ["i64", "i64", "i64", "i32", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64"], results = ["i64"] },
-  { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i32"], results = ["i32"] },
   { params = [], results = ["i32"] },
   { params = ["i64", "i32", "i64", "i64", "i64"], results = ["i64"] },
@@ -557,7 +549,7 @@ callable_arity = 1
 
 [[import]]
 name = "arena_new"
-type = 48
+type = 40
 
 [[import]]
 name = "arena_alloc_object"
@@ -1285,124 +1277,53 @@ name = "call_bind_ic_owned"
 return_contract = "owned_object"
 type = 5
 
+# CPython's LOAD_ATTR in method form: (site, receiver, name, name length,
+# self-or-null out address). Returns the callable; the entry writes the
+# receiver or the null sentinel to the out word as its last action.
 [[import]]
-name = "call_method_ic0"
+name = "load_method"
 return_contract = "owned_object"
 type = 37
 
+# CPython's LOAD_SUPER_ATTR in method form for zero-argument `super()`:
+# (site, class, first argument, name, name length, self-or-null out address).
 [[import]]
-name = "call_method_ic1"
+name = "load_super_method"
 return_contract = "owned_object"
 type = 38
 
+# CPython's CALL after a method load: (callable, self_or_null, arguments...).
+# The call adopts every word.
 [[import]]
-name = "call_method_ic2"
+name = "call_loaded_method0"
 return_contract = "owned_object"
-type = 39
-
-[[import]]
-name = "call_method_ic3"
-return_contract = "owned_object"
-type = 40
+type = 3
 
 [[import]]
-name = "call_method_ic4"
+name = "call_loaded_method1"
 return_contract = "owned_object"
-type = 41
-
-# A fused method call whose instruction adopted its receiver and arguments:
-# (site, receiver, name, name length, spilled arguments, count).
-[[import]]
-name = "call_method_ic_owned"
-return_contract = "owned_object"
-type = 39
+type = 5
 
 [[import]]
-name = "call_super_method_ic0"
+name = "call_loaded_method2"
 return_contract = "owned_object"
-type = 42
+type = 7
 
 [[import]]
-name = "call_super_method_ic1"
+name = "call_loaded_method3"
 return_contract = "owned_object"
-type = 43
+type = 12
 
 [[import]]
-name = "call_super_method_ic2"
+name = "call_loaded_method4"
 return_contract = "owned_object"
-type = 44
+type = 9
 
+# Above four arguments: (callable, self_or_null, spilled arguments, count).
 [[import]]
-name = "call_super_method_ic3"
+name = "call_loaded_method_spilled"
 return_contract = "owned_object"
-type = 45
-
-[[import]]
-name = "call_super_method_ic4"
-return_contract = "owned_object"
-type = 46
-
-# A fused `super().method()` call whose instruction adopted `self` and its
-# arguments; the class stays borrowed: (site, class, self, name, name length,
-# spilled arguments, count).
-[[import]]
-name = "call_super_method_ic_owned"
-return_contract = "owned_object"
-type = 44
-
-# Method inline-cache arity selector. Extra arguments are capped at the highest
-# generated helper arity; `call_method_ic4` and `call_super_method_ic4` own the
-# overflow path.
-
-[[method_ic_selector]]
-family = "method"
-extra_arg_count = 0
-import_name = "call_method_ic0"
-
-[[method_ic_selector]]
-family = "method"
-extra_arg_count = 1
-import_name = "call_method_ic1"
-
-[[method_ic_selector]]
-family = "method"
-extra_arg_count = 2
-import_name = "call_method_ic2"
-
-[[method_ic_selector]]
-family = "method"
-extra_arg_count = 3
-import_name = "call_method_ic3"
-
-[[method_ic_selector]]
-family = "method"
-extra_arg_count = 4
-import_name = "call_method_ic4"
-
-[[method_ic_selector]]
-family = "super_method"
-extra_arg_count = 0
-import_name = "call_super_method_ic0"
-
-[[method_ic_selector]]
-family = "super_method"
-extra_arg_count = 1
-import_name = "call_super_method_ic1"
-
-[[method_ic_selector]]
-family = "super_method"
-extra_arg_count = 2
-import_name = "call_super_method_ic2"
-
-[[method_ic_selector]]
-family = "super_method"
-extra_arg_count = 3
-import_name = "call_super_method_ic3"
-
-[[method_ic_selector]]
-family = "super_method"
-extra_arg_count = 4
-import_name = "call_super_method_ic4"
+type = 7
 
 [[import]]
 name = "call_func_dispatch"
@@ -2093,7 +2014,7 @@ callable_arity = 3
 [[import]]
 name = "set_attr_object_ic"
 return_contract = "owned_object"
-type = 49
+type = 41
 
 [[import]]
 name = "set_attr_ptr"
@@ -2241,6 +2162,14 @@ callable_arity = 1
 [[import]]
 name = "iter_next"
 type = 2
+
+# Advance an iterator without a `(value, done)` tuple: (iterator, value out
+# address). Returns the done flag (a bool, or None with an exception pending);
+# the entry writes the owned value, or None, to the out word as its last action.
+[[import]]
+name = "iter_next_unboxed"
+return_contract = "owned_object"
+type = 3
 
 [[import]]
 name = "iter_sentinel"
@@ -3246,7 +3175,7 @@ type = 19
 
 [[import]]
 name = "bytes_as_ptr"
-type = 47
+type = 39
 
 [[import]]
 name = "bytes_from_obj"

@@ -174,6 +174,12 @@ impl RustBackend {
             "set_item" | "store_subscript" | "store_index" => self.emit_op_set_item(op),
             "dict_set" => self.emit_op_dict_set(op),
             "get_attr" | "load_attr" => self.emit_op_get_attr(op),
+            "load_method" => self.emit_op_load_method(op),
+            "load_super_method" => self.emit_unsupported_op(
+                op,
+                "zero-argument super() needs the CPython super object protocol",
+            ),
+            "call_loaded_method" => self.emit_op_call_loaded_method(op),
             "get_attr_name" => self.emit_op_get_attr_name(op),
             "get_attr_name_default" => self.emit_op_get_attr_name_default(op),
             "set_attr" | "store_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {

@@ -209,6 +209,22 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 ..OpIR::default()
             })
         }
+        OpCode::LoadMethod | OpCode::LoadSuperMethod => {
+            // `var` carries the callable and `out` the self-or-null word.
+            let mut simple = OpIR {
+                kind: if op.opcode == OpCode::LoadMethod {
+                    "load_method"
+                } else {
+                    "load_super_method"
+                }
+                .to_string(),
+                args: Some(operand_args(op)),
+                s_value: attr_str(&op.attrs, "name"),
+                ..OpIR::default()
+            };
+            assign_multi_result_transport(&mut simple, op);
+            Some(simple)
+        }
         OpCode::StoreAttr => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "set_attr".to_string());
@@ -288,17 +304,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
-        OpCode::CallMethodIc => Some(OpIR {
-            kind: "call_method_ic".to_string(),
+        OpCode::CallLoadedMethod => Some(OpIR {
+            kind: "call_loaded_method".to_string(),
             args: Some(operand_args(op)),
-            s_value: attr_str(&op.attrs, "method").or_else(|| attr_str(&op.attrs, "s_value")),
-            out: out_var,
-            ..OpIR::default()
-        }),
-        OpCode::CallSuperMethodIc => Some(OpIR {
-            kind: "call_super_method_ic".to_string(),
-            args: Some(operand_args(op)),
-            s_value: attr_str(&op.attrs, "method").or_else(|| attr_str(&op.attrs, "s_value")),
             out: out_var,
             ..OpIR::default()
         }),

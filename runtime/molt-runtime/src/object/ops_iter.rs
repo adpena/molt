@@ -2627,10 +2627,12 @@ pub(crate) fn iteration_step(
 
 /// Advance an iterator without allocating a `(value, done)` tuple.
 ///
-/// Writes `None` to `*value_out` before advancing the iterator, overwrites it
-/// with the next owned value when one is available, and returns `false`-bits for
-/// that value or `true`-bits when the iterator is exhausted. Returns `None`
-/// bits when an exception is pending.
+/// Returns `false`-bits and writes the next owned value to `*value_out` when
+/// one is available, `true`-bits when the iterator is exhausted, and `None`
+/// bits when an exception is pending; the last two write `None`. The entry
+/// writes `*value_out` as its last action, after any Python code the step
+/// ran, so a caller may pass scratch storage that nested compiled code reuses
+/// (the WASM call spill region).
 ///
 /// Fast-paths list, tuple, and i64-range iterators with zero allocation.
 /// Everything else falls back to `molt_iter_next` + destructure.
@@ -2641,9 +2643,6 @@ pub(crate) fn iteration_step(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let done_true = MoltObject::from_bool(true).bits();
-        let done_false = MoltObject::from_bool(false).bits();
-        let no_value = MoltObject::none().bits();
         let Some(value_out) = crate::provenance::abi::mut_ptr::<u64>(value_out_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -2654,190 +2653,187 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
         if value_out.is_null() {
             return raise_exception::<u64>(_py, "RuntimeError", "iterator output pointer is null");
         }
-
+        let (done, value) = unsafe { iter_next_unboxed_step(_py, iter_bits) };
+        // SAFETY: the caller supplies writable storage for one word.
         unsafe {
-            *value_out = no_value;
+            *value_out = value;
         }
-
-        let Some(ptr) = maybe_ptr_from_bits(iter_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-        };
-
-        unsafe {
-            if let Some((reverse, projection)) = hash_iterator_kind(_py, ptr) {
-                return match hash_iterator_step(_py, ptr, reverse, projection) {
-                    Err(()) => no_value,
-                    Ok(None) => done_true,
-                    Ok(Some(row)) => {
-                        let value = row.value(projection);
-                        if exception_pending(_py) {
-                            dec_ref_bits(_py, value);
-                            no_value
-                        } else {
-                            *value_out = value;
-                            done_false
-                        }
-                    }
-                };
-            }
-            // Fast paths for TYPE_ID_ITER wrapping list/tuple/range.
-            // Generators, enumerate, map, filter, zip, reversed, etc.
-            // go through the slow path below.
-            if object_type_id(ptr) == TYPE_ID_ITER {
-                let target_bits = iter_target_bits(ptr);
-                let target_obj = obj_from_bits(target_bits);
-                let idx = iter_index(ptr);
-
-                if let Some(target_ptr) = target_obj.as_ptr() {
-                    let target_type = object_type_id(target_ptr);
-
-                    // ── LIST fast path (zero alloc) ──────────────
-                    // Read the current backing only for this scalar step. A list
-                    // mutation between iterator calls may resize it, so no backing
-                    // reference survives the call boundary.
-                    if target_type == TYPE_ID_LIST {
-                        let len = crate::object::seq_access::len(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= len {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        let mut val_bits = 0;
-                        if crate::object::seq_access::read_item_owned(
-                            target_ptr,
-                            idx,
-                            &mut val_bits,
-                        ) == 0
-                        {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        *value_out = val_bits;
-                        iter_set_index(ptr, idx + 1);
-                        return done_false;
-                    }
-
-                    // ── LIST_INT fast path (zero alloc) ─────────
-                    // Raw i64 storage — box on read, no refcount needed.
-                    if target_type == TYPE_ID_LIST_INT {
-                        let elems = crate::object::layout::list_int_vec_ref(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        let val_bits = MoltObject::from_int(elems[idx]).bits();
-                        *value_out = val_bits;
-                        iter_set_index(ptr, idx + 1);
-                        return done_false;
-                    }
-
-                    // ── LIST_BOOL fast path (zero alloc) ────────
-                    // Raw u8 storage — box on read, no refcount needed.
-                    if target_type == TYPE_ID_LIST_BOOL {
-                        let elems = crate::object::layout::list_bool_vec_ref(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= elems.len() {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        let val_bits = MoltObject::from_bool(elems[idx] != 0).bits();
-                        *value_out = val_bits;
-                        iter_set_index(ptr, idx + 1);
-                        return done_false;
-                    }
-
-                    // ── TUPLE fast path (zero alloc) ─────────────
-                    if target_type == TYPE_ID_TUPLE {
-                        let len = crate::object::seq_access::len(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= len {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        let Some(val_bits) = crate::object::seq_access::item(target_ptr, idx)
-                        else {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        };
-                        inc_ref_bits(_py, val_bits);
-                        *value_out = val_bits;
-                        iter_set_index(ptr, idx + 1);
-                        return done_false;
-                    }
-
-                    // ── RANGE i64 fast path (zero alloc) ─────────
-                    if target_type == TYPE_ID_RANGE
-                        && let Some((start_i64, stop_i64, step_i64)) =
-                            range_components_i64(target_ptr)
-                    {
-                        if idx == ITER_EXHAUSTED {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        if let Some(value) =
-                            range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
-                        {
-                            // Owned, full range (a heap int outside the inline
-                            // window); zero allocation for inline values.
-                            let val_bits = int_bits_from_i64(_py, value);
-                            *value_out = val_bits;
-                            let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
-                            iter_set_index(ptr, next_idx);
-                            return done_false;
-                        }
-                        iter_finish(_py, ptr);
-                        return done_true;
-                    }
-                    // BigInt range — fall through to slow path.
-                }
-            }
-
-            // ── Slow path: delegate to molt_iter_next ─────────────
-            let pair_bits = molt_iter_next(iter_bits);
-            if exception_pending(_py) {
-                if !obj_from_bits(pair_bits).is_none() {
-                    dec_ref_bits(_py, pair_bits);
-                }
-                return no_value;
-            }
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "SystemError",
-                    "iterator returned an invalid pair",
-                );
-            };
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                dec_ref_bits(_py, pair_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "SystemError",
-                    "iterator returned a non-tuple pair",
-                );
-            }
-            let Some((val_bits, exhausted_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
-            else {
-                dec_ref_bits(_py, pair_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "SystemError",
-                    "iterator returned a malformed pair",
-                );
-            };
-            let exhausted = is_truthy(_py, obj_from_bits(exhausted_bits));
-            if exception_pending(_py) {
-                dec_ref_bits(_py, pair_bits);
-                return no_value;
-            }
-            if exhausted {
-                dec_ref_bits(_py, pair_bits);
-                return done_true;
-            }
-            // Transfer ownership: inc_ref value, drop wrapper tuple.
-            inc_ref_bits(_py, val_bits);
-            *value_out = val_bits;
-            dec_ref_bits(_py, pair_bits);
-            done_false
-        }
+        done
     })
+}
+
+/// One `molt_iter_next_unboxed` step: `(done, value)`, where `value` is the
+/// next owned value when `done` is `false`-bits and `None` otherwise.
+unsafe fn iter_next_unboxed_step(_py: &PyToken<'_>, iter_bits: u64) -> (u64, u64) {
+    let done_true = MoltObject::from_bool(true).bits();
+    let done_false = MoltObject::from_bool(false).bits();
+    let no_value = MoltObject::none().bits();
+    let Some(ptr) = maybe_ptr_from_bits(iter_bits) else {
+        return (
+            raise_exception::<_>(_py, "TypeError", "object is not an iterator"),
+            no_value,
+        );
+    };
+
+    unsafe {
+        if let Some((reverse, projection)) = hash_iterator_kind(_py, ptr) {
+            return match hash_iterator_step(_py, ptr, reverse, projection) {
+                Err(()) => (no_value, no_value),
+                Ok(None) => (done_true, no_value),
+                Ok(Some(row)) => {
+                    let value = row.value(projection);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, value);
+                        (no_value, no_value)
+                    } else {
+                        (done_false, value)
+                    }
+                }
+            };
+        }
+        // Fast paths for TYPE_ID_ITER wrapping list/tuple/range.
+        // Generators, enumerate, map, filter, zip, reversed, etc.
+        // go through the slow path below.
+        if object_type_id(ptr) == TYPE_ID_ITER {
+            let target_bits = iter_target_bits(ptr);
+            let target_obj = obj_from_bits(target_bits);
+            let idx = iter_index(ptr);
+
+            if let Some(target_ptr) = target_obj.as_ptr() {
+                let target_type = object_type_id(target_ptr);
+
+                // ── LIST fast path (zero alloc) ──────────────
+                // Read the current backing only for this scalar step. A list
+                // mutation between iterator calls may resize it, so no backing
+                // reference survives the call boundary.
+                if target_type == TYPE_ID_LIST {
+                    let len = crate::object::seq_access::len(target_ptr);
+                    if idx == ITER_EXHAUSTED || idx >= len {
+                        iter_finish(_py, ptr);
+                        return (done_true, no_value);
+                    }
+                    let mut val_bits = 0;
+                    if crate::object::seq_access::read_item_owned(target_ptr, idx, &mut val_bits)
+                        == 0
+                    {
+                        iter_finish(_py, ptr);
+                        return (done_true, no_value);
+                    }
+                    iter_set_index(ptr, idx + 1);
+                    return (done_false, val_bits);
+                }
+
+                // ── LIST_INT fast path (zero alloc) ─────────
+                // Raw i64 storage — box on read, no refcount needed.
+                if target_type == TYPE_ID_LIST_INT {
+                    let elems = crate::object::layout::list_int_vec_ref(target_ptr);
+                    if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                        iter_finish(_py, ptr);
+                        return (done_true, no_value);
+                    }
+                    let val_bits = MoltObject::from_int(elems[idx]).bits();
+                    iter_set_index(ptr, idx + 1);
+                    return (done_false, val_bits);
+                }
+
+                // ── LIST_BOOL fast path (zero alloc) ────────
+                // Raw u8 storage — box on read, no refcount needed.
+                if target_type == TYPE_ID_LIST_BOOL {
+                    let elems = crate::object::layout::list_bool_vec_ref(target_ptr);
+                    if idx == ITER_EXHAUSTED || idx >= elems.len() {
+                        iter_finish(_py, ptr);
+                        return (done_true, no_value);
+                    }
+                    let val_bits = MoltObject::from_bool(elems[idx] != 0).bits();
+                    iter_set_index(ptr, idx + 1);
+                    return (done_false, val_bits);
+                }
+
+                // ── TUPLE fast path (zero alloc) ─────────────
+                if target_type == TYPE_ID_TUPLE {
+                    let len = crate::object::seq_access::len(target_ptr);
+                    if idx == ITER_EXHAUSTED || idx >= len {
+                        iter_finish(_py, ptr);
+                        return (done_true, no_value);
+                    }
+                    let Some(val_bits) = crate::object::seq_access::item(target_ptr, idx) else {
+                        iter_finish(_py, ptr);
+                        return (done_true, no_value);
+                    };
+                    inc_ref_bits(_py, val_bits);
+                    iter_set_index(ptr, idx + 1);
+                    return (done_false, val_bits);
+                }
+
+                // ── RANGE i64 fast path (zero alloc) ─────────
+                if target_type == TYPE_ID_RANGE
+                    && let Some((start_i64, stop_i64, step_i64)) = range_components_i64(target_ptr)
+                {
+                    if idx == ITER_EXHAUSTED {
+                        iter_finish(_py, ptr);
+                        return (done_true, no_value);
+                    }
+                    if let Some(value) =
+                        range_value_at_index_i64(start_i64, stop_i64, step_i64, idx as i128)
+                    {
+                        // Owned, full range (a heap int outside the inline
+                        // window); zero allocation for inline values.
+                        let val_bits = int_bits_from_i64(_py, value);
+                        let next_idx = idx.checked_add(1).unwrap_or(ITER_EXHAUSTED);
+                        iter_set_index(ptr, next_idx);
+                        return (done_false, val_bits);
+                    }
+                    iter_finish(_py, ptr);
+                    return (done_true, no_value);
+                }
+                // BigInt range — fall through to slow path.
+            }
+        }
+
+        // ── Slow path: delegate to molt_iter_next ─────────────
+        let pair_bits = molt_iter_next(iter_bits);
+        if exception_pending(_py) {
+            if !obj_from_bits(pair_bits).is_none() {
+                dec_ref_bits(_py, pair_bits);
+            }
+            return (no_value, no_value);
+        }
+        let pair_obj = obj_from_bits(pair_bits);
+        let Some(pair_ptr) = pair_obj.as_ptr() else {
+            return (
+                raise_exception::<_>(_py, "SystemError", "iterator returned an invalid pair"),
+                no_value,
+            );
+        };
+        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+            dec_ref_bits(_py, pair_bits);
+            return (
+                raise_exception::<_>(_py, "SystemError", "iterator returned a non-tuple pair"),
+                no_value,
+            );
+        }
+        let Some((val_bits, exhausted_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
+        else {
+            dec_ref_bits(_py, pair_bits);
+            return (
+                raise_exception::<_>(_py, "SystemError", "iterator returned a malformed pair"),
+                no_value,
+            );
+        };
+        let exhausted = is_truthy(_py, obj_from_bits(exhausted_bits));
+        if exception_pending(_py) {
+            dec_ref_bits(_py, pair_bits);
+            return (no_value, no_value);
+        }
+        if exhausted {
+            dec_ref_bits(_py, pair_bits);
+            return (done_true, no_value);
+        }
+        // Transfer ownership: inc_ref value, drop wrapper tuple.
+        inc_ref_bits(_py, val_bits);
+        dec_ref_bits(_py, pair_bits);
+        (done_false, val_bits)
+    }
 }
 
 /// Zero-allocation dict items iterator.

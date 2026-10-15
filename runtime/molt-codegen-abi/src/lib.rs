@@ -1238,6 +1238,15 @@ pub const fn pending_bits() -> i64 {
     box_pending_bits()
 }
 
+/// CPython's NULL in a loaded method pair (`LOAD_ATTR` in method form): the
+/// `self_or_null` word when the attribute is not a plain function on the
+/// receiver's type. The pending marker never denotes a Python value, and
+/// reference counting ignores every non-pointer word, so releasing it is a
+/// no-op on every target.
+pub const fn loaded_method_null_bits() -> i64 {
+    box_pending_bits()
+}
+
 pub const fn fits_inline_int(val: i64) -> bool {
     val >= INT_MIN_INLINE && val <= INT_MAX_INLINE
 }

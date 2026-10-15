@@ -1407,7 +1407,8 @@ fn list_hoisting_fences_nested_effects_and_pairs_indexed_preludes() {
     let fixture = typed_list_hoist_fixture();
     for (kind, args) in [
         ("call", vec![]),
-        ("call_method_ic", vec!["receiver"]),
+        ("load_method", vec!["receiver"]),
+        ("call_loaded_method", vec!["callable", "self_or_null"]),
         ("call_indirect", vec!["callee", "callargs"]),
         ("call_bind", vec!["callee", "callargs"]),
         ("invoke_ffi", vec![]),

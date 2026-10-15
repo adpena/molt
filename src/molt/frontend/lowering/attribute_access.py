@@ -795,6 +795,41 @@ class AttributeAccessMixin(GeneratorMixinBase):
             merged.type_hint = fast_hint
         return merged
 
+    def _emit_method_load(self, obj: MoltValue, attr: str) -> MoltValue:
+        """CPython's LOAD_ATTR in method form, for a call that follows.
+
+        One frontend value names the (callable, self_or_null) pair the runtime
+        returns: a plain function on the receiver's type with the receiver, or
+        any other attribute with the null sentinel. Only CALL_LOADED_METHOD
+        consumes it, and serialization gives the pair its two wire results.
+        """
+        pair = MoltValue(self.next_var())
+        self.emit(
+            MoltOp(
+                kind="LOAD_METHOD",
+                args=[obj, attr],
+                result=pair,
+                metadata={"self_or_null": self.next_var()},
+            )
+        )
+        return pair
+
+    def _emit_generic_attribute_load(
+        self,
+        obj: MoltValue,
+        attr: str,
+        kind: str,
+        *,
+        method_load: bool,
+        type_hint: TypeHint = "Unknown",
+    ) -> MoltValue:
+        """A generic attribute lookup, or its method form before a call."""
+        if method_load:
+            return self._emit_method_load(obj, attr)
+        res = MoltValue(self.next_var(), type_hint=type_hint)
+        self.emit(MoltOp(kind=kind, args=[obj, attr], result=res))
+        return res
+
     def _emit_attribute_load(
         self,
         node: ast.Attribute,
@@ -803,6 +838,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         exact_class: ClassId | None,
         *,
         generic: bool = False,
+        method_load: bool = False,
     ) -> MoltValue:
         # Set expression-level col_offset from the Attribute AST node so
         # that get_attr ops carry the correct column range for traceback
@@ -814,7 +850,12 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self._expr_col = (_attr_col, _attr_end_col)
         try:
             return self._emit_attribute_load_inner(
-                node, obj, obj_name, exact_class, generic=generic
+                node,
+                obj,
+                obj_name,
+                exact_class,
+                generic=generic,
+                method_load=method_load,
             )
         finally:
             self._expr_col = _prev_expr_col
@@ -827,7 +868,12 @@ class AttributeAccessMixin(GeneratorMixinBase):
         exact_class: ClassId | None,
         *,
         generic: bool = False,
+        method_load: bool = False,
     ) -> MoltValue:
+        # `method_load` asks for CPython's method-form LOAD_ATTR wherever this
+        # lookup is a generic attribute load: the result is then a method pair
+        # (`_emit_method_load`). Field, property, module and protected loads
+        # keep their own lowering, and their value is an ordinary callee.
         # Canonical imported-module callable acquisition is a producer fact.
         # It must be stamped before type-driven attribute lowering: a module
         # alias loaded through a function's module globals intentionally has an
@@ -895,15 +941,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 declared_class, "__getattribute__"
             )
             if getattribute_info:
-                res = MoltValue(self.next_var())
-                self.emit(
-                    MoltOp(
-                        kind="GETATTR_GENERIC_PTR",
-                        args=[obj, node.attr],
-                        result=res,
-                    )
+                return self._emit_generic_attribute_load(
+                    obj, node.attr, "GETATTR_GENERIC_PTR", method_load=method_load
                 )
-                return res
         exact_dataclass_field = self._exact_dataclass_field(obj, obj_name, node.attr)
         if exact_dataclass_field is not None:
             exact_dataclass, field_offset = exact_dataclass_field
@@ -918,15 +958,13 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="DATACLASS_GET", args=[obj, idx_val], result=res))
             return res
         if class_info and class_info.get("dataclass"):
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_OBJ",
-                    args=[obj, node.attr],
-                    result=res,
-                )
+            return self._emit_generic_attribute_load(
+                obj,
+                node.attr,
+                "GETATTR_GENERIC_OBJ",
+                method_load=method_load,
+                type_hint="Any",
             )
-            return res
         method_info = None
         method_class: ClassId | None = None
         if declared_class is not None:
@@ -956,6 +994,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 and node.attr not in fields
                 and not self._instance_attr_mutated(declared_class, node.attr)
             ):
+                if method_load:
+                    # The method load selects the same function at run time
+                    # and binds no method object.
+                    return self._emit_method_load(obj, node.attr)
                 func_val = method_info["func"]
                 if self.current_func_name != "molt_main":
                     class_ref = MoltValue(self.next_var(), type_hint="type")
@@ -1045,54 +1087,31 @@ class AttributeAccessMixin(GeneratorMixinBase):
         )
         if receiver_kind is not None and _fast_methods is not None:
             if node.attr in _fast_methods:
-                res = MoltValue(
-                    self.next_var(),
+                return self._emit_generic_attribute_load(
+                    obj,
+                    node.attr,
+                    "GETATTR_GENERIC_OBJ",
+                    method_load=method_load,
                     type_hint=BoundMethodHint(BuiltinClass(receiver_kind), node.attr),
                 )
-                self.emit(
-                    MoltOp(
-                        kind="GETATTR_GENERIC_OBJ",
-                        args=[obj, node.attr],
-                        result=res,
-                    )
-                )
-                return res
         expected_class = declared_class
         if expected_class is None or class_info is None:
-            res = MoltValue(self.next_var())
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_OBJ",
-                    args=[obj, node.attr],
-                    result=res,
-                )
+            return self._emit_generic_attribute_load(
+                obj, node.attr, "GETATTR_GENERIC_OBJ", method_load=method_load
             )
-            return res
         if class_info.get("dynamic"):
-            res = MoltValue(self.next_var())
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_PTR",
-                    args=[obj, node.attr],
-                    result=res,
-                )
+            return self._emit_generic_attribute_load(
+                obj, node.attr, "GETATTR_GENERIC_PTR", method_load=method_load
             )
-            return res
         field_map = class_info.get("fields", {})
         if (
             receiver_is_class_object
             or node.attr not in field_map
             or self._class_attr_is_data_descriptor(expected_class, node.attr)
         ):
-            res = MoltValue(self.next_var())
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_PTR",
-                    args=[obj, node.attr],
-                    result=res,
-                )
+            return self._emit_generic_attribute_load(
+                obj, node.attr, "GETATTR_GENERIC_PTR", method_load=method_load
             )
-            return res
         field_hint: TypeHint | None = None
         if self._hints_enabled():
             field_hint = class_info.get("field_hints", {}).get(node.attr)

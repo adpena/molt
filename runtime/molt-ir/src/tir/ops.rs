@@ -124,6 +124,26 @@ pub enum OpCode {
     ObjectNewBound,
     Free,
     LoadAttr,
+    /// CPython's `LOAD_ATTR` in method form.
+    ///
+    /// Operands: `[receiver]`. Attr `name`: the attribute.
+    /// Results: `[callable, self_or_null]`. When the attribute is a plain
+    /// function on the receiver's type, `callable` is that function and
+    /// `self_or_null` a new reference to the receiver; otherwise `callable`
+    /// is the attribute and `self_or_null` the null sentinel
+    /// (`molt_codegen_abi::loaded_method_null_bits`). Only operand 1 of one
+    /// [`OpCode::CallLoadedMethod`] in the same function may consume
+    /// `self_or_null` (verified).
+    LoadMethod,
+    /// CPython's `LOAD_DEREF __class__` and `LOAD_SUPER_ATTR` in method form
+    /// for zero-argument `super()`.
+    ///
+    /// Operands: `[class_cell, first_arg]`: the `__class__` cell and the
+    /// method's first argument. The load reads the cell; an empty cell raises
+    /// LOAD_DEREF's `NameError`. Attr `name`. Results as
+    /// [`OpCode::LoadMethod`], and no super object is created when the
+    /// attribute is a plain function.
+    LoadSuperMethod,
     StoreAttr,
     DelAttr,
     Index,
@@ -141,8 +161,14 @@ pub enum OpCode {
     // Call
     Call,
     CallMethod,
-    CallMethodIc,
-    CallSuperMethodIc,
+    /// CPython's `CALL` after a method load.
+    ///
+    /// Operands: `[callable, self_or_null, args...]`, the results of one
+    /// [`OpCode::LoadMethod`] or [`OpCode::LoadSuperMethod`] and the positional
+    /// arguments. With a receiver it calls `callable(self, *args)`; with the
+    /// null sentinel it calls `callable(*args)`. A source call: it adopts every
+    /// operand (`argument_custody`).
+    CallLoadedMethod,
     /// Named lookup carries arguments only; metadata-free lookup carries
     /// [name, arguments...]. Use builtin_call() for the executable contract.
     CallBuiltin,

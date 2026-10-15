@@ -2457,12 +2457,10 @@ def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> No
 def _validate_source_call_kinds(data: dict, valid_spellings: dict[str, str]) -> None:
     """Structurally validate the ``[[source_call_kind]]`` rows (fail-loud).
 
-    Each row admits typed ``argument_custody`` on one source Python call
-    spelling from ``first_adopted_operand`` on. The spelling must be a known
-    mapper spelling, and the position must be 0 or 1: only a ``super()`` class
-    operand may precede the adoptable ones. An optional ``callable_operand``
-    names the callable, which an ordinary call adopts, so it must be 0 and
-    inside the adoptable range.
+    Each row admits typed ``argument_custody`` on every operand of one source
+    Python call spelling. The spelling must be a known mapper spelling. An
+    optional ``callable_operand`` names the callable, which an ordinary call
+    adopts; it must be operand 0.
     """
     rows = data.get("source_call_kind", [])
     if not isinstance(rows, list):
@@ -2479,22 +2477,17 @@ def _validate_source_call_kinds(data: dict, valid_spellings: dict[str, str]) -> 
             raise OpKindTableError(
                 f"source_call_kind {kind!r} is not a known [[kind]] mapper spelling"
             )
-        first = row.get("first_adopted_operand")
-        if isinstance(first, bool) or first not in (0, 1):
+        unknown = set(row) - {"kind", "callable_operand"}
+        if unknown:
             raise OpKindTableError(
-                f"source_call_kind {kind}: 'first_adopted_operand' must be 0 or 1, "
-                f"got {first!r}"
+                f"source_call_kind {kind}: unknown field(s) {sorted(unknown)}"
             )
         if "callable_operand" in row:
             callable_operand = row["callable_operand"]
-            if (
-                isinstance(callable_operand, bool)
-                or callable_operand != 0
-                or callable_operand < first
-            ):
+            if isinstance(callable_operand, bool) or callable_operand != 0:
                 raise OpKindTableError(
-                    f"source_call_kind {kind}: 'callable_operand' must be 0 and not "
-                    f"before 'first_adopted_operand', got {callable_operand!r}"
+                    f"source_call_kind {kind}: 'callable_operand' must be 0, "
+                    f"got {callable_operand!r}"
                 )
 
 

@@ -3783,9 +3783,9 @@ mod json_parse_tests {
                 "operand 1 custody Borrowed disagrees with its source call, which adopts it",
             ),
             (
-                "call_super_method_ic",
-                vec![Transferred, Transferred],
-                "operand 0 custody Transferred disagrees with its source call, which borrows it",
+                "call_loaded_method",
+                vec![Transferred, Borrowed],
+                "operand 1 custody Borrowed disagrees with its source call, which adopts it",
             ),
             (
                 "call_func",

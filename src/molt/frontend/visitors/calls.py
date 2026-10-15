@@ -44,6 +44,9 @@ class CallVisitorMixin(
         split_result = self._try_emit_split_call(node)
         if split_result is not CALL_NOT_HANDLED:
             return split_result
+        super_method = self._try_emit_guarded_super_method_call(node)
+        if super_method is not CALL_NOT_HANDLED:
+            return super_method
         guarded = self._try_emit_builtin_guarded_call(node)
         if guarded is not CALL_NOT_HANDLED:
             return guarded
@@ -53,6 +56,12 @@ class CallVisitorMixin(
         ):
             # Runtime lookup custody precedes every spelling/import registry,
             # including builtin shape emission. ABI admission is independent.
+            if isinstance(node.func, ast.Attribute):
+                # An attribute callee is still CPython's method-form load.
+                receiver, obj_name, exact_class = self._attribute_receiver(node.func)
+                return self._emit_attribute_method_call(
+                    node, node.func, receiver, obj_name, exact_class
+                )
             callee = self.visit(node.func)
             if callee is None:
                 raise FrontendRejection(

@@ -166,9 +166,9 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 ---
 
-#### 2c. Bound methods / fuse_method_dispatch
+#### 2c. Bound methods / method loads
 
-**UPSTREAM.** `call_method` with `fused_method_dispatch` attribute on the op. The zero-arg `super()` fold now reads `ClassFacts.super_fold_sound_methods_by_class`, precomputed from sema-owned static class-graph/C3/reachability/local class-member facts plus explicit imported-class metadata: restricted to entry-module, guards against MRO diamonds, non-method class-attribute interposition, and dynamic/decorated class-member surfaces. `CallMethod` is a first-class TIR opcode.
+**UPSTREAM.** A positional attribute call lowers to CPython's two-value method load: `LoadMethod`/`LoadSuperMethod` return `(callable, self_or_null)` and `CallLoadedMethod` consumes them, with no bound-method or super object on the class-function path (HF-216). The zero-arg `super()` fold now reads `ClassFacts.super_fold_sound_methods_by_class`, precomputed from sema-owned static class-graph/C3/reachability/local class-member facts plus explicit imported-class metadata: restricted to entry-module, guards against MRO diamonds, non-method class-attribute interposition, and dynamic/decorated class-member surfaces. `CallMethod` is a first-class TIR opcode.
 
 **Score.** IMPORTANCE=3, GAP=1.
 

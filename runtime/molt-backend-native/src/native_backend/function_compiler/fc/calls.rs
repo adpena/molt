@@ -12,8 +12,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "invoke_ffi",
     "call_bind",
     "call_indirect",
-    "call_method_ic",
-    "call_super_method_ic",
+    "call_loaded_method",
     "call_method",
     "getargv",
     "getframe",
@@ -192,24 +191,9 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             cleanup_roots,
             nbc,
         ),
-        "call_method_ic" => handle_call_method_ic_op(
+        "call_loaded_method" => handle_call_loaded_method_op(
             op,
             &operands,
-            op_idx,
-            func_name,
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            vars,
-            representation_plan,
-            nbc,
-        ),
-        "call_super_method_ic" => handle_call_super_method_ic_op(
-            op,
-            &operands,
-            op_idx,
-            func_name,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
@@ -2071,123 +2055,27 @@ fn handle_call_bind_indirect_op(
     cleanup_roots.transfer(builder, callargs_name);
 }
 
+/// The runtime entries for CPython's CALL after a method load, by positional
+/// argument count; wider calls spill their arguments.
 #[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments, clippy::manual_map)]
-fn handle_call_method_ic_op(
-    op: &OpIR,
-    operands: &NativeOperandTransaction<'_>,
-    op_idx: usize,
-    func_name: &str,
-    module: &mut ObjectModule,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    vars: &BTreeMap<String, Variable>,
-    representation_plan: &ScalarRepresentationPlan,
-    nbc: &crate::NanBoxConsts,
-) {
-    // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
-    //   args = [recv, a0, a1, ...]  s_value = <method name>
-    // Lowers to a single `molt_call_method_icN(site, recv, name,
-    // name_len, a0..)` call — no bound-method/callargs alloc on
-    // the fast path, identical legacy behaviour on the slow path.
-    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let recv_bits = operands
-        .word(&args_names[0])
-        .expect("call_method_ic receiver not found");
-    let mut extra_args = Vec::new();
-    for name in &args_names[1..] {
-        extra_args.push(*operands.word(name).expect("call_method_ic arg not found"));
-    }
-    let method_name = op
-        .s_value
-        .as_ref()
-        .expect("call_method_ic missing method name");
-    // Emit the method name as a private data symbol (same shape
-    // as get_attr_generic_ptr) and pass (ptr, len).
-    let data_id = module
-        .declare_data(
-            &format!("mname_{}_{}", func_name, op_idx),
-            Linkage::Local,
-            false,
-            false,
-        )
-        .unwrap();
-    let mut data_ctx = DataDescription::new();
-    data_ctx.define(method_name.as_bytes().to_vec().into_boxed_slice());
-    module.define_data(data_id, &data_ctx).unwrap();
-    let global_ptr = module.declare_data_in_func(data_id, builder.func);
-    let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-    let name_len = builder.ins().iconst(types::I64, method_name.len() as i64);
-    let site_bits = builder.ins().iconst(
-        types::I64,
-        box_int(stable_ic_site_id(func_name, op_idx, "call_method_ic")),
-    );
-    let res = if call_adopts_arguments(op) {
-        // The instruction adopted its receiver and arguments: the owned entry
-        // moves them into the resolved method's frame, or ends the receiver
-        // at attribute resolution, and never returns them to this frame.
-        let (args_ptr, nargs) = spill_call_arguments(&mut *builder, &extra_args);
-        let callee = SimpleBackend::import_func_id_split(
-            &mut *module,
-            &mut *import_ids,
-            "molt_call_method_ic_owned",
-            &[types::I64; 6],
-            &[types::I64],
-        );
-        let local = module.declare_func_in_func(callee, builder.func);
-        let call = builder.ins().call(
-            local,
-            &[site_bits, *recv_bits, name_ptr, name_len, args_ptr, nargs],
-        );
-        builder.inst_results(call)[0]
-    } else {
-        let symbol = match extra_args.len() {
-            0 => "molt_call_method_ic0",
-            1 => "molt_call_method_ic1",
-            2 => "molt_call_method_ic2",
-            3 => "molt_call_method_ic3",
-            _ => "molt_call_method_ic4",
-        };
-        // site + recv + name_ptr + name_len + one I64 per extra arg.
-        let sig_params = vec![types::I64; 4 + extra_args.len()];
-        let callee = SimpleBackend::import_func_id_split(
-            &mut *module,
-            &mut *import_ids,
-            symbol,
-            &sig_params,
-            &[types::I64],
-        );
-        let local = module.declare_func_in_func(callee, builder.func);
-        let mut call_args = vec![site_bits, *recv_bits, name_ptr, name_len];
-        call_args.extend_from_slice(&extra_args);
-        let call = builder.ins().call(local, &call_args);
-        builder.inst_results(call)[0]
-    };
-    if let Some(out__) = op.out.as_ref() {
-        def_var_from_boxed_transport(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            vars,
-            representation_plan,
-            nbc,
-            out__,
-            res,
-        );
-    } else {
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
-    }
-}
+const LOADED_METHOD_CALLS: [&str; 5] = [
+    "molt_call_loaded_method0",
+    "molt_call_loaded_method1",
+    "molt_call_loaded_method2",
+    "molt_call_loaded_method3",
+    "molt_call_loaded_method4",
+];
 
+/// CPython's CALL after a method load: `[callable, self_or_null, args...]`.
+/// The instruction is always a source call that adopts every operand; the
+/// runtime enters the selected function with `self` prepended, or calls the
+/// attribute when `self_or_null` is the null sentinel, and never returns an
+/// input to this frame.
 #[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments, clippy::manual_map)]
-fn handle_call_super_method_ic_op(
+#[allow(clippy::too_many_arguments)]
+fn handle_call_loaded_method_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
-    op_idx: usize,
-    func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -2196,89 +2084,40 @@ fn handle_call_super_method_ic_op(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    // Fused `super().method(args)` dispatch (no super-object /
-    // bound-method / callargs allocation on the fast path):
-    //   args = [class, self, a0, a1, ...]  s_value = <method>
-    // Lowers to `molt_call_super_method_icN(site, class, self,
-    // name, name_len, a0..)`.
-    let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let class_bits = *operands
-        .word(&args_names[0])
-        .expect("call_super_method_ic class not found");
-    let self_bits = *operands
-        .word(&args_names[1])
-        .expect("call_super_method_ic self not found");
-    let mut extra_args = Vec::new();
-    for name in &args_names[2..] {
-        extra_args.push(
-            *operands
-                .word(name)
-                .expect("call_super_method_ic arg not found"),
-        );
-    }
-    let method_name = op
-        .s_value
-        .as_ref()
-        .expect("call_super_method_ic missing method name");
-    let data_id = module
-        .declare_data(
-            &format!("smname_{}_{}", func_name, op_idx),
-            Linkage::Local,
-            false,
-            false,
-        )
-        .unwrap();
-    let mut data_ctx = DataDescription::new();
-    data_ctx.define(method_name.as_bytes().to_vec().into_boxed_slice());
-    module.define_data(data_id, &data_ctx).unwrap();
-    let global_ptr = module.declare_data_in_func(data_id, builder.func);
-    let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-    let name_len = builder.ins().iconst(types::I64, method_name.len() as i64);
-    let site_bits = builder.ins().iconst(
-        types::I64,
-        box_int(stable_ic_site_id(func_name, op_idx, "call_super_method_ic")),
+    let names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+    assert!(
+        names.len() >= 2 && (0..names.len()).all(|position| operand_adopted(op, position)),
+        "call_loaded_method adopts its loaded pair and every argument"
     );
-    let res = if call_adopts_arguments(op) {
-        // The instruction adopted `self` and its arguments (never the class):
-        // the owned entry moves them into the resolved method's frame and
-        // never returns them to this frame.
-        let (args_ptr, nargs) = spill_call_arguments(&mut *builder, &extra_args);
-        let callee = SimpleBackend::import_func_id_split(
-            &mut *module,
-            &mut *import_ids,
-            "molt_call_super_method_ic_owned",
-            &[types::I64; 7],
-            &[types::I64],
-        );
-        let local = module.declare_func_in_func(callee, builder.func);
-        let call = builder.ins().call(
-            local,
-            &[
-                site_bits, class_bits, self_bits, name_ptr, name_len, args_ptr, nargs,
-            ],
-        );
-        builder.inst_results(call)[0]
-    } else {
-        let symbol = match extra_args.len() {
-            0 => "molt_call_super_method_ic0",
-            1 => "molt_call_super_method_ic1",
-            2 => "molt_call_super_method_ic2",
-            3 => "molt_call_super_method_ic3",
-            _ => "molt_call_super_method_ic4",
-        };
-        // site + class + self + name_ptr + name_len + one per arg.
-        let sig_params = vec![types::I64; 5 + extra_args.len()];
+    let words: Vec<Value> = names
+        .iter()
+        .map(|name| *operands.word(name).expect("call_loaded_method operand"))
+        .collect();
+    let (pair, args) = words.split_at(2);
+    let res = if let Some(symbol) = LOADED_METHOD_CALLS.get(args.len()) {
         let callee = SimpleBackend::import_func_id_split(
             &mut *module,
             &mut *import_ids,
             symbol,
-            &sig_params,
+            &vec![types::I64; words.len()],
             &[types::I64],
         );
         let local = module.declare_func_in_func(callee, builder.func);
-        let mut call_args = vec![site_bits, class_bits, self_bits, name_ptr, name_len];
-        call_args.extend_from_slice(&extra_args);
-        let call = builder.ins().call(local, &call_args);
+        let call = builder.ins().call(local, &words);
+        builder.inst_results(call)[0]
+    } else {
+        let (args_ptr, nargs) = spill_call_arguments(&mut *builder, args);
+        let callee = SimpleBackend::import_func_id_split(
+            &mut *module,
+            &mut *import_ids,
+            "molt_call_loaded_method_spilled",
+            &[types::I64; 4],
+            &[types::I64],
+        );
+        let local = module.declare_func_in_func(callee, builder.func);
+        let call = builder
+            .ins()
+            .call(local, &[pair[0], pair[1], args_ptr, nargs]);
         builder.inst_results(call)[0]
     };
     if let Some(out__) = op.out.as_ref() {

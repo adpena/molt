@@ -1,5 +1,5 @@
 mod descriptor_ops;
-mod inline_cache_ops;
+mod method_load_ops;
 
 use crate::wasm::{WasmBackend, WasmFrameLocals};
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -21,7 +21,7 @@ pub(super) fn emit_method_op(
     if descriptor_ops::emit_method_descriptor_op(func, op, import_ids, locals, reloc_enabled) {
         return true;
     }
-    inline_cache_ops::emit_method_inline_cache_op(
+    method_load_ops::emit_method_load_op(
         backend,
         func,
         op,

@@ -9,8 +9,9 @@ fn attribute_overrides_cannot_bypass_snapshot_shape_admission() {
         (OpCode::ObjectNewBound, "_type_hint", "Point"),
         (OpCode::Call, "return_type", "int"),
         (OpCode::CallMethod, "return_type", "float"),
-        (OpCode::CallMethodIc, "return_type", "int"),
-        (OpCode::CallSuperMethodIc, "return_type", "float"),
+        (OpCode::CallLoadedMethod, "return_type", "int"),
+        (OpCode::LoadMethod, "name", "upper"),
+        (OpCode::LoadSuperMethod, "name", "compute"),
         (OpCode::CallBuiltin, "name", "len"),
         (OpCode::Copy, "_original_kind", "len"),
     ] {

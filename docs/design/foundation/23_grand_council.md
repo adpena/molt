@@ -31,7 +31,7 @@ chambers, a permanent red team, bias for people who still ship.
 | Seat | Domain | molt arc |
 |---|---|---|
 | Cliff Click | HotSpot C2, sea-of-nodes, deopt | Deopt skeleton + guarded-tier exit design |
-| Lars Bak | V8/HotSpot/Dart VM | Inline caches at industrial scale (call_method_ic lineage) |
+| Lars Bak | V8/HotSpot/Dart VM | Inline caches at industrial scale (method-load IC lineage) |
 | Urs Hölzle | Self, polymorphic inline caches | Poly-IC roadmap item — he invented them |
 | Mike Pall | LuaJIT | Definitive NaN-boxing; chief witness for value-format bake-off (#33); Luau backend lineage |
 | Vyacheslav Egorov | V8/Dart optimization forensics | Perf-cliff debugging craft (loop-IV cliff class) |
