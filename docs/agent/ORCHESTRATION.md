@@ -36,6 +36,7 @@ scratch, which never lands in a checkout. The structural audit rejects a new
 | custody root | `~/Molt` (internal NVMe) | `C:\Molt` (internal NVMe) |
 | checkout, git work, landings | `~/Molt/molt-src` (`~/Projects/molt` links to it) | `C:\Molt\molt-src` |
 | lane worktrees | `~/Molt/worktrees/<lane>` | `C:\Molt\worktrees\<lane>` |
+| build artifacts | `/Volumes/VertigoDataTier/Molt` (APFS SSD), set in `~/.zshenv` by `MOLT_EXTERNAL_ARTIFACT_ROOTS` and `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`; the custody root while the SSD is absent or has under 20 GiB free | the custody root |
 | Python commands | `uv run --python 3.12 ...` from the checkout | same |
 
 Route builds through RunContext (`tools/run_context_env.py --prefer-external-artifacts

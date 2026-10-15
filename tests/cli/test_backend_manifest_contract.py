@@ -196,6 +196,9 @@ def test_workspace_dev_dependency_wildcard_preserves_workspace_policy() -> None:
         "molt-codegen-abi": {"opt-level": 1, "debug": 0},
         "molt-artifact-publish": {"opt-level": 1, "debug": 0},
         "molt-runtime": {"opt-level": 2, "debug": 0},
+        # The maintained vendor patch is a member only so its upstream tests
+        # resolve; it keeps the dependency debug policy, not a hot override.
+        "cranelift-object": {"debug": 0},
     }
     assert expected_hot_members.keys() <= workspace_names
 

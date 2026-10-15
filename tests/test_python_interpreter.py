@@ -218,7 +218,9 @@ def test_interpreter_candidates_share_callers_remaining_probe_budget(monkeypatch
         return "", "missing", 127
 
     monkeypatch.setattr(python_interpreter, "_run_command", run)
-    monkeypatch.setattr(python_interpreter.shutil, "which", lambda name: "uv")
+    install_module_view(
+        monkeypatch, "shutil", shutil, python_interpreter, which=lambda name: "uv"
+    )
     with pytest.raises(RuntimeError) as error:
         python_interpreter.resolve_target_python_command(
             python_interpreter.parse_target_python_version("3.13"), probe_timeout=limit
