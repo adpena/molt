@@ -104,7 +104,7 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
-from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.frontend import ClassId, MoltValue, SimpleTIRGenerator
 from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from molt.source_root import compiler_source_root
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION, TargetPythonVersion
@@ -16894,9 +16894,9 @@ def test_module_lowering_context_payload_scopes_known_classes() -> None:
         entry_override=None,
         module_execution_kind="imported",
         known_classes_snapshot={
-            "MainClass": {"module": "main", "fields": {}},
-            "DepClass": {"module": "alpha", "fields": {}},
-            "UnrelatedClass": {"module": "unrelated", "fields": {}},
+            ClassId("main", "MainClass"): {"fields": {}},
+            ClassId("alpha", "DepClass"): {"fields": {}},
+            ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
         },
         parse_codec="json",
         type_hint_policy="ignore",
@@ -16921,8 +16921,11 @@ def test_module_lowering_context_payload_scopes_known_classes() -> None:
     )
 
     assert payload is not None
-    assert set(payload["known_classes"]) == {"MainClass", "DepClass"}
-    assert "UnrelatedClass" not in payload["known_classes"]
+    assert set(payload["known_classes"]) == {
+        ClassId("main", "MainClass"),
+        ClassId("alpha", "DepClass"),
+    }
+    assert ClassId("unrelated", "UnrelatedClass") not in payload["known_classes"]
 
 
 def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
@@ -16941,9 +16944,9 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
         enable_phi=True,
         known_modules=("alpha", "main", "unrelated"),
         known_classes_snapshot={
-            "MainClass": {"module": "main", "fields": {}},
-            "DepClass": {"module": "alpha", "fields": {}},
-            "UnrelatedClass": {"module": "unrelated", "fields": {}},
+            ClassId("main", "MainClass"): {"fields": {}},
+            ClassId("alpha", "DepClass"): {"fields": {}},
+            ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
         },
         stdlib_allowlist_sorted=("json",),
         known_func_defaults={
@@ -16965,7 +16968,10 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     )
 
     assert payload["known_modules"] == ["alpha", "main"]
-    assert set(payload["known_classes"]) == {"MainClass", "DepClass"}
+    assert set(payload["known_classes"]) == {
+        ClassId("main", "MainClass"),
+        ClassId("alpha", "DepClass"),
+    }
     assert set(payload["known_func_defaults"]) == {"main", "alpha"}
     assert set(payload["known_func_kinds"]) == {"main", "alpha"}
     assert payload["pgo_hot_functions"] == ["main::hot"]
@@ -17014,21 +17020,25 @@ def test_build_scoped_known_classes_snapshot_precomputes_parallel_views() -> Non
             "alpha": frozenset({"alpha"}),
         },
         known_classes_snapshot={
-            "MainClass": {"module": "main", "fields": {}},
-            "DepClass": {"module": "alpha", "fields": {}},
-            "UnrelatedClass": {"module": "unrelated", "fields": {}},
+            ClassId("main", "MainClass"): {"fields": {}},
+            ClassId("alpha", "DepClass"): {"fields": {}},
+            ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
+            ClassId("unrelated", "MainClass"): {"fields": {}},
         },
     )
 
-    assert set(scoped["main"]) == {"MainClass", "DepClass"}
-    assert set(scoped["alpha"]) == {"DepClass"}
+    assert set(scoped["main"]) == {
+        ClassId("main", "MainClass"),
+        ClassId("alpha", "DepClass"),
+    }
+    assert set(scoped["alpha"]) == {ClassId("alpha", "DepClass")}
 
 
 def test_scoped_known_classes_view_reuses_precomputed_snapshot() -> None:
     scoped = {
         "main": {
-            "MainClass": {"module": "main", "fields": {}},
-            "DepClass": {"module": "alpha", "fields": {}},
+            ClassId("main", "MainClass"): {"fields": {}},
+            ClassId("alpha", "DepClass"): {"fields": {}},
         }
     }
 
@@ -17036,8 +17046,8 @@ def test_scoped_known_classes_view_reuses_precomputed_snapshot() -> None:
         "main",
         module_deps={"main": {"alpha"}, "alpha": set()},
         known_classes_snapshot={
-            "MainClass": {"module": "main", "fields": {}},
-            "DepClass": {"module": "alpha", "fields": {}},
+            ClassId("main", "MainClass"): {"fields": {}},
+            ClassId("alpha", "DepClass"): {"fields": {}},
         },
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_known_classes_by_module=scoped,
@@ -17095,9 +17105,9 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             module_sources=module_sources,
             project_root=tmp_path,
             known_classes_snapshot={
-                "MainClass": {"module": "main", "fields": {}},
-                "DepClass": {"module": "alpha", "fields": {}},
-                "UnrelatedClass": {"module": "unrelated", "fields": {}},
+                ClassId("main", "MainClass"): {"fields": {}},
+                ClassId("alpha", "DepClass"): {"fields": {}},
+                ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
             },
             module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
@@ -17796,7 +17806,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
             pgo_hot_function_names=("main::hot",),
             type_facts=None,
         ),
-        scoped_known_classes={"MainClass": {"module": "main", "fields": {}}},
+        scoped_known_classes={ClassId("main", "MainClass"): {"fields": {}}},
         target_sys_platform=None,
     )
 
@@ -17809,7 +17819,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     assert gen.known_func_kinds == {"main": {"run": "sync"}}
     assert gen.native_python_exports == {"alpha.native_call"}
     assert gen.midend_hot_functions == {"main::hot"}
-    assert gen.classes["MainClass"]["module"] == "main"
+    assert gen.classes == {ClassId("main", "MainClass"): {"fields": {}}}
 
 
 def test_module_lowering_context_digest_for_module_reuses_precomputed_views() -> None:
@@ -19959,7 +19969,7 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
         known_func_kinds={"main": {"run": "sync"}},
         pgo_hot_function_names={"main::hot"},
         type_facts=None,
-        known_classes_snapshot={"MainClass": {"module": "main", "fields": {}}},
+        known_classes_snapshot={ClassId("main", "MainClass"): {"fields": {}}},
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         path_stat_by_module={"main": module_path.stat()},
         known_modules_sorted=("alpha", "main"),
@@ -19971,7 +19981,7 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
     assert execution_view.scoped_inputs.known_modules == ("alpha", "main")
     assert execution_view.scoped_inputs.known_func_kinds == {"main": {"run": "sync"}}
     assert execution_view.scoped_inputs.pgo_hot_function_names == ("main::hot",)
-    assert set(execution_view.scoped_known_classes) == {"MainClass"}
+    assert set(execution_view.scoped_known_classes) == {ClassId("main", "MainClass")}
 
 
 def test_choose_frontend_parallel_layer_workers_uses_precomputed_costs_and_flags(
