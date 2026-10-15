@@ -621,6 +621,7 @@ def build_shard_command(
     selection_file: Path,
     summary_file: Path,
     artifact_root: Path | None = None,
+    plan_file: Path | None = None,
 ) -> list[str]:
     """Return the canonical exact-file-list harness command for one shard."""
 
@@ -648,13 +649,19 @@ def build_shard_command(
             str(summary_file),
         ]
     if program == "regrtest":
-        if artifact_root is None:
-            raise ValueError("regrtest shard requires an artifact root")
+        if artifact_root is None or plan_file is None:
+            raise ValueError("regrtest shard requires an artifact root and its plan")
         return [
             python,
             "tools/cpython_regrtest.py",
             "--cpython-dir",
             "third_party/cpython",
+            # The transported CPython tree has no Git metadata; the shard plan
+            # is its custody (pinned commit, digest-bound test sources).
+            "--cpython-custody",
+            "shard-plan",
+            "--shard-plan",
+            str(plan_file),
             "--uv",
             "--uv-python",
             "3.12",
@@ -843,6 +850,7 @@ def run_shard(
     artifact_out: Path | None = None,
     timeout: float | None = None,
     command: Sequence[str] | None = None,
+    plan_file: Path | None = None,
 ) -> dict[str, Any]:
     validate_plan(plan, root)
     if timeout is None:
@@ -860,7 +868,7 @@ def run_shard(
             list(command)
             if command is not None
             else build_shard_command(
-                root, program, selection, summary_path, artifact_root
+                root, program, selection, summary_path, artifact_root, plan_file
             )
         )
         expanded: list[str] = []
@@ -1462,6 +1470,7 @@ def main(argv: list[str] | None = None) -> int:
                 artifact_root=args.artifact_root,
                 artifact_out=args.artifact_out,
                 command=command or None,
+                plan_file=args.plan,
             )
             print("\n".join(shard_report(raw)), flush=True)
         elif args.command == "aggregate":

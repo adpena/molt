@@ -49,11 +49,31 @@ class CPythonSource:
     git_url: str
 
 
+@dataclass(frozen=True)
+class GitCustody:
+    """The CPython directory is a Git checkout of the pinned revision."""
+
+
+@dataclass(frozen=True)
+class ShardPlanCustody:
+    """The CPython tree arrived with a Nightly shard plan, without Git metadata.
+
+    The plan binds the tree's commit to the pinned source and every selected
+    test source to its digest; the plan is the custody evidence.
+    """
+
+    plan: Path
+
+
+type CPythonCustody = GitCustody | ShardPlanCustody
+
+
 @dataclass
 class RegrtestConfig:
     repo_root: Path
     cpython_dir: Path
     cpython_source: CPythonSource
+    cpython_custody: CPythonCustody
     host_python: str
     use_uv: bool
     uv_project: Path | None
@@ -187,8 +207,23 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
     parser.add_argument(
         "--cpython-dir",
         type=Path,
-        default=REPO_ROOT / "third_party" / "cpython",
-        help="Path to a CPython checkout (default: third_party/cpython).",
+        default=None,
+        help=(
+            "the checkout of the one pinned CPython source this run uses "
+            "(default: third_party/cpython-<version>)"
+        ),
+    )
+    parser.add_argument(
+        "--cpython-custody",
+        choices=("git", "shard-plan"),
+        default="git",
+        help="how the CPython tree proves its pinned revision",
+    )
+    parser.add_argument(
+        "--shard-plan",
+        type=Path,
+        default=None,
+        help="the Nightly shard plan that is the CPython tree's custody",
     )
     parser.add_argument(
         "--clone",
@@ -462,7 +497,6 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
             parser.error(f"{args.tests_from}: exact regrtest selection is empty")
 
     repo_root = args.repo_root.resolve()
-    cpython_dir = args.cpython_dir.resolve()
     output_root = args.output_dir
     if output_root is None:
         ts = dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
@@ -491,6 +525,20 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         raise ValueError(
             "one regrtest invocation must use exactly one pinned CPython source"
         )
+    cpython_dir = (
+        args.cpython_dir
+        if args.cpython_dir is not None
+        else repo_root / "third_party" / f"cpython-{source_version}"
+    ).resolve()
+    custody: CPythonCustody
+    if args.cpython_custody == "shard-plan":
+        if args.shard_plan is None or args.clone:
+            raise ValueError("shard-plan custody requires --shard-plan and no --clone")
+        custody = ShardPlanCustody(args.shard_plan.resolve())
+    else:
+        if args.shard_plan is not None:
+            raise ValueError("--shard-plan requires --cpython-custody shard-plan")
+        custody = GitCustody()
 
     diff_paths = args.diff_path
     if args.diff and not diff_paths:
@@ -508,6 +556,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         repo_root=repo_root,
         cpython_dir=cpython_dir,
         cpython_source=sources[source_version],
+        cpython_custody=custody,
         host_python=args.host_python,
         use_uv=args.uv,
         uv_project=uv_project,
@@ -685,10 +734,29 @@ def ensure_cpython_checkout(
     cpython_dir: Path,
     source: CPythonSource,
     *,
+    custody: CPythonCustody = GitCustody(),
     allow_clone: bool,
     log_handle,
     dry_run: bool,
 ) -> None:
+    if isinstance(custody, ShardPlanCustody):
+        if dry_run:
+            return
+        from tools import nightly_sharding
+
+        plan = nightly_sharding._load_plan(custody.plan)
+        if plan.get("cpython_commit") != source.revision:
+            raise RuntimeError(
+                "Nightly shard plan does not carry the pinned CPython source: "
+                f"expected {source.revision}, plan {plan.get('cpython_commit')}"
+            )
+        expected_dir = (nightly_sharding.ROOT / "third_party" / "cpython").resolve()
+        if cpython_dir.resolve() != expected_dir:
+            raise RuntimeError(
+                f"shard-plan custody covers {expected_dir}, not {cpython_dir}"
+            )
+        return
+
     def verify_revision() -> None:
         if dry_run:
             return
@@ -1647,8 +1715,6 @@ def run_regrtest(
                 f"CPython {python_version} is not admitted by pinned source "
                 f"{config.cpython_source.python}"
             )
-        if python_version not in cpython_dir.name:
-            cpython_dir = cpython_dir.with_name(f"{cpython_dir.name}-{python_version}")
     run_config = replace(
         config,
         output_dir=output_dir,
@@ -1680,6 +1746,7 @@ def run_regrtest(
             ensure_cpython_checkout(
                 run_config.cpython_dir,
                 run_config.cpython_source,
+                custody=run_config.cpython_custody,
                 allow_clone=run_config.allow_clone,
                 log_handle=log_handle,
                 dry_run=run_config.dry_run,

@@ -250,8 +250,9 @@ def test_command_construction_uses_exact_file_lists_and_regrtest_no_diff(
     differential = nightly_sharding.build_shard_command(
         tmp_path, "differential", selection, summary
     )
+    plan_file = tmp_path / "shard-plan.json"
     regrtest = nightly_sharding.build_shard_command(
-        tmp_path, "regrtest", selection, summary, artifact_root
+        tmp_path, "regrtest", selection, summary, artifact_root, plan_file
     )
 
     assert conformance[conformance.index("--files-from") + 1] == str(selection)
@@ -259,6 +260,14 @@ def test_command_construction_uses_exact_file_lists_and_regrtest_no_diff(
     assert regrtest[regrtest.index("--tests-from") + 1] == str(selection)
     assert "--no-diff" in regrtest
     assert "--core-only" not in regrtest
+    # The transported tree has no Git metadata; its custody is the plan.
+    assert regrtest[regrtest.index("--cpython-dir") + 1] == "third_party/cpython"
+    assert regrtest[regrtest.index("--cpython-custody") + 1] == "shard-plan"
+    assert regrtest[regrtest.index("--shard-plan") + 1] == str(plan_file)
+    with pytest.raises(ValueError, match="requires an artifact root and its plan"):
+        nightly_sharding.build_shard_command(
+            tmp_path, "regrtest", selection, summary, artifact_root
+        )
 
 
 def test_item_telemetry_normalizes_harness_failure_classes() -> None:

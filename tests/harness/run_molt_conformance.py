@@ -49,7 +49,7 @@ CORPUS_DIR = _HARNESS_DIR / "corpus" / "monty_compat"
 SMOKE_MANIFEST = CORPUS_DIR / "SMOKE.txt"
 
 COMPILE_TIMEOUT = 30  # seconds per file (after warmup)
-WARMUP_TIMEOUT = 300  # seconds for the very first build (may trigger Rust recompile)
+WARMUP_TIMEOUT = 300  # seconds per build until one succeeds (runtime may recompile)
 RUN_TIMEOUT = 5  # seconds per binary
 
 
@@ -421,8 +421,9 @@ def preflight(
 ) -> bool:
     """Compile a handful of trivial files to verify Molt works.
 
-    The very first compilation may trigger a full Rust recompile of the
-    runtime library, so we use a generous timeout for the warmup build.
+    The first build that reaches the backend may compile the Rust runtime.
+    A file the frontend rejects returns before that, so every build keeps the
+    warmup budget until one build has succeeded and the runtime is warm.
     """
     candidates = _pick_preflight_files(test_files)
     if not candidates:
@@ -433,7 +434,7 @@ def preflight(
 
     ok = 0
     for i, f in enumerate(candidates):
-        timeout = WARMUP_TIMEOUT if i == 0 else COMPILE_TIMEOUT
+        timeout = WARMUP_TIMEOUT if ok == 0 else COMPILE_TIMEOUT
         out = tmpdir / f"preflight_{f.stem}"
         try:
             t0 = time.monotonic()

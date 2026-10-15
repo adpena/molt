@@ -55,3 +55,82 @@ def test_junit_aggregates_module_status_and_duration(tmp_path: Path):
         {"path": "test_int", "status": "skipped", "duration_s": 0.5},
         {"path": "test_math", "status": "failed", "duration_s": 1.0},
     ]
+
+
+def _selection(tmp_path: Path) -> str:
+    selection = tmp_path / "selection.txt"
+    selection.write_text("test_math\n", encoding="utf-8")
+    return str(selection)
+
+
+def test_an_explicit_cpython_dir_is_the_checkout_used(tmp_path: Path):
+    # Nightly 38652601508: `--cpython-dir third_party/cpython` became
+    # `third_party/cpython-3.12` by a name-containment rule, so every regrtest
+    # shard failed before running a test.
+    given = tmp_path / "cpython"
+    explicit = cpython_regrtest.parse_args(
+        ["--uv", "--uv-python", "3.12", "--cpython-dir", str(given)]
+        + ["--tests-from", _selection(tmp_path), "--no-diff"]
+    )
+    assert explicit.cpython_dir == given.resolve()
+    default = cpython_regrtest.parse_args(
+        [
+            "--uv",
+            "--uv-python",
+            "3.12",
+            "--tests-from",
+            _selection(tmp_path),
+            "--no-diff",
+        ]
+    )
+    assert default.cpython_dir.name == "cpython-3.12"
+    assert isinstance(default.cpython_custody, cpython_regrtest.GitCustody)
+
+
+def test_shard_plan_custody_needs_its_plan_and_no_clone(tmp_path: Path):
+    base = ["--tests-from", _selection(tmp_path), "--no-diff"]
+    plan = tmp_path / "plan.json"
+    config = cpython_regrtest.parse_args(
+        base + ["--cpython-custody", "shard-plan", "--shard-plan", str(plan)]
+    )
+    assert config.cpython_custody == cpython_regrtest.ShardPlanCustody(plan.resolve())
+    with pytest.raises(ValueError, match="requires --shard-plan"):
+        cpython_regrtest.parse_args(base + ["--cpython-custody", "shard-plan"])
+    with pytest.raises(ValueError, match="requires --shard-plan"):
+        cpython_regrtest.parse_args(
+            base
+            + ["--cpython-custody", "shard-plan", "--shard-plan", str(plan), "--clone"]
+        )
+    with pytest.raises(ValueError, match="requires --cpython-custody shard-plan"):
+        cpython_regrtest.parse_args(base + ["--shard-plan", str(plan)])
+
+
+def test_shard_plan_custody_admits_only_the_pinned_plan_tree(monkeypatch, tmp_path):
+    from tools import nightly_sharding
+
+    source = next(iter(cpython_regrtest.load_cpython_sources().values()))
+    plan_commit = {"value": source.revision}
+    monkeypatch.setattr(
+        nightly_sharding,
+        "_load_plan",
+        lambda path: {"cpython_commit": plan_commit["value"]},
+    )
+    custody = cpython_regrtest.ShardPlanCustody(tmp_path / "plan.json")
+    tree = nightly_sharding.ROOT / "third_party" / "cpython"
+
+    def check(directory: Path) -> None:
+        cpython_regrtest.ensure_cpython_checkout(
+            directory,
+            source,
+            custody=custody,
+            allow_clone=False,
+            log_handle=None,
+            dry_run=False,
+        )
+
+    check(tree)
+    with pytest.raises(RuntimeError, match="covers"):
+        check(tmp_path / "elsewhere")
+    plan_commit["value"] = "0" * 40
+    with pytest.raises(RuntimeError, match="does not carry the pinned CPython source"):
+        check(tree)
