@@ -16,7 +16,7 @@ from tests.process_guard_common import run_guarded_test_process
 from tests.tools.verified_subset_fixtures import synthetic_validation
 from tests.tools.receipt_engine_fixtures import install_observed_runtime
 from tests.tools.perf_scoreboard_fixtures import write_synthetic_build_observation
-from tools import perf_scoreboard, release_exit_gate, verified_subset
+from tools import perf_scoreboard, proof_plan, release_exit_gate, verified_subset
 from tools.compat import comparison, test_policy
 
 
@@ -918,6 +918,32 @@ def test_verify_rejects_registry_snapshot_drift_from_checked_out_source(
         "release-exit registry differs from the checked-out canonical scientific "
         "registry" in report.problems
     )
+
+
+def test_main_tier_proof_rows_produce_each_e4_receipt() -> None:
+    plan = proof_plan.ProofPlan.load()
+    for kind in sorted(release_exit_gate.E4_KINDS):
+        tool = release_exit_gate.rcr.KIND_TO_TOOL[kind]
+        runs = [command for command in plan.commands if tool in command.argv]
+        producers = [
+            command
+            for command in runs
+            if "main" in command.data["tiers"] and "--receipt" in command.argv
+        ]
+        assert len(producers) == 1, (kind, [command.id for command in producers])
+        producer = producers[0]
+        argv = list(producer.argv)
+        receipt = argv[argv.index("--receipt") + 1]
+        assert producer.evidence_outputs == (receipt,)
+        assert (
+            argv[argv.index("--source-sha") + 1]
+            == proof_plan.PROOF_SOURCE_COMMIT_PLACEHOLDER
+        )
+        # Pull requests still gate on the same tool without a receipt.
+        assert any(
+            "pr" in command.data["tiers"] and "--receipt" not in command.argv
+            for command in runs
+        ), kind
 
 
 @pytest.mark.parametrize("count_key", ("e1_receipts", "e4_receipts"))

@@ -508,6 +508,18 @@ def _proof_command_registry() -> dict[str, object]:
             named_entrypoints.setdefault(entrypoint, []).append(lane.id)
     for command in plan.commands:
         argv = tuple(str(value) for value in command.argv)
+        entrypoint = _command_entrypoint(argv)
+        if entrypoint is not None:
+            entrypoints.setdefault(entrypoint, []).append(command.id)
+        if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
+            _prefix, payload = _uv_prefix_and_payload(argv)
+            payload_name = _basename(payload[0])
+            if not _PYTHON_COMMAND.fullmatch(payload_name):
+                console_tools.setdefault(payload_name, set()).update(command.toolchains)
+        if command.binds_source_commit:
+            # Only the plan executor can bind the verified checkout commit, so
+            # neither the template nor a hand-bound argv is admitted ad hoc.
+            continue
         declared = tuple(command.toolchains)
         existing = exact.get(argv)
         if existing is None:
@@ -527,14 +539,6 @@ def _proof_command_registry() -> dict[str, object]:
             ids = existing["ids"]
             assert isinstance(ids, list)
             ids.append(command.id)
-        entrypoint = _command_entrypoint(argv)
-        if entrypoint is not None:
-            entrypoints.setdefault(entrypoint, []).append(command.id)
-        if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
-            _prefix, payload = _uv_prefix_and_payload(argv)
-            payload_name = _basename(payload[0])
-            if not _PYTHON_COMMAND.fullmatch(payload_name):
-                console_tools.setdefault(payload_name, set()).update(command.toolchains)
     return {
         "exact": exact,
         "named": named,

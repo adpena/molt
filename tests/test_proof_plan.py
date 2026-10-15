@@ -3540,6 +3540,132 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
     assert "evidence output is missing" in missing_record["evidence_error"]
 
 
+def test_executor_binds_the_verified_checkout_commit_into_source_bound_argv(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        proof_receipts, "_evidence_path", lambda root, relative: tmp_path / relative
+    )
+    relative = "proof-receipts/evidence/tests/bound-source.txt"
+    output = tmp_path / relative
+    producer = _synthetic_executor_command("synthetic.source-bound")
+    producer = replace(
+        producer,
+        data={
+            **producer.data,
+            "timeout_seconds": _REAL_CHILD_DEADLINE_SECONDS,
+            "evidence_outputs": [relative],
+            # The child writes back the argument it actually received.
+            "argv": [
+                sys.executable,
+                "-c",
+                "import pathlib, sys; "
+                f"pathlib.Path({str(output)!r}).write_text(sys.argv[1], "
+                "encoding='utf-8')",
+                proof_plan.PROOF_SOURCE_COMMIT_PLACEHOLDER,
+            ],
+        },
+    )
+    assert producer.binds_source_commit
+    plan = _synthetic_executor_plan((producer,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+    receipt_path = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, (producer,), receipt_path) == 0
+
+    head = run_guarded_test_process(
+        ["git", "-C", str(proof_plan.ROOT), "rev-parse", "--verify", "HEAD^{commit}"],
+        check=True,
+    ).stdout.strip()
+    assert output.read_text(encoding="utf-8") == head
+    # The receipt keeps the declared template; the commit is its own field.
+    record = json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0]
+    assert record["argv"][-1] == proof_plan.PROOF_SOURCE_COMMIT_PLACEHOLDER
+
+
+def test_source_bound_commands_bind_one_whole_placeholder_in_ci_tiers() -> None:
+    row = next(
+        command
+        for command in PLAN.commands
+        if command.id == "repository.structural-debt.receipt"
+    )
+
+    def row_errors(**changes: object) -> list[str]:
+        mutated = replace(row, data={**row.data, **changes})
+        commands = tuple(
+            mutated if command.id == row.id else command for command in PLAN.commands
+        )
+        return [
+            error
+            for error in replace(PLAN, commands=commands).validate()
+            if error.startswith(f"{row.id}:")
+        ]
+
+    assert row.binds_source_commit
+    assert row_errors() == []
+    embedded = [
+        *row.argv[:-2],
+        f"--source-sha={proof_plan.PROOF_SOURCE_COMMIT_PLACEHOLDER}",
+    ]
+    assert row_errors(argv=embedded) == [
+        f"{row.id}: '{{proof_source_commit}}' must be a whole argv element: "
+        f"'--source-sha={{proof_source_commit}}'"
+    ]
+    assert row_errors(argv=[*row.argv[:-1], "{proof_commit}"]) == [
+        f"{row.id}: unknown argv placeholder '{{proof_commit}}'"
+    ]
+    assert row_errors(tiers=["pre-push", "main"]) == [
+        f"{row.id}: a source-bound command cannot run in the pre-push tier"
+    ]
+    assert row_errors(evidence_outputs=[]) == [
+        f"{row.id}: a source-bound command must declare evidence_outputs"
+    ]
+
+
+def test_every_family_transports_its_declared_evidence() -> None:
+    row = next(
+        command
+        for command in PLAN.commands
+        if command.id == "repository.structural-debt.receipt"
+    )
+    untransported = "proof-receipts/evidence/e4/untransported.json"
+    commands = tuple(
+        replace(command, data={**command.data, "evidence_outputs": [untransported]})
+        if command.id == row.id
+        else command
+        for command in PLAN.commands
+    )
+    assert (
+        f"repository_policy: workflow artifact transport omits {untransported!r}"
+        in replace(PLAN, commands=commands).validate()
+    )
+
+
+def test_queue_admits_source_bound_commands_only_through_the_executor() -> None:
+    row = next(
+        command
+        for command in PLAN.commands
+        if command.id == "repository.structural-debt.receipt"
+    )
+    bound = [*row.argv[:-1], "0" * 40]
+    for argv in (list(row.argv), bound):
+        with pytest.raises(ValueError, match="must match its registered command"):
+            command_admission._command_registration(argv, has_python=True, has_uv=True)
+    check = next(
+        command
+        for command in PLAN.commands
+        if command.id == "repository.structural-debt"
+    )
+    kind, _toolchains, ids, _units = command_admission._command_registration(
+        list(check.argv), has_python=True, has_uv=True
+    )
+    assert (kind, ids) == ("proof-plan", ["repository.structural-debt"])
+
+
 def test_executor_schedules_dependencies_and_resources_with_deterministic_receipts(
     tmp_path: Path, monkeypatch
 ) -> None:

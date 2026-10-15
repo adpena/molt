@@ -69,6 +69,20 @@ jobs:
           path: proof-receipts/repository_policy.json
           if-no-files-found: error
 
+      # Main-tier rows write the four source-addressed E4 release criterion
+      # receipts that release-exit assembly consumes.
+      - name: Upload E4 release criterion receipts
+        if: always() && hashFiles('proof-receipts/evidence/e4/*.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-e4-receipts-${{ github.sha }}
+          path: |
+            proof-receipts/evidence/e4/canonicalization_contract.json
+            proof-receipts/evidence/e4/degrade_to_slow_gate.json
+            proof-receipts/evidence/e4/fail_closed_gate.json
+            proof-receipts/evidence/e4/structural_audit.json
+          if-no-files-found: error
+
       - name: Summarize guarded command hotspots
         if: always()
         run: python3 tools/profile_hotspots.py --limit 20

@@ -73,6 +73,11 @@ except ModuleNotFoundError:  # pragma: no cover - direct script execution
 
 DEFAULT_MANIFEST = ROOT / "tools" / "proof_plan.toml"
 NULL_SHA = "0" * 40
+# The one argv placeholder a command may use. The executor binds it to the
+# commit it verified as the proof checkout, so a source-addressed receipt names
+# the exact revision the proof ran on without a hand-supplied object ID.
+PROOF_SOURCE_COMMIT_PLACEHOLDER = "{proof_source_commit}"
+_ARGV_PLACEHOLDER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 REQUIRED_FAMILY_FIELDS = (
     "description",
     "inputs",
@@ -201,6 +206,10 @@ class ProofCommand:
     @property
     def evidence_outputs(self) -> tuple[str, ...]:
         return tuple(self.data.get("evidence_outputs", ()))
+
+    @property
+    def binds_source_commit(self) -> bool:
+        return PROOF_SOURCE_COMMIT_PLACEHOLDER in self.argv
 
 
 @dataclass(frozen=True, slots=True)
@@ -1648,6 +1657,34 @@ class ProofPlan:
                 or not all(isinstance(part, str) and part for part in argv)
             ):
                 errors.append(f"{command.id}: argv must be a non-empty string list")
+            else:
+                for part in argv:
+                    if part == PROOF_SOURCE_COMMIT_PLACEHOLDER:
+                        continue
+                    if PROOF_SOURCE_COMMIT_PLACEHOLDER in part:
+                        errors.append(
+                            f"{command.id}: {PROOF_SOURCE_COMMIT_PLACEHOLDER!r} "
+                            f"must be a whole argv element: {part!r}"
+                        )
+                    elif _ARGV_PLACEHOLDER.fullmatch(part):
+                        errors.append(
+                            f"{command.id}: unknown argv placeholder {part!r}"
+                        )
+                if command.binds_source_commit:
+                    # A source-bound command attests one commit. A developer
+                    # checkout need not be clean, and an unretained receipt
+                    # attests nothing, so it runs only in CI tiers and keeps
+                    # its output as declared evidence.
+                    if "pre-push" in (command.data.get("tiers") or ()):
+                        errors.append(
+                            f"{command.id}: a source-bound command cannot run "
+                            "in the pre-push tier"
+                        )
+                    if not command.data.get("evidence_outputs"):
+                        errors.append(
+                            f"{command.id}: a source-bound command must declare "
+                            "evidence_outputs"
+                        )
             try:
                 cargo_native_units(command.data)
             except ValueError as exc:
@@ -1808,7 +1845,10 @@ class ProofPlan:
                     ):
                         where = "" if cell is None else f" in matrix cell {cell!r}"
                         errors.append(f"{name}: tier {tier!r} gates no command{where}")
-        for family in self.scheduled_families:
+        # Declared evidence that never leaves the runner attests nothing: the
+        # owning job must transport every output as a workflow artifact.
+        scheduled_names = {family.name for family in self.scheduled_families}
+        for family in (*self.families, *self.scheduled_families):
             outputs = tuple(
                 output
                 for command in self.commands
@@ -1816,8 +1856,16 @@ class ProofPlan:
                 for output in command.evidence_outputs
             )
             if not outputs:
+                if family.name in scheduled_names:
+                    errors.append(
+                        f"{family.name}: scheduled family has no declared "
+                        "evidence outputs"
+                    )
+                continue
+            if "workflow" not in family.data or "job" not in family.data:
                 errors.append(
-                    f"{family.name}: scheduled family has no declared evidence outputs"
+                    f"{family.name}: family with evidence outputs has no "
+                    "workflow job to transport them"
                 )
                 continue
             workflow = ROOT / str(family.data["workflow"])
@@ -2212,6 +2260,17 @@ def _source_identity() -> dict[str, str]:
     if _source_commit() != commit:
         raise ValueError("checkout HEAD changed while capturing proof candidate")
     return {"commit": commit, "tree": tree}
+
+
+def resolved_command_argv(command: ProofCommand) -> tuple[str, ...]:
+    """The argv the executor launches, with the source-commit placeholder bound."""
+    if not command.binds_source_commit:
+        return command.argv
+    commit = _source_commit()
+    return tuple(
+        commit if part == PROOF_SOURCE_COMMIT_PLACEHOLDER else part
+        for part in command.argv
+    )
 
 
 def _source_tree_changes() -> tuple[str, ...]:
@@ -3336,7 +3395,7 @@ def _run_command(
     cancellation_elapsed: float | None = None
     try:
         process = _COMMANDS.start_guarded(
-            command.argv,
+            resolved_command_argv(command),
             cwd=ROOT / relative_cwd,
             env=child_env,
             timeout=timeout,

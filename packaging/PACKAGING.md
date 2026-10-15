@@ -232,6 +232,11 @@ must come from `release.yml` under the same constraints. Subject digests alone
 are not signature authentication. E1, E2 and E4 are currently typed,
 source-bound receipts, not independently signed execution attestations; release
 signing attests their verified contents, not an independent rerun.
+The main-tier `repository_policy` rows `repository.*.receipt` produce the four
+E4 receipts at each pushed `main` commit, and CI uploads them as the
+`release-e4-receipts-<sha>` artifact that `assemble` takes through
+`--e4-receipt`. `tools/proof_plan.py --run-command <row>` produces the same
+receipt from a clean local checkout.
 E4 structural receipts bind the Python audit interpreter by observed command
 and base-executable bytes, implementation, exact version, and the canonical
 `molt.python-runtime-closure.v5` inventory. That existing authority identifies

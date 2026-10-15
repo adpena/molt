@@ -1987,12 +1987,50 @@ toolchains = ["python", "uv"]
 id = "repository.fail-closed-gate"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
-tiers = ["pre-push", "pr", "main"]
+tiers = ["pre-push", "pr"]
 resource_class = "repository-policy"
 timeout_seconds = 120
 cache_domain = "uv"
 dependencies = []
 argv = ["uv", "run", "python3", "tools/fail_closed_gate.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.fail-closed-gate.receipt"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/fail_closed_gate.py", "--receipt", "proof-receipts/evidence/e4/fail_closed_gate.json", "--source-sha", "{proof_source_commit}"]
+evidence_outputs = ["proof-receipts/evidence/e4/fail_closed_gate.json"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.degrade-to-slow-gate"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/degrade_to_slow_gate.py"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.degrade-to-slow-gate.receipt"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/degrade_to_slow_gate.py", "--receipt", "proof-receipts/evidence/e4/degrade_to_slow_gate.json", "--source-sha", "{proof_source_commit}"]
+evidence_outputs = ["proof-receipts/evidence/e4/degrade_to_slow_gate.json"]
 toolchains = ["python", "uv"]
 
 # Every Rust dead-code mask and cfg corpse is waived by item with an owner,
@@ -2152,7 +2190,7 @@ toolchains = ["python", "uv"]
 id = "repository.structural-debt"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
-tiers = ["pre-push", "pr", "main"]
+tiers = ["pre-push", "pr"]
 resource_class = "repository-policy"
 timeout_seconds = 300
 cache_domain = "uv"
@@ -2161,15 +2199,41 @@ argv = ["uv", "run", "python3", "tools/structural_audit.py", "--check"]
 toolchains = ["python", "uv"]
 
 [[command]]
+id = "repository.structural-debt.receipt"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/structural_audit.py", "--receipt", "proof-receipts/evidence/e4/structural_audit.json", "--source-sha", "{proof_source_commit}"]
+evidence_outputs = ["proof-receipts/evidence/e4/structural_audit.json"]
+toolchains = ["python", "uv"]
+
+[[command]]
 id = "repository.canonicalization"
 family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
-tiers = ["pre-push", "pr", "main"]
+tiers = ["pre-push", "pr"]
 resource_class = "repository-policy"
 timeout_seconds = 300
 cache_domain = "uv"
 dependencies = []
 argv = ["uv", "run", "python3", "tools/canonicalization_contract.py", "--check"]
+toolchains = ["python", "uv"]
+
+[[command]]
+id = "repository.canonicalization.receipt"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["main"]
+resource_class = "repository-policy"
+timeout_seconds = 300
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/canonicalization_contract.py", "--receipt", "proof-receipts/evidence/e4/canonicalization_contract.json", "--source-sha", "{proof_source_commit}"]
+evidence_outputs = ["proof-receipts/evidence/e4/canonicalization_contract.json"]
 toolchains = ["python", "uv"]
 
 [[command]]

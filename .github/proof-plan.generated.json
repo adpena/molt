@@ -362,7 +362,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "e8b0543e93327f6dbb269adca7da27e7b54198dc280311152ff7bcf9d733cd17",
+  "authority_sha256": "4f5b2138a9c612c84f0c6db83d97bc785b93f79625c81bee3d584b428f8baa18",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2202,7 +2202,87 @@
       "resource_class": "repository-policy",
       "tiers": [
         "pre-push",
-        "pr",
+        "pr"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/fail_closed_gate.py",
+        "--receipt",
+        "proof-receipts/evidence/e4/fail_closed_gate.json",
+        "--source-sha",
+        "{proof_source_commit}"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/e4/fail_closed_gate.json"
+      ],
+      "family": "repository_policy",
+      "id": "repository.fail-closed-gate.receipt",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/degrade_to_slow_gate.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.degrade-to-slow-gate",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/degrade_to_slow_gate.py",
+        "--receipt",
+        "proof-receipts/evidence/e4/degrade_to_slow_gate.json",
+        "--source-sha",
+        "{proof_source_commit}"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/e4/degrade_to_slow_gate.json"
+      ],
+      "family": "repository_policy",
+      "id": "repository.degrade-to-slow-gate.receipt",
+      "resource_class": "repository-policy",
+      "tiers": [
         "main"
       ],
       "timeout_seconds": 120,
@@ -2527,7 +2607,35 @@
       "resource_class": "repository-policy",
       "tiers": [
         "pre-push",
-        "pr",
+        "pr"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/structural_audit.py",
+        "--receipt",
+        "proof-receipts/evidence/e4/structural_audit.json",
+        "--source-sha",
+        "{proof_source_commit}"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/e4/structural_audit.json"
+      ],
+      "family": "repository_policy",
+      "id": "repository.structural-debt.receipt",
+      "resource_class": "repository-policy",
+      "tiers": [
         "main"
       ],
       "timeout_seconds": 300,
@@ -2552,7 +2660,35 @@
       "resource_class": "repository-policy",
       "tiers": [
         "pre-push",
-        "pr",
+        "pr"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/canonicalization_contract.py",
+        "--receipt",
+        "proof-receipts/evidence/e4/canonicalization_contract.json",
+        "--source-sha",
+        "{proof_source_commit}"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/e4/canonicalization_contract.json"
+      ],
+      "family": "repository_policy",
+      "id": "repository.canonicalization.receipt",
+      "resource_class": "repository-policy",
+      "tiers": [
         "main"
       ],
       "timeout_seconds": 300,
@@ -7596,12 +7732,12 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1800,
-        "headroom_seconds": 900,
+        "headroom_seconds": 840,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2580,
-        "required_job_seconds": 2700,
+        "projected_makespan_seconds": 2640,
+        "required_job_seconds": 2760,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2175
+          "repository-policy": 2415
         }
       },
       "rust": {
