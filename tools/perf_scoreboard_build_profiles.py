@@ -54,42 +54,77 @@ def profile_binding_problems(
     ]
 
 
-def record_measured_backend_identity(
+def _canonical_content_identity(identity: object, fields: frozenset[str]) -> bool:
+    import re
+
+    return (
+        isinstance(identity, Mapping)
+        and set(identity) == fields
+        and isinstance(identity.get("size"), int)
+        and not isinstance(identity.get("size"), bool)
+        and identity["size"] > 0
+        and all(
+            isinstance(identity.get(k), str) and identity[k]
+            for k in fields - {"size", "sha256"}
+        )
+        and isinstance(identity.get("sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is not None
+    )
+
+
+def _measured_runtime_digest(observation: Mapping[str, object]) -> str | None:
+    """The runtime library a native link bound, or None for a lane without one."""
+    from molt.exact_json import canonical_json_sha256
+
+    if "runtime" not in observation:
+        raise ValueError("measured build observation lacks its runtime fact")
+    runtime = observation["runtime"]
+    if runtime is None:
+        return None
+    identity = runtime.get("identity") if isinstance(runtime, Mapping) else None
+    if not _canonical_content_identity(
+        identity, frozenset({"filename", "size", "sha256"})
+    ):
+        error = runtime.get("error") if isinstance(runtime, Mapping) else None
+        raise ValueError(
+            "measured build lacks a canonical runtime identity"
+            + (f": {error}" if isinstance(error, str) and error else "")
+        )
+    assert isinstance(identity, Mapping)
+    return canonical_json_sha256({"schema": 1, "runtime": dict(identity)})
+
+
+def record_measured_build_identity(
     provenance: dict, *, observation: object, backend: str, profile: str
 ) -> None:
-    """Bind lane provenance to selected compiler file publication observations.
+    """Bind lane provenance to the compiler and runtime the build observed.
 
     A pre-build alias probe may be absent or obsolete. A later probe cannot
     retrospectively establish which compiler was selected during measurement.
     """
-    import re
-    from molt.exact_json import canonical_json_sha256
+    from molt.backend_binary_identity import backend_binary_digest
 
     compiler = observation.get("compiler") if isinstance(observation, Mapping) else None
     identity = compiler.get("identity") if isinstance(compiler, Mapping) else None
-    if (
-        not isinstance(identity, Mapping)
-        or set(identity) != {"entrypoint", "content_filename", "size", "sha256"}
-        or not isinstance(identity.get("size"), int)
-        or isinstance(identity.get("size"), bool)
-        or identity["size"] <= 0
-        or not all(
-            isinstance(identity.get(k), str) and identity[k]
-            for k in ("entrypoint", "content_filename")
-        )
-        or not isinstance(identity.get("sha256"), str)
-        or re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]) is None
+    if not _canonical_content_identity(
+        identity, frozenset({"entrypoint", "content_filename", "size", "sha256"})
     ):
         raise ValueError("measured build lacks a canonical selected compiler identity")
+    assert isinstance(identity, Mapping) and isinstance(observation, Mapping)
     key = f"{backend}/{profile}"
-    digest = canonical_json_sha256({"schema": 2, "binary": dict(identity)})
+    digest = backend_binary_digest(identity)
     measured = provenance.setdefault("measured_backend_binary_identity", {})
     previous = measured.get(key)
     if previous is not None and previous != digest:
         raise ValueError(f"selected compiler changed within measured lane {key}")
+    runtime_digest = _measured_runtime_digest(observation)
+    runtimes = provenance.setdefault("runtime_identity", {})
+    if key in runtimes and runtimes[key] != runtime_digest:
+        raise ValueError(f"runtime library changed within measured lane {key}")
     provenance.setdefault(
         "backend_binary_identity_before_build",
         dict(provenance.get("backend_binary_identity", {})),
     )
     measured[key] = digest
+    runtimes[key] = runtime_digest
     provenance.setdefault("backend_binary_identity", {})[key] = digest

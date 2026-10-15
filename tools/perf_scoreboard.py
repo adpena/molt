@@ -122,6 +122,7 @@ import bench  # noqa: E402
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from sample_profile import read_self_time  # noqa: E402
+from molt.backend_binary_identity import identify_backend_binary  # noqa: E402
 from molt.backend_executable_names import is_backend_executable_name  # noqa: E402
 from perf_schema import (  # noqa: E402
     CLASS_DIMENSIONAL_WIN,
@@ -1278,28 +1279,14 @@ def _benchmark_tool_identity() -> dict[str, str | None]:
 
 
 def _backend_binary_identity_for(spec: "BackendSpec", profile: str) -> str | None:
-    """Reuse cli.py's ``_backend_binary_identity`` for the daemon backend binary.
+    """The compiler this lane would select, observed before it builds.
 
-    The backend binary identity (path|mtime_ns|size) is the SAME signal the
-    stdlib/TIR caches salt their namespace with; recording it on the board lets
-    a reader prove the artifact a number was measured against, and detect the
-    stale-cache confound class directly. If cli.py cannot be imported (it is a
-    heavy module) we degrade to None rather than fail the board.
+    It is the identity the stdlib/TIR caches salt their namespace with. The
+    measured build replaces it (``record_measured_build_identity``); a lane
+    whose compiler is not built yet has no identity to record.
     """
-    try:
-        import molt.cli as _cli  # noqa: PLC0415 - optional, heavy import
-    except Exception:  # noqa: BLE001
-        return None
-    fn = getattr(_cli, "_backend_binary_identity", None)
-    if fn is None:
-        return None
     backend_bin = _resolve_backend_binary_path(spec, profile)
-    if backend_bin is None:
-        return None
-    try:
-        return fn(backend_bin)
-    except Exception:  # noqa: BLE001
-        return None
+    return None if backend_bin is None else identify_backend_binary(backend_bin)
 
 
 def _resolve_backend_binary_path(spec: "BackendSpec", profile: str) -> Path | None:
@@ -1316,26 +1303,6 @@ def _resolve_backend_binary_path(spec: "BackendSpec", profile: str) -> Path | No
     name = "molt-backend.exe" if os.name == "nt" else "molt-backend"
     candidate = root / selection.compiler_profile / name
     return candidate if candidate.is_file() else None
-
-
-def _stdlib_cache_key_signal() -> str | None:
-    """A stable signal for the stdlib/runtime cache identity.
-
-    The full per-build ``_shared_stdlib_cache_key`` needs the program IR (only
-    available mid-build), so for board-level provenance we record the runtime
-    backend source-tree fingerprint (``_cache_fingerprint``) which is exactly
-    the ``runtime_backend`` component that key is salted with. A reader can
-    diff this across boards to know whether the runtime/codegen sources moved.
-    """
-    try:
-        import molt.cli as _cli  # noqa: PLC0415
-
-        fn = getattr(_cli, "_cache_fingerprint", None)
-        if fn is not None:
-            return str(fn())
-    except Exception:  # noqa: BLE001
-        return None
-    return None
 
 
 def gather_provenance(
@@ -1396,7 +1363,8 @@ def gather_provenance(
         "benchmark_tool_last_commit": tool.get("last_commit_sha"),
         "benchmark_tool_modified": tool_modified,
         "backend_binary_identity": backend_identities,
-        "stdlib_cache_key": _stdlib_cache_key_signal(),
+        # Measured per lane from each build's observed runtime library.
+        "runtime_identity": {},
         "authoritative": authoritative,
         "authoritative_reason": _authoritative_reason(
             diverges,
@@ -1839,6 +1807,7 @@ def _merge_boards(
     generated_at = None
     first_doc: dict | None = None
     merged_identities: dict = {}
+    merged_runtimes: dict = {}
     merged_invocations: list[dict] = []
     shard_records: list[tuple[Path, object, list]] = []
     for src in sources:
@@ -1905,7 +1874,6 @@ def _merge_boards(
                 "merge_base_sha",
                 "benchmark_tool_sha",
                 "benchmark_tool_last_commit",
-                "stdlib_cache_key",
             ):
                 if prov.get(field) != provenance.get(field):
                     incompatible.append("provenance." + field)
@@ -1945,6 +1913,11 @@ def _merge_boards(
                 )
                 return 3
             merged_identities[lane] = identity
+        for lane, runtime in prov.get("runtime_identity", {}).items():
+            if lane in merged_runtimes and merged_runtimes[lane] != runtime:
+                print(f"--merge: conflicting runtime identity {lane}", file=sys.stderr)
+                return 3
+            merged_runtimes[lane] = runtime
         for d in _flatten_cells(doc):
             cell = _cell_from_dict(d)
             key = (cell.benchmark, cell.target, cell.backend, cell.profile)
@@ -1977,6 +1950,7 @@ def _merge_boards(
     provenance.pop("shard", None)
     provenance["producer_invocations"] = merged_invocations
     provenance["backend_binary_identity"] = merged_identities
+    provenance["runtime_identity"] = merged_runtimes
     cells = list(by_key.values())
     try:
         _finalize_with_board_context(

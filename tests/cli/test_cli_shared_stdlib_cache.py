@@ -15,6 +15,7 @@ from molt.cli import native_link_plan, native_symbol_inspection
 import pytest
 
 import molt.cli as cli
+from molt.backend_binary_identity import identify_backend_binary
 from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli import backend_binary as cli_backend_binary
@@ -3049,25 +3050,25 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
 def test_backend_binary_identity_tracks_content_and_fails_safe(tmp_path: Path) -> None:
     backend_bin = tmp_path / "molt-backend"
 
-    missing = cli._backend_binary_identity(backend_bin)
+    missing = identify_backend_binary(backend_bin)
     assert missing.startswith("missing:")
 
     backend_bin.write_bytes(b"AAAA")
     os.utime(backend_bin, (1_700_000_000, 1_700_000_000))
-    ident_small = cli._backend_binary_identity(backend_bin)
+    ident_small = identify_backend_binary(backend_bin)
     assert not ident_small.startswith("missing:")
     assert ident_small != missing
 
     # A rebuild that changes content/size and bumps mtime must change identity.
     backend_bin.write_bytes(b"BBBBBBBB")
     os.utime(backend_bin, (1_700_000_010, 1_700_000_010))
-    ident_big = cli._backend_binary_identity(backend_bin)
+    ident_big = identify_backend_binary(backend_bin)
     assert ident_big != ident_small
 
     # A same-content relink does not invalidate a content-addressed cache.
     backend_bin.write_bytes(b"BBBBBBBB")
     os.utime(backend_bin, (1_700_000_020, 1_700_000_020))
-    ident_touched = cli._backend_binary_identity(backend_bin)
+    ident_touched = identify_backend_binary(backend_bin)
     assert ident_touched == ident_big
 
 
@@ -3077,7 +3078,7 @@ def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_bytes(b"old-binary")
-    before = cli._backend_binary_identity(backend_bin)
+    before = identify_backend_binary(backend_bin)
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_cache_tooling_fingerprint", lambda: "tooling"
     )
@@ -3096,7 +3097,7 @@ def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_
         backend_bin.write_bytes(b"new-binary")
     assert backend_bin.stat().st_size == metadata.st_size
     os.utime(backend_bin, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-    after = cli._backend_binary_identity(backend_bin)
+    after = identify_backend_binary(backend_bin)
     daemon_after = BACKEND_EXECUTION._backend_daemon_config_digest(
         tmp_path,
         "release",

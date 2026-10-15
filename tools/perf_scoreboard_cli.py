@@ -653,11 +653,11 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                     )
                     if cell.build_ok:
                         from perf_scoreboard_build_profiles import (
-                            record_measured_backend_identity,
+                            record_measured_build_identity,
                         )
 
                         try:
-                            record_measured_backend_identity(
+                            record_measured_build_identity(
                                 provenance,
                                 observation=cell.build_observation,
                                 backend=backend_name,

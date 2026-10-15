@@ -348,7 +348,7 @@ def _board(cells: list[ps.Cell], provenance: dict | None = None) -> dict:
         "dirty_tree": False,
         "benchmark_tool_sha": "b" * 40,
         "backend_binary_identity": {"native/release-fast": "x|1|2"},
-        "stdlib_cache_key": "deadbeef",
+        "runtime_identity": {"native/release-fast": "f" * 64},
         "authoritative": True,
     }
     if provenance is not None:
@@ -446,7 +446,7 @@ def test_board_carries_provenance_and_passes_schema() -> None:
         "dirty_tree": False,
         "benchmark_tool_sha": "b" * 40,
         "backend_binary_identity": {"native/release-fast": "x|1|2"},
-        "stdlib_cache_key": "deadbeef",
+        "runtime_identity": {"native/release-fast": "f" * 64},
         "authoritative": True,
     }
     _release_evidence(g)
@@ -920,7 +920,6 @@ def test_gather_provenance_authoritative_when_clean(monkeypatch) -> None:
             "last_commit_sha": "c",
         },
     )
-    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
     prov = ps.gather_provenance(None)
     assert prov["authoritative"] is True
     assert prov["origin_sha"] == prov["local_head_sha"]
@@ -956,7 +955,6 @@ def test_authority_requires_a_landed_revision_not_the_main_tip(
             "last_commit_sha": "c",
         },
     )
-    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
     prov = ps.gather_provenance(None)
     assert prov["authoritative"] is authoritative
     assert prov["diverges_from_origin"] is (not authoritative)
@@ -1728,7 +1726,6 @@ def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
             "last_commit_sha": "c",
         },
     )
-    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
     noisy = {
         "quiet": False,
         "reasons": ["1 active build process(es): 1:cargo"],
@@ -2081,7 +2078,6 @@ def test_print_provenance_emits_all_new_fields(capsys, monkeypatch) -> None:
             "last_commit_sha": "c",
         },
     )
-    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
     q = {
         "quiet": True,
         "reasons": [],
@@ -2101,7 +2097,7 @@ def test_print_provenance_emits_all_new_fields(capsys, monkeypatch) -> None:
         "origin_sha",
         "candidate_sha",
         "dirty_tree",
-        "stdlib_cache_key",
+        "runtime_identity",
         "backend_binary_identity",
         "active_molt_processes",
         "active_cargo_or_rustc_processes",

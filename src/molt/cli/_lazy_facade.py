@@ -109,7 +109,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_backend_artifact_source_key": ("backend_cache", "_backend_artifact_source_key"),
     "_backend_bin_path": ("backend_execution", "_backend_bin_path"),
     "_backend_bin_path_cached": ("backend_execution", "_backend_bin_path_cached"),
-    "_backend_binary_identity": ("backend_execution", "_backend_binary_identity"),
     "_backend_cache_artifact_path": ("backend_cache", "_backend_cache_artifact_path"),
     "_backend_codegen_env_digest": ("backend_execution", "_backend_codegen_env_digest"),
     "_backend_codegen_env_inputs": ("backend_execution", "_backend_codegen_env_inputs"),
