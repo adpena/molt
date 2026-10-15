@@ -2019,14 +2019,16 @@ def test_wasm_ci_uses_molt_wasm_host_for_imported_modules() -> None:
 
 
 def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
-    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    from tools.proof_plan import ProofPlan
+
+    plan = ProofPlan.load(REPO_ROOT / "tools/proof_plan.toml")
     node_policy = next(
-        policy for policy in plan["toolchain_policy"] if policy["name"] == "node"
+        policy for policy in plan.toolchain_policies if policy.name == "node"
     )
     node_families = {
-        command["family"]
-        for command in plan["command"]
-        if "node" in command["toolchains"]
+        command.family
+        for command in plan.commands
+        if "node" in plan.required_toolchains(command)
     }
     consumers = {
         "repository_policy": (".github/workflows/ci.yml", "docs-gates"),
@@ -2037,7 +2039,7 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
     }
     # setup-project resolves `pinned` from config/tool_releases.toml; the
     # plan's preflight pattern must accept exactly that version.
-    assert node_policy["setup_value"] == tool_releases.tool_release("node").version
+    assert node_policy.data["setup_value"] == tool_releases.tool_release("node").version
 
     assert node_families == set(consumers)
     for family, (workflow_path, job_name) in consumers.items():
