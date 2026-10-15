@@ -82,7 +82,10 @@ def _source_doc(cells: list[dict[str, object]], *, authoritative: bool = True) -
         "git_rev": "a" * 40,
         "provenance": {
             "authoritative": authoritative,
-            "benchmark_tool_sha": "tool" + "0" * 36,
+            "methodology_schema": "molt-perf-methodology-v1",
+            "methodology_version": 1,
+            "methodology_sha256": "d" * 64,
+            "methodology_locked": True,
         },
         "host": {
             "platform": "linux",

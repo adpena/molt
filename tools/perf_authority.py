@@ -89,7 +89,7 @@ __all__ = [
     "non_canonical_provenance",
     "release_scoreboard_problems",
     "release_cell_problems",
-    "perf_tool_identity_problems",
+    "perf_methodology_problems",
     "relative_time_delta",
     "safe_speedup",
     "scoreboard_revision_fields",
@@ -606,7 +606,7 @@ def current_scoreboard_problems(
 
     problems.extend(
         f"{label} {problem}"
-        for problem in perf_tool_identity_problems(
+        for problem in perf_methodology_problems(
             provenance if isinstance(provenance, Mapping) else {}
         )
     )
@@ -651,20 +651,26 @@ def current_scoreboard_problems(
     return problems
 
 
-def perf_tool_identity_problems(provenance: Mapping[str, Any]) -> list[str]:
-    """Historical entrypoint-only hashes do not attest the measurement family."""
-    if provenance.get("benchmark_tool_identity_schema") != "molt-perf-tool-family-v1":
+def perf_methodology_problems(provenance: Mapping[str, Any]) -> list[str]:
+    """A board names the locked methodology version that measured and judged it."""
+    if provenance.get("methodology_schema") != "molt-perf-methodology-v1":
         return [
-            "benchmark tool identity must attest molt-perf-tool-family-v1; remeasure legacy evidence"
+            "board must record the molt-perf-methodology-v1 lock; remeasure legacy evidence"
         ]
-    digest = provenance.get("benchmark_tool_sha")
+    problems = []
+    version = provenance.get("methodology_version")
+    if type(version) is not int or version < 1:
+        problems.append("methodology_version must be a positive integer")
+    digest = provenance.get("methodology_sha256")
     if (
         not isinstance(digest, str)
         or len(digest) != 64
         or any(ch not in "0123456789abcdef" for ch in digest)
     ):
-        return ["benchmark tool family identity must be a lowercase SHA256 digest"]
-    return []
+        problems.append("methodology_sha256 must be a lowercase SHA-256 digest")
+    if provenance.get("methodology_locked") is not True:
+        problems.append("methodology content was not locked to its version")
+    return problems
 
 
 def release_cell_problems(cell: Mapping[str, Any]) -> list[str]:
@@ -771,7 +777,7 @@ def release_scoreboard_problems(
         problems.append(f"{label} oracle/target mismatch: {exc}")
 
     problems.extend(
-        f"{label} {problem}" for problem in perf_tool_identity_problems(provenance)
+        f"{label} {problem}" for problem in perf_methodology_problems(provenance)
     )
 
     summary = doc.get("summary")

@@ -298,8 +298,10 @@ def _current_scoreboard_doc(**overrides: object) -> dict:
     assert isinstance(provenance, dict)
     provenance.update(
         {
-            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
-            "benchmark_tool_sha": "b" * 64,
+            "methodology_schema": "molt-perf-methodology-v1",
+            "methodology_version": 1,
+            "methodology_sha256": "d" * 64,
+            "methodology_locked": True,
             "local_head_sha": "a" * 40,
             "authoritative": True,
             "authoritative_reason": "unit-test",
@@ -539,8 +541,10 @@ def _scoreboard_payload(
         "generated_at": generated_at,
         "git_rev": git_rev,
         "provenance": {
-            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
-            "benchmark_tool_sha": "b" * 64,
+            "methodology_schema": "molt-perf-methodology-v1",
+            "methodology_version": 1,
+            "methodology_sha256": "d" * 64,
+            "methodology_locked": True,
             "local_head_sha": local_head_sha or git_rev,
             "authoritative": authoritative,
             "authoritative_reason": "unit-test",

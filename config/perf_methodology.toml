@@ -1,0 +1,127 @@
+# The perf methodology: the code and data that decide a scoreboard cell's
+# numbers and verdicts. Boards are comparable only within one `version`
+# (tools/perf_history.py identity_class). `content_sha256` locks the listed
+# files; when they change, run `python3 tools/perf_methodology.py --bump` if the
+# change can move a number or a verdict, else `--relock`.
+schema = "molt-perf-methodology-v1"
+version = 1
+content_sha256 = "662b25c2c15e0c2294a4385119af225ff78e9d50a685ac6d6e2947bbf9b555a4"
+
+[[methodology]]
+path = "tools/safe_run.py"
+role = "times each process and samples its peak RSS"
+
+[[methodology]]
+path = "tools/perf_scoreboard_measure.py"
+role = "runs the cold and warm samples for one cell"
+
+[[methodology]]
+path = "tools/perf_scoreboard_model.py"
+role = "parses timings and finalizes each cell's verdict"
+
+[[methodology]]
+path = "tools/perf_scoreboard.py"
+role = "classifies cells against CPython and the repeat interval"
+
+[[methodology]]
+path = "tools/perf_schema.py"
+role = "verdict vocabulary, thresholds and output-parity evidence"
+
+[[methodology]]
+path = "tools/perf_causality.py"
+role = "attributes a red cell to its cause class"
+
+[[methodology]]
+path = "tools/compat/comparison.py"
+role = "decides whether Molt's output matches CPython's"
+
+[[methodology]]
+path = "tools/perf_board.py"
+role = "projects cells into the gated boards"
+
+[[methodology]]
+path = "tools/perf_authority.py"
+role = "release acceptance rules a board reports"
+
+[[methodology]]
+path = "src/molt/metric_ratios.py"
+role = "speedup and ratio arithmetic"
+
+[[methodology]]
+path = "bench/scoreboard/cold_start_budget.json"
+role = "cold-start budgets per benchmark"
+
+# Modules the methodology imports that cannot move a measured number or a
+# verdict. tests/tools/test_perf_methodology.py requires every repo-local import
+# of a methodology module to be listed above or here.
+[[mechanics]]
+path = "tools/bench.py"
+reason = "builds the subject; each measured build records its compiler, runtime and selected profiles"
+
+[[mechanics]]
+path = "tools/bench_suites.py"
+reason = "suite membership is its own comparability axis (suite_hash)"
+
+[[mechanics]]
+path = "tools/harness_memory_guard.py"
+reason = "process custody: a cap breach fails the cell, it never rescales a sample"
+
+[[mechanics]]
+path = "tools/memory_guard.py"
+reason = "process custody under safe_run"
+
+[[mechanics]]
+path = "tools/perf_scoreboard_build_profiles.py"
+reason = "selects build profiles, recorded per lane as selected_profiles"
+
+[[mechanics]]
+path = "tools/perf_scoreboard_cli.py"
+reason = "argument wiring; sample counts are recorded in the board's methodology record"
+
+[[mechanics]]
+path = "tools/perf_scoreboard_profile.py"
+reason = "diagnostic cycle profiles, never a verdict input"
+
+[[mechanics]]
+path = "tools/perf_scoreboard_report.py"
+reason = "renders a finished board"
+
+[[mechanics]]
+path = "tools/perf_scoreboard_resolver.py"
+reason = "resolves benchmark paths"
+
+[[mechanics]]
+path = "tools/perf_methodology.py"
+reason = "this lock"
+
+[[mechanics]]
+path = "tools/sample_profile.py"
+reason = "diagnostic self-time profiles"
+
+[[mechanics]]
+path = "tools/git_identity.py"
+reason = "validates object ids"
+
+[[mechanics]]
+path = "src/molt/backend_binary_identity.py"
+reason = "provenance digest of the compiler bytes"
+
+[[mechanics]]
+path = "src/molt/backend_executable_names.py"
+reason = "names compiler executables for process custody"
+
+[[mechanics]]
+path = "src/molt/dx.py"
+reason = "scratch directory location for safe_run's reports"
+
+[[mechanics]]
+path = "src/molt/llvm_toolchain.py"
+reason = "locates LLVM tools for diagnostic profiles"
+
+[[mechanics]]
+path = "src/molt/python_runtime_identity.py"
+reason = "provenance identity of the oracle interpreter"
+
+[[mechanics]]
+path = "src/molt/target_python.py"
+reason = "selects the CPython oracle, recorded as host.cpython_baseline (host_class)"

@@ -498,17 +498,17 @@ def _perf_provenance() -> dict[str, object]:
         "merge_base_sha": SOURCE_SHA,
         "dirty_tree": False,
         "diverges_from_origin": False,
-        "benchmark_tool_sha": "b" * 64,
-        "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
-        "benchmark_tool_last_commit": SOURCE_SHA,
-        "benchmark_tool_modified": False,
+        "methodology_schema": "molt-perf-methodology-v1",
+        "methodology_version": 1,
+        "methodology_sha256": "d" * 64,
+        "methodology_locked": True,
         "backend_binary_identity": {
             f"{backend}/{pa.CANONICAL_PERF_PROFILE}": f"target/{backend}/backend|1|1"
             for backend in sorted(pa.CANONICAL_PERF_BACKENDS)
         },
         "runtime_identity": {"native/release-fast": "c" * 64},
         "authoritative": True,
-        "authoritative_reason": "tree == origin/main, clean, tool unmodified",
+        "authoritative_reason": "tree == origin/main, clean, methodology locked",
         "require_quiescent": True,
         "quiescent": True,
         "quiescence": {

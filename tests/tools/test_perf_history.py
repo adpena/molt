@@ -83,7 +83,10 @@ def _source_doc(
         "git_rev": git_rev,
         "provenance": {
             "authoritative": authoritative,
-            "benchmark_tool_sha": "tool" + "0" * 36,
+            "methodology_schema": "molt-perf-methodology-v1",
+            "methodology_version": 1,
+            "methodology_sha256": "d" * 64,
+            "methodology_locked": True,
         },
         "host": {
             "platform": "linux",
@@ -222,10 +225,12 @@ def test_record_is_idempotent_by_identity(tmp_path: Path) -> None:
     assert len(index) == 1
 
 
-def test_full_cli_chain_project_record_gate(tmp_path: Path) -> None:
-    """Exercise the CLI surface CI uses: write a source board, project it, record
-    the authoritative baseline, then gate a regressed candidate -> exit 1."""
+def test_full_cli_chain_project_promote_gate(tmp_path: Path, monkeypatch) -> None:
+    """Exercise the CLI surface: write a source board, project it, promote the
+    authoritative baseline, then gate a regressed candidate -> exit 1."""
     import json
+
+    monkeypatch.setattr(ph, "_revision_is_on_origin_main", lambda _rev: True)
 
     src = tmp_path / "cpython_source.json"
     src.write_text(
@@ -241,7 +246,7 @@ def test_full_cli_chain_project_record_gate(tmp_path: Path) -> None:
     rc = ph.main(
         [
             str(board_dir / "cpython_aaaaaaaaaaaa.json"),
-            "--record",
+            "--promote",
             "--history-dir",
             str(hist),
         ]
@@ -272,3 +277,77 @@ def test_full_cli_chain_project_record_gate(tmp_path: Path) -> None:
         ]
     )
     assert rc == 1  # the regression gate fails CI on the previously-green red
+
+
+def test_promotion_refuses_boards_that_cannot_be_baselines(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    on_main = {"a" * 40}
+    monkeypatch.setattr(ph, "_revision_is_on_origin_main", lambda rev: rev in on_main)
+    src = tmp_path / "source.json"
+    src.write_text(
+        json.dumps(_source_doc([_cell()], authoritative=True, git_rev="a" * 40)),
+        encoding="utf-8",
+    )
+    board_dir = tmp_path / "boards"
+    assert pb.main([str(src), "--out-dir", str(board_dir), "--no-gate", "--quiet"]) == 0
+    board = json.loads(
+        (board_dir / "cpython_aaaaaaaaaaaa.json").read_text(encoding="utf-8")
+    )
+    assert ph.promotion_problems(board) == []
+
+    off_main = {**board, "git_rev": "e" * 40}
+    assert ph.promotion_problems(off_main) == [
+        f"board revision {'e' * 12} is not on origin/main"
+    ]
+    unlocked = {
+        **board,
+        "provenance": {**board["provenance"], "methodology_locked": False},
+    }
+    assert "methodology content was not locked to its version" in (
+        ph.promotion_problems(unlocked)
+    )
+    noisy = {**board, "provenance": {**board["provenance"], "authoritative": False}}
+    assert "board is not authoritative" in ph.promotion_problems(noisy)
+
+    path = tmp_path / "noisy.json"
+    path.write_text(json.dumps(noisy), encoding="utf-8")
+    hist = tmp_path / "history"
+    assert ph.main([str(path), "--promote", "--history-dir", str(hist)]) == 2
+    assert not hist.exists()
+
+
+def test_unarmed_gate_is_reported_not_silently_passed(tmp_path: Path, capsys) -> None:
+    import json
+
+    src = tmp_path / "source.json"
+    src.write_text(
+        json.dumps(_source_doc([_cell()], authoritative=True, git_rev="a" * 40)),
+        encoding="utf-8",
+    )
+    board_dir = tmp_path / "boards"
+    assert pb.main([str(src), "--out-dir", str(board_dir), "--no-gate", "--quiet"]) == 0
+    rc = ph.main(
+        [
+            str(board_dir / "cpython_aaaaaaaaaaaa.json"),
+            "--gate",
+            "--history-dir",
+            str(tmp_path / "empty-history"),
+        ]
+    )
+    assert rc == 0
+    assert "UNARMED" in capsys.readouterr().err
+
+
+def test_history_index_bytes_do_not_depend_on_the_clock(tmp_path: Path) -> None:
+    board = pb.project_all(
+        _source_doc([_cell()], authoritative=True, git_rev="a" * 40)
+    )["cpython"]
+    first, second = tmp_path / "first", tmp_path / "second"
+    ph.record_board(board, history_dir=first)
+    ph.record_board(board, history_dir=second)
+    assert (first / "cpython" / "index.json").read_bytes() == (
+        second / "cpython" / "index.json"
+    ).read_bytes()

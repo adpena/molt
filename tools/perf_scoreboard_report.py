@@ -75,7 +75,8 @@ def print_summary(doc: dict) -> None:
     print(
         f"  origin/main = {_short(prov.get('origin_sha'))}   "
         f"local HEAD = {_short(prov.get('local_head_sha'))}   "
-        f"tool = {_short(prov.get('benchmark_tool_sha'))}"
+        f"methodology = v{prov.get('methodology_version')} "
+        f"{_short(prov.get('methodology_sha256'))}"
     )
     print(
         f"  cpython={doc['host']['cpython_baseline']}  "
@@ -575,9 +576,9 @@ def _print_provenance(provenance: dict) -> None:
     print(f"    merge_base_sha               = {p.get('merge_base_sha')}")
     print(f"    dirty_tree                   = {p.get('dirty_tree')}")
     print(f"    diverges_from_origin         = {p.get('diverges_from_origin')}")
-    print(f"    benchmark_tool_sha (on-disk) = {p.get('benchmark_tool_sha')}")
-    print(f"    benchmark_tool_last_commit   = {p.get('benchmark_tool_last_commit')}")
-    print(f"    benchmark_tool_modified      = {p.get('benchmark_tool_modified')}")
+    print(f"    methodology_version          = {p.get('methodology_version')}")
+    print(f"    methodology_sha256           = {p.get('methodology_sha256')}")
+    print(f"    methodology_locked           = {p.get('methodology_locked')}")
     print("  [backend_binary_identity (daemon / stale-cache guard)]")
     bbi = p.get("backend_binary_identity") or {}
     if bbi:

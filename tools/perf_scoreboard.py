@@ -120,6 +120,7 @@ if str(SRC_ROOT) not in sys.path:
 # binary-size / compile-time capture; bench_suites owns the curated suite.
 import bench  # noqa: E402
 import bench_suites  # noqa: E402
+import perf_methodology  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from sample_profile import read_self_time  # noqa: E402
 from molt.backend_binary_identity import identify_backend_binary  # noqa: E402
@@ -1205,79 +1206,6 @@ def _origin_main_sha() -> str | None:
     return _git_output(["rev-parse", "origin/main"])
 
 
-PERF_TOOL_IDENTITY_PATHS = (
-    "tools/perf_scoreboard.py",
-    "tools/perf_scoreboard_cli.py",
-    "tools/perf_scoreboard_model.py",
-    "tools/perf_scoreboard_build_profiles.py",
-    "tools/perf_scoreboard_measure.py",
-    "tools/perf_scoreboard_report.py",
-    "tools/perf_scoreboard_resolver.py",
-    "tools/perf_scoreboard_profile.py",
-    "tools/sample_profile.py",
-    "tools/shard_partition.py",
-    "tools/perf_authority.py",
-    "src/molt/cli/build_results.py",
-    "src/molt/cli/backend_output_pipeline.py",
-    "src/molt/toolchain_identity.py",
-    "src/molt/python_runtime_identity.py",
-    "src/molt/python_file_node_custody.py",
-    "src/molt/python_identity_common.py",
-    "src/molt/python_native_dependency_custody.py",
-    "src/molt/python_native_locations.py",
-    "src/molt/exact_json.py",
-    "tools/perf_schema.py",
-    "tools/perf_board.py",
-    "tools/bench.py",
-    "tools/bench_suites.py",
-    "tools/safe_run.py",
-    "tools/perf_calibration.py",
-    "tools/harness_memory_guard.py",
-    "tools/memory_guard.py",
-    "tools/win_job.py",
-    "src/molt/metric_ratios.py",
-    "src/molt/target_python.py",
-    "tools/memory_guard_core/process_custody.py",
-    "bench/scoreboard/cold_start_budget.json",
-)
-
-
-def _benchmark_tool_identity() -> dict[str, str | None]:
-    """Content-bound identity of the complete measurement/acceptance family.
-
-    Historical single-file hashes cannot match this versioned family manifest;
-    changing a classifier, timer or gate changes the measured tool identity.
-    """
-    import hashlib
-
-    ondisk: dict[str, str | None] = {}
-    committed: dict[str, str | None] = {}
-    for rel in PERF_TOOL_IDENTITY_PATHS:
-        ondisk[rel] = _git_output(
-            ["hash-object", f"--path={rel}", str(REPO_ROOT / rel)]
-        )
-        committed[rel] = _git_output(["rev-parse", f"HEAD:{rel}"])
-
-    def digest(blobs: dict[str, str | None]) -> str | None:
-        if any(value is None for value in blobs.values()):
-            return None
-        manifest = {"identity_schema": "molt-perf-tool-family-v1", "blobs": blobs}
-        return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
-
-    blob, head_blob = digest(ondisk), digest(committed)
-    return {
-        "path": "molt-perf-tool-family-v1",
-        "ondisk_blob_sha": blob,
-        "head_blob_sha": head_blob,
-        "last_commit_sha": _git_output(
-            ["log", "-n", "1", "--format=%H", "--", *PERF_TOOL_IDENTITY_PATHS]
-        ),
-        "modified_vs_head": str(
-            blob is None or head_blob is None or blob != head_blob
-        ).lower(),
-    }
-
-
 def _backend_binary_identity_for(spec: "BackendSpec", profile: str) -> str | None:
     """The compiler this lane would select, observed before it builds.
 
@@ -1333,8 +1261,8 @@ def gather_provenance(
         else None
     )
     dirty = bool(_git_output(["status", "--porcelain"]))
-    tool = _benchmark_tool_identity()
-    tool_modified = tool.get("modified_vs_head") == "true"
+    methodology = perf_methodology.identity()
+    methodology_unlocked = methodology["methodology_locked"] is not True
 
     # A citable measurement names a revision that has landed on main: HEAD is
     # origin/main or one of its ancestors. Main moving on while the run waits
@@ -1344,7 +1272,7 @@ def gather_provenance(
     quiet = bool(quiescence.get("quiet")) if quiescence else None
     # The quiescence component of authority only BITES when --require-quiescent.
     quiet_blocks = bool(require_quiescent and quiescence is not None and not quiet)
-    authoritative = not (diverges or dirty or tool_modified or quiet_blocks)
+    authoritative = not (diverges or dirty or methodology_unlocked or quiet_blocks)
 
     backend_identities: dict[str, str | None] = {}
     if specs_profiles:
@@ -1358,10 +1286,7 @@ def gather_provenance(
         "merge_base_sha": merge_base,
         "dirty_tree": dirty,
         "diverges_from_origin": diverges,
-        "benchmark_tool_sha": tool.get("ondisk_blob_sha"),
-        "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
-        "benchmark_tool_last_commit": tool.get("last_commit_sha"),
-        "benchmark_tool_modified": tool_modified,
+        **methodology,
         "backend_binary_identity": backend_identities,
         # Measured per lane from each build's observed runtime library.
         "runtime_identity": {},
@@ -1369,7 +1294,7 @@ def gather_provenance(
         "authoritative_reason": _authoritative_reason(
             diverges,
             dirty,
-            tool_modified,
+            methodology_unlocked,
             quiet_blocks=quiet_blocks,
             quiescence=quiescence,
         ),
@@ -1395,20 +1320,23 @@ def gather_provenance(
 def _authoritative_reason(
     diverges: bool,
     dirty: bool,
-    tool_modified: bool,
+    methodology_unlocked: bool,
     *,
     quiet_blocks: bool = False,
     quiescence: dict | None = None,
 ) -> str:
-    if not (diverges or dirty or tool_modified or quiet_blocks):
-        return "revision is on origin/main, clean, tool unmodified"
+    if not (diverges or dirty or methodology_unlocked or quiet_blocks):
+        return "revision is on origin/main, clean, methodology locked"
     parts = []
     if diverges:
         parts.append("local HEAD is not on origin/main")
     if dirty:
         parts.append("working tree is dirty")
-    if tool_modified:
-        parts.append("perf_scoreboard.py modified vs HEAD")
+    if methodology_unlocked:
+        parts.append(
+            "perf methodology content is not locked to its version "
+            "(tools/perf_methodology.py --check)"
+        )
     if quiet_blocks:
         why = "; ".join((quiescence or {}).get("reasons", [])) or "machine not quiet"
         parts.append(f"machine NOT quiescent (--require-quiescent): {why}")
@@ -1833,9 +1761,9 @@ def _merge_boards(
             print(f"--merge: invalid producer invocations in {src}", file=sys.stderr)
             return 3
         merged_invocations.extend(invocations)
-        from perf_authority import perf_tool_identity_problems
+        from perf_authority import perf_methodology_problems
 
-        identity_problems = perf_tool_identity_problems(prov)
+        identity_problems = perf_methodology_problems(prov)
         if identity_problems:
             print(
                 f"--merge: source {src}: {'; '.join(identity_problems)}",
@@ -1847,7 +1775,7 @@ def _merge_boards(
             or prov.get("dirty_tree") is not False
             or prov.get("quiescent") is not True
             or prov.get("require_quiescent") is not True
-            or prov.get("benchmark_tool_modified") is not False
+            or prov.get("methodology_locked") is not True
             or prov.get("diverges_from_origin") is not False
         ):
             print(
@@ -1872,8 +1800,8 @@ def _merge_boards(
             for field in (
                 "local_head_sha",
                 "merge_base_sha",
-                "benchmark_tool_sha",
-                "benchmark_tool_last_commit",
+                "methodology_version",
+                "methodology_sha256",
             ):
                 if prov.get(field) != provenance.get(field):
                     incompatible.append("provenance." + field)

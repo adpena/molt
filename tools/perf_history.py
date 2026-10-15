@@ -8,13 +8,16 @@ absolute red. CLAUDE.md triage priority #2 ("any previously-green benchmark that
 regressed") is only gateable if "previously-green" is a queryable FACT.
 
 Design (doc 64 §3.4):
-- ``board_identity = sha256(git_rev || benchmark_tool_blob || suite_hash ||
-  host_class)`` — content-addressed identity so a regression is compared only
-  against a board measured under the *same* tool + suite + host class (comparing
-  a Windows board to a Linux board is meaningless).
+- ``board_identity = sha256(git_rev || methodology_sha256 || suite_hash ||
+  host_class)`` addresses one stored board. A regression is compared only
+  against a board of the same ``identity_class``: methodology version
+  (``tools/perf_methodology.py``) + suite + host class (comparing a Windows
+  board to a Linux board, or two methodologies, is meaningless).
 - ``bench/scoreboard/history/<board>/<entry>.json`` + a per-board ``index.json``
-  is the durable trail. Only AUTHORITATIVE boards seed the baseline (a noisy /
-  dirty / non-quiescent board cannot become the reference, Rule 2).
+  is the durable trail, committed to the repository. ``--promote`` admits only
+  AUTHORITATIVE boards with a locked methodology whose revision is on
+  origin/main (a noisy / dirty / non-quiescent board cannot become the
+  reference, Rule 2). CI never records: its checkout is discarded.
 - ``regressions_vs_history`` compares a candidate projected board against the most
   recent authoritative history entry of the SAME identity-class: a cell that was
   PASS in history and is FAIL now is a regression with ``severity=error``. A
@@ -29,9 +32,9 @@ the no-false-positive gate of doc 64 §5).
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import json
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -39,6 +42,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HISTORY_DIR = REPO_ROOT / "bench" / "scoreboard" / "history"
+
+from command_execution import CommandExecutor  # noqa: E402
+from perf_authority import perf_methodology_problems  # noqa: E402
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # A regression is only "real" if the candidate is below baseline by more than
 # this fraction (mirrors perf_regression's slowdown sensitivity). A 5% drop that
@@ -85,16 +93,17 @@ def _iter_cell_keys(node: Any) -> list[str]:
     return out
 
 
-def board_identity(board: Mapping[str, Any]) -> str:
-    """``sha256(git_rev || benchmark_tool_blob || suite_hash || host_class)`` —
-    content-addressed board identity (doc 64 §3.4)."""
+def _methodology_field(board: Mapping[str, Any], field: str) -> str:
     prov = board.get("provenance", {})
-    tool_blob = (
-        str(prov.get("benchmark_tool_sha", "?")) if isinstance(prov, Mapping) else "?"
-    )
+    return str(prov.get(field, "?")) if isinstance(prov, Mapping) else "?"
+
+
+def board_identity(board: Mapping[str, Any]) -> str:
+    """``sha256(git_rev || methodology_sha256 || suite_hash || host_class)`` —
+    content-addressed board identity (doc 64 §3.4)."""
     parts = [
         str(board.get("git_rev", "?")),
-        tool_blob,
+        _methodology_field(board, "methodology_sha256"),
         _suite_hash(board),
         _host_class(board.get("host", {})),
     ]
@@ -102,14 +111,16 @@ def board_identity(board: Mapping[str, Any]) -> str:
 
 
 def identity_class(board: Mapping[str, Any]) -> str:
-    """The identity-class a board is comparable WITHIN (tool + suite + host,
-    *excluding* git_rev — two revs of the same tool/suite/host are comparable;
-    that comparability is the whole point of a regression gate)."""
-    prov = board.get("provenance", {})
-    tool_blob = (
-        str(prov.get("benchmark_tool_sha", "?")) if isinstance(prov, Mapping) else "?"
-    )
-    parts = [tool_blob, _suite_hash(board), _host_class(board.get("host", {}))]
+    """The identity-class a board is comparable WITHIN: methodology version +
+    suite + host, *excluding* git_rev. Two revisions measured by one methodology
+    are comparable; that comparability is the whole point of a regression gate,
+    and a refactor that keeps the version keeps it."""
+    parts = [
+        _methodology_field(board, "methodology_schema"),
+        _methodology_field(board, "methodology_version"),
+        _suite_hash(board),
+        _host_class(board.get("host", {})),
+    ]
     return hashlib.sha256("||".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
@@ -152,9 +163,13 @@ def _write_index_at(
 ) -> None:
     p = _index_path(board_name, base)
     p.parent.mkdir(parents=True, exist_ok=True)
+    # The index is committed: derive its timestamp from its entries so the
+    # same promotion always writes the same bytes.
     doc = {
         "board": board_name,
-        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "updated_at": max(
+            (str(entry.get("generated_at", "")) for entry in entries), default=""
+        ),
         "entries": list(entries),
     }
     tmp = p.with_suffix(".tmp")
@@ -183,9 +198,7 @@ def record_board(
         else False
     )
     git_rev = str(board.get("git_rev", "?"))
-    generated_at = str(
-        board.get("generated_at") or dt.datetime.now(dt.timezone.utc).isoformat()
-    )
+    generated_at = str(board.get("generated_at", ""))
     state = str(board.get("summary", {}).get("board_state", "?"))
 
     board_dir = base / board_name
@@ -399,7 +412,43 @@ def _fmt(v: float | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI — record boards into history and/or run the regression gate
+# Promotion — the only way a board becomes a committed baseline
+# ---------------------------------------------------------------------------
+
+
+def _revision_is_on_origin_main(revision: str) -> bool:
+    completed = _COMMANDS.run(
+        ["git", "merge-base", "--is-ancestor", revision, "origin/main"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def promotion_problems(board: Mapping[str, Any]) -> list[str]:
+    """Why a projected board cannot become a regression baseline."""
+    problems: list[str] = []
+    prov = board.get("provenance")
+    if not isinstance(prov, Mapping):
+        return ["board has no provenance"]
+    if prov.get("authoritative") is not True:
+        problems.append("board is not authoritative")
+    problems.extend(perf_methodology_problems(prov))
+    if not isinstance(board.get("generated_at"), str) or not board["generated_at"]:
+        problems.append("board has no generated_at")
+    revision = board.get("git_rev")
+    if not isinstance(revision, str) or len(revision) != 40:
+        problems.append("board has no full git_rev")
+    elif not _revision_is_on_origin_main(revision):
+        problems.append(f"board revision {revision[:12]} is not on origin/main")
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# CLI — promote boards into history and/or run the regression gate
 # ---------------------------------------------------------------------------
 
 
@@ -432,10 +481,10 @@ def main(argv: list[str] | None = None) -> int:
         help="projected board JSON path(s) (output of perf_board.py)",
     )
     parser.add_argument(
-        "--record",
+        "--promote",
         action="store_true",
-        help="append the board(s) to history + update the index (authoritative boards "
-        "become the regression baseline)",
+        help="record authoritative, methodology-locked boards measured on origin/main "
+        "as committed regression baselines (refuses any other board)",
     )
     parser.add_argument(
         "--gate",
@@ -469,17 +518,17 @@ def main(argv: list[str] | None = None) -> int:
         print("\n" + "=" * 100, file=sys.stderr)
         print("BOARD-vs-HISTORY REGRESSION GATE (doc 64 Phase 4)", file=sys.stderr)
         print("=" * 100, file=sys.stderr)
-        any_baseline = False
+        unarmed: list[str] = []
         for name, info in report["boards"].items():
             base_rev = info.get("baseline_git_rev")
             if base_rev is None:
+                unarmed.append(name)
                 print(
-                    f"  {name:<10} no authoritative same-class baseline in history "
-                    "(nothing to regress against)",
+                    f"  {name:<10} UNARMED: no promoted baseline of this methodology, "
+                    "suite and host class; regressions cannot be detected",
                     file=sys.stderr,
                 )
                 continue
-            any_baseline = True
             regs = info.get("regressions", [])
             print(
                 f"  {name:<10} baseline={str(base_rev)[:12]}  regressions={len(regs)}",
@@ -493,21 +542,35 @@ def main(argv: list[str] | None = None) -> int:
             print("\n  WARN drift (advisory):", file=sys.stderr)
             for w in report["warnings"]:
                 print(f"    {w}", file=sys.stderr)
-        if not any_baseline:
-            print(
-                "  (no baselines yet — record an authoritative run first to arm the gate)",
-                file=sys.stderr,
+        if unarmed:
+            message = (
+                f"history gate unarmed for {', '.join(unarmed)}: promote an "
+                "authoritative board with tools/perf_history.py --promote"
             )
+            print(f"  {message}", file=sys.stderr)
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(f"::warning title=perf history gate unarmed::{message}")
         print("=" * 100, file=sys.stderr)
         if report["gate_fails"] and not ns.no_gate:
             exit_code = 1
 
-    if ns.record:
+    if ns.promote:
+        refused = {
+            name: problems
+            for name, board in boards.items()
+            if (problems := promotion_problems(board))
+        }
+        if refused:
+            for name, problems in refused.items():
+                print(
+                    f"[perf_history] refuse to promote {name}: {'; '.join(problems)}",
+                    file=sys.stderr,
+                )
+            return 2
         for name, board in boards.items():
             entry = record_board(board, history_dir=history_dir)
-            tag = "authoritative" if entry.authoritative else "non-authoritative"
             print(
-                f"[perf_history] recorded {name} ({tag}, state={entry.board_state}) "
+                f"[perf_history] promoted {name} (state={entry.board_state}) "
                 f"-> {entry.path}",
                 file=sys.stderr,
             )

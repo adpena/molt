@@ -83,11 +83,12 @@ def _merge_source(backend, benchmark):
     doc = helpers["_board"](
         [cell],
         provenance=dict(
-            benchmark_tool_identity_schema="molt-perf-tool-family-v1",
-            benchmark_tool_sha="b" * 64,
+            methodology_schema="molt-perf-methodology-v1",
+            methodology_version=1,
+            methodology_sha256="b" * 64,
+            methodology_locked=True,
             require_quiescent=True,
             quiescent=True,
-            benchmark_tool_modified=False,
             diverges_from_origin=False,
             backend_binary_identity={backend + "/release-fast": "binary-" + backend},
         ),
@@ -128,7 +129,7 @@ def test_merge_rejects_provenance_laundering_and_overwrite(tmp_path, mutation):
     elif mutation == "quiet":
         a["provenance"]["quiescent"] = False
     elif mutation == "tool":
-        b["provenance"]["benchmark_tool_sha"] = "c" * 64
+        b["provenance"]["methodology_sha256"] = "c" * 64
     else:
         b = copy.deepcopy(a)
     rc, out = _merge(tmp_path, [a, b])
@@ -160,31 +161,6 @@ def test_gate_does_not_trust_forged_summary():
     next(iter(cell.values()))["repeat_ci_lo"] = 0.99
     doc["summary"]["gate_fails"] = False
     assert ps._gate_exit_code(doc, no_gate=False) == 1
-
-
-def test_tool_family_identity_changes_when_sibling_gate_changes(monkeypatch):
-    import perf_scoreboard as ps
-
-    changed = False
-
-    def git(args):
-        if args[0] == "log":
-            return "a" * 40
-        if (
-            changed
-            and args[0] == "hash-object"
-            and args[1] == "--path=tools/perf_authority.py"
-        ):
-            return "c" * 40
-        return "b" * 40
-
-    monkeypatch.setattr(ps, "_git_output", git)
-    original = ps._benchmark_tool_identity()
-    assert original["modified_vs_head"] == "false"
-    changed = True
-    modified = ps._benchmark_tool_identity()
-    assert modified["modified_vs_head"] == "true"
-    assert modified["ondisk_blob_sha"] != original["ondisk_blob_sha"]
 
 
 @pytest.mark.parametrize("value", [None, True, -1, float("nan"), float("inf"), "100"])
@@ -279,16 +255,22 @@ def test_wasm_measurement_build_uses_same_oracle_minor(monkeypatch, tmp_path):
     assert captured[captured.index("--target") + 1] == "wasm"
 
 
-def test_legacy_entrypoint_hash_cannot_attest_tool_family():
-    from perf_authority import perf_tool_identity_problems
+def test_board_must_name_a_locked_methodology():
+    from perf_authority import perf_methodology_problems
 
-    assert perf_tool_identity_problems({"benchmark_tool_sha": "b" * 40})
-    assert not perf_tool_identity_problems(
-        {
-            "benchmark_tool_sha": "b" * 64,
-            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
-        }
-    )
+    locked = {
+        "methodology_schema": "molt-perf-methodology-v1",
+        "methodology_version": 1,
+        "methodology_sha256": "b" * 64,
+        "methodology_locked": True,
+    }
+    assert perf_methodology_problems(locked) == []
+    assert perf_methodology_problems({"benchmark_tool_sha": "b" * 64})
+    assert perf_methodology_problems({**locked, "methodology_locked": False}) == [
+        "methodology content was not locked to its version"
+    ]
+    assert perf_methodology_problems({**locked, "methodology_version": True})
+    assert perf_methodology_problems({**locked, "methodology_sha256": "b" * 40})
 
 
 def test_build_observation_hashes_selected_bytes_without_claiming_daemon_attestation(

@@ -312,7 +312,9 @@ regression-CI) per-PR and reserves absolute-warm-RED authority for quiescent nig
 ### 3.4 FACT: board history + identity — retires "previously-green silently regressed"
 
 `bench/scoreboard/history/<board>/<board_identity>.json` + an `index.json`. `board_identity
-= sha256(git_rev || benchmark_tool_blob || suite_hash || host_class)`. The history lets the
+= sha256(git_rev || methodology_sha256 || suite_hash || host_class)`; boards compare within
+one methodology version (`config/perf_methodology.toml`), suite and host class, and only
+`tools/perf_history.py --promote` adds a baseline. The history lets the
 gate answer "was this cell green before?" as a *fact*, so the doc-51 §3 / CLAUDE.md triage
 priority #2 ("any previously-green benchmark that regressed") is gateable, not anecdotal.
 
