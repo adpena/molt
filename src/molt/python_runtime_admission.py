@@ -20,6 +20,7 @@ from molt.python_environment_identity import (
     validate_python_capture,
 )
 from molt.python_runtime_identity import (
+    BUILD_PYTHON_IDENTITY_SCHEMA,
     startup_selection_difference,
     validate_python_runtime_identity,
 )
@@ -29,8 +30,6 @@ from molt.toolchain_identity import (
     stable_executable_probe,
     _stat_identity,
 )
-
-_BUILD_PYTHON_SCHEMA = "molt.runtime-build-python.v1"
 
 
 _RESPONSE_TIMEOUT = 30.0
@@ -325,7 +324,7 @@ class BuildPythonAdmission:
                         self._executable = executable
                         self._environment = policy
                         material = {
-                            "schema": _BUILD_PYTHON_SCHEMA,
+                            "schema": BUILD_PYTHON_IDENTITY_SCHEMA,
                             "logical_name": "build_python",
                             "selected_executable": {
                                 "entrypoint": entrypoint.name.casefold()
