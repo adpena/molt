@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.compat import regrtest_results  # noqa: E402
 
 
 def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -38,6 +39,18 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         type=Path,
         default=os.environ.get("MOLT_REGRTEST_CPYTHON_DIR", ""),
         help="Path to CPython checkout.",
+    )
+    parser.add_argument(
+        "--results-jsonl",
+        type=Path,
+        default=None,
+        help="Append one row per test to this log (tools/compat/regrtest_results.py).",
+    )
+    parser.add_argument(
+        "--admit-until",
+        type=float,
+        default=None,
+        help="Wall-clock time after which no admitted test may still run.",
     )
     return parser.parse_known_args(argv)
 
@@ -184,10 +197,11 @@ def build_junit_xml(
 ) -> str:
     duration_text = f"{duration:.6f}" if duration is not None else "0.000000"
     escaped_name = escape(test_name)
-    errors = 1 if state not in {"PASSED", "SKIPPED"} else 0
-    skipped = 1 if state == "SKIPPED" else 0
+    skips = {"SKIPPED", "DID_NOT_RUN"}
+    errors = 1 if state not in {"PASSED", *skips} else 0
+    skipped = 1 if state in skips else 0
     testcase = f'<testcase name="{escaped_name}" time="{duration_text}">'
-    if state == "SKIPPED":
+    if state in skips:
         reason = skip_reason or "skipped"
         escaped_reason = escape(reason)
         testcase += f'<skipped message="{escaped_reason}">{escaped_reason}</skipped>'
@@ -223,87 +237,14 @@ def compat_skip_reason(stdout: str, stderr: str) -> str | None:
     return "MOLT_COMPAT_ERROR"
 
 
-def run_molt_test(
-    molt_cmd: str,
-    cpython_dir: Path,
+def test_result(
     test_name: str,
-    python_flags: list[str],
+    state: str,
+    duration: float | None,
+    xml_data: str,
+    errors: list[tuple[str, str]] | None,
 ) -> dict:
-    test_path = resolve_test_path(cpython_dir, test_name)
-    if test_path is None:
-        fallback = cpython_dir / "Lib" / "test" / f"{test_name}.py"
-        print(f"molt regrtest shim: test not found: {fallback}", file=sys.stderr)
-        xml_data = build_junit_xml(test_name, None, "WORKER_FAILED", "", "")
-        result = {
-            "__test_result__": "TestResult",
-            "test_name": test_name,
-            "state": "WORKER_FAILED",
-            "duration": None,
-            "xml_data": [xml_data],
-            "stats": None,
-            "errors": [(test_name, f"test not found: {fallback}")],
-            "failures": None,
-        }
-        if sys.version_info >= (3, 13):
-            result["covered_lines"] = None
-        return result
-    cmd = shlex.split(molt_cmd)
-    coverage_args = coverage_args_from_env()
-    cmd, wrapped = wrap_python_cmd(cmd, python_flags, coverage_args)
-    if (python_flags or coverage_args) and not wrapped:
-        print(
-            "molt regrtest shim: unable to apply python flags/coverage; "
-            "non-python molt-cmd",
-            file=sys.stderr,
-        )
-    module_name = module_name_from_test_path(cpython_dir, test_path)
-    if module_name and "--module" not in cmd:
-        cmd.extend(["--module", module_name])
-    else:
-        cmd.append(str(test_path))
-    env = build_env(cpython_dir)
-    start = time.perf_counter()
-    limits = harness_memory_guard.limits_from_env("MOLT_REGRTEST", env)
-    result = harness_memory_guard.guarded_completed_process(
-        cmd,
-        prefix="MOLT_REGRTEST",
-        env=env,
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        limits=limits,
-    )
-    duration = (
-        result.elapsed_s
-        if result.elapsed_s is not None
-        else time.perf_counter() - start
-    )
-    if result.returncode == 0:
-        state = "PASSED"
-        errors = None
-        skip_reason = None
-    else:
-        skip_reason = compat_skip_reason(result.stdout, result.stderr)
-        if skip_reason:
-            state = "SKIPPED"
-            errors = None
-        else:
-            state = "FAILED"
-            errors = [
-                (
-                    test_name,
-                    f"molt rc={result.returncode}\nstdout:\n{result.stdout}\n"
-                    f"stderr:\n{result.stderr}",
-                )
-            ]
-    xml_data = build_junit_xml(
-        test_name,
-        duration,
-        state,
-        result.stdout,
-        result.stderr,
-        skip_reason=skip_reason,
-    )
+    """One libregrtest ``TestResult`` in its worker JSON form."""
     result = {
         "__test_result__": "TestResult",
         "test_name": test_name,
@@ -319,11 +260,107 @@ def run_molt_test(
     return result
 
 
+def run_molt_test(
+    molt_cmd: str,
+    cpython_dir: Path,
+    test_name: str,
+    python_flags: list[str],
+    timeout: float | None,
+) -> tuple[dict, str]:
+    """Run one test under molt; return its TestResult and the reason it did not pass.
+
+    The worker owns the per-test timeout, as faulthandler does for CPython's
+    own workers: regrtest kills a worker only at min(1.5 x timeout,
+    timeout + 300 s), and that kill would not reach the molt process tree.
+    """
+    start = time.perf_counter()
+    test_path = resolve_test_path(cpython_dir, test_name)
+    if test_path is None:
+        fallback = cpython_dir / "Lib" / "test" / f"{test_name}.py"
+        print(f"molt regrtest shim: test not found: {fallback}", file=sys.stderr)
+        xml_data = build_junit_xml(test_name, None, "WORKER_FAILED", "", "")
+        duration = max(time.perf_counter() - start, 1e-6)
+        errors = [(test_name, f"test not found: {fallback}")]
+        return (
+            test_result(test_name, "WORKER_FAILED", duration, xml_data, errors),
+            "test not found",
+        )
+    cmd = shlex.split(molt_cmd)
+    coverage_args = coverage_args_from_env()
+    cmd, wrapped = wrap_python_cmd(cmd, python_flags, coverage_args)
+    if (python_flags or coverage_args) and not wrapped:
+        print(
+            "molt regrtest shim: unable to apply python flags/coverage; "
+            "non-python molt-cmd",
+            file=sys.stderr,
+        )
+    module_name = module_name_from_test_path(cpython_dir, test_path)
+    if module_name and "--module" not in cmd:
+        cmd.extend(["--module", module_name])
+    else:
+        cmd.append(str(test_path))
+    env = build_env(cpython_dir)
+    limits = harness_memory_guard.limits_from_env("MOLT_REGRTEST", env)
+    result = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_REGRTEST",
+        env=env,
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        limits=limits,
+    )
+    duration = max(
+        result.elapsed_s
+        if result.elapsed_s is not None
+        else time.perf_counter() - start,
+        1e-6,
+    )
+    skip_reason = None
+    if result.timed_out:
+        state = "TIMEOUT"
+        reason = "timeout"
+        errors = [(test_name, f"molt exceeded the {timeout:g} s test timeout")]
+    elif result.returncode == 0:
+        state = "PASSED"
+        reason = ""
+        errors = None
+    else:
+        skip_reason = compat_skip_reason(result.stdout, result.stderr)
+        if skip_reason:
+            state = "SKIPPED"
+            reason = skip_reason
+            errors = None
+        else:
+            state = "FAILED"
+            reason = f"molt rc={result.returncode}"
+            errors = [
+                (
+                    test_name,
+                    f"molt rc={result.returncode}\nstdout:\n{result.stdout}\n"
+                    f"stderr:\n{result.stderr}",
+                )
+            ]
+    xml_data = build_junit_xml(
+        test_name,
+        duration,
+        state,
+        result.stdout,
+        result.stderr,
+        skip_reason=skip_reason,
+    )
+    return test_result(test_name, state, duration, xml_data, errors), reason
+
+
 def run_worker(
     worker_json: str,
     molt_cmd: str,
     cpython_dir: Path,
     python_flags: list[str],
+    *,
+    results_jsonl: Path | None = None,
+    admit_until: float | None = None,
 ) -> int:
     try:
         payload = json.loads(worker_json)
@@ -335,7 +372,37 @@ def run_worker(
         print("molt regrtest shim: no tests in worker json", file=sys.stderr)
         return 1
     test_name = tests[0]
-    result = run_molt_test(molt_cmd, cpython_dir, test_name, python_flags)
+    # libregrtest's RunTests.timeout: the per-test bound regrtest was given.
+    timeout = payload.get("timeout")
+    if timeout is not None and (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or timeout <= 0
+    ):
+        print(f"molt regrtest shim: invalid test timeout: {timeout!r}", file=sys.stderr)
+        return 1
+    # Admit only a test that can finish before the deadline, so the run always
+    # ends and writes its summary.
+    if admit_until is not None and time.time() + (timeout or 0.0) > admit_until:
+        reason = regrtest_results.DEADLINE_REASON
+        xml_data = build_junit_xml(
+            test_name, None, "DID_NOT_RUN", "", "", skip_reason=reason
+        )
+        result = test_result(test_name, "DID_NOT_RUN", None, xml_data, None)
+    else:
+        result, reason = run_molt_test(
+            molt_cmd, cpython_dir, test_name, python_flags, timeout
+        )
+    if results_jsonl is not None:
+        errors = result["errors"] or []
+        regrtest_results.append(
+            results_jsonl,
+            test=test_name,
+            state=result["state"],
+            duration_s=result["duration"],
+            reason=reason,
+            detail=errors[0][1][-160:] if errors else "",
+        )
     sys.stdout.write("\n")
     sys.stdout.write(json.dumps(result))
     sys.stdout.flush()
@@ -374,7 +441,14 @@ def main() -> int:
             if cpython_dir is None:
                 print("molt regrtest shim: cpython dir not found", file=sys.stderr)
                 return 1
-            return run_worker(rest[idx + 2], ns.molt_cmd, cpython_dir, python_flags)
+            return run_worker(
+                rest[idx + 2],
+                ns.molt_cmd,
+                cpython_dir,
+                python_flags,
+                results_jsonl=ns.results_jsonl,
+                admit_until=ns.admit_until,
+            )
     return passthrough(rest_raw)
 
 

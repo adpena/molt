@@ -1,8 +1,11 @@
+import shlex
+import time
 from pathlib import Path
 
 import pytest
 
 from tools import cpython_regrtest
+from tools.compat import regrtest_results
 
 
 def test_tests_from_is_exact_and_disables_no_other_work_implicitly(tmp_path: Path):
@@ -33,7 +36,7 @@ def test_tests_from_rejects_ambiguous_membership(
         cpython_regrtest.parse_args(["--tests-from", str(selection), "--no-diff"])
 
 
-def test_junit_aggregates_module_status_and_duration(tmp_path: Path):
+def test_junit_names_the_failed_modules(tmp_path: Path):
     junit = tmp_path / "junit.xml"
     junit.write_text(
         '<testsuite tests="3" failures="1" errors="0" skipped="1">'
@@ -51,10 +54,7 @@ def test_junit_aggregates_module_status_and_duration(tmp_path: Path):
     summary = cpython_regrtest.parse_junit(junit)
 
     assert summary.failed_modules == ["test_math"]
-    assert summary.module_results == [
-        {"path": "test_int", "status": "skipped", "duration_s": 0.5},
-        {"path": "test_math", "status": "failed", "duration_s": 1.0},
-    ]
+    assert (summary.tests, summary.failures, summary.skipped) == (3, 1, 1)
 
 
 def _selection(tmp_path: Path) -> str:
@@ -134,3 +134,61 @@ def test_shard_plan_custody_admits_only_the_pinned_plan_tree(monkeypatch, tmp_pa
     plan_commit["value"] = "0" * 40
     with pytest.raises(RuntimeError, match="does not carry the pinned CPython source"):
         check(tree)
+
+
+def test_deadline_admission_needs_the_per_test_timeout(tmp_path: Path):
+    base = ["--tests-from", _selection(tmp_path), "--no-diff"]
+    with pytest.raises(SystemExit):
+        cpython_regrtest.parse_args(base + ["--deadline-s", "100"])
+    with pytest.raises(SystemExit):
+        cpython_regrtest.parse_args(base + ["--timeout", "60", "--deadline-s", "0"])
+
+    before = time.time()
+    config = cpython_regrtest.parse_args(
+        base + ["--timeout", "60", "--deadline-s", "100"]
+    )
+    assert config.admit_until is not None
+    assert before + 100 <= config.admit_until <= time.time() + 100
+
+
+def test_the_shim_receives_the_deadline_and_the_result_log(tmp_path: Path):
+    log = tmp_path / "results.jsonl"
+    config = cpython_regrtest.parse_args(
+        ["--tests-from", _selection(tmp_path), "--no-diff", "--timeout", "60"]
+        + ["--deadline-s", "100", "--results-jsonl", str(log)]
+    )
+    cmd = cpython_regrtest.build_regrtest_cmd(
+        config, tmp_path / "regrtest.py", [], ["python3"]
+    )
+    shim_cmd = shlex.split(cmd[cmd.index("--python") + 1])
+
+    assert shim_cmd[shim_cmd.index("--results-jsonl") + 1] == str(log)
+    assert float(shim_cmd[shim_cmd.index("--admit-until") + 1]) == config.admit_until
+    assert cmd[cmd.index("--timeout") + 1] == "60"
+
+
+def test_item_rows_come_from_the_result_log(tmp_path: Path):
+    log = tmp_path / "results.jsonl"
+    regrtest_results.append(log, test="test_math", state="PASSED", duration_s=2.0)
+    regrtest_results.append(
+        log, test="test_os", state="DID_NOT_RUN", duration_s=None, reason="deadline"
+    )
+
+    rows = cpython_regrtest.item_rows(["test_math", "test_os", "test_io"], log)
+
+    assert rows == [
+        {"path": "test_math", "status": "passed", "duration_s": 2.0, "reason": ""},
+        {
+            "path": "test_os",
+            "status": "not_run",
+            "duration_s": None,
+            "reason": "deadline",
+        },
+        # Selected but never reported: it did not run.
+        {
+            "path": "test_io",
+            "status": "not_run",
+            "duration_s": None,
+            "reason": "no result row",
+        },
+    ]

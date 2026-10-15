@@ -10,11 +10,11 @@ policy to them.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from molt.exact_json import ExactJsonError, loads_exact
+from tools.compat.item_outcome import ItemOutcome, ItemStatus
 
 RESULTS_ENV = "MOLT_DIFF_RESULTS_JSONL"
 _DETAIL_CHARS = 160
@@ -42,16 +42,6 @@ def load_rows(path: Path) -> tuple[Mapping[str, Any], ...]:
     return tuple(rows)
 
 
-@dataclass(frozen=True, slots=True)
-class DiffOutcome:
-    """One finished test: its shard status, why it did not pass, and how long it took."""
-
-    status: str  # passed | failed | errors | skipped
-    reason: str  # "" for a pass; otherwise the failure or skip class
-    detail: str
-    duration_s: float | None
-
-
 def _failure_reason(test: Mapping[str, Any], backends: list[Mapping[str, Any]]) -> str:
     tag = test.get("reason_tag")
     if tag == "xpass":
@@ -69,7 +59,7 @@ def _failure_reason(test: Mapping[str, Any], backends: list[Mapping[str, Any]]) 
     return "mismatch"
 
 
-def outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, DiffOutcome]:
+def outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, ItemOutcome]:
     """Each finished test's outcome, keyed by its repo-relative path."""
     tests: dict[str, Mapping[str, Any]] = {}
     backends: dict[str, list[Mapping[str, Any]]] = {}
@@ -83,7 +73,7 @@ def outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, DiffOutcome]:
             tests[path] = row
         else:
             raise ValueError(f"differential result row has an unknown type: {path}")
-    result: dict[str, DiffOutcome] = {}
+    result: dict[str, ItemOutcome] = {}
     for path, test in tests.items():
         rows_for_test = backends.get(path, [])
         resolved = test.get("resolved_status")
@@ -98,6 +88,7 @@ def outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, DiffOutcome]:
             ),
             "",
         )
+        status: ItemStatus
         if resolved == "pass":
             status, reason = "passed", ""
         elif resolved == "skip":
@@ -106,5 +97,5 @@ def outcomes(rows: Iterable[Mapping[str, Any]]) -> dict[str, DiffOutcome]:
             status, reason = "failed", _failure_reason(test, rows_for_test)
         else:
             status, reason = "errors", _failure_reason(test, rows_for_test)
-        result[path] = DiffOutcome(status, reason, detail, duration)
+        result[path] = ItemOutcome(status, reason, detail, duration)
     return result
