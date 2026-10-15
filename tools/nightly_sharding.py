@@ -43,7 +43,8 @@ from molt.artifact_publication import (  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools import nightly_shard_profile  # noqa: E402
 from tools.shard_partition import lpt_shards  # noqa: E402
-from tools.compat import diff_results, test_policy  # noqa: E402
+from tools.compat import diff_results, regrtest_results, test_policy  # noqa: E402
+from tools.compat.item_outcome import ITEM_STATUSES, ItemOutcome  # noqa: E402
 from molt.verified_subset import load_verified_subset_policy  # noqa: E402
 
 
@@ -52,9 +53,6 @@ EXECUTOR = CommandExecutor.for_file(__file__)
 PLAN_SCHEMA = "molt.nightly-shard-plan.v2"
 EVIDENCE_SCHEMA = "molt.nightly-shard-evidence.v2"
 AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v3"
-# An item that finished has a duration; ``not_run`` names one the shard
-# deadline or a harness failure left unfinished.
-ITEM_STATUSES = ("passed", "failed", "errors", "skipped", "not_run")
 
 
 def _shard_budgets(root: Path = ROOT) -> dict[str, tuple[int, int, int | None]]:
@@ -689,6 +687,11 @@ def build_shard_command(
             "3.12",
             "--timeout",
             str(SHARD_ITEM_TIMEOUTS_S["regrtest"]),
+            # Admit only tests that can finish, so the summary always lands.
+            "--deadline-s",
+            str(SHARD_DEADLINES_S["regrtest"] - SUMMARY_RESERVE_S),
+            "--results-jsonl",
+            "{results}",
             "--no-diff",
             "--tests-from",
             str(selection_file),
@@ -752,9 +755,11 @@ def _item_results(
             "path": path,
             "status": status,
             "duration_s": float(duration),
-            # The child's own status word is the reason until a richer
-            # authority (the differential result log) names one.
-            "reason": "" if status == "passed" else child_status,
+            # The child's own reason, else its status word; the per-test result
+            # log, when present, refines it.
+            "reason": ""
+            if status == "passed"
+            else str(row.get("reason") or child_status)[:160],
         }
     if set(by_path) != set(expected_entries):
         missing = sorted(set(expected_entries).difference(by_path))[:3]
@@ -840,10 +845,10 @@ def _validate_artifact_archive(path: Path, rows: Any) -> None:
         raise ValueError("artifact archive file closure mismatch")
 
 
-def _with_diff_outcomes(
+def _with_item_outcomes(
     items: list[dict[str, Any]] | None,
     entries: Sequence[str],
-    outcomes: Mapping[str, diff_results.DiffOutcome],
+    outcomes: Mapping[str, ItemOutcome],
     *,
     unfinished_reason: str,
 ) -> list[dict[str, Any]]:
@@ -877,7 +882,12 @@ def _with_diff_outcomes(
                     "path": path,
                     "status": "not_run",
                     "duration_s": None,
-                    "reason": unfinished_reason,
+                    # A test the harness refused at admission names why.
+                    "reason": (
+                        outcome.reason
+                        if outcome is not None and outcome.status == "not_run"
+                        else unfinished_reason
+                    ),
                 }
             )
             continue
@@ -933,9 +943,9 @@ def run_shard(
                 expanded.extend(entries)
             else:
                 expanded.append(
-                    part.replace("{selection}", str(selection)).replace(
-                        "{summary}", str(summary_path)
-                    )
+                    part.replace("{selection}", str(selection))
+                    .replace("{summary}", str(summary_path))
+                    .replace("{results}", str(results_log))
                 )
         # The differential harness appends each finished test to this log, so a
         # shard the deadline kills still names what it finished.
@@ -992,13 +1002,17 @@ def run_shard(
         unfinished = (
             "shard deadline" if returncode == 124 else (summary_error or "unfinished")
         )[:160]
-        if program == "differential" and results_log.is_file():
+        if results_log.is_file():
             try:
-                outcomes = diff_results.outcomes(diff_results.load_rows(results_log))
+                outcomes = (
+                    diff_results.outcomes(diff_results.load_rows(results_log))
+                    if program == "differential"
+                    else regrtest_results.outcomes(results_log)
+                )
             except ValueError as exc:
                 summary_error = summary_error or f"result log: {exc}"
             else:
-                items = _with_diff_outcomes(
+                items = _with_item_outcomes(
                     items, entries, outcomes, unfinished_reason=unfinished
                 )
         if items is None:

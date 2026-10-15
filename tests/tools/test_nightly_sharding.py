@@ -264,6 +264,13 @@ def test_command_construction_uses_exact_file_lists_and_regrtest_no_diff(
     assert regrtest[regrtest.index("--cpython-dir") + 1] == "third_party/cpython"
     assert regrtest[regrtest.index("--cpython-custody") + 1] == "shard-plan"
     assert regrtest[regrtest.index("--shard-plan") + 1] == str(plan_file)
+    # Admission keeps every regrtest shard inside its deadline, and the worker
+    # log keeps what it finished.
+    assert regrtest[regrtest.index("--deadline-s") + 1] == str(
+        nightly_sharding.SHARD_DEADLINES_S["regrtest"]
+        - nightly_sharding.SUMMARY_RESERVE_S
+    )
+    assert regrtest[regrtest.index("--results-jsonl") + 1] == "{results}"
     with pytest.raises(ValueError, match="requires an artifact root and its plan"):
         nightly_sharding.build_shard_command(
             tmp_path, "regrtest", selection, summary, artifact_root
@@ -691,6 +698,83 @@ def test_killed_differential_shard_keeps_the_items_it_finished(
     report = "\n".join(nightly_sharding.shard_report(raw))
     assert f"not_run/shard deadline: {len(entries) - 2}" in report
     assert "failed/build: 1" in report
+
+
+def _regrtest_repo(tmp_path: Path) -> Path:
+    """A fixture with several regrtest modules per shard."""
+    root = _repo(tmp_path)
+    for index in range(4, 24):
+        _write(
+            root / "third_party/cpython/Lib/test" / f"test_module_{index:02d}.py",
+            "x = " + "1" * (index + 1) + "\n",
+        )
+    return root
+
+
+def test_killed_regrtest_shard_keeps_finished_and_refused_tests(
+    tmp_path: Path,
+) -> None:
+    # The worker appends one row per test, including a test it refused at
+    # admission; then the run hangs past the shard deadline.
+    root = _regrtest_repo(tmp_path)
+    plan = _plan(root)
+    entries = nightly_sharding.shard_entries(plan, "regrtest", 0)
+    assert len(entries) >= 3
+    script = (
+        "import json, sys, time\n"
+        "entries = open(sys.argv[1], encoding='utf-8').read().split()\n"
+        "rows = [\n"
+        " {'test': entries[0], 'state': 'PASSED', 'duration_s': 0.5,\n"
+        "  'reason': '', 'detail': ''},\n"
+        " {'test': entries[1], 'state': 'TIMEOUT', 'duration_s': 600.0,\n"
+        "  'reason': 'timeout', 'detail': ''},\n"
+        " {'test': entries[2], 'state': 'DID_NOT_RUN', 'duration_s': None,\n"
+        "  'reason': 'deadline', 'detail': ''},\n"
+        "]\n"
+        "with open(sys.argv[2], 'a', encoding='utf-8') as log:\n"
+        "    log.write(''.join(json.dumps(row) + '\\n' for row in rows))\n"
+        "time.sleep(60)\n"
+    )
+    evidence = tmp_path / "evidence"
+    artifact_root = evidence / "artifact-tree"
+    _write(artifact_root / "regrtest.log", "partial\n")
+    raw = nightly_sharding.run_shard(
+        plan,
+        root=root,
+        program="regrtest",
+        shard_id=0,
+        raw_out=evidence / "shard-00.raw.json",
+        checkpoint_out=evidence / "shard-00.checkpoint.json",
+        artifact_root=artifact_root,
+        artifact_out=evidence / "shard-00.artifacts.zip",
+        command=[sys.executable, "-c", script, "{selection}", "{results}"],
+        timeout=5,
+    )
+
+    assert raw["returncode"] == 124
+    rows = {row["path"]: row for row in raw["item_results"]}
+    assert rows[entries[0]] == {
+        "path": entries[0],
+        "status": "passed",
+        "duration_s": 0.5,
+        "reason": "",
+    }
+    assert (rows[entries[1]]["status"], rows[entries[1]]["reason"]) == (
+        "errors",
+        "timeout",
+    )
+    assert rows[entries[2]] == {
+        "path": entries[2],
+        "status": "not_run",
+        "duration_s": None,
+        "reason": "deadline",
+    }
+    assert {rows[path]["reason"] for path in entries[3:]} <= {"shard deadline"}
+    assert (raw["passed"], raw["errors"], raw["not_run"]) == (
+        1,
+        1,
+        len(entries) - 2,
+    )
 
 
 def test_skipped_differential_items_count_toward_the_selection(

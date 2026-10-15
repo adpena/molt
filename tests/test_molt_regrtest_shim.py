@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import shlex
+import sys
+import time
 from pathlib import Path
 
 import tools.molt_regrtest_shim as shim
@@ -18,3 +22,80 @@ def test_build_env_enables_hermetic_module_roots(monkeypatch, tmp_path: Path) ->
     assert env["PYTHONNOUSERSITE"] == "1"
     assert env["MOLT_REGRTEST_CPYTHON_DIR"] == str(cpython_dir)
     assert env["MOLT_MODULE_ROOTS"] == str(cpython_lib.resolve())
+
+
+def _cpython_with_test(tmp_path: Path, name: str) -> Path:
+    cpython_dir = tmp_path / "cpython"
+    test_dir = cpython_dir / "Lib" / "test"
+    test_dir.mkdir(parents=True)
+    (test_dir / "__init__.py").write_text("", encoding="utf-8")
+    (test_dir / f"{name}.py").write_text("", encoding="utf-8")
+    return cpython_dir
+
+
+def _worker(
+    tmp_path: Path,
+    capsys,
+    code: str,
+    *,
+    timeout: float,
+    admit_until: float | None = None,
+) -> tuple[dict, dict]:
+    log = tmp_path / "results.jsonl"
+    rc = shim.run_worker(
+        json.dumps({"tests": ["test_probe"], "timeout": timeout}),
+        shlex.join([sys.executable, "-c", code]),
+        _cpython_with_test(tmp_path, "test_probe"),
+        [],
+        results_jsonl=log,
+        admit_until=admit_until,
+    )
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    (row,) = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    return result, row
+
+
+def test_worker_enforces_the_regrtest_test_timeout(tmp_path: Path, capsys) -> None:
+    # CPython's own workers stop a test at --timeout through faulthandler;
+    # regrtest kills a worker only at min(1.5 x timeout, timeout + 300 s).
+    started = time.monotonic()
+    result, row = _worker(tmp_path, capsys, "import time; time.sleep(30)", timeout=1)
+
+    assert time.monotonic() - started < 20
+    assert result["state"] == "TIMEOUT"
+    assert (row["state"], row["reason"]) == ("TIMEOUT", "timeout")
+    assert row["duration_s"] >= 1
+
+
+def test_worker_refuses_a_test_that_cannot_finish_before_the_deadline(
+    tmp_path: Path, capsys
+) -> None:
+    marker = tmp_path / "ran"
+    result, row = _worker(
+        tmp_path,
+        capsys,
+        f"open({str(marker)!r}, 'w').close()",
+        timeout=600,
+        admit_until=time.time() + 60,
+    )
+
+    assert not marker.exists()
+    assert (result["state"], result["duration"]) == ("DID_NOT_RUN", None)
+    assert row == {
+        "test": "test_probe",
+        "state": "DID_NOT_RUN",
+        "duration_s": None,
+        "reason": "deadline",
+        "detail": "",
+    }
+
+
+def test_worker_runs_and_records_an_admitted_test(tmp_path: Path, capsys) -> None:
+    result, row = _worker(
+        tmp_path, capsys, "pass", timeout=60, admit_until=time.time() + 600
+    )
+
+    assert result["state"] == "PASSED"
+    assert row["state"] == "PASSED" and row["reason"] == ""
+    assert row["duration_s"] > 0

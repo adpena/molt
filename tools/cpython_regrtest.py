@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -32,6 +33,7 @@ bind_repository_imports(__file__)
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.compat import regrtest_results  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 
 
@@ -93,6 +95,10 @@ class RegrtestConfig:
     ignore_file: Path | None
     resources: list[str]
     timeout: int | None
+    # Wall-clock time after which no admitted test may still run (--deadline-s).
+    admit_until: float | None
+    # Per-test result log (tools/compat/regrtest_results.py).
+    results_jsonl: Path | None
     junit_xml: Path
     tests: list[str]
     regrtest_args: list[str]
@@ -124,7 +130,6 @@ class RegrtestSummary:
     errors: int
     skipped: int
     failed_modules: list[str]
-    module_results: list[dict[str, object]]
     returncode: int
 
 
@@ -339,6 +344,24 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         help="Per-test timeout in seconds (regrtest --timeout).",
     )
     parser.add_argument(
+        "--deadline-s",
+        type=float,
+        default=None,
+        help=(
+            "Admit only tests whose --timeout still fits this many seconds after "
+            "start; the rest are reported DID_NOT_RUN, so the summary always lands."
+        ),
+    )
+    parser.add_argument(
+        "--results-jsonl",
+        type=Path,
+        default=None,
+        help=(
+            "Per-test result log (default: item_results.jsonl in the run's output "
+            "directory)."
+        ),
+    )
+    parser.add_argument(
         "--regrtest-arg",
         action="append",
         default=[],
@@ -494,6 +517,13 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
             tests.append(module)
         if not tests:
             parser.error(f"{args.tests_from}: exact regrtest selection is empty")
+    admit_until = None
+    if args.deadline_s is not None:
+        if args.deadline_s <= 0:
+            parser.error("--deadline-s must be positive")
+        if args.timeout is None:
+            parser.error("--deadline-s needs --timeout, which bounds every test")
+        admit_until = time.time() + args.deadline_s
 
     repo_root = args.repo_root.resolve()
     output_root = args.output_dir
@@ -576,6 +606,8 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         ignore_file=args.ignore_file,
         resources=args.resource,
         timeout=args.timeout,
+        admit_until=admit_until,
+        results_jsonl=args.results_jsonl,
         junit_xml=output_root / "junit.xml",
         tests=tests,
         regrtest_args=args.regrtest_arg,
@@ -838,6 +870,16 @@ def build_regrtest_cmd(
             shlex.join(config.molt_cmd),
             "--cpython-dir",
             str(config.cpython_dir),
+            *(
+                ("--results-jsonl", str(config.results_jsonl))
+                if config.results_jsonl is not None
+                else ()
+            ),
+            *(
+                ("--admit-until", repr(config.admit_until))
+                if config.admit_until is not None
+                else ()
+            ),
         ]
     )
     cmd = host_cmd + [str(regrtest_path), "--python", python_cmd]
@@ -873,7 +915,6 @@ def parse_junit(path: Path) -> RegrtestSummary:
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
     tests = failures = errors = skipped = 0
     failed_modules: set[str] = set()
-    module_state: dict[str, dict[str, object]] = {}
     for suite in suites:
         tests += int(suite.attrib.get("tests", 0))
         failures += int(suite.attrib.get("failures", 0))
@@ -887,29 +928,16 @@ def parse_junit(path: Path) -> RegrtestSummary:
                 f"{classname}.{name}",
             )
             module = match.group(1) if match else ""
-            if not module:
-                continue
-            state = module_state.setdefault(
-                module,
-                {"path": module, "status": "passed", "duration_s": 0.0},
-            )
-            try:
-                duration = float(case.attrib.get("time", "0"))
-            except ValueError:
-                duration = 0.0
-            state["duration_s"] = float(state["duration_s"]) + max(0.0, duration)
-            if case.find("failure") is not None or case.find("error") is not None:
-                state["status"] = "failed"
+            if module and (
+                case.find("failure") is not None or case.find("error") is not None
+            ):
                 failed_modules.add(module)
-            elif case.find("skipped") is not None and state["status"] == "passed":
-                state["status"] = "skipped"
     return RegrtestSummary(
         tests=tests,
         failures=failures,
         errors=errors,
         skipped=skipped,
         failed_modules=sorted(failed_modules),
-        module_results=[module_state[name] for name in sorted(module_state)],
         returncode=1 if failures or errors else 0,
     )
 
@@ -1477,6 +1505,35 @@ def run_property_tests(
     )
 
 
+def item_rows(tests: list[str], results_jsonl: Path | None) -> list[dict[str, object]]:
+    """One summary row per selected test, from the per-test result log.
+
+    The log is the item authority: the worker appends each row as the test
+    finishes or is refused admission. A selected test with no row did not run.
+    """
+    logged = (
+        regrtest_results.outcomes(results_jsonl)
+        if results_jsonl is not None and results_jsonl.is_file()
+        else {}
+    )
+    return [
+        {
+            "path": module,
+            "status": logged[module].status,
+            "duration_s": logged[module].duration_s,
+            "reason": logged[module].reason,
+        }
+        if module in logged
+        else {
+            "path": module,
+            "status": "not_run",
+            "duration_s": None,
+            "reason": "no result row",
+        }
+        for module in (tests or sorted(logged))
+    ]
+
+
 def write_summary(
     config: RegrtestConfig,
     summary: RegrtestSummary | None,
@@ -1489,29 +1546,7 @@ def write_summary(
     rust_coverage: RustCoverageSummary | None,
     memory_guard: dict[str, object] | None = None,
 ) -> None:
-    observed_module_results = (
-        {
-            str(item["path"]): {
-                **item,
-                "duration_s": max(float(item["duration_s"]), 1e-6),
-            }
-            for item in summary.module_results
-        }
-        if summary
-        else {}
-    )
-    item_results = [
-        observed_module_results.get(
-            module,
-            {"path": module, "status": "error", "duration_s": 1e-6},
-        )
-        for module in config.tests
-    ]
-    if not config.tests:
-        item_results = [
-            observed_module_results[module]
-            for module in sorted(observed_module_results)
-        ]
+    item_results = item_rows(config.tests, config.results_jsonl)
     payload = {
         "python_version": python_version,
         "tests": summary.tests if summary else 0,
@@ -1714,9 +1749,16 @@ def run_regrtest(
                 f"CPython {python_version} is not admitted by pinned source "
                 f"{config.cpython_source.python}"
             )
+    results_jsonl = (
+        config.results_jsonl or output_dir / regrtest_results.RESULTS_FILENAME
+    )
+    results_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    # Rows from an earlier run in this directory would read as this run's.
+    results_jsonl.write_text("", encoding="utf-8")
     run_config = replace(
         config,
         output_dir=output_dir,
+        results_jsonl=results_jsonl,
         junit_xml=output_dir / "junit.xml",
         coverage_dir=output_dir / "coverage",
         rust_coverage_dir=output_dir / "rust_coverage",

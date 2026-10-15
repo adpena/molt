@@ -830,6 +830,12 @@ type/semantics matrices; `--rust-coverage` adds `rust_coverage/` output
 you want networked downloads or dependency installs.
 The shim treats `MOLT_COMPAT_ERROR` results as skipped and records the reason
 in `junit.xml`; use `tools/cpython_regrtest_skip.txt` for intentional exclusions.
+The shim is regrtest's worker. It stops each test at regrtest's `--timeout`
+itself (CPython's own workers do this through faulthandler) and appends one row
+per test to `item_results.jsonl` (`tools/compat/regrtest_results.py`), which is
+the summary's item authority and survives a killed run. `--deadline-s` (needs
+`--timeout`) admits only tests whose timeout still fits; the rest report
+`DID_NOT_RUN` with reason `deadline`, so the run always writes its summary.
 When `--coverage` is enabled, the harness combines host regrtest coverage with
 Molt subprocess coverage (use a Python-based `--molt-cmd` to capture it). The
 shim forwards interpreter flags from regrtest to the Molt command to preserve
