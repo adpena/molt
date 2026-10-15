@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import json
 import re
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tools.import_file import molt_module_name
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,12 +20,11 @@ def _gen():
 
 
 def _generated() -> ModuleType:
-    path = _gen().OUT_PYTHON
-    spec = importlib.util.spec_from_file_location("_molt_host_capabilities_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    # The checked-in output under its one identity (HF-223); the byte-exact
+    # test proves it equals the generator's render.
+    name = molt_module_name(_gen().OUT_PYTHON)
+    assert name is not None
+    return importlib.import_module(name)
 
 
 def test_generated_outputs_are_byte_exact() -> None:

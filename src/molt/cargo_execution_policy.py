@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+# tools/command_execution.py loads this file under a per-checkout neutral
+# package (tools/import_file.py require_repository_identity, HF-223).
+__molt_neutral_authority__ = True
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import math

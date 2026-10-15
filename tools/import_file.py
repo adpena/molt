@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.machinery
 import importlib.util
 import sys
@@ -86,12 +87,64 @@ def tool_module_name(path: str | Path) -> str | None:
     return ".".join(parts) if all(part.isidentifier() for part in parts) else None
 
 
-def require_tool_identity(module_name: str, path: str | Path) -> None:
-    """Refuse to load a repository tool file under any name but its own."""
+_MOLT_ROOT = _TOOLS_ROOT.parent / "src" / "molt"
+# Molt's stdlib sources are modules of compiled programs, not of the host
+# ``molt`` package; tests load them by path under names of their own.
+_MOLT_STDLIB_ROOT = _MOLT_ROOT / "stdlib"
+# A Molt host module that may execute under a neutral name declares it with
+# this module-level literal (HF-223); the guard keeps no list of them.
+_NEUTRAL_AUTHORITY_DECLARATION = "__molt_neutral_authority__"
+
+
+def molt_module_name(path: str | Path) -> str | None:
+    """The one module name a Molt host source file executes as, else None."""
+    resolved = Path(path).resolve()
+    if (
+        resolved.suffix != ".py"
+        or not resolved.is_relative_to(_MOLT_ROOT)
+        or resolved.is_relative_to(_MOLT_STDLIB_ROOT)
+    ):
+        return None
+    parts = resolved.relative_to(_MOLT_ROOT.parent).with_suffix("").parts
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts) if all(part.isidentifier() for part in parts) else None
+
+
+def _declares_neutral_authority(path: Path) -> bool:
+    """Whether a Molt source declares itself loadable under a neutral name."""
+    for node in ast.parse(path.read_bytes(), filename=str(path)).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == _NEUTRAL_AUTHORITY_DECLARATION
+            for target in node.targets
+        ):
+            return isinstance(node.value, ast.Constant) and node.value.value is True
+    return False
+
+
+def require_repository_identity(module_name: str, path: str | Path) -> None:
+    """Refuse to load a repository host module under any name but its own.
+
+    A file under ``tools/`` is ``tools.<path>`` (HF-221) and a Molt host
+    source is ``molt.<path>`` (HF-223): loading either by path under another
+    name builds a second copy of its state and types. A Molt source that
+    declares ``__molt_neutral_authority__ = True`` may run under a neutral
+    name, because it is selected by exact file before any ``molt`` import.
+    """
     canonical = tool_module_name(path)
+    owner = "tool"
+    if canonical is None:
+        canonical = molt_module_name(path)
+        owner = "Molt"
+        if (
+            canonical is not None
+            and module_name != canonical
+            and _declares_neutral_authority(Path(path).resolve())
+        ):
+            return
     if canonical is not None and module_name != canonical:
         raise ImportError(
-            f"{path} is the repository tool module {canonical}; "
+            f"{path} is the repository {owner} module {canonical}; "
             f"import {canonical} instead of loading it by path as {module_name!r}"
         )
 
@@ -199,7 +252,7 @@ def load_module_from_path(module_name: str, path: Path) -> ModuleType:
     prior binding.
     """
 
-    require_tool_identity(module_name, path)
+    require_repository_identity(module_name, path)
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load module {module_name!r} from {path}")

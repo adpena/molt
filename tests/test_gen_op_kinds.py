@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import ast
 import importlib
-import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
 
 import pytest
+
+from tools.import_file import molt_module_name
 
 from tools.op_kinds.paths import (
     OUT_RS,
@@ -207,17 +208,6 @@ def _rust_pub_fn(src: str, name: str) -> bool:
         re.search(rf"\bpub(?:\(crate\))?\s+fn\s+{re.escape(name)}\s*\(", src)
         is not None
     )
-
-
-def _load(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec so `@dataclass` / typing introspection can resolve the
-    # module via `sys.modules[cls.__module__]` (audit_op_kinds defines dataclasses).
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _gen():
@@ -4880,7 +4870,8 @@ def test_opcode_effects_exhaustive_over_enum() -> None:
 
 
 def _load_generated_py():
-    return _load(OUT_PY, "molt_test_op_kinds_generated_py")
+    # The checked-in output under its one identity (HF-223).
+    return importlib.import_module(str(molt_module_name(OUT_PY)))
 
 
 def test_frontend_raising_kinds_match_table() -> None:
@@ -5297,15 +5288,24 @@ def test_frontend_raising_kinds_match_frontend_consumer() -> None:
     renders — the frontend emit()/visit_BinOp/visit_AugAssign now have no private
     copy. Importing the frontend lowering module must expose them identically."""
     py = _load_generated_py()
-    consumer = _load(
-        ROOT / "src/molt/frontend/lowering/op_kinds_generated.py",
-        "molt_test_op_kinds_consumer",
+    import molt.frontend  # noqa: F401  (binds every lowering mixin)
+
+    names = (
+        "RAISING_KIND_NAMES",
+        "FRONTEND_OPERATOR_OPCODE",
+        "CHECK_EXCEPTION_SKIP_KINDS",
+        "BINOP_OP_KIND",
+        "AUGASSIGN_OP_KIND",
     )
-    assert consumer.RAISING_KIND_NAMES == py.RAISING_KIND_NAMES
-    assert consumer.FRONTEND_OPERATOR_OPCODE == py.FRONTEND_OPERATOR_OPCODE
-    assert consumer.CHECK_EXCEPTION_SKIP_KINDS == py.CHECK_EXCEPTION_SKIP_KINDS
-    assert consumer.BINOP_OP_KIND == py.BINOP_OP_KIND
-    assert consumer.AUGASSIGN_OP_KIND == py.AUGASSIGN_OP_KIND
+    consumers: dict[str, list[str]] = {name: [] for name in names}
+    for module_name, module in tuple(sys.modules.items()):
+        if not module_name.startswith("molt.frontend.") or module is py:
+            continue
+        for name in names:
+            if name in vars(module):
+                assert vars(module)[name] is getattr(py, name), (module_name, name)
+                consumers[name].append(module_name)
+    assert all(consumers.values()), consumers
 
 
 @pytest.mark.parametrize("invalid", [None, 0, 1, "false", []])

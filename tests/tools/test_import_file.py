@@ -18,6 +18,7 @@ from tools.import_file import (
     bind_repository_imports,
     load_module_from_path,
     load_sibling_package_module_from_path,
+    molt_module_name,
     tool_module_name,
 )
 
@@ -713,6 +714,74 @@ def test_test_session_refuses_a_second_tool_identity() -> None:
     with pytest.raises(ImportError, match="import tools.import_file instead"):
         load_module_from_path("private_binder", source)
     assert "private_binder" not in sys.modules
+
+
+def test_molt_module_name_is_the_dotted_host_package_path() -> None:
+    molt_root = ROOT / "src" / "molt"
+    assert molt_module_name(molt_root / "dx.py") == "molt.dx"
+    assert molt_module_name(molt_root / "cli" / "__init__.py") == "molt.cli"
+    assert molt_module_name(
+        molt_root / "frontend" / "lowering" / "op_kinds_generated.py"
+    ) == ("molt.frontend.lowering.op_kinds_generated")
+    # Stdlib sources are modules of compiled programs, not of the host package.
+    assert molt_module_name(molt_root / "stdlib" / "inspect.py") is None
+    assert molt_module_name(ROOT / "tools" / "import_file.py") is None
+
+
+def test_test_session_refuses_a_second_molt_identity() -> None:
+    source = ROOT / "src" / "molt" / "target_python.py"
+    with pytest.raises(ImportError, match="import molt.target_python instead"):
+        importlib.util.spec_from_file_location("private_target_python", source)
+    assert importlib.util.spec_from_file_location("molt.target_python", source)
+    with pytest.raises(ImportError, match="import molt.target_python instead"):
+        load_module_from_path("private_target_python", source)
+    assert "private_target_python" not in sys.modules
+    # A stdlib source keeps whatever name its test gives it.
+    stdlib = ROOT / "src" / "molt" / "stdlib" / "inspect.py"
+    assert importlib.util.spec_from_file_location("molt_test_inspect", stdlib)
+
+
+def test_neutral_authorities_declare_themselves() -> None:
+    from tools.import_file import _declares_neutral_authority
+
+    molt_root = ROOT / "src" / "molt"
+    declared = {
+        path.relative_to(molt_root).as_posix()
+        for path in molt_root.rglob("*.py")
+        if not path.is_relative_to(molt_root / "stdlib")
+        and "__molt_neutral_authority__" in path.read_text(encoding="utf-8")
+        and _declares_neutral_authority(path)
+    }
+    # Each is selected by exact file before any ``molt`` import: package
+    # admission by name, the process guard (with its sibling) per checkout.
+    assert declared == {
+        "package_import_custody.py",
+        "process_guard.py",
+        "cargo_execution_policy.py",
+    }
+    assert importlib.util.spec_from_file_location(
+        "_molt_package_import_custody", molt_root / "package_import_custody.py"
+    )
+
+
+@pytest.mark.parametrize(
+    ("declaration", "neutral"),
+    [
+        ("__molt_neutral_authority__ = True\n", True),
+        ("__molt_neutral_authority__ = 1\n", False),
+        ("__molt_neutral_authority__ = flag\n", False),
+        ("def f():\n    __molt_neutral_authority__ = True\n", False),
+        ("x = 1\n", False),
+    ],
+)
+def test_neutral_authority_is_a_module_level_true_literal(
+    tmp_path: Path, declaration: str, neutral: bool
+) -> None:
+    from tools.import_file import _declares_neutral_authority
+
+    source = tmp_path / "candidate.py"
+    source.write_text(declaration, encoding="utf-8")
+    assert _declares_neutral_authority(source) is neutral
 
 
 def test_package_only_imports_do_not_need_a_by_path_binding() -> None:

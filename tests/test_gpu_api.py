@@ -2424,10 +2424,13 @@ def test_kernel_reference_context_is_lazy_and_isolated(monkeypatch):
 
 
 def _load_gpu_with_runtime(monkeypatch, *, active, symbols, loads):
-    # Execute the actual module against the existing intrinsic import boundary.
-    # Keep this module private so unrelated GPU tests retain their CPython API.
-    import importlib.util
+    # Execute the actual module against the existing intrinsic import boundary,
+    # fresh and under its own name (CPython's import_fresh_module pattern), then
+    # restore the host binding so unrelated GPU tests keep their CPython API and
+    # the process never holds a second module identity (HF-223).
+    import importlib
     import types
+    import molt
     import molt.gpu as gpu
 
     def require(name):
@@ -2439,12 +2442,14 @@ def _load_gpu_with_runtime(monkeypatch, *, active, symbols, loads):
     provider = types.ModuleType("_intrinsics")
     provider.runtime_active = lambda: active
     provider.require_intrinsic = require
-    spec = importlib.util.spec_from_file_location("_gpu_publication_test", gpu.__file__)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
     with monkeypatch.context() as local:
         local.setitem(sys.modules, "_intrinsics", provider)
-        spec.loader.exec_module(module)
+        # Record the host bindings; the context restores them on exit.
+        local.setitem(sys.modules, "molt.gpu", gpu)
+        local.setattr(molt, "gpu", gpu)
+        del sys.modules["molt.gpu"]
+        module = importlib.import_module("molt.gpu")
+    assert module is not gpu and sys.modules["molt.gpu"] is gpu
     return module
 
 

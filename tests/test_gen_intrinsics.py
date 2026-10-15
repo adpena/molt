@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from tools import gen_intrinsics
+from tools.import_file import molt_module_name
 from tools.intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
 
 
@@ -273,13 +274,7 @@ def test_all_canonical_builtin_symbols_are_ungated() -> None:
 def test_runtime_feature_gates_are_generated_from_categories() -> None:
     module = gen_intrinsics
     gates_path = ROOT / "src/molt/_runtime_feature_gates.py"
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_runtime_feature_gates", gates_path
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    gates_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gates_module)
+    gates_module = importlib.import_module(str(molt_module_name(gates_path)))
 
     expected_gates = module._load_runtime_feature_gates_from_categories()
     assert gates_module.RUNTIME_BUILTIN_SYMBOLS == frozenset(
@@ -298,13 +293,7 @@ def test_intrinsic_symbol_table_is_generated_from_manifest() -> None:
     module = gen_intrinsics
     _raw, entries = module._load_manifest()
     symbols_path = ROOT / "src/molt/_intrinsic_symbols.py"
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_intrinsic_symbols", symbols_path
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    symbols_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(symbols_module)
+    symbols_module = importlib.import_module(str(molt_module_name(symbols_path)))
 
     expected = {entry.name: entry.symbol for entry in entries}
     assert symbols_module.INTRINSIC_SYMBOL_NAMES == expected
