@@ -215,7 +215,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.value_types.insert(result_id, TirType::DynBox);
             return;
         }
-        if matches!(original_kind, Some("guarded_field_get")) && op.operands.len() >= 3 {
+        if matches!(original_kind, Some("guarded_field_get")) {
+            // operands = [obj, expected_version]; the class statement is the
+            // op's `class_definition` (HF-220).
+            assert_eq!(op.operands.len(), 2, "admitted guarded_field_get operands");
             let attr_name = op
                 .attrs
                 .get("name")
@@ -242,12 +245,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .context
                 .i64_type()
                 .const_int(offset as u64, true);
+            let definition_slot = self.class_definition_slot(op);
             let val = self.borrowed_runtime_call_value(
                 get_fn,
                 &[
                     RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Word(definition_slot.into()),
                     RuntimeArg::Operand(op.operands[1]),
-                    RuntimeArg::Operand(op.operands[2]),
                     RuntimeArg::Word(offset_bits.into()),
                     RuntimeArg::Word(attr_ptr_bits.into()),
                     RuntimeArg::Word(attr_len_bits.into()),
@@ -466,7 +470,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             return;
         }
-        if matches!(original_kind, Some("guarded_field_set")) && op.operands.len() >= 4 {
+        if matches!(original_kind, Some("guarded_field_set")) {
+            // operands = [obj, expected_version, value] (HF-220).
+            assert_eq!(op.operands.len(), 3, "admitted guarded_field_set operands");
             let attr_name = op
                 .attrs
                 .get("name")
@@ -493,15 +499,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .context
                 .i64_type()
                 .const_int(offset as u64, true);
+            let definition_slot = self.class_definition_slot(op);
             self.emit_borrowed_runtime_call(
                 op,
                 set_fn,
                 &[
                     RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Word(definition_slot.into()),
                     RuntimeArg::Operand(op.operands[1]),
-                    RuntimeArg::Operand(op.operands[2]),
                     RuntimeArg::Word(offset_bits.into()),
-                    RuntimeArg::Operand(op.operands[3]),
+                    RuntimeArg::Operand(op.operands[2]),
                     RuntimeArg::Word(attr_ptr_bits.into()),
                     RuntimeArg::Word(attr_len_bits.into()),
                 ],

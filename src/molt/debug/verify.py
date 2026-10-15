@@ -35,7 +35,6 @@ REQUIRED_BACKEND_KINDS = {
     "call_indirect",
     "invoke_ffi",
     "guard_tag",
-    "guard_dict_shape",
     "inc_ref",
     "dec_ref",
     "borrow",
@@ -126,10 +125,8 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
     SemanticAssertion(
         scope="native",
-        description="guard_dict_shape uses molt_guard_layout runtime guard",
-        pattern=(
-            r'"guard_layout"\s*\|\s*"guard_dict_shape"\s*=>[\s\S]*?"molt_guard_layout"'
-        ),
+        description="guard_layout uses molt_guard_layout runtime guard",
+        pattern=(r'"guard_layout"\s*=>[\s\S]*?"molt_guard_layout"'),
     ),
     SemanticAssertion(
         scope="native",
@@ -179,8 +176,8 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
     SemanticAssertion(
         scope="wasm",
-        description="guard_dict_shape lowering remains explicit",
-        pattern=r'"guard_layout"\s*\|\s*"guard_dict_shape"\s*=>',
+        description="guard_layout lowering remains explicit",
+        pattern=r'"guard_layout"[\s\S]*?WasmRuntimeImport::GuardLayout',
     ),
     SemanticAssertion(
         scope="wasm",

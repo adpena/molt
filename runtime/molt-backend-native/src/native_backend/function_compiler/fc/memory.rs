@@ -23,7 +23,6 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "guard_type",
     "guard_tag",
     "guard_layout",
-    "guard_dict_shape",
 ];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
@@ -603,7 +602,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 representation_plan,
             )
             .expect("Object not found");
-            let class_bits = var_get_boxed_overflow_safe(
+            let expected_version = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
@@ -613,18 +612,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &args[1],
                 representation_plan,
             )
-            .expect("Class not found");
-            let expected_version = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[2],
-                representation_plan,
-            )
             .expect("Expected version not found");
+            let definition_slot = emit_class_definition_slot(op, module, builder);
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -663,7 +652,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 local_callee,
                 &[
                     *obj,
-                    *class_bits,
+                    definition_slot,
                     *expected_version,
                     offset,
                     attr_ptr,
@@ -689,17 +678,6 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 representation_plan,
             )
             .expect("Object not found");
-            let class_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Class not found");
             let expected_version = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -707,7 +685,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 vars,
-                &args[2],
+                &args[1],
                 representation_plan,
             )
             .expect("Expected version not found");
@@ -718,10 +696,11 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 vars,
-                &args[3],
+                &args[2],
                 representation_plan,
             )
             .expect("Value not found");
+            let definition_slot = emit_class_definition_slot(op, module, builder);
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -761,7 +740,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 local_callee,
                 &[
                     *obj,
-                    *class_bits,
+                    definition_slot,
                     *expected_version,
                     offset,
                     *val,
@@ -900,7 +879,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 seal_block_once(builder, sealed_blocks, join);
             }
         }
-        "guard_layout" | "guard_dict_shape" => {
+        "guard_layout" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -913,7 +892,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 representation_plan,
             )
             .expect("Guard object not found");
-            let class_bits = var_get_boxed_overflow_safe(
+            let expected_version = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
@@ -923,18 +902,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &args[1],
                 representation_plan,
             )
-            .expect("Guard class not found");
-            let expected_version = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[2],
-                representation_plan,
-            )
             .expect("Guard version not found");
+            let definition_slot = emit_class_definition_slot(op, module, builder);
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -945,7 +914,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder
                 .ins()
-                .call(local_callee, &[*obj, *class_bits, *expected_version]);
+                .call(local_callee, &[*obj, definition_slot, *expected_version]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);

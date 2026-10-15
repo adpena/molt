@@ -72,8 +72,8 @@ pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
     // `line` / `missing` carry dedicated (RC-inert) backend
     // lowerings; `nop` is an explicit no-op. The read-only representation guards
     // (`guard_int`/`guard_float`/`guard_str`/`guard_bool`/`guard_none`) clobber
-    // nothing and yield no droppable reference. The layout guards
-    // (`guard_layout`/`guard_dict_shape`/`guard_layout`) produce a RAW BOOL
+    // nothing and yield no droppable reference. The layout guard
+    // (`guard_layout`) produces a RAW BOOL
     // (`molt_guard_layout` → `from_bool`), never a heap reference —
     // drop-irrelevant — and clobber no heap memory. The set is the registry's
     // `classifier_inert_marker` (op_kinds.toml, generated into

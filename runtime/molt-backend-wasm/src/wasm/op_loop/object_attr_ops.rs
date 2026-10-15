@@ -28,7 +28,15 @@ pub(super) fn emit_object_attr_op(
     if dataclass_ops::emit_dataclass_op(func, op, import_ids, locals, reloc_enabled) {
         return true;
     }
-    if class_ops::emit_class_object_op(func, op, ctx, import_ids, locals, reloc_enabled) {
+    if class_ops::emit_class_object_op(
+        func,
+        op,
+        ctx,
+        &backend.code_slots,
+        import_ids,
+        locals,
+        reloc_enabled,
+    ) {
         return true;
     }
     if method_ops::emit_method_op(

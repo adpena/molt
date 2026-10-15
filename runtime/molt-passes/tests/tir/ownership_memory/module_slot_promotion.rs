@@ -509,9 +509,14 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
                     .insert("_original_kind".into(), AttrValue::Str(boundary.into()));
             }
             "guarded_field_set" => {
-                body.ops[2]
+                let store = &mut body.ops[2];
+                store
                     .attrs
                     .insert("_original_kind".into(), AttrValue::Str(boundary.into()));
+                store.attrs.insert(
+                    "class_definition".into(),
+                    AttrValue::Str("class:m:Owner".into()),
+                );
             }
             "poll" => {
                 let mut poll = op(OpCode::CheckException, vec![], vec![]);

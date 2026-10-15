@@ -61,6 +61,22 @@ class ClassId:
         """The Python-visible ``__name__`` (the last qualname component)."""
         return self.qualname.rpartition(".")[2]
 
+    @property
+    def definition_symbol(self) -> str:
+        """The statement's program slot symbol (HF-220).
+
+        The statement stamps it on every class it creates and layout guards
+        compare receivers against it; the program binds it to a dense slot.
+        Module names and qualnames never contain ``:`` or ``@``, and code-owner
+        symbols never contain ``:``, so the spelling is injective and never
+        names compiled code.
+        """
+        symbol = f"class:{self.module}:{self.qualname}"
+        if self.occurrence is None:
+            return symbol
+        line, column = self.occurrence
+        return f"{symbol}@{line}:{column}"
+
     def sort_key(self) -> tuple[str, str, int, int, int]:
         """Total, deterministic order; a unique qualname sorts first."""
         if self.occurrence is None:
@@ -1216,6 +1232,19 @@ class ClassInfo(TypedDict, total=False):
     decorated: bool
 
 
+def layout_definition_symbol(class_id: ClassId, info: ClassInfo) -> str | None:
+    """The class statement identity a layout guard may trust, or None (HF-220).
+
+    Only a non-dynamic statement publishes its field offsets with ``CLASS_DEF``
+    and stamps the class it creates. A dynamic class (a metaclass call, several
+    bases, ``__slots__``, attribute hooks) has no offsets to trust, and a
+    metaclass may return a class that another statement created. Every module
+    applies this one rule: the defining module stamps exactly the statements a
+    guard in any module may name.
+    """
+    return None if info.get("dynamic") else class_id.definition_symbol
+
+
 class FuncInfo(TypedDict):
     params: list[str]
     param_types: list[str]  # type hints from annotations ("int", "float", "Any", ...)
@@ -1364,6 +1393,7 @@ __all__ = [
     "TryScope",
     "MethodInfo",
     "ClassInfo",
+    "layout_definition_symbol",
     "FuncInfo",
     "_TrackedOpsList",
     "CanonicalizationState",

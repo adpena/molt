@@ -1210,10 +1210,7 @@ fn statement_output_metadata_never_defines_or_overwrites_a_value() {
         ("module_del_global", &["receiver", "key"]),
         ("module_del_global_if_present", &["receiver", "key"]),
         ("store", &["receiver", "value"]),
-        (
-            "guarded_field_set",
-            &["receiver", "class", "version", "value"],
-        ),
+        ("guarded_field_set", &["receiver", "version", "value"]),
         ("store_index", &["receiver", "key", "value"]),
         ("del_index", &["receiver", "key"]),
         ("raise", &["receiver"]),
@@ -1229,6 +1226,7 @@ fn statement_output_metadata_never_defines_or_overwrites_a_value() {
                 out: output.map(str::to_owned),
                 s_value: Some("field".into()),
                 value: Some(0),
+                class_definition: (kind == "guarded_field_set").then(|| "class:m:Owner".into()),
                 source_op_idx: Some(7),
                 ..Default::default()
             };

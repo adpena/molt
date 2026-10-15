@@ -1044,6 +1044,26 @@ pub(in crate::native_backend::function_compiler) fn emit_program_slot_id(
     )
 }
 
+/// Load the program slot of the class statement a layout op names (HF-220):
+/// the stamp and every layout guard pass it to the runtime as a raw integer.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn emit_class_definition_slot(
+    op: &OpIR,
+    module: &mut ObjectModule,
+    builder: &mut FunctionBuilder<'_>,
+) -> Value {
+    let symbol = op
+        .class_definition
+        .as_deref()
+        .expect("admitted class statement symbol");
+    emit_program_slot_id(
+        molt_ir::code_slots::ProgramSlotKind::Code,
+        symbol,
+        module,
+        builder,
+    )
+}
+
 /// Enter the code-slot-backed frame owned by this compiled invocation.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_enter(

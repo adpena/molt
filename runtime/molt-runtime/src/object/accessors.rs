@@ -4,6 +4,7 @@ use molt_obj_model::MoltObject;
 use std::sync::OnceLock;
 
 use super::field_storage::{self, FieldStorage};
+use super::layout::{ClassDefinition, class_definition};
 use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_FAIL_EXPECTED_VERSION_INVALID_COUNT,
@@ -12,9 +13,8 @@ use crate::{
     GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT,
     GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT, LAYOUT_GUARD_COUNT, LAYOUT_GUARD_FAIL, PyToken,
     STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_TYPE,
-    builtin_classes_if_initialized, class_layout_version_bits, dec_ref_bits, dict_get_in_place,
-    dict_set_in_place, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, is_missing_bits,
-    obj_from_bits, object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs,
+    class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_set_in_place, inc_ref_bits,
+    instance_dict_bits, is_missing_bits, obj_from_bits, object_class_bits, object_mark_has_ptrs,
     object_type_id, profile_hit, raise_exception, to_i64, usize_from_bits,
 };
 
@@ -509,10 +509,15 @@ pub unsafe extern "C" fn molt_object_field_init_ptr(
     }
 }
 
+/// The layout guard (HF-220): the receiver's class was created by the compiled
+/// class statement bound to `definition_slot`, and its layout version is still
+/// the statement's. Field offsets are facts of the statement, so every class it
+/// creates, on any run, admits them; no other class does, whatever name binds
+/// it. A class no compiled statement stamped never matches.
 unsafe fn guard_layout_match(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
-    class_bits: u64,
+    definition_slot: u64,
     expected_version: u64,
 ) -> bool {
     unsafe {
@@ -522,16 +527,6 @@ unsafe fn guard_layout_match(
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NULL_OBJ_COUNT);
             return false;
         }
-        if debug_guard_enabled() {
-            let header = header_from_obj_ptr(obj_ptr);
-            let tid = (*header).type_id;
-            let ocb = object_class_bits(obj_ptr);
-            eprintln!(
-                "[guard] ptr=0x{:x} type_id={} obj_class_bits=0x{:x} expected_class=0x{:x}",
-                obj_ptr as usize, tid, ocb, class_bits
-            );
-        }
-        let header = header_from_obj_ptr(obj_ptr);
         let expected = match to_i64(obj_from_bits(expected_version)) {
             Some(val) if val >= 0 => val as u64,
             _ => {
@@ -543,8 +538,12 @@ unsafe fn guard_layout_match(
                 return false;
             }
         };
-        let class_obj = obj_from_bits(class_bits);
-        let Some(class_ptr) = class_obj.as_ptr() else {
+        if !super::object_has_class_shape(obj_ptr) {
+            profile_hit(_py, &LAYOUT_GUARD_FAIL);
+            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT);
+            return false;
+        }
+        let Some(class_ptr) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr() else {
             profile_hit(_py, &LAYOUT_GUARD_FAIL);
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
             return false;
@@ -554,29 +553,15 @@ unsafe fn guard_layout_match(
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_TYPE_CLASS_COUNT);
             return false;
         }
-        if (*header).type_id == TYPE_ID_DICT {
-            let expected_is_builtin_dict = builtin_classes_if_initialized(_py)
-                .is_some_and(|builtins| class_bits == builtins.dict);
-            if !expected_is_builtin_dict || !object_is_exact_builtin_dict(_py, obj_ptr) {
-                profile_hit(_py, &LAYOUT_GUARD_FAIL);
-                profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT);
-                return false;
-            }
-            let version = class_layout_version_bits(class_ptr);
-            if version != expected {
-                profile_hit(_py, &LAYOUT_GUARD_FAIL);
-                profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_VERSION_MISMATCH_COUNT);
-                return false;
-            }
-            return true;
+        let definition = class_definition(class_ptr);
+        if debug_guard_enabled() {
+            eprintln!(
+                "[guard] ptr=0x{:x} class=0x{:x} definition={:?} expected_slot={}",
+                obj_ptr as usize, class_ptr as usize, definition, definition_slot
+            );
         }
-        if !super::object_has_class_shape(obj_ptr) {
-            profile_hit(_py, &LAYOUT_GUARD_FAIL);
-            profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_NON_OBJECT_COUNT);
-            return false;
-        }
-        let obj_class_bits = object_class_bits(obj_ptr);
-        if obj_class_bits == 0 || obj_class_bits != class_bits {
+        if definition.is_none() || definition != ClassDefinition::from_program_slot(definition_slot)
+        {
             profile_hit(_py, &LAYOUT_GUARD_FAIL);
             profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_FAIL_CLASS_MISMATCH_COUNT);
             return false;
@@ -592,18 +577,18 @@ unsafe fn guard_layout_match(
 }
 
 /// # Safety
-/// `obj_bits` and `class_bits` are tagged runtime values. Non-object or
-/// non-class candidates are safe guard misses.
+/// `obj_bits` is a tagged runtime value; `definition_slot` is a raw program
+/// slot. A non-object receiver is a safe guard miss.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guard_layout(
     obj_bits: u64,
-    class_bits: u64,
+    definition_slot: u64,
     expected_version: u64,
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let obj_ptr = resolve_obj_ptr(obj_bits).unwrap_or(std::ptr::null_mut());
-            let matches = guard_layout_match(_py, obj_ptr, class_bits, expected_version);
+            let matches = guard_layout_match(_py, obj_ptr, definition_slot, expected_version);
             if !matches {
                 profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT);
             }
@@ -622,7 +607,7 @@ pub unsafe extern "C" fn molt_guard_layout(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guarded_field_get(
     obj_bits: u64,
-    class_bits: u64,
+    definition_slot: u64,
     expected_version: u64,
     offset_bits: u64,
     attr_name_ptr_bits: u64,
@@ -638,7 +623,7 @@ pub unsafe extern "C" fn molt_guarded_field_get(
                 return MoltObject::none().bits();
             };
             if let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
-                && guard_layout_match(_py, obj_ptr, class_bits, expected_version)
+                && guard_layout_match(_py, obj_ptr, definition_slot, expected_version)
             {
                 if instance_dict_bits(obj_ptr) != 0 {
                     return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
@@ -667,7 +652,7 @@ pub unsafe extern "C" fn molt_guarded_field_get(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guarded_field_set(
     obj_bits: u64,
-    class_bits: u64,
+    definition_slot: u64,
     expected_version: u64,
     offset_bits: u64,
     val_bits: u64,
@@ -684,46 +669,12 @@ pub unsafe extern "C" fn molt_guarded_field_set(
                 return MoltObject::none().bits();
             };
             if let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
-                && guard_layout_match(_py, obj_ptr, class_bits, expected_version)
+                && guard_layout_match(_py, obj_ptr, definition_slot, expected_version)
             {
                 let _completed = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
                 return MoltObject::none().bits();
             }
             crate::molt_set_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits, val_bits)
-        })
-    }
-}
-
-/// # Safety
-/// `obj_ptr_bits` must encode a valid object with enough payload for
-/// `offset_bits`; `attr_name_ptr_bits` must encode valid UTF-8 bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_guarded_field_init_ptr(
-    obj_ptr_bits: u64,
-    class_bits: u64,
-    expected_version: u64,
-    offset_bits: u64,
-    val_bits: u64,
-    attr_name_ptr_bits: u64,
-    attr_name_len_bits: u64,
-) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let Some(obj_ptr) = crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits) else {
-                return MoltObject::none().bits();
-            };
-            let Some(attr_name_ptr) = crate::provenance::abi::const_ptr::<u8>(attr_name_ptr_bits)
-            else {
-                return MoltObject::none().bits();
-            };
-            let Some(offset) = usize_from_bits(offset_bits) else {
-                return MoltObject::none().bits();
-            };
-            if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
-                let _completed = object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
-                return MoltObject::none().bits();
-            }
-            crate::molt_set_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits)
         })
     }
 }

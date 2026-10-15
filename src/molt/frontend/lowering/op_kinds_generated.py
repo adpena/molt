@@ -416,6 +416,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[str] = frozenset(
         "class_merge_layout",
         "class_new",
         "class_set_base",
+        "class_set_definition",
         "class_set_layout_version",
         "classmethod_new",
         "closure_load",
@@ -577,7 +578,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[str] = frozenset(
         "gpu_thread_id",
         "gt",
         "guard_bool",
-        "guard_dict_shape",
         "guard_float",
         "guard_int",
         "guard_layout",
@@ -1019,6 +1019,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "CLASS_MERGE_LAYOUT",
         "CLASS_NEW",
         "CLASS_SET_BASE",
+        "CLASS_SET_DEFINITION",
         "CLASS_SET_LAYOUT_VERSION",
         "CMP_EQ",
         "CMP_GE",
@@ -1186,7 +1187,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "GUARDED_LOAD",
         "GUARDED_SETATTR",
         "GUARD_BOOL",
-        "GUARD_DICT_SHAPE",
         "GUARD_FLOAT",
         "GUARD_INT",
         "GUARD_LAYOUT",
@@ -2177,6 +2177,7 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
         "CODE_NEW",
         "FUNC_NEW",
         "CODE_SLOT_SET",
+        "CLASS_SET_DEFINITION",
         "CLASSMETHOD_NEW",
         "STATICMETHOD_NEW",
         "PROPERTY_NEW",
@@ -2807,6 +2808,16 @@ SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS: frozenset[str] = frozenset(
     }
 )
 
+# Wire operations that name a class statement in `class_definition` (HF-220).
+SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: frozenset[str] = frozenset(
+    {
+        "class_set_definition",
+        "guard_layout",
+        "guarded_field_get",
+        "guarded_field_set",
+    }
+)
+
 # Explicit acquisition-provenance requirement bits shared with target admission.
 SIMPLEIR_RUNTIME_REQUIREMENT_MASK_BITS: int = 32
 SIMPLEIR_RUNTIME_REQUIREMENT_ALL: int = 262143
@@ -2921,6 +2932,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "class_merge_layout": 64,
     "class_new": 64,
     "class_set_base": 64,
+    "class_set_definition": 64,
     "class_set_layout_version": 64,
     "closure_load": 64,
     "closure_store": 64,
@@ -3800,6 +3812,7 @@ BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[str] = frozenset(
         "class_merge_layout",
         "class_new",
         "class_set_base",
+        "class_set_definition",
         "class_set_layout_version",
         "classmethod_new",
         "code_new",

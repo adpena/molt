@@ -74,6 +74,16 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
+        elif op.kind == "CLASS_SET_DEFINITION":
+            (created_class,) = op.args
+            ctx.json_ops.append(
+                {
+                    "kind": "class_set_definition",
+                    "args": [created_class.name],
+                    "class_definition": (op.metadata or {})["class_definition"],
+                    "out": op.result.name,
+                }
+            )
         elif op.kind == "CLASS_MERGE_LAYOUT":
             ctx.json_ops.append(
                 {
@@ -83,10 +93,12 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 }
             )
         elif op.kind == "GUARD_LAYOUT":
+            obj, expected_version = op.args
             ctx.json_ops.append(
                 {
                     "kind": "guard_layout",
-                    "args": [arg.name for arg in op.args],
+                    "args": [obj.name, expected_version.name],
+                    "class_definition": (op.metadata or {})["class_definition"],
                     "out": op.result.name,
                 }
             )

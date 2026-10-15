@@ -39,6 +39,10 @@ fn operation_shape_fixture(
                 "module_slot" => Some("fixture.module".into()),
                 _ => None,
             },
+            // A class statement carrier names its statement (HF-220).
+            class_definition:
+                molt_ir::tir::op_kinds_generated::simpleir_kind_carries_class_definition(shape.kind)
+                    .then(|| "class:fixture:Owner".into()),
             out: (shape.kind == "module_slot").then(|| "module_id".into()),
             ..OpIR::default()
         }],

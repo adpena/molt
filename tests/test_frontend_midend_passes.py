@@ -2002,12 +2002,12 @@ def test_dce_lattice_keeps_guard_results_even_when_unused() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
-            MoltOp(kind="MISSING", args=[], result=MoltValue("cls")),
             MoltOp(kind="CONST", args=[1], result=MoltValue("layout_version")),
             MoltOp(
                 kind="GUARD_LAYOUT",
-                args=[MoltValue("obj"), MoltValue("cls"), MoltValue("layout_version")],
+                args=[MoltValue("obj"), MoltValue("layout_version")],
                 result=MoltValue("guard_result"),
+                metadata={"class_definition": "class:__main__:Point"},
             ),
         ]
     )
@@ -4574,15 +4574,9 @@ def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
         [
             MoltOp(
                 kind="GUARDED_SETATTR",
-                args=[
-                    MoltValue("obj"),
-                    MoltValue("cls"),
-                    MoltValue("ver"),
-                    "x",
-                    MoltValue("val"),
-                    point,
-                ],
+                args=[MoltValue("obj"), MoltValue("ver"), "x", MoltValue("val"), point],
                 result=MoltValue("out"),
+                metadata={"class_definition": point.definition_symbol},
             )
         ]
     )
@@ -4592,9 +4586,10 @@ def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
     guarded_set = next(op for op in lowered if op.get("kind") == "guarded_field_set")
     assert guarded_set == {
         "kind": "guarded_field_set",
-        "args": ["obj", "cls", "ver", "val"],
+        "args": ["obj", "ver", "val"],
         "s_value": "x",
         "value": 24,
+        "class_definition": "class:__main__:Point",
         "out": "out",
     }
 

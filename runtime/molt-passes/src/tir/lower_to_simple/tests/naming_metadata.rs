@@ -1214,22 +1214,13 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
     let func_ir = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "guarded_store".into(),
-        params: vec![
-            "obj".into(),
-            "class_bits".into(),
-            "expected".into(),
-            "value".into(),
-        ],
+        params: vec!["obj".into(), "expected".into(), "value".into()],
         ops: vec![OpIR {
             kind: "guarded_field_set".into(),
-            args: Some(vec![
-                "obj".into(),
-                "class_bits".into(),
-                "expected".into(),
-                "value".into(),
-            ]),
+            args: Some(vec!["obj".into(), "expected".into(), "value".into()]),
             s_value: Some("x".into()),
             value: Some(24),
+            class_definition: Some("class:m:Point".into()),
             ..OpIR::default()
         }],
         param_types: None,
@@ -1249,6 +1240,8 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
 
     assert_eq!(store_op.s_value.as_deref(), Some("x"));
     assert_eq!(store_op.value, Some(24));
+    assert_eq!(store_op.class_definition.as_deref(), Some("class:m:Point"));
+    assert_eq!(store_op.args.as_ref().map(Vec::len), Some(3));
 }
 
 #[test]
@@ -1259,12 +1252,13 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
     let func_ir = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "guarded_load".into(),
-        params: vec!["obj".into(), "class_bits".into(), "expected".into()],
+        params: vec!["obj".into(), "expected".into()],
         ops: vec![OpIR {
             kind: "guarded_field_get".into(),
-            args: Some(vec!["obj".into(), "class_bits".into(), "expected".into()]),
+            args: Some(vec!["obj".into(), "expected".into()]),
             s_value: Some("x".into()),
             value: Some(24),
+            class_definition: Some("class:m:Point".into()),
             out: Some("loaded".into()),
             ..OpIR::default()
         }],
@@ -1285,6 +1279,8 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
 
     assert_eq!(load_op.s_value.as_deref(), Some("x"));
     assert_eq!(load_op.value, Some(24));
+    assert_eq!(load_op.class_definition.as_deref(), Some("class:m:Point"));
+    assert_eq!(load_op.args.as_ref().map(Vec::len), Some(2));
     assert!(
         load_op.out.is_some(),
         "guarded_field_get must preserve an output"
@@ -1486,55 +1482,19 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
                 ..OpIR::default()
             },
             OpIR {
-                kind: "const_str".into(),
-                s_value: Some("C".into()),
-                out: Some("v91".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "const_str".into(),
-                s_value: Some("method_trace".into()),
-                out: Some("v92".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "module_cache_get".into(),
-                args: Some(vec!["v92".into()]),
-                out: Some("v93".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "check_exception".into(),
-                value: Some(1),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "module_get_attr".into(),
-                args: Some(vec!["v93".into(), "v91".into()]),
-                out: Some("v94".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "check_exception".into(),
-                value: Some(1),
-                ..OpIR::default()
-            },
-            OpIR {
                 kind: "const".into(),
                 value: Some(3),
                 out: Some("v95".into()),
                 ..OpIR::default()
             },
+            // HF-220: the guard names its class statement; no class lookup
+            // feeds it.
             OpIR {
                 kind: "guarded_field_set".into(),
-                args: Some(vec![
-                    "self".into(),
-                    "v94".into(),
-                    "v95".into(),
-                    "v90".into(),
-                ]),
+                args: Some(vec!["self".into(), "v95".into(), "v90".into()]),
                 s_value: Some("x".into()),
                 value: Some(0),
+                class_definition: Some("class:method_trace:C".into()),
                 out: Some("none".into()),
                 ..OpIR::default()
             },
@@ -1591,98 +1551,43 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
     refine_types(&mut tir_func);
     let round_tripped = lower_to_simple_ir(&tir_func);
 
-    let cache_get_idx = round_tripped
-        .iter()
-        .position(|op| op.kind == "module_cache_get")
-        .expect("module_cache_get must survive TIR roundtrip");
-    let module_get_idx = round_tripped
-        .iter()
-        .position(|op| op.kind == "module_get_attr")
-        .expect("module_get_attr must survive TIR roundtrip");
     let field_set_idx = round_tripped
         .iter()
         .position(|op| op.kind == "guarded_field_set")
         .expect("guarded_field_set must survive TIR roundtrip");
-
-    assert!(
-        cache_get_idx < module_get_idx && module_get_idx < field_set_idx,
-        "method guarded field set path must preserve class lookup ordering: {round_tripped:?}"
-    );
 
     let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
         .iter()
         .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
         .collect();
 
-    let cache_get = &round_tripped[cache_get_idx];
-    let cache_arg = cache_get
-        .args
-        .as_ref()
-        .and_then(|args| args.first())
-        .expect("module_cache_get must keep module-name operand");
-    // Follow through Copy/copy chains to find the original const_str
-    // (GVN may deduplicate identical constants, replacing the second
-    // with a copy of the first).
-    let mut cache_arg_name = cache_arg.clone();
-    for _ in 0..10 {
-        let op = producer_by_out
-            .get(&cache_arg_name)
-            .expect("module_cache_get operand must come from an op");
-        if op.kind == "const_str" {
-            assert_eq!(op.s_value.as_deref(), Some("method_trace"));
-            break;
-        }
-        if op.kind == "copy" || op.kind == "copy_var" {
-            cache_arg_name = op
-                .args
-                .as_ref()
-                .and_then(|a| a.first().cloned())
-                .unwrap_or_else(|| cache_arg_name.clone());
-        } else {
-            panic!(
-                "expected const_str or copy, got {} for module_cache_get operand",
-                op.kind
-            );
-        }
-    }
-
-    let class_lookup = &round_tripped[module_get_idx];
-    let class_lookup_args = class_lookup
-        .args
-        .as_ref()
-        .expect("module_get_attr must keep operands");
-    assert_eq!(class_lookup_args.len(), 2);
-    assert_eq!(class_lookup_args[0], cache_get.out.clone().unwrap());
-    let class_name_op = producer_by_out
-        .get(&class_lookup_args[1])
-        .expect("module_get_attr class-name operand must come from an op");
-    assert_eq!(class_name_op.kind, "const_str");
-    assert_eq!(class_name_op.s_value.as_deref(), Some("C"));
-
     let field_set = &round_tripped[field_set_idx];
     let field_set_args = field_set
         .args
         .as_ref()
         .expect("guarded_field_set must keep operands");
-    assert_eq!(field_set_args.len(), 4);
+    assert_eq!(field_set_args.len(), 3);
     let self_value_op = producer_by_out
         .get(&field_set_args[0])
         .expect("guarded_field_set receiver must come from an op");
     assert_eq!(self_value_op.kind, "copy_var");
     assert_eq!(self_value_op.var.as_deref(), Some("self"));
-    assert_eq!(field_set_args[1], class_lookup.out.clone().unwrap());
     let expected_version_op = producer_by_out
-        .get(&field_set_args[2])
+        .get(&field_set_args[1])
         .expect("guarded_field_set version operand must come from an op");
     assert_eq!(expected_version_op.kind, "const");
     assert_eq!(expected_version_op.value, Some(3));
     let stored_value_op = producer_by_out
-        .get(&field_set_args[3])
+        .get(&field_set_args[2])
         .expect("guarded_field_set value operand must come from an op");
     assert_eq!(stored_value_op.kind, "const");
     assert_eq!(stored_value_op.value, Some(1));
     assert_eq!(field_set.s_value.as_deref(), Some("x"));
     assert_eq!(field_set.value, Some(0));
+    assert_eq!(
+        field_set.class_definition.as_deref(),
+        Some("class:method_trace:C")
+    );
 
     let set_depth_idx = round_tripped
         .iter()

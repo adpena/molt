@@ -70,6 +70,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             Some(AttrValue::Str(owner)) => owner.as_str(),
             _ => panic!("admitted program-slot owner"),
         };
+        self.load_program_slot(kind, owner)
+    }
+
+    /// The program slot of the class statement a layout op names (HF-220).
+    pub(super) fn class_definition_slot(&self, op: &TirOp) -> inkwell::values::IntValue<'ctx> {
+        let owner = match op.attrs.get("class_definition") {
+            Some(AttrValue::Str(owner)) => owner.as_str(),
+            _ => panic!("admitted class statement symbol"),
+        };
+        self.load_program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner)
+    }
+
+    fn load_program_slot(
+        &self,
+        kind: molt_ir::code_slots::ProgramSlotKind,
+        owner: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
         let binding = self.backend.program_slot_binding(kind, owner);
         self.backend
             .builder

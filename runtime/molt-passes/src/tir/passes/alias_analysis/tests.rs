@@ -272,7 +272,7 @@ fn default_plan_keeps_plain_and_guarded_loads_may_dispatch() {
     let guarded = with_field_attrs(
         op_kind(
             OpCode::LoadAttr,
-            vec![ValueId(0), ValueId(2), ValueId(3)],
+            vec![ValueId(0), ValueId(3)],
             vec![ValueId(1)],
             "guarded_field_get",
         ),
@@ -583,7 +583,6 @@ fn copy_lowering_classes_are_total_and_disjoint() {
         Some("missing"),
         Some("nop"),
         Some("guard_layout"),
-        Some("guard_dict_shape"),
         Some("guard_int"),
         Some("guard_float"),
         Some("guard_str"),
@@ -1056,7 +1055,6 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
         "missing",
         "nop",
         "guard_layout",
-        "guard_dict_shape",
         "guard_int",
         "guard_float",
         "guard_str",
@@ -1091,14 +1089,14 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
 }
 
 #[test]
-fn guarded_field_get_3operand_abi_falls_back_to_generic_heap() {
-    // `guarded_field_get` ABI: operands [obj, class_bits, expected_version],
-    // offset in `value`. obj is operand[0].
+fn guarded_field_get_abi_falls_back_to_generic_heap() {
+    // `guarded_field_get` ABI (HF-220): operands [obj, expected_version],
+    // offset in `value`, class statement in `class_definition`.
     let res = empty_res();
     let get = with_field_attrs(
         op_kind(
             OpCode::LoadAttr,
-            vec![ValueId(0), ValueId(1), ValueId(2)], // obj, class_bits, version
+            vec![ValueId(0), ValueId(2)], // obj, version
             vec![ValueId(3)],
             "guarded_field_get",
         ),
@@ -1113,14 +1111,14 @@ fn guarded_field_get_3operand_abi_falls_back_to_generic_heap() {
 }
 
 #[test]
-fn guarded_field_set_4operand_abi_falls_back_to_generic_heap() {
-    // `guarded_field_set` ABI: operands [obj, class_bits, expected_version,
-    // val], offset in `value`. obj is operand[0].
+fn guarded_field_set_abi_falls_back_to_generic_heap() {
+    // `guarded_field_set` ABI (HF-220): operands [obj, expected_version, val],
+    // offset in `value`, class statement in `class_definition`.
     let res = empty_res();
     let set = with_field_attrs(
         op_kind(
             OpCode::StoreAttr,
-            vec![ValueId(0), ValueId(1), ValueId(2), ValueId(3)],
+            vec![ValueId(0), ValueId(2), ValueId(3)],
             vec![],
             "guarded_field_set",
         ),

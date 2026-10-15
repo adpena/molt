@@ -6,7 +6,9 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let read = kind == "guarded_field_get";
-        let mut params = vec![TirType::DynBox; if read { 3 } else { 4 }];
+        // HF-220: [obj, expected_version] (+ value); the class statement is
+        // an attribute, loaded as a program slot.
+        let mut params = vec![TirType::DynBox; if read { 2 } else { 3 }];
         // An unchecked annotation may supply this hint for an actual scalar.
         params[0] = TirType::UserClass("C".into());
         let mut func = TirFunction::new(
@@ -24,12 +26,16 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
             } else {
                 OpCode::StoreAttr
             },
-            operands: (0..if read { 3 } else { 4 }).map(ValueId).collect(),
+            operands: (0..if read { 2 } else { 3 }).map(ValueId).collect(),
             results: if read { vec![result] } else { vec![] },
             attrs: AttrDict::from([
                 ("_original_kind".into(), AttrValue::Str(kind.into())),
                 ("name".into(), AttrValue::Str("x".into())),
                 ("value".into(), AttrValue::Int(0)),
+                (
+                    "class_definition".into(),
+                    AttrValue::Str("class:m:C".into()),
+                ),
             ]),
             source_span: None,
         });
@@ -46,7 +52,7 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
             .expect("tagged guarded field ABI must verify");
         let ir = llvm_fn.print_to_string().to_string();
         assert!(
-            ir.contains(&format!("@molt_{kind}(i64 %0, i64 %1, i64 %2")),
+            ir.contains(&format!("@molt_{kind}(i64 %0, i64 %program_slot, i64 %1")),
             "{ir}"
         );
         assert!(

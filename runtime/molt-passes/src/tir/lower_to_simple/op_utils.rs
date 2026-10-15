@@ -45,6 +45,11 @@ pub(super) fn annotate_lowered_op(
     if let Some(AttrValue::Str(symbol)) = tir_op.attrs.get("runtime_symbol") {
         opir.runtime_symbol = Some(symbol.clone());
     }
+    // The class statement a layout guard trusts (HF-220) is a typed transport
+    // field; every relift and back-conversion keeps it on its carrier.
+    if let Some(AttrValue::Str(symbol)) = tir_op.attrs.get("class_definition") {
+        opir.class_definition = Some(symbol.clone());
+    }
     if let Some(AttrValue::Int(bits)) = tir_op.attrs.get("runtime_requirement_bits") {
         opir.runtime_requirement_bits = (*bits).try_into().unwrap_or_else(|_| {
             panic!("TIR runtime_requirement_bits is outside the generated bitset domain: {bits}")

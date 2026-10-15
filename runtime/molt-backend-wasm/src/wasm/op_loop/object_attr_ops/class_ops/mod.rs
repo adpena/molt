@@ -13,6 +13,7 @@ pub(super) fn emit_class_object_op(
     func: &mut Function,
     op: &OpIR,
     ctx: &CompileFuncContext<'_>,
+    code_slots: &molt_ir::code_slots::CodeSlotBindings,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
@@ -35,6 +36,14 @@ pub(super) fn emit_class_object_op(
         "class_set_layout_version" => {
             metadata::emit_class_set_layout_version(func, op, import_ids, locals, reloc_enabled)
         }
+        "class_set_definition" => metadata::emit_class_set_definition(
+            func,
+            op,
+            code_slots,
+            import_ids,
+            locals,
+            reloc_enabled,
+        ),
         "class_merge_layout" => {
             metadata::emit_class_merge_layout(func, op, import_ids, locals, reloc_enabled)
         }

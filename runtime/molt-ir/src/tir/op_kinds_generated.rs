@@ -149,6 +149,7 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "class_merge_layout"
             | "class_new"
             | "class_set_base"
+            | "class_set_definition"
             | "class_set_layout_version"
             | "classmethod_new"
             | "closure_load"
@@ -310,7 +311,6 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "gpu_thread_id"
             | "gt"
             | "guard_bool"
-            | "guard_dict_shape"
             | "guard_float"
             | "guard_int"
             | "guard_layout"
@@ -1230,6 +1230,18 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
         value_rule: SimpleIrOpValueRule::Unconstrained,
     },
     SimpleIrOpShape {
+        kind: "guard_layout",
+        family: "class_layout",
+        operands: 2,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "class_set_definition",
+        family: "class_layout",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
         kind: "code_slots_init",
         family: "code_metadata",
         operands: 0,
@@ -1291,13 +1303,15 @@ pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {
         "module_slot" => Some(&SIMPLEIR_OP_SHAPES[13]),
         "code_new" => Some(&SIMPLEIR_OP_SHAPES[14]),
         "code_slot_set" => Some(&SIMPLEIR_OP_SHAPES[15]),
-        "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[16]),
-        "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[17]),
-        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[18]),
-        "box" => Some(&SIMPLEIR_OP_SHAPES[19]),
-        "box_from_raw_int" => Some(&SIMPLEIR_OP_SHAPES[20]),
-        "unbox" => Some(&SIMPLEIR_OP_SHAPES[21]),
-        "unbox_to_raw_int" => Some(&SIMPLEIR_OP_SHAPES[22]),
+        "guard_layout" => Some(&SIMPLEIR_OP_SHAPES[16]),
+        "class_set_definition" => Some(&SIMPLEIR_OP_SHAPES[17]),
+        "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[18]),
+        "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[19]),
+        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[20]),
+        "box" => Some(&SIMPLEIR_OP_SHAPES[21]),
+        "box_from_raw_int" => Some(&SIMPLEIR_OP_SHAPES[22]),
+        "unbox" => Some(&SIMPLEIR_OP_SHAPES[23]),
+        "unbox_to_raw_int" => Some(&SIMPLEIR_OP_SHAPES[24]),
         _ => None,
     }
 }
@@ -1767,6 +1781,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "class_merge_layout"
         | "class_new"
         | "class_set_base"
+        | "class_set_definition"
         | "class_set_layout_version"
         | "closure_load"
         | "closure_store"
@@ -2061,6 +2076,24 @@ pub fn simpleir_kind_may_carry_runtime_symbol(kind: &str) -> bool {
     matches!(
         kind,
         "module_get_attr" | "module_get_global" | "module_import_from"
+    )
+}
+
+/// Complete generated wire-op carrier authority for class statement identity
+/// (`class_definition`, HF-220).
+pub const SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: &[&str] = &[
+    "class_set_definition",
+    "guard_layout",
+    "guarded_field_get",
+    "guarded_field_set",
+];
+
+/// Whether a wire operation names a class statement in `class_definition`.
+#[inline]
+pub fn simpleir_kind_carries_class_definition(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_set_definition" | "guard_layout" | "guarded_field_get" | "guarded_field_set"
     )
 }
 
@@ -2625,6 +2658,7 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "class_merge_layout"
             | "class_new"
             | "class_set_base"
+            | "class_set_definition"
             | "class_set_layout_version"
             | "classmethod_new"
             | "code_new"
@@ -2859,7 +2893,6 @@ pub fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
     matches!(
         kind,
         "guard_bool"
-            | "guard_dict_shape"
             | "guard_float"
             | "guard_int"
             | "guard_layout"
@@ -3583,7 +3616,6 @@ pub fn copy_kind_is_callback_free_table(kind: &str) -> bool {
         kind,
         "call_async"
             | "guard_bool"
-            | "guard_dict_shape"
             | "guard_float"
             | "guard_int"
             | "guard_layout"

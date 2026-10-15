@@ -11,10 +11,10 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `197`
+- `implemented-exact`: `198`
 - `implemented-target-limited`: `15`
 - `not-admitted`: `205`
-- `total`: `424`
+- `total`: `425`
 
 ## Matrix
 
@@ -90,6 +90,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `class_merge_layout` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `class_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `class_set_base` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `class_set_definition` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `class_set_layout_version` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `classmethod_new` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `closure_load` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |

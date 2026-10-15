@@ -2,7 +2,8 @@
 //!
 //! Function bodies carry symbols; only the final program assigns dense runtime
 //! indices. Cached object jobs import these bindings without carrying their
-//! application-specific values.
+//! application-specific values. Class statement symbols (HF-220) share this
+//! index space: a statement's slot is the identity its classes carry.
 
 use std::collections::BTreeMap;
 
@@ -55,6 +56,16 @@ impl CodeSlotBindings {
             .ok_or_else(|| format!("compiled code slot `{symbol}` has no program binding"))
     }
 
+    /// The program slot of the class statement a stamp or layout guard names
+    /// (HF-220), for targets that resolve bindings at compile time.
+    pub fn resolve_class_definition(&self, op: &crate::OpIR) -> Result<u64, String> {
+        let symbol = op
+            .class_definition
+            .as_deref()
+            .ok_or_else(|| format!("`{}` names no class statement", op.kind))?;
+        self.resolve(symbol)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&str, u64)> {
         self.0
             .iter()
@@ -77,7 +88,12 @@ impl CodeSlotBindings {
     ) -> Result<(), FunctionOpShapeDiagnostic> {
         for function in functions {
             for (op_index, op) in function.ops.iter().enumerate() {
+                let unbound_class_definition = op
+                    .class_definition
+                    .as_deref()
+                    .is_some_and(|symbol| !self.0.contains_key(symbol));
                 let violation = match op.kind.as_str() {
+                    _ if unbound_class_definition => Some(OpShapeViolation::UnboundClassDefinition),
                     "code_slot_set" | "trace_enter_slot"
                         if op
                             .s_value
@@ -99,7 +115,11 @@ impl CodeSlotBindings {
                         function: function.name.clone(),
                         op_index,
                         shape: OpShapeDiagnostic {
-                            family: "code_metadata",
+                            family: if violation == OpShapeViolation::UnboundClassDefinition {
+                                "class_layout"
+                            } else {
+                                "code_metadata"
+                            },
                             kind: op.kind.clone(),
                             violation,
                         },
@@ -178,6 +198,28 @@ mod tests {
             assert_eq!(error.op_index, 0);
             assert_eq!(error.shape.kind, kind);
             assert_eq!(error.shape.violation, OpShapeViolation::UnboundCodeSlot);
+        }
+        for kind in ["class_set_definition", "guard_layout"] {
+            let mut function = FunctionIR {
+                name: "owner".into(),
+                ops: vec![crate::OpIR {
+                    kind: kind.into(),
+                    class_definition: Some("owner".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            bindings
+                .validate_functions(std::slice::from_ref(&function))
+                .unwrap();
+            function.ops[0].class_definition = Some("class:absent:P".into());
+            let error = bindings.validate_functions(&[function]).unwrap_err();
+            assert_eq!(error.shape.family, "class_layout");
+            assert_eq!(error.shape.kind, kind);
+            assert_eq!(
+                error.shape.violation,
+                OpShapeViolation::UnboundClassDefinition
+            );
         }
         for count in [None, Some(0), Some(1), Some(2), Some(3)] {
             let functions = [FunctionIR {

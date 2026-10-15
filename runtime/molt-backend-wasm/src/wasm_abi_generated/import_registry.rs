@@ -560,6 +560,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ClassSetDefinition,
+        name: "class_set_definition",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ClassmethodNew,
         name: "classmethod_new",
         type_idx: 2,
@@ -1068,11 +1073,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::GuardedFieldGet,
         name: "guarded_field_get",
         type_idx: 9,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::GuardedFieldInitPtr,
-        name: "guarded_field_init_ptr",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardedFieldSet,
@@ -14255,6 +14255,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_class_set_base" => Some(WasmRuntimeImport::ClassSetBase),
         "class_set_layout_version" => Some(WasmRuntimeImport::ClassSetLayoutVersion),
         "molt_class_set_layout_version" => Some(WasmRuntimeImport::ClassSetLayoutVersion),
+        "class_set_definition" => Some(WasmRuntimeImport::ClassSetDefinition),
+        "molt_class_set_definition" => Some(WasmRuntimeImport::ClassSetDefinition),
         "classmethod_new" => Some(WasmRuntimeImport::ClassmethodNew),
         "molt_classmethod_new" => Some(WasmRuntimeImport::ClassmethodNew),
         "isinstance" => Some(WasmRuntimeImport::Isinstance),
@@ -14461,8 +14463,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_guard_type" => Some(WasmRuntimeImport::GuardType),
         "guarded_field_get" => Some(WasmRuntimeImport::GuardedFieldGet),
         "molt_guarded_field_get" => Some(WasmRuntimeImport::GuardedFieldGet),
-        "guarded_field_init_ptr" => Some(WasmRuntimeImport::GuardedFieldInitPtr),
-        "molt_guarded_field_init_ptr" => Some(WasmRuntimeImport::GuardedFieldInitPtr),
         "guarded_field_set" => Some(WasmRuntimeImport::GuardedFieldSet),
         "molt_guarded_field_set" => Some(WasmRuntimeImport::GuardedFieldSet),
         "guarded_class_def" => Some(WasmRuntimeImport::GuardedClassDef),

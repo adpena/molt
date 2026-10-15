@@ -494,6 +494,8 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "frame_home_clear": 0,
         "code_new": 9,
         "module_slot": 0,
+        "guard_layout": 2,
+        "class_set_definition": 1,
         "code_slot_set": 2,
         "code_slots_init": 0,
         "trace_enter_slot": 0,
@@ -1360,7 +1362,6 @@ def test_call_sites_share_effect_authority() -> None:
     assert data["callback_free_copy_kinds"] == [
         "call_async",
         "guard_bool",
-        "guard_dict_shape",
         "guard_float",
         "guard_int",
         "guard_layout",
@@ -6512,6 +6513,41 @@ def test_runtime_symbol_carriers_reject_invalid_authority(tmp_path: Path) -> Non
         with pytest.raises(
             generator.OpKindTableError,
             match="runtime_symbol_carrier_kinds",
+        ):
+            generator.load_table(path)
+
+
+def test_class_definition_carriers_reject_invalid_authority(tmp_path: Path) -> None:
+    """HF-220: the class statement carriers are a closed, registered wire set."""
+    generator = _gen()
+    data = generator.load_table()
+    assert data["simpleir_class_definition_carrier_kinds"] == [
+        "class_set_definition",
+        "guard_layout",
+        "guarded_field_get",
+        "guarded_field_set",
+    ]
+    source = TABLE.read_text(encoding="utf-8")
+    canonical = (
+        "simpleir_class_definition_carrier_kinds = [\n"
+        '    "class_set_definition", "guard_layout", "guarded_field_get", '
+        '"guarded_field_set",\n]'
+    )
+    for label, replacement in {
+        "empty": "simpleir_class_definition_carrier_kinds = []",
+        "duplicate": (
+            'simpleir_class_definition_carrier_kinds = ["guard_layout", "guard_layout"]'
+        ),
+        "unknown": 'simpleir_class_definition_carrier_kinds = ["not_a_wire_kind"]',
+        "non-string": "simpleir_class_definition_carrier_kinds = [1]",
+    }.items():
+        mutated = source.replace(canonical, replacement, 1)
+        assert mutated != source, label
+        path = tmp_path / f"class_definition_carrier_{label}.toml"
+        path.write_text(mutated, encoding="utf-8")
+        with pytest.raises(
+            generator.OpKindTableError,
+            match="class_definition_carrier_kinds",
         ):
             generator.load_table(path)
 

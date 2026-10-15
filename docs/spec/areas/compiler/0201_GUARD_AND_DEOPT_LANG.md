@@ -35,13 +35,14 @@ Tier policy:
 Type/layout:
 - `guard_type(x, TypeId)`
 - `guard_tag(x, Tag)`
-- `guard_layout(x, LayoutId)`
+- `guard_layout(x, ClassDefinition, LayoutVersion)`: `x`'s class was created by
+  one compiled class statement (its program-slot identity, stamped when the
+  statement runs) and still has that statement's layout version (HF-220).
+  Rebinding the class name cannot redirect it.
 
 Shapes and targets:
-- `guard_dict_shape(d, ShapeId)` where the current builtin `dict` shape comes
-  from the runtime `dict` type object's layout version; exact builtin
-  dictionaries must pass that guard without falling through the mismatch/deopt
-  counters.
+- `guard_dict_shape(d, ShapeId)` (not implemented: the wire kind and its
+  lowerings were retired with HF-220 because no frontend produced them).
 - `guard_dict_has_keys(d, [k1,k2,...])`
 - `guard_callee(site_id, symbol_id)`
 

@@ -922,6 +922,11 @@ return_contract = "owned_object"
 type = 3
 
 [[import]]
+name = "class_set_definition"
+return_contract = "owned_object"
+type = 3
+
+[[import]]
 name = "classmethod_new"
 type = 2
 
@@ -1515,11 +1520,6 @@ type = 3
 name = "guarded_field_get"
 return_contract = "owned_object"
 type = 9
-
-[[import]]
-name = "guarded_field_init_ptr"
-return_contract = "owned_object"
-type = 10
 
 [[import]]
 name = "guarded_field_set"

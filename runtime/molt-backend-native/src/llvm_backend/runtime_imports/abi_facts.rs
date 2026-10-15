@@ -14,6 +14,7 @@ use crate::runtime_import_abi::{
 pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_builtin_type", 1, RuntimeReturnAbi::I64),
     runtime_sig("molt_class_layout_version", 1, RuntimeReturnAbi::I64),
+    runtime_sig("molt_class_set_definition", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_class_set_layout_version", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_closure_load", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_closure_store", 3, RuntimeReturnAbi::I64),
@@ -34,7 +35,6 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_profile_enabled", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_guarded_class_def", 8, RuntimeReturnAbi::I64),
     runtime_sig("molt_guarded_field_get", 6, RuntimeReturnAbi::I64),
-    runtime_sig("molt_guarded_field_init_ptr", 7, RuntimeReturnAbi::I64),
     runtime_sig("molt_guarded_field_set", 7, RuntimeReturnAbi::I64),
     runtime_sig("molt_iter_next_unboxed", 2, RuntimeReturnAbi::I64),
     runtime_sig("molt_not_implemented", 0, RuntimeReturnAbi::I64),

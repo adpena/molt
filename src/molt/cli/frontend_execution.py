@@ -170,7 +170,10 @@ def _lower_entry_module_as_main(
             "__main__",
             ir_functions=main_ir["functions"],
             func_code_ids=main_gen.func_code_ids,
-            local_classes={},
+            local_classes={
+                class_id: main_gen.classes[class_id]
+                for class_id in main_gen.local_class_ids
+            },
         )
     )
     if integration_error is not None:

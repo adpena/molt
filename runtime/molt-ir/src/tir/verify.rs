@@ -194,6 +194,20 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 errors.push(VerifyError::op(*bid, op_index, error.to_string()));
                 continue;
             }
+            // Class statement identity follows the wire spelling, which a typed
+            // carrier (LoadAttr for `guarded_field_get`) keeps as its origin.
+            let class_definition = match op.attrs.get("class_definition") {
+                Some(AttrValue::Str(symbol)) => Some(symbol.as_str()),
+                Some(_) => Some(""),
+                None => None,
+            };
+            if let Err(error) = crate::ir_schema::validate_class_definition_symbol(
+                original_kind.unwrap_or(kind),
+                class_definition,
+            ) {
+                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                continue;
+            }
             if let Err(error) = crate::literal_payload::validate_tir_literal(op) {
                 errors.push(VerifyError::op(*bid, op_index, error));
             }
@@ -1113,6 +1127,13 @@ mod tests {
             if let Some(symbol) = symbol {
                 attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
             }
+            if super::super::op_kinds_generated::simpleir_kind_carries_class_definition(shape.kind)
+            {
+                attrs.insert(
+                    "class_definition".into(),
+                    AttrValue::Str("class:fixture:Owner".into()),
+                );
+            }
             func.blocks
                 .get_mut(&func.entry_block)
                 .unwrap()
@@ -1173,6 +1194,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// HF-220: a layout guard's carrier keeps its class statement through
+    /// its wire spelling, and no other operation may claim one.
+    #[test]
+    fn class_statement_identity_follows_the_wire_spelling() {
+        use super::super::types::TirType;
+        let check = |opcode: OpCode, original: &str, class_definition: Option<AttrValue>| {
+            let mut func = TirFunction::new(
+                "class_identity".into(),
+                vec![],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let mut attrs =
+                AttrDict::from([("_original_kind".into(), AttrValue::Str(original.into()))]);
+            if let Some(symbol) = class_definition {
+                attrs.insert("class_definition".into(), symbol);
+            }
+            let operands = if opcode == OpCode::LoadAttr { 2 } else { 1 };
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: (0..operands).map(ValueId).collect(),
+                    results: vec![ValueId(100)],
+                    attrs,
+                    source_span: None,
+                });
+            verify_operation_shapes(&func).map_err(|errors| errors[0].message.clone())
+        };
+        let symbol = || Some(AttrValue::Str("class:m:P".into()));
+        assert!(check(OpCode::LoadAttr, "guarded_field_get", symbol()).is_ok());
+        for missing in [
+            None,
+            Some(AttrValue::Str(String::new())),
+            Some(AttrValue::Int(3)),
+        ] {
+            let error = check(OpCode::LoadAttr, "guarded_field_get", missing).unwrap_err();
+            assert!(error.contains("class statement symbol"), "{error}");
+        }
+        let error = check(OpCode::LoadAttr, "get_attr_generic_ptr", symbol()).unwrap_err();
+        assert!(error.contains("forbids `class_definition`"), "{error}");
     }
 
     #[test]

@@ -4,8 +4,9 @@ use molt_codegen_abi::{HEADER_FLAG_HAS_PTRS, HEADER_FLAGS_OFFSET};
 fn compile_field_op(kind: &str) -> Vec<u8> {
     let guarded = kind.starts_with("guarded_");
     let read = matches!(kind, "load" | "guarded_field_get");
+    // HF-220: a guarded op's class statement is a compile-time slot.
     let mut params = if guarded {
-        vec!["object", "class", "version"]
+        vec!["object", "version"]
     } else {
         vec!["object"]
     };
@@ -14,8 +15,11 @@ fn compile_field_op(kind: &str) -> Vec<u8> {
     }
     let mut field = wasm_test_op(kind, read.then_some("result"), params.clone());
     field.value = Some(0);
+    let mut code_slots = std::collections::BTreeMap::new();
     if guarded {
         field.s_value = Some("field".into());
+        field.class_definition = Some("class:m:Owner".into());
+        code_slots.insert("class:m:Owner".to_string(), 0);
     }
     let ret = if read {
         wasm_test_op("ret", None, vec!["result"])
@@ -32,7 +36,7 @@ fn compile_field_op(kind: &str) -> Vec<u8> {
             )],
             profile: None,
         },
-        Default::default(),
+        molt_ir::code_slots::CodeSlotBindings::try_from(code_slots).unwrap(),
     )
     .wasm
 }
@@ -50,11 +54,7 @@ fn all_inline_field_paths_admit_receiver_and_backing_before_payload_access() {
         let imports = wasm_function_import_indices(&wasm);
         let runtime = imports[runtime_name];
         let ops = wasm_operator_debug_for_export(&wasm, "molt_main");
-        for initializer in [
-            "object_field_init",
-            "object_field_init_ptr",
-            "guarded_field_init_ptr",
-        ] {
+        for initializer in ["object_field_init", "object_field_init_ptr"] {
             if let Some(index) = imports.get(initializer) {
                 assert!(
                     !ops.contains(&format!("Call {{ function_index: {index} }}")),
