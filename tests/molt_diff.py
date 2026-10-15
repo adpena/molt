@@ -5000,15 +5000,15 @@ def run_diff(
         status_by_path = {path: status for path, status in results}
         if jobs > 1 and retry_oom and not fail_fast and guard_trip_message is None:
             oom_paths = [p for p, s in status_by_path.items() if s == "oom"]
-            if oom_paths:
-                _emit_line(
-                    f"[RETRY-OOM] Retrying {len(oom_paths)} test(s) with --jobs 1",
-                    None,
-                    echo=True,
-                )
-            for path in oom_paths:
-                if suite_trip_outcome() is not None:
+            for index, path in enumerate(oom_paths):
+                if suite_trip_outcome() is not None or not admission.admits():
                     break
+                if index == 0:
+                    _emit_line(
+                        f"[RETRY-OOM] Retrying {len(oom_paths)} test(s) with --jobs 1",
+                        None,
+                        echo=True,
+                    )
                 retry_payload = _diff_run_single(
                     path,
                     python_exe,
