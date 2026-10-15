@@ -14,9 +14,17 @@ class P:
 
 
 class Q:
+    # The same methods as P give Q P's layout version, so only the class
+    # statement identity tells the two apart.
     def __init__(self):
         self.b = 10
         self.a = 20
+
+    def get_a(self):
+        return self.a
+
+    def set_b(self, value):
+        self.b = value
 
 
 def read_a(p: P):
