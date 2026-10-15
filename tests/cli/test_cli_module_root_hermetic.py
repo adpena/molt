@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import molt.cli as cli
 from molt.cli import build_inputs as cli_build_inputs
+from molt.cli import deps as cli_deps
 
 
 def test_resolve_module_roots_omits_auto_site_packages_when_hermetic(
@@ -15,7 +15,7 @@ def test_resolve_module_roots_omits_auto_site_packages_when_hermetic(
     explicit_root = tmp_path / "cpython-lib"
     venv_site = project_root / ".venv" / "lib" / "python3.12" / "site-packages"
     molt_venv_site = (
-        project_root / cli.MOLT_VENV_DIR / "lib" / "python3.12" / "site-packages"
+        project_root / cli_deps.MOLT_VENV_DIR / "lib" / "python3.12" / "site-packages"
     )
     vendor_root = project_root / "vendor" / "packages"
 

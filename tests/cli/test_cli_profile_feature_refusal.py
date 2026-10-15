@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import tomllib
 
-import molt.cli as cli
 import pytest
 from molt.cli import backend_ir as BACKEND_IR
 from molt.cli import required_features as RF
@@ -20,9 +19,10 @@ from molt._runtime_feature_gates import (
     feature_gate_for_symbol,
     link_affecting_feature_gate_for_symbol,
 )
+from molt.cli import compiler_metadata as cli_compiler_metadata
 
 
-MOLT_ROOT = cli._compiler_root()
+MOLT_ROOT = cli_compiler_metadata._compiler_root()
 
 
 def _micro_features() -> frozenset[str]:

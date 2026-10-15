@@ -293,8 +293,10 @@ Current extraction state:
   `llvm_backend` only through feature-gated `molt-backend-native` dependency
   edges. Do not add implementation shims or fallback native/LLVM lanes under the
   facade crate.
-- CLI/daemon orchestration is in `src/molt/cli/__init__.py`, with the backend
-  binary still built from package `molt-backend` and named `molt-backend`.
+- CLI/daemon orchestration lives in the `src/molt/cli` submodules
+  (`build_command`, `build_pipeline`, `backend_execution`); the package
+  `__init__` holds only `main` (HF-227). The backend binary is still built from
+  package `molt-backend` and named `molt-backend`.
 
 Next structural cut:
 - Decompose the remaining native codegen god-file inside

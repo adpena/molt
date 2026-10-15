@@ -147,7 +147,7 @@ def test_generate_worker_stdio_capture(tmp_path):
 
 
 def test_generate_split_worker_bootstrap_import_surface() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -164,7 +164,7 @@ def test_generate_split_worker_bootstrap_import_surface() -> None:
 
 
 def test_generate_split_worker_contains_vfs_adapter_import() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -178,7 +178,7 @@ def test_generate_split_worker_contains_vfs_adapter_import() -> None:
 
 
 def test_generate_split_worker_contains_vfs_host_imports() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -194,7 +194,7 @@ def test_generate_split_worker_contains_vfs_host_imports() -> None:
 
 
 def test_generate_split_worker_uses_worker_env_for_static_assets() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -208,7 +208,7 @@ def test_generate_split_worker_uses_worker_env_for_static_assets() -> None:
 
 
 def test_generate_split_worker_defines_utf8_decoder_for_vfs_paths() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -223,7 +223,7 @@ def test_generate_split_worker_defines_utf8_decoder_for_vfs_paths() -> None:
 
 
 def test_generate_split_worker_defines_wasi_vfs_errno_and_preopen_state() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -244,7 +244,7 @@ def test_generate_split_worker_defines_wasi_vfs_errno_and_preopen_state() -> Non
 
 
 def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -268,7 +268,7 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
 
 
 def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> None:
-    from molt.cli import _generate_split_wrangler_jsonc
+    from molt.cli.wasm import _generate_split_wrangler_jsonc
 
     root = Path(__file__).resolve().parents[1]
     browser_assets = wasm_loader_asset_closure(root / "wasm", BROWSER_WASM_ENTRY_ASSETS)
@@ -286,7 +286,7 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
 
 
 def test_generate_split_worker_requires_final_callable_table_before_main() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -314,7 +314,7 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
 
 
 def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
     from molt.cli.wasm import _split_runtime_browser_abi_from_manifest
 
     content = _generate_split_worker_js(
@@ -538,7 +538,7 @@ def test_static_browser_host_fd_write_preserves_tmp_file_bytes() -> None:
 def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> (
     None
 ):
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
         resolved_capability_policy=_default_runtime_policy(),
@@ -906,7 +906,7 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
 
 
 def test_effective_split_worker_table_base_uses_backend_authority() -> None:
-    from molt.cli import _effective_split_worker_table_base
+    from molt.cli.wasm import _effective_split_worker_table_base
 
     assert (
         _effective_split_worker_table_base(
@@ -920,7 +920,7 @@ def test_effective_split_worker_table_base_uses_backend_authority() -> None:
 def test_effective_split_worker_table_base_does_not_infer_fallback() -> None:
     import pytest
 
-    from molt.cli import _effective_split_worker_table_base
+    from molt.cli.wasm import _effective_split_worker_table_base
 
     with pytest.raises(ValueError, match="requires the bound backend table base"):
         _effective_split_worker_table_base(
@@ -934,7 +934,7 @@ def test_effective_split_worker_table_base_rejects_callable_below_backend_base()
 ):
     import pytest
 
-    from molt.cli import _effective_split_worker_table_base
+    from molt.cli.wasm import _effective_split_worker_table_base
 
     with pytest.raises(ValueError, match="above finalized callable-table slot"):
         _effective_split_worker_table_base(
@@ -948,7 +948,7 @@ def test_effective_split_worker_table_base_rejects_final_slot_below_backend_base
 ):
     import pytest
 
-    from molt.cli import _effective_split_worker_table_base
+    from molt.cli.wasm import _effective_split_worker_table_base
 
     with pytest.raises(ValueError, match="above finalized callable-table slot"):
         _effective_split_worker_table_base(

@@ -16,7 +16,6 @@ from typing import cast
 import pytest
 
 import molt.wasm_artifact as wasm_artifact
-from molt import cli
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_native_build as RUNTIME_NATIVE_BUILD
 from molt.cli.models import _RuntimeArtifactState
@@ -35,6 +34,9 @@ from tests.cli.native_link_test_support import static_archive_bytes
 from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
 )
+from molt.cli import artifact_state as cli_artifact_state
+from molt.cli import runtime_paths as cli_runtime_paths
+from molt.cli import runtime_fingerprints as cli_runtime_fingerprints
 
 _FAKE_STATICLIB = static_archive_bytes(b"fake-staticlib")
 
@@ -107,7 +109,7 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli._cargo_profile_dir("dev-fast")
+    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target_root, profile_dir
     )
@@ -197,7 +199,7 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli._cargo_profile_dir("dev-fast")
+    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target_root, profile_dir
     )
@@ -264,7 +266,7 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli._cargo_profile_dir("dev-fast")
+    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_artifact_path(
         target_root, profile_dir
     )
@@ -328,7 +330,7 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli._cargo_profile_dir("release-fast")
+    profile_dir = cli_runtime_paths._cargo_profile_dir("release-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_runtime_staticlib_path(
         target_root, profile_dir
     )
@@ -401,7 +403,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     report_artifact: bool,
 ) -> None:
     target_root = tmp_path / "target"
-    profile_dir = cli._cargo_profile_dir("dev-fast")
+    profile_dir = cli_runtime_paths._cargo_profile_dir("dev-fast")
     primary = RUNTIME_WASM_BUILD_SUPPORT._wasm_cpython_abi_staticlib_path(
         target_root, profile_dir
     )
@@ -465,13 +467,13 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     )
     assert provider == (reported if report_artifact else None)
     assert primary.read_bytes() == b"stale-primary"
-    reported_fp = cli._runtime_target_fingerprint_path(
+    reported_fp = cli_artifact_state._runtime_target_fingerprint_path(
         state_root,
         reported,
         cargo_profile="dev-fast",
         target_label="wasm32-wasip1.cpython-abi",
     )
-    primary_fp = cli._runtime_target_fingerprint_path(
+    primary_fp = cli_artifact_state._runtime_target_fingerprint_path(
         state_root,
         primary,
         cargo_profile="dev-fast",
@@ -482,7 +484,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
     if report_artifact:
         # The canonical requested-output sidecar may be named for the primary,
         # but its artifact identity must attest the exact Cargo-reported path.
-        stored = cli._read_runtime_fingerprint(primary_fp)
+        stored = cli_runtime_fingerprints._read_runtime_fingerprint(primary_fp)
         assert stored["build_identity"] == identity.to_dict()
         assert stored["artifact_content_identity"] == artifact_content_identity(
             reported
@@ -735,15 +737,15 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
         "meta_digest": _TEST_RUNTIME_META_DIGEST,
     }
-    canonical_fp = cli._artifact_state_path_for_build_state_root(
-        cli._canonical_build_state_root(project_root),
+    canonical_fp = cli_artifact_state._artifact_state_path_for_build_state_root(
+        cli_artifact_state._canonical_build_state_root(project_root),
         canonical_backend,
         subdir="backend_fingerprints",
         stem_suffix="dev-fast",
         extension="fingerprint",
     )
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(
+    cli_runtime_fingerprints._write_runtime_fingerprint(
         canonical_fp, fingerprint, artifact=canonical_backend
     )
 
@@ -958,7 +960,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     selected.write_bytes(new_bytes)
     fingerprint = spec.staticlib_fingerprint if reloc else spec.fingerprint
     assert fingerprint is not None
-    selected_fp = cli._runtime_target_fingerprint_path(
+    selected_fp = cli_artifact_state._runtime_target_fingerprint_path(
         state, selected, cargo_profile=spec.cargo_profile, target_label="wasm32-wasip1"
     )
     if placement == "reported":
@@ -979,7 +981,9 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         )
     else:
         selected_fp.parent.mkdir(parents=True, exist_ok=True)
-        cli._write_runtime_fingerprint(selected_fp, fingerprint, artifact=selected)
+        cli_runtime_fingerprints._write_runtime_fingerprint(
+            selected_fp, fingerprint, artifact=selected
+        )
     linked: list[Path] = []
 
     def relink(*, staticlib_path: Path, output_path: Path, **_kwargs: object) -> bool:
@@ -1018,6 +1022,6 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     assert selected.read_bytes() == new_bytes
     if selected != primary:
         assert primary.read_bytes() == old_bytes
-    assert cli._read_runtime_fingerprint(selected_fp)[
+    assert cli_runtime_fingerprints._read_runtime_fingerprint(selected_fp)[
         "artifact_content_identity"
     ] == artifact_content_identity(selected)

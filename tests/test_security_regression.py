@@ -161,61 +161,61 @@ class TestDownloadArtifactURLValidation:
     """SSRF protection: reject private IPs, non-https schemes."""
 
     def test_link_local_metadata_is_private(self):
-        from molt.cli import _is_private_ip
+        from molt.cli.deps import _is_private_ip
 
         assert _is_private_ip("169.254.169.254") is True
 
     def test_loopback_is_private(self):
-        from molt.cli import _is_private_ip
+        from molt.cli.deps import _is_private_ip
 
         assert _is_private_ip("127.0.0.1") is True
 
     def test_rfc1918_is_private(self):
-        from molt.cli import _is_private_ip
+        from molt.cli.deps import _is_private_ip
 
         assert _is_private_ip("10.0.0.1") is True
 
     def test_public_host_is_not_private(self):
-        from molt.cli import _is_private_ip
+        from molt.cli.deps import _is_private_ip
 
         assert _is_private_ip("pypi.org") is False
 
     def test_file_scheme_rejected(self):
-        from molt.cli import _download_artifact
+        from molt.cli.deps import _download_artifact
 
         with pytest.raises(ValueError, match="https"):
             _download_artifact("file:///etc/passwd", "sha256:abc123")
 
     def test_http_scheme_rejected(self):
-        from molt.cli import _download_artifact
+        from molt.cli.deps import _download_artifact
 
         with pytest.raises(ValueError, match="https"):
             _download_artifact("http://example.com/pkg.whl", "sha256:abc123")
 
     def test_ipv4_mapped_ipv6_detected_as_private(self):
         """::ffff:169.254.169.254 must be detected as private."""
-        from molt.cli import _is_private_ip
+        from molt.cli.deps import _is_private_ip
 
         # IPv4-mapped IPv6 representation of the AWS metadata endpoint
         assert _is_private_ip("::ffff:169.254.169.254") is True
 
     def test_malformed_hash_rejected(self):
         """Hash without algorithm prefix must be rejected."""
-        from molt.cli import _download_artifact
+        from molt.cli.deps import _download_artifact
 
         with pytest.raises(ValueError, match="algorithm:hex"):
             _download_artifact("https://example.com/file.whl", "deadbeef")
 
     def test_non_sha256_hash_rejected(self):
         """Only sha256 is accepted."""
-        from molt.cli import _download_artifact
+        from molt.cli.deps import _download_artifact
 
         with pytest.raises(ValueError, match="unsupported"):
             _download_artifact("https://example.com/file.whl", "md5:" + "a" * 32)
 
     def test_unresolvable_host_is_blocked(self):
         """DNS failure must be treated as private (fail-closed)."""
-        from molt.cli import _is_private_ip
+        from molt.cli.deps import _is_private_ip
 
         # This host should not resolve
         assert (
@@ -224,7 +224,7 @@ class TestDownloadArtifactURLValidation:
 
     def test_ipv6_scope_id_handled(self):
         """IPv6 with scope ID must not bypass the check."""
-        from molt.cli import _is_private_ip
+        from molt.cli.deps import _is_private_ip
 
         # fe80::1%eth0 is link-local and must be detected
         assert _is_private_ip("fe80::1") is True

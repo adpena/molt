@@ -44,7 +44,8 @@ _MODULE_CACHE_NAMES = (
 
 def test_cli_module_cache_authority_is_single_home() -> None:
     for name in _MODULE_CACHE_NAMES:
-        assert getattr(cli, name) is getattr(module_cache, name)
+        assert hasattr(module_cache, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for name in _MODULE_CACHE_NAMES:

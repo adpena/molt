@@ -67,7 +67,6 @@ from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 _SRC_DIR = _REPO_ROOT / "src"
 
 
-import molt.cli as molt_cli  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.cli import build_inputs as cli_build_inputs  # noqa: E402
 from molt.dx import (  # noqa: E402
@@ -76,6 +75,8 @@ from molt.dx import (  # noqa: E402
     scratch_dir,
     scratch_root,
 )
+from molt.cli import config_resolution as cli_config_resolution  # noqa: E402
+from molt import target_python as molt_target_python  # noqa: E402
 
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
@@ -106,10 +107,10 @@ def _resolve_target_python(
     explicit: str | None,
     *,
     project_root: Path = _REPO_ROOT,
-) -> molt_cli.TargetPythonVersion:
-    return molt_cli._resolve_target_python_version(
+) -> molt_target_python.TargetPythonVersion:
+    return molt_target_python._resolve_target_python_version(
         explicit=explicit,
-        build_config=molt_cli._resolve_build_config(
+        build_config=cli_config_resolution._resolve_build_config(
             cli_build_inputs._load_molt_config(project_root)
         ),
         project_root=project_root,
@@ -117,7 +118,7 @@ def _resolve_target_python(
 
 
 def _target_python_command(
-    target_python: molt_cli.TargetPythonVersion,
+    target_python: molt_target_python.TargetPythonVersion,
 ) -> list[str]:
     return list(
         python_interpreter.resolve_target_python_command(
@@ -246,7 +247,7 @@ def _run_cpython(
     source_path: str,
     *,
     timeout: int,
-    target_python: molt_cli.TargetPythonVersion,
+    target_python: molt_target_python.TargetPythonVersion,
 ) -> RunResult:
     """Run a Python file through CPython."""
     t0 = time.perf_counter()
@@ -273,7 +274,7 @@ def _run_molt(
     *,
     timeout: int,
     build_profile: str,
-    target_python: molt_cli.TargetPythonVersion,
+    target_python: molt_target_python.TargetPythonVersion,
 ) -> RunResult:
     """Build and run a Python file through Molt."""
     mode = "molt"
@@ -379,7 +380,7 @@ def validate_file(
     build_profile: str = _DEFAULT_BUILD_PROFILE,
     include_cpython: bool = True,
     verbose: bool = False,
-    target_python: molt_cli.TargetPythonVersion = molt_cli._DEFAULT_TARGET_PYTHON_VERSION,
+    target_python: molt_target_python.TargetPythonVersion = molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
 ) -> ValidationResult:
     """Run translation validation on a single source file."""
     result = ValidationResult(source_path=source_path)
@@ -447,7 +448,7 @@ def validate_directory(
     verbose: bool = False,
     jobs: int = _DEFAULT_JOBS,
     glob_pattern: str = "**/*.py",
-    target_python: molt_cli.TargetPythonVersion = molt_cli._DEFAULT_TARGET_PYTHON_VERSION,
+    target_python: molt_target_python.TargetPythonVersion = molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
 ) -> ValidationSummary:
     """Run translation validation on all .py files under a directory."""
     summary = ValidationSummary()

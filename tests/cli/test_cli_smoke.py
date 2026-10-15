@@ -16,13 +16,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-import molt.cli as cli
 from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import toolchain_validation
 
 from tests.cli.process_guard import run_cli_test_process
 from tests.process_guard_common import install_module_view
 from tests.runtime_profile_fixtures import process_profile_payload
+from molt.cli import compiler_target as cli_compiler_target
 
 DEFAULT_PATHS = importlib.import_module("molt.default_paths")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
@@ -248,7 +248,7 @@ def _cross_target_triple() -> str | None:
     ],
 )
 def test_zig_target_query_mapping(triple: str, expected: str) -> None:
-    assert cli._zig_target_query(triple) == expected
+    assert cli_compiler_target._zig_target_query(triple) == expected
 
 
 def test_resolve_output_path_directory(tmp_path: Path) -> None:
@@ -299,7 +299,7 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
     )
 
     assert output_root == tmp_path / "dist"
-    assert bin_root == cli._default_molt_bin()
+    assert bin_root == DEFAULT_PATHS._default_molt_bin()
 
 
 def test_resolve_build_output_layout_defaults_wasm_outputs_to_dist(
@@ -380,7 +380,7 @@ def test_default_molt_home_uses_cache_root_when_unset(
     cache_root = tmp_path / "cache_root"
     monkeypatch.delenv("MOLT_HOME", raising=False)
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    assert cli._default_molt_home() == cache_root / "home"
+    assert DEFAULT_PATHS._default_molt_home() == cache_root / "home"
 
 
 def test_default_molt_home_prefers_explicit_override(
@@ -390,7 +390,7 @@ def test_default_molt_home_prefers_explicit_override(
     explicit_home = tmp_path / "custom_home"
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
     monkeypatch.setenv("MOLT_HOME", str(explicit_home))
-    assert cli._default_molt_home() == explicit_home
+    assert DEFAULT_PATHS._default_molt_home() == explicit_home
 
 
 def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
@@ -411,14 +411,14 @@ def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
             )
         ),
     )
-    cli._default_molt_cache_cached.cache_clear()
-    cli._default_molt_home_cached.cache_clear()
-    cli._default_molt_bin_cached.cache_clear()
+    DEFAULT_PATHS._default_molt_cache_cached.cache_clear()
+    DEFAULT_PATHS._default_molt_home_cached.cache_clear()
+    DEFAULT_PATHS._default_molt_bin_cached.cache_clear()
     cli_build_output_layout._default_build_root_cached.cache_clear()
     cli_build_output_layout._resolve_cache_root_cached.cache_clear()
 
-    assert cli._default_molt_cache() == ext_root / ".molt_cache"
-    assert cli._default_molt_home() == ext_root / ".molt_cache" / "home"
+    assert DEFAULT_PATHS._default_molt_cache() == ext_root / ".molt_cache"
+    assert DEFAULT_PATHS._default_molt_home() == ext_root / ".molt_cache" / "home"
 
 
 @pytest.mark.parametrize("seed", [None, "0", "123", "random"])
@@ -565,7 +565,7 @@ def test_cli_update_check_json() -> None:
 
 
 def test_required_llvm_backend_major_matches_manifest() -> None:
-    assert cli._required_llvm_backend_major(ROOT) == 22
+    assert SETUP_READINESS._required_llvm_backend_major(ROOT) == 22
 
 
 def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
@@ -581,7 +581,7 @@ def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
     install_module_view(
         monkeypatch, "shutil", shutil, toolchain_validation, which=fake_which
     )
-    steps, warnings = cli._planned_update_steps(
+    steps, warnings = toolchain_validation._planned_update_steps(
         ROOT,
         include_toolchains=False,
         include_locks=False,

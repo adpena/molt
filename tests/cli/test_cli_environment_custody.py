@@ -27,7 +27,6 @@ from typing import Any
 
 import pytest
 
-import molt.cli as cli
 from molt.backend_environment import CodegenSelection
 from molt.cli import (
     backend_execution,
@@ -46,6 +45,7 @@ from molt.cli.rust_cpu_policy import (
     resolve_rust_cpu_policy,
 )
 from molt.environment_registry import load_registry
+from molt.cli import build_command as cli_build_command
 
 ROOT = Path(__file__).resolve().parents[2]
 _SELECTION_NAMES = (
@@ -146,7 +146,7 @@ def test_build_passes_every_selection_explicitly(
 
     monkeypatch.setattr(build_inputs, "_prepare_build_inputs", fake_prepare_inputs)
 
-    rc = cli.build(
+    rc = cli_build_command.build(
         "app.py",
         target="wasm",
         trusted=True,

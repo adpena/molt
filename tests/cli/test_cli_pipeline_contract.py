@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import fields
 
 from molt import cli
+from molt.cli import models as cli_models
 
 
 def test_frontend_run_ticket_owns_runtime_execution_surfaces() -> None:
-    assert [field.name for field in fields(cli._PreparedFrontendRunTicket)] == [
+    assert [field.name for field in fields(cli_models._PreparedFrontendRunTicket)] == [
         "module_order",
         "module_layers",
         "frontend_parallel_config",

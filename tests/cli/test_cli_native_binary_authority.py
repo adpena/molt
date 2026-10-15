@@ -43,7 +43,8 @@ _NATIVE_BINARY_DEFINITIONS = (
 
 def test_cli_native_binary_authority_is_single_home() -> None:
     for name in _NATIVE_BINARY_NAMES:
-        assert getattr(cli, name) is getattr(native_binary, name)
+        assert hasattr(native_binary, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for marker in _NATIVE_BINARY_DEFINITIONS:

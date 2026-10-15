@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from tools import translation_validate
 from molt import python_interpreter
+from molt.target_python import _SUPPORTED_TARGET_PYTHON_BY_SHORT
 import shutil
 from tests.process_guard_common import install_module_view
 
@@ -103,7 +104,7 @@ def test_resolve_target_python_uses_project_floor(tmp_path: Path) -> None:
 def test_python_command_candidates_are_versioned_not_process_python(
     monkeypatch,
 ) -> None:
-    target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"]
+    target = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"]
 
     candidates = python_interpreter.target_python_command_candidates(
         target,
@@ -117,7 +118,7 @@ def test_python_command_candidates_are_versioned_not_process_python(
 
 
 def test_target_python_command_prefers_uv_python_find_path(monkeypatch) -> None:
-    target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
+    target = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
 
     monkeypatch.delenv("MOLT_TV_PYTHON", raising=False)
     install_module_view(
@@ -144,7 +145,7 @@ def test_target_python_command_prefers_uv_python_find_path(monkeypatch) -> None:
 
 
 def test_run_cpython_uses_verified_target_python_command(monkeypatch) -> None:
-    target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
+    target = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
     calls: list[list[str]] = []
 
     monkeypatch.setattr(
@@ -173,7 +174,7 @@ def test_run_molt_build_stamps_target_python(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"]
+    target = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"]
     source = tmp_path / "case.py"
     source.write_text("print('ok')\n", encoding="utf-8")
     build_cmds: list[list[str]] = []

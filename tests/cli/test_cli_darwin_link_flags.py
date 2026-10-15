@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import molt.cli as cli
 import molt.cli.native_toolchain as NATIVE_TOOLCHAIN
 from molt.cli import native_link_command
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
@@ -16,6 +15,7 @@ from tests.cli.native_link_test_support import (
 )
 from tests.cli.process_guard import run_cli_test_process
 from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
+from molt.cli import native_link_deps as cli_native_link_deps
 
 
 def _cargo_output(message: str, native_arguments: str = "") -> str:
@@ -40,7 +40,7 @@ def test_append_darwin_runtime_frameworks_for_host_darwin(
 ) -> None:
     monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     args = ["clang", "-lc++"]
-    cli._append_darwin_runtime_frameworks(
+    NATIVE_TOOLCHAIN._append_darwin_runtime_frameworks(
         args,
         target=resolve_native_target_spec(
             None, host_platform="darwin", host_arch="arm64"
@@ -54,7 +54,7 @@ def test_append_darwin_runtime_frameworks_for_cross_target() -> None:
 
     os.environ.pop("MOLT_RUNTIME_GPU_METAL", None)
     args = ["zig", "cc", "-target", "aarch64-macos"]
-    cli._append_darwin_runtime_frameworks(
+    NATIVE_TOOLCHAIN._append_darwin_runtime_frameworks(
         args, target=resolve_native_target_spec("aarch64-apple-darwin")
     )
     assert args[-4:] == ["-framework", "Security", "-framework", "CoreFoundation"]
@@ -65,7 +65,7 @@ def test_append_darwin_runtime_frameworks_adds_metal_when_enabled(
 ) -> None:
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     args = ["clang", "-lc++"]
-    cli._append_darwin_runtime_frameworks(
+    NATIVE_TOOLCHAIN._append_darwin_runtime_frameworks(
         args, target=resolve_native_target_spec("aarch64-apple-darwin")
     )
     assert args[-7:] == [
@@ -85,7 +85,7 @@ def test_append_darwin_runtime_frameworks_adds_webgpu_when_enabled(
     monkeypatch.setenv("MOLT_RUNTIME_GPU_WEBGPU", "1")
     monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     args = ["clang", "-lc++"]
-    cli._append_darwin_runtime_frameworks(
+    NATIVE_TOOLCHAIN._append_darwin_runtime_frameworks(
         args,
         target=resolve_native_target_spec(
             None, host_platform="darwin", host_arch="arm64"
@@ -146,7 +146,7 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
     )
 
     link_flags = list(
-        cli._collect_cargo_native_link_deps(
+        cli_native_link_deps._collect_cargo_native_link_deps(
             runtime_lib,
             target_triple=target_triple,
             object_format="macho",
@@ -217,7 +217,7 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
     )
 
     link_flags = list(
-        cli._collect_cargo_native_link_deps(
+        cli_native_link_deps._collect_cargo_native_link_deps(
             runtime_lib,
             target_triple=target_triple,
             object_format="macho",
@@ -263,7 +263,7 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
         runtime_build_identity=build_identity,
     )
 
-    plan = cli._build_native_link_plan(
+    plan = native_link_command._build_native_link_plan(
         output_obj=output_obj,
         stub_path=stub_path,
         runtime_lib=runtime_lib,
@@ -282,7 +282,7 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
 
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
     args = ["zig", "cc", "-target", "x86_64-unknown-linux-gnu"]
-    cli._append_darwin_runtime_frameworks(
+    NATIVE_TOOLCHAIN._append_darwin_runtime_frameworks(
         args, target=resolve_native_target_spec("x86_64-unknown-linux-gnu")
     )
     assert "-framework" not in args

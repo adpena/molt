@@ -9,7 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import molt.cli as molt_cli
 from molt.cli import debug_helpers as cli_debug_helpers
 from molt.dx import development_artifact_env
 from molt.debug import DebugSubcommand, allocate_debug_paths
@@ -384,7 +383,7 @@ def test_debug_repro_runs_one_file_and_records_execution(
         }
 
     monkeypatch.setattr(
-        molt_cli,
+        cli_debug_helpers,
         "_capture_json_cli_result",
         fake_capture_json_cli_result,
     )
@@ -450,7 +449,7 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         }
 
     monkeypatch.setattr(
-        molt_cli,
+        cli_debug_helpers,
         "_capture_json_cli_result",
         fake_capture_json_cli_result,
     )
@@ -526,7 +525,7 @@ def test_debug_trace_can_enable_success_path_assertion(
         }
 
     monkeypatch.setattr(
-        molt_cli,
+        cli_debug_helpers,
         "_capture_json_cli_result",
         fake_capture_json_cli_result,
     )
@@ -585,7 +584,7 @@ def test_debug_trace_can_enable_backend_timing_family(
         }
 
     monkeypatch.setattr(
-        molt_cli,
+        cli_debug_helpers,
         "_capture_json_cli_result",
         fake_capture_json_cli_result,
     )
@@ -648,7 +647,7 @@ def test_debug_trace_can_enable_compile_func_family(
         }
 
     monkeypatch.setattr(
-        molt_cli,
+        cli_debug_helpers,
         "_capture_json_cli_result",
         fake_capture_json_cli_result,
     )

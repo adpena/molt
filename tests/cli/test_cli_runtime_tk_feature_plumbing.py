@@ -22,7 +22,6 @@ import subprocess
 from pathlib import Path
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 
-import molt.cli as cli
 import molt.dx as molt_dx
 import pytest
 from molt.capability_manifest import CapabilityManifest
@@ -49,6 +48,9 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
 )
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.cli import artifact_state as cli_artifact_state
+from molt.cli import models as cli_models
+from molt.cli import runtime_paths as cli_runtime_paths
 
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 RUNTIME_FEATURES = importlib.import_module("molt.cli.runtime_features")
@@ -343,22 +345,22 @@ def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
 def test_runtime_lib_path_is_stdlib_profile_qualified(
     tmp_path: Path, monkeypatch
 ) -> None:
-    cli._runtime_lib_path_cached.cache_clear()
+    cli_runtime_paths._runtime_lib_path_cached.cache_clear()
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
 
-    micro = cli._runtime_lib_path(
+    micro = cli_runtime_paths._runtime_lib_path(
         tmp_path,
         "dev-fast",
         None,
         stdlib_profile="micro",
     )
-    full = cli._runtime_lib_path(
+    full = cli_runtime_paths._runtime_lib_path(
         tmp_path,
         "dev-fast",
         None,
         stdlib_profile="full",
     )
-    target_micro = cli._runtime_lib_path(
+    target_micro = cli_runtime_paths._runtime_lib_path(
         tmp_path,
         "dev-fast",
         "aarch64-apple-darwin",
@@ -366,14 +368,14 @@ def test_runtime_lib_path_is_stdlib_profile_qualified(
     )
 
     assert micro != full
-    assert micro.name == cli._runtime_lib_archive_name("micro", None)
-    assert full.name == cli._runtime_lib_archive_name("full", None)
+    assert micro.name == cli_runtime_paths._runtime_lib_archive_name("micro", None)
+    assert full.name == cli_runtime_paths._runtime_lib_archive_name("full", None)
     assert target_micro == (
         tmp_path
         / "target"
         / "aarch64-apple-darwin"
         / "dev-fast"
-        / cli._runtime_lib_archive_name("micro", "aarch64-apple-darwin")
+        / cli_runtime_paths._runtime_lib_archive_name("micro", "aarch64-apple-darwin")
     )
 
 
@@ -386,7 +388,7 @@ def test_cargo_target_root_ignores_removed_legacy_target_root_env(
     monkeypatch.setenv(legacy_key, str(tmp_path / "legacy-target"))
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
 
-    assert cli._cargo_target_root(tmp_path) == (
+    assert cli_runtime_paths._cargo_target_root(tmp_path) == (
         tmp_path / "target" / "sessions" / "alpha_session_b-575cb2aec94ffa27"
     )
 
@@ -410,7 +412,7 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
         / "checkouts"
         / molt_dx.checkout_component(project_root.resolve())
     )
-    assert cli._cargo_target_root(project_root) == (
+    assert cli_runtime_paths._cargo_target_root(project_root) == (
         checkout_target / "sessions" / "agent-one"
     )
     # Every consumer of the default target reads the same rule: build
@@ -418,15 +420,15 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
     from molt.backend_daemon_custody import backend_daemon_root_from_env
 
     assert backend_daemon_root_from_env(os.environ, project_root=project_root) == (
-        cli._build_state_root(project_root) / "backend_daemon"
+        cli_runtime_paths._build_state_root(project_root) / "backend_daemon"
     )
     # A generated session never scopes it, as in `molt dx run`, and the
     # target stays outside the project.
     monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
-    assert cli._cargo_target_root(project_root) == checkout_target
+    assert cli_runtime_paths._cargo_target_root(project_root) == checkout_target
     monkeypatch.setenv("CARGO_TARGET_DIR", str(project_root / "target"))
     with pytest.raises(molt_dx.DxConfigError, match="CARGO_TARGET_DIR"):
-        cli._cargo_target_root(project_root)
+        cli_runtime_paths._cargo_target_root(project_root)
 
 
 def test_cargo_build_env_preserves_public_cargo_defaults_without_dev_request(
@@ -451,13 +453,13 @@ def test_runtime_fingerprint_path_is_stdlib_profile_qualified(tmp_path: Path) ->
     micro = target_root / "libmolt_runtime.stdlib_micro.a"
     full = target_root / "libmolt_runtime.stdlib_full.a"
 
-    micro_fingerprint = cli._runtime_fingerprint_path(
+    micro_fingerprint = cli_artifact_state._runtime_fingerprint_path(
         tmp_path,
         micro,
         "dev-fast",
         None,
     )
-    full_fingerprint = cli._runtime_fingerprint_path(
+    full_fingerprint = cli_artifact_state._runtime_fingerprint_path(
         tmp_path,
         full,
         "dev-fast",
@@ -487,7 +489,7 @@ def test_artifact_needs_rebuild_checks_regular_artifact_once(
 
     monkeypatch.setattr(Path, "stat", wrapped_stat)
     assert (
-        cli._artifact_needs_rebuild(
+        RUNTIME_FINGERPRINTS._artifact_needs_rebuild(
             artifact, fingerprint, {"version": 3, **fingerprint}
         )
         is not present
@@ -499,7 +501,7 @@ def test_artifact_needs_rebuild_on_runtime_meta_digest_mismatch(tmp_path: Path) 
     artifact = tmp_path / "libmolt_runtime.a"
     artifact.write_bytes(static_archive_bytes(b"fake-staticlib"))
     fingerprint = _source_fingerprint("current")
-    assert cli._artifact_needs_rebuild(
+    assert RUNTIME_FINGERPRINTS._artifact_needs_rebuild(
         artifact, fingerprint, {"version": 3, **fingerprint, "meta_digest": "other"}
     )
 
@@ -568,7 +570,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
     project_root.mkdir()
     target_root = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    cli._runtime_lib_path_cached.cache_clear()
+    cli_runtime_paths._runtime_lib_path_cached.cache_clear()
 
     output_obj = tmp_path / "output.o"
     output_obj.write_bytes(static_archive_bytes())
@@ -659,7 +661,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
         lambda **kwargs: subprocess.CompletedProcess(kwargs["link_cmd"], 0, "", ""),
     )
 
-    selected_runtime = cli._runtime_lib_path(
+    selected_runtime = cli_runtime_paths._runtime_lib_path(
         project_root, "dev-fast", None, stdlib_profile="full"
     )
     selected_runtime.parent.mkdir(parents=True, exist_ok=True)
@@ -683,7 +685,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
         warnings=[],
     )
 
-    expected = cli._runtime_lib_path(
+    expected = cli_runtime_paths._runtime_lib_path(
         project_root,
         "dev-fast",
         None,
@@ -699,10 +701,10 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
 def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profile(
     tmp_path: Path, monkeypatch
 ) -> None:
-    runtime_state = cli._RuntimeArtifactState(
+    runtime_state = cli_models._RuntimeArtifactState(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
-    cache_setup = cli._BackendCacheSetup(
+    cache_setup = cli_models._BackendCacheSetup(
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -783,10 +785,10 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
 def test_prepare_backend_setup_records_backend_stage_timings(
     tmp_path: Path, monkeypatch
 ) -> None:
-    runtime_state = cli._RuntimeArtifactState(
+    runtime_state = cli_models._RuntimeArtifactState(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
-    cache_setup = cli._BackendCacheSetup(
+    cache_setup = cli_models._BackendCacheSetup(
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -889,10 +891,10 @@ def test_prepare_backend_setup_records_backend_stage_timings(
 def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
     tmp_path: Path, monkeypatch
 ) -> None:
-    runtime_state = cli._RuntimeArtifactState(
+    runtime_state = cli_models._RuntimeArtifactState(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
-    cache_setup = cli._BackendCacheSetup(
+    cache_setup = cli_models._BackendCacheSetup(
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -909,7 +911,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         cache_hit_tier=None,
     )
     captured_extra_features: list[tuple[str, ...]] = []
-    artifact = cli._ExternalPackageNativeArtifact(
+    artifact = cli_models._ExternalPackageNativeArtifact(
         package="nativepkg",
         module="nativepkg._native",
         package_dir=tmp_path / "nativepkg",
@@ -925,7 +927,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         artifact_kind="static_archive",
         link_requirements=SourceExtensionLinkRequirements("x86_64-unknown-linux-gnu"),
     )
-    native_plan = cli._ExternalPackageNativeArtifactPlan(artifacts=(artifact,))
+    native_plan = cli_models._ExternalPackageNativeArtifactPlan(artifacts=(artifact,))
     _stub_backend_binary_ensure(monkeypatch, tmp_path)
 
     def fake_initialize_runtime_artifact_state(*args, **kwargs):
@@ -1235,12 +1237,14 @@ def test_runtime_fingerprint_read_observes_same_size_preserved_mtime_rewrite(
     fingerprint_path = tmp_path / "runtime.fingerprint.json"
     first_fingerprint = _source_fingerprint("first")
     second_fingerprint = _source_fingerprint("other")
-    cli._write_runtime_fingerprint(fingerprint_path, first_fingerprint)
-    first = cli._read_runtime_fingerprint(fingerprint_path)
+    RUNTIME_FINGERPRINTS._write_runtime_fingerprint(fingerprint_path, first_fingerprint)
+    first = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     metadata = fingerprint_path.stat()
-    cli._write_runtime_fingerprint(fingerprint_path, second_fingerprint)
+    RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
+        fingerprint_path, second_fingerprint
+    )
     assert fingerprint_path.stat().st_size == metadata.st_size
     os.utime(fingerprint_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-    second = cli._read_runtime_fingerprint(fingerprint_path)
+    second = RUNTIME_FINGERPRINTS._read_runtime_fingerprint(fingerprint_path)
     assert first == {"version": 3, **first_fingerprint}
     assert second == {"version": 3, **second_fingerprint}

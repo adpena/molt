@@ -15,44 +15,16 @@ from molt.cli.config_resolution import (
     _resolve_command_config,
     resolve_stdlib_profile,
 )
-
-
-def _cli_module() -> Any:
-    import importlib
-
-    return importlib.import_module("molt.cli")
-
-
-def _require_molt_root(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._require_molt_root(*args, **kwargs)
-
-
-def _fail(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._fail(*args, **kwargs)
-
-
-def _default_molt_home() -> Path:
-    return _cli_module()._default_molt_home()
-
-
-def _default_molt_bin() -> Path:
-    return _cli_module()._default_molt_bin()
-
-
-def _default_molt_cache() -> Path:
-    return _cli_module()._default_molt_cache()
-
-
-def _format_capabilities_input(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module().format_capability_input(*args, **kwargs)
-
-
-def _json_payload(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._json_payload(*args, **kwargs)
-
-
-def _emit_json(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._emit_json(*args, **kwargs)
+from molt.capability_policy import format_capability_input as _format_capabilities_input
+from molt.cli.output import emit_json as _emit_json
+from molt.cli.output import fail as _fail
+from molt.cli.output import json_payload as _json_payload
+from molt.cli.project_roots import _require_molt_root
+from molt.default_paths import (
+    _default_molt_bin,
+    _default_molt_cache,
+    _default_molt_home,
+)
 
 
 def _load_artifact_cleanup_module(root: Path) -> Any:

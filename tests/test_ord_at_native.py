@@ -15,6 +15,7 @@ from tests.wasm_linked_runner import (
     require_wasm_toolchain,
     run_wasm_linked,
 )
+from molt.cli import setup_readiness as cli_setup_readiness
 
 
 PROGRAM = """
@@ -98,9 +99,8 @@ def _write_program(tmp_path: Path, name: str, source: str = PROGRAM) -> Path:
 
 
 def _llvm_backend_available(root: Path) -> bool:
-    from molt import cli as molt_cli
 
-    major, toolchain = molt_cli._detect_llvm_backend_toolchain(root)
+    major, toolchain = cli_setup_readiness._detect_llvm_backend_toolchain(root)
     return major is not None and toolchain is not None
 
 

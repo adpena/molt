@@ -2,12 +2,8 @@ schema_version = 1
 search_roots = ["src", "tools", "."]
 source_roots = ["src", "tools"]
 
-# The only dynamic ``molt.cli`` imports are the finite `_LAZY_REEXPORTS` registry
-# and `_LazyPostLoweringModule` instances. Derive their module targets from those
-# source authorities and ratchet the exact call count; arbitrary bare submodule
-# attributes are rejected by `molt.cli.__getattr__` rather than compatibility-
-# imported.
-[[source]]
-path = "src/molt/cli/_lazy_facade.py"
-nonliteral_calls = 2
-derive_molt_cli_lazy_targets = true
+# Each [[source]] row names a tooling source that imports a module by a
+# computed name, with its exact non-literal call count and the module targets
+# those calls may reach. No tooling source does so today; `molt.cli` resolves
+# every name by a literal import (HF-227).
+source = []

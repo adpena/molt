@@ -10,6 +10,7 @@ import pytest
 from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 from tests import process_guard_common
+from molt.cli import setup_readiness as cli_setup_readiness
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -64,9 +65,8 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
 
 
 def _llvm_backend_available() -> bool:
-    from molt import cli as molt_cli
 
-    major, toolchain = molt_cli._detect_llvm_backend_toolchain(ROOT)
+    major, toolchain = cli_setup_readiness._detect_llvm_backend_toolchain(ROOT)
     return major is not None and toolchain is not None
 
 

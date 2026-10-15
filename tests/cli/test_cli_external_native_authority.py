@@ -33,7 +33,8 @@ _EXTERNAL_NATIVE_DEFINITIONS = (
 
 def test_cli_external_native_authority_is_single_home() -> None:
     for name in _EXTERNAL_NATIVE_NAMES:
-        assert getattr(cli, name) is getattr(external_native, name)
+        assert hasattr(external_native, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for marker in _EXTERNAL_NATIVE_DEFINITIONS:

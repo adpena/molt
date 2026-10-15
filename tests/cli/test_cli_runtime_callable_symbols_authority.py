@@ -22,7 +22,8 @@ _RUNTIME_CALLABLE_SYMBOL_NAMES = (
 
 def test_cli_runtime_callable_symbols_authority_is_single_home() -> None:
     for name in _RUNTIME_CALLABLE_SYMBOL_NAMES:
-        assert getattr(cli, name) is getattr(runtime_callable_symbols, name)
+        assert hasattr(runtime_callable_symbols, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for name in _RUNTIME_CALLABLE_SYMBOL_NAMES:

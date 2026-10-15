@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 import os
-from collections.abc import Callable, Iterable, Generator, Mapping
+from collections.abc import Iterable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -466,77 +465,6 @@ def _graph_namespace_writes(
     )
 
 
-def _molt_cli_lazy_targets(
-    snapshot: PythonSourceSnapshot,
-) -> set[str]:
-    """Derive finite ``molt.cli`` lazy imports from their source authorities."""
-
-    # The graph owns captured bytes for the whole walk, but this derivation owns
-    # its AST only until the finite target projection is complete.
-    source = snapshot.path
-    tree = PythonSourceSnapshot(source, snapshot.content).tree
-    targets: set[str] = set()
-    registry_found = False
-    for node in tree.body:
-        value = None
-        if (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "_LAZY_REEXPORTS"
-        ):
-            value = node.value
-        elif isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "_LAZY_REEXPORTS"
-            for target in node.targets
-        ):
-            value = node.value
-        if value is not None:
-            if not isinstance(value, ast.Dict):
-                raise ValueError(
-                    f"molt.cli lazy reexport registry is not a literal dict: {source}"
-                )
-            registry_found = True
-            for registry_value in value.values:
-                if (
-                    not isinstance(
-                        registry_value,
-                        (ast.Tuple, ast.List),
-                    )
-                    or not registry_value.elts
-                ):
-                    raise ValueError(f"invalid molt.cli lazy reexport row in {source}")
-                module_node = registry_value.elts[0]
-                if not (
-                    isinstance(module_node, ast.Constant)
-                    and isinstance(module_node.value, str)
-                ):
-                    raise ValueError(
-                        f"non-literal molt.cli lazy reexport module in {source}"
-                    )
-                targets.add(f"molt.cli.{module_node.value}")
-        assignment_value = None
-        if isinstance(node, ast.Assign):
-            assignment_value = node.value
-        elif isinstance(node, ast.AnnAssign):
-            assignment_value = node.value
-        if (
-            isinstance(assignment_value, ast.Call)
-            and isinstance(assignment_value.func, ast.Name)
-            and assignment_value.func.id == "_LazyPostLoweringModule"
-            and assignment_value.args
-        ):
-            module_node = assignment_value.args[0]
-            if not (
-                isinstance(module_node, ast.Constant)
-                and isinstance(module_node.value, str)
-            ):
-                raise ValueError(f"non-literal molt.cli lazy proxy module in {source}")
-            targets.add(f"molt.cli.{module_node.value}")
-    if not registry_found:
-        raise ValueError(f"molt.cli lazy reexport registry is missing: {source}")
-    return targets
-
-
 def _read_python_import_manifest(
     project_root: Path,
 ) -> _ImportManifest | None:
@@ -594,7 +522,6 @@ def _read_dynamic_import_manifest(
     manifest_record: _ImportManifest | None,
     project_root: Path,
     resolver: LocalPythonModuleResolver,
-    capture: Callable[[Path], PythonSourceSnapshot],
 ) -> tuple[tuple[Path, bytes] | None, dict[Path, tuple[int, tuple[str, ...]]]]:
     if manifest_record is None:
         return None, {}
@@ -612,7 +539,6 @@ def _read_dynamic_import_manifest(
         expected = row.get("nonliteral_calls")
         modules = row.get("modules", [])
         module_trees = row.get("module_trees", [])
-        derive_molt_cli_lazy_targets = row.get("derive_molt_cli_lazy_targets", False)
         if (
             not isinstance(source_value, str)
             or not isinstance(expected, int)
@@ -621,7 +547,6 @@ def _read_dynamic_import_manifest(
             or not all(isinstance(module, str) for module in modules)
             or not isinstance(module_trees, list)
             or not all(isinstance(module, str) for module in module_trees)
-            or not isinstance(derive_molt_cli_lazy_targets, bool)
         ):
             raise ValueError(f"invalid Python tooling import manifest row: {manifest}")
         source = (project_root / source_value).resolve()
@@ -640,8 +565,6 @@ def _read_dynamic_import_manifest(
             for child in package_dir.rglob("*.py"):
                 member = relative_python_module_name(child, package_dir)
                 targets.add(f"{module_tree}.{member}" if member else module_tree)
-        if derive_molt_cli_lazy_targets:
-            targets.update(_molt_cli_lazy_targets(capture(source)))
         overrides[source] = (expected, tuple(sorted(targets)))
     return (manifest, content), overrides
 
@@ -710,7 +633,7 @@ def local_python_import_closure(
         return snapshots[path]
 
     manifest, dynamic_import_overrides = (
-        _read_dynamic_import_manifest(manifest_record, root, resolver, capture)
+        _read_dynamic_import_manifest(manifest_record, root, resolver)
         if not policy.module_level_only
         else (None, {})
     )

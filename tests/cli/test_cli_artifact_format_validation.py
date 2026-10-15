@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import molt.cli as cli
 from molt.exact_json import canonical_json_sha256
 from tests.cli.native_link_test_support import static_archive_bytes
+from molt.cli import runtime_fingerprints as cli_runtime_fingerprints
 
 
 def test_is_valid_static_library_artifact_checks_archive_magic(tmp_path: Path) -> None:
@@ -13,14 +13,19 @@ def test_is_valid_static_library_artifact_checks_archive_magic(tmp_path: Path) -
     invalid = tmp_path / "libmolt_runtime.a.bad"
     invalid.write_bytes(b"runtime")
 
-    assert cli._is_valid_static_library_artifact(valid) is True
-    assert cli._artifact_content_looks_valid(valid) is True
-    assert cli._artifact_content_looks_valid(invalid) is True
+    assert cli_runtime_fingerprints._is_valid_static_library_artifact(valid) is True
+    assert cli_runtime_fingerprints._artifact_content_looks_valid(valid) is True
+    assert cli_runtime_fingerprints._artifact_content_looks_valid(invalid) is True
 
     invalid_static = tmp_path / "libmolt_runtime.a"
     invalid_static.write_bytes(b"runtime")
-    assert cli._is_valid_static_library_artifact(invalid_static) is False
-    assert cli._artifact_content_looks_valid(invalid_static) is False
+    assert (
+        cli_runtime_fingerprints._is_valid_static_library_artifact(invalid_static)
+        is False
+    )
+    assert (
+        cli_runtime_fingerprints._artifact_content_looks_valid(invalid_static) is False
+    )
 
 
 def test_artifact_needs_rebuild_for_invalid_static_library_even_with_matching_fingerprint(
@@ -33,7 +38,17 @@ def test_artifact_needs_rebuild_for_invalid_static_library_even_with_matching_fi
     }
     stored = {"version": 3, **fingerprint}
     runtime_lib.write_bytes(static_archive_bytes(b"object"))
-    assert cli._artifact_needs_rebuild(runtime_lib, fingerprint, stored) is False
+    assert (
+        cli_runtime_fingerprints._artifact_needs_rebuild(
+            runtime_lib, fingerprint, stored
+        )
+        is False
+    )
     runtime_lib.write_bytes(b"runtime")
 
-    assert cli._artifact_needs_rebuild(runtime_lib, fingerprint, stored) is True
+    assert (
+        cli_runtime_fingerprints._artifact_needs_rebuild(
+            runtime_lib, fingerprint, stored
+        )
+        is True
+    )

@@ -1956,7 +1956,7 @@ vm.runInContext(boundary + methods + owner, context);
 def test_generated_split_worker_metadata_uses_owned_integer_transaction(
     tmp_path: Path,
 ) -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
     from molt.capability_manifest import CapabilityManifest
 
     source = _generate_split_worker_js(
@@ -2020,7 +2020,7 @@ for (const failure of [null, 'call', 'cleanup']) {
 def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
     tmp_path: Path,
 ) -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
     from molt.capability_manifest import CapabilityManifest
 
     source = _generate_split_worker_js(

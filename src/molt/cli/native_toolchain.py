@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import contextlib
 from molt.artifact_publication import discard_staged_output
 import os
@@ -8,20 +7,12 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import _coerce_bool
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
 from molt.cli.native_link_plan import NativeTargetSpec, resolve_native_target_spec
-
-
-def _cli_module() -> Any:
-    return importlib.import_module("molt.cli")
-
-
-def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._run_completed_command(*args, **kwargs)
+from molt.cli.command_runtime import _run_completed_command
 
 
 def _codesign_binary(binary_path: Path, *, identifier: str) -> None:
