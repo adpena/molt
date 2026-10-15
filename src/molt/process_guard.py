@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# tools/command_execution.py loads this file under a per-checkout neutral
+# package (tools/import_file.py require_repository_identity, HF-223).
+__molt_neutral_authority__ = True
+
 import os
 import shlex
 import subprocess

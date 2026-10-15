@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tools.import_file import require_tool_identity
+from tools.import_file import require_repository_identity
 
 if TYPE_CHECKING:
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
@@ -319,20 +319,21 @@ def _reject_molt_stdlib_import_root(request: pytest.FixtureRequest) -> Iterator[
 _spec_from_file_location = importlib.util.spec_from_file_location
 
 
-def _one_tool_identity(name, location=None, *args, **kwargs):  # type: ignore[no-untyped-def]
-    """``spec_from_file_location`` that refuses a second tool identity (HF-221).
+def _one_repository_identity(name, location=None, *args, **kwargs):  # type: ignore[no-untyped-def]
+    """``spec_from_file_location`` that refuses a second repository identity.
 
-    A file under ``tools/`` is the module ``tools.<path>``. Loading it by path
-    under another name builds a second copy of its state and types, so the
-    test or tool that does so fails at the load. Normal imports use the import
+    A file under ``tools/`` is the module ``tools.<path>`` (HF-221) and a Molt
+    host source is ``molt.<path>`` (HF-223). Loading either by path under
+    another name builds a second copy of its state and types, so the test or
+    tool that does so fails at the load. Normal imports use the import
     system's own binding of this function and never come here.
     """
     if location is not None:
-        require_tool_identity(name, location)
+        require_repository_identity(name, location)
     return _spec_from_file_location(name, location, *args, **kwargs)
 
 
-importlib.util.spec_from_file_location = _one_tool_identity
+importlib.util.spec_from_file_location = _one_repository_identity
 
 
 @dataclass(frozen=True)

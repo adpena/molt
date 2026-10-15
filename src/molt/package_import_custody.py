@@ -13,6 +13,10 @@ from pathlib import Path
 from types import ModuleType
 from typing import NoReturn
 
+# Selected by exact file under a neutral name before any ``molt`` import
+# (tools/import_file.py require_repository_identity, HF-223).
+__molt_neutral_authority__ = True
+
 if __name__ != "_molt_package_import_custody":
     raise ImportError("package import custody requires its selected file loader")
 
