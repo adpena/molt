@@ -2556,12 +2556,12 @@ mod tests {
                 kind: "guarded_field_set".to_string(),
                 args: Some(vec![
                     "self".to_string(),
-                    "v94".to_string(),
                     "v95".to_string(),
                     "v90".to_string(),
                 ]),
                 s_value: Some("x".to_string()),
                 value: Some(0),
+                class_definition: Some("class:method_trace:C".to_string()),
                 out: Some("none".to_string()),
                 ..OpIR::default()
             },

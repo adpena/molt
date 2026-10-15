@@ -535,6 +535,13 @@ simpleir_runtime_requirement_carrier_kinds = [
 simpleir_runtime_symbol_carrier_kinds = [
     "module_get_attr", "module_get_global", "module_import_from",
 ]
+# Operations that name one class statement through `class_definition` (HF-220):
+# the stamp that marks the class a statement created, and every layout guard
+# that trusts that statement's field offsets. The program's code-slot bindings
+# resolve the symbol; no other operation may carry it.
+simpleir_class_definition_carrier_kinds = [
+    "class_set_definition", "guard_layout", "guarded_field_get", "guarded_field_set",
+]
 
 # SimpleIR field-role authority. `out` is the ordinary result slot unless the
 # kind appears in the metadata set. For binding definitions, `out` is a result
@@ -596,6 +603,7 @@ simpleir_object_model_semantics_kinds = [
     "alloc_class_static", "alloc_class_trusted", "alloc_class", "alloc_instance",
     "init_instance", "instance_set_field", "instance_get_field", "instance_has_field",
     "object_set_class", "class_set_base", "class_set_layout_version",
+    "class_set_definition",
     "class_merge_layout", "class_apply_set_name", "class_layout_version",
     "class_layout_field_count", "class_layout_slot_count",
     # Luau's backend instance validator admits `callargs_expand_kwstar` only
@@ -658,7 +666,7 @@ simpleir_host_capability_semantics_kinds = [
 # finalized TIR. Trace frame lifecycle operations are deliberately absent.
 # call_async only constructs an unstarted task; print_newline writes host stdout.
 callback_free_copy_kinds = [
-    "call_async", "guard_bool", "guard_dict_shape", "guard_float", "guard_int",
+    "call_async", "guard_bool", "guard_float", "guard_int",
     "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
     "line", "missing", "nop", "print_newline",
 ]
@@ -890,6 +898,7 @@ classifier_owned_value = [
     "class_merge_layout",
     "class_new",
     "class_set_base",
+    "class_set_definition",
     "class_set_layout_version",
     "classmethod_new",
     "code_new",
@@ -1932,7 +1941,6 @@ alias_slot_never_observer_opcodes = [
 # (line/trace_*/missing/nop, the read-only repr/layout guards).
 classifier_inert_marker = [
     "guard_bool",
-    "guard_dict_shape",
     "guard_float",
     "guard_int",
     "guard_layout",
@@ -2083,6 +2091,21 @@ value_rule = "unconstrained"
 kind = "code_slot_set"
 family = "code_metadata"
 operands = 2
+value_rule = "unconstrained"
+
+# The layout guard (HF-220) names its class statement in `class_definition`;
+# its operands are the receiver and the expected layout version.
+[[simpleir_op_shape]]
+kind = "guard_layout"
+family = "class_layout"
+operands = 2
+value_rule = "unconstrained"
+
+# The stamp's operand is the class the statement just created.
+[[simpleir_op_shape]]
+kind = "class_set_definition"
+family = "class_layout"
+operands = 1
 value_rule = "unconstrained"
 
 [[simpleir_op_shape]]
@@ -6191,6 +6214,10 @@ reason = "structural: function-object construction"
 [[frontend_check_exception_skip]]
 kind = "CODE_SLOT_SET"
 reason = "structural: set a code-object slot"
+
+[[frontend_check_exception_skip]]
+kind = "CLASS_SET_DEFINITION"
+reason = "structural: stamp a fresh class with its class statement identity"
 
 [[frontend_check_exception_skip]]
 kind = "CLASSMETHOD_NEW"

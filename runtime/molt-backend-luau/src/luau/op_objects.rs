@@ -6,34 +6,28 @@ impl LuauBackend {
             // ================================================================
             // Guarded field access
             // ================================================================
+            // Luau tables hold attributes by name, so a layout guard has no
+            // fast path to admit: operands = [obj, expected_version] for a
+            // read and [obj, expected_version, value] for a write (HF-220).
             "guarded_field_get" => {
                 let out = self.out_var(op);
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if let Some(obj) = args.first() {
-                    let obj = sanitize_ident(obj);
-                    if let Some(attr) = op.s_value.as_deref() {
-                        let attr = sanitize_ident(attr);
-                        self.emit_line(&format!("local {out} = {obj}.{attr}"));
-                    } else if args.len() >= 2 {
-                        let key = sanitize_ident(&args[1]);
-                        self.emit_line(&format!("local {out} = {obj}[{key}]"));
-                    }
-                }
+                let args = op
+                    .args
+                    .as_deref()
+                    .expect("admitted guarded_field_get operands");
+                let obj = sanitize_ident(&args[0]);
+                let attr = sanitize_ident(op.s_value.as_deref().expect("admitted field name"));
+                self.emit_line(&format!("local {out} = {obj}.{attr}"));
             }
             "guarded_field_set" => {
-                let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 2 {
-                    let obj = sanitize_ident(&args[0]);
-                    if let Some(attr) = op.s_value.as_deref() {
-                        let attr = sanitize_ident(attr);
-                        let val = sanitize_ident(&args[1]);
-                        self.emit_line(&format!("{obj}.{attr} = {val}"));
-                    } else if args.len() >= 3 {
-                        let key = sanitize_ident(&args[1]);
-                        let val = sanitize_ident(&args[2]);
-                        self.emit_line(&format!("{obj}[{key}] = {val}"));
-                    }
-                }
+                let args = op
+                    .args
+                    .as_deref()
+                    .expect("admitted guarded_field_set operands");
+                let obj = sanitize_ident(&args[0]);
+                let val = sanitize_ident(&args[2]);
+                let attr = sanitize_ident(op.s_value.as_deref().expect("admitted field name"));
+                self.emit_line(&format!("{obj}.{attr} = {val}"));
             }
 
             // ================================================================
@@ -144,6 +138,22 @@ impl LuauBackend {
                         self.emit_line(&format!("local {out} = 0"));
                     }
                 }
+            }
+            // The class statement's program slot, recorded beside the layout
+            // version on the class table it created (HF-220).
+            "class_set_definition" => {
+                let args = op
+                    .args
+                    .as_deref()
+                    .expect("admitted class_set_definition operand");
+                let class = sanitize_ident(&args[0]);
+                let slot = self
+                    .code_slots
+                    .resolve_class_definition(op)
+                    .expect("admitted class statement binding");
+                self.emit_line(&format!(
+                    "if type({class}) == \"table\" then {class}.__molt_class_definition = {slot} end"
+                ));
             }
             "class_set_layout_version" => {
                 let args = op.args.as_deref().unwrap_or(&[]);

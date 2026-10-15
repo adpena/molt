@@ -193,6 +193,9 @@ impl<'a> SsaContext<'a> {
         if let Some(ref v) = op.runtime_symbol {
             attrs.insert("runtime_symbol".into(), AttrValue::Str(v.clone()));
         }
+        if let Some(ref v) = op.class_definition {
+            attrs.insert("class_definition".into(), AttrValue::Str(v.clone()));
+        }
         if op.runtime_requirement_bits != 0 {
             attrs.insert(
                 "runtime_requirement_bits".into(),

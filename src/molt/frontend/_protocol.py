@@ -488,6 +488,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _class_is_exception_subclass(self, class_id: ClassId) -> bool: ...
 
+    def _class_layout_definition(self, class_id: ClassId) -> str | None: ...
+
     def _class_layout_stable(self, class_id: ClassId) -> bool: ...
 
     def _class_layout_version(
@@ -937,8 +939,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_class_method_func(
         self, class_obj: MoltValue, method_name: str
     ) -> MoltValue: ...
-
-    def _emit_class_ref(self, class_id: ClassId) -> MoltValue: ...
 
     def _emit_compare_op(
         self, op: ast.cmpop, left: MoltValue, right: MoltValue

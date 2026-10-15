@@ -30,7 +30,10 @@ from molt.cli.backend_cache import (
 )
 from molt.cli.cache_keys import _json_ir_default
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
-from molt.cli.frontend_integration import _register_global_code_id_with_state
+from molt.cli.frontend_integration import (
+    _register_global_code_id_with_state,
+    _validate_class_definition_references_with_state,
+)
 from molt.cli.models import (
     _FrontendIntegrationState,
     _ExternalNativeModuleInitSpec,
@@ -2111,6 +2114,11 @@ def _prepare_backend_ir(
 
     functions = integration_state.functions
     global_code_ids = integration_state.global_code_ids
+    class_definition_issue = _validate_class_definition_references_with_state(
+        integration_state
+    )
+    if class_definition_issue is not None:
+        return None, fail(class_definition_issue, json_output, command="build")
 
     def register_global_code_id(symbol: str) -> int:
         return _register_global_code_id_with_state(integration_state, symbol)

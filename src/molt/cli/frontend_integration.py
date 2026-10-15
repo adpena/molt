@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from typing import Any
 
 from molt.frontend import SimpleTIRGenerator
-from molt.frontend import ClassId, ClassInfo
+from molt.frontend import ClassId, ClassInfo, layout_definition_symbol
 from molt.cli.models import _FrontendIntegrationState, _MidendDiagnosticsState
 
 
@@ -18,11 +19,21 @@ def _register_global_code_id_with_state(
     return code_id
 
 
+def _module_class_definitions(local_classes: Mapping[ClassId, ClassInfo]) -> set[str]:
+    """The class statement symbols a module owns: the ones it stamps (HF-220)."""
+    return {
+        symbol
+        for class_id, info in local_classes.items()
+        if (symbol := layout_definition_symbol(class_id, info)) is not None
+    }
+
+
 def _integrate_module_code_slots_with_state(
     integration_state: _FrontendIntegrationState,
     module_name: str,
     funcs: list[dict[str, Any]],
     local_symbols: set[str],
+    class_definitions: Collection[str],
 ) -> None:
     init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
     for func in funcs:
@@ -41,8 +52,40 @@ def _integrate_module_code_slots_with_state(
                     symbol = init_symbol
                 op["s_value"] = symbol
                 _register_global_code_id_with_state(integration_state, symbol)
+            definition = op.get("class_definition")
+            if definition is not None:
+                # A stamp names its own module's statement; a layout guard may
+                # name any module's statement (an imported class), so its owner
+                # is checked once the whole program is integrated.
+                if (
+                    kind == "class_set_definition"
+                    and definition not in class_definitions
+                ):
+                    raise ValueError(
+                        f"Class statement {definition!r} is stamped outside its "
+                        f"owning module {module_name}"
+                    )
+                integration_state.class_definition_references.setdefault(
+                    definition, module_name
+                )
+                _register_global_code_id_with_state(integration_state, definition)
             integrated_ops.append(op)
         func["ops"] = integrated_ops
+
+
+def _validate_class_definition_references_with_state(
+    integration_state: _FrontendIntegrationState,
+) -> str | None:
+    """Every class statement a stamp or guard names has exactly one owner."""
+    for symbol, module_name in sorted(
+        integration_state.class_definition_references.items()
+    ):
+        if symbol not in integration_state.class_definition_owners:
+            return (
+                f"Class statement {symbol!r} named by module {module_name} is "
+                "defined by no module of the program"
+            )
+    return None
 
 
 def _accumulate_midend_diagnostics_with_state(
@@ -91,12 +134,23 @@ def _integrate_module_frontend_result_with_state(
     local_classes: dict[ClassId, ClassInfo],
 ) -> str | None:
     init_symbol = SimpleTIRGenerator.module_init_symbol(module_name)
+    class_definitions = _module_class_definitions(local_classes)
+    for symbol in sorted(class_definitions):
+        owner = integration_state.class_definition_owners.setdefault(
+            symbol, module_name
+        )
+        if owner != module_name:
+            return (
+                f"Class statement {symbol!r} is defined by both module {owner} "
+                f"and module {module_name}"
+            )
     try:
         _integrate_module_code_slots_with_state(
             integration_state,
             module_name,
             ir_functions,
             set(func_code_ids),
+            class_definitions,
         )
     except ValueError as exc:
         return str(exc)

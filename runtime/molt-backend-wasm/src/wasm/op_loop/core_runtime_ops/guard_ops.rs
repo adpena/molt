@@ -6,24 +6,28 @@ use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use wasm_encoder::{Function, Instruction};
 
+/// `guard_layout` operands are `[obj, expected_version]`; the class statement
+/// it trusts is the op's `class_definition`, a compile-time slot (HF-220).
 pub(super) fn emit_guard_runtime_op(
     func: &mut Function,
     op: &OpIR,
+    code_slots: &molt_ir::code_slots::CodeSlotBindings,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "guard_layout" | "guard_dict_shape" => {}
-        _ => return false,
+    if op.kind != "guard_layout" {
+        return false;
     }
 
     let args = op.args.as_ref().unwrap();
     let obj = locals[&args[0]];
-    let class_bits = locals[&args[1]];
-    let expected = locals[&args[2]];
+    let expected = locals[&args[1]];
+    let definition_slot = code_slots
+        .resolve_class_definition(op)
+        .expect("admitted class statement binding");
     func.instruction(&Instruction::LocalGet(obj));
-    func.instruction(&Instruction::LocalGet(class_bits));
+    func.instruction(&Instruction::I64Const(definition_slot as i64));
     func.instruction(&Instruction::LocalGet(expected));
     emit_call(
         func,

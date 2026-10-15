@@ -33,6 +33,7 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "builtin_type",
     "class_layout_version",
     "class_set_layout_version",
+    "class_set_definition",
     "object_set_class",
     "string_format",
     "object_new",
@@ -57,7 +58,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "guard_type",
     "guard_tag",
     "guard_layout",
-    "guard_dict_shape",
     "json_parse",
     "msgpack_parse",
     "cbor_parse",
@@ -422,6 +422,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind,
                     "class_layout_version",
+                );
+                true
+            }
+            // operands = [class]; the stamp names its class statement in
+            // `class_definition` (HF-220).
+            "class_set_definition" => {
+                if op.operands.len() != 1 {
+                    return false;
+                }
+                let set_fn = self.ensure_runtime_i64_fn("molt_class_set_definition", 2);
+                let definition_slot = self.class_definition_slot(op);
+                self.emit_borrowed_runtime_call(
+                    op,
+                    set_fn,
+                    &[
+                        RuntimeArg::Operand(op.operands[0]),
+                        RuntimeArg::Word(definition_slot.into()),
+                    ],
+                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    kind,
+                    "class_set_definition",
                 );
                 true
             }
@@ -972,18 +993,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
 
-            // Both layout guards share runtime receiver admission. A class
-            // hint is not a pointer proof: keep the receiver tagged so scalar
-            // mismatches return false without dereferencing their payload.
-            // operands = [obj, class, expected_version]; the result is a boolean.
-            "guard_layout" | "guard_dict_shape" => {
-                if op.operands.len() != 3 {
+            // A class hint is not a pointer proof: keep the receiver tagged so
+            // scalar mismatches return false without dereferencing their
+            // payload. operands = [obj, expected_version]; the class statement
+            // is the op's `class_definition` (HF-220); the result is a boolean.
+            "guard_layout" => {
+                if op.operands.len() != 2 {
                     return false;
                 }
                 let guard_fn = self.ensure_runtime_i64_fn("molt_guard_layout", 3);
-                self.emit_positional_runtime_call(
+                let definition_slot = self.class_definition_slot(op);
+                self.emit_borrowed_runtime_call(
                     op,
                     guard_fn,
+                    &[
+                        RuntimeArg::Operand(op.operands[0]),
+                        RuntimeArg::Word(definition_slot.into()),
+                        RuntimeArg::Operand(op.operands[1]),
+                    ],
                     RuntimeResultCustody::Unowned,
                     kind,
                     "guard_layout",

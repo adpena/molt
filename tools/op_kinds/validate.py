@@ -663,6 +663,20 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_runtime_symbol_carrier_kinds has duplicate members"
         )
 
+    class_definition_carriers = data.get("simpleir_class_definition_carrier_kinds", [])
+    if (
+        not isinstance(class_definition_carriers, list)
+        or not class_definition_carriers
+        or not all(isinstance(kind, str) and kind for kind in class_definition_carriers)
+    ):
+        raise OpKindTableError(
+            "simpleir_class_definition_carrier_kinds must be a non-empty list of wire kinds"
+        )
+    if len(set(class_definition_carriers)) != len(class_definition_carriers):
+        raise OpKindTableError(
+            "simpleir_class_definition_carrier_kinds has duplicate members"
+        )
+
     function_reference_kinds = data.get("simpleir_function_reference_s_value_kinds", [])
     if not isinstance(function_reference_kinds, list) or not all(
         isinstance(kind, str) and kind for kind in function_reference_kinds
@@ -998,6 +1012,17 @@ def load_table(table_path: Path = TABLE) -> dict:
         raise OpKindTableError(
             "simpleir_runtime_symbol_carrier_kinds references unknown frontend wire kinds: "
             + ", ".join(sorted(unknown_runtime_symbol_carriers))
+        )
+    registered_wire_kinds = _simpleir_registered_runtime_kinds(data)
+    for table in _CLASSIFIER_SETS:
+        registered_wire_kinds.update(data.get(table, []))
+    unknown_class_definition_carriers = (
+        set(class_definition_carriers) - registered_wire_kinds
+    )
+    if unknown_class_definition_carriers:
+        raise OpKindTableError(
+            "simpleir_class_definition_carrier_kinds references unknown frontend wire kinds: "
+            + ", ".join(sorted(unknown_class_definition_carriers))
         )
 
     return data

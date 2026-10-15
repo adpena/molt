@@ -1483,7 +1483,12 @@ mod tests {
                 assert_eq!(unsafe { slot.load(ptr) }, MoltObject::none().bits());
             }
             assert_eq!(words[4], 0xA55A + 1);
-            for index in [8, 9, super::super::layout::CLASS_DECLARATIONS_WORD] {
+            for index in [
+                8,
+                9,
+                super::super::layout::CLASS_DECLARATIONS_WORD,
+                super::super::layout::CLASS_DEFINITION_WORD,
+            ] {
                 assert_eq!(words[index], 0xA55A);
             }
         });

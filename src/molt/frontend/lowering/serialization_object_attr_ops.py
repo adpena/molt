@@ -71,7 +71,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     }
                 )
         elif op.kind == "GUARDED_SETATTR":
-            obj, class_ref, expected_version, attr, val, expected_class = op.args
+            obj, expected_version, attr, val, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             if offset is None:
                 if self._class_is_exception_subclass(expected_class):
@@ -96,14 +96,10 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 ctx.json_ops.append(
                     {
                         "kind": "guarded_field_set",
-                        "args": [
-                            obj.name,
-                            class_ref.name,
-                            expected_version.name,
-                            val.name,
-                        ],
+                        "args": [obj.name, expected_version.name, val.name],
                         "s_value": attr,
                         "value": offset,
+                        "class_definition": (op.metadata or {})["class_definition"],
                         "out": op.result.name,
                     }
                 )
@@ -205,7 +201,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     }
                 )
         elif op.kind == "GUARDED_GETATTR":
-            obj, class_ref, expected_version, attr, expected_class = op.args
+            obj, expected_version, attr, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             if offset is None:
                 if self._class_is_exception_subclass(expected_class):
@@ -230,9 +226,10 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 ctx.json_ops.append(
                     {
                         "kind": "guarded_field_get",
-                        "args": [obj.name, class_ref.name, expected_version.name],
+                        "args": [obj.name, expected_version.name],
                         "s_value": attr,
                         "value": offset,
+                        "class_definition": (op.metadata or {})["class_definition"],
                         "out": op.result.name,
                     }
                 )

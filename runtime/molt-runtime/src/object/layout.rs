@@ -2250,8 +2250,59 @@ pub(crate) enum ClassSlotDeclaration {
 // Annotation values and evaluators belong to Dictionary. Reclaimed words 5/6
 // hold slot declarations and physical rows; policy8 and cached size9 stay fixed.
 pub(crate) const CLASS_DECLARATIONS_WORD: usize = 10;
-// Static generic attributes own a separate reference after semantic facts.
-pub(crate) const CLASS_PAYLOAD_WORDS: usize = ClassReferenceSlot::StaticModule as usize + 1;
+/// The compiled class statement that created this class, appended after the
+/// reference slots so no existing word moves. It is a plain scalar: the class
+/// owns no reference through it, and teardown leaves it alone.
+pub(crate) const CLASS_DEFINITION_WORD: usize = ClassReferenceSlot::StaticModule as usize + 1;
+pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_DEFINITION_WORD + 1;
+
+/// The identity of one compiled class statement (HF-220): its program slot
+/// plus one, so zero stays the word of every class no compiled statement
+/// stamped (`type(...)`, C extensions, builtins, rebuilt dataclasses). Running
+/// a statement again stamps the same identity; its layout facts are the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ClassDefinition(std::num::NonZeroU64);
+
+impl ClassDefinition {
+    /// The identity of the statement the program bound to `slot`.
+    pub(crate) fn from_program_slot(slot: u64) -> Option<Self> {
+        slot.checked_add(1)
+            .and_then(std::num::NonZeroU64::new)
+            .map(Self)
+    }
+}
+
+/// # Safety
+/// `ptr` must be a live class object payload that outlives the reference.
+unsafe fn class_definition_word<'a>(ptr: *mut u8) -> &'a std::sync::atomic::AtomicU64 {
+    unsafe {
+        &*(ptr.add(CLASS_DEFINITION_WORD * std::mem::size_of::<u64>())
+            as *const std::sync::atomic::AtomicU64)
+    }
+}
+
+/// # Safety
+/// `ptr` must be a live class object payload.
+pub(crate) unsafe fn class_definition(ptr: *mut u8) -> Option<ClassDefinition> {
+    let word = unsafe { class_definition_word(ptr) };
+    std::num::NonZeroU64::new(word.load(std::sync::atomic::Ordering::Acquire)).map(ClassDefinition)
+}
+
+/// Stamp the class a compiled statement created with that statement's
+/// identity; a class carries at most one. False when it already names one.
+///
+/// # Safety
+/// `ptr` must be a live class object payload.
+pub(crate) unsafe fn class_set_definition(ptr: *mut u8, definition: ClassDefinition) -> bool {
+    let word = unsafe { class_definition_word(ptr) };
+    word.compare_exchange(
+        0,
+        definition.0.get(),
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+    )
+    .is_ok()
+}
 
 pub(crate) unsafe fn class_slot_declaration_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::SlotDeclaration.load(ptr) }

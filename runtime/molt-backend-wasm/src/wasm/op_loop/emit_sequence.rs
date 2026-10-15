@@ -90,6 +90,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 func,
                 op,
                 func_ir,
+                &backend.code_slots,
                 import_ids,
                 locals,
                 scalar_plan,

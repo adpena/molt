@@ -212,7 +212,7 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
     for kind in ["load", "guarded_field_get"] {
         let guarded = kind == "guarded_field_get";
         let params = if guarded {
-            vec!["object".into(), "class".into(), "version".into()]
+            vec!["object".into(), "version".into()]
         } else {
             vec!["object".into()]
         };
@@ -227,6 +227,7 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
                     out: Some("value".into()),
                     value: Some(0),
                     s_value: guarded.then(|| "field".into()),
+                    class_definition: guarded.then(|| "class:m:Owner".into()),
                     ..OpIR::default()
                 },
                 OpIR {
@@ -253,11 +254,32 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
                 .iter()
                 .any(|&inst| clif.dfg.insts[inst].opcode() == Opcode::Call)
         );
-        assert!(
-            !instructions.iter().any(|&inst| {
+        // HF-220: a guarded read loads its class statement's program slot
+        // from the slot binding symbol; no other 64-bit load may appear.
+        let loads_program_slot = |inst| {
+            let address = clif.dfg.inst_args(inst)[0];
+            definition(&clif, address)
+                .is_some_and(|def| clif.dfg.insts[def].opcode() == Opcode::SymbolValue)
+        };
+        let i64_loads: Vec<_> = instructions
+            .iter()
+            .copied()
+            .filter(|&inst| {
                 clif.dfg.insts[inst].opcode() == Opcode::Load
                     && clif.dfg.value_type(clif.dfg.first_result(inst)) == types::I64
-            }),
+            })
+            .collect();
+        assert_eq!(
+            i64_loads
+                .iter()
+                .filter(|&&inst| loads_program_slot(inst))
+                .count(),
+            usize::from(guarded),
+            "{kind}: {}",
+            clif.display()
+        );
+        assert!(
+            i64_loads.iter().all(|&inst| loads_program_slot(inst)),
             "native reads must retain runtime missing/owner resolution: {}",
             clif.display()
         );
@@ -268,8 +290,8 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
 fn native_guarded_object_helpers_receive_the_tagged_receiver() {
     for kind in ["guarded_field_get", "guarded_field_set", "guard_layout"] {
         let params: Vec<String> = match kind {
-            "guarded_field_set" => vec!["object", "class", "version", "value"],
-            _ => vec!["object", "class", "version"],
+            "guarded_field_set" => vec!["object", "version", "value"],
+            _ => vec!["object", "version"],
         }
         .into_iter()
         .map(str::to_owned)
@@ -280,6 +302,7 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
             out: Some("result".into()),
             value: kind.starts_with("guarded_field").then_some(0),
             s_value: kind.starts_with("guarded_field").then(|| "field".into()),
+            class_definition: Some("class:m:Owner".into()),
             ..OpIR::default()
         }];
         ops.push(OpIR {

@@ -283,11 +283,24 @@ for (const test of config.cases) {
 }
 
 fn compile_literal_body(params: Vec<&str>, ops: Vec<OpIR>) -> (Vec<String>, BTreeMap<String, u32>) {
+    // Bind every class statement the ops name to a dense slot (HF-220).
+    let statements: std::collections::BTreeSet<String> = ops
+        .iter()
+        .filter_map(|op| op.class_definition.clone())
+        .collect();
+    let code_slots = molt_ir::code_slots::CodeSlotBindings::try_from(
+        statements
+            .into_iter()
+            .enumerate()
+            .map(|(slot, statement)| (statement, slot as u64))
+            .collect::<BTreeMap<_, _>>(),
+    )
+    .unwrap();
     let ir = SimpleIR {
         functions: vec![wasm_test_function("molt_main", params, None, ops)],
         profile: None,
     };
-    let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default());
+    let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, code_slots);
     wasmparser::Validator::new()
         .validate_all(&output.wasm)
         .unwrap();
@@ -559,14 +572,17 @@ fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
         ("load", 1, "object_field_get"),
         ("guarded_load", 1, "object_field_get"),
         ("store", 2, "object_field_set"),
-        ("guarded_field_get", 3, "guarded_field_get"),
-        ("guarded_field_set", 4, "guarded_field_set"),
+        ("guarded_field_get", 2, "guarded_field_get"),
+        ("guarded_field_set", 3, "guarded_field_set"),
     ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let bound = result == Some("result") && !matches!(kind, "store" | "guarded_field_set");
             let mut op = wasm_test_op(kind, result, vec!["value"; argc]);
             op.value = Some(0);
             op.s_value = Some("attribute".into());
+            if kind.starts_with("guarded_field") {
+                op.class_definition = Some("class:m:Owner".into());
+            }
             let (operators, imports) = compile_literal_body(
                 vec!["value"],
                 vec![

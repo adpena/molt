@@ -113,9 +113,11 @@ def test_each_field_op_carries_the_class_statement_that_emitted_it() -> None:
         assert all(op.args[-1] == class_id for op in field_ops)
 
 
-def test_shared_binding_gives_layout_guards_no_class_handle() -> None:
-    # Two statements bind ``P``: a guard in either class's method cannot read
-    # the binding as its own class object, so its class operand is None.
+def test_layout_guards_name_their_own_class_statement() -> None:
+    # HF-220: a layout guard trusts the class statement whose layout facts it
+    # carries, never a namespace binding. Two statements that bind ``P`` stamp
+    # distinct identities, each method's guards name its own statement, and no
+    # guard reads the class through the module namespace.
     redefined = _lower(
         "class P:\n"
         "    def get(self):\n"
@@ -136,17 +138,71 @@ def test_shared_binding_gives_layout_guards_no_class_handle() -> None:
         "        self.a = 1\n"
     )
 
-    def guard_class_operands(generator: SimpleTIRGenerator) -> set[str]:
-        ops = _ops(generator)
-        producers = {op.result.name: op for op in ops}
-        return {
-            producers[op.args[1].name].kind
-            for op in ops
-            if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR"}
-        }
+    def stamps(generator: SimpleTIRGenerator) -> list[str]:
+        return sorted(
+            (op.metadata or {})["class_definition"]
+            for op in _ops(generator)
+            if op.kind == "CLASS_SET_DEFINITION"
+        )
 
-    assert guard_class_operands(redefined) == {"CONST_NONE"}
-    assert guard_class_operands(unique) == {"DICT_GET"}
+    def guards(generator: SimpleTIRGenerator) -> dict[str, set[str]]:
+        named: dict[str, set[str]] = {}
+        for symbol, function in generator.funcs_map.items():
+            for op in function["ops"]:
+                if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR", "GUARD_LAYOUT"}:
+                    named.setdefault(symbol, set()).add(
+                        (op.metadata or {})["class_definition"]
+                    )
+        return named
+
+    first, second = redefined.local_class_ids
+    assert first.definition_symbol != second.definition_symbol
+    assert stamps(redefined) == sorted(
+        [first.definition_symbol, second.definition_symbol]
+    )
+    for class_id, suffix in ((first, 0), (second, 1)):
+        for method in ("get", "__init__"):
+            symbol = sorted(
+                name
+                for name in redefined.funcs_map
+                if name.startswith(f"mod__P_{method}")
+            )[suffix]
+            assert guards(redefined)[symbol] == {class_id.definition_symbol}
+
+    (only,) = unique.local_class_ids
+    assert only.definition_symbol == "class:mod:P"
+    assert stamps(unique) == ["class:mod:P"]
+    assert set().union(*guards(unique).values()) == {"class:mod:P"}
+    for generator in (redefined, unique):
+        assert not any(op.kind == "DICT_GET" for op in _ops(generator))
+
+
+def test_dynamic_classes_stamp_no_identity_and_take_the_generic_path() -> None:
+    # A class with several bases builds without published offsets: its
+    # statement stamps nothing, so no guard can trust it.
+    generator = _lower(
+        "class A:\n"
+        "    pass\n"
+        "class B:\n"
+        "    pass\n"
+        "class C(A, B):\n"
+        "    def __init__(self):\n"
+        "        self.x = 1\n"
+        "    def get(self):\n"
+        "        return self.x\n"
+    )
+    class_c = next(cid for cid in generator.local_class_ids if cid.name == "C")
+    assert generator.classes[class_c]["dynamic"]
+    stamped = {
+        (op.metadata or {})["class_definition"]
+        for op in _ops(generator)
+        if op.kind == "CLASS_SET_DEFINITION"
+    }
+    assert class_c.definition_symbol not in stamped
+    assert not any(
+        op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR", "GUARD_LAYOUT"}
+        for op in _ops(generator)
+    )
 
 
 def test_instance_attribute_store_does_not_mutate_its_class() -> None:

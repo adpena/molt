@@ -131,12 +131,12 @@ pub(super) fn emit_guard_layout_to_tmp(
     context: &LocalStateOpContext<'_>,
     func: &mut Function,
     obj: u32,
-    class_bits: u32,
+    class_definition: i64,
     expected: u32,
     guard_val: u32,
 ) {
     func.instruction(&Instruction::LocalGet(obj));
-    func.instruction(&Instruction::LocalGet(class_bits));
+    func.instruction(&Instruction::I64Const(class_definition));
     func.instruction(&Instruction::LocalGet(expected));
     emit_call(
         func,

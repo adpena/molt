@@ -1,7 +1,7 @@
 use super::*;
 use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use crate::object::builders::alloc_class_instance;
-use crate::{attr_name_bits_from_bytes, exception_pending};
+use crate::{attr_name_bits_from_bytes, exception_pending, header_from_obj_ptr};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct FieldAbi {
@@ -792,6 +792,8 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
         let builtins = crate::builtin_classes(_py);
         let version = MoltObject::from_int(0).bits();
         let class_attr = b"__class__";
+        // Any statement slot: a scalar has no stamped class.
+        let definition_slot = 0;
 
         let missing_attr = b"missing";
         for (name, scalar, class) in [
@@ -803,7 +805,7 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             ("None", MoltObject::none().bits(), builtins.none_type),
         ] {
             assert_eq!(
-                unsafe { molt_guard_layout(scalar, class, version) },
+                unsafe { molt_guard_layout(scalar, definition_slot, version) },
                 MoltObject::from_bool(false).bits(),
                 "{name} layout guard"
             );
@@ -817,7 +819,7 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             let guarded_class = unsafe {
                 molt_guarded_field_get(
                     scalar,
-                    class,
+                    definition_slot,
                     version,
                     0,
                     crate::provenance::abi::expose_address(class_attr.as_ptr()),
@@ -848,7 +850,7 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             let result = unsafe {
                 molt_guarded_field_get(
                     scalar,
-                    class,
+                    definition_slot,
                     version,
                     0,
                     crate::provenance::abi::expose_address(missing_attr.as_ptr()),
@@ -875,7 +877,7 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
             let result = unsafe {
                 molt_guarded_field_set(
                     scalar,
-                    class,
+                    definition_slot,
                     version,
                     0,
                     MoltObject::from_int(7).bits(),
@@ -890,27 +892,119 @@ fn tagged_scalar_receivers_miss_layout_and_preserve_generic_attribute_dispatch()
     });
 }
 
+fn assert_and_clear_system_error(_py: &PyToken<'_>) {
+    assert!(exception_pending(_py));
+    let error = crate::builtins::exceptions::molt_exception_last_pending();
+    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        _py,
+        error,
+        "SystemError"
+    ));
+    crate::clear_exception(_py);
+    dec_ref_bits(_py, error);
+}
+
+/// HF-220: the guard admits exactly the classes one compiled class statement
+/// stamped, on every run of that statement, at the statement's layout version.
+/// Same-shaped classes from another statement, unstamped classes and builtins
+/// miss, whatever names bind them.
 #[test]
-fn guard_layout_accepts_exact_builtin_dict_with_bootstrap_version() {
+fn layout_guard_admits_exactly_the_stamped_class_statement() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
+        const STATEMENT: u64 = 3;
+        const OTHER_STATEMENT: u64 = 4;
+        let class_ptr = |object: u64| unsafe {
+            obj_from_bits(object_class_bits(obj_from_bits(object).as_ptr().unwrap()))
+                .as_ptr()
+                .unwrap()
+        };
+        let version = |object: u64| {
+            MoltObject::from_int(unsafe { class_layout_version_bits(class_ptr(object)) } as i64)
+                .bits()
+        };
+        let guard = |object: u64, slot: u64, version: u64| unsafe {
+            guard_layout_match(_py, obj_from_bits(object).as_ptr().unwrap(), slot, version)
+        };
+        let (first, first_field) = field_object(_py);
+        let (rerun, rerun_field) = field_object(_py);
+        let (other, other_field) = field_object(_py);
+        let (unstamped, unstamped_field) = field_object(_py);
+        for (object, slot) in [
+            (first, STATEMENT),
+            (rerun, STATEMENT),
+            (other, OTHER_STATEMENT),
+        ] {
+            let class = MoltObject::from_ptr(class_ptr(object)).bits();
+            assert_eq!(
+                crate::builtins::types::molt_class_set_definition(class, slot),
+                MoltObject::none().bits()
+            );
+            assert!(!exception_pending(_py));
+        }
+        // A class keeps the identity of the statement that created it.
+        let first_class = MoltObject::from_ptr(class_ptr(first)).bits();
+        crate::builtins::types::molt_class_set_definition(first_class, OTHER_STATEMENT);
+        assert_and_clear_system_error(_py);
+        crate::builtins::types::molt_class_set_definition(
+            MoltObject::from_int(1).bits(),
+            STATEMENT,
+        );
+        assert_and_clear_system_error(_py);
+
+        assert!(guard(first, STATEMENT, version(first)));
+        assert!(
+            guard(rerun, STATEMENT, version(rerun)),
+            "a re-run shares facts"
+        );
+        assert!(
+            !guard(other, STATEMENT, version(other)),
+            "same shape, other statement"
+        );
+        assert!(
+            !guard(unstamped, STATEMENT, version(unstamped)),
+            "no statement"
+        );
+        assert!(!guard(first, OTHER_STATEMENT, version(first)));
+        assert!(
+            !guard(first, u64::MAX, version(first)),
+            "slot without identity"
+        );
+        let stale =
+            MoltObject::from_int(unsafe { class_layout_version_bits(class_ptr(first)) } as i64 + 1)
+                .bits();
+        assert!(!guard(first, STATEMENT, stale), "stale layout version");
+
         let builtins = crate::builtin_classes(_py);
+        let dict_class = obj_from_bits(builtins.dict).as_ptr().unwrap();
+        assert_eq!(
+            unsafe { crate::object::layout::class_definition(dict_class) },
+            None
+        );
         let dict_ptr = crate::alloc_dict_with_pairs(_py, &[]);
         assert!(!dict_ptr.is_null());
-        let dict_class_ptr = obj_from_bits(builtins.dict).as_ptr().unwrap();
-        let current_version = unsafe { class_layout_version_bits(dict_class_ptr) };
-        assert!(current_version > 0);
-        assert!(unsafe {
-            guard_layout_match(
-                _py,
-                dict_ptr,
-                builtins.dict,
-                MoltObject::from_int(current_version as i64).bits(),
-            )
-        });
-        assert!(!unsafe {
-            guard_layout_match(_py, dict_ptr, builtins.dict, MoltObject::from_int(0).bits())
-        });
-        dec_ref_bits(_py, MoltObject::from_ptr(dict_ptr).bits());
+        let dict = MoltObject::from_ptr(dict_ptr).bits();
+        let dict_version =
+            MoltObject::from_int(unsafe { class_layout_version_bits(dict_class) } as i64).bits();
+        for slot in [0, STATEMENT] {
+            assert!(
+                !guard(dict, slot, dict_version),
+                "builtins carry no statement"
+            );
+        }
+        assert!(!exception_pending(_py));
+        for bits in [
+            dict,
+            first,
+            first_field,
+            rerun,
+            rerun_field,
+            other,
+            other_field,
+            unstamped,
+            unstamped_field,
+        ] {
+            dec_ref_bits(_py, bits);
+        }
     });
 }

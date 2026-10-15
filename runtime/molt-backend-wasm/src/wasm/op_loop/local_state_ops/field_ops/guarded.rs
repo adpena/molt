@@ -25,11 +25,22 @@ pub(super) fn emit_guarded_field_op(
     true
 }
 
+/// The compile-time program slot of the class statement a guarded field op
+/// trusts (HF-220).
+fn definition_slot(context: &LocalStateOpContext<'_>, op: &OpIR) -> i64 {
+    context
+        .backend
+        .code_slots
+        .resolve_class_definition(op)
+        .expect("admitted class statement binding") as i64
+}
+
+/// operands = [obj, expected_version].
 fn emit_guarded_get(context: &mut LocalStateOpContext<'_>, func: &mut Function, op: &OpIR) {
     let args = op.args.as_ref().unwrap();
     let obj = context.locals[&args[0]];
-    let class_bits = context.locals[&args[1]];
-    let expected = context.locals[&args[2]];
+    let expected = context.locals[&args[1]];
+    let class_definition = definition_slot(context, op);
     let offset = op.value.unwrap();
     let tmp_ptr = context.locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
     let tmp_val = context.locals.synthetic(WasmFrameSyntheticLocal::WasmTmp1);
@@ -40,7 +51,7 @@ fn emit_guarded_get(context: &mut LocalStateOpContext<'_>, func: &mut Function, 
         .backend
         .add_data_segment(context.reloc_enabled, bytes);
 
-    emit_guard_layout_to_tmp(context, func, obj, class_bits, expected, guard_val);
+    emit_guard_layout_to_tmp(context, func, obj, class_definition, expected, guard_val);
 
     emit_guard_success_test(func, guard_val);
     func.instruction(&Instruction::If(BlockType::Empty));
@@ -53,7 +64,7 @@ fn emit_guarded_get(context: &mut LocalStateOpContext<'_>, func: &mut Function, 
         func,
         op,
         obj,
-        class_bits,
+        class_definition,
         expected,
         offset,
         data,
@@ -70,7 +81,7 @@ fn emit_guarded_get(context: &mut LocalStateOpContext<'_>, func: &mut Function, 
             func,
             op,
             obj,
-            class_bits,
+            class_definition,
             expected,
             offset,
             data,
@@ -86,7 +97,7 @@ fn emit_guarded_get(context: &mut LocalStateOpContext<'_>, func: &mut Function, 
         func,
         op,
         obj,
-        class_bits,
+        class_definition,
         expected,
         offset,
         data,
@@ -95,12 +106,13 @@ fn emit_guarded_get(context: &mut LocalStateOpContext<'_>, func: &mut Function, 
     func.instruction(&Instruction::End);
 }
 
+/// operands = [obj, expected_version, value].
 fn emit_guarded_write(context: &mut LocalStateOpContext<'_>, func: &mut Function, op: &OpIR) {
     let args = op.args.as_ref().unwrap();
     let obj = context.locals[&args[0]];
-    let class_bits = context.locals[&args[1]];
-    let expected = context.locals[&args[2]];
-    let val = context.locals[&args[3]];
+    let expected = context.locals[&args[1]];
+    let val = context.locals[&args[2]];
+    let class_definition = definition_slot(context, op);
     let offset = op.value.unwrap();
     let tmp_ptr = context.locals.synthetic(WasmFrameSyntheticLocal::WasmTmp0);
     let guard_val = context.locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
@@ -110,7 +122,7 @@ fn emit_guarded_write(context: &mut LocalStateOpContext<'_>, func: &mut Function
         .backend
         .add_data_segment(context.reloc_enabled, bytes);
 
-    emit_guard_layout_to_tmp(context, func, obj, class_bits, expected, guard_val);
+    emit_guard_layout_to_tmp(context, func, obj, class_definition, expected, guard_val);
 
     emit_guard_success_test(func, guard_val);
     func.instruction(&Instruction::If(BlockType::Empty));
@@ -134,7 +146,7 @@ fn emit_guarded_write(context: &mut LocalStateOpContext<'_>, func: &mut Function
         func,
         op,
         obj,
-        class_bits,
+        class_definition,
         expected,
         offset,
         val,
@@ -168,14 +180,14 @@ fn emit_guarded_runtime_get(
     func: &mut Function,
     op: &OpIR,
     obj: u32,
-    class_bits: u32,
+    class_definition: i64,
     expected: u32,
     offset: i64,
     data: DataSegmentRef,
     len: usize,
 ) {
     func.instruction(&Instruction::LocalGet(obj));
-    func.instruction(&Instruction::LocalGet(class_bits));
+    func.instruction(&Instruction::I64Const(class_definition));
     func.instruction(&Instruction::LocalGet(expected));
     func.instruction(&Instruction::I64Const(offset));
     context
@@ -196,7 +208,7 @@ fn emit_guarded_runtime_write(
     func: &mut Function,
     op: &OpIR,
     obj: u32,
-    class_bits: u32,
+    class_definition: i64,
     expected: u32,
     offset: i64,
     val: u32,
@@ -204,7 +216,7 @@ fn emit_guarded_runtime_write(
     len: usize,
 ) {
     func.instruction(&Instruction::LocalGet(obj));
-    func.instruction(&Instruction::LocalGet(class_bits));
+    func.instruction(&Instruction::I64Const(class_definition));
     func.instruction(&Instruction::LocalGet(expected));
     func.instruction(&Instruction::I64Const(offset));
     func.instruction(&Instruction::LocalGet(val));

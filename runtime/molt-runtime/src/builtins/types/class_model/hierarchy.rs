@@ -488,6 +488,42 @@ pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u
     })
 }
 
+/// Stamp the class a compiled class statement just created with that
+/// statement's identity (HF-220). `definition_slot` is the raw program slot the
+/// program bound to the statement's definition symbol. Layout guards compare
+/// this identity, never a class binding, so rebinding a name cannot redirect
+/// them. A class takes one identity, from the statement that created it.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_class_set_definition(class_bits: u64, definition_slot: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "SystemError", "class definition expects a class");
+        };
+        let Some(definition) =
+            crate::object::layout::ClassDefinition::from_program_slot(definition_slot)
+        else {
+            return raise_exception::<_>(_py, "SystemError", "class definition slot out of range");
+        };
+        unsafe {
+            if object_type_id(class_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "class definition expects a class",
+                );
+            }
+            if !crate::object::layout::class_set_definition(class_ptr, definition) {
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "class already carries a class statement identity",
+                );
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
 /// Merge construction inputs only. A finished class's physical record is
 /// immutable; explicit callers must agree with that record instead of resizing
 /// it or reconstructing a competing extent from namespace dictionaries.

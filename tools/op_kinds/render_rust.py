@@ -1574,6 +1574,33 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         else '""'
     )
     lines.extend([")\n", "}\n"])
+    class_definition_carriers = sorted(
+        data.get("simpleir_class_definition_carrier_kinds", [])
+    )
+    lines.extend(
+        [
+            "\n/// Complete generated wire-op carrier authority for class statement identity\n",
+            "/// (`class_definition`, HF-220).\n",
+            "pub const SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: &[&str] = &[\n",
+        ]
+    )
+    for kind in class_definition_carriers:
+        lines.append(f'    "{kind}",\n')
+    lines.extend(
+        [
+            "];\n\n",
+            "/// Whether a wire operation names a class statement in `class_definition`.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_carries_class_definition(kind: &str) -> bool {\n",
+            "    matches!(kind, ",
+        ]
+    )
+    lines.append(
+        " | ".join(f'"{kind}"' for kind in class_definition_carriers)
+        if class_definition_carriers
+        else '""'
+    )
+    lines.extend([")\n", "}\n"])
     lines.extend(
         [
             "\n/// Whether s_value is a first-class function reference.\n",

@@ -2211,6 +2211,119 @@ fn runtime_builtin_callable_admits_exact_manifest_contracts() {
     }
 }
 
+/// HF-220: a class stamp and every layout guard name their class statement
+/// through the program's code-slot bindings. A complete program rejects an
+/// unbound statement; a reusable object imports the statement's stable binding
+/// symbol and passes the runtime a slot, never a class object.
+#[test]
+fn class_statement_identity_imports_its_stable_slot_binding() {
+    use molt_ir::code_slots::{CodeSlotBindings, ProgramSlotKind, program_slot_symbol};
+    use molt_ir::ir_schema::OpShapeViolation;
+    use object::{BinaryFormat, Object, ObjectSection, ObjectSymbol, RelocationTarget};
+
+    let _guard = acquire_backend_env_lock();
+    let _backend_env = ScopedEnvVar::set("MOLT_BACKEND", None);
+    let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", None);
+    let compile = |backend: SimpleBackend, ir: SimpleIR, kind: NativeCodegenBackend| match kind {
+        NativeCodegenBackend::Cranelift => backend.compile_checked(ir),
+        #[cfg(feature = "llvm")]
+        NativeCodegenBackend::Llvm => backend.compile_llvm_checked(ir),
+    };
+    const STATEMENT: &str = "class:m:P";
+    let layout_ops = || {
+        let named = |kind: &str, args: &[&str], out: &str| OpIR {
+            kind: kind.into(),
+            args: Some(args.iter().map(|arg| (*arg).into()).collect()),
+            class_definition: Some(STATEMENT.into()),
+            out: Some(out.into()),
+            ..OpIR::default()
+        };
+        let field = |mut op: OpIR| {
+            op.s_value = Some("x".into());
+            op.value = Some(0);
+            op
+        };
+        vec![
+            named("class_set_definition", &["class"], "none"),
+            named("guard_layout", &["object", "version"], "guard"),
+            field(named("guarded_field_get", &["object", "version"], "read")),
+            field(named(
+                "guarded_field_set",
+                &["object", "version", "value"],
+                "none",
+            )),
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["read".into()]),
+                ..OpIR::default()
+            },
+        ]
+    };
+    let program = || {
+        let mut ir = trace_probe_ir(crate::ir::ExecutionContextPolicy::None);
+        ir.functions[0].params = ["class", "object", "version", "value"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        ir.functions[0].ops = layout_ops();
+        ir
+    };
+    let symbol = program_slot_symbol(ProgramSlotKind::Code, STATEMENT);
+    for kind in [
+        NativeCodegenBackend::Cranelift,
+        #[cfg(feature = "llvm")]
+        NativeCodegenBackend::Llvm,
+    ] {
+        let mut application = SimpleBackend::new();
+        application.code_slots = Some(CodeSlotBindings::default());
+        let Err(error) = compile(application, program(), kind) else {
+            panic!("{kind:?}: an unbound class statement emitted an object");
+        };
+        assert_eq!(error.op_index, 0);
+        assert_eq!(error.shape.kind, "class_set_definition");
+        assert_eq!(
+            error.shape.violation,
+            OpShapeViolation::UnboundClassDefinition
+        );
+
+        let mut common_backend = SimpleBackend::new();
+        common_backend.emit_app_callable_resolver = false;
+        let bytes = compile(common_backend, program(), kind)
+            .expect("reusable objects import class statement bindings")
+            .bytes;
+        let common = object::File::parse(bytes.as_slice()).unwrap();
+        let linker_name = |name: &str| {
+            if common.format() == BinaryFormat::MachO {
+                format!("_{name}")
+            } else {
+                name.to_string()
+            }
+        };
+        let imported = common
+            .symbols()
+            .find(|entry| entry.name().ok() == Some(linker_name(&symbol).as_str()))
+            .expect("layout ops import the statement's stable binding symbol");
+        assert!(imported.is_undefined() && !imported.is_weak());
+        assert!(common.sections().any(|section| {
+            section.relocations().any(|(_, relocation)| {
+                matches!(relocation.target(), RelocationTarget::Symbol(index) if index == imported.index())
+            })
+        }));
+        for runtime in [
+            "molt_class_set_definition",
+            "molt_guard_layout",
+            "molt_guarded_field_get",
+            "molt_guarded_field_set",
+        ] {
+            assert!(
+                common.symbols().any(|entry| entry.is_undefined()
+                    && entry.name().ok() == Some(linker_name(runtime).as_str())),
+                "{kind:?}: {runtime} must be called"
+            );
+        }
+    }
+}
+
 #[test]
 fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values() {
     use molt_ir::code_slots::{CodeSlotBindings, ProgramSlotKind, program_slot_symbol};

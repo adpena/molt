@@ -35,6 +35,7 @@ from molt.frontend._types import (
     TypeHint,
     _ClassNsScope,
     _function_is_instance_method,
+    layout_definition_symbol,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -1739,6 +1740,21 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     metadata={"s_value": class_def_meta},
                 )
             )
+            # The statement's identity, stamped on the class it just created
+            # before any binding, decorator or dataclass transform sees it
+            # (HF-220). Layout guards compare it; the metaclass path below
+            # builds only dynamic classes, which no guard trusts.
+            definition = layout_definition_symbol(class_id, class_info)
+            if definition is not None:
+                self._register_code_symbol(definition)
+                self.emit(
+                    MoltOp(
+                        kind="CLASS_SET_DEFINITION",
+                        args=[class_val],
+                        result=MoltValue("none"),
+                        metadata={"class_definition": definition},
+                    )
+                )
             if classcell_val is not None:
                 self._verify_classcell_result(class_id.name, classcell_val, class_val)
             self._publish_class_value(node.name, class_val)

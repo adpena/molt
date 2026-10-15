@@ -130,8 +130,6 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         ("guard_tag", 2, true, None, "molt_guard_type"),
         ("guard_type", 2, false, None, "molt_guard_type"),
         ("guard_type", 2, true, None, "molt_guard_type"),
-        ("guard_layout", 3, true, None, "molt_guard_layout"),
-        ("guard_dict_shape", 3, true, None, "molt_guard_layout"),
         ("dataclass_new", 4, true, None, "molt_dataclass_new"),
         ("json_parse", 1, true, None, "molt_json_parse_scalar_obj"),
         (
@@ -1043,51 +1041,80 @@ fn stateful_locals_registration_preserves_mixed_abi() {
     }
 }
 
+/// HF-220: the stamp and the layout guard pass the runtime the class
+/// statement's program slot, loaded from its stable binding symbol; the guard
+/// keeps the receiver tagged so scalar mismatches never dereference a payload.
 #[test]
-fn layout_guards_preserve_tagged_parameters_at_runtime_admission() {
-    for kind in ["guard_layout", "guard_dict_shape"] {
-        let ctx = Context::create();
-        let backend = make_backend(&ctx);
-        let mut func = TirFunction::new(
-            kind.into(),
-            vec![
-                TirType::UserClass("C".into()),
-                TirType::DynBox,
-                TirType::DynBox,
-            ],
+fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "class_identity".into(),
+        vec![
             TirType::DynBox,
-            molt_ir::FunctionReturnAbi::Value,
-        );
-        let result = func.fresh_value();
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::Copy,
-            operands: entry.args.iter().map(|arg| arg.id).collect(),
-            results: vec![result],
-            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return {
-            values: vec![result],
-        };
-        let ir = try_lower_tir_to_llvm(&func, &backend)
-            .expect("layout guard must lower")
-            .print_to_string()
-            .to_string();
-        backend
-            .module
-            .verify()
-            .expect("tagged layout guard ABI must verify");
-        assert!(
-            ir.contains("@molt_guard_layout(i64 %0, i64 %1, i64 %2)"),
-            "layout guards must preserve the receiver tag: {ir}"
-        );
-        assert!(
-            !ir.contains("inttoptr") && !ir.contains("ptr_unbox"),
-            "{ir}"
-        );
-    }
+            TirType::UserClass("C".into()),
+            TirType::DynBox,
+        ],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let params: Vec<_> = entry.args.iter().map(|arg| arg.id).collect();
+    let named = |kind: &str| {
+        AttrDict::from([
+            ("_original_kind".into(), AttrValue::Str(kind.into())),
+            (
+                "class_definition".into(),
+                AttrValue::Str("class:m:C".into()),
+            ),
+        ])
+    };
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![params[0]],
+        results: vec![],
+        attrs: named("class_set_definition"),
+        source_span: None,
+    });
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![params[1], params[2]],
+        results: vec![result],
+        attrs: named("guard_layout"),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let ir = try_lower_tir_to_llvm(&func, &backend)
+        .expect("class stamp and layout guard must lower")
+        .print_to_string()
+        .to_string();
+    backend
+        .module
+        .verify()
+        .expect("class statement identity ABI must verify");
+    let binding = molt_ir::code_slots::program_slot_symbol(
+        molt_ir::code_slots::ProgramSlotKind::Code,
+        "class:m:C",
+    );
+    assert!(ir.contains(&format!("@{binding}")), "{ir}");
+    assert!(
+        ir.contains("@molt_class_set_definition(i64 %0, i64 %program_slot"),
+        "the stamp names its statement's slot: {ir}"
+    );
+    assert!(
+        ir.contains("@molt_guard_layout(i64 %1, i64 %program_slot"),
+        "layout guards keep the receiver tag and name the statement's slot: {ir}"
+    );
+    assert!(ir.contains(", i64 %2)"), "{ir}");
+    assert!(
+        !ir.contains("inttoptr") && !ir.contains("ptr_unbox"),
+        "{ir}"
+    );
 }
 
 #[test]

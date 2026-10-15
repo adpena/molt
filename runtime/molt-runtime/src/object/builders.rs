@@ -1849,6 +1849,12 @@ pub(crate) fn alloc_class_obj_with_namespace(
             ptr.add(9 * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicUsize,
             std::sync::atomic::AtomicUsize::new(0),
         );
+        // No compiled class statement has stamped this class yet.
+        std::ptr::write(
+            ptr.add(super::layout::CLASS_DEFINITION_WORD * std::mem::size_of::<u64>())
+                as *mut std::sync::atomic::AtomicU64,
+            std::sync::atomic::AtomicU64::new(0),
+        );
     }
     ptr
 }

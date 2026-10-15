@@ -147,7 +147,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     create source-level suspension or channel-specific IR opcodes.
 - **Vector**: `VecSum`, `VecProd`, `VecMin`, `VecMax` (one bounded chunk of a fused-loop reduction over the loop's own iterator of a list, tuple or range; operands the iterator, the accumulator and the loop target's previous value; result the tuple (result, last, count, more). The op consumes the `count` next items whose updates provably run no Python code, and result and last are then exactly the accumulator and loop target the loop leaves after them; it stops before the first item it does not admit, at the iterator's end, or at its chunk bound (more). The frontend runs it in a chunk loop that publishes both bindings before each back edge and rereads them, and then the ordinary loop on the same iterator. See 0190 "Fused loops".)
 - **Index**: `OperatorIndex` (`operator.index(x)`: range()'s conversion of a bound to an exact int, calling `__index__` where the value is not already an int.)
-- **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout`, `GuardDictShape`.
+- **Guards (Tier 1)**: `GuardType`, `GuardTag`, `GuardLayout` (the receiver's class came from one named class statement, at its layout version; HF-220).
 - **RC ops (LIR)**: `IncRef`, `DecRef`, `Borrow`, `Release`.
 - **Conversions**: `Box`, `Unbox`, `Cast`, `Widen`, `StrFromObj`.
 
@@ -358,7 +358,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     `src/molt/frontend/cfg_analysis.py`, and mid-end telemetry reports
     per-transform and function-scoped counters via `MOLT_MIDEND_STATS=1`.
   - Frontend/lowering/backend now provide dedicated lanes for
-    `CallIndirect`/`InvokeFFI`/`GuardTag`/`GuardDictShape` and
+    `CallIndirect`/`InvokeFFI`/`GuardTag`/`GuardLayout` and
     `IncRef`/`DecRef`/`Borrow`/`Release` plus conversion families
     (`Box`/`Unbox`/`Cast`/`Widen`); deterministic semantic-depth hardening and
     broader differential evidence are still in progress.

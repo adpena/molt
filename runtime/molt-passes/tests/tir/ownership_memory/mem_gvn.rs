@@ -888,10 +888,10 @@ fn unknown_receiver_field_loads_remain_callback_capable() {
 /// Guarded field reads can fall back to generic attribute lookup and are not
 /// precise typed-slot loads, even when they carry an offset.
 #[test]
-fn guarded_field_get_three_operand_form_is_not_a_typed_slot_load() {
+fn guarded_field_get_is_not_a_typed_slot_load() {
     let mut o = op(
         OpCode::LoadAttr,
-        vec![ValueId(0), ValueId(1), ValueId(2)],
+        vec![ValueId(0), ValueId(1)],
         vec![ValueId(3)],
     );
     o.attrs.insert("value".into(), AttrValue::Int(8));
@@ -906,12 +906,16 @@ fn guarded_field_get_three_operand_form_is_not_a_typed_slot_load() {
 /// invoke generic attribute lookup and observe different state.
 #[test]
 fn guarded_field_get_fallback_blocks_forwarding() {
-    fn gget(obj: ValueId, cls: ValueId, ver: ValueId, offset: i64, r: ValueId) -> TirOp {
-        let mut o = op(OpCode::LoadAttr, vec![obj, cls, ver], vec![r]);
+    fn gget(obj: ValueId, ver: ValueId, offset: i64, r: ValueId) -> TirOp {
+        let mut o = op(OpCode::LoadAttr, vec![obj, ver], vec![r]);
         o.attrs.insert("value".into(), AttrValue::Int(offset));
         o.attrs.insert(
             "_original_kind".into(),
             AttrValue::Str("guarded_field_get".into()),
+        );
+        o.attrs.insert(
+            "class_definition".into(),
+            AttrValue::Str("class:m:Point".into()),
         );
         o
     }
@@ -921,7 +925,6 @@ fn guarded_field_get_fallback_blocks_forwarding() {
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let cls = ValueId(0);
     let ver = ValueId(1);
     let val = ValueId(2);
     let obj = func.fresh_value();
@@ -930,7 +933,7 @@ fn guarded_field_get_fallback_blocks_forwarding() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(fixed_boxed_alloc(obj));
         entry.ops.push(store(obj, val, 8));
-        entry.ops.push(gget(obj, cls, ver, 8, r));
+        entry.ops.push(gget(obj, ver, 8, r));
         entry.terminator = Terminator::Return { values: vec![r] };
     }
     let aliases = AliasAnalysisResult::compute(&func);

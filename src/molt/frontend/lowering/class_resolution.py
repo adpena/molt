@@ -37,6 +37,7 @@ from molt.frontend._types import (
     MoltValue,
     ReceiverKind,
     TypeHint,
+    layout_definition_symbol,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -422,73 +423,21 @@ class ClassResolutionMixin(GeneratorMixinBase):
             return False
         return True
 
-    def _emit_class_ref(self, class_id: ClassId) -> MoltValue:
-        """The class object a layout guard compares the receiver's class with.
+    def _class_layout_definition(self, class_id: ClassId) -> str | None:
+        """The class statement a layout guard against ``class_id`` trusts.
 
-        It must be the class this statement created: ``guard_layout_match``
-        trusts the field offsets of ``class_id`` whenever the receiver's class
-        is this object and its layout version matches, and the version alone
-        does not tell same-shaped classes apart. A namespace binding is that
-        object only when one statement owns it. Several statements with one
-        qualname share the binding, so outside the defining scope's SSA value
-        there is no definition-precise handle and the guard must miss.
+        ``guard_layout_match`` admits a receiver whose class carries this
+        statement's identity at the statement's layout version (HF-220). The
+        identity is stamped when the statement runs, never read from a
+        binding, so rebinding the name in this module or another cannot
+        redirect a guard, and each run of the statement creates classes with
+        the same facts. ``None``: no statement stamps the class, so the
+        consumer emits the generic path.
         """
-        static_ref = self._current_module_static_class_ref(class_id)
-        if static_ref is not None:
-            return static_ref
         class_info = self.classes.get(class_id)
-        if class_info is None or class_id.occurrence is not None:
-            return self._emit_const_value(None)
-        binding_name = class_info["binding_name"]
-        if class_id.module != self.module_name:
-            # Reuse an imported class binding, never import its defining module
-            # or invoke module attribute hooks merely to construct a guard.
-            binding = next(
-                (
-                    name
-                    for name, origin in self.global_imported_names.items()
-                    if origin == class_id.module
-                    and self.global_imported_attr_names.get(name, name) == binding_name
-                ),
-                None,
-            )
-            if binding is None:
-                for name, origin in self.imported_names.items():
-                    if (
-                        name in self.local_imported_names
-                        and origin == class_id.module
-                        and self.imported_attr_names.get(name, name) == binding_name
-                        and self._active_class_ns_scope(name) is None
-                    ):
-                        local = self._load_local_value(name, guard_unbound=False)
-                        if local is not None:
-                            return local
-                return self._emit_const_value(None)
-            binding_name = binding
-        elif not class_info.get(
-            "static"
-        ) and not self._binding_targets_module_namespace(binding_name):
-            if self._active_class_ns_scope(binding_name) is None:
-                local = self._load_local_value(binding_name, guard_unbound=False)
-                if local is not None:
-                    return local
-            return self._emit_const_value(None)
-        # These references belong only to synthesized layout guards. A retained
-        # instance remains usable after its class binding is deleted/rebound,
-        # including while module globals are being retired. Missing identity
-        # makes the guard miss; explicit source Names still use _emit_global_get.
-        namespace = (
-            self._emit_globals_dict()
-            if self._function_needs_frame_trace()
-            else self._emit_module_globals_dict()
-        )
-        name = self._emit_const_value(binding_name)
-        missing = self._emit_const_value(None)
-        result = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(
-            MoltOp(kind="DICT_GET", args=[namespace, name, missing], result=result)
-        )
-        return result
+        if class_info is None:
+            return None
+        return layout_definition_symbol(class_id, class_info)
 
     def _current_module_static_class_ref(self, class_id: ClassId) -> MoltValue | None:
         if self.current_func_name != "molt_main":

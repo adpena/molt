@@ -385,7 +385,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_guard_layout` | 1 | Yes | Layout guard for IC |
 | `molt_guarded_field_get` | 1 | Yes | Guarded field load |
 | `molt_guarded_field_set` | 1 | Moderate | |
-| `molt_guarded_field_init_ptr` | 1 | Moderate | |
 
 #### Module System (12 functions)
 

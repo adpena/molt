@@ -8,6 +8,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "class_def",
     "class_layout_version",
     "class_set_layout_version",
+    "class_set_definition",
     "class_merge_layout",
     "class_set_base",
     "class_apply_set_name",
@@ -157,6 +158,32 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
             }
+        }
+        "class_set_definition" => {
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let class_bits = var_get_boxed_overflow_safe(
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+                &mut *sealed_blocks,
+                vars,
+                &args[0],
+                representation_plan,
+            )
+            .expect("Class not found");
+            let definition_slot = emit_class_definition_slot(op, module, builder);
+            let callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                "molt_class_set_definition",
+                &[types::I64, types::I64],
+                &[types::I64],
+            );
+            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let _ = builder
+                .ins()
+                .call(local_callee, &[*class_bits, definition_slot]);
         }
         "class_set_layout_version" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

@@ -529,6 +529,14 @@ Field writes always have assignment semantics. `store_init` and
 `guarded_field_init` are retired and rejected: initialization specialization
 requires the shared compiler's exact-site pristine-slot proof, never a wire hint.
 
+A layout guard names the class statement whose field offsets it trusts in
+`class_definition` (HF-220), never a class operand. The statement stamps that
+identity on every class it creates (`class_set_definition`); the program's
+code-slot bindings resolve the symbol. The guard admits a receiver whose class
+carries the identity at the statement's layout version, so rebinding the class
+name cannot redirect it. Only the generated
+`simpleir_class_definition_carrier_kinds` may carry `class_definition`.
+
 | kind                     | Fields used                                    | Description                        |
 |--------------------------|------------------------------------------------|------------------------------------|
 | `load`                   | `args` [obj], `value` (offset), `out`          | Load field at known offset         |
@@ -545,8 +553,8 @@ requires the shared compiler's exact-site pristine-slot proof, never a wire hint
 | `del_attr_generic_obj`   | `args` [obj], `s_value` (attr), `out`          | Delete attr (obj-based)            |
 | `del_attr_name`          | `args`, `out`                                  | Delete attr by runtime name value  |
 | `has_attr_name`          | `args`, `out`                                  | hasattr() by runtime name          |
-| `guarded_field_get`      | `args` [obj, cls, ver], `s_value`, `value` (offset), `out` | Guarded field load  |
-| `guarded_field_set`      | `args` [obj, cls, ver, val], `s_value`, `value` (offset), `out` | Guarded field store |
+| `guarded_field_get`      | `args` [obj, ver], `s_value`, `value` (offset), `class_definition`, `out` | Guarded field load  |
+| `guarded_field_set`      | `args` [obj, ver, val], `s_value`, `value` (offset), `class_definition`, `out` | Guarded field store |
 
 ### Indexing
 
@@ -662,7 +670,8 @@ All use the standard `args` + `out` pattern.
 | `class_apply_set_name`    | `args`, `out`                  | Apply `__set_name__`           |
 | `class_layout_version`    | `args`, `out`                  | Get class layout version       |
 | `class_set_layout_version`| `args`, `out`                  | Set class layout version       |
-| `guard_layout`            | `args`, `out`                  | Guard on class layout          |
+| `class_set_definition`    | `args` [class], `class_definition`, `out` | Stamp a fresh class with its class statement identity |
+| `guard_layout`            | `args` [obj, ver], `class_definition`, `out` | Guard on class statement and layout version |
 | `object_new`              | `out`                          | Create bare object             |
 | `object_set_class`        | `args`, `out`                  | Set object's class ref         |
 | `super_new`               | `args`, `out`                  | Create super() proxy           |
@@ -749,7 +758,6 @@ roundtrip, before native, LLVM, WASM, Luau, or Rust admission and emission.
 |------------------|---------------|---------------------------------|
 | `guard_type`     | `args`        | Read value and expected tag; profile mismatch and return the original value |
 | `guard_tag`      | `args`        | Same runtime contract as `guard_type`; rejected expected tags raise |
-| `guard_dict_shape` | `args`, `out` | Deopt if dict shape changed   |
 | `type_guard`     | --            | Generic type guard              |
 
 ### Call Arguments Protocol

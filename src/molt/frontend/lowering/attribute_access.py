@@ -412,7 +412,16 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 return
         guard = self._loop_guard_for(obj, expected_class, obj_name=name)
         if guard is None:
-            class_ref = self._emit_class_ref(expected_class)
+            definition = self._class_layout_definition(expected_class)
+            if definition is None:
+                self.emit(
+                    MoltOp(
+                        kind="SETATTR_GENERIC_PTR",
+                        args=[obj, attr, value],
+                        result=MoltValue("none"),
+                    )
+                )
+                return
             expected_version = MoltValue(self.next_var(), type_hint="int")
             self.emit(
                 MoltOp(
@@ -424,15 +433,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="GUARDED_SETATTR",
-                    args=[
-                        obj,
-                        class_ref,
-                        expected_version,
-                        attr,
-                        value,
-                        expected_class,
-                    ],
+                    args=[obj, expected_version, attr, value, expected_class],
                     result=MoltValue("none"),
+                    metadata={"class_definition": definition},
                 )
             )
             return
@@ -530,7 +533,13 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 return res
         guard = self._loop_guard_for(obj, expected_class, obj_name=name)
         if guard is None:
-            class_ref = self._emit_class_ref(expected_class)
+            definition = self._class_layout_definition(expected_class)
+            if definition is None:
+                res = MoltValue(self.next_var())
+                self.emit(
+                    MoltOp(kind="GETATTR_GENERIC_PTR", args=[obj, attr], result=res)
+                )
+                return res
             expected_version = MoltValue(self.next_var(), type_hint="int")
             self.emit(
                 MoltOp(
@@ -543,8 +552,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="GUARDED_GETATTR",
-                    args=[obj, class_ref, expected_version, attr, expected_class],
+                    args=[obj, expected_version, attr, expected_class],
                     result=res,
+                    metadata={"class_definition": definition},
                 )
             )
             return res

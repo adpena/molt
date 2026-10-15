@@ -464,7 +464,7 @@ pub fn write_function_ir_contract(
     function: &FunctionIR,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), String> {
-    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v3\0";
+    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v4\0";
     // MessagePack's f64 carrier is total and bit-preserving for every legal IR
     // value, including NaN payloads, infinities, and signed zero. JSON is not:
     // JSON cannot represent their complete bit patterns. Named struct
@@ -542,6 +542,12 @@ pub struct OpIR {
     /// statically known module attribute/import. Target admission checks this
     /// acquisition fact before source generation; it does not imply execution.
     pub runtime_symbol: Option<String>,
+    /// Program slot symbol of one class statement (HF-220), carried only by
+    /// the generated `simpleir_kind_carries_class_definition` kinds: the stamp
+    /// that marks the class the statement created, and each layout guard that
+    /// trusts the statement's field offsets. The program's code-slot bindings
+    /// resolve it to the slot whose identity the class carries.
+    pub class_definition: Option<String>,
     /// Generated target-admission requirement bits for conservative acquisition
     /// provenance that is not an executable runtime/link symbol.
     #[serde(default)]
@@ -1666,7 +1672,7 @@ mod json_parse_tests {
                 let first = contract_bytes(&function);
                 assert_eq!(first, contract_bytes(&function));
                 let payload = first
-                    .strip_prefix(b"molt-function-ir-contract-v3\0")
+                    .strip_prefix(b"molt-function-ir-contract-v4\0")
                     .expect("versioned contract");
                 let decoded: FunctionIR = rmp_serde::from_slice(payload).expect("decode contract");
                 assert_eq!(decoded.ops[0].f_value.unwrap().to_bits(), value.to_bits());
@@ -2055,6 +2061,7 @@ mod json_parse_tests {
             native_callable_abi: Some("molt".to_string()),
             builtin_name: Some("len".to_string()),
             runtime_symbol: Some("molt_len".to_string()),
+            class_definition: Some("class:module:Owner".to_string()),
             runtime_requirement_bits: 3,
             passes_execution_context: true,
             async_work_poll: true,

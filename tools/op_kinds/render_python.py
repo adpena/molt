@@ -264,6 +264,18 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         out.append(f'        "{kind}",\n')
     out.append("    }\n")
     out.append(")\n\n")
+    class_definition_carriers = sorted(
+        set(data.get("simpleir_class_definition_carrier_kinds", []))
+    )
+    out.append(
+        "# Wire operations that name a class statement in `class_definition` (HF-220).\n"
+    )
+    out.append("SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: frozenset[str] = frozenset(\n")
+    out.append("    {\n")
+    for kind in class_definition_carriers:
+        out.append(f'        "{kind}",\n')
+    out.append("    }\n")
+    out.append(")\n\n")
     out.append(
         "# Explicit acquisition-provenance requirement bits shared with target admission.\n"
     )

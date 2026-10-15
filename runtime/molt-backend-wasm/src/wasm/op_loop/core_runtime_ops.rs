@@ -24,6 +24,7 @@ pub(super) fn emit_core_runtime_op(
     func: &mut Function,
     op: &OpIR,
     func_ir: &FunctionIR,
+    code_slots: &molt_ir::code_slots::CodeSlotBindings,
     import_ids: &TrackedImportIds,
     locals: &WasmFrameLocals,
     scalar_plan: &ScalarRepresentationPlan,
@@ -75,7 +76,7 @@ pub(super) fn emit_core_runtime_op(
     if truth_ops::emit_truth_runtime_op(func, op, import_ids, locals, scalar_plan, reloc_enabled) {
         return true;
     }
-    if guard_ops::emit_guard_runtime_op(func, op, import_ids, locals, reloc_enabled) {
+    if guard_ops::emit_guard_runtime_op(func, op, code_slots, import_ids, locals, reloc_enabled) {
         return true;
     }
     if allocation_ops::emit_allocation_runtime_op(func, op, import_ids, locals, reloc_enabled) {

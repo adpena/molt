@@ -268,7 +268,8 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_attribute_store")
     # class resolution
     assert hasattr(SimpleTIRGenerator, "_class_layout_stable")
-    assert hasattr(SimpleTIRGenerator, "_emit_class_ref")
+    assert hasattr(SimpleTIRGenerator, "_class_layout_definition")
+    assert not hasattr(SimpleTIRGenerator, "_emit_class_ref")
     assert hasattr(SimpleTIRGenerator, "_emit_class_method_func")
     assert hasattr(SimpleTIRGenerator, "_class_mro")
     assert hasattr(SimpleTIRGenerator, "_class_reference")

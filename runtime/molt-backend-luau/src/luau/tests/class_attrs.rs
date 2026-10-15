@@ -884,6 +884,66 @@ fn test_compile_checked_lowers_class_layout_metadata() {
     );
 }
 
+/// HF-220: Luau tables hold attributes by name, so guarded field ops read and
+/// write by name; a guarded write stores its value operand (the last one),
+/// and the stamp records the class statement's slot on the class table.
+#[test]
+fn class_statement_identity_and_guarded_fields_lower_by_name() {
+    let statement = "class:m:P";
+    let named = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
+        kind: kind.to_string(),
+        args: Some(args.iter().map(|arg| (*arg).to_string()).collect()),
+        out: out.map(str::to_string),
+        class_definition: Some(statement.to_string()),
+        ..OpIR::default()
+    };
+    let field = |mut op: OpIR| {
+        op.s_value = Some("x".to_string());
+        op.value = Some(0);
+        op
+    };
+    let ir = SimpleIR {
+        functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            name: "class_identity".to_string(),
+            params: vec![
+                "cls".to_string(),
+                "obj".to_string(),
+                "version".to_string(),
+                "val".to_string(),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            parameter_custody: Vec::new(),
+            execution_context: ExecutionContextPolicy::None,
+            ops: vec![
+                named("class_set_definition", &["cls"], None),
+                field(named("guarded_field_set", &["obj", "version", "val"], None)),
+                field(named(
+                    "guarded_field_get",
+                    &["obj", "version"],
+                    Some("read"),
+                )),
+            ],
+        }],
+        profile: None,
+    };
+    let bindings = molt_ir::code_slots::CodeSlotBindings::try_from(
+        std::collections::BTreeMap::from([(statement.to_string(), 0)]),
+    )
+    .unwrap();
+    let source = LuauBackend::new().with_code_slots(bindings).compile(&ir);
+    assert!(
+        source.contains("cls.__molt_class_definition = 0"),
+        "the stamp records the statement's slot: {source}"
+    );
+    assert!(source.contains("obj.x = val"), "{source}");
+    assert!(!source.contains("obj.x = version"), "{source}");
+    assert!(source.contains("local read = obj.x"), "{source}");
+}
+
 #[test]
 fn luau_compile_rejects_unknown_ops_instead_of_failing_open() {
     let ir = SimpleIR {

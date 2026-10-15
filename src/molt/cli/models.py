@@ -795,6 +795,10 @@ class _FrontendIntegrationState:
     functions: list[dict[str, Any]]
     known_classes: dict[ClassId, ClassInfo]
     global_code_ids: dict[str, int] = field(default_factory=dict)
+    # HF-220: the module that owns each class statement symbol, and the first
+    # module whose stamp or layout guard names each symbol.
+    class_definition_owners: dict[str, str] = field(default_factory=dict)
+    class_definition_references: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

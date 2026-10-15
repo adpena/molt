@@ -4,8 +4,8 @@ use crate::tir::op_kinds_generated::{
     SimpleIrVarFieldRole, kind_consumed_operand_table, kind_source_call_callable_operand,
     kind_source_call_first_adopted_operand, kind_to_opcode_table, simpleir_backend_private_owner,
     simpleir_backend_service_kind, simpleir_call_target_role,
-    simpleir_kind_has_function_reference_s_value, simpleir_kind_is_registered,
-    simpleir_kind_may_carry_async_work_poll_marker,
+    simpleir_kind_carries_class_definition, simpleir_kind_has_function_reference_s_value,
+    simpleir_kind_is_registered, simpleir_kind_may_carry_async_work_poll_marker,
     simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
     simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
 };
@@ -122,6 +122,9 @@ pub enum OpShapeViolation {
     UnboundCodeSlot,
     ModuleSlotSymbol,
     UnboundModuleSlot,
+    ClassDefinitionSymbol,
+    ForbiddenClassDefinition,
+    UnboundClassDefinition,
     MissingResult,
     InvalidModuleRegistry {
         reason: String,
@@ -191,6 +194,24 @@ impl std::fmt::Display for OpShapeDiagnostic {
                 write!(
                     f,
                     "references a module name without a program registry binding"
+                )
+            }
+            OpShapeViolation::ClassDefinitionSymbol => {
+                write!(
+                    f,
+                    "requires a nonempty class statement symbol in `class_definition`"
+                )
+            }
+            OpShapeViolation::ForbiddenClassDefinition => {
+                write!(
+                    f,
+                    "forbids `class_definition`; only class stamps and layout guards name a class statement"
+                )
+            }
+            OpShapeViolation::UnboundClassDefinition => {
+                write!(
+                    f,
+                    "references a class statement symbol without a program binding"
                 )
             }
             OpShapeViolation::InvalidModuleRegistry { reason } => {
@@ -343,10 +364,30 @@ pub fn validate_program_slot_symbol(
     Ok(())
 }
 
+/// One rule for class statement identity (HF-220): every generated carrier
+/// names a nonempty class statement symbol, and no other operation names one.
+/// `kind` is the wire spelling (a TIR carrier passes its original spelling).
+pub fn validate_class_definition_symbol(
+    kind: &str,
+    symbol: Option<&str>,
+) -> Result<(), OpShapeDiagnostic> {
+    let violation = match (simpleir_kind_carries_class_definition(kind), symbol) {
+        (true, None | Some("")) => OpShapeViolation::ClassDefinitionSymbol,
+        (false, Some(_)) => OpShapeViolation::ForbiddenClassDefinition,
+        _ => return Ok(()),
+    };
+    Err(OpShapeDiagnostic {
+        family: "class_layout",
+        kind: kind.into(),
+        violation,
+    })
+}
+
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     validate_registered_op_kind(&op.kind)?;
     validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
     validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;
+    validate_class_definition_symbol(&op.kind, op.class_definition.as_deref())?;
     if op.kind == "module_slot"
         && op
             .out
@@ -939,6 +980,54 @@ mod op_shape_tests {
         );
         slot.out = Some("v0".into());
         assert!(validate_simple_op_shape(&slot).is_ok());
+    }
+
+    /// HF-220: the generated carriers name a class statement; nothing else may.
+    #[test]
+    fn class_statement_symbols_belong_to_their_generated_carriers_only() {
+        use crate::tir::op_kinds_generated::SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS;
+        for &kind in SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS {
+            assert!(validate_class_definition_symbol(kind, Some("class:m:P")).is_ok());
+            for symbol in [None, Some("")] {
+                assert_eq!(
+                    validate_class_definition_symbol(kind, symbol)
+                        .unwrap_err()
+                        .violation,
+                    OpShapeViolation::ClassDefinitionSymbol
+                );
+            }
+        }
+        for kind in [
+            "get_attr_generic_ptr",
+            "class_set_layout_version",
+            "code_slot_set",
+        ] {
+            assert!(validate_class_definition_symbol(kind, None).is_ok());
+            assert_eq!(
+                validate_class_definition_symbol(kind, Some("class:m:P"))
+                    .unwrap_err()
+                    .violation,
+                OpShapeViolation::ForbiddenClassDefinition
+            );
+        }
+        let mut guard = OpIR {
+            kind: "guard_layout".into(),
+            args: Some(vec!["obj".into(), "version".into()]),
+            out: Some("ok".into()),
+            ..OpIR::default()
+        };
+        assert_eq!(
+            validate_simple_op_shape(&guard).unwrap_err().violation,
+            OpShapeViolation::ClassDefinitionSymbol
+        );
+        guard.class_definition = Some("class:m:P".into());
+        assert!(validate_simple_op_shape(&guard).is_ok());
+        // The retired class-handle operand is a shape error, not a fallback.
+        guard.args = Some(vec!["obj".into(), "class".into(), "version".into()]);
+        assert!(matches!(
+            validate_simple_op_shape(&guard).unwrap_err().violation,
+            OpShapeViolation::OperandCount { .. }
+        ));
     }
 
     #[test]

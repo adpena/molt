@@ -27,13 +27,7 @@ def test_attribute_serialization_is_independent_of_global_cache_allocation(
     owner = MoltValue("owner")
     args = {
         "GETATTR": [owner, "x", POINT],
-        "GUARDED_GETATTR": [
-            owner,
-            MoltValue("class"),
-            MoltValue("version"),
-            "x",
-            POINT,
-        ],
+        "GUARDED_GETATTR": [owner, MoltValue("version"), "x", POINT],
         "GETATTR_GENERIC_PTR": [owner, "x"],
     }[kind]
     generators = [SimpleTIRGenerator(), SimpleTIRGenerator()]
@@ -54,30 +48,27 @@ def test_attribute_serialization_is_independent_of_global_cache_allocation(
 
 def test_guarded_field_serialization_uses_only_class_layout_authority() -> None:
     # The op carries the ClassId bound at emission; serialization reads that
-    # class's offsets and emits no class field on the SimpleIR wire.
+    # class's offsets, and the wire names the class statement the guard trusts
+    # (HF-220), never a class operand.
     generator = SimpleTIRGenerator()
     generator.classes[POINT] = {"binding_name": "Point", "fields": {"x": 8}}
     context = SerializationContext([], set(), None)
     assert generator._serialize_object_attr_op(
         MoltOp(
             "GUARDED_GETATTR",
-            [
-                MoltValue("owner"),
-                MoltValue("class"),
-                MoltValue("version"),
-                "x",
-                POINT,
-            ],
+            [MoltValue("owner"), MoltValue("version"), "x", POINT],
             MoltValue("result"),
+            metadata={"class_definition": POINT.definition_symbol},
         ),
         context,
     )
     assert context.json_ops == [
         {
             "kind": "guarded_field_get",
-            "args": ["owner", "class", "version"],
+            "args": ["owner", "version"],
             "s_value": "x",
             "value": 8,
+            "class_definition": "class:exact_class_authority:Point",
             "out": "result",
         }
     ]
@@ -98,7 +89,7 @@ def _ops(source: str, *, function: str | None = None) -> list[MoltOp]:
 def _attribute_ops(ops: list[MoltOp], attr: str) -> list[MoltOp]:
     result = []
     for op in ops:
-        position = 3 if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR"} else 1
+        position = 2 if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR"} else 1
         if len(op.args) > position and op.args[position] == attr:
             result.append(op)
     return result
@@ -561,8 +552,50 @@ def test_native_base_layout_never_publishes_inferred_prefix_offsets(
     )
 
 
+def _emit_guard(
+    generator: SimpleTIRGenerator, operation: str, class_id: ClassId
+) -> list[MoltOp]:
+    first_op = len(generator.current_ops)
+    owner = MoltValue("owner", type_hint=DeclaredClass(class_id))
+    if operation == "read":
+        generator._emit_guarded_getattr(owner, "x", class_id)
+    elif operation == "write":
+        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), class_id)
+    else:
+        generator._emit_layout_guard(owner, class_id)
+    return generator.current_ops[first_op:]
+
+
+def _assert_guard_names_statement(ops: list[MoltOp], class_id: ClassId) -> None:
+    """One guard names ``class_id``'s statement and reads no class binding."""
+    guards = [
+        op
+        for op in ops
+        if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR", "GUARD_LAYOUT"}
+    ]
+    assert len(guards) == 1
+    assert (guards[0].metadata or {}) == {
+        "class_definition": class_id.definition_symbol
+    }
+    assert not any(
+        op.kind
+        in {
+            "DICT_GET",
+            "LOAD_VAR",
+            "CLOSURE_LOAD",
+            "MODULE_GET_GLOBAL",
+            "MODULE_IMPORT",
+            "MODULE_CACHE_GET",
+            "RAISE",
+        }
+        for op in ops
+    )
+
+
 @pytest.mark.parametrize("operation", ["read", "write", "loop"])
-def test_synthesized_layout_guards_use_optional_class_identity(operation: str) -> None:
+def test_synthesized_layout_guards_name_their_class_statement(operation: str) -> None:
+    # HF-220: a guard outside the defining scope trusts the class statement,
+    # not the module binding, so rebinding the name cannot redirect it.
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
     generator.classes[POINT] = {
@@ -570,25 +603,7 @@ def test_synthesized_layout_guards_use_optional_class_identity(operation: str) -
         "static": True,
         "fields": {"x": 8},
     }
-    first_op = len(generator.current_ops)
-    owner = MoltValue("owner", type_hint=DeclaredClass(POINT))
-    if operation == "read":
-        generator._emit_guarded_getattr(owner, "x", POINT)
-    elif operation == "write":
-        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), POINT)
-    else:
-        generator._emit_layout_guard(owner, POINT)
-    ops = generator.current_ops[first_op:]
-    guards = [
-        op
-        for op in ops
-        if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR", "GUARD_LAYOUT"}
-    ]
-    assert len(guards) == 1
-    candidate = next(op for op in ops if op.result is guards[0].args[1])
-    assert candidate.kind == "DICT_GET"
-    assert next(op for op in ops if op.result is candidate.args[2]).kind == "CONST_NONE"
-    assert not any(op.kind == "MODULE_GET_GLOBAL" for op in ops)
+    _assert_guard_names_statement(_emit_guard(generator, operation, POINT), POINT)
 
 
 def test_optional_layout_identity_does_not_change_explicit_source_name() -> None:
@@ -600,19 +615,31 @@ def test_optional_layout_identity_does_not_change_explicit_source_name() -> None
         op.kind == "MODULE_GET_GLOBAL" and strings.get(op.args[1].name) == "Point"
         for op in ops
     )
-    assert any(op.kind == "DICT_GET" for op in ops)
+    # The guard names the statement; only the explicit source read loads it.
+    assert not any(op.kind == "DICT_GET" for op in ops)
+    assert any(
+        (op.metadata or {}).get("class_definition") == POINT.definition_symbol
+        for op in ops
+        if op.kind == "GUARDED_GETATTR"
+    )
 
 
-def test_unavailable_external_layout_identity_does_not_import_or_read_module() -> None:
+@pytest.mark.parametrize("operation", ["read", "write", "loop"])
+def test_external_layout_identity_does_not_import_or_read_module(
+    operation: str,
+) -> None:
+    # An imported class's guard names the exporting statement directly: no
+    # import, module read or binding is needed to construct it.
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
-    generator.classes[ELSEWHERE_POINT] = {"binding_name": "Point", "static": True}
-    first_op = len(generator.current_ops)
-    result = generator._emit_class_ref(ELSEWHERE_POINT)
-    ops = generator.current_ops[first_op:]
-    assert len(ops) == 1
-    assert ops[0].kind == "CONST_NONE"
-    assert ops[0].result is result
+    generator.classes[ELSEWHERE_POINT] = {
+        "binding_name": "Point",
+        "static": True,
+        "fields": {"x": 8},
+    }
+    ops = _emit_guard(generator, operation, ELSEWHERE_POINT)
+    _assert_guard_names_statement(ops, ELSEWHERE_POINT)
+    assert ELSEWHERE_POINT.definition_symbol == "class:elsewhere:Point"
 
 
 def test_retained_layout_differential_capsule_lowers_optional_guards() -> None:
@@ -630,16 +657,26 @@ def test_retained_layout_differential_capsule_lowers_optional_guards() -> None:
             for function in ir["functions"]
             if function["name"].endswith(f"__RetainedLayoutOwner_{method}")
         )
-        assert any(op["kind"] == guard for op in function["ops"])
-        assert any(op["kind"] == "dict_get" for op in function["ops"])
+        guards = [op for op in function["ops"] if op["kind"] == guard]
+        assert guards
+        assert {op["class_definition"] for op in guards} == {
+            "class:__main__:RetainedLayoutOwner"
+        }
+        assert not any(op["kind"] == "dict_get" for op in function["ops"])
 
 
 @pytest.mark.parametrize("local", [False, True], ids=["global-alias", "local-alias"])
-def test_external_layout_identity_reuses_matching_imported_alias(local: bool) -> None:
+def test_external_layout_identity_ignores_imported_aliases(local: bool) -> None:
+    # Aliases of an imported class are bindings; the guard names the class
+    # statement and reads none of them.
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
-    generator.classes[ELSEWHERE_POINT] = {"binding_name": "Point", "static": True}
+    generator.classes[ELSEWHERE_POINT] = {
+        "binding_name": "Point",
+        "static": True,
+        "fields": {"x": 8},
+    }
     generator.global_imported_names["Point"] = "unrelated"
     if local:
         generator.imported_names["Alias"] = "elsewhere"
@@ -649,25 +686,15 @@ def test_external_layout_identity_reuses_matching_imported_alias(local: bool) ->
     else:
         generator.global_imported_names["Alias"] = "elsewhere"
         generator.global_imported_attr_names["Alias"] = "Point"
-    first_op = len(generator.current_ops)
-    result = generator._emit_class_ref(ELSEWHERE_POINT)
-    ops = generator.current_ops[first_op:]
-    if local:
-        assert result.name == "imported_alias"
-    else:
-        lookup = next(op for op in ops if op.result is result)
-        assert lookup.kind == "DICT_GET"
-        key = next(op for op in ops if op.result is lookup.args[1])
-        assert key.args == ["Alias"]
-    assert not any(
-        op.kind in {"MODULE_IMPORT", "MODULE_CACHE_GET", "MODULE_GET_GLOBAL"}
-        for op in ops
-    )
+    ops = _emit_guard(generator, "read", ELSEWHERE_POINT)
+    _assert_guard_names_statement(ops, ELSEWHERE_POINT)
 
 
 @pytest.mark.parametrize("operation", ["read", "write", "loop"])
 @pytest.mark.parametrize("storage", ["local", "cell", "global"])
-def test_local_class_guard_reads_optional_storage(operation: str, storage: str) -> None:
+def test_local_class_guard_reads_no_class_storage(operation: str, storage: str) -> None:
+    # A function-local class statement's guard names the statement wherever
+    # its binding lives; the binding may be rebound or unbound.
     generator = SimpleTIRGenerator(module_name="exact_class_authority")
     generator.current_func_name = "retained_method"
     generator.funcs_map["retained_method"] = generator.funcs_map["molt_main"].copy()
@@ -684,30 +711,10 @@ def test_local_class_guard_reads_optional_storage(operation: str, storage: str) 
     else:
         generator.locals["Point"] = MoltValue("point_binding", type_hint="type")
         generator.scope_assigned.add("Point")
-    first_op = len(generator.current_ops)
-    owner = MoltValue("owner", type_hint=DeclaredClass(POINT))
-    if operation == "read":
-        generator._emit_guarded_getattr(owner, "x", POINT)
-    elif operation == "write":
-        generator._emit_guarded_setattr(owner, "x", MoltValue("value"), POINT)
-    else:
-        generator._emit_layout_guard(owner, POINT)
-    ops = generator.current_ops[first_op:]
-    assert not any(op.kind in {"RAISE", "MODULE_GET_GLOBAL"} for op in ops)
-    guard = next(
-        op
+    ops = _emit_guard(generator, operation, POINT)
+    _assert_guard_names_statement(ops, POINT)
+    assert not any(
+        arg == MoltValue("point_cell", type_hint="cell")
         for op in ops
-        if op.kind in {"GUARDED_GETATTR", "GUARDED_SETATTR", "GUARD_LAYOUT"}
+        for arg in op.args
     )
-    if storage == "local":
-        candidate = next(op for op in ops if op.result is guard.args[1])
-        assert candidate.kind == "LOAD_VAR" and candidate.metadata == {"var": "Point"}
-    else:
-        candidate = next(op for op in ops if op.result is guard.args[1])
-        if storage == "global":
-            assert candidate.kind == "DICT_GET"
-        else:
-            assert any(
-                arg == MoltValue("point_cell", type_hint="cell")
-                for arg in candidate.args
-            )

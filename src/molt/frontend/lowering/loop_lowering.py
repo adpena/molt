@@ -610,7 +610,16 @@ class LoopLoweringMixin(GeneratorMixinBase):
         return pair
 
     def _emit_layout_guard(self, obj: MoltValue, expected_class: ClassId) -> MoltValue:
-        class_ref = self._emit_class_ref(expected_class)
+        """True when ``obj``'s class came from ``expected_class``'s statement.
+
+        The guard names the statement (HF-220); a class no compiled statement
+        stamps cannot pass, so its guard is the constant ``False``.
+        """
+        guard = MoltValue(self.next_var(), type_hint="bool")
+        definition = self._class_layout_definition(expected_class)
+        if definition is None:
+            self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=guard))
+            return guard
         expected_version = MoltValue(self.next_var(), type_hint="int")
         self.emit(
             MoltOp(
@@ -619,12 +628,12 @@ class LoopLoweringMixin(GeneratorMixinBase):
                 result=expected_version,
             )
         )
-        guard = MoltValue(self.next_var(), type_hint="bool")
         self.emit(
             MoltOp(
                 kind="GUARD_LAYOUT",
-                args=[obj, class_ref, expected_version],
+                args=[obj, expected_version],
                 result=guard,
+                metadata={"class_definition": definition},
             )
         )
         return guard
@@ -669,6 +678,8 @@ class LoopLoweringMixin(GeneratorMixinBase):
         name = obj_name or obj.name
         if self._exact_class_for_name(name) != expected_class:
             return None
+        if self._class_layout_definition(expected_class) is None:
+            return None
         guard_map = self.loop_layout_guards[-1]
         cached = guard_map.get(name)
         if cached is not None:
@@ -704,6 +715,9 @@ class LoopLoweringMixin(GeneratorMixinBase):
             return {}
         guard_map: dict[str, tuple[ClassId, MoltValue, int]] = {}
         for name, expected_class in sorted(candidates.items()):
+            # A class no statement stamps has no fast path to hoist.
+            if self._class_layout_definition(expected_class) is None:
+                continue
             # The guarded object is the binding's current value on loop entry;
             # a name with no visible binding here is not guarded.
             obj = self._load_local_value(name)
