@@ -1831,7 +1831,10 @@ def test_managed_attestation_rejects_live_asset_drift(
     )
     _write(prefix / "lib" / "MLIRDrift.lib", "drift")
 
-    with pytest.raises(LlvmToolchainConfigError, match="attestation drift"):
+    with pytest.raises(
+        LlvmToolchainConfigError,
+        match=r"attestation drift.*tools/bootstrap_llvm\.py --reattest",
+    ):
         verify_llvm_toolchain_prefix(
             ROOT,
             prefix,
