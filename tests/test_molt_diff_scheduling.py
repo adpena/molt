@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import sys
 import signal
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ for _path in (_ROOT, _ROOT / "tests", _ROOT / "src"):
         sys.path.insert(0, str(_path))
 
 import molt_diff  # noqa: E402
+from tests.process_guard_common import install_module_view  # noqa: E402
 
 
 def _started(summary: dict) -> list[dict]:
@@ -223,7 +225,16 @@ def test_oom_retries_share_the_run_admission_deadline(
     suite.files[:] = suite.files[:2]
     clock = SimpleNamespace(now=0.0)
     monkeypatch.setattr(molt_diff, "_PROCESS_STARTED", 0.0)
-    monkeypatch.setattr(molt_diff.time, "monotonic", lambda: clock.now)
+    # The fake clock reaches only the two modules that keep differential
+    # deadlines; pytest, the guard and every other reader keep real time.
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        molt_diff,
+        molt_diff.compat_backends,
+        monotonic=lambda: clock.now,
+    )
     monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "10")
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "30")
     # The real admission policy reserves 30 s build + 10 s run + 10 s CPython.
@@ -725,7 +736,16 @@ def test_suite_preflight_consumes_deadline_and_keeps_not_run_summary(
 ):
     clock = SimpleNamespace(now=0.0)
     monkeypatch.setattr(molt_diff, "_PROCESS_STARTED", 0.0)
-    monkeypatch.setattr(molt_diff.time, "monotonic", lambda: clock.now)
+    # The fake clock reaches only the two modules that keep differential
+    # deadlines; pytest, the guard and every other reader keep real time.
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        molt_diff,
+        molt_diff.compat_backends,
+        monotonic=lambda: clock.now,
+    )
     monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "1")
     monkeypatch.setenv("MOLT_DIFF_BUILD_TIMEOUT", "1")
     observed = []
