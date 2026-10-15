@@ -970,17 +970,23 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
 
     def visit(self, node: ast.AST) -> None:
         if self.suspension_only:
-            cached = self.authority._await_expressions.get(node)
+            cached = self.authority._suspension_expressions.get(node)
             if cached is not None:
-                self.contains_await |= cached
+                awaits, yields = cached
+                self.contains_await |= awaits
+                self.contains_yield |= yields
                 return
         self.authority.node_visits += 1
-        enclosing_await = self.contains_await
-        self.contains_await = False
+        enclosing_await, enclosing_yield = self.contains_await, self.contains_yield
+        self.contains_await = self.contains_yield = False
         super().visit(node)
         if isinstance(node, ast.expr):
-            self.authority._await_expressions[node] = self.contains_await
+            self.authority._suspension_expressions[node] = (
+                self.contains_await,
+                self.contains_yield,
+            )
         self.contains_await |= enclosing_await
+        self.contains_yield |= enclosing_yield
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load) and node.id in {"super", "__class__"}:
@@ -1067,23 +1073,33 @@ class PythonDependencyAuthority:
         self._declarations: dict[ast.AST, PythonScopeDeclarations] = {}
         self.summaries: dict[ast.AST, PythonDefinitionDependencies] = {}
         self._regions: dict[ast.AST, DefinitionLexicalRegions] = {}
-        self._await_expressions: dict[ast.AST, bool] = {}
+        # Per expression: (contains an await, contains a yield or yield from),
+        # each counted only where it suspends the evaluating frame.
+        self._suspension_expressions: dict[ast.AST, tuple[bool, bool]] = {}
 
-    def expression_contains_await(self, node: ast.AST) -> bool:
-        """Whether evaluating this node suspends its enclosing code scope.
-
-        The dependency traversal also publishes descendant expression facts;
-        overlapping frontend queries reuse that work without skipping reads.
-        """
-        cached = self._await_expressions.get(node)
+    def _expression_suspension(self, node: ast.AST) -> tuple[bool, bool]:
+        """The dependency traversal also publishes descendant expression facts;
+        overlapping frontend queries reuse that work without skipping reads."""
+        cached = self._suspension_expressions.get(node)
         if cached is None:
             visitor = _DependencyProjection(
                 self, variable_annotations=False, suspension_only=True
             )
             visitor.visit(node)
-            cached = visitor.contains_await
-            self._await_expressions[node] = cached
+            cached = (visitor.contains_await, visitor.contains_yield)
+            self._suspension_expressions[node] = cached
         return cached
+
+    def expression_contains_await(self, node: ast.AST) -> bool:
+        """Whether evaluating this node awaits in its enclosing code scope."""
+        return self._expression_suspension(node)[0]
+
+    def expression_may_suspend(self, node: ast.AST) -> bool:
+        """Whether evaluating this node can suspend the frame that evaluates it:
+        an ``await``, a ``yield`` or ``yield from``, an inline async
+        comprehension, or one of those in a generator expression's outermost
+        iterable or a lambda's defaults."""
+        return any(self._expression_suspension(node))
 
     def project(
         self,

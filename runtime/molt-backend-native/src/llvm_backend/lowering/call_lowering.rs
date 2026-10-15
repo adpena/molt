@@ -332,6 +332,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let i64_ty = self.backend.context.i64_type();
         let null = i64_ty.const_int(molt_codegen_abi::loaded_method_null_bits() as u64, false);
         let self_slot = self.build_entry_i64_alloca(&format!("{lane}_self"));
+        // The slot holds the null sentinel until the runtime writes it, so a
+        // call that raises before its write leaves a releasable word.
+        self.backend.builder.build_store(self_slot, null).unwrap();
         let call_fn =
             declare_fixed_runtime_function(self.backend.context, &self.backend.module, symbol)
                 .unwrap_or_else(|| panic!("{symbol} must be a fixed LLVM runtime import"));

@@ -78,37 +78,39 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             return None
         if (
             self.python_class_body_context
-            or "__class__" not in self.free_vars
+            or not self._free_var_cell_available("__class__")
             or not isinstance(self.current_python_first_arg, str)
             or any(self._expr_may_yield(argument) for argument in node.args)
         ):
             return None
         return receiver
 
-    def _emit_super_method_call(self, node: ast.Call) -> MoltValue:
+    def _emit_super_method_call(self, node: ast.Call) -> Any:
         """CPython's LOAD_SUPER_ATTR in method form, then CALL.
 
         The operands are the ``__class__`` cell and the function's first
         argument. The first argument keeps its own unbound-local error; the
         method load reads the cell as LOAD_DEREF does, so an empty cell raises
         NameError there. The load selects the function after ``__class__`` in
-        ``type(first)``'s MRO without a super object.
+        ``type(first)``'s MRO without a super object. When this frame cannot
+        load an operand, the generic ``super()`` call does the work.
         """
-        assert isinstance(node.func, ast.Attribute)
+        func = node.func
         first_arg = self.current_python_first_arg
-        assert isinstance(first_arg, str)
-        class_cell = self._load_free_var_cell("__class__")
+        if not isinstance(func, ast.Attribute) or not isinstance(first_arg, str):
+            return CALL_NOT_HANDLED
         if first_arg in self.unbound_check_names:
             # CPython loads __class__ before the first argument: an empty
             # cell's NameError precedes the argument's UnboundLocalError.
             self._emit_free_var_load("__class__")
         receiver = self._load_local_value(first_arg)
-        if class_cell is None or receiver is None:
-            raise AssertionError("zero-argument super() operands must be loadable")
+        class_cell = self._load_free_var_cell("__class__")
+        if receiver is None or class_cell is None:
+            return CALL_NOT_HANDLED
         pair = MoltValue(self.next_var())
         load = MoltOp(
             kind="LOAD_SUPER_METHOD",
-            args=[class_cell, receiver, node.func.attr],
+            args=[class_cell, receiver, func.attr],
             result=pair,
             metadata={"self_or_null": self.next_var()},
         )

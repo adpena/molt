@@ -70,16 +70,18 @@ pub(super) fn emit_method_load_op(
         SimpleIrResultField::Arg(_) => unreachable!("a method load has fixed result roles"),
     });
     let [callable, self_or_null] = results;
-    store_owned_value(
-        func,
-        locals.bound_result_slot(callable),
-        import_ids,
-        reloc_enabled,
-    );
+    // Read the scratch word before any release: releasing a discarded
+    // callable can run `__del__`, whose compiled code may reuse the word.
     self_out.load(func);
     store_owned_value(
         func,
         locals.bound_result_slot(self_or_null),
+        import_ids,
+        reloc_enabled,
+    );
+    store_owned_value(
+        func,
+        locals.bound_result_slot(callable),
         import_ids,
         reloc_enabled,
     );

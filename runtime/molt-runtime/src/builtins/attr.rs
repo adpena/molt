@@ -3066,8 +3066,9 @@ pub(crate) struct MethodIcResolution {
     pub(crate) class_version: u64,
     pub(crate) func_bits: u64,
     /// Whether an instance of this class could carry an OWN attribute of this
-    /// name (a managed field slot).  When false, instance-shadow checks may be
-    /// skipped on IC hits — a non-data class method can never be shadowed.
+    /// name (an instance dictionary, an inferred field slot, or a dataclass
+    /// field). When false, instance-shadow checks may be skipped on IC hits:
+    /// a non-data class method can never be shadowed.
     pub(crate) can_shadow: bool,
 }
 
@@ -3151,7 +3152,8 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
             crate::object::layout::class_field_offsets_bits(class_ptr),
             attr_bits,
         );
-        let can_shadow = slots.allows_dict
+        let can_shadow = type_id == TYPE_ID_DATACLASS
+            || slots.allows_dict
             || offset.is_some_and(|offset| {
                 crate::object::class_layout::field_at_offset(class_ptr, offset)
                     .is_some_and(|field| field.kind.is_inferred())
@@ -3168,6 +3170,9 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
 /// Return one owned instance-tier hit for a captured plain method selection.
 /// A shadowing callback is part of this lookup and must not be repeated by a
 /// fallback. The caller either calls this value or consumes its captured method.
+/// A dataclass instance keeps its fields in the storage its descriptor maps,
+/// which the generic lookup reads before any class attribute; a class-shaped
+/// instance keeps them at the class layout's inferred offsets.
 pub(crate) unsafe fn object_instance_attribute(
     py: &PyToken<'_>,
     object: *mut u8,
@@ -3175,7 +3180,11 @@ pub(crate) unsafe fn object_instance_attribute(
     name: u64,
 ) -> Result<Option<u64>, ()> {
     unsafe {
-        let offset = class_inferred_field_offset(py, class, name)?;
+        let offset = if object_type_id(object) == TYPE_ID_DATACLASS {
+            dataclass_field_offset(object, name)
+        } else {
+            class_inferred_field_offset(py, class, name)?
+        };
         crate::object::accessors::instance_attribute_lookup(py, object, name, offset)
     }
 }
@@ -3330,6 +3339,28 @@ pub(crate) unsafe fn dataclass_attr_lookup_raw(
     unsafe { dataclass_attr_lookup_inner(_py, obj_ptr, attr_bits, None, false) }
 }
 
+/// The storage offset of field `attr_bits` in a dataclass instance, from the
+/// instance's descriptor. The generic lookup and the method cache read the
+/// instance tier of a dataclass instance through this one authority.
+///
+/// # Safety
+/// `obj_ptr` must be a live dataclass instance.
+pub(crate) unsafe fn dataclass_field_offset(obj_ptr: *mut u8, attr_bits: u64) -> Option<usize> {
+    unsafe {
+        let desc_ptr = dataclass_desc_ptr(obj_ptr);
+        if desc_ptr.is_null() {
+            return None;
+        }
+        crate::object::ops_format::with_string_bytes(obj_from_bits(attr_bits), |name| {
+            std::str::from_utf8(name)
+                .ok()
+                .and_then(|name| (*desc_ptr).field_name_to_index.get(name).copied())
+        })
+        .flatten()
+        .map(|index| index * std::mem::size_of::<u64>())
+    }
+}
+
 pub(crate) unsafe fn dataclass_attr_lookup_inner(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -3345,16 +3376,11 @@ pub(crate) unsafe fn dataclass_attr_lookup_inner(
             DescriptorCallPolicy::Required
         };
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
-        let desc_ptr = dataclass_desc_ptr(obj_ptr);
-        if desc_ptr.is_null() {
+        if dataclass_desc_ptr(obj_ptr).is_null() {
             return Ok(None);
         }
-        let attr_name = string_obj_to_owned(obj_from_bits(attr_bits));
         let class_bits = object_class_bits(obj_ptr);
-        let offset = attr_name
-            .as_deref()
-            .and_then(|name| (*desc_ptr).field_name_to_index.get(name).copied())
-            .map(|index| index * std::mem::size_of::<u64>());
+        let offset = dataclass_field_offset(obj_ptr, attr_bits);
         if let Some(offset) = offset
             && crate::object::field_storage::field_at_offset(_py, obj_ptr, offset)
                 .is_some_and(|field| field.kind.is_declared_slot())
