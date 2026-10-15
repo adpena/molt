@@ -86,8 +86,7 @@ def test_pact_witness_acceptance_check_parity_uses_shared_engine_and_gates(
 ) -> None:
     """`_check_parity` must invoke the ONE shared parity authority --
     `collab/pact/parity/check_parity.py` against the declarative Kernel A
-    gate manifest -- not the superseded per-kernel inline oracle at
-    `collab/pact/pact_witness_kernel/check_parity.py`. This is the 011
+    gate manifest -- never a per-kernel inline oracle. This is the 011
     parity-harness wiring: `tools/pact_witness_acceptance.py` must have
     exactly ONE acceptance authority, never two disagreeing implementations."""
     captured: dict[str, object] = {}

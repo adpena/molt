@@ -25,7 +25,7 @@ def test_wasm_channel_basic() -> None:
     with _work_dir(root) as work_dir:
         src = work_dir / "channel_basic.py"
         src.write_text(
-            "from molt.concurrency import channel, _call_intrinsic\n"
+            "from moltlib.concurrency import channel, _call_intrinsic\n"
             "\n"
             "ch = channel(1)\n"
             'res = _call_intrinsic("molt_chan_send", ch._handle, 41)\n'
@@ -58,7 +58,7 @@ def test_wasm_channel_dynamic_intrinsic_require(tmp_path: Path) -> None:
         src = work_dir / "channel_dynamic_require.py"
         src.write_text(
             "from molt import intrinsics as _intrinsics\n"
-            "from molt.concurrency import channel\n"
+            "from moltlib.concurrency import channel\n"
             "\n"
             "ch = channel(1)\n"
             "send = _intrinsics.require('molt_chan_send', globals())\n"

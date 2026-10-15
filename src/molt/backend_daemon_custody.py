@@ -640,16 +640,3 @@ def terminate_backend_daemons_for_session(
         if remove_identity_files:
             remove_backend_daemon_identity(record.path)
     return tuple(terminated)
-
-
-def remove_legacy_pid_files(root: Path, pattern: str = "*.pid") -> int:
-    removed = 0
-    try:
-        pid_files = list(root.glob(pattern))
-    except OSError:
-        return removed
-    for pid_file in pid_files:
-        with contextlib.suppress(OSError):
-            pid_file.unlink()
-            removed += 1
-    return removed

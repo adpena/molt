@@ -1075,11 +1075,6 @@ def _prune_backend_daemons() -> None:
                         f"{process.pid} age={age_sec}s socket={socket_path}"
                     )
 
-    daemon_root = _diff_backend_daemon_root()
-    if not daemon_root.exists():
-        return
-    daemon_custody.remove_legacy_pid_files(daemon_root)
-
 
 def _prune_stale_build_locks() -> None:
     lock_root = _diff_build_lock_root()

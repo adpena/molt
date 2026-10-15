@@ -16,7 +16,7 @@ Pipeline:  `witness_forward.levelset_argmax` (INR → lstar) → `field_solve(ls
 | `make_weights_fixture.py` | deterministic SYNTHETIC decoder weights (real shapes, seeded) → `witness_weights_sample.npz`. |
 | `make_fixture.py` | deterministic synthetic road-scene `lstar` (pure geometry) → `lstar_sample.npz` (384×512 u8). |
 | `verify_against_tac.py` | **NO-FAKE fidelity proof:** imports tac, asserts the extract == canonical, bit-for-bit (ALL-MATCH). |
-| `check_parity.py` | the oracle: `check_parity.py candidate.npz [reference_outputs.npz]` → per-field gates, exit 0 = PASS. |
+| `field_solve_gates.json` | Kernel A's parity gates for the shared engine `../parity/check_parity.py` (exit 0 = PASS). |
 
 Generated `.npz` outputs are ignored, not committed. Recreate them locally with
 the commands below under numpy 2.5.1 / scipy 1.18.0; the scripts and parity
@@ -28,7 +28,7 @@ python make_weights_fixture.py                       # -> witness_weights_sample
 python witness_forward.py witness_weights_sample.npz  # -> witness_forward_reference.npz (Kernel B)
 python make_fixture.py                                # -> lstar_sample.npz
 python field_solve.py lstar_sample.npz                # -> reference_outputs.npz (Kernel A)
-python check_parity.py reference_outputs.npz          # sanity: all PASS
+python ../parity/check_parity.py reference_outputs.npz reference_outputs.npz field_solve_gates.json  # sanity: all PASS
 PYTHONPATH=<pact>/src python verify_against_tac.py    # fidelity: ALL-MATCH (extract == tac)
 ```
 
@@ -36,7 +36,7 @@ PYTHONPATH=<pact>/src python verify_against_tac.py    # fidelity: ALL-MATCH (ext
 ```bash
 python make_fixture.py          # -> lstar_sample.npz
 python field_solve.py lstar_sample.npz   # -> reference_outputs.npz  (+ self-check argmax==lstar)
-python check_parity.py reference_outputs.npz   # sanity: all PASS
+python ../parity/check_parity.py reference_outputs.npz reference_outputs.npz field_solve_gates.json   # sanity: all PASS
 ```
 
 ## The molt ask (precise)
@@ -63,16 +63,14 @@ uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witne
 ```
 
 The oracle lane regenerates ignored `.npz` outputs in a temporary directory and
-proves the tracked `check_parity.py` gates without creating a second acceptance
-path.
+proves that the shared engine accepts them under `field_solve_gates.json`, the
+same acceptance authority as `pact-witness-acceptance`.
 
-**Acceptance authority note:** `pact-witness-acceptance` (the real Molt-WASM-vs-reference
-check) is wired to the shared, generalized engine at `../parity/check_parity.py`, driven
-by the declarative `field_solve_gates.json` manifest in this directory — not the inline
-`check_parity.py` above. That file's gate dicts are the ones `field_solve_gates.json`
-generalizes; it is kept only as the equivalence-proof reference
-(`tests/tools/test_pact_parity_engine.py`) and for the `pact-witness-oracle` CPython-only
-sanity self-check. Kernels B..7 land as a `<k>_gates.json` manifest for the shared engine
+**Acceptance authority note:** every Pact check, `pact-witness-acceptance` (the real
+Molt-WASM-vs-reference check) and the `pact-witness-oracle` sanity lane alike, runs the shared,
+generalized engine at `../parity/check_parity.py`, driven by the declarative
+`field_solve_gates.json` manifest in this directory. The inline per-kernel oracle it
+generalized proved verdict equivalence when the engine landed and has been retired. Kernels B..7 land as a `<k>_gates.json` manifest for the shared engine
 — see `../parity/make_kernel_scaffold.py` for the drop-in scaffold generator.
 
 `field_solve` is deterministic (no RNG/time/I/O) and bit-identical across CPython re-runs. The two

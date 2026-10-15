@@ -370,7 +370,7 @@ async def work():
 
 def test_imported_async_sleep_uses_live_callable_and_awaitable_result():
     src = """
-from molt.concurrency import molt_async_sleep
+from moltlib._concurrency_runtime import molt_async_sleep
 
 async def main():
     await molt_async_sleep(0, None)

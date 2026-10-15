@@ -11,13 +11,12 @@ Two things are proved here:
    `uv run --with numpy==1.26.4` child process (see that module's docstring
    for why numpy never touches the main pytest process).
 
-2. **Verdict equivalence** (`test_new_engine_matches_legacy_kernel_a_oracle_*`):
-   the new engine + `field_solve_gates.json`, run against the REAL Kernel A
-   numpy-fp32 reference, produces the identical per-array PASS/FAIL verdict
-   as the original inline `pact_witness_kernel/check_parity.py` oracle it
-   generalizes -- both on a true (uncorrupted) run and on an injected
-   corruption, so the generalization is proved to be behavior-preserving, not
-   just structurally similar.
+2. **Real Kernel A verdicts** (`test_engine_*_real_kernel_a_*`): the engine
+   with `field_solve_gates.json`, run against the REAL Kernel A numpy-fp32
+   reference, passes every declared array on a true run and fails exactly the
+   corrupted array on an injected corruption. (The inline per-kernel oracle it
+   generalized proved verdict equivalence when the engine landed and has been
+   retired.)
 """
 
 from __future__ import annotations
@@ -34,7 +33,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 PARITY_ENGINE = ROOT / "collab" / "pact" / "parity" / "check_parity.py"
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
-LEGACY_ORACLE = KERNEL_ROOT / "check_parity.py"
 FIELD_SOLVE_GATES = KERNEL_ROOT / "field_solve_gates.json"
 SCENARIOS_SCRIPT = ROOT / "tests" / "helpers" / "pact_parity_scenarios.py"
 
@@ -221,14 +219,11 @@ def _write_trivial_fixture_and_gates(tmp_path: Path, *, corrupt: bool = False) -
 
 
 # --------------------------------------------------------------------------- #
-# 3. Verdict-equivalence proof: new engine vs. the legacy Kernel A inline
-#    oracle it generalizes, on the REAL numpy-fp32 reference.
+# 3. The engine on the REAL Kernel A numpy-fp32 reference.
 # --------------------------------------------------------------------------- #
 def _line_verdicts(stdout: str) -> dict[str, bool]:
-    """Parse `  PASS <key> ...` / `  FAIL <key> ...` lines from either oracle's
-    stdout into {key: ok}. Both the legacy oracle's and the new engine's
-    report lines share this leading shape (see check_parity.py::ArrayResult.line
-    and pact_witness_kernel/check_parity.py's per-key prints)."""
+    """Parse the engine's `  PASS <key> ...` / `  FAIL <key> ...` report lines
+    into {key: ok} (see check_parity.py::ArrayResult.line)."""
     verdicts: dict[str, bool] = {}
     for line in stdout.splitlines():
         m = re.match(r"^\s*(PASS|FAIL)\s+(\S+)\s", line)
@@ -262,7 +257,7 @@ def real_kernel_a_reference(
     return reference
 
 
-def test_new_engine_matches_legacy_kernel_a_oracle_on_true_reference(
+def test_engine_passes_every_array_of_the_real_kernel_a_reference(
     tmp_path: Path, real_kernel_a_reference: Path
 ) -> None:
     """field_solve is bit-identical across re-runs (README.md: 'deterministic
@@ -272,13 +267,6 @@ def test_new_engine_matches_legacy_kernel_a_oracle_on_true_reference(
     candidate = tmp_path / "candidate_outputs.npz"
     shutil.copy2(real_kernel_a_reference, candidate)
 
-    legacy = _uv_run(
-        str(LEGACY_ORACLE),
-        str(candidate),
-        str(real_kernel_a_reference),
-        cwd=ROOT,
-        with_packages=_UV_NUMPY,
-    )
     new = _uv_run(
         str(PARITY_ENGINE),
         str(candidate),
@@ -287,42 +275,30 @@ def test_new_engine_matches_legacy_kernel_a_oracle_on_true_reference(
         cwd=ROOT,
         with_packages=_UV_NUMPY,
     )
-
-    assert legacy.returncode == 0, legacy.stdout + legacy.stderr
     assert new.returncode == 0, new.stdout + new.stderr
 
-    legacy_verdicts = _line_verdicts(legacy.stdout)
     new_verdicts = _line_verdicts(new.stdout)
-    assert legacy_verdicts, "legacy oracle produced no parseable per-key verdict lines"
-    assert (
-        set(legacy_verdicts)
-        == set(new_verdicts)
-        == {
-            "sdf_argmax",
-            "sdf_margin_m12",
-            "sdf_gap13",
-            "boundary",
-            "m_smooth",
-            "crit_max_rc",
-            "crit_min_rc",
-            "crit_saddle_rc",
-            "crit_saddle_eigvec",
-            "curvature",
-            "dist",
-        }
-    )
-    assert legacy_verdicts == new_verdicts, (
-        f"per-array verdict diverged: legacy={legacy_verdicts} new={new_verdicts}"
-    )
-    assert all(legacy_verdicts.values()), "the true reference must PASS every key"
+    assert set(new_verdicts) == {
+        "sdf_argmax",
+        "sdf_margin_m12",
+        "sdf_gap13",
+        "boundary",
+        "m_smooth",
+        "crit_max_rc",
+        "crit_min_rc",
+        "crit_saddle_rc",
+        "crit_saddle_eigvec",
+        "curvature",
+        "dist",
+    }
+    assert all(new_verdicts.values()), "the true reference must PASS every key"
 
 
-def test_new_engine_matches_legacy_kernel_a_oracle_on_injected_corruption(
+def test_engine_fails_the_corrupted_array_of_the_real_kernel_a_reference(
     tmp_path: Path, real_kernel_a_reference: Path
 ) -> None:
-    """A real, non-numpy-only corruption (flip one label pixel in sdf_argmax)
-    must be caught identically by both oracles, and must not bleed into an
-    unrelated key's verdict for either oracle."""
+    """A real corruption (flip one label pixel in sdf_argmax) must fail that
+    array, and only the arrays derived from it."""
     _require_uv()
     candidate = tmp_path / "candidate_outputs.npz"
 
@@ -346,13 +322,6 @@ def test_new_engine_matches_legacy_kernel_a_oracle_on_injected_corruption(
     )
     assert r.returncode == 0, r.stdout + r.stderr
 
-    legacy = _uv_run(
-        str(LEGACY_ORACLE),
-        str(candidate),
-        str(real_kernel_a_reference),
-        cwd=ROOT,
-        with_packages=_UV_NUMPY,
-    )
     new = _uv_run(
         str(PARITY_ENGINE),
         str(candidate),
@@ -361,19 +330,11 @@ def test_new_engine_matches_legacy_kernel_a_oracle_on_injected_corruption(
         cwd=ROOT,
         with_packages=_UV_NUMPY,
     )
-
-    assert legacy.returncode == 1, legacy.stdout + legacy.stderr
     assert new.returncode == 1, new.stdout + new.stderr
 
-    legacy_verdicts = _line_verdicts(legacy.stdout)
     new_verdicts = _line_verdicts(new.stdout)
-    assert legacy_verdicts == new_verdicts, (
-        f"per-array verdict diverged on corruption: legacy={legacy_verdicts} new={new_verdicts}"
-    )
-    assert legacy_verdicts["sdf_argmax"] is False
     assert new_verdicts["sdf_argmax"] is False
     # boundary is derived from sdf_argmax (inter-class boundary mask), so it
-    # may legitimately also flip; everything NOT touched by the corruption
-    # must still agree PASS between the two oracles (already asserted above
-    # by full-dict equality) -- this just pins the one key we corrupted
-    # directly.
+    # may legitimately also flip; no array the corruption cannot reach may.
+    untouched = set(new_verdicts) - {"sdf_argmax", "boundary"}
+    assert untouched and all(new_verdicts[key] for key in untouched), new_verdicts

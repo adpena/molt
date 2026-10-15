@@ -4571,7 +4571,7 @@ timeout_seconds = 1800
 [[named_lane]]
 cache_domain = "none"
 id = "pact.witness.oracle"
-description = "Pact Kernel A fixture/reference regeneration and check_parity.py oracle proof."
+description = "Pact Kernel A fixture/reference regeneration and shared parity engine proof."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_oracle.py"]
 toolchains = ["python", "uv"]
 resource_family = "wasm-browser"
