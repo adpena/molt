@@ -2,7 +2,11 @@
 
 This bundle includes the Molt CLI, a production-optimized compiler, prebuilt
 native and WASM runtime artifacts for every supported profile, stdlib tier and
-extension/freestanding variant, and the matching compiler/runtime sources. The optional `molt-worker` helper is a separate package
+extension/freestanding variant, and the matching compiler/runtime sources.
+Repository-only CPython source evidence
+(`config/cpython_stdlib_snapshot.json`) stays in the development checkout;
+installed compilation uses the generated sources and does not carry that capture.
+The optional `molt-worker` helper is a separate package
 with its own command and data paths; installing both does not duplicate ownership.
 Molt requires the local toolchains listed below; it does not install them on
 your behalf. Private CLI dependencies require the explicit setup command below.

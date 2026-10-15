@@ -39,6 +39,12 @@ def test_cpython_source_authority_is_commit_pinned() -> None:
             tag="v3.14.8",
             git_url="https://github.com/python/cpython.git",
         ),
+        "3.15": module.CPythonSource(
+            python="3.15",
+            revision="d220409a13b77de7a6c30abe16ea90db01528edc",
+            tag="v3.15.0",
+            git_url="https://github.com/python/cpython.git",
+        ),
     }
     # The regrtest default is the first row.
     assert next(iter(sources)) == "3.12"
