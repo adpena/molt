@@ -784,3 +784,45 @@ Ready to contribute code? Please read [CONTRIBUTING.md](../CONTRIBUTING.md). Not
 
 - **Specifications**: `docs/spec/` contains detailed architectural decisions (ADRs).
 - **Benchmarks**: `tools/bench.py`, `docs/BENCHMARKING.md`, and `docs/spec/STATUS.md` (generated summary block).
+
+### Adding a CPython version
+
+Keep source discovery, target admission and execution qualification separate.
+`src/molt/target_python.py` owns the admitted language catalog;
+`config/cpython_regrtest_sources.toml` owns exact upstream tags and commits;
+`config/verified_subset.toml` owns configured executable references. A pending
+source row does not admit that version or prove an execution coordinate.
+The snapshot retains unmodified upstream text under the existing
+[CPython license](../src/molt/stdlib/collections/LICENSE.cpython).
+
+1. Verify the official release/tag and add its full peeled commit to the existing
+   source-pin file. Retain the source-versus-reference patch distinction.
+2. Run `python3 tools/gen_stdlib_module_union.py --refresh-sources`. It captures
+   all pinned releases atomically, checks tag identity and unchanged receipts,
+   and retains stdlib membership, ASDL, grammar, startup/import sources, Stable ABI,
+   public-header identities and release notes in the existing source snapshot.
+3. Run `python3 tools/gen_stdlib_module_union.py --compare-sources 3.14 3.15 --report logs/cpython-source-comparison.json`.
+   This offline, deterministic report names added/removed modules, source hashes
+   and configured-reference patch mismatches. Changed sources have one linear
+   common-prefix/suffix interval with bounded excerpts and explicit omissions;
+   the full hash-bound source remains in the snapshot. An interval is not a
+   minimal edit script or a claim that every enclosed line changed. It neither
+   executes the target nor labels changes compatible. Review source changes through their
+   existing compiler/runtime/ABI owners; record unresolved work and qualification
+   in the existing V1 handoff finding (V1-35 for 3.15), not another support matrix.
+4. Complete each affected producer/consumer family, including source and wheel
+   installation, host frontend, generated tables, fixtures, target/backends and
+   explicit unsupported coordinates. Unchanged source is not behavioral proof.
+5. Admit the version through `TargetPythonVersion` only with coherent semantics.
+   Regenerate through the existing generator manifest; generated stdlib outputs
+   select admitted targets even when the source snapshot includes newer releases.
+   Configure actual oracle executables and use existing verified-subset/release
+   receipts to qualify each coordinate. Reuse a runtime build only when its
+   exact source/toolchain/target/profile identity agrees; compiled Python target
+   artifacts and per-version observations remain distinct.
+
+Python 3.15 source capture alone leaves lazy imports, unpacking comprehensions,
+grammar admission (including syntax changes without AST schema changes),
+new builtins, startup encoding/configuration, changed APIs and ABI/concurrency
+qualification open under V1-35. Unknown future versions remain rejected by the
+canonical admission authority.

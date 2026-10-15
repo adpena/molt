@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.machinery
+from dataclasses import replace
 import json
 import os
 import runpy
@@ -8,6 +9,8 @@ import socket
 import subprocess
 import sys
 import sysconfig
+import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -101,6 +104,18 @@ FETCHED_ENTRIES = (
 CPYTHON_URL = "https://github.com/python/cpython.git"
 
 
+def _evidence_inputs(python: str) -> tuple[gen.SourceInput, ...]:
+    return tuple(
+        gen.SourceInput(
+            role,
+            template.format(python=python),
+            gen._git_blob_id(f"{role} fixture\n".encode()),
+            f"{role} fixture\n",
+        )
+        for role, template in gen.EVIDENCE_PATHS
+    )
+
+
 def _snapshot(
     *,
     python: str = "3.12",
@@ -118,6 +133,7 @@ def _snapshot(
         header_lines=header,
         lib_object="b" * 40,
         lib_entries=entries,
+        inputs=_evidence_inputs(python),
     )
 
 
@@ -337,7 +353,7 @@ def test_a_non_canonical_snapshot_fails_closed(fixture_authority: Path) -> None:
             ("3.12", "3.13"),
             "3.13 is missing",
         ),
-        ({"3.13": ("v3.13.1", "e" * 40)}, ("3.13",), "3.12 is not a supported"),
+        ({"3.13": ("v3.13.1", "e" * 40)}, ("3.13",), "3.12 is not a pinned source"),
         ({"3.12": ("v3.12.1", "a" * 40)}, ("3.12", "3.13"), "pins no CPython source"),
     ],
 )
@@ -417,7 +433,9 @@ def test_git_failure_fails_closed_through_the_memory_guard(
     assert captured["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
 
-def _fixture_remote(root: Path) -> tuple[Path, str, str]:
+def _fixture_remote(
+    root: Path, *, include_grammar: bool = True
+) -> tuple[Path, str, str]:
     """A tagged repository shaped like CPython, served like GitHub serves it."""
     env = {
         **os.environ,
@@ -436,6 +454,11 @@ def _fixture_remote(root: Path) -> tuple[Path, str, str]:
     files = {
         "Python/stdlib_module_names.h": "\n".join(FIXTURE_HEADER) + "\n",
         "README.rst": "not part of the inputs\n",
+        **{
+            template.format(python="3.12"): f"{role} fixture\n"
+            for role, template in gen.EVIDENCE_PATHS
+            if role != "public_headers" and (include_grammar or role != "grammar")
+        },
         **{
             f"Lib/{entry}": "# fixture\n"
             for entry in FIXTURE_ENTRIES
@@ -462,6 +485,8 @@ def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
     )
 
     snapshot = gen.fetch_pinned_source(pin)
+    roundtrip = json.loads(gen.render_snapshot({"3.12": snapshot}))["sources"][0]
+    assert gen._snapshot_from_row(roundtrip, "fixture") == snapshot
 
     assert snapshot == gen.SourceSnapshot(
         python="3.12",
@@ -471,7 +496,24 @@ def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
         header_lines=FIXTURE_HEADER,
         lib_object=lib_object,
         lib_entries=FETCHED_ENTRIES,
+        inputs=snapshot.inputs,
     )
+    assert tuple(item.role for item in snapshot.inputs) == (
+        "release",
+        "ast_schema",
+        "grammar",
+        "startup",
+        "import_execution",
+        "stable_abi",
+        "public_headers",
+        "release_notes",
+    )
+    for item in snapshot.inputs:
+        if item.role == "public_headers":
+            assert item.text.endswith("\tpatchlevel.h\n")
+            assert len(item.text.splitlines()) == 1
+        else:
+            assert item.text == f"{item.role} fixture\n"
     assert gen.derive_version_data(FIXTURE_NAMES, snapshot.lib_entries) == (
         EXPECTED_PACKAGES,
         EXPECTED_PY_MODULES,
@@ -584,3 +626,320 @@ def test_generated_outputs_fail_closed_on_a_retired_version_module(
     assert str(retired) in str(raised.value)
     assert str(hand_written) not in str(raised.value)
     assert retired.exists()
+
+
+def test_pending_source_capture_does_not_admit_or_generate_target(
+    fixture_authority, monkeypatch
+):
+    current = _snapshot()
+    pending = _snapshot(python="3.15", tag="v3.15.0", revision="c" * 40)
+    _write_pins(
+        gen.PINS_PATH,
+        {
+            "3.12": (current.tag, current.revision),
+            "3.15": (pending.tag, pending.revision),
+        },
+    )
+    calls = []
+
+    def fetch(pin):
+        calls.append(pin.python)
+        return {"3.12": current, "3.15": pending}[pin.python]
+
+    assert gen.refresh_sources(fetch=fetch) == 0
+    assert calls == ["3.12", "3.15"]
+    assert tuple(gen.load_snapshot(gen.SNAPSHOT_PATH)) == ("3.12", "3.15")
+    assert tuple(gen.pinned_snapshots(gen.DEFAULT_PYTHONS)) == ("3.12",)
+    outputs = gen.generated_outputs()
+    assert not any("3_15" in path.name for path in outputs)
+    assert gen.DEFAULT_PYTHONS == ("3.12",)
+
+
+def _comparison_reference_policy(root: Path, references: list[str]) -> Path:
+    text = gen.REFERENCE_POLICY.read_text(encoding="utf-8")
+    source = tomllib.loads(text)
+    for suite in source["differential_suites"]:
+        (root / suite["path"]).mkdir(parents=True, exist_ok=True)
+    path = root / "config" / "verified_subset.toml"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(
+        re.sub(
+            r"(?m)^reference_cpython = .*?$",
+            "reference_cpython = " + json.dumps(references),
+            text,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_source_comparison_reports_literal_delta_and_reference_mismatch(
+    fixture_authority, monkeypatch
+):
+    before = _snapshot()
+    after = _snapshot(
+        python="3.15",
+        tag="v3.15.0",
+        revision="c" * 40,
+        header=tuple(line.replace('"abc",', '"new_api",') for line in FIXTURE_HEADER),
+    )
+    after = replace(
+        after,
+        inputs=tuple(
+            replace(
+                item,
+                text="Import(identifier name, int? is_lazy)\n",
+                git_object=gen._git_blob_id(b"Import(identifier name, int? is_lazy)\n"),
+            )
+            if item.role == "ast_schema"
+            else item
+            for item in after.inputs
+        ),
+    )
+    _write_pins(
+        gen.PINS_PATH,
+        {"3.12": (before.tag, before.revision), "3.15": (after.tag, after.revision)},
+    )
+    gen.SNAPSHOT_PATH.write_text(
+        gen.render_snapshot({"3.12": before, "3.15": after}), encoding="utf-8"
+    )
+    policy = _comparison_reference_policy(
+        fixture_authority, ["3.12.9", "3.13.11", "3.14.3"]
+    )
+    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
+    report = gen.source_comparison("3.12", "3.15")
+    assert report["stdlib_membership"]["modules"] == {
+        "added": ["new_api"],
+        "removed": ["abc"],
+    }
+    assert report["before"]["configured_reference"] == "3.12.9"
+    assert report["before"]["source_matches_reference_patch"] is False
+    assert report["after"]["configured_reference"] is None
+    assert report["after"]["admitted_target"] is False
+    assert (
+        report["after"]["qualification"] == "requires-source-bound-execution-receipts"
+    )
+    ast_delta = next(
+        row for row in report["source_inputs"] if row["role"] == "ast_schema"
+    )
+    assert (
+        ast_delta["changed_interval"]["after"]["head"]
+        == "Import(identifier name, int? is_lazy)"
+    )
+    assert ast_delta["changed_interval"]["before"]["head"] == "ast_schema fixture"
+    out = fixture_authority / "comparison.json"
+    assert gen.main(["--compare-sources", "3.12", "3.15", "--report", str(out)]) == 0
+    first = out.read_bytes()
+    assert json.loads(first) == report
+    assert gen.main(["--compare-sources", "3.12", "3.15", "--report", str(out)]) == 0
+    assert out.read_bytes() == first
+
+
+@pytest.mark.parametrize("mutation", ["missing", "role", "path", "text", "forged_hash"])
+def test_source_evidence_rejects_missing_misbound_and_forged_bytes(
+    fixture_authority, mutation
+):
+    def edit(data):
+        inputs = data["inputs"]
+        if mutation == "missing":
+            inputs.pop()
+        elif mutation == "role":
+            inputs[1]["role"] = "startup"
+        elif mutation == "path":
+            inputs[1]["path"] = "Parser/Other.asdl"
+        else:
+            inputs[1]["text"] = "changed\n"
+            if mutation == "forged_hash":
+                import hashlib
+
+                inputs[1]["sha256"] = hashlib.sha256(b"changed\n").hexdigest()
+
+    _rewrite_snapshot(gen.SNAPSHOT_PATH, edit)
+    with pytest.raises(ValueError, match="evidence"):
+        gen.load_snapshot(gen.SNAPSHOT_PATH)
+
+
+def test_comparison_rejects_unpinned_version_and_ambiguous_reference(
+    fixture_authority, monkeypatch
+):
+    with pytest.raises(RuntimeError, match="pins no CPython source"):
+        gen.source_comparison("3.12", "3.99")
+    policy = _comparison_reference_policy(fixture_authority, ["3.12.1", "3.12.2"])
+    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
+    with pytest.raises(ValueError, match="minors must be unique"):
+        gen.source_comparison("3.12", "3.12")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--report", "ignored.json"],
+        ["--compare-sources", "3.12", "3.15"],
+        ["--compare-sources", "3.12", "3.15", "--report", "ignored.json", "--write"],
+        [
+            "--compare-sources",
+            "3.12",
+            "3.15",
+            "--report",
+            "ignored.json",
+            "--refresh-sources",
+        ],
+    ],
+)
+def test_comparison_mode_cannot_mutate_generated_admission(argv):
+    with pytest.raises(SystemExit):
+        gen.main(argv)
+
+
+def test_declared_pending_pin_requires_captured_inputs(fixture_authority):
+    _write_pins(
+        gen.PINS_PATH, {"3.12": ("v3.12.1", "a" * 40), "3.15": ("v3.15.0", "c" * 40)}
+    )
+    with pytest.raises(RuntimeError, match="3.15 is missing"):
+        gen.generated_outputs()
+
+
+@pytest.mark.parametrize("missing_role", ["ASDL", "grammar"])
+def test_refresh_never_writes_partial_evidence_on_late_failure(
+    fixture_authority, missing_role
+):
+    before = gen.SNAPSHOT_PATH.read_bytes()
+    _write_pins(
+        gen.PINS_PATH, {"3.12": ("v3.12.1", "a" * 40), "3.15": ("v3.15.0", "c" * 40)}
+    )
+
+    def fetch(pin):
+        if pin.python == "3.15":
+            raise RuntimeError(f"missing pinned {missing_role} blob")
+        return _snapshot()
+
+    with pytest.raises(RuntimeError, match=f"missing pinned {missing_role}"):
+        gen.refresh_sources(fetch=fetch)
+    assert gen.SNAPSHOT_PATH.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "before, after, prefix, suffix, old, new",
+    [
+        ("", "x", 0, 0, "", "x"),
+        ("x", "", 0, 0, "x", ""),
+        ("ab", "a界b", 1, 1, "", "界"),
+        ("a界b", "ab", 1, 1, "界", ""),
+        ("éαend", "éβend", 1, 3, "α", "β"),
+        ("aaaaab", "baaaaa", 0, 0, "aaaaab", "baaaaa"),
+    ],
+)
+def test_source_detail_has_exact_nonoverlapping_unicode_intervals(
+    before, after, prefix, suffix, old, new
+):
+    detail = gen._source_change_detail(before, after)
+    assert detail["common_prefix_chars"] == prefix
+    assert detail["common_suffix_chars"] == suffix
+    for side, text, changed in (("before", before, old), ("after", after, new)):
+        row = detail[side]
+        assert row == {
+            "start_char": prefix,
+            "end_char": len(text) - suffix,
+            "total_chars": len(text),
+            "changed_chars": len(changed),
+            "head": changed,
+            "tail": "",
+            "omitted_chars": 0,
+        }
+    assert gen._source_change_detail(before, before) is None
+
+
+def test_source_detail_bounds_repetitive_single_line_without_matching():
+    # Shifted repetition defeats minimal-edit matchers; this contract deliberately
+    # emits one exact interval with bounded detail, not guessed middle matches.
+    before = "α" * 100_000 + "界"
+    after = "界" + "α" * 100_000
+    detail = gen._source_change_detail(before, after)
+    assert detail["common_prefix_chars"] == detail["common_suffix_chars"] == 0
+    for side in ("before", "after"):
+        row = detail[side]
+        assert row["changed_chars"] == row["total_chars"] == 100_001
+        assert len(row["head"]) == len(row["tail"]) == 1024
+        assert row["omitted_chars"] == 97_953
+    assert detail["before"]["tail"].endswith("界")
+    assert detail["after"]["head"].startswith("界")
+    assert len(json.dumps(detail, ensure_ascii=True)) < 26_000
+
+
+@pytest.mark.parametrize("mutation", ["missing", "path", "forged_hash"])
+def test_grammar_evidence_is_required_and_bound_to_its_git_blob(
+    fixture_authority, mutation
+):
+    def edit(row):
+        grammar = next(item for item in row["inputs"] if item["role"] == "grammar")
+        assert grammar["path"] == "Grammar/python.gram"
+        if mutation == "missing":
+            row["inputs"].remove(grammar)
+        elif mutation == "path":
+            grammar["path"] = "Parser/Python.asdl"
+        else:
+            import hashlib
+
+            grammar["text"] = "signed_number: '+' NUMBER\n"
+            grammar["sha256"] = hashlib.sha256(
+                grammar["text"].encode("utf-8")
+            ).hexdigest()
+
+    _rewrite_snapshot(gen.SNAPSHOT_PATH, edit)
+    with pytest.raises(ValueError, match="evidence"):
+        gen.load_snapshot(gen.SNAPSHOT_PATH)
+
+
+def test_capture_refuses_a_pinned_source_without_grammar(tmp_path: Path) -> None:
+    remote, revision, _ = _fixture_remote(tmp_path / "cpython", include_grammar=False)
+    pin = gen.CPythonSource(
+        python="3.12", revision=revision, tag="v3.12.1", git_url=remote.as_uri()
+    )
+    with pytest.raises(RuntimeError, match=r"Grammar/python\.gram"):
+        gen.fetch_pinned_source(pin)
+
+
+def test_grammar_only_change_is_reported_when_ast_schema_is_identical(
+    fixture_authority, monkeypatch
+):
+    before = _snapshot()
+    after = _snapshot(python="3.15", tag="v3.15.0", revision="c" * 40)
+
+    # Leading plus in numeric patterns changes accepted syntax without adding
+    # an AST field. The literal grammar delta is independent of the role table.
+    def grammar(snapshot, text):
+        return replace(
+            snapshot,
+            inputs=tuple(
+                replace(
+                    item, text=text, git_object=gen._git_blob_id(text.encode("utf-8"))
+                )
+                if item.role == "grammar"
+                else item
+                for item in snapshot.inputs
+            ),
+        )
+
+    before = grammar(before, "signed_number: NUMBER | '-' NUMBER\n")
+    after = grammar(after, "signed_number: NUMBER | '-' NUMBER | '+' NUMBER\n")
+    _write_pins(
+        gen.PINS_PATH,
+        {"3.12": (before.tag, before.revision), "3.15": (after.tag, after.revision)},
+    )
+    gen.SNAPSHOT_PATH.write_text(
+        gen.render_snapshot({"3.12": before, "3.15": after}), encoding="utf-8"
+    )
+    policy = _comparison_reference_policy(
+        fixture_authority, ["3.12.1", "3.13.11", "3.14.3"]
+    )
+    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
+    report = gen.source_comparison("3.12", "3.15")
+    rows = {row["role"]: row for row in report["source_inputs"]}
+    assert rows["ast_schema"]["changed"] is False
+    assert rows["grammar"]["changed"] is True
+    assert rows["grammar"]["before"]["path"] == "Grammar/python.gram"
+    assert rows["grammar"]["after"]["path"] == "Grammar/python.gram"
+    assert rows["grammar"]["changed_interval"]["after"]["head"] == " | '+' NUMBER"
+    assert rows["grammar"]["changed_interval"]["before"]["head"] == ""
+    assert report["stdlib_membership"]["modules"] == {"added": [], "removed": []}
+    assert report["after"]["admitted_target"] is False

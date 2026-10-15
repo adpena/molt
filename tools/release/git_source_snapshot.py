@@ -360,11 +360,16 @@ def capture_git_source_snapshot(
     git: Path,
     environment: Mapping[str, str],
     pathspecs: Sequence[str] = (),
+    excluded_paths: frozenset[str] = frozenset(),
     required_markers: frozenset[str] = frozenset(),
     max_files: int,
     max_bytes: int,
 ) -> GitSourceSnapshot:
-    """Capture selected blob identities from exactly one full commit ID."""
+    """Capture selected blob identities from exactly one full commit ID.
+
+    Exclusions name exact portable file paths, not prefixes or glob patterns.
+    They are applied before hashing blobs or accounting the selected closure.
+    """
 
     source_sha = require_git_object_id(source_sha, label="Git source snapshot commit")
     resolved_repo = repo_root.resolve(strict=True)
@@ -403,6 +408,9 @@ def capture_git_source_snapshot(
     normalized_pathspecs = tuple(
         portable_relative_path(path).as_posix() for path in pathspecs
     )
+    normalized_exclusions = frozenset(
+        portable_relative_path(path).as_posix() for path in excluded_paths
+    )
     files = _capture_git_tree_files(
         resolved_repo,
         tree_sha,
@@ -410,6 +418,7 @@ def capture_git_source_snapshot(
         git=git,
         environment=environment,
         pathspecs=normalized_pathspecs,
+        excluded_paths=normalized_exclusions,
         required_markers=required_markers,
         max_files=max_files,
         max_bytes=max_bytes,
@@ -431,6 +440,7 @@ def _capture_git_tree_files(
     git: Path,
     environment: Mapping[str, str],
     pathspecs: tuple[str, ...],
+    excluded_paths: frozenset[str] = frozenset(),
     required_markers: frozenset[str],
     max_files: int,
     max_bytes: int,
@@ -493,6 +503,8 @@ def _capture_git_tree_files(
                 f"Git source snapshot path identity collides: {relative_text}"
             )
         identities.add(identity)
+        if relative_text in excluded_paths:
+            continue
         total_bytes += size
         if len(rows) >= max_files or total_bytes > max_bytes:
             raise ValueError("Git source snapshot exceeds its bounded closure policy")

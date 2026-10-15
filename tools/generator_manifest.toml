@@ -505,13 +505,9 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_stdlib_module_union.py"
-outputs = [
-  "tools/stdlib_module_union.py",
-  "tools/stdlib_module_union_3_12.py",
-  "tools/stdlib_module_union_3_13.py",
-  "tools/stdlib_module_union_3_14.py",
-]
-source = "config/cpython_stdlib_snapshot.json (Python/stdlib_module_names.h and the Lib tree at the CPython revisions pinned in config/cpython_regrtest_sources.toml, with receipts) + tools/generator_io.py"
+outputs = []
+output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending source pins produce no module baseline"
+source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI and release-note source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_stdlib_module_union.py --check"

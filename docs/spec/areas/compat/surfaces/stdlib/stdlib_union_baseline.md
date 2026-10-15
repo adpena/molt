@@ -88,16 +88,28 @@ Failure of any invariant is a hard CI failure.
    - `python3 tools/check_stdlib_intrinsics.py --update-doc`
 
 ### 5.2 Add A New CPython Version Or Move A Pin (Example: 3.15)
-1. Add the version to the target-Python authority (`src/molt/target_python.py`;
-   `tools/check_table_drift.py` requires the baseline versions to equal it).
-2. Pin its latest stable tag and that tag's commit in
-   `config/cpython_regrtest_sources.toml`. A patch-release advance changes
-   only the pin.
-3. Fetch the pinned inputs (network; git verifies each tag against its pinned
-   commit, and content at an unchanged commit must match its receipt):
+1. Pin the official stable tag and its exact commit in
+   `config/cpython_regrtest_sources.toml`. Capture source evidence before adding
+   the version to the admitted target catalog. A patch advance changes the pin.
+2. Fetch all pinned inputs (network; each tag and unchanged-commit receipt is
+   checked):
    - `python3 tools/gen_stdlib_module_union.py --refresh-sources`
-4. Regenerate the baseline offline:
+3. Compare the candidate with the preceding source release, offline:
+   - `python3 tools/gen_stdlib_module_union.py --compare-sources 3.14 3.15 --report /tmp/cpython-source-delta.json`
+   `Grammar/python.gram` is mandatory alongside `Parser/Python.asdl`: accepted
+   syntax can change without a schema change, and `ast.parse(feature_version=...)`
+   is only best-effort grammar evidence. Missing grammar fails capture/loading;
+   no source role is optional.
+   The report records source pins, stdlib/ASDL/grammar/startup/ABI changes and the exact
+   configured oracle join. It is evidence for semantic work, not qualification.
+   Pending sources do not produce admitted-version baseline files. See the
+   [version-addition workflow](../../../../../DEVELOPER_GUIDE.md) and existing
+   V1-35 entry in [the findings ledger](../../../../../agent/V1_HANDOFF_FINDINGS.md).
+4. Complete and qualify the affected semantic families before extending
+   `src/molt/target_python.py`. Then regenerate the admitted baseline offline:
    - `python3 tools/gen_stdlib_module_union.py --write`
+   `tools/check_table_drift.py` continues requiring baseline versions to equal
+   the target catalog. Declaring a source pin alone does not change admission.
 5. Materialize stubs for the new union entries:
    - `python3 tools/gen_stdlib_stubs.py --write`
 6. Run gates:

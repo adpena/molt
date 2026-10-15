@@ -52,6 +52,9 @@ SOURCE_PATHS = (
     "pyproject.toml",
     "rust-toolchain.toml",
 )
+# Source evidence supports repository capture/report/generation, not compilation.
+# Keep this exact omission shared by native builds, runtime cells, and bundles.
+DEVELOPMENT_ONLY_SOURCE_PATHS = frozenset({"config/cpython_stdlib_snapshot.json"})
 REQUIRED_MARKERS = frozenset(
     {
         "Cargo.toml",
@@ -105,6 +108,7 @@ def source_snapshot(repo_root: Path, source_sha: str) -> GitSourceSnapshot:
         git=resolve_executable("git", environment=env, label="release source Git"),
         environment=env,
         pathspecs=SOURCE_PATHS,
+        excluded_paths=DEVELOPMENT_ONLY_SOURCE_PATHS,
         required_markers=REQUIRED_MARKERS,
         max_files=MAX_SOURCE_FILES,
         max_bytes=MAX_SOURCE_BYTES,

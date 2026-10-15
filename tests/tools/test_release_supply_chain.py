@@ -444,6 +444,84 @@ def _prepare_release_source(
     return snapshot
 
 
+def test_compiler_snapshot_excludes_only_development_evidence_before_blob_reads(
+    tmp_path, monkeypatch
+):
+    omitted = "config/cpython_stdlib_snapshot.json"
+    evidence = b"repository source evidence\n" * 65_536
+    retained = {
+        "config/runtime-policy.toml": b"enabled = true\n",
+        "config/cpython_stdlib_snapshot.json.signature": b"distinct exact path\n",
+    }
+    observed = set()
+    original = git_source_snapshot._map_git_blobs
+
+    def observe_reads(git, root, environment, rows, consume):
+        selected = {row[0].as_posix() for row in rows}
+        assert omitted not in selected
+        observed.update(selected)
+        return original(git, root, environment, rows, consume)
+
+    monkeypatch.setattr(git_source_snapshot, "_map_git_blobs", observe_reads)
+    snapshot = _prepare_release_source(
+        tmp_path, monkeypatch, extra_files={omitted: evidence, **retained}
+    )
+    files = {entry.relative.as_posix(): entry for entry in snapshot.files}
+    assert omitted not in files
+    assert compiler_payload.REQUIRED_MARKERS <= files.keys()
+    assert retained.keys() <= files.keys()
+    assert set(files) == observed
+    root = tmp_path / "source-repo"
+    commit = _COMMANDS.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    ).strip()
+    # The selected byte limit is exact: even one excluded byte counted before
+    # selection would reject the second capture.
+    monkeypatch.setattr(compiler_payload, "MAX_SOURCE_BYTES", snapshot.total_bytes)
+    selected = compiler_payload.source_snapshot(root, commit)
+    assert selected.files == snapshot.files
+    assert (root / omitted).read_bytes() == evidence
+    git_path = shutil.which("git")
+    assert git_path is not None
+    git = Path(git_path)
+    destination = tmp_path / "selected-source"
+    git_source_snapshot.materialize_git_source_snapshot(
+        selected, destination, repo_root=root, git=git, environment=os.environ
+    )
+    selected.verify(destination)
+    assert not (destination / omitted).exists()
+    for name, expected in retained.items():
+        assert (destination / name).read_bytes() == expected
+
+    arguments = dict(
+        git=git,
+        environment=os.environ,
+        pathspecs=compiler_payload.SOURCE_PATHS,
+        required_markers=compiler_payload.REQUIRED_MARKERS,
+        max_files=len(selected.files) + 1,
+        max_bytes=selected.total_bytes + len(evidence),
+    )
+    with pytest.raises(ValueError, match="missing required markers: LICENSE"):
+        git_source_snapshot.capture_git_source_snapshot(
+            root, commit, excluded_paths=frozenset({omitted, "LICENSE"}), **arguments
+        )
+    with pytest.raises(ValueError):
+        git_source_snapshot.capture_git_source_snapshot(
+            root, commit, excluded_paths=frozenset({"../outside"}), **arguments
+        )
+    # Generic/staged consumers retain the old default; the release owner alone
+    # declares this omission. Exercise the real Git reader, not an alias filter.
+    monkeypatch.setattr(git_source_snapshot, "_map_git_blobs", original)
+    complete = git_source_snapshot.capture_git_source_snapshot(root, commit, **arguments)
+    full_files = {entry.relative.as_posix(): entry for entry in complete.files}
+    assert full_files[omitted].sha256 == hashlib.sha256(evidence).hexdigest()
+    assert full_files.keys() == files.keys() | {omitted}
+
+
 def test_guarded_git_snapshot_preserves_binary_blobs_beyond_capture_tail(tmp_path):
     root = tmp_path / "repository"
     root.mkdir()
@@ -723,8 +801,17 @@ def test_git_snapshot_rejects_valid_loose_blob_under_wrong_object_id(
 
 @pytest.mark.parametrize("platform", ["linux", "windows"])
 def test_bundle_archives_are_byte_reproducible(
-    tmp_path: Path, platform: str, release_source
+    tmp_path: Path, platform: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    omitted = "config/cpython_stdlib_snapshot.json"
+    retained = "config/cpython_stdlib_snapshot.json.signature"
+    release_source = _prepare_release_source(
+        tmp_path,
+        monkeypatch,
+        extra_files={omitted: b"development-only evidence", retained: b"retained config"},
+    )
+    pure_wheel = _wheel(tmp_path / "molt-0.0.1-py3-none-any.whl", "0.0.1")
+    wheels = []
     worker = tmp_path / ("molt-worker.exe" if platform == "windows" else "molt-worker")
     worker.write_bytes(b"worker-binary")
     suffix = "zip" if platform == "windows" else "tar.gz"
@@ -737,8 +824,8 @@ def test_bundle_archives_are_byte_reproducible(
         snapshot=release_source,
     )
     for output in (first, second):
-        build_bundle.build_bundle(
-            version="0.0.001",
+        wheel = build_bundle.build_bundle(
+            version="0.0.1",
             platform=platform,
             worker=worker,
             kind="molt",
@@ -749,13 +836,31 @@ def test_bundle_archives_are_byte_reproducible(
             launcher=worker,
             snapshot=release_source,
             runtime_cells=cells,
+            pure_wheel=pure_wheel,
+            wheel_output_dir=tmp_path / f"wheel-{output.stem}",
         )
+        assert wheel is not None
+        wheels.append(wheel)
     assert first.read_bytes() == second.read_bytes()
+    assert wheels[0].read_bytes() == wheels[1].read_bytes()
     extracted = tmp_path / "extracted"
     verify_consumer._extract(first, extracted)
-    bundle = extracted / "molt-0.0.001"
+    bundle = extracted / "molt-0.0.1"
     assert not (bundle / "lib/molt/bootstrap.py").exists()
     assert not (bundle / "share/molt/wheels").exists()
+    assert not (bundle / "source" / omitted).exists()
+    assert (bundle / "source" / retained).read_bytes() == b"retained config"
+    manifest = json.loads(
+        (bundle / "source" / compiler_payload.MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+    names = {row["path"] for row in manifest["files"]}
+    assert omitted not in names and retained in names
+    with zipfile.ZipFile(wheels[0]) as archive:
+        source = "molt-0.0.1.data/data/share/molt/distribution/source/"
+        assert source + omitted not in archive.namelist()
+        assert archive.read(source + retained) == b"retained config"
+        wheel_manifest = json.loads(archive.read(source + compiler_payload.MANIFEST_NAME))
+        assert wheel_manifest == manifest
 
 
 def test_consumer_extraction_rejects_archive_escape(tmp_path: Path) -> None:
