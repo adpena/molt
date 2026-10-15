@@ -121,8 +121,8 @@ against, under the top-level `provenance` block:
   "diverges_from_origin":    false,
   "benchmark_tool_sha":      "<git blob of perf_scoreboard.py on disk>",
   "benchmark_tool_modified": false,            // tool differs from its committed blob?
-  "backend_binary_identity": { "native/release-fast": "<path|mtime_ns|size>" },
-  "stdlib_cache_key":        "<runtime/codegen source-tree fingerprint>",
+  "backend_binary_identity": { "native/release-fast": "<digest of the measured compiler bytes>" },
+  "runtime_identity":        { "native/release-fast": "<digest of the linked runtime library>" },
   "authoritative":           true,
   "authoritative_reason":    "revision is on origin/main, clean, tool unmodified"
 }
@@ -134,9 +134,11 @@ OR the tree is dirty, OR the scoreboard tool itself is modified-vs-HEAD, OR
 `--require-quiescent` cannot certify the machine as quiet. A non-authoritative
 board PRINTS *"WARNING: scoreboard provenance is non-authoritative; benchmark is
 exploratory unless explicitly requested"* and stamps every cell `FAIL_STALE`.
-`backend_binary_identity` reuses `cli.py._backend_binary_identity`
-(`path|mtime_ns|size`) — the same signal the stdlib/TIR caches salt with — so a
-reader can detect the stale-cache confound class directly.
+`backend_binary_identity` is `molt.backend_binary_identity`'s digest of the
+compiler bytes, the same identity the stdlib/TIR caches salt with, so a reader
+can detect the stale-cache confound class directly. Each measured build replaces
+the pre-build probe with the compiler it observed, and records the runtime
+library it linked as `runtime_identity` (`null` for a lane that links none).
 
 > Authoring note: a Lane-C run that **adds a commit to the scoreboard tool on top
 > of origin/main** is technically non-authoritative by the strict
@@ -237,7 +239,7 @@ do not optimize from this red list"* naming WHICH check failed:
 `--print-provenance` dumps the full block including the new fields
 `active_molt_processes`, `active_cargo_or_rustc_processes`, `loadavg_1m`,
 `ncpu`, `runnable_signal` alongside the origin/candidate SHAs,
-`backend_binary_identity`, and `stdlib_cache_key`.
+`backend_binary_identity`, and `runtime_identity`.
 
 ### The cycle-attribution mechanism (`--emit-cycle-profile`) — Rule 1
 

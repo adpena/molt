@@ -485,7 +485,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
     backend.write_bytes(b"compiler fixture")
     monkeypatch.setattr(
         backend_cache_setup,
-        "_backend_binary_identity",
+        "identify_backend_binary",
         lambda _path: "fixture-compiler",
     )
     monkeypatch.setattr(

@@ -27,6 +27,7 @@ import pytest
 
 from molt.backend_environment import CodegenSelection
 import molt.cli as cli
+from molt.backend_binary_identity import identify_backend_binary
 import molt.wasm_artifact as wasm_artifact
 from molt import c_api_symbols as cli_c_api_symbols
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
@@ -21160,7 +21161,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         )
         call_order.append("cache_setup")
         assert backend_bin.exists()
-        assert not cli._backend_binary_identity(backend_bin).startswith("missing:")
+        assert not identify_backend_binary(backend_bin).startswith("missing:")
         return cli._BackendCacheSetup(
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None

@@ -215,19 +215,18 @@ def test_summary_rebuild_cannot_fill_unrecorded_measurement_identities(
 
     doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
     doc["provenance"]["backend_binary_identity"]["native/release-fast"] = None
-    doc["provenance"]["stdlib_cache_key"] = None
+    doc["provenance"]["runtime_identity"] = {"native/release-fast": None}
     path = tmp_path / "prior.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
     # Present-day artifacts are deliberately available: they cannot attest old samples.
     monkeypatch.setattr(ps, "_backend_binary_identity_for", lambda *args: "new-binary")
-    monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "new-cache")
     rc = ps._rebuild_summary(path, no_gate=True)
     assert rc == 0
     rebuilt = json.loads(path.read_text(encoding="utf-8"))
     assert (
         rebuilt["provenance"]["backend_binary_identity"]["native/release-fast"] is None
     )
-    assert rebuilt["provenance"]["stdlib_cache_key"] is None
+    assert rebuilt["provenance"]["runtime_identity"] == {"native/release-fast": None}
 
 
 def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):

@@ -506,7 +506,7 @@ def _perf_provenance() -> dict[str, object]:
             f"{backend}/{pa.CANONICAL_PERF_PROFILE}": f"target/{backend}/backend|1|1"
             for backend in sorted(pa.CANONICAL_PERF_BACKENDS)
         },
-        "stdlib_cache_key": "c" * 16,
+        "runtime_identity": {"native/release-fast": "c" * 64},
         "authoritative": True,
         "authoritative_reason": "tree == origin/main, clean, tool unmodified",
         "require_quiescent": True,

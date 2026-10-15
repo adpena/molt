@@ -37,7 +37,7 @@ from molt.dx import (
 )
 from molt.exact_json import canonical_json_sha256
 from molt.file_publication import is_link_like, resolve_owned_path
-from molt.toolchain_identity import executable_content_identity
+from molt.backend_binary_identity import identify_backend_binary
 from molt.cli.backend_cache import (
     _backend_artifact_source_key,
     _shared_stdlib_cache_matches_key_locked,
@@ -162,17 +162,6 @@ def _backend_features_for_build_target(
         is_rust_transpile=target in {"rust", "luau"},
         codegen_backend=codegen_backend,
     )
-
-
-def _backend_binary_identity(backend_bin: Path) -> str:
-    """Bind object-cache and daemon selection to stable executable content."""
-    try:
-        identity = executable_content_identity(backend_bin, label="backend executable")
-    except (OSError, ValueError):
-        if not backend_bin.exists():
-            return f"missing:{backend_bin.absolute()}"
-        raise
-    return canonical_json_sha256({"schema": 2, "binary": identity})
 
 
 def _backend_native_codegen_identity(
@@ -338,7 +327,7 @@ def _backend_daemon_config_digest(
             "target_triple": target_triple,
         }
         if backend_bin is not None:
-            payload["backend_binary"] = _backend_binary_identity(backend_bin)
+            payload["backend_binary"] = identify_backend_binary(backend_bin)
         return canonical_json_sha256(payload)
     except CompilerIdentityError:
         raise

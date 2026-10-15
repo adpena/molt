@@ -25,8 +25,8 @@ from molt.cli.backend_cache import (
     _hydrate_shared_stdlib_archive,
     _try_cached_backend_candidates,
 )
+from molt.backend_binary_identity import identify_backend_binary
 from molt.cli.backend_execution import (
-    _backend_binary_identity,
     _backend_native_codegen_identity,
     _backend_codegen_env_digest,
     _backend_features_for_build_target,
@@ -229,7 +229,7 @@ def _build_cache_variant(
 
     ``backend_binary_identity`` MUST be part of the variant: it is the stable
     content identity of the backend binary that will compile these
-    objects (see ``_backend_binary_identity``). The variant flows into every
+    objects (see ``molt.backend_binary_identity``). The variant flows into every
     artifact cache key (stdlib-shared, module, per-function), so binding it here
     makes the cache key change whenever the backend binary changes — closing the
     Finding #4 (design 20 §4.1) confound where a rebuilt backend with different
@@ -338,7 +338,7 @@ def _prepare_backend_cache_setup(
     backend_features = _backend_features_for_build_target(
         target=target, is_wasm=is_wasm, codegen_backend=codegen.backend
     )
-    backend_binary_identity = _backend_binary_identity(backend_bin)
+    backend_binary_identity = identify_backend_binary(backend_bin)
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_backend_binary_identity",

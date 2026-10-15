@@ -585,7 +585,13 @@ def _print_provenance(provenance: dict) -> None:
             print(f"    {lane:<24} = {ident}")
     else:
         print("    (none recorded)")
-    print(f"    stdlib_cache_key             = {p.get('stdlib_cache_key')}")
+    print("  [runtime_identity (measured runtime library per lane)]")
+    runtimes = p.get("runtime_identity") or {}
+    if runtimes:
+        for lane, ident in sorted(runtimes.items()):
+            print(f"    {lane:<24} = {ident}")
+    else:
+        print("    (none recorded)")
     # --- Quiescence (#69 Rule 2) — the NEW fields, named explicitly ---------
     print("  [quiescence (#69 Rule 2)]")
     print(f"    require_quiescent            = {p.get('require_quiescent')}")

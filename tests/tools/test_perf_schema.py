@@ -109,7 +109,7 @@ def _doc(cell: dict[str, object]) -> dict[str, object]:
             "dirty_tree": False,
             "benchmark_tool_sha": "b" * 40,
             "backend_binary_identity": {"native/release-fast": "sha|1|2"},
-            "stdlib_cache_key": "cache",
+            "runtime_identity": {},
             "authoritative": True,
         },
         "host": _minimal_host(),

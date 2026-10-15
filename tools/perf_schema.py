@@ -147,7 +147,7 @@ REQUIRED_PROVENANCE_FIELDS = frozenset(
         "dirty_tree",
         "benchmark_tool_sha",
         "backend_binary_identity",
-        "stdlib_cache_key",
+        "runtime_identity",
         "authoritative",
     }
 )

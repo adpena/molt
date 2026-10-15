@@ -265,25 +265,25 @@ def test_profile_change_invalidates_real_build_cache_variant(minor):
 
 def test_cold_provenance_uses_measured_compiler_and_rejects_lane_change(tmp_path):
     from molt.toolchain_identity import executable_content_identity
-    from molt.cli.backend_execution import _backend_binary_identity
-    from perf_scoreboard_build_profiles import record_measured_backend_identity
+    from molt.backend_binary_identity import identify_backend_binary
+    from perf_scoreboard_build_profiles import record_measured_build_identity
 
     compiler = tmp_path / "molt-backend.exe"
     compiler.write_bytes(b"actual selected compiler bytes")
     identity = executable_content_identity(compiler, label="test selected compiler")
-    observation = {"compiler": {"identity": identity}}
+    observation = {"compiler": {"identity": identity}, "runtime": None}
     provenance = {"backend_binary_identity": {"native/release-output": None}}
-    record_measured_backend_identity(
+    record_measured_build_identity(
         provenance, observation=observation, backend="native", profile="release-output"
     )
     assert provenance["backend_binary_identity"][
         "native/release-output"
-    ] == _backend_binary_identity(compiler)
+    ] == identify_backend_binary(compiler)
     assert (
         provenance["backend_binary_identity_before_build"]["native/release-output"]
         is None
     )
-    record_measured_backend_identity(
+    record_measured_build_identity(
         provenance, observation=observation, backend="native", profile="release-output"
     )
     compiler.write_bytes(b"replacement compiler")
@@ -292,15 +292,16 @@ def test_cold_provenance_uses_measured_compiler_and_rejects_lane_change(tmp_path
             "identity": executable_content_identity(
                 compiler, label="replacement compiler"
             )
-        }
+        },
+        "runtime": None,
     }
     with pytest.raises(ValueError, match="changed within measured lane"):
-        record_measured_backend_identity(
+        record_measured_build_identity(
             provenance, observation=changed, backend="native", profile="release-output"
         )
     assert provenance["backend_binary_identity"][
         "native/release-output"
-    ] != _backend_binary_identity(compiler)
+    ] != identify_backend_binary(compiler)
 
 
 @pytest.mark.parametrize(
@@ -313,10 +314,93 @@ def test_cold_provenance_uses_measured_compiler_and_rejects_lane_change(tmp_path
     ],
 )
 def test_missing_selected_compiler_cannot_become_provenance(observation):
-    from perf_scoreboard_build_profiles import record_measured_backend_identity
+    from perf_scoreboard_build_profiles import record_measured_build_identity
 
     with pytest.raises(ValueError, match="canonical selected compiler identity"):
-        record_measured_backend_identity(
+        record_measured_build_identity(
+            {}, observation=observation, backend="native", profile="release-fast"
+        )
+
+
+def test_measured_provenance_binds_the_linked_runtime_library(tmp_path):
+    from molt.toolchain_identity import (
+        executable_content_identity,
+        stable_file_content_identity,
+    )
+    from perf_scoreboard_build_profiles import record_measured_build_identity
+
+    compiler = tmp_path / "molt-backend"
+    compiler.write_bytes(b"compiler bytes")
+    runtime = tmp_path / "libmolt_runtime.a"
+    runtime.write_bytes(b"runtime archive bytes")
+
+    def observation() -> dict[str, object]:
+        return {
+            "compiler": {
+                "identity": executable_content_identity(compiler, label="compiler")
+            },
+            "runtime": {
+                "path": str(runtime),
+                "identity": stable_file_content_identity(runtime, label="runtime"),
+            },
+        }
+
+    provenance: dict = {}
+    record_measured_build_identity(
+        provenance, observation=observation(), backend="native", profile="release-fast"
+    )
+    first = provenance["runtime_identity"]["native/release-fast"]
+    assert isinstance(first, str) and len(first) == 64
+    record_measured_build_identity(
+        provenance, observation=observation(), backend="native", profile="release-fast"
+    )
+    assert provenance["runtime_identity"]["native/release-fast"] == first
+    runtime.write_bytes(b"rebuilt runtime archive")
+    with pytest.raises(
+        ValueError, match="runtime library changed within measured lane"
+    ):
+        record_measured_build_identity(
+            provenance,
+            observation=observation(),
+            backend="native",
+            profile="release-fast",
+        )
+    # A lane that links no runtime artifact records that fact, not a guess.
+    record_measured_build_identity(
+        provenance,
+        observation={**observation(), "runtime": None},
+        backend="wasm",
+        profile="release-fast",
+    )
+    assert provenance["runtime_identity"]["wasm/release-fast"] is None
+
+
+@pytest.mark.parametrize(
+    ("runtime_fact", "message"),
+    [
+        ("absent", "lacks its runtime fact"),
+        ({"error": "runtime archive vanished"}, "runtime archive vanished"),
+        (
+            {"identity": {"filename": "lib.a", "size": 0, "sha256": "a" * 64}},
+            "canonical runtime identity",
+        ),
+    ],
+)
+def test_failed_runtime_observation_cannot_become_provenance(
+    tmp_path, runtime_fact, message
+):
+    from molt.toolchain_identity import executable_content_identity
+    from perf_scoreboard_build_profiles import record_measured_build_identity
+
+    compiler = tmp_path / "molt-backend"
+    compiler.write_bytes(b"compiler bytes")
+    observation: dict[str, object] = {
+        "compiler": {"identity": executable_content_identity(compiler, label="c")}
+    }
+    if runtime_fact != "absent":
+        observation["runtime"] = runtime_fact
+    with pytest.raises(ValueError, match=message):
+        record_measured_build_identity(
             {}, observation=observation, backend="native", profile="release-fast"
         )
 
