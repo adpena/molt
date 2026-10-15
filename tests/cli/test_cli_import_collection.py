@@ -15032,6 +15032,10 @@ def test_backend_source_paths_are_feature_aware() -> None:
         "Cargo.toml",
         # Cargo.lock is a separately admitted compiler dependency projection.
         "src/molt/backend_environment.json",
+        # Maintained [patch.crates-io] sources: molt-backend always links
+        # `object`, and the lock closure is conservative over features.
+        "vendor/rust/cranelift-object",
+        "vendor/rust/object",
     }
     codegen_abi = {
         "runtime/molt-codegen-abi",

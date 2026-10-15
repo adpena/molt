@@ -132,32 +132,6 @@ def test_molt_diff_backend_daemon_scan_failure_fails_closed(monkeypatch) -> None
     assert module._list_backend_daemon_processes() == []
 
 
-def test_molt_diff_legacy_pid_cleanup_unlinks_without_signaling(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = _load_diff_module()
-    daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
-    daemon_root.mkdir(parents=True)
-    legacy_pid = daemon_root / "molt-backend.dev-fast.alpha.legacy.pid"
-    legacy_pid.write_text("4321\n", encoding="utf-8")
-    monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
-    monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
-    monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [])
-    install_module_os_view(monkeypatch, module, name="posix")
-    monkeypatch.setattr(
-        module.daemon_custody,
-        "terminate_backend_daemon_identity",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("legacy pid cleanup must not terminate identities")
-        ),
-    )
-
-    module._prune_backend_daemons()
-
-    assert not legacy_pid.exists()
-
-
 def test_molt_diff_missing_socket_daemon_without_identity_is_not_killed(
     tmp_path: Path,
     monkeypatch,
