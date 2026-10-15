@@ -534,3 +534,27 @@ def test_main_preflight_honors_requested_suite_selection(tmp_path: Path, monkeyp
 
     assert rc == 0
     assert [path.name for path in captured["selected_files"]] == ["alpha.py"]
+
+
+def test_preflight_keeps_the_warmup_budget_until_a_build_succeeds(
+    monkeypatch, tmp_path: Path
+):
+    # Nightly 38652601508: the first preflight file failed in the frontend, so
+    # the cold runtime build fell on the second file under the 30 s budget.
+    files = [tmp_path / f"case_{index}.py" for index in range(4)]
+    outcomes = iter(["frontend-error", "ok", "ok", "ok"])
+    budgets: list[float] = []
+
+    def fake_compile(compiler, src, out, *, timeout):
+        budgets.append(timeout)
+        if next(outcomes) == "ok":
+            out.write_text("binary", encoding="utf-8")
+            return run_molt_conformance.CompileResult(True)
+        return run_molt_conformance.CompileResult(False, "SyntaxError")
+
+    monkeypatch.setattr(run_molt_conformance, "_pick_preflight_files", lambda _: files)
+    monkeypatch.setattr(run_molt_conformance, "compile_file", fake_compile)
+    assert run_molt_conformance.preflight(None, files, tmp_path)
+    warm = run_molt_conformance.WARMUP_TIMEOUT
+    cold_free = run_molt_conformance.COMPILE_TIMEOUT
+    assert budgets == [warm, warm, cold_free, cold_free]
