@@ -235,10 +235,8 @@ def test_frontend_drivers_and_explicit_local_coverage_scope() -> None:
         "toolchain_validation.py",
         "setup_readiness.py",
     }
-    if inputs.topology_digest:
-        assert post_lowering <= scoped
-    else:
-        assert not post_lowering & scoped
+    assert not inputs.topology_digest
+    assert not post_lowering & scoped
 
 
 def test_reachability_follows_driver_imports_but_not_backend() -> None:
@@ -409,11 +407,12 @@ def _scope_relpaths(root: Path) -> set[str]:
 # Files every landing edits that provably run only after a module is lowered
 # (command dispatch, extension sealing, build locking, the backend daemon, debug
 # tooling). None appear on the ast->TIR path, so all must be OUT of scope.
+# ``file_locks.py`` is not listed: ``cli/module_cache.py`` imports
+# ``cache_eviction.py``, which imports it at module level.
 _COMMAND_LAYER_OUT = (
     "cli/__init__.py",
     "cli/build_locks.py",
     "cli/source_build_environment.py",
-    "file_locks.py",
     "cli/extension_seal.py",
     "cli/extension_scan.py",
     "cli/package_registry.py",
@@ -458,9 +457,12 @@ def test_command_layer_matches_coverage_and_analysis_and_intrinsics_are_kept() -
     """Complete coverage includes all owners; narrow graphs exclude orchestration."""
     root = CF._compiler_root()
     inputs = CF._frontend_semantic_tooling_sources(root)
+    # HF-226: the real tree resolves every relative anchor, so the scope is
+    # the import graph, not the whole source tree.
+    assert not inputs.topology_digest
     rels = _scope_relpaths(root)
-    for rel in _COMMAND_LAYER_OUT:
-        assert (rel in rels) is bool(inputs.topology_digest)
+    leaked = [rel for rel in _COMMAND_LAYER_OUT if rel in rels]
+    assert not leaked, f"command-layer files entered the lowering scope: {leaked}"
 
     dropped = [rel for rel in _LOWERING_RELEVANT_IN if rel not in rels]
     assert not dropped, (
@@ -571,7 +573,8 @@ def test_lowering_graph_does_not_swallow_transitive_source_errors(
     "source, covered",
     [
         ("__package__ = unknown\nfrom .child import item\n", True),
-        ("import os\nfrom .child import item\n", True),
+        # A namespace handed on can be rewritten by the next call.
+        ("register(globals())\nload()\nfrom .child import item\n", True),
         ("__import__(unknown)\n", False),
     ],
 )
@@ -605,6 +608,24 @@ def test_lowering_complete_identity_covers_relative_but_checks_dynamic_obligatio
         with pytest.raises(ValueError) as exc:
             CF._lowering_scope_source_closure(tmp_path)
         assert str(helper) in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "separator", ["import os\n", "load()\n", "for item in items:\n    use(item)\n"]
+)
+def test_lowering_relative_import_after_a_callback_keeps_its_anchor(
+    tmp_path: Path, isolated_molt_cache: Path, separator: str
+) -> None:
+    # HF-226: no code in the graph writes the helper's metadata, so a callback
+    # cannot move its relative anchor; no whole-tree coverage is needed.
+    molt = _build_leak_tree(tmp_path)
+    helper = molt / "cli" / "frontend_execution.py"
+    helper.write_text(f"{separator}from .child import item\n", encoding="utf-8")
+    _write(molt / "cli" / "child.py", "item = 1\n")
+    receipt = CF._lowering_scope_source_closure(tmp_path)
+    assert not receipt.topology_digest
+    assert molt / "cli" / "child.py" in receipt.paths
+    assert molt / "cli/orchestration_only.py" not in receipt.paths
 
 
 @pytest.mark.parametrize(

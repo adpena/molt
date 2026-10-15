@@ -18,11 +18,14 @@ from bisect import bisect_left, bisect_right
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, replace
+from functools import reduce
+from operator import or_
 from threading import Event, RLock
 from types import MappingProxyType
 from typing import Final, Literal, Sequence, cast
 
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     _PythonAstDigestAdmission,
@@ -195,7 +198,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 55
+_ANALYSIS_SCHEMA: Final = 56
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -226,7 +229,6 @@ _CALLEE_RETENTION_FORBIDDEN_EFFECTS: Final[EffectMask] = (
     _CALLEE_ELISION_FORBIDDEN_EFFECTS
     & ~(READS_FRAME_STATE | READS_GLOBAL_NAMESPACE | REFLECTS_NAMESPACE)
 )
-_IMPORT_EXECUTION_INVALID_MEMBERS: Final[MemberMask] = ALL_INVALID_MEMBERS
 _BUILTIN_IDENTITIES: Final[dict[str, tuple[PythonIdentity, PythonMember]]] = {
     "__import__": (PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),
     "globals": (PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),
@@ -299,6 +301,15 @@ _CANONICAL_FROM_IMPORT_IDENTITIES: Final[
 }
 
 
+_SYS_IMPORT_HOOK_MEMBERS: Final = frozenset(
+    {"meta_path", "path_hooks", "path_importer_cache", "modules"}
+)
+# A namespace reached by a computed ``sys.modules`` key is some module.
+_ANY_CANONICAL_MODULE_IDENTITY: Final[IdentityMask] = reduce(
+    or_, (int(identity) for identity in _CANONICAL_IMPORT_IDENTITIES.values()), 0
+)
+
+
 def _canonical_member_declarations(
     base: IdentityMask, member: str
 ) -> Iterator[tuple[PythonIdentity, PythonIdentity, PythonMember]]:
@@ -309,6 +320,51 @@ def _canonical_member_declarations(
             if declaration is not None:
                 identity, guard = declaration
                 yield owner, identity, guard
+
+
+def _member_write_mask(base: IdentityMask, member: str) -> MemberMask:
+    """Canonical members a write of ``member`` on ``base`` can change."""
+    members = 0
+    for _owner, _identity, guard in _canonical_member_declarations(base, member):
+        members |= int(guard)
+    if base & int(PythonIdentity.MODULE_SPEC_CLASS):
+        members |= int(PythonMember.MODULE_SPEC_CLASS)
+    if base & int(PythonIdentity.BUILTINS_MODULE) and member == "__import__":
+        members |= int(PythonMember.IMPORT_HOOKS)
+    if base & int(PythonIdentity.SYS_MODULE) and member in _SYS_IMPORT_HOOK_MEMBERS:
+        members |= int(PythonMember.IMPORT_HOOKS)
+    if base & int(PythonIdentity.SYS_MODULE) and member == "platform":
+        members |= int(PythonMember.SYS_PLATFORM)
+    return members
+
+
+def _canonical_spelling_identity(module: str) -> IdentityMask:
+    """The canonical identity a dotted module or member spelling names."""
+    identity = _CANONICAL_IMPORT_IDENTITIES.get(module)
+    if identity is not None:
+        return int(identity)
+    owner, _, member = module.rpartition(".")
+    declaration = _CANONICAL_FROM_IMPORT_IDENTITIES.get((owner, member))
+    return int(declaration[0]) if declaration is not None else NO_IDENTITIES
+
+
+def python_canonical_member_writes(module: str | None, name: str | None) -> MemberMask:
+    """Canonical members a summarized namespace write can change.
+
+    ``module`` is a write's dotted receiver spelling, ``None`` for a namespace
+    reached by a computed ``sys.modules`` key; ``name`` is ``None`` when computed.
+    Shares ``_member_write_mask`` with the flow's own direct stores.
+    """
+    base = (
+        _ANY_CANONICAL_MODULE_IDENTITY
+        if module is None
+        else _canonical_spelling_identity(module)
+    )
+    if base == NO_IDENTITIES:
+        return NO_INVALID_MEMBERS
+    if name is None:
+        return ALL_INVALID_MEMBERS
+    return _member_write_mask(base, name)
 
 
 def python_dynamic_import_facts_required(
@@ -359,6 +415,17 @@ class PythonBindingFlowPolicy:
     target_sys_platform: str | None = None
     standard_imports_are_canonical: bool = True
     analyze_deferred_bodies: bool = True
+    # Spec 0216 admits scoped mutation and excludes unrestricted reflection,
+    # exec/eval and arbitrary monkeypatching. A module's globals then change
+    # outside its own statements only through named writes from other modules
+    # and the import system's submodule bindings. A closed-graph consumer
+    # supplies those names, sorted (``python_namespace_writes``); callbacks then
+    # expire only them and the names this module's own deferred code rebinds.
+    # None: any name may change, the only premise without a graph.
+    foreign_namespace_writes: tuple[str, ...] | None = None
+    # Canonical members that code anywhere in that graph, this module included,
+    # writes (``python_canonical_member_writes``). Callbacks change only these.
+    callback_member_writes: MemberMask = ALL_INVALID_MEMBERS
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +445,8 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             target_sys_platform=self.target_sys_platform,
             standard_imports_are_canonical=self.standard_imports_are_canonical,
             analyze_deferred_bodies=self.analyze_deferred_bodies,
+            foreign_namespace_writes=self.foreign_namespace_writes,
+            callback_member_writes=self.callback_member_writes,
         )
 
 
@@ -2369,6 +2438,9 @@ class _Analyzer:
         self.module_scope: _Scope | None = None
         self.module_slots: list[int] = []
         self.module_slot_mask = 0
+        # None until a graph premise bounds the globals a callback can rebind.
+        self._callback_module_names: frozenset[str] | None = None
+        self.callback_module_slot_mask = 0
         self.callback_slot_mask = 0
         self._observed_stack: list[_ObservedStateFrame] = []
         self._module_history: list[int] = [0]
@@ -2538,7 +2610,7 @@ class _Analyzer:
         ordered_module_slots = tuple(sorted(module_slots))
         ordered_lexical_slots = tuple(sorted(lexical_slots))
         self.callback_slot_mask |= sum(1 << slot for slot in ordered_lexical_slots)
-        self.states.set_taint_domain(self.module_slot_mask | self.callback_slot_mask)
+        self.states.set_taint_domain(self._callback_taint_domain())
         return (
             tuple(
                 (slot, self.states.binding(state_id, slot))
@@ -2692,9 +2764,7 @@ class _Analyzer:
             # once, without one growing arbitrary-precision addition per local.
             local_slot_mask = (1 << len(scope.slots)) - 1
             self.callback_slot_mask |= local_slot_mask << first_local_slot
-            self.states.set_taint_domain(
-                self.module_slot_mask | self.callback_slot_mask
-            )
+            self.states.set_taint_domain(self._callback_taint_domain())
         self.scopes.append(scope)
         self._source_scopes[key] = scope
         return scope
@@ -2711,9 +2781,35 @@ class _Analyzer:
         self.slot_owner_scope_ids.append(self.module_scope.scope_id)
         self.module_slots.append(slot)
         self.module_slot_mask |= 1 << slot
-        self.states.set_taint_domain(self.module_slot_mask | self.callback_slot_mask)
+        self.states.set_taint_domain(self._callback_taint_domain())
         self._scope_slot_cache.clear()
         return slot
+
+    def _callback_taint_domain(self) -> int:
+        """Slots a callback can rebind: module globals, then captured cells."""
+        module = (
+            self.module_slot_mask
+            if self._callback_module_names is None
+            else self.callback_module_slot_mask
+        )
+        return module | self.callback_slot_mask
+
+    def _configure_callback_namespace(self, tree: ast.Module) -> None:
+        """Bound the globals a callback can rebind, when the policy verifies it.
+
+        Without a graph premise every global stays callback-exposed. With one,
+        a callback rebinds only names declared ``global`` in deferred code,
+        own-namespace item writes and the names other code writes. A module
+        that reflects its own namespace dynamically keeps the whole namespace.
+        """
+        foreign = self.policy.foreign_namespace_writes
+        own = python_namespace_summary(tree).own_names if foreign is not None else None
+        if foreign is None or own is None:
+            return
+        names = own | frozenset(foreign)
+        self._callback_module_names = names
+        for name in sorted(names):
+            self.callback_module_slot_mask |= 1 << self._ensure_module_slot(name)
 
     def _module_slot(self, name: str) -> int | None:
         assert self.module_scope is not None
@@ -2729,11 +2825,12 @@ class _Analyzer:
         for name in _METADATA_NAMES:
             slot = self._module_slot(name)
             if slot is None:
-                clean &= epoch == 0
+                # A bounded namespace gains no name a callback could bind.
+                clean &= epoch == 0 or self._callback_module_names is not None
                 pristine.add(name)
             else:
                 resolution = self.states._binding_resolution(state_id, slot)
-                clean &= resolution.namespace_clean
+                clean &= resolution.clean
                 if not resolution.present:
                     pristine.add(name)
         return PythonModuleMetadataProof(
@@ -2913,7 +3010,11 @@ class _Analyzer:
                 )
             )
             value = (value & ~UNBOUND_IDENTITY) | fallback
-        callback_exposed = slot is None or self.states.slot_in_taint_domain(slot)
+        callback_exposed = (
+            self._callback_module_names is None
+            if slot is None
+            else self.states.slot_in_taint_domain(slot)
+        )
         invalidated = (
             callback_exposed
             and self.states.get(state_id).taint_epoch != 0
@@ -3182,7 +3283,9 @@ class _Analyzer:
             or effects & WRITES_OBJECT_STATE
             and object_write_may_invalidate_members
         ):
-            state_id = self.states.invalidate_members(state_id, ALL_INVALID_MEMBERS)
+            state_id = self.states.invalidate_members(
+                state_id, self.policy.callback_member_writes
+            )
         return state_id
 
     def _guarded_member_identity(
@@ -3243,23 +3346,9 @@ class _Analyzer:
         base: IdentityMask,
         member: str,
     ) -> int:
-        members = 0
-        for _owner, _identity, guard in _canonical_member_declarations(base, member):
-            members |= int(guard)
-        if base & int(PythonIdentity.MODULE_SPEC_CLASS):
-            members |= int(PythonMember.MODULE_SPEC_CLASS)
-        if base & int(PythonIdentity.BUILTINS_MODULE) and member == "__import__":
-            members |= int(PythonMember.IMPORT_HOOKS)
-        if base & int(PythonIdentity.SYS_MODULE) and member in {
-            "meta_path",
-            "path_hooks",
-        }:
-            members |= int(PythonMember.IMPORT_HOOKS)
-        if base & int(PythonIdentity.SYS_MODULE) and member == "platform":
-            members |= int(PythonMember.SYS_PLATFORM)
-        if base & int(PythonIdentity.SYS_MODULE) and member == "modules":
-            members |= int(PythonMember.IMPORT_HOOKS)
-        return self.states.invalidate_members(state_id, members, definite=True)
+        return self.states.invalidate_members(
+            state_id, _member_write_mask(base, member), definite=True
+        )
 
     def _call_semantics(
         self,
@@ -4839,7 +4928,8 @@ class _Analyzer:
                     and self.states.owner_tokens_equal(left, right)
                 ),
                 widen_state=lambda header: self.states.invalidate_members(
-                    self._widen_exposed_bindings(header), ALL_INVALID_MEMBERS
+                    self._widen_exposed_bindings(header),
+                    self.policy.callback_member_writes,
                 ),
                 finalize=finalize,
             )
@@ -5800,7 +5890,7 @@ class _Analyzer:
             if not canonical_statement:
                 state_id = self._apply_effects(state_id, effects)
                 state_id = self.states.invalidate_members(
-                    state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
+                    state_id, self.policy.callback_member_writes
                 )
             for alias in node.names:
                 bound = python_import_binding(alias)
@@ -5836,7 +5926,7 @@ class _Analyzer:
             if not canonical_statement:
                 state_id = self._apply_effects(state_id, effects)
                 state_id = self.states.invalidate_members(
-                    state_id, _IMPORT_EXECUTION_INVALID_MEMBERS
+                    state_id, self.policy.callback_member_writes
                 )
             if any(alias.name == "*" for alias in node.names):
                 state_id = self._widen_exposed_bindings(state_id)
@@ -6397,7 +6487,8 @@ class _Analyzer:
 
         def widen(header: int) -> int:
             return self.states.invalidate_members(
-                self._widen_exposed_bindings(header), ALL_INVALID_MEMBERS
+                self._widen_exposed_bindings(header),
+                self.policy.callback_member_writes,
             )
 
         def terminal_release_effects() -> EffectMask:
@@ -6653,7 +6744,9 @@ class _Analyzer:
             activation_namespace_stable=False,
         )
         scope.annotation_evaluator = job.annotation_scope
-        state_id = self.states.invalidate_members(outer_state, ALL_INVALID_MEMBERS)
+        state_id = self.states.invalidate_members(
+            outer_state, self.policy.callback_member_writes
+        )
         # Free cells are activation inputs, not source-owned locals. A later
         # nonlocal write can still establish fresh exact facts until a callback.
         state_id = self._widen_activation_inputs(state_id, job.lexical_base_bindings)
@@ -6881,7 +6974,8 @@ class _Analyzer:
         self._module_source = python_node_source_key(tree)
         self.module_slots = list(module.slots.values())
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
-        self.states.set_taint_domain(self.module_slot_mask)
+        self._configure_callback_namespace(tree)
+        self.states.set_taint_domain(self._callback_taint_domain())
         observed: list[int] = [0]
         self._observed_stack.append(_ObservedStateFrame(observed))
         self._active_lexical_history = observed
@@ -6978,6 +7072,8 @@ class _Analyzer:
         )
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
+            callbacks_rewrite_metadata=self._callback_module_names is None
+            or not self._callback_module_names.isdisjoint(_METADATA_NAMES),
             source_namespaces=tuple(
                 (
                     owner,
@@ -7090,6 +7186,7 @@ def _project_binding_index(
             expression_facts=facts._expression_lookup,
             assignment_effects=analysis.assignment_effects,
             call_facts=facts._call_lookup,
+            callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )
     else:
         state = context_import_state(context)
@@ -7109,6 +7206,7 @@ def _project_binding_index(
             assignment_effects=analysis.assignment_effects,
             call_facts=facts._call_lookup,
             source_discovery=True,
+            callbacks_rewrite_metadata=facts.callbacks_rewrite_metadata,
         )
         flow = replace(
             flow,
@@ -7313,5 +7411,6 @@ __all__ = [
     "analyze_python_bindings",
     "analyze_python_source_bindings",
     "python_binding_core_computations",
+    "python_canonical_member_writes",
     "python_dynamic_import_facts_required",
 ]

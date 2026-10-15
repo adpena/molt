@@ -69,7 +69,7 @@ the source of truth.
 - Current module-scope control-flow binding status: [spec/STATUS.md](spec/STATUS.md)
 - Codebase decomposition program: [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md), including the crate-graph per-move execution spec [21f](design/foundation/21f_crate_graph_smove_execution_specs.md)
 - Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [design/parallel_build_architecture.md](design/parallel_build_architecture.md), [architecture/compilation-model.md](architecture/compilation-model.md)
-- Import effect summaries (binding-flow precision for imports, `TYPE_CHECKING`, relative imports; HF-226): [design/import_effect_summaries.md](design/import_effect_summaries.md)
+- Verified namespace premises (binding-flow precision across callbacks: `TYPE_CHECKING`, relative-import metadata, canonical members; HF-226): [design/verified_namespace_premises.md](design/verified_namespace_premises.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
 - One SimpleIR optimization pipeline for every target: [design/foundation/76_simple_ir_pass_pipeline.md](design/foundation/76_simple_ir_pass_pipeline.md)
 - Generator fusion and deforestation routing: [design/generator_fusion.md](design/generator_fusion.md)

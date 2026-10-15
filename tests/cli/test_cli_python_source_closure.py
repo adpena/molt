@@ -10,7 +10,10 @@ import pytest
 
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli import python_source_closure as graph
-from molt.cli.python_import_resolution import PythonImportPolicy
+from molt.cli.python_import_resolution import (
+    LocalPythonNamespacePremise,
+    PythonImportPolicy,
+)
 from tests.process_guard_common import install_module_view
 
 
@@ -1035,8 +1038,6 @@ def test_all_valid_relative_levels_resolve_and_beyond_top_fails(tmp_path: Path) 
     )
     paths: set[str] = set()
     for request in requests:
-        # Each level starts with the loader's initial metadata. Executing an
-        # earlier import can re-enter Python and mutate that metadata.
         seed.write_text(request, encoding="utf-8")
         closure = local_python_import_closure(tmp_path, (seed,)).paths
         paths.update(_relative_paths(tmp_path, closure))
@@ -1046,10 +1047,23 @@ def test_all_valid_relative_levels_resolve_and_beyond_top_fails(tmp_path: Path) 
         "src/pkg/deep/more/local_leaf.py",
     } <= paths
 
+    # Executing an earlier import re-enters Python, but no code in this graph
+    # writes the entry's metadata, so every later level keeps its anchor.
     seed.write_text("".join(requests), encoding="utf-8")
+    exact = local_python_import_closure(tmp_path, (seed,))
+    assert not exact.topology_digest
+    assert paths <= _relative_paths(tmp_path, exact.paths)
+
+    # A named write of the entry's __package__ from an imported module leaves
+    # the later levels without an anchor: they cover every local source.
+    (nested / "local_leaf.py").write_text(
+        "import pkg.deep.more.entry\npkg.deep.more.entry.__package__ = 'pkg'\n",
+        encoding="utf-8",
+    )
     covered = local_python_import_closure(tmp_path, (seed,))
     assert covered.topology_digest
     assert paths <= _relative_paths(tmp_path, covered.paths)
+    (nested / "local_leaf.py").write_text("VALUE = 3\n", encoding="utf-8")
 
     seed.write_text("from .... import escaped\n", encoding="utf-8")
     with pytest.raises(ValueError, match="escapes local package"):
@@ -1466,7 +1480,8 @@ def test_source_discovery_cache_rows_cannot_be_reused_as_semantic_edges(
     package = tmp_path / "src" / "pkg"
     package.mkdir(parents=True)
     seed, child = package / "entry.py", package / "child.py"
-    seed.write_text("import os\nfrom . import child\n", encoding="utf-8")
+    # A module that hands its namespace on loses its anchor at the next call.
+    seed.write_text("register(globals())\nfrom . import child\n", encoding="utf-8")
     child.write_text("VALUE = 1\n", encoding="utf-8")
     source = PythonImportPolicy(
         False,
@@ -1484,8 +1499,9 @@ def test_source_discovery_cache_rows_cannot_be_reused_as_semantic_edges(
         graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
     )
     variants = cache["entries"]["src/pkg/entry.py"]
-    source_key = graph._analysis_policy_digest("pkg.entry", False, source)
-    semantic_key = graph._analysis_policy_digest("pkg.entry", False, semantic)
+    premise = LocalPythonNamespacePremise((), 0)
+    source_key = graph._analysis_policy_digest("pkg.entry", False, source, premise)
+    semantic_key = graph._analysis_policy_digest("pkg.entry", False, semantic, premise)
     assert source_key != semantic_key
     assert variants[source_key]["discovery_requests"]
     assert variants[source_key]["relative_source_obligations"]
@@ -2016,3 +2032,118 @@ def test_fresh_cache_root_reuses_this_process_analysis_but_not_changed_bytes(
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "third-cache"))
     local_python_import_closure(project, (seed,))
     assert analyzed == [helper.resolve()]
+
+
+# Module-level execution graphs prune statically dead branches; the full
+# lexical tool graph keeps every import statement.
+_EAGER_SOURCE_POLICY = PythonImportPolicy(
+    module_level_only=True,
+    include_parent_packages=False,
+    fail_on_nonliteral_dynamic_import=True,
+    purpose="source_dependency",
+    unknown_relative_sources="local_inventory",
+)
+
+
+def _eager_closure(tmp_path: Path, seed: Path) -> set[Path]:
+    return set(
+        local_python_import_closure(
+            tmp_path, (seed,), policy=_EAGER_SOURCE_POLICY
+        ).paths
+    )
+
+
+def _type_checking_package(tmp_path: Path) -> tuple[Path, Path]:
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    seed = package / "entry.py"
+    seed.write_text(
+        "from typing import TYPE_CHECKING\nimport os\nimport pkg.peer\nload()\n"
+        "if TYPE_CHECKING:\n    import pkg.typeonly\n",
+        encoding="utf-8",
+    )
+    (package / "peer.py").write_text("VALUE = 1\n", encoding="utf-8")
+    typeonly = package / "typeonly.py"
+    typeonly.write_text("VALUE = 2\n", encoding="utf-8")
+    return seed, typeonly
+
+
+def test_type_only_imports_stay_out_after_callbacks(tmp_path: Path) -> None:
+    # HF-226: no code in this graph writes the entry's TYPE_CHECKING, so the
+    # imports and the call before the guard cannot make it true.
+    seed, typeonly = _type_checking_package(tmp_path)
+    assert typeonly not in _eager_closure(tmp_path, seed)
+
+
+def test_a_named_foreign_write_keeps_the_guarded_import(tmp_path: Path) -> None:
+    # The peer writes the entry's flag while the entry imports it, so CPython
+    # executes the guarded import. The fixpoint finds the write and walks again.
+    seed, typeonly = _type_checking_package(tmp_path)
+    (seed.parent / "peer.py").write_text(
+        "import pkg.entry\npkg.entry.TYPE_CHECKING = True\n", encoding="utf-8"
+    )
+    assert typeonly in _eager_closure(tmp_path, seed)
+
+
+def test_a_package_child_binding_keeps_the_guarded_import(tmp_path: Path) -> None:
+    # Importing pkg.TYPE_CHECKING binds a module, a true value, to that name in
+    # the package's namespace; the import system's write needs no syntax.
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    init = package / "__init__.py"
+    init.write_text(
+        "from typing import TYPE_CHECKING\nload()\n"
+        "if TYPE_CHECKING:\n    from . import typeonly\n",
+        encoding="utf-8",
+    )
+    typeonly = package / "typeonly.py"
+    typeonly.write_text("VALUE = 1\n", encoding="utf-8")
+    assert typeonly not in _eager_closure(tmp_path, init)
+    (package / "TYPE_CHECKING.py").write_text("", encoding="utf-8")
+    assert typeonly in _eager_closure(tmp_path, init)
+
+
+def test_a_dead_relative_import_is_a_lexical_edge(tmp_path: Path) -> None:
+    # The flow proves the branch never runs, so no metadata anchors it; the
+    # lexical graph resolves it from the module's identity like a dead
+    # absolute import, instead of rejecting an unknown anchor.
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    init = package / "__init__.py"
+    init.write_text(
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from . import typeonly\n",
+        encoding="utf-8",
+    )
+    typeonly = package / "typeonly.py"
+    typeonly.write_text("VALUE = 1\n", encoding="utf-8")
+    closure = local_python_import_closure(tmp_path, (init,))
+    assert typeonly in closure.paths
+    assert not closure.topology_digest
+    assert typeonly not in _eager_closure(tmp_path, init)
+
+
+def test_namespace_premise_fixpoint_reuses_every_cached_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed, typeonly = _type_checking_package(tmp_path)
+    (seed.parent / "peer.py").write_text(
+        "import pkg.entry\npkg.entry.TYPE_CHECKING = True\n", encoding="utf-8"
+    )
+    first = local_python_import_closure(tmp_path, (seed,), policy=_EAGER_SOURCE_POLICY)
+    assert typeonly in first.paths
+    graph._PROCESS_GRAPH_ENTRIES.clear()
+    monkeypatch.setattr(
+        graph,
+        "analyze_local_imports",
+        lambda *_args, **_kwargs: pytest.fail("unchanged source missed its cache"),
+    )
+    monkeypatch.setattr(
+        graph,
+        "python_namespace_summary",
+        lambda *_args, **_kwargs: pytest.fail("unchanged source was summarized again"),
+    )
+    assert (
+        local_python_import_closure(tmp_path, (seed,), policy=_EAGER_SOURCE_POLICY)
+        == first
+    )

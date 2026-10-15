@@ -795,6 +795,10 @@ class PythonBindingFacts:
     source_attributes: tuple[
         tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
     ]
+    # Whether a callback can rebind this module's import metadata
+    # (``__name__``, ``__package__``, ``__spec__``, ``__path__``). True unless
+    # a closed-graph namespace premise bounds the callback domain (HF-226).
+    callbacks_rewrite_metadata: bool
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _statement_lookup: Mapping[PythonNodeKey, PythonStatementFact]
     _iteration_lookup: Mapping[PythonNodeKey, PythonIterationFact]
@@ -827,6 +831,7 @@ class PythonBindingFacts:
         source_attributes: tuple[
             tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
         ] = (),
+        callbacks_rewrite_metadata: bool = True,
     ) -> PythonBindingFacts:
         return cls(
             source_digest=source_digest,
@@ -843,6 +848,7 @@ class PythonBindingFacts:
             slot_names=slot_names,
             source_namespaces=source_namespaces,
             source_attributes=source_attributes,
+            callbacks_rewrite_metadata=callbacks_rewrite_metadata,
             _expression_lookup=MappingProxyType(
                 {fact.node: fact for fact in expressions}
             ),
