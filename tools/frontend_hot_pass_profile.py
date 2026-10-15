@@ -17,51 +17,22 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
-TOOLS_ROOT = ROOT / "tools"
 DEFAULT_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
 
 
-def _path_entry_resolves_to(path_entry: str, target: Path) -> bool:
-    try:
-        return Path(path_entry).resolve() == target.resolve()
-    except OSError:
-        return False
+import cProfile  # noqa: E402
+import pstats  # noqa: E402
 
-
-def _import_stdlib_profilers() -> tuple[Any, Any]:
-    """Import cProfile without letting tools/profile.py shadow stdlib profile."""
-    removed_entries = [
-        entry for entry in sys.path if _path_entry_resolves_to(entry, TOOLS_ROOT)
-    ]
-    for entry in removed_entries:
-        sys.path.remove(entry)
-    previous_profile = sys.modules.get("profile")
-    if previous_profile is not None:
-        profile_file = getattr(previous_profile, "__file__", "")
-        if profile_file and _path_entry_resolves_to(
-            str(Path(profile_file).parent), TOOLS_ROOT
-        ):
-            sys.modules.pop("profile", None)
-    try:
-        import cProfile as cprofile_module
-        import pstats as pstats_module
-    finally:
-        for entry in reversed(removed_entries):
-            if entry not in sys.path:
-                sys.path.insert(0, entry)
-        if previous_profile is not None and "profile" not in sys.modules:
-            sys.modules["profile"] = previous_profile
-    return cprofile_module, pstats_module
-
-
-cProfile, pstats = _import_stdlib_profilers()
-
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from molt.frontend import SimpleTIRGenerator  # noqa: E402
 from molt.target_python import (  # noqa: E402

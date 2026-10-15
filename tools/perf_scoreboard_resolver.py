@@ -5,7 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
-import bench
+from tools import bench
 
 
 def _resolve_pypy(arg: str) -> str | None:
@@ -42,7 +42,7 @@ def _resolve_codon(arg: str) -> str | None:
 def _probe_interp_version(interp_bin: str | None) -> str | None:
     if not interp_bin:
         return None
-    from perf_scoreboard import _metadata_probe
+    from tools.perf_scoreboard import _metadata_probe
 
     res = _metadata_probe([interp_bin, "--version"], timeout_s=30)
     if res is None:
@@ -54,7 +54,7 @@ def _probe_interp_version(interp_bin: str | None) -> str | None:
 def _probe_codon_version(codon_bin: str | None) -> str | None:
     if not codon_bin:
         return None
-    from perf_scoreboard import _metadata_probe
+    from tools.perf_scoreboard import _metadata_probe
 
     res = _metadata_probe([codon_bin, "--version"], timeout_s=30)
     if res is None:

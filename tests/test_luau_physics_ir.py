@@ -16,12 +16,7 @@ import pytest
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "tools"))
-from luau_physics_to_ir import (  # noqa: E402
-    OpIR,
-    SimpleIR,
-    parse_luau_file,
-    tokenize,
-)
+from tools.luau_physics_to_ir import OpIR, SimpleIR, parse_luau_file, tokenize
 
 VERTIGO_PHYSICS_DIR = (
     Path(__file__).parent.parent.parent

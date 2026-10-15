@@ -8,10 +8,10 @@ import sys
 from molt import _wasm_runtime_exports as _runtime_exports
 from molt._wasm_abi_generated import WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS
 from molt.wasm_artifact import flatten_wasm_plain_function_rec_groups
-import wasm_link_edit as _edit
-import wasm_link_export_contract as _export_contract
-from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
-import wasm_link_format as _format
+from tools import wasm_link_edit as _edit
+from tools import wasm_link_export_contract as _export_contract
+from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+from tools import wasm_link_format as _format
 
 
 def _validate_split_runtime_typed_edges(

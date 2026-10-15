@@ -8,17 +8,15 @@ baseline (Rule 2). SYNTHETIC boards only — no molt rebuild.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import perf_board as pb  # noqa: E402
-import perf_history as ph  # noqa: E402
-import perf_schema as schema  # noqa: E402
+
+from tools import perf_board as pb  # noqa: E402
+from tools import perf_history as ph  # noqa: E402
+from tools import perf_schema as schema  # noqa: E402
 
 
 def _cell(**overrides: object) -> dict[str, object]:

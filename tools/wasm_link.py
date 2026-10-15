@@ -9,12 +9,18 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 TOOLS_ROOT = Path(__file__).resolve().parent
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
+
 SRC_ROOT = TOOLS_ROOT.parent / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+
 
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmExpectedPair,
@@ -42,14 +48,14 @@ from molt.cli import wasm_toolchain  # noqa: E402
 from molt.cli.runtime_paths import _runtime_wasm_artifact_path  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 from molt.dx import configured_artifact_root, proof_scratch_root  # noqa: E402
-import wasm_link_command as _link_command  # noqa: E402
-import wasm_link_native_inputs as _native_inputs  # noqa: E402
-from wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
-from wasm_link_format import WASM_MAGIC, WASM_VERSION  # noqa: E402
-from wasm_link_pipeline import (  # noqa: E402
+from tools import wasm_link_command as _link_command  # noqa: E402
+from tools import wasm_link_native_inputs as _native_inputs  # noqa: E402
+from tools.wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
+from tools.wasm_link_format import WASM_MAGIC, WASM_VERSION  # noqa: E402
+from tools.wasm_link_pipeline import (  # noqa: E402
     run_wasm_ld_with_custodied_inputs as _run_wasm_ld_with_custodied_inputs,
 )
-import wasm_link_runtime_data as _runtime_data  # noqa: E402
+from tools import wasm_link_runtime_data as _runtime_data  # noqa: E402
 
 
 def _default_runtime_path() -> Path:

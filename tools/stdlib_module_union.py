@@ -14,9 +14,8 @@ hard gate baseline for top-level + submodule stdlib coverage.
 
 from __future__ import annotations
 
-import importlib.util as _importlib_util
+import runpy as _runpy
 from pathlib import Path as _Path
-from types import ModuleType as _ModuleType
 
 BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.14")
 
@@ -27,15 +26,10 @@ _VERSION_MODULE_STEMS = {
 }
 
 
-def _load_version_data(version: str) -> _ModuleType:
+def _load_version_data(version: str) -> dict[str, object]:
+    # Sibling data files, read as data: no second module identity.
     stem = _VERSION_MODULE_STEMS[version]
-    path = _Path(__file__).with_name(f"{stem}.py")
-    spec = _importlib_util.spec_from_file_location(stem, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load stdlib union data for {version}: {path}")
-    module = _importlib_util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _runpy.run_path(str(_Path(__file__).with_name(f"{stem}.py")))
 
 
 _VERSION_DATA = {
@@ -43,19 +37,19 @@ _VERSION_DATA = {
 }
 
 STDLIB_MODULES_BY_VERSION = {
-    version: _VERSION_DATA[version].STDLIB_MODULES
+    version: _VERSION_DATA[version]["STDLIB_MODULES"]
     for version in BASELINE_PYTHON_VERSIONS
 }
 STDLIB_PACKAGES_BY_VERSION = {
-    version: _VERSION_DATA[version].STDLIB_PACKAGES
+    version: _VERSION_DATA[version]["STDLIB_PACKAGES"]
     for version in BASELINE_PYTHON_VERSIONS
 }
 STDLIB_PY_MODULES_BY_VERSION = {
-    version: _VERSION_DATA[version].STDLIB_PY_MODULES
+    version: _VERSION_DATA[version]["STDLIB_PY_MODULES"]
     for version in BASELINE_PYTHON_VERSIONS
 }
 STDLIB_PY_PACKAGES_BY_VERSION = {
-    version: _VERSION_DATA[version].STDLIB_PY_PACKAGES
+    version: _VERSION_DATA[version]["STDLIB_PY_PACKAGES"]
     for version in BASELINE_PYTHON_VERSIONS
 }
 

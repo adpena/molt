@@ -9,11 +9,19 @@ from contextlib import ExitStack
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-import harness_memory_guard  # noqa: E402
-from generator_io import generator_main  # noqa: E402
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+from tools import harness_memory_guard  # noqa: E402
+from tools.generator_io import generator_main  # noqa: E402
 from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
 
 OUTPUT = ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"

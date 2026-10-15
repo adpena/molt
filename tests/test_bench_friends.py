@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import signal
@@ -18,49 +17,11 @@ from tests.native_process_guard import run_native_test_process
 from tests.process_guard_common import install_module_view
 
 
+from tools import bench_friends, numpy_off_shelf_adapter, perf_authority
+from tools import tinygrad_off_shelf_adapter
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TOOLS_ROOT = REPO_ROOT / "tools"
-TOOL_PATH = REPO_ROOT / "tools" / "bench_friends.py"
-ADAPTER_PATH = REPO_ROOT / "tools" / "tinygrad_off_shelf_adapter.py"
-NUMPY_ADAPTER_PATH = REPO_ROOT / "tools" / "numpy_off_shelf_adapter.py"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-
-import perf_authority  # noqa: E402
-
-
-def _load_tool_module():
-    spec = importlib.util.spec_from_file_location("bench_friends_under_test", TOOL_PATH)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_tinygrad_adapter_module():
-    spec = importlib.util.spec_from_file_location(
-        "tinygrad_off_shelf_adapter_under_test", ADAPTER_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_numpy_adapter_module():
-    spec = importlib.util.spec_from_file_location(
-        "numpy_off_shelf_adapter_under_test", NUMPY_ADAPTER_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _has_env_pair_casefold(env: dict[str, str], name: str, value: str) -> bool:
@@ -168,7 +129,7 @@ def _init_git_repo(repo: Path) -> str:
 
 
 def test_default_output_root_is_canonical_bench_results(monkeypatch) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     monkeypatch.setenv("MOLT_EXT_ROOT", str(REPO_ROOT))
 
     output_root = module._default_output_root()
@@ -177,7 +138,7 @@ def test_default_output_root_is_canonical_bench_results(monkeypatch) -> None:
 
 
 def test_project_python_prefers_active_virtualenv(monkeypatch, tmp_path: Path) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     venv = tmp_path / "venv"
     python_path = venv / (
         "Scripts/python.exe" if module.os.name == "nt" else "bin/python"
@@ -194,7 +155,7 @@ def test_project_python_prefers_active_virtualenv(monkeypatch, tmp_path: Path) -
 def test_base_run_env_preserves_windows_toolchain_roots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
     monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
     monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
@@ -235,7 +196,7 @@ def test_base_run_env_preserves_windows_toolchain_roots(
 
 
 def test_bench_friends_result_dict_round_trip_preserves_renderer_fields() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     suite = _sample_suite_result(module, "round_trip_smoke")
     payload = module._suite_to_dict(suite)
 
@@ -246,7 +207,7 @@ def test_bench_friends_result_dict_round_trip_preserves_renderer_fields() -> Non
 
 @pytest.mark.parametrize("location", ["build", "run", "molt_failure"])
 def test_bench_friends_restored_metrics_derive_from_admitted_runners(location) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     payload = module._suite_to_dict(_sample_suite_result(module))
     molt = json.loads(json.dumps(payload["runners"]["tinygrad"]))
     molt["name"] = "molt"
@@ -293,7 +254,7 @@ def test_bench_friends_restored_metrics_derive_from_admitted_runners(location) -
 
 
 def test_bench_friends_summary_row_spacing_is_regular() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     suite = _sample_suite_result(module, "spacing_smoke")
 
     summary_text = module._render_summary_markdown(
@@ -318,7 +279,7 @@ def test_bench_friends_summary_row_spacing_is_regular() -> None:
 def test_bench_friends_render_existing_json_does_not_run_workloads(
     monkeypatch, tmp_path: Path
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     suite = _sample_suite_result(module)
     results_json = tmp_path / "results.json"
     summary_out = tmp_path / "summary.md"
@@ -365,7 +326,7 @@ def test_bench_friends_render_existing_json_does_not_run_workloads(
 def test_bench_friends_render_existing_json_rejects_workload_checkout_flag(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     results_json = tmp_path / "results.json"
     summary_out = tmp_path / "summary.md"
     results_json.write_text(
@@ -570,7 +531,7 @@ def test_bench_friends_interrupt_writes_partial_results_and_cleans_daemon(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     manifest = tmp_path / "manifest.toml"
     output_root = tmp_path / "interrupted_out"
     suite_root = tmp_path / "suite"
@@ -654,7 +615,7 @@ def test_bench_friends_phase_result_preserves_memory_guard_diagnostics(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     stdout_path = tmp_path / "phase.stdout.log"
     stderr_path = tmp_path / "phase.stderr.log"
 
@@ -703,7 +664,7 @@ def test_bench_friends_timeout_uses_typed_guard_outcome(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
 
     def guarded_result(*, timed_out: bool):
         result = subprocess.CompletedProcess(
@@ -763,7 +724,7 @@ def test_bench_friends_marks_guard_infrastructure_as_non_evidence(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     infrastructure_failure = (
         module.harness_memory_guard.memory_guard.GuardInfrastructureFailure(
             phase="temporary_artifact_custody",
@@ -868,7 +829,7 @@ def test_bench_friends_molt_runner_classifies_daemon_empty_response(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
 
     class GuardedResult(subprocess.CompletedProcess):
         elapsed_s = 208.19
@@ -951,7 +912,7 @@ def test_bench_friends_daemon_failure_writes_custody_artifacts(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     manifest = tmp_path / "manifest.toml"
     output_root = tmp_path / "daemon_failure_out"
     suite_root = tmp_path / "suite"
@@ -1071,7 +1032,7 @@ def test_bench_friends_sentinel_violation_emergency_writes_results(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_tool_module()
+    module = bench_friends
     manifest = tmp_path / "manifest.toml"
     output_root = tmp_path / "sentinel_out"
     suite_root = tmp_path / "suite"
@@ -1242,7 +1203,7 @@ def test_bench_friends_nuitka_pyodide_runners(tmp_path: Path) -> None:
 
 
 def test_bench_friends_dynamic_runner_keys_are_manifest_authority() -> None:
-    module = _load_tool_module()
+    module = bench_friends
 
     suite = module._parse_suite(
         {
@@ -1300,7 +1261,7 @@ def test_bench_friends_dynamic_runner_keys_are_manifest_authority() -> None:
 
 
 def test_bench_friends_token_resolution_exposes_platform_pathsep() -> None:
-    module = _load_tool_module()
+    module = bench_friends
 
     assert module._resolve_tokenized(
         ["{repo_root}{pathsep}{suite_root}"],
@@ -1313,7 +1274,7 @@ def test_bench_friends_token_resolution_exposes_platform_pathsep() -> None:
 
 
 def test_bench_friends_non_workload_runner_excluded_from_speed_metrics() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     runners = {
         "molt": module.RunnerResult(
             name="molt",
@@ -1343,7 +1304,7 @@ def test_bench_friends_non_workload_runner_excluded_from_speed_metrics() -> None
 
 
 def test_bench_friends_suite_metrics_serializes_ratio_directions() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     runners = {
         "cpython": module.RunnerResult(
             name="cpython",
@@ -1807,7 +1768,7 @@ def test_bench_friends_git_suite_rejects_ignored_override_artifacts(
 
 
 def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
     suite = next(s for s in suites if s.id == "tinygrad_off_the_shelf")
 
@@ -1925,7 +1886,7 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
 
 
 def test_friend_manifest_does_not_register_upat_compile_diagnostic_lane() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
     suite_ids = {suite.id for suite in suites}
     tinygrad_suite = next(
@@ -1940,7 +1901,7 @@ def test_friend_manifest_does_not_register_upat_compile_diagnostic_lane() -> Non
 
 
 def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     stack = resolve_scientific_stack()
     _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
     suite = next(s for s in suites if s.id == "numpy_off_the_shelf")
@@ -2031,7 +1992,7 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
 
 
 def test_friend_manifest_registers_scipy_off_the_shelf_suite() -> None:
-    module = _load_tool_module()
+    module = bench_friends
     _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
     suite = next(s for s in suites if s.id == "scipy_off_the_shelf")
 
@@ -2264,7 +2225,7 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
 def test_tinygrad_off_shelf_adapter_installs_static_upat_exec_registry(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    module = _load_tinygrad_adapter_module()
+    module = tinygrad_off_shelf_adapter
     tinygrad_pkg = tmp_path / "tinygrad"
     (tinygrad_pkg / "uop").mkdir(parents=True)
     (tinygrad_pkg / "__init__.py").write_text("", encoding="utf-8")
@@ -2409,7 +2370,7 @@ def test_tinygrad_off_shelf_adapter_propagates_upat_interpret_nameerror(
 def test_tinygrad_off_shelf_adapter_import_restores_process_state(
     tmp_path: Path,
 ) -> None:
-    module = _load_tinygrad_adapter_module()
+    module = tinygrad_off_shelf_adapter
     tinygrad_pkg = tmp_path / "tinygrad"
     tinygrad_pkg.mkdir()
     (tinygrad_pkg / "__init__.py").write_text("", encoding="utf-8")
@@ -2444,7 +2405,7 @@ def test_tinygrad_off_shelf_adapter_import_restores_process_state(
 
 
 def test_tinygrad_off_shelf_adapter_prefers_tolist_without_numpy() -> None:
-    module = _load_tinygrad_adapter_module()
+    module = tinygrad_off_shelf_adapter
 
     class TinygradLikeTensor:
         def tolist(self):
@@ -2457,7 +2418,7 @@ def test_tinygrad_off_shelf_adapter_prefers_tolist_without_numpy() -> None:
 
 
 def test_numpy_off_shelf_adapter_source_tree_audit(tmp_path: Path, capsys) -> None:
-    module = _load_numpy_adapter_module()
+    module = numpy_off_shelf_adapter
     suite_root = tmp_path / "numpy_src"
     (suite_root / "numpy" / "_core").mkdir(parents=True)
     (suite_root / "numpy" / "__init__.py").write_text(
@@ -2492,7 +2453,7 @@ def test_numpy_off_shelf_adapter_rejects_loaded_submodule_origin_escape(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_numpy_adapter_module()
+    module = numpy_off_shelf_adapter
     suite_root = tmp_path / "numpy_src"
     outside_root = tmp_path / "outside"
     (suite_root / "numpy").mkdir(parents=True)
@@ -2521,7 +2482,7 @@ def test_numpy_off_shelf_adapter_rejects_loaded_submodule_origin_escape(
 
 def test_numpy_off_shelf_adapter_runs_public_api_workloads(capsys) -> None:
     np = pytest.importorskip("numpy")
-    module = _load_numpy_adapter_module()
+    module = numpy_off_shelf_adapter
 
     rc = module.main(
         [

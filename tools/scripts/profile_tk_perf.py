@@ -23,6 +23,7 @@ import time
 import threading
 from typing import TYPE_CHECKING
 
+
 if TYPE_CHECKING:
     import tkinter as tk
 

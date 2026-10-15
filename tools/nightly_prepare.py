@@ -16,16 +16,19 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-for import_root in (ROOT, SRC):
-    if str(import_root) not in sys.path:
-        sys.path.insert(0, str(import_root))
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 from molt.artifact_publication import atomic_write_json  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
-from tools.command_execution import CommandExecutor, bind_repository_imports  # noqa: E402
-
-bind_repository_imports(__file__)
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 from tools import cpython_regrtest, nightly_sharding  # noqa: E402
 

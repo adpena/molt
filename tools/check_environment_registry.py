@@ -95,13 +95,19 @@ import sys
 import tokenize
 import tomllib
 
-ROOT = Path(__file__).resolve().parents[1]
-for _import_root in (ROOT / "tools", ROOT / "src"):
-    if str(_import_root) not in sys.path:
-        sys.path.insert(0, str(_import_root))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from _io_utf8 import force_utf8_stdio  # noqa: E402
-import gen_environment_registry as _gen  # noqa: E402
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+from tools._io_utf8 import force_utf8_stdio  # noqa: E402
+from tools import gen_environment_registry as _gen  # noqa: E402
 from molt.environment_registry import (  # noqa: E402
     EnvironmentRegistry,
     EnvironmentRegistryError,

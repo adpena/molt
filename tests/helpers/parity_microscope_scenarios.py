@@ -42,6 +42,8 @@ if str(_ROOT) not in sys.path:
 
 import numpy as np  # noqa: E402
 
+from tools import parity_microscope as scope  # noqa: E402
+
 
 def _import_by_path(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -51,7 +53,6 @@ def _import_by_path(name: str, path: Path):
     return module
 
 
-scope = _import_by_path("parity_microscope", _ROOT / "tools" / "parity_microscope.py")
 field_solve_mod = _import_by_path(
     "pact_field_solve_for_scenarios",
     _ROOT / "collab" / "pact" / "pact_witness_kernel" / "field_solve.py",

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
+import functools
 import importlib
 import importlib.machinery
 import importlib.resources
 import importlib.util
 import sys
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -15,6 +18,7 @@ from tools.import_file import (
     bind_repository_imports,
     load_module_from_path,
     load_sibling_package_module_from_path,
+    tool_module_name,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -132,111 +136,25 @@ def _namespace_package(name: str, locations: list[Path]) -> ModuleType:
     return package
 
 
-def test_top_level_import_reuses_loaded_canonical_module(
+def test_bare_binder_import_is_refused_without_side_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.syspath_prepend(str(ROOT / "tools"))
-    sys.modules.pop("import_file", None)
-    try:
-        direct = importlib.import_module("import_file")
-        canonical = sys.modules["tools.import_file"]
-        assert direct is canonical
-        assert sys.modules["import_file"] is canonical
-        assert getattr(direct, "bind_repository_imports") is bind_repository_imports
-    finally:
-        sys.modules.pop("import_file", None)
-
-
-def test_top_level_import_publishes_file_first_module_canonically(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    # One import identity (HF-221): with tools/ on sys.path, a bare
+    # `import_file` must fail before it can build a second binder, load the
+    # custody helper, or touch the canonical module and its parent binding.
+    tools_package = sys.modules["tools"]
     canonical = sys.modules["tools.import_file"]
-    tools_package = sys.modules["tools"]
+    custody = sys.modules[_ADMISSION_MODULE]
     monkeypatch.syspath_prepend(str(ROOT / "tools"))
-    sys.modules.pop("import_file", None)
-    sys.modules.pop("tools.import_file", None)
-    try:
-        direct = importlib.import_module("import_file")
-        assert sys.modules["tools.import_file"] is direct
-        assert importlib.import_module("tools.import_file") is direct
-        assert tools_package.import_file is direct
-    finally:
-        sys.modules.pop("import_file", None)
-        sys.modules["tools.import_file"] = canonical
-        tools_package.import_file = canonical
+    monkeypatch.delitem(sys.modules, "import_file", raising=False)
 
+    with pytest.raises(ImportError, match="as tools.import_file, not 'import_file'"):
+        importlib.import_module("import_file")
 
-@pytest.mark.parametrize("canonical_state", ["absent", "none"])
-@pytest.mark.parametrize("parent_state", ["absent", "existing"])
-@pytest.mark.parametrize("failure", ["missing", "body", "cached-none", "foreign"])
-def test_top_level_import_failure_preserves_alias_and_parent_bindings(
-    tmp_path, monkeypatch, canonical_state, parent_state, failure
-):
-    selected = tmp_path / "selected"
-    tools_root = selected / "tools"
-    tools_root.mkdir(parents=True)
-    (tools_root / "import_file.py").write_bytes(
-        (ROOT / "tools/import_file.py").read_bytes()
-    )
-    helper = selected / "src/molt/package_import_custody.py"
-    helper.parent.mkdir(parents=True)
-    if failure == "body":
-        helper.write_text(
-            "raise RuntimeError('ordinary helper body failure')\n", encoding="utf-8"
-        )
-    elif failure != "missing":
-        helper.write_bytes((ROOT / "src/molt/package_import_custody.py").read_bytes())
-
-    tools_package = sys.modules["tools"]
-    foreign_authority = sys.modules[_ADMISSION_MODULE]
-    marker = object()
-    expected_error, diagnostic = {
-        "missing": (FileNotFoundError, "package_import_custody"),
-        "body": (RuntimeError, "ordinary helper body failure"),
-        "cached-none": (ImportError, "already loaded from another authority"),
-        "foreign": (ImportError, "already loaded from another authority"),
-    }[failure]
-
-    # Scope altered imports to this operation so pytest/report hooks observe
-    # their original package bindings even when the regression assertion fails.
-    with monkeypatch.context() as scoped:
-        scoped.syspath_prepend(str(tools_root))
-        scoped.delitem(sys.modules, "import_file", raising=False)
-        if canonical_state == "none":
-            scoped.setitem(sys.modules, "tools.import_file", None)
-        else:
-            scoped.delitem(sys.modules, "tools.import_file", raising=False)
-        if parent_state == "existing":
-            scoped.setattr(tools_package, "import_file", marker, raising=False)
-        else:
-            scoped.delattr(tools_package, "import_file", raising=False)
-        if failure == "cached-none":
-            scoped.setitem(sys.modules, _ADMISSION_MODULE, None)
-        elif failure == "foreign":
-            scoped.setitem(sys.modules, _ADMISSION_MODULE, foreign_authority)
-        else:
-            scoped.delitem(sys.modules, _ADMISSION_MODULE, raising=False)
-
-        before = (
-            "tools.import_file" in sys.modules,
-            sys.modules.get("tools.import_file"),
-            hasattr(tools_package, "import_file"),
-            getattr(tools_package, "import_file", None),
-            _ADMISSION_MODULE in sys.modules,
-            sys.modules.get(_ADMISSION_MODULE),
-        )
-        with pytest.raises(expected_error, match=diagnostic):
-            importlib.import_module("import_file")
-
-        assert "import_file" not in sys.modules
-        assert (
-            "tools.import_file" in sys.modules,
-            sys.modules.get("tools.import_file"),
-            hasattr(tools_package, "import_file"),
-            getattr(tools_package, "import_file", None),
-            _ADMISSION_MODULE in sys.modules,
-            sys.modules.get(_ADMISSION_MODULE),
-        ) == before
+    assert "import_file" not in sys.modules
+    assert sys.modules["tools.import_file"] is canonical
+    assert tools_package.import_file is canonical
+    assert sys.modules[_ADMISSION_MODULE] is custody
 
 
 def test_repository_binding_repositions_selected_roots_ahead_of_foreign_paths(
@@ -284,16 +202,16 @@ def test_repository_binding_canonicalizes_unexecuted_namespace_root(
 def test_repository_binding_canonicalizes_nested_namespace_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    selected = ROOT / "tools" / "bench"
-    foreign = tmp_path / "foreign" / "tools" / "bench"
+    selected = ROOT / "tools" / "compat"
+    foreign = tmp_path / "foreign" / "tools" / "compat"
     foreign.mkdir(parents=True)
-    namespace = _namespace_package("tools.bench", [selected, foreign])
-    monkeypatch.setitem(sys.modules, "tools.bench", namespace)
+    namespace = _namespace_package("tools.compat", [selected, foreign])
+    monkeypatch.setitem(sys.modules, "tools.compat", namespace)
 
     bind_repository_imports(ROOT / "tools" / "structural_audit.py")
 
     expected = [str(selected.resolve())]
-    assert sys.modules["tools.bench"] is namespace
+    assert sys.modules["tools.compat"] is namespace
     assert list(namespace.__path__) == expected
     assert list(namespace.__spec__.submodule_search_locations) == expected
 
@@ -466,24 +384,25 @@ def test_sibling_package_loader_restores_parent_after_failure(tmp_path) -> None:
         sys.modules.pop(package_name, None)
 
 
-def _resolves_beside(script: Path, module: str) -> bool:
-    head = module.split(".", 1)[0]
-    return (script.parent / f"{head}.py").is_file() or (script.parent / head).is_dir()
+_STDLIB = frozenset(sys.stdlib_module_names)
+# A tools module named like a stdlib module (`profile`) means the stdlib one.
+_TOOLS_TOP = (
+    frozenset(
+        {path.stem for path in (ROOT / "tools").glob("*.py")}
+        | {
+            path.name
+            for path in (ROOT / "tools").iterdir()
+            if path.is_dir() and path.name.isidentifier()
+        }
+    )
+    - _STDLIB
+)
 
 
-def _script_launch_failure(script: Path) -> str | None:
-    """The first import a by-path launch of ``script`` cannot resolve.
-
-    A launch puts only the script's directory first on ``sys.path``: ``tools``
-    resolves after ``bind_repository_imports``, a fallback must name a file
-    beside the script, and a relative import never resolves.
-    """
-    import ast
-
-    tree = ast.parse(script.read_text(encoding="utf-8"))
+def _is_entrypoint(tree: ast.Module) -> bool:
     # Generated script text and nested guards do not turn their owning module
     # into a path entrypoint. Inspect the executable module body itself.
-    if not any(
+    return any(
         isinstance(node, ast.If)
         and isinstance(node.test, ast.Compare)
         and len(node.test.ops) == 1
@@ -491,67 +410,240 @@ def _script_launch_failure(script: Path) -> str | None:
         and {ast.unparse(node.test.left), ast.unparse(node.test.comparators[0])}
         == {"__name__", "'__main__'"}
         for node in tree.body
+    )
+
+
+def _edits_sys_path(node: ast.AST) -> bool:
+    return any(
+        isinstance(call, ast.Call)
+        and ast.unparse(call.func)
+        in {"sys.path.insert", "sys.path.append", "sys.path.extend"}
+        for call in ast.walk(node)
+    )
+
+
+# Python a developer's CPython runs from a checkout. demos/, examples/ and
+# demo/ hold programs Molt compiles; src/ is the installed package.
+_HOST_SCRIPT_ROOTS = (
+    "tools",
+    "bench",
+    "deploy",
+    "drivers",
+    "collab",
+    "packaging",
+    "docs",
+    ".github",
+)
+
+
+@functools.cache
+def _repository_python(*roots: str) -> tuple[Path, ...]:
+    """Python files under ``roots`` that git tracks or would track.
+
+    Ignored trees (virtualenvs, node_modules, cloned upstream repos) are
+    not repository code.
+    """
+    listed = run_guarded_test_process(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            *(f"{root}/*.py" for root in roots),
+        ],
+        cwd=ROOT,
+        check=True,
+    ).stdout
+    return tuple(
+        path
+        for path in sorted({ROOT / item for item in listed.split("\0") if item})
+        if path.is_file()
+    )
+
+
+def _is_root_insertion(node: ast.stmt) -> bool:
+    """`if str(_REPO_ROOT) not in sys.path: sys.path.insert(0, str(_REPO_ROOT))`."""
+    return (
+        isinstance(node, ast.If)
+        and not node.orelse
+        and ast.unparse(node.test) == "str(_REPO_ROOT) not in sys.path"
+        and [ast.unparse(statement) for statement in node.body]
+        == ["sys.path.insert(0, str(_REPO_ROOT))"]
+    )
+
+
+def _module_heads(node: ast.stmt) -> list[str | None]:
+    if isinstance(node, ast.Import):
+        return [alias.name.split(".")[0] for alias in node.names]
+    if isinstance(node, ast.ImportFrom):
+        return [None if node.level else (node.module or "").split(".")[0]]
+    return []
+
+
+# Top-level import names that resolve inside this repository.
+_REPOSITORY_PACKAGES = frozenset(
+    {"tests", *(root for root in _HOST_SCRIPT_ROOTS if root.isidentifier())}
+    | {
+        path.stem if path.suffix == ".py" else path.name
+        for path in (ROOT / "src").iterdir()
+        if (path.suffix == ".py" or (path / "__init__.py").is_file())
+        and path.stem != "sitecustomize"
+    }
+)
+
+
+def _by_path_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """The nodes a by-path launch can execute.
+
+    An ``if __package__:`` body runs only when the file is imported as a
+    package module, never when it is launched by path.
+    """
+    yield node
+    if (
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "__package__"
     ):
-        return None
-    bound = False
-    for node in tree.body:
-        calls = {
-            ast.unparse(call.func)
-            for call in ast.walk(node)
-            if isinstance(call, ast.Call)
-        }
-        # Binding the repository (directly or through the executor, which
-        # binds from its file), or putting a root on sys.path, makes later
-        # tools imports resolve.
-        if calls & {
-            "bind_repository_imports",
-            "CommandExecutor.for_file",
-            "sys.path.insert",
-            "sys.path.append",
-        }:
-            bound = True
-            if not isinstance(node, (ast.Import, ast.ImportFrom, ast.Try, ast.If)):
-                continue
-        if isinstance(node, ast.ImportFrom) and node.level:
-            return f"line {node.lineno}: relative import"
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            names = (
-                [alias.name for alias in node.names]
-                if isinstance(node, ast.Import)
-                else [node.module or ""]
-            )
-            if not bound and any(name.split(".")[0] == "tools" for name in names):
-                return f"line {node.lineno}: tools import before binding"
-        guarded = isinstance(node, ast.Try) or (
-            isinstance(node, ast.If) and "__package__" in ast.unparse(node.test)
-        )
-        if guarded and not bound:
-            fallbacks = (
-                [stmt for handler in node.handlers for stmt in handler.body]
-                if isinstance(node, ast.Try)
-                else node.body
-            )
-            for stmt in fallbacks:
-                if isinstance(stmt, ast.ImportFrom) and stmt.level == 0:
-                    module = stmt.module or ""
-                    if module.split(".")[0] != "tools" and not _resolves_beside(
-                        script, module
-                    ):
-                        if (ROOT / "tools" / f"{module.split('.')[0]}.py").is_file():
-                            return f"line {stmt.lineno}: fallback {module} is not beside it"
-    return None
+        children: Iterable[ast.AST] = node.orelse
+    else:
+        children = ast.iter_child_nodes(node)
+    for child in children:
+        yield from _by_path_nodes(child)
 
 
-def test_tool_scripts_import_when_launched_by_path() -> None:
-    failures = {}
-    for script in sorted((ROOT / "tools").rglob("*.py")):
-        source = script.read_text(encoding="utf-8")
-        if "__main__" not in source:
+def _imports_repository_code(tree: ast.Module) -> bool:
+    for node in _by_path_nodes(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "tools.import_file":
             continue
-        failure = _script_launch_failure(script)
-        if failure is not None:
-            failures[script.relative_to(ROOT).as_posix()] = failure
+        heads = _module_heads(node) if isinstance(node, ast.stmt) else []
+        if any(head is None or head in _REPOSITORY_PACKAGES for head in heads):
+            return True
+    return False
+
+
+def _bootstrap_failure(script: Path, *, root: Path = ROOT) -> str | None:
+    """Why ``script``, launched by path, could import repository code unbound.
+
+    Every tool entrypoint binds the repository before its first repository
+    import; the canonical root insertion that reaches the binder is its only
+    module-level sys.path edit.
+    """
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    if not _is_entrypoint(tree) or not _imports_repository_code(tree):
+        return None
+    root_value = (
+        f"Path(__file__).resolve().parents[{len(script.relative_to(root).parts) - 1}]"
+    )
+    for node in tree.body:
+        if isinstance(node, (ast.Expr, ast.Assign)) and ast.unparse(node.value) == (
+            "bind_repository_imports(__file__)"
+        ):
+            return None
+        if _is_root_insertion(node):
+            continue
+        if isinstance(node, ast.Assign) and [
+            ast.unparse(target) for target in node.targets
+        ] == ["_REPO_ROOT"]:
+            if ast.unparse(node.value) != root_value:
+                return f"line {node.lineno}: _REPO_ROOT must be {root_value}"
+            continue
+        if isinstance(node, ast.ImportFrom) and node.module == "tools.import_file":
+            continue
+        for head in _module_heads(node):
+            if head is None or head not in _STDLIB:
+                return f"line {node.lineno}: import before the repository binding"
+        if _edits_sys_path(node):
+            return f"line {node.lineno}: sys.path edit outside the bootstrap"
+    return "no repository binding"
+
+
+def test_binding_a_by_path_tool_drops_tools_directories_from_sys_path(
+    tmp_path: Path,
+) -> None:
+    # A by-path launch puts tools/ first, where tools/profile.py shadows the
+    # stdlib module; binding must leave only package-qualified tool imports.
+    script = ROOT / "tools" / "frontend_hot_pass_profile.py"
+    code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "script = Path(sys.argv[1])\n"
+        "sys.path[0] = str(script.parent)\n"
+        "sys.path.insert(0, str(script.parents[1]))\n"
+        "from tools.import_file import bind_repository_imports\n"
+        "bind_repository_imports(script)\n"
+        "import profile\n"
+        "print(profile.__file__)\n"
+        "print(any(Path(p or '.').resolve().is_relative_to(script.parent)"
+        " for p in sys.path))\n"
+    )
+    result = run_guarded_test_process(
+        [sys.executable, "-I", "-c", code, str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    profile_file, tools_on_path = result.stdout.split()
+    assert Path(profile_file).parent != ROOT / "tools"
+    assert tools_on_path == "False"
+
+
+def test_every_host_entrypoint_binds_the_repository_first() -> None:
+    failures = {
+        script.relative_to(ROOT).as_posix(): failure
+        for script in _repository_python(*_HOST_SCRIPT_ROOTS)
+        if (failure := _bootstrap_failure(script)) is not None
+    }
     assert not failures, failures
+
+
+def _bare_tool_imports(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        f"line {node.lineno}: {ast.unparse(node)}"
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and any(head in _TOOLS_TOP for head in _module_heads(node))
+    ]
+
+
+def test_tools_have_one_import_identity() -> None:
+    """Repository tools import each other only as ``tools.<module>``.
+
+    A bare sibling import resolves only while ``tools/`` is on sys.path, so a
+    module would load under two names depending on how it was launched.
+    """
+    failures = {
+        path.relative_to(ROOT).as_posix(): bare
+        for path in _repository_python(
+            *_HOST_SCRIPT_ROOTS, "tests", "src", "demos", "demo", "examples"
+        )
+        if not path.is_relative_to(ROOT / "tests" / "differential")
+        and not path.is_relative_to(ROOT / "src" / "molt" / "stdlib")
+        and (bare := _bare_tool_imports(path))
+    }
+    assert not failures, failures
+
+
+def test_host_libraries_never_edit_sys_path_at_import() -> None:
+    failures = []
+    for path in _repository_python(*_HOST_SCRIPT_ROOTS):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if _is_entrypoint(tree):
+            continue
+        failures.extend(
+            f"{path.relative_to(ROOT).as_posix()}:{node.lineno}"
+            for node in tree.body
+            if not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+            and _edits_sys_path(node)
+        )
+    assert failures == []
 
 
 @pytest.mark.parametrize(
@@ -593,7 +685,83 @@ def test_script_launch_scan_uses_executable_module_guard(
 ) -> None:
     script = tmp_path / "command.py"
     script.write_text("from . import sibling\n" + body, encoding="utf-8")
-    failure = _script_launch_failure(script)
+    failure = _bootstrap_failure(script, root=tmp_path.parent)
     assert (failure is not None) is is_entrypoint
     if is_entrypoint:
-        assert failure == "line 1: relative import"
+        assert failure == "line 1: import before the repository binding"
+
+
+def test_tool_module_name_is_the_dotted_tools_path() -> None:
+    tools_root = ROOT / "tools"
+    assert tool_module_name(tools_root / "import_file.py") == "tools.import_file"
+    assert tool_module_name(tools_root / "compat" / "diff_results.py") == (
+        "tools.compat.diff_results"
+    )
+    assert tool_module_name(tools_root / "proof_queue_pkg" / "__init__.py") == (
+        "tools.proof_queue_pkg"
+    )
+    assert tool_module_name(ROOT / "src" / "molt" / "dx.py") is None
+    assert tool_module_name(ROOT / "tests" / "tools" / "test_import_file.py") is None
+    assert tool_module_name(tools_root / "proof_plan.toml") is None
+
+
+def test_test_session_refuses_a_second_tool_identity() -> None:
+    source = ROOT / "tools" / "import_file.py"
+    with pytest.raises(ImportError, match="import tools.import_file instead"):
+        importlib.util.spec_from_file_location("private_binder", source)
+    assert importlib.util.spec_from_file_location("tools.import_file", source)
+    with pytest.raises(ImportError, match="import tools.import_file instead"):
+        load_module_from_path("private_binder", source)
+    assert "private_binder" not in sys.modules
+
+
+def test_package_only_imports_do_not_need_a_by_path_binding() -> None:
+    # The proof custody bootstrap runs inside payload children and must not
+    # bind the repository; its relative import runs only under a package import.
+    package_only = ast.parse(
+        "if __package__:\n    from .authority import check\nelse:\n    check = None\n"
+    )
+    by_path = ast.parse(
+        "if __package__:\n    pass\nelse:\n    from tools import authority\n"
+    )
+    assert not _imports_repository_code(package_only)
+    assert _imports_repository_code(by_path)
+
+
+def test_bootstrap_scan_accepts_only_the_canonical_binding(tmp_path: Path) -> None:
+    canonical = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "_REPO_ROOT = Path(__file__).resolve().parents[1]\n"
+        "if str(_REPO_ROOT) not in sys.path:\n"
+        "    sys.path.insert(0, str(_REPO_ROOT))\n"
+        "from tools.import_file import bind_repository_imports\n"
+        "bind_repository_imports(__file__)\n"
+        "from tools import bench\n"
+        'if __name__ == "__main__":\n'
+        "    bench.main()\n"
+    )
+    script = tmp_path / "command.py"
+    script.write_text(canonical, encoding="utf-8")
+    assert _bootstrap_failure(script, root=tmp_path.parent) is None
+    script.write_text(canonical.replace("parents[1]", "parents[2]"), encoding="utf-8")
+    assert _bootstrap_failure(script, root=tmp_path.parent) == (
+        "line 3: _REPO_ROOT must be Path(__file__).resolve().parents[1]"
+    )
+    hand_rolled = canonical.replace(
+        "if str(_REPO_ROOT) not in sys.path:\n    sys.path.insert(0, str(_REPO_ROOT))",
+        "sys.path.insert(0, str(Path(__file__).parent))",
+    )
+    script.write_text(hand_rolled, encoding="utf-8")
+    assert (
+        _bootstrap_failure(script, root=tmp_path.parent)
+        == "line 4: sys.path edit outside the bootstrap"
+    )
+    script.write_text(
+        'from tools import bench\nif __name__ == "__main__":\n    bench.main()\n',
+        encoding="utf-8",
+    )
+    assert (
+        _bootstrap_failure(script, root=tmp_path.parent)
+        == "line 1: import before the repository binding"
+    )

@@ -15,9 +15,7 @@ the mask-proof that it can.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 import platform
 
@@ -25,20 +23,9 @@ import pytest
 from tests.process_guard_common import install_module_view
 import shutil
 
-_RUNNER = Path(__file__).resolve().parents[2] / "tools" / "witness_iter.py"
+from tools import witness_iter as WI
 
 
-def _load_runner():
-    spec = importlib.util.spec_from_file_location("witness_iter_mod", _RUNNER)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    # Register before exec so @dataclass can resolve cls.__module__ during import.
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-WI = _load_runner()
 BASELINE = WI.DEFAULT_BASELINES["_multiarray_umath"]
 
 

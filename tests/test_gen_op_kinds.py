@@ -39,7 +39,6 @@ from tools.op_kinds.paths import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AUDIT = ROOT / "tools" / "audit_op_kinds.py"
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
 
 
@@ -230,7 +229,7 @@ def _render_rust():
 
 
 def _audit():
-    return _load(AUDIT, "molt_test_audit_op_kinds")
+    return importlib.import_module("tools.audit_op_kinds")
 
 
 def _generated_arm_region(rendered: str, marker: str, next_prefix: str) -> str:

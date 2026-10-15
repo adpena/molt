@@ -26,14 +26,21 @@ import sys
 import tempfile
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO = Path(__file__).resolve().parent.parent
 TOOLS = REPO / "tools"
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
 
-import perf_board as pb  # noqa: E402
-import perf_history as ph  # noqa: E402
-import perf_schema as schema  # noqa: E402
+
+from tools import perf_board as pb  # noqa: E402
+from tools import perf_history as ph  # noqa: E402
+from tools import perf_schema as schema  # noqa: E402
 
 
 def _green_cell() -> dict[str, object]:

@@ -35,12 +35,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from tools import claims_status as cs
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    import claims_status as cs  # type: ignore
-    from command_execution import CommandExecutor  # type: ignore
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import claims_status as cs  # noqa: E402
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 # Binding the executor binds the repository, so the tools package resolves next.
 _COMMANDS = CommandExecutor.for_file(__file__)

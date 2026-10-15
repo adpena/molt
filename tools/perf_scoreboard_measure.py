@@ -3,21 +3,19 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
 
-import bench  # noqa: E402
-import bench_suites  # noqa: E402
-import harness_memory_guard  # noqa: E402
-from perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
-from perf_scoreboard_model import (  # noqa: E402
+
+from tools import bench  # noqa: E402
+from tools import bench_suites  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
+from tools.perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
+from tools.perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
     REPO_ROOT,
     RUN_BLOCKED_BACKENDS,
@@ -43,7 +41,7 @@ def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     codec, conformance dirs). The codegen backend is a build flag
     from the canonical release lane, never an environment variable.
     """
-    from perf_scoreboard_build_profiles import profile_selection
+    from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
     base = os.environ.copy()
@@ -110,7 +108,7 @@ def measure_cell(
     log_lines: list[str] = [f"# {benchmark} | {spec.backend} | {profile}"]
 
     build_env = _perfscore_build_env(spec, profile)
-    from perf_scoreboard_build_profiles import profile_selection
+    from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
     extra_args = [
@@ -175,7 +173,7 @@ def measure_cell(
 
     cell.build_ok = True
     cell.build_observation = binary.build_observation
-    from perf_scoreboard_build_profiles import profile_binding_problems
+    from tools.perf_scoreboard_build_profiles import profile_binding_problems
 
     binding_problems = profile_binding_problems(
         binary.build_observation, backend=spec.backend, profile=profile
@@ -348,7 +346,7 @@ def measure_cell(
         and cpy_stats.n > 0
     )
     if emit_cycle_profile and is_warm_red_now:
-        from perf_scoreboard import capture_cycle_profile
+        from tools.perf_scoreboard import capture_cycle_profile
 
         log_lines.append("capturing CYCLE profile (warm red — Rule 1 attribution)")
         cell.cycle_profile = capture_cycle_profile(

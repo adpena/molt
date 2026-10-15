@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 import sys
 import tomllib
 
+
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "tools/test_ownership_baseline.json"
 SCHEMA_VERSION = 1

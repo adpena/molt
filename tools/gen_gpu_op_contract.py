@@ -66,23 +66,24 @@ A decision the pinned source contradicts (or a missing pinned source) raises
 from __future__ import annotations
 
 import ast
-import importlib.util as _ilu
 from pathlib import Path
 
-from generator_io import generator_main
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+# The contract header records the *checked* pinned version, so a bump that
+# forgets to re-run this generator is caught by the pin gate.
+from tools.check_tinygrad_pin import PINNED_TINYGRAD_VERSION  # noqa: E402
+from tools.generator_io import generator_main  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-
-# Load the pin authority so the contract header records the *checked* pinned
-# version (and a bump that forgets to re-run this generator is caught by the pin
-# gate). Direct-file load to avoid package-path assumptions.
-_PIN_SPEC = _ilu.spec_from_file_location(
-    "_molt_check_tinygrad_pin", ROOT / "tools" / "check_tinygrad_pin.py"
-)
-assert _PIN_SPEC is not None and _PIN_SPEC.loader is not None
-_PIN_MOD = _ilu.module_from_spec(_PIN_SPEC)
-_PIN_SPEC.loader.exec_module(_PIN_MOD)
-PINNED_TINYGRAD_VERSION: str = _PIN_MOD.PINNED_TINYGRAD_VERSION
 
 # --- pinned-source authorities (the read-only oracle) ------------------------
 OFF_THE_SHELF = ROOT / "bench/friends/repos/tinygrad_off_the_shelf"

@@ -44,10 +44,16 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-for _import_root in (ROOT, ROOT / "src", ROOT / "tools"):
-    if str(_import_root) not in sys.path:
-        sys.path.insert(0, str(_import_root))
+
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.cpython_regrtest import (  # noqa: E402
@@ -627,9 +633,8 @@ def _format_facade_module(
             "",
             "from __future__ import annotations",
             "",
-            "import importlib.util as _importlib_util",
+            "import runpy as _runpy",
             "from pathlib import Path as _Path",
-            "from types import ModuleType as _ModuleType",
             "",
             f"BASELINE_PYTHON_VERSIONS = {version_tuple}",
             "",
@@ -641,15 +646,10 @@ def _format_facade_module(
             "}",
             "",
             "",
-            "def _load_version_data(version: str) -> _ModuleType:",
+            "def _load_version_data(version: str) -> dict[str, object]:",
+            "    # Sibling data files, read as data: no second module identity.",
             "    stem = _VERSION_MODULE_STEMS[version]",
-            '    path = _Path(__file__).with_name(f"{stem}.py")',
-            "    spec = _importlib_util.spec_from_file_location(stem, path)",
-            "    if spec is None or spec.loader is None:",
-            '        raise ImportError(f"cannot load stdlib union data for {version}: {path}")',
-            "    module = _importlib_util.module_from_spec(spec)",
-            "    spec.loader.exec_module(module)",
-            "    return module",
+            '    return _runpy.run_path(str(_Path(__file__).with_name(f"{stem}.py")))',
             "",
             "",
             "_VERSION_DATA = {",
@@ -657,19 +657,19 @@ def _format_facade_module(
             "}",
             "",
             "STDLIB_MODULES_BY_VERSION = {",
-            "    version: _VERSION_DATA[version].STDLIB_MODULES",
+            '    version: _VERSION_DATA[version]["STDLIB_MODULES"]',
             "    for version in BASELINE_PYTHON_VERSIONS",
             "}",
             "STDLIB_PACKAGES_BY_VERSION = {",
-            "    version: _VERSION_DATA[version].STDLIB_PACKAGES",
+            '    version: _VERSION_DATA[version]["STDLIB_PACKAGES"]',
             "    for version in BASELINE_PYTHON_VERSIONS",
             "}",
             "STDLIB_PY_MODULES_BY_VERSION = {",
-            "    version: _VERSION_DATA[version].STDLIB_PY_MODULES",
+            '    version: _VERSION_DATA[version]["STDLIB_PY_MODULES"]',
             "    for version in BASELINE_PYTHON_VERSIONS",
             "}",
             "STDLIB_PY_PACKAGES_BY_VERSION = {",
-            "    version: _VERSION_DATA[version].STDLIB_PY_PACKAGES",
+            '    version: _VERSION_DATA[version]["STDLIB_PY_PACKAGES"]',
             "    for version in BASELINE_PYTHON_VERSIONS",
             "}",
             "",

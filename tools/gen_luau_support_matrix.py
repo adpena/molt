@@ -15,13 +15,20 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from generator_io import generator_main
-from molt.rust_source_scan import mask_rust_comments_and_strings
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.generator_io import generator_main  # noqa: E402
+from molt.rust_source_scan import mask_rust_comments_and_strings  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 from tools.op_kinds.runtime_requirements import (  # noqa: E402 - direct-script bootstrap above
     integer_semantics_by_kind,
     registered_runtime_kinds,

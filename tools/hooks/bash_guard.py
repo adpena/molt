@@ -42,15 +42,18 @@ import shlex
 import sys
 from dataclasses import dataclass, field
 
-try:
-    from tools.hooks import _common
-    from tools.hooks.waivers import record_waiver
-except Exception:  # pragma: no cover - path-invocation fallback
-    import os as _os
+from pathlib import Path
 
-    sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))))
-    from tools.hooks import _common
-    from tools.hooks.waivers import record_waiver
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.hooks import _common  # noqa: E402
+from tools.hooks.waivers import record_waiver  # noqa: E402
 
 
 OVERRIDE_TOKEN = "MOLT_GUARD_OK"

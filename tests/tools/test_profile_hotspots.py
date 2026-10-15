@@ -1,30 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PROFILE_HOTSPOTS = REPO_ROOT / "tools" / "profile_hotspots.py"
-
-
-def _load_profile_hotspots():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_profile_hotspots",
-        PROFILE_HOTSPOTS,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import profile_hotspots
 
 
 def test_profile_hotspots_summarizes_slowest_events(tmp_path: Path) -> None:
-    module = _load_profile_hotspots()
+    module = profile_hotspots
     log_path = tmp_path / "commands.jsonl"
     events = [
         {
@@ -76,7 +59,7 @@ def test_profile_hotspots_summarizes_slowest_events(tmp_path: Path) -> None:
 
 
 def test_profile_hotspots_filters_by_prefix_and_min_elapsed(tmp_path: Path) -> None:
-    module = _load_profile_hotspots()
+    module = profile_hotspots
     log_path = tmp_path / "commands.jsonl"
     events = [
         {

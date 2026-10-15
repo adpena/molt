@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+
 FACT_GRAPH_SCHEMA_VERSION = 3
 FACT_GRAPH_KIND = "molt_tir_fact_graph"
 BOXED_REPRS = frozenset({"DynBox", "MaybeBigInt"})

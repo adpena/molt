@@ -11,27 +11,30 @@ import sys
 import time
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 TOOLS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = TOOLS_ROOT.parent
 SRC_ROOT = REPO_ROOT / "src"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-import harness_memory_guard  # noqa: E402
+
+from tools import harness_memory_guard  # noqa: E402
 from molt.cli.atomic_io import _atomic_write_json  # noqa: E402
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
 )
-from wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
-from wasm_link_optimizer_policy import _tree_shake_runtime  # noqa: E402
-from wasm_link_runtime_data import (  # noqa: E402
-    _canonical_split_runtime_required_exports,
-)
-from wasm_metrics import wasm_metrics  # noqa: E402
+from tools.wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
+from tools.wasm_link_optimizer_policy import _tree_shake_runtime  # noqa: E402
+from tools.wasm_link_runtime_data import _canonical_split_runtime_required_exports  # noqa: E402
+from tools.wasm_metrics import wasm_metrics  # noqa: E402
 
 
 def _sha256(data: bytes) -> str:

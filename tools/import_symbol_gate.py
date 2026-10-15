@@ -21,6 +21,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOTS: tuple[tuple[str, Path], ...] = (
     ("molt", ROOT / "src" / "molt"),

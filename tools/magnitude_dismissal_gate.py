@@ -45,22 +45,20 @@ import re
 import sys
 from pathlib import Path
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
-try:
-    from tools.hooks import _common
-    from tools.hooks.waivers import is_valid_rationale, record_waiver
-except Exception:  # pragma: no cover - path-invocation fallback
-    import os as _os
-
-    sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-    from tools.hooks import _common
-    from tools.hooks.waivers import is_valid_rationale, record_waiver
+from tools.hooks import _common  # noqa: E402
+from tools.hooks.waivers import is_valid_rationale, record_waiver  # noqa: E402
 
 
 MARKER_NAME = "magnitude_dismissal_marker.json"

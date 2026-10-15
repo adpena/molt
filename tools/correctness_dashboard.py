@@ -27,6 +27,17 @@ from typing import Any
 # Paths
 # ---------------------------------------------------------------------------
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.dashboard_delta import DeltaTracker  # noqa: E402
+from tools.specialization_slo import SpecializationSLO  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 FORMAL_LEAN = ROOT / "formal" / "lean"
 FORMAL_QUINT = ROOT / "formal" / "quint"
@@ -661,49 +672,6 @@ def build_json_output(
 # ---------------------------------------------------------------------------
 
 
-def _import_sibling(module_name: str, filename: str) -> Any:
-    """Import a sibling script from the tools/ directory, returning the module or None."""
-    import importlib.util
-
-    path = TOOLS / filename
-    if not path.exists():
-        return None
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        return None
-    mod = importlib.util.module_from_spec(spec)
-    # Register in sys.modules so dataclass introspection works.
-    sys.modules[module_name] = mod
-    try:
-        spec.loader.exec_module(mod)
-    except Exception:
-        sys.modules.pop(module_name, None)
-        return None
-    return mod
-
-
-def _try_import_delta() -> Any:
-    """Import the delta tracker, returning the class or None."""
-    try:
-        from tools.dashboard_delta import DeltaTracker
-
-        return DeltaTracker
-    except ImportError:
-        mod = _import_sibling("dashboard_delta", "dashboard_delta.py")
-        return getattr(mod, "DeltaTracker", None) if mod else None
-
-
-def _try_import_slo() -> Any:
-    """Import the specialization SLO evaluator, returning the class or None."""
-    try:
-        from tools.specialization_slo import SpecializationSLO
-
-        return SpecializationSLO
-    except ImportError:
-        mod = _import_sibling("specialization_slo", "specialization_slo.py")
-        return getattr(mod, "SpecializationSLO", None) if mod else None
-
-
 def flatten_dashboard_state(
     lean: dict[str, Any],
     quint: dict[str, Any],
@@ -746,24 +714,12 @@ def publish_to_delta_tracker(
     tests: dict[str, Any],
     ci: dict[str, Any],
     chain: list[dict[str, Any]],
-) -> Any:
-    """Push the current dashboard state into a DeltaTracker instance.
-
-    Returns the tracker (or None if the delta module is not available).
-    """
-    DeltaTracker = _try_import_delta()
-    if DeltaTracker is None:
-        return None
-
+) -> DeltaTracker:
+    """Push the current dashboard state into a DeltaTracker instance."""
     tracker = DeltaTracker()
     flat = flatten_dashboard_state(lean, quint, tests, ci, chain)
-
-    # Also merge specialization SLO metrics if available.
-    SLOClass = _try_import_slo()
-    if SLOClass is not None:
-        slo = SLOClass.from_env()
-        report = slo.evaluate()
-        flat.update(report.dashboard_metrics())
+    # Also merge specialization SLO metrics.
+    flat.update(SpecializationSLO.from_env().evaluate().dashboard_metrics())
 
     tracker.batch_update(flat)
     return tracker
@@ -807,22 +763,14 @@ def main() -> None:
     if args.delta_snapshot:
         flat = flatten_dashboard_state(lean, quint, tests, ci, chain)
         # Merge SLO metrics.
-        SLOClass = _try_import_slo()
-        if SLOClass is not None:
-            slo = SLOClass.from_env()
-            report = slo.evaluate()
-            flat.update(report.dashboard_metrics())
+        flat.update(SpecializationSLO.from_env().evaluate().dashboard_metrics())
         print(json.dumps(flat, indent=2))
         return
 
     if args.json:
         output = build_json_output(lean, quint, tests, ci, chain)
         # Append SLO status to JSON output.
-        SLOClass = _try_import_slo()
-        if SLOClass is not None:
-            slo = SLOClass.from_env()
-            report = slo.evaluate()
-            output["specialization_slo"] = report.to_dict()
+        output["specialization_slo"] = SpecializationSLO.from_env().evaluate().to_dict()
         print(json.dumps(output, indent=2))
     else:
         render_human(lean, quint, tests, ci, chain, verbose=args.verbose)

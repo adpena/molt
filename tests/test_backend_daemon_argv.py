@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import replace
-import importlib.util
+import importlib
 from pathlib import Path
 import shlex
 import sys
@@ -170,18 +170,11 @@ def test_daemon_observation_uses_only_birth_bound_typed_vectors(
     assert daemon.backend_daemon_process_observations() == ((valid, Path(argv[-1])),)
 
 
-@pytest.mark.parametrize(
-    "relative", ["tools/bench_individual.py", "tests/molt_diff.py"]
-)
+@pytest.mark.parametrize("module_name", ["tools.bench_individual", "tests.molt_diff"])
 def test_lateral_daemon_producers_preserve_typed_socket_path(
-    tmp_path, monkeypatch, relative
+    tmp_path, monkeypatch, module_name
 ):
-    root = Path(__file__).resolve().parents[1]
-    name = "molt_argv_" + Path(relative).stem
-    spec = importlib.util.spec_from_file_location(name, root / relative)
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, name, module)
-    spec.loader.exec_module(module)
+    module = importlib.import_module(module_name)
     socket = tmp_path / "socket with spaces.sock"
     argv = (str(tmp_path / "molt-backend"), "--daemon", "--socket", str(socket))
     sample = model.ProcessSample(12, 1, 0, "diagnostic", 12, 1, 100, argv)

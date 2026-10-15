@@ -14,10 +14,11 @@ import sys
 import time
 from typing import Any
 
-if __package__ in (None, ""):
-    from import_file import bind_repository_imports
-else:
-    from tools.import_file import bind_repository_imports
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
@@ -37,10 +38,7 @@ from molt.node_runtime import NodeRuntimeError, resolve_node_runtime  # noqa: E4
 from molt.wasm_artifact import wasm_runtime_manifest_entry_path  # noqa: E402
 from tools import pact_witness_receipt  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -49,10 +47,8 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 # non-cp1252 char, the default Windows codec raises UnicodeEncodeError and aborts
 # an otherwise-successful run. One shared primitive backstops it (the proof-queue
 # env also sets PYTHONUTF8=1 tree-wide; this is the belt for direct invocation).
-try:  # importable whether launched as a script (tools/ on path) or as tools.X
-    from _io_utf8 import force_utf8_stdio
-except ModuleNotFoundError:
-    from tools._io_utf8 import force_utf8_stdio
+from tools._io_utf8 import force_utf8_stdio  # noqa: E402
+
 force_utf8_stdio()
 
 ROOT = Path(__file__).resolve().parents[1]

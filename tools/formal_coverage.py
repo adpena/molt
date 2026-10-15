@@ -18,10 +18,17 @@ import json
 import re
 from pathlib import Path
 
-try:
-    from correspondence_sources import parse_lean_inductive_variants
-except ModuleNotFoundError:  # pragma: no cover - package-style import path
-    from tools.correspondence_sources import parse_lean_inductive_variants
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.correspondence_sources import parse_lean_inductive_variants  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 LEAN_DIR = ROOT / "formal" / "lean" / "MoltTIR"

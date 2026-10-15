@@ -50,16 +50,22 @@ from typing import Any
 # Repo / environment
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 
 _SRC_DIR = _REPO_ROOT / "src"
-if str(_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_DIR))
+
 
 import molt.cli as molt_cli  # noqa: E402
 from molt import python_interpreter  # noqa: E402

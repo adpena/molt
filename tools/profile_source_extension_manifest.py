@@ -15,7 +15,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from molt.cli.source_extension_manifest_codec import (
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.cli.source_extension_manifest_codec import (  # noqa: E402
     _compact_source_extension_manifest,
     _manifest_sequence,
     _validate_compact_source_extension_manifest,

@@ -1,31 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / "tools" / "check_dynamic_policy.py"
-
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location(
-        "check_dynamic_policy_under_test", SCRIPT_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import check_dynamic_policy as module
 
 
 def test_dynamic_policy_guard_passes_for_repo_state() -> None:
-    module = _load_module()
     assert module.main() == 0
 
 
@@ -37,7 +20,6 @@ def _write_file(path: Path, text: str) -> None:
 def test_scope_discovery_uses_canonical_test_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _load_module()
     monkeypatch.setattr(module, "ROOT", tmp_path)
     expected = frozenset(
         {
@@ -75,7 +57,6 @@ def test_scope_discovery_uses_canonical_test_policy(
 def test_scope_requires_expected_failure_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _load_module()
     monkeypatch.setattr(module, "ROOT", tmp_path)
     exec_path = "tests/differential/basic/exec_case.py"
     eval_path = "tests/differential/basic/eval_case.py"
@@ -101,7 +82,6 @@ def test_scope_requires_expected_failure_metadata(
 def test_runpy_expected_failure_paths_must_exist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _load_module()
     monkeypatch.setattr(module, "ROOT", tmp_path)
     missing_path = "tests/differential/stdlib/runpy_missing_case.py"
 
@@ -113,7 +93,6 @@ def test_runpy_expected_failure_paths_must_exist(
 def test_empty_runpy_expected_failure_lane_allowed_with_doc_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _load_module()
     monkeypatch.setattr(module, "ROOT", tmp_path)
     _write_file(
         tmp_path / "docs/spec/STATUS.md",
@@ -131,7 +110,6 @@ def test_empty_runpy_expected_failure_lane_allowed_with_doc_note(
 def test_empty_runpy_expected_failure_lane_requires_doc_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _load_module()
     monkeypatch.setattr(module, "ROOT", tmp_path)
     _write_file(tmp_path / "docs/spec/STATUS.md", "runpy policy lanes are tracked.")
     _write_file(tmp_path / "ROADMAP.md", "policy update pending.")
@@ -145,7 +123,6 @@ def test_empty_runpy_expected_failure_lane_requires_doc_note(
 def test_runtime_policy_guard_requires_executable_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = _load_module()
     monkeypatch.setattr(module, "ROOT", tmp_path)
     for relative, snippets in module.RUNTIME_POLICY_EVIDENCE.items():
         _write_file(tmp_path / relative, "\n".join(snippets))

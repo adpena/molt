@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -14,16 +13,10 @@ import pytest
 
 from tests.native_process_guard import run_native_test_process
 from tests.process_guard_common import install_module_view
+from tools import bench as bench_tool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BENCH_TOOL_PATH = REPO_ROOT / "tools" / "bench.py"
-BENCH_TOOL_SPEC = importlib.util.spec_from_file_location(
-    "bench_tool_under_test", BENCH_TOOL_PATH
-)
-assert BENCH_TOOL_SPEC is not None and BENCH_TOOL_SPEC.loader is not None
-bench_tool = importlib.util.module_from_spec(BENCH_TOOL_SPEC)
-BENCH_TOOL_SPEC.loader.exec_module(bench_tool)
 
 
 def _run_bench(

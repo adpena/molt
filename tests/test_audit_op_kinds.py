@@ -19,28 +19,15 @@ arm and hits the dispatch's loud catch-all panic at codegen — exactly how
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from tools import audit_op_kinds as AUDIT
+
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "tools" / "audit_op_kinds.py"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("molt_test_audit_op_kinds", TOOL)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_audit_op_kinds"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-AUDIT = _load_tool()
 
 
 def test_llvm_generic_eligibility_uses_generated_boxed_contracts() -> None:
@@ -789,7 +776,10 @@ def test_d9_single_kind_handler_cannot_infer_an_opaque_wire_kind_domain(tmp_path
 def test_d10_projects_full_runtime_return_authority_and_actual_aliases(
     d10_audit_result,
 ):
-    from wasm_abi_gen.manifest import load_manifest, runtime_operation_return_specs
+    from tools.wasm_abi_gen.manifest import (
+        load_manifest,
+        runtime_operation_return_specs,
+    )
 
     contracts = runtime_operation_return_specs(load_manifest())
     for kind in (
@@ -840,7 +830,7 @@ def test_d10_projects_full_runtime_return_authority_and_actual_aliases(
 
 
 def test_runtime_return_projection_rejects_conflicting_operation_selectors():
-    from wasm_abi_gen.manifest import (
+    from tools.wasm_abi_gen.manifest import (
         WasmAbiManifestError,
         load_manifest,
         runtime_operation_return_specs,

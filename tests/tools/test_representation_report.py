@@ -1,32 +1,16 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
-import sys
-import uuid
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 
+from tools import representation_report as mod
+
 # Cargo runs in this file are fakes; build capacity is not under test.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPO_ROOT / "tools" / "representation_report.py"
-
-
-def _load_module() -> ModuleType:
-    name = f"representation_report_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _backend_report(
@@ -89,7 +73,6 @@ def _backend_report(
 def test_analyze_file_delegates_to_backend_lir_reporter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mod = _load_module()
     source = tmp_path / "sample.py"
     source.write_text(
         "def f(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8"
@@ -123,7 +106,6 @@ def test_analyze_file_delegates_to_backend_lir_reporter(
 def test_backend_command_uses_typed_repr_report_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mod = _load_module()
     captured: dict[str, Any] = {}
 
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -146,8 +128,6 @@ def test_backend_command_uses_typed_repr_report_binary(
 
 
 def test_backend_failure_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
-    mod = _load_module()
-
     def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args[0], 2, stdout="", stderr="bad LIR")
 
@@ -160,7 +140,6 @@ def test_backend_failure_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_json_output_aggregates_backend_reports(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mod = _load_module()
     first = tmp_path / "first.py"
     second = tmp_path / "second.py"
     first.write_text("def f():\n    return 1\n", encoding="utf-8")
@@ -194,7 +173,6 @@ def test_json_output_aggregates_backend_reports(
 def test_text_output_reports_reference_values(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mod = _load_module()
     source = tmp_path / "sample.py"
     source.write_text("def f():\n    return 1\n", encoding="utf-8")
     report = mod.FileReport(
@@ -214,7 +192,6 @@ def test_text_output_reports_reference_values(
 def test_markdown_output_documents_ref64_as_reference_lane(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mod = _load_module()
     source = tmp_path / "sample.py"
     source.write_text("def f():\n    return 1\n", encoding="utf-8")
     markdown = tmp_path / "report.md"
@@ -236,7 +213,6 @@ def test_markdown_output_documents_ref64_as_reference_lane(
 def test_update_doc_uses_default_generated_report_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mod = _load_module()
     doc_path = tmp_path / "backend_lir_representation.generated.md"
     monkeypatch.setattr(mod, "DEFAULT_MARKDOWN_PATH", doc_path)
     report = mod.FileReport(

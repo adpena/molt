@@ -13,6 +13,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 import tools.linear_seed_backlog as linear_seed_backlog  # noqa: E402
 import tools.linear_workspace as linear_workspace  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402

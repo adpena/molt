@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
 TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
-sys.path.insert(0, str(TOOLS_DIR))
 
-import z3_pass_verify  # noqa: E402
+
+from tools import z3_pass_verify  # noqa: E402
 
 
 def test_parse_op_ignores_removed_raw_int_transport_field() -> None:

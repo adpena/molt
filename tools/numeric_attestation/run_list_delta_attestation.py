@@ -20,15 +20,20 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_ROOT = Path(__file__).resolve().parent
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(BENCH_ROOT) not in sys.path:
-    sys.path.insert(0, str(BENCH_ROOT))
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import run_l7_numeric_attestation as l7  # noqa: E402
+
+from tools.numeric_attestation import run_l7_numeric_attestation as l7  # noqa: E402
 from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
     harness_guard_artifact_dir,

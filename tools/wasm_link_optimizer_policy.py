@@ -30,18 +30,14 @@ from molt.wasm_optimizer_identity import (
     build_wasm_optimizer_attestation,
     validate_wasm_optimizer_attestation,
 )
-from wasm_link_format import (
-    _ESSENTIAL_EXPORTS,
-    _write_string,
-    _write_varuint,
-)
-from wasm_link_fact_provider import WasmFactsProvider
-from wasm_link_operations import build_sections, parse_sections
-from wasm_link_optimize import (
+from tools.wasm_link_format import _ESSENTIAL_EXPORTS, _write_string, _write_varuint
+from tools.wasm_link_fact_provider import WasmFactsProvider
+from tools.wasm_link_operations import build_sections, parse_sections
+from tools.wasm_link_optimize import (
     _post_link_optimize,
     _strip_unused_module_function_imports,
 )
-from wasm_optimize import optimize as optimize_wasm
+from tools.wasm_optimize import optimize as optimize_wasm
 
 TOOLS_ROOT = Path(__file__).resolve().parent
 

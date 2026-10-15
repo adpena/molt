@@ -29,11 +29,17 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping, NotRequired, Sequence, TypedDict
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-for import_root in (ROOT, SRC):
-    if str(import_root) not in sys.path:
-        sys.path.insert(0, str(import_root))
+
 
 from molt.cli.build_results import _finalize_native_link_candidate  # noqa: E402
 from molt.cli.link_pipeline import _native_link_execution_command  # noqa: E402

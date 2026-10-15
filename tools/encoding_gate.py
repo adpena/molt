@@ -67,13 +67,19 @@ from pathlib import Path
 import re
 import sys
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 # Dogfood the runtime backstop: this gate prints subprocess-style diagnostics and
 # runs inside ci_gate (high traffic), so it must not itself trip the very cp1252
 # crash it guards against. force_utf8_stdio() is idempotent and never raises.
-try:  # importable whether launched as a script (tools/ on path) or as tools.X
-    from _io_utf8 import force_utf8_stdio
-except ModuleNotFoundError:  # pragma: no cover
-    from tools._io_utf8 import force_utf8_stdio
+from tools._io_utf8 import force_utf8_stdio  # noqa: E402
+
 force_utf8_stdio()
 
 ROOT = Path(__file__).resolve().parents[1]

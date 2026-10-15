@@ -54,32 +54,19 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
-try:  # pragma: no cover - trivial import shim
-    from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio
-except Exception:  # pragma: no cover - path-invocation fallback
-    _sys_path_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _sys_path_dir not in sys.path:
-        sys.path.insert(0, _sys_path_dir)
-    try:
-        from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio
-    except Exception:
-
-        def _force_utf8_stdio(*, errors: str = "backslashreplace") -> None:
-            for stream in (sys.stdout, sys.stderr):
-                reconfigure = getattr(stream, "reconfigure", None)
-                if reconfigure is None:
-                    continue
-                try:
-                    reconfigure(encoding="utf-8", errors=errors)
-                except (AttributeError, ValueError, OSError):
-                    pass
+from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

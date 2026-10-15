@@ -19,7 +19,7 @@ if str(ROOT / "tools") not in sys.path:
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-import check_environment_registry as C  # noqa: E402
+from tools import check_environment_registry as C  # noqa: E402
 from molt.environment_registry import registry_from_payload  # noqa: E402
 
 

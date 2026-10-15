@@ -16,9 +16,9 @@ import pytest
 
 from molt import wasm_artifact
 from molt._wasm_runtime_exports import wasm_cpython_abi_data_symbol_names
-import wasm_link_format as _format
-import wasm_link_operations as _operations
-import wasm_link_runtime_data as _runtime_data
+from tools import wasm_link_format as _format
+from tools import wasm_link_operations as _operations
+from tools import wasm_link_runtime_data as _runtime_data
 
 
 def _global_module(inits: list[int]) -> bytes:

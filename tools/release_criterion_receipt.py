@@ -16,12 +16,6 @@ from typing import TYPE_CHECKING, Any, TypeGuard, TypedDict
 if TYPE_CHECKING:
     from tools.verified_subset import VerifiedSubsetValidation
 
-if __package__ in (None, ""):
-    from import_file import bind_repository_imports
-else:
-    from tools.import_file import bind_repository_imports
-
-bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 

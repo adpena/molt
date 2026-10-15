@@ -1,33 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 import shutil
 import tempfile
 from tests.process_guard_common import install_module_view
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-COLD_START = REPO_ROOT / "tools" / "cold_start_decompose.py"
-
-
-def _load_cold_start_decompose():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_cold_start_decompose",
-        COLD_START,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import cold_start_decompose
 
 
 def test_safe_run_elapsed_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
-    module = _load_cold_start_decompose()
+    module = cold_start_decompose
     calls: list[dict[str, object]] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
@@ -67,7 +49,7 @@ def test_safe_run_elapsed_uses_shared_guard(monkeypatch, tmp_path: Path) -> None
 
 
 def test_build_noop_c_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
-    module = _load_cold_start_decompose()
+    module = cold_start_decompose
     calls: list[dict[str, object]] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
@@ -102,7 +84,7 @@ def test_build_noop_c_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_measure_dyld_ms_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
-    module = _load_cold_start_decompose()
+    module = cold_start_decompose
     binary = tmp_path / "probe"
     binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     calls: list[dict[str, object]] = []

@@ -16,7 +16,7 @@ import time
 from types import MappingProxyType
 from typing import Protocol, cast
 
-from command_execution import CommandExecutor
+from tools.command_execution import CommandExecutor
 
 from molt.exact_json import loads_exact
 from molt.file_publication import atomic_write_bytes
@@ -25,7 +25,7 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-from wasm_link_format import CallableTableLayout
+from tools.wasm_link_format import CallableTableLayout
 from molt.wasm_linking_symbols import (
     WasmLinkingSymbol,
     WasmLinkingSymbolTable,

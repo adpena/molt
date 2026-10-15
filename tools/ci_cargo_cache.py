@@ -22,6 +22,7 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
+
 # Outside the checkout, so verified ephemeral custody admits it, and stable
 # across runs, because actions/cache folds its paths into the cache version.
 DEFAULT_TARGET_NAME = "molt-cargo-target"

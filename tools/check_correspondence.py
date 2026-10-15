@@ -26,30 +26,25 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:
-    from correspondence_sources import (
-        normalize_lean_variant_name as _normalize_lean_variant_name,
-        parse_lean_builtin_mappings as _parse_lean_builtin_mappings,
-        parse_lean_eval_binop_rules as _parse_lean_evalBinOp_rules,
-        parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
-        parse_lean_hex_constants as _parse_lean_hex_constants,
-        parse_lean_inductive_variants as _parse_lean_inductive_variants,
-        parse_rust_enum_variants as _parse_rust_enum_variants,
-        parse_rust_unsigned_constant_expressions as _parse_rust_u64_constants,
-        resolve_rust_or_hex_int as _normalize_hex,
-    )
-except ModuleNotFoundError:  # pragma: no cover - package-style import path
-    from tools.correspondence_sources import (
-        normalize_lean_variant_name as _normalize_lean_variant_name,
-        parse_lean_builtin_mappings as _parse_lean_builtin_mappings,
-        parse_lean_eval_binop_rules as _parse_lean_evalBinOp_rules,
-        parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
-        parse_lean_hex_constants as _parse_lean_hex_constants,
-        parse_lean_inductive_variants as _parse_lean_inductive_variants,
-        parse_rust_enum_variants as _parse_rust_enum_variants,
-        parse_rust_unsigned_constant_expressions as _parse_rust_u64_constants,
-        resolve_rust_or_hex_int as _normalize_hex,
-    )
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.correspondence_sources import (  # noqa: E402
+    normalize_lean_variant_name as _normalize_lean_variant_name,
+    parse_lean_builtin_mappings as _parse_lean_builtin_mappings,
+    parse_lean_eval_binop_rules as _parse_lean_evalBinOp_rules,
+    parse_lean_eval_unop_rules as _parse_lean_evalUnOp_rules,
+    parse_lean_hex_constants as _parse_lean_hex_constants,
+    parse_lean_inductive_variants as _parse_lean_inductive_variants,
+    parse_rust_enum_variants as _parse_rust_enum_variants,
+    parse_rust_unsigned_constant_expressions as _parse_rust_u64_constants,
+    resolve_rust_or_hex_int as _normalize_hex,
+)
 
 
 def _find_repo_root() -> Path:
@@ -95,8 +90,7 @@ LEAN_PASSES_DIR = LEAN_DIR / "MoltTIR" / "Passes"
 # Python sources
 FRONTEND_PY = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+
 
 from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # noqa: E402
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,19 +8,7 @@ import pytest
 
 from molt import custody_layout
 from molt import dx as molt_dx
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEV_PY = REPO_ROOT / "tools" / "dev.py"
-
-
-def _load_dev_py():
-    spec = importlib.util.spec_from_file_location("molt_tools_dev_py", DEV_PY)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from tools import dev
 
 
 def _fake_dx_env(module):
@@ -33,7 +20,7 @@ def _fake_dx_env(module):
 
 
 def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[tuple[list[str], str | None, bool]] = []
 
     def fake_run_uv(args, python=None, env=None, tty=False):
@@ -58,7 +45,7 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
 
 
 def test_dev_py_clean_artifacts_dispatches_to_cleanup_tool(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[list[str]] = []
     create_dirs_values: list[bool] = []
     fake_env = _fake_dx_env(module)
@@ -99,7 +86,7 @@ def test_dev_py_clean_artifacts_dispatches_to_cleanup_tool(monkeypatch) -> None:
 
 
 def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[list[str]] = []
 
     monkeypatch.setattr(
@@ -149,7 +136,7 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
 
 
 def test_dev_py_bench_defaults_to_guarded_smoke_command(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[list[str]] = []
     fake_env = _fake_dx_env(module)
 
@@ -192,7 +179,7 @@ def test_dev_py_bench_defaults_to_guarded_smoke_command(monkeypatch) -> None:
 
 
 def test_dev_py_bench_forwards_explicit_molt_bench_args(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[list[str]] = []
 
     monkeypatch.setattr(
@@ -236,7 +223,7 @@ def test_dev_py_bench_forwards_explicit_molt_bench_args(monkeypatch) -> None:
 
 
 def test_dev_py_clippy_expands_backend_and_tir_ratchets(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[list[str]] = []
 
     monkeypatch.setattr(
@@ -282,7 +269,7 @@ def test_dev_py_clippy_expands_backend_and_tir_ratchets(monkeypatch) -> None:
 
 
 def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[list[str]] = []
     summary_path = tmp_path / "dev-gates-summary.json"
 
@@ -388,7 +375,7 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> No
 def test_dev_py_gates_writes_error_summary_on_failed_gate(
     monkeypatch, tmp_path
 ) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[list[str]] = []
     summary_path = tmp_path / "failed-gates.json"
 
@@ -445,7 +432,7 @@ def test_dev_py_gates_writes_error_summary_on_failed_gate(
 
 
 def test_dev_py_command_refs_fail_loudly_on_bad_config() -> None:
-    module = _load_dev_py()
+    module = dev
 
     with pytest.raises(RuntimeError, match="Missing .*missing"):
         module._split_command_sequence("@missing", "root", commands={})
@@ -457,7 +444,7 @@ def test_dev_py_command_refs_fail_loudly_on_bad_config() -> None:
 def test_dev_py_canonical_env_keeps_backend_daemon_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_dev_py()
+    module = dev
     monkeypatch.delenv("MOLT_BACKEND_DAEMON", raising=False)
 
     env = module._canonical_env()
@@ -466,7 +453,7 @@ def test_dev_py_canonical_env_keeps_backend_daemon_enabled(
 
 
 def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[tuple[list[str], str | None, bool]] = []
 
     def fake_run_uv(args, python=None, env=None, tty=False):
@@ -523,7 +510,7 @@ def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
 def test_dev_py_test_argv_is_consumed_by_real_runner(monkeypatch, flags) -> None:
     from tools import dev_test_runner
 
-    module = _load_dev_py()
+    module = dev
     batches = []
 
     def capture_batch(args, python=None, env=None, tty=False):
@@ -567,7 +554,7 @@ def _isolated_checkout(module, monkeypatch, tmp_path: Path) -> Path:
 
 
 def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> None:
-    module = _load_dev_py()
+    module = dev
     _isolated_checkout(module, monkeypatch, tmp_path)
     calls: list[tuple[list[str], dict[str, str], object | None]] = []
 
@@ -632,7 +619,7 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
 def test_dev_py_run_uv_preserves_explicit_canonical_roots(
     monkeypatch, tmp_path
 ) -> None:
-    module = _load_dev_py()
+    module = dev
     clone = _isolated_checkout(module, monkeypatch, tmp_path)
     calls: list[dict[str, str]] = []
     explicit_root = tmp_path / "external-root"
@@ -678,7 +665,7 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
 
 
 def test_dev_py_tty_uses_guard_when_memory_guard_enabled(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[tuple[str, list[str]]] = []
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
@@ -694,7 +681,7 @@ def test_dev_py_tty_uses_guard_when_memory_guard_enabled(monkeypatch) -> None:
 
 
 def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     calls: list[tuple[str, list[str]]] = []
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
@@ -712,7 +699,7 @@ def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> No
 def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(
     monkeypatch, tmp_path
 ) -> None:
-    module = _load_dev_py()
+    module = dev
     clone = _isolated_checkout(module, monkeypatch, tmp_path)
     # Any existing file stands in for the project interpreter.
     fake_python = clone / "python3"
@@ -768,7 +755,7 @@ def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(
 
 
 def test_dev_py_uv_no_sync_normalization_uses_guarded_probe(monkeypatch) -> None:
-    module = _load_dev_py()
+    module = dev
     probes: list[tuple[str | None, dict[str, str]]] = []
 
     def fake_probe(requested, env):
@@ -794,7 +781,7 @@ def test_dev_py_uv_no_sync_normalization_uses_guarded_probe(monkeypatch) -> None
 
 
 def test_dx_normalized_uv_no_sync_requires_guarded_probe() -> None:
-    module = _load_dev_py()
+    module = dev
 
     with pytest.raises(RuntimeError, match="guarded project Python version probe"):
         module.DX.normalized_uv_run_env({"UV_NO_SYNC": "1"}, python="3.12")

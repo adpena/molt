@@ -18,6 +18,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+
 REPO = Path(__file__).resolve().parent.parent
 PERF_GATE = REPO / ".github" / "workflows" / "perf-gate.yml"
 SCOREBOARD_CMD = "perf_scoreboard.py"

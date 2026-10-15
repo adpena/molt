@@ -21,9 +21,16 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 
 from tools import harness_memory_guard  # noqa: E402
 
@@ -87,9 +94,7 @@ def compile_with_ir(py_path: Path, profile: str = "dev") -> tuple[Path | None, s
 
 def analyze_ir(ir_path: Path) -> dict:
     """Run formal bridge analysis on an IR file."""
-    # Import from formal_bridge
-    sys.path.insert(0, str(ROOT / "tools"))
-    from formal_bridge import analyze_ir_file
+    from tools.formal_bridge import analyze_ir_file
 
     result = analyze_ir_file(ir_path)
     return result or {}

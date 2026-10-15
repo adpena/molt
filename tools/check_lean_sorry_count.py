@@ -22,6 +22,7 @@ import re
 import sys
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[1]
 LEAN_DIR = ROOT / "formal" / "lean"
 BASELINE_FILE = LEAN_DIR / "SORRY_BASELINE"

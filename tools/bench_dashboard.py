@@ -19,12 +19,19 @@ import sys
 from html import escape as html_escape
 from pathlib import Path
 
-TOOLS_ROOT = Path(__file__).resolve().parent
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-import perf_authority  # noqa: E402
-from bench_evidence import native_molt_speedup, native_molt_time  # noqa: E402
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+TOOLS_ROOT = Path(__file__).resolve().parent
+
+
+from tools import perf_authority  # noqa: E402
+from tools.bench_evidence import native_molt_speedup, native_molt_time  # noqa: E402
 
 
 def load_benchmarks(path: Path) -> dict:

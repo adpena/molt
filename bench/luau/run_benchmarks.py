@@ -23,19 +23,23 @@ from pathlib import Path
 
 BENCH_DIR = Path(__file__).parent
 REPO_ROOT = BENCH_DIR.parent.parent
-TOOLS_ROOT = REPO_ROOT / "tools"
-SRC_ROOT = REPO_ROOT / "src"
 RESULTS_DIR = REPO_ROOT / "bench" / "results" / "luau"
 DEFAULT_RESULTS_PATH = RESULTS_DIR / "results.json"
 
-sys.path.insert(0, str(TOOLS_ROOT))
-sys.path.insert(0, str(SRC_ROOT))
 
-import harness_memory_guard  # noqa: E402
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
 
 TMP_ROOT = scratch_dir(REPO_ROOT, "bench/luau")
-import perf_authority  # noqa: E402
+from tools import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
 
 BENCHMARKS = [

@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import perf_schema as schema  # noqa: E402
-import perf_scoreboard as scoreboard  # noqa: E402
-import perf_authority as pa  # noqa: E402
+
+from tools import perf_schema as schema  # noqa: E402
+from tools import perf_scoreboard as scoreboard  # noqa: E402
+from tools import perf_authority as pa  # noqa: E402
 
 
 def _matching_output_parity() -> dict[str, object]:

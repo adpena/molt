@@ -51,11 +51,18 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT / "tools") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-import harness_memory_guard  # noqa: E402
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 @dataclass(frozen=True)

@@ -1,25 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-STREAM_TOOL = REPO_ROOT / "tools" / "memory_guard_stream.py"
-
-
-def _load_stream_tool():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_memory_guard_stream", STREAM_TOOL
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import memory_guard_stream
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -30,7 +14,7 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def test_stream_paths_include_bounded_rotations(tmp_path: Path) -> None:
-    module = _load_stream_tool()
+    module = memory_guard_stream
     guard_root = tmp_path / "memory_guard"
 
     paths = module.stream_paths(guard_root)
@@ -44,7 +28,7 @@ def test_stream_paths_include_bounded_rotations(tmp_path: Path) -> None:
 
 
 def test_read_history_merges_rotated_guard_streams(tmp_path: Path) -> None:
-    module = _load_stream_tool()
+    module = memory_guard_stream
     guard_root = tmp_path / "memory_guard"
     _write_jsonl(
         guard_root / "global_samples.jsonl.1",

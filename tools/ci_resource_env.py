@@ -11,10 +11,17 @@ from pathlib import Path
 import sys
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = ROOT / "src"
-if str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
+
 
 from molt.cargo_execution_policy import (  # noqa: E402
     CargoBuildResourcePolicy,
@@ -24,8 +31,8 @@ from molt.cargo_execution_policy import (  # noqa: E402
 if __package__:
     from . import memory_guard, resource_pressure
 else:  # pragma: no cover - direct script execution
-    import memory_guard  # type: ignore
-    import resource_pressure  # type: ignore
+    from tools import memory_guard  # type: ignore
+    from tools import resource_pressure  # type: ignore
 
 
 CI_RESOURCE_POLICY = ROOT / "config" / "ci_resource_policy.toml"

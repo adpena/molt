@@ -8,10 +8,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from bench_friends_context import REPO_ROOT
-from bench_friends_phase import _bounded_failure_text
-from bench_friends_runner import _suite_metrics
-from bench_friends_types import (
+from tools.bench_friends_context import REPO_ROOT
+from tools.bench_friends_phase import _bounded_failure_text
+from tools.bench_friends_runner import _suite_metrics
+from tools.bench_friends_types import (
     MAX_FAILURE_DETAIL_RECORDS,
     BenchInterrupted,
     PhaseResult,
@@ -20,8 +20,8 @@ from bench_friends_types import (
     SuiteResult,
 )
 
-import harness_memory_guard
-import perf_authority
+from tools import harness_memory_guard
+from tools import perf_authority
 from molt import backend_daemon_custody as daemon_custody
 
 

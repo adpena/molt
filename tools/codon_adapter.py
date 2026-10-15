@@ -51,12 +51,19 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 # Import the just-landed cross-platform measurement substrate (time + peak RSS).
 _TOOLS_DIR = Path(__file__).resolve().parent
-if str(_TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR))
 
-import perf_calibration  # noqa: E402
+
+from tools import perf_calibration  # noqa: E402
 
 
 LANES = ("cpython", "molt", "codon")

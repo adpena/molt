@@ -18,6 +18,7 @@ import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LEAN_DIR = REPO_ROOT / "formal" / "lean" / "MoltTIR"
 OUTPUT_DIR = REPO_ROOT / "tests" / "differential" / "basic" / "generated_from_proofs"

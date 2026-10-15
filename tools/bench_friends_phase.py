@@ -5,11 +5,11 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from bench_friends_env import _emit_progress
-from bench_friends_types import MAX_FAILURE_MESSAGE_CHARS, PhaseResult
+from tools.bench_friends_env import _emit_progress
+from tools.bench_friends_types import MAX_FAILURE_MESSAGE_CHARS, PhaseResult
 
-import harness_memory_guard
-import bench as bench_tool
+from tools import harness_memory_guard
+from tools import bench as bench_tool
 
 
 def _parse_stdout_json(stdout: str) -> tuple[Any | None, str | None]:

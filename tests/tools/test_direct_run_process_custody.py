@@ -2,30 +2,18 @@ from __future__ import annotations
 
 import argparse
 import ast
-import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
 from tests.process_guard_common import install_module_view
+from tools import safe_run
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_safe_run():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_safe_run", ROOT / "tools" / "safe_run.py"
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_safe_run_delegates_process_custody_to_memory_guard(tmp_path: Path) -> None:
-    safe_run = _load_safe_run()
     ns = argparse.Namespace(rss_mb=512, timeout=7.5, poll=0.25)
     summary_path = tmp_path / "summary.json"
 
@@ -45,8 +33,6 @@ def test_safe_run_delegates_process_custody_to_memory_guard(tmp_path: Path) -> N
 
 
 def test_safe_run_status_uses_guard_summary_before_legacy_exit_codes() -> None:
-    safe_run = _load_safe_run()
-
     assert (
         safe_run._status(
             safe_run.EXIT_OOM,
@@ -67,7 +53,6 @@ def test_safe_run_status_uses_guard_summary_before_legacy_exit_codes() -> None:
 def test_safe_run_preserves_guard_infrastructure_outcome(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    safe_run = _load_safe_run()
     summary_path = tmp_path / "summary.json"
     infrastructure_failure = {
         "phase": "temporary_artifact_custody",

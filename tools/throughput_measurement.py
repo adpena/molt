@@ -13,10 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    from tools.memory_guard import TIMEOUT_RETURN_CODE as TIMEOUT_RETURN_CODE
-except ModuleNotFoundError:  # pragma: no cover - direct import from tools/
-    from memory_guard import TIMEOUT_RETURN_CODE as TIMEOUT_RETURN_CODE  # type: ignore
+from tools.memory_guard import TIMEOUT_RETURN_CODE as TIMEOUT_RETURN_CODE  # type: ignore
 
 
 TAIL_LINES = 12

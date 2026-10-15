@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -8,27 +7,15 @@ import sys
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
+from tools import check_subprocess_guard_coverage
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AUDIT_TOOL = REPO_ROOT / "tools" / "check_subprocess_guard_coverage.py"
 
 
-def _load_audit_tool():
-    spec = importlib.util.spec_from_file_location(
-        "molt_check_subprocess_guard_coverage",
-        AUDIT_TOOL,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
 
     audit = module.audit_paths()
 
@@ -46,7 +33,7 @@ def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
 
 
 def test_copied_default_targets_still_scan_guard_text_files() -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
 
     default_audit = module.audit_paths()
     copied_audit = module.audit_paths(tuple(module.DEFAULT_TARGETS))
@@ -211,7 +198,7 @@ def test_cli_default_scope_retains_global_stale_checks(cli_root: Path) -> None:
 def test_explicit_custom_allowlist_is_not_filtered_by_selected_files(
     tmp_path: Path,
 ) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "selected.py"
     source.write_text("pass\n", encoding="utf-8")
     entry = module.AllowedRawSubprocessUse(
@@ -229,7 +216,7 @@ def test_explicit_custom_allowlist_is_not_filtered_by_selected_files(
 def test_explicit_custom_allowlist_formats_its_actual_denominator(
     tmp_path: Path,
 ) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "selected.py"
     source.write_text("import subprocess\nsubprocess.run([])\n", encoding="utf-8")
     entry = module.AllowedRawSubprocessUse(
@@ -246,7 +233,7 @@ def test_explicit_custom_allowlist_formats_its_actual_denominator(
 
 
 def test_unclassified_raw_subprocess_call_fails(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "bad.py"
     source.write_text(
         "import subprocess\n\n"
@@ -279,7 +266,7 @@ def test_unclassified_raw_subprocess_call_fails(tmp_path: Path) -> None:
 def test_raw_callable_aliases_remain_audited(
     tmp_path: Path, expression: str, expected: str
 ) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "aliases.py"
     source.write_text(
         "import os, subprocess\n"
@@ -299,7 +286,7 @@ def test_raw_callable_aliases_remain_audited(
 
 
 def test_callable_alias_scope_shadowing_and_immediate_getattr(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "shadowing.py"
     source.write_text(
         "import subprocess as sp\n"
@@ -323,7 +310,7 @@ def test_callable_alias_scope_shadowing_and_immediate_getattr(tmp_path: Path) ->
 
 
 def test_direct_import_alias_and_constant_capability_name(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "import_alias.py"
     source.write_text(
         "import os as host\n"
@@ -340,7 +327,7 @@ def test_direct_import_alias_and_constant_capability_name(tmp_path: Path) -> Non
 
 
 def test_unclassified_os_kill_call_fails(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "bad_kill.py"
     source.write_text(
         "import os\n\ndef terminate(pid):\n    os.kill(pid, 9)\n",
@@ -357,7 +344,7 @@ def test_unclassified_os_kill_call_fails(tmp_path: Path) -> None:
 
 
 def test_unclassified_process_object_signal_fails(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "bad_process_signal.py"
     source.write_text(
         "def close(proc):\n    proc.terminate()\n    proc.kill()\n",
@@ -374,7 +361,7 @@ def test_unclassified_process_object_signal_fails(tmp_path: Path) -> None:
 
 
 def test_non_executable_process_vocabulary_is_not_a_violation(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "documentation.py"
     source.write_text(
         '"""Never invoke taskkill or pkill -f molt-backend."""\n'
@@ -389,7 +376,7 @@ def test_non_executable_process_vocabulary_is_not_a_violation(tmp_path: Path) ->
 
 
 def test_os_system_and_popen_execution_sinks_fail(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "bad_os_shell.py"
     source.write_text(
         "import os\n"
@@ -412,7 +399,7 @@ def test_os_system_and_popen_execution_sinks_fail(tmp_path: Path) -> None:
 
 
 def test_shell_true_constant_flow_and_kill_sink_fail(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "bad_shell.py"
     source.write_text(
         "import subprocess\n\n"
@@ -434,7 +421,7 @@ def test_shell_true_constant_flow_and_kill_sink_fail(tmp_path: Path) -> None:
 
 
 def test_inner_parameter_shadows_outer_shell_constant(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "shadowed_shell.py"
     source.write_text(
         "import subprocess\n\n"
@@ -450,7 +437,7 @@ def test_inner_parameter_shadows_outer_shell_constant(tmp_path: Path) -> None:
 
 
 def test_unclassified_makefile_pkill_fails(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "Makefile.pgo"
     source.write_text(
         'train:\n\tpkill -9 -f "molt-backend"\n',
@@ -472,7 +459,7 @@ def test_unclassified_makefile_pkill_fails(tmp_path: Path) -> None:
 
 
 def test_stale_allowlist_entry_fails(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "clean.py"
     source.write_text("def ok():\n    return 1\n", encoding="utf-8")
     allowlist = (
@@ -491,7 +478,7 @@ def test_stale_allowlist_entry_fails(tmp_path: Path) -> None:
 
 
 def test_expanded_allowlist_entry_fails(tmp_path: Path) -> None:
-    module = _load_audit_tool()
+    module = check_subprocess_guard_coverage
     source = tmp_path / "expanded.py"
     source.write_text(
         "import subprocess\n\n"

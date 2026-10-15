@@ -8,13 +8,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import harness_memory_guard
-from sample_profile import read_self_time
-import bench
-import bench_suites
-import perf_inner_repeat
-from perf_schema import SCHEMA_VERSION
-from perf_scoreboard_model import (
+from tools import harness_memory_guard
+from tools.sample_profile import read_self_time
+from tools import bench
+from tools import bench_suites
+from tools import perf_inner_repeat
+from tools.perf_schema import SCHEMA_VERSION
+from tools.perf_scoreboard_model import (
     REPO_ROOT,
     SAFE_RUN,
     SCOREBOARD_DIR,
@@ -24,7 +24,7 @@ from perf_scoreboard_model import (
 
 
 def _facade():
-    import perf_scoreboard as ps
+    from tools import perf_scoreboard as ps
 
     return ps
 
@@ -237,7 +237,7 @@ def build_profiling_binary(
 
     build_env = _perfscore_build_env(spec, profile)
     build_env[MOLT_KEEP_SYMBOLS_ENV] = "1"  # the symbolication hatch
-    from perf_scoreboard_build_profiles import profile_selection
+    from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
     extra_args = [

@@ -21,30 +21,16 @@ Run:
 """
 
 from __future__ import annotations
-import importlib.util
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from tools import check_table_drift as GATE
+
 
 ROOT = Path(__file__).resolve().parents[1]
-GATE_PATH = ROOT / "tools" / "check_table_drift.py"
-
-
-def _load_gate():
-    spec = importlib.util.spec_from_file_location("check_table_drift", GATE_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec so @dataclass introspection
-    # (sys.modules.get(cls.__module__)) can resolve the module's namespace.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-GATE = _load_gate()
 
 
 def _category_ok(key: str) -> bool:

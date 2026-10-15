@@ -38,10 +38,15 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-try:
-    import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - package import
-    from tools import harness_memory_guard  # type: ignore
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

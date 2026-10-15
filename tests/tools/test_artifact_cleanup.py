@@ -1,31 +1,16 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
 
 from tests.process_guard_common import run_guarded_test_process
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-ARTIFACT_CLEANUP = REPO_ROOT / "tools" / "artifact_cleanup.py"
-
-
-def _load_artifact_cleanup():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_artifact_cleanup", ARTIFACT_CLEANUP
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from tools import artifact_cleanup
 
 
 def test_default_pathspecs_exclude_stateful_roots() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     defaults = set(module.default_pathspecs())
 
     for pathspec in module.stateful_pathspecs():
@@ -33,13 +18,13 @@ def test_default_pathspecs_exclude_stateful_roots() -> None:
 
 
 def test_default_pathspecs_avoid_recursive_globs() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     assert all("**" not in pathspec for pathspec in module.default_pathspecs())
 
 
 def test_default_pathspecs_avoid_broad_leading_wildcards() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     assert all(
         not pathspec.lstrip(":").startswith("*")
@@ -48,7 +33,7 @@ def test_default_pathspecs_avoid_broad_leading_wildcards() -> None:
 
 
 def test_default_pathspecs_cover_canonical_local_artifact_roots() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     assert {
         "target/",
@@ -66,7 +51,7 @@ def test_default_pathspecs_cover_canonical_local_artifact_roots() -> None:
 
 
 def test_default_cleanup_intentionally_covers_cargo_quarantine_receipts() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     defaults = set(module.default_pathspecs())
     stateful = set(module.stateful_pathspecs())
 
@@ -84,7 +69,7 @@ def test_default_cleanup_intentionally_covers_cargo_quarantine_receipts() -> Non
 
 
 def test_extra_pathspecs_reject_stateful_roots() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     for pathspec in [".venv/", ".omx/cache", "third_party/tool"]:
         try:
@@ -96,7 +81,7 @@ def test_extra_pathspecs_reject_stateful_roots() -> None:
 
 
 def test_cache_roots_leave_git_clean_for_the_cache_pruner() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     defaults = set(module.default_pathspecs())
 
     assert {
@@ -119,7 +104,7 @@ def test_cache_roots_leave_git_clean_for_the_cache_pruner() -> None:
 
 
 def test_extra_pathspecs_reject_ancestors_of_protected_data() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     # git clean removes a whole tree, so `runtime` would reach the fuzz corpus.
     for pathspec in ["runtime", "runtime/molt-runtime/fuzz", "tests/e2e"]:
@@ -135,7 +120,7 @@ def test_extra_pathspecs_reject_ancestors_of_protected_data() -> None:
 
 
 def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     cache = tmp_path / "cache"
     # A published analysis leaf is an eviction unit; an unknown namespace may
     # own live state, so the pruner never removes it.
@@ -168,7 +153,7 @@ def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:
 def test_main_prunes_checkout_cache_roots_after_git_clean(
     monkeypatch, capsys, tmp_path
 ) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     cache = tmp_path / ".molt_cache"
     cache.mkdir()
     calls: list[list[str]] = []
@@ -200,7 +185,7 @@ def test_main_prunes_checkout_cache_roots_after_git_clean(
 
 
 def test_main_reports_a_failed_cache_prune(monkeypatch, capsys, tmp_path) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     cache = tmp_path / ".molt_cache"
     cache.mkdir()
 
@@ -225,7 +210,7 @@ def test_main_reports_a_failed_cache_prune(monkeypatch, capsys, tmp_path) -> Non
 
 
 def test_extra_pathspecs_reject_nonliteral_paths() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     for pathspec in ["/tmp/cache", "../tmp", "tests/**/__pycache__/", ":(glob)tmp/*"]:
         try:
@@ -237,7 +222,7 @@ def test_extra_pathspecs_reject_nonliteral_paths() -> None:
 
 
 def test_repo_root_must_be_this_checkout(tmp_path: Path) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     other_repo = tmp_path / "other"
     other_repo.mkdir()
     (other_repo / "pyproject.toml").write_text(
@@ -253,7 +238,7 @@ def test_repo_root_must_be_this_checkout(tmp_path: Path) -> None:
 
 
 def test_git_clean_command_is_dry_run_by_default() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     cmd = module.build_git_clean_command(
         apply=False,
@@ -264,7 +249,7 @@ def test_git_clean_command_is_dry_run_by_default() -> None:
 
 
 def test_git_clean_command_apply_uses_delete_mode() -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     cmd = module.build_git_clean_command(
         apply=True,
@@ -275,7 +260,7 @@ def test_git_clean_command_apply_uses_delete_mode() -> None:
 
 
 def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     calls: list[dict[str, object]] = []
     for key in (
         "MOLT_EXT_ROOT",
@@ -320,7 +305,7 @@ def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> Non
 
 
 def test_main_json_reports_git_clean_entries(monkeypatch, capsys) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     def fake_guarded_completed_process(cmd, **_kwargs):
         return SimpleNamespace(
@@ -349,7 +334,7 @@ def test_main_json_reports_git_clean_entries(monkeypatch, capsys) -> None:
 
 
 def test_main_rejects_stateful_extra_before_git_clean(monkeypatch) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     def fail_run(*_args, **_kwargs):
         raise AssertionError("git clean must not run for rejected extra pathspecs")
@@ -366,7 +351,7 @@ def test_main_rejects_stateful_extra_before_git_clean(monkeypatch) -> None:
 
 
 def test_main_apply_accepts_sentinel_kill_report(monkeypatch) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     calls: list[list[str]] = []
 
     def fake_guarded_completed_process(cmd, **_kwargs):
@@ -392,7 +377,7 @@ def test_main_apply_accepts_sentinel_kill_report(monkeypatch) -> None:
 
 
 def test_run_process_sentinel_uses_json_when_capturing(monkeypatch, tmp_path) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
     calls: list[list[str]] = []
 
     def fake_guarded_completed_process(cmd, **_kwargs):
@@ -417,7 +402,7 @@ def test_main_json_includes_sentinel_events_without_raw_logs(
     monkeypatch,
     capsys,
 ) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     sentinel_event = {
         "event": "process_sentinel_violation",
@@ -461,7 +446,7 @@ def test_main_json_rejects_malformed_sentinel_events_before_git_clean(
     monkeypatch,
     capsys,
 ) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     def fake_guarded_completed_process(cmd, **_kwargs):
         if "process_sentinel.py" in cmd[1]:
@@ -491,7 +476,7 @@ def test_main_json_rejects_empty_sentinel_violation_before_git_clean(
     monkeypatch,
     capsys,
 ) -> None:
-    module = _load_artifact_cleanup()
+    module = artifact_cleanup
 
     def fake_guarded_completed_process(cmd, **_kwargs):
         if "process_sentinel.py" in cmd[1]:

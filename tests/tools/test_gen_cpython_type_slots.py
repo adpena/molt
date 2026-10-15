@@ -1,25 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
+
+from tools import gen_cpython_type_slots
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TOOL = ROOT / "tools/gen_cpython_type_slots.py"
-
-
-def _load_generator():
-    spec = importlib.util.spec_from_file_location("gen_cpython_type_slots", TOOL)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_type_slot_authority_is_complete_and_generated_header_is_current() -> None:
-    generator = _load_generator()
+    generator = gen_cpython_type_slots
     slots = generator.load_slots()
 
     assert len(slots) == 81

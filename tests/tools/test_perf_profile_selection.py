@@ -8,10 +8,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 
-import perf_scoreboard as scoreboard
-import perf_scoreboard_measure as measure
-from perf_scoreboard_build_profiles import profile_selection
-from perf_scoreboard_model import NATIVE_CRANELIFT, NATIVE_LLVM, BACKENDS_BY_NAME
+from tools import perf_scoreboard as scoreboard
+from tools import perf_scoreboard_measure as measure
+from tools.perf_scoreboard_build_profiles import profile_selection
+from tools.perf_scoreboard_model import NATIVE_CRANELIFT, NATIVE_LLVM, BACKENDS_BY_NAME
 from tests.release_lane_fixtures import EXPECTED_LANES
 
 
@@ -96,7 +96,7 @@ def test_unknown_profile_does_not_alias_release():
 
 
 def test_batch_request_carries_distinct_profile_inputs(tmp_path):
-    import bench
+    from tools import bench
 
     environments = [
         measure._perfscore_build_env(NATIVE_CRANELIFT, p)
@@ -127,7 +127,7 @@ def test_batch_request_carries_distinct_profile_inputs(tmp_path):
     ],
 )
 def test_profile_binding_requires_actual_selected_coordinates(spec, profile):
-    from perf_scoreboard_build_profiles import profile_binding_problems
+    from tools.perf_scoreboard_build_profiles import profile_binding_problems
 
     selection = profile_selection(spec, profile)
     facts = {
@@ -176,7 +176,7 @@ def test_publication_observes_selected_profiles_without_claiming_loaded_compiler
 
 
 def test_batch_restart_preserves_owned_profile_and_isolates_next_cell(monkeypatch):
-    import bench
+    from tools import bench
 
     clients = []
 
@@ -222,7 +222,7 @@ def test_batch_restart_preserves_owned_profile_and_isolates_next_cell(monkeypatc
     ],
 )
 def test_every_declared_acceptance_profile_remains_distinct(backend, profile):
-    from perf_scoreboard_model import BACKENDS_BY_NAME
+    from tools.perf_scoreboard_model import BACKENDS_BY_NAME
 
     spec = BACKENDS_BY_NAME[backend]
     selection = profile_selection(spec, profile)
@@ -266,7 +266,7 @@ def test_profile_change_invalidates_real_build_cache_variant(minor):
 def test_cold_provenance_uses_measured_compiler_and_rejects_lane_change(tmp_path):
     from molt.toolchain_identity import executable_content_identity
     from molt.backend_binary_identity import identify_backend_binary
-    from perf_scoreboard_build_profiles import record_measured_build_identity
+    from tools.perf_scoreboard_build_profiles import record_measured_build_identity
 
     compiler = tmp_path / "molt-backend.exe"
     compiler.write_bytes(b"actual selected compiler bytes")
@@ -314,7 +314,7 @@ def test_cold_provenance_uses_measured_compiler_and_rejects_lane_change(tmp_path
     ],
 )
 def test_missing_selected_compiler_cannot_become_provenance(observation):
-    from perf_scoreboard_build_profiles import record_measured_build_identity
+    from tools.perf_scoreboard_build_profiles import record_measured_build_identity
 
     with pytest.raises(ValueError, match="canonical selected compiler identity"):
         record_measured_build_identity(
@@ -327,7 +327,7 @@ def test_measured_provenance_binds_the_linked_runtime_library(tmp_path):
         executable_content_identity,
         stable_file_content_identity,
     )
-    from perf_scoreboard_build_profiles import record_measured_build_identity
+    from tools.perf_scoreboard_build_profiles import record_measured_build_identity
 
     compiler = tmp_path / "molt-backend"
     compiler.write_bytes(b"compiler bytes")
@@ -390,7 +390,7 @@ def test_failed_runtime_observation_cannot_become_provenance(
     tmp_path, runtime_fact, message
 ):
     from molt.toolchain_identity import executable_content_identity
-    from perf_scoreboard_build_profiles import record_measured_build_identity
+    from tools.perf_scoreboard_build_profiles import record_measured_build_identity
 
     compiler = tmp_path / "molt-backend"
     compiler.write_bytes(b"compiler bytes")
@@ -424,7 +424,7 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
         "tests/tools/test_release_matrix_acceptance.py"
         in commands["repository.release-supply-chain"]["argv"]
     )
-    import perf_methodology
+    from tools import perf_methodology
 
     assert set(perf_methodology.load().paths) | {
         "config/perf_methodology.toml",
@@ -449,8 +449,8 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
 def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults(
     monkeypatch, tmp_path, minor, profile
 ):
-    import bench
-    import perf_scoreboard_profile as profiling
+    from tools import bench
+    from tools import perf_scoreboard_profile as profiling
     from molt.target_python import _resolve_target_python_version
 
     captured = {}
@@ -498,7 +498,7 @@ def test_profiling_rebuild_preserves_minor_and_profile_over_conflicting_defaults
 
 @pytest.mark.parametrize("minor", ["3.12", "3.13", "3.14"])
 def test_hot_profile_controller_forwards_the_selected_minor(monkeypatch, minor):
-    import perf_scoreboard_profile as profiling
+    from tools import perf_scoreboard_profile as profiling
 
     received = []
 
@@ -522,7 +522,7 @@ def test_hot_profile_controller_forwards_the_selected_minor(monkeypatch, minor):
 
 @pytest.mark.parametrize("minor", ["", "3.11", "3.15", "4.12"])
 def test_profiling_refuses_an_unbound_or_unsupported_minor(minor):
-    import perf_scoreboard_profile as profiling
+    from tools import perf_scoreboard_profile as profiling
 
     binary, metadata = profiling.build_profiling_binary(
         Path("never-read.py"),
@@ -542,7 +542,7 @@ def test_profiling_refuses_an_unbound_or_unsupported_minor(minor):
     [("unknown", "release-fast"), ("wasm", "release-fast"), ("llvm", "unknown")],
 )
 def test_profile_binding_reports_unsupported_observed_lane(backend, profile):
-    from perf_scoreboard_build_profiles import profile_binding_problems
+    from tools.perf_scoreboard_build_profiles import profile_binding_problems
 
     assert profile_binding_problems(
         {"selected_profiles": {}}, backend=backend, profile=profile
@@ -561,8 +561,8 @@ def test_lane_backend_is_a_build_flag_for_batch_and_cli_builds(
     backend from the environment, so a lane that set only the variable built
     with Cranelift.
     """
-    import bench
-    from perf_scoreboard_build_profiles import profile_selection
+    from tools import bench
+    from tools.perf_scoreboard_build_profiles import profile_selection
 
     monkeypatch.delenv("MOLT_BACKEND", raising=False)
     env = measure._perfscore_build_env(spec, "release-fast")

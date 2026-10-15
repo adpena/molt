@@ -99,6 +99,7 @@ import json
 import sys
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[1]
 ECO_DIR = Path(__file__).resolve().parent / "ecosystem"
 FEATURES_PATH = ECO_DIR / "dynamism_features.json"

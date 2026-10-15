@@ -15,7 +15,15 @@ import time
 from pathlib import Path
 from typing import TextIO
 
-from molt_dev_common import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.molt_dev_common import (  # noqa: E402
     EXIT_FAIL,
     EXIT_OK,
     EXIT_USAGE,
@@ -24,12 +32,9 @@ from molt_dev_common import (
     _ok,
     _say,
 )
-from molt_dev_probe import probe_path, probe_pid
+from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

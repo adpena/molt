@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Mapping
 from molt.release_lanes import ReleaseLane, capture_release_lanes
 
 if TYPE_CHECKING:
-    from perf_scoreboard_model import BackendSpec
+    from tools.perf_scoreboard_model import BackendSpec
 
 _ROOT = Path(__file__).resolve().parents[1]
 

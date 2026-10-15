@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from wasm_link_fact_provider import WasmFactsProvider
+from tools.wasm_link_fact_provider import WasmFactsProvider
 
 import sys
 from molt.temporary_artifacts import OwnedTemporaryDirectory
@@ -15,7 +15,7 @@ from molt.wasm_artifact import (
     write_wasm_limits as _write_limits,
 )
 
-from wasm_link_format import (
+from tools.wasm_link_format import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORTS,
     _ESSENTIAL_EXPORTS,
@@ -48,9 +48,9 @@ from molt.wasm_linking_symbols import (
     SYMBOL_KIND_DATA,
     SYMTAB_SUBSECTION_ID,
 )
-from wasm_archive import AR_MAGIC, WASM_HEADER, iter_wasm_archive_members
-from wasm_link_facts import callable_table_entry_rows
-from wasm_link_operations import (
+from tools.wasm_archive import AR_MAGIC, WASM_HEADER, iter_wasm_archive_members
+from tools.wasm_link_facts import callable_table_entry_rows
+from tools.wasm_link_operations import (
     build_sections as _build_sections,
     parse_sections as _parse_sections,
 )

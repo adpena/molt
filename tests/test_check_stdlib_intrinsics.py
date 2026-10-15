@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
 
 import pytest
 
+from tools import check_stdlib_intrinsics
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / "tools" / "check_stdlib_intrinsics.py"
 
 
 @pytest.fixture(autouse=True)
@@ -16,18 +16,6 @@ def _private_build_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     # The gate caches per-module facts under the build state; keep each test's
     # cache in its own directory instead of the checkout's target tree.
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
-
-
-def _load_gate_module():
-    spec = importlib.util.spec_from_file_location(
-        "check_stdlib_intrinsics_gate", SCRIPT_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.mark.parametrize(
@@ -52,7 +40,7 @@ def _load_gate_module():
     ],
 )
 def test_runtime_boundary_rejects_compiler_imports(tmp_path: Path, source: str) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     path = tmp_path / "runtime.py"
     path.write_text(source + "\n", encoding="utf-8")
 
@@ -82,7 +70,7 @@ def test_runtime_boundary_rejects_compiler_imports(tmp_path: Path, source: str) 
 def test_runtime_boundary_allows_runtime_and_normalized_imports(
     tmp_path: Path, source: str
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     path = tmp_path / "runtime.py"
     path.write_text(source + "\n", encoding="utf-8")
 
@@ -95,7 +83,7 @@ def test_runtime_boundary_allows_runtime_and_normalized_imports(
 def test_runtime_boundary_is_enforced_for_both_source_roots(
     tmp_path: Path, monkeypatch, capsys, owner: str
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     moltlib_root = tmp_path / "moltlib"
     moltlib_root.mkdir()
@@ -122,7 +110,7 @@ def test_runtime_boundary_is_enforced_for_both_source_roots(
 def test_moltlib_boundary_scan_does_not_change_stdlib_coverage(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     moltlib_root = tmp_path / "moltlib"
     nested = moltlib_root / "nested"
@@ -166,7 +154,7 @@ def test_moltlib_boundary_scan_does_not_change_stdlib_coverage(
 def test_runtime_seeded_builtins_facade_uses_auditable_canonical_resolver() -> None:
     from molt.stdlib_intrinsic_policy import module_required_intrinsic_names
 
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     path = REPO_ROOT / "src" / "molt" / "stdlib" / "builtins.py"
     errors, intrinsic_names, _ = module._scan_file(path)
     assert errors == []
@@ -190,7 +178,7 @@ def test_runtime_seeded_builtins_facade_uses_auditable_canonical_resolver() -> N
 def test_required_intrinsic_boundary_validates_and_deduplicates(
     tmp_path, names, expected
 ):
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     manifest = tmp_path / "required.py"
     manifest.write_text(
         f"STDLIB_REQUIRED_INTRINSICS_BY_MODULE = {{'pkg': {names!r}}}\n",
@@ -362,7 +350,7 @@ def _disable_full_coverage_contract(module, monkeypatch) -> None:
 
 
 def _configure_report_test(tmp_path: Path, monkeypatch, *options: str):
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     _seed_bootstrap_strict_modules(stdlib_root)
     _configure_required_top_level(module, monkeypatch, stdlib_root)
@@ -560,7 +548,7 @@ def test_incomplete_audit_emits_failure_without_fabricated_empty_coverage(
 def test_manifest_evaluation_failure_replaces_stale_report(
     tmp_path: Path, monkeypatch, source: str
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     root = tmp_path / "stdlib"
     root.mkdir()
     manifest = tmp_path / "broken_manifest.py"
@@ -606,7 +594,7 @@ def test_manifest_evaluation_failure_replaces_stale_report(
 def test_all_manifest_loaders_normalize_evaluation_errors(
     tmp_path: Path, monkeypatch, loader: str
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     manifest = tmp_path / "broken_manifest.py"
     manifest.write_text("BROKEN = UNDEFINED\n", encoding="utf-8")
     monkeypatch.setattr(module, "STDLIB_UNION_BASELINE", manifest)
@@ -627,14 +615,14 @@ def test_report_publication_failure_is_not_a_success(
 
 
 def test_critical_allowlist_includes_re() -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     assert "re" in module.CRITICAL_STRICT_IMPORT_ROOTS
 
 
 def test_all_stdlib_fallback_gate_is_default(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_fallback_module(stdlib_root)
@@ -659,7 +647,7 @@ def test_all_stdlib_fallback_gate_is_default(
 def test_fallback_intrinsic_backed_only_opt_down_flag_is_accepted(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "intrinsic_mod.py").write_text(_INTRINSIC_READ, encoding="utf-8")
@@ -685,7 +673,7 @@ def test_fallback_intrinsic_backed_only_opt_down_flag_is_accepted(
 def test_critical_allowlist_does_not_run_global_fallback_gate(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "critical_root", "")
@@ -722,7 +710,7 @@ except ImportError:
 def test_compiled_python_module_is_an_admitted_implementation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "plain_mod.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -778,7 +766,7 @@ def test_unread_intrinsic_requirement_is_not_backing(
 def test_same_package_import_preserves_python_implementation_in_audit(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     package = stdlib_root / "pkg"
     package.mkdir(parents=True)
@@ -831,7 +819,7 @@ def test_same_package_import_preserves_python_implementation_in_audit(
 def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_in_audit(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "_pyio.py").write_text(
@@ -862,7 +850,7 @@ def test_private_support_fragment_loaded_by_intrinsic_owner_is_not_python_only_i
 
 
 def test_fail_closed_import_policy_gate_is_allowed(tmp_path: Path, monkeypatch) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "reserved_mod.py").write_text(
@@ -889,7 +877,7 @@ def test_fail_closed_import_policy_gate_is_allowed(tmp_path: Path, monkeypatch) 
 def test_fail_closed_import_policy_gate_requires_explicit_allowlist(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "reserved_mod.py").write_text(
@@ -914,7 +902,7 @@ def test_fail_closed_import_policy_gate_requires_explicit_allowlist(
 def test_policy_gate_rejects_executable_python_body(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     (stdlib_root / "not_reserved_mod.py").write_text(
@@ -936,7 +924,7 @@ def test_policy_gate_rejects_executable_python_body(
 
 
 def test_real_stdlib_import_fallback_cleanup_modules_stay_clean() -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     offenders = {
         name: module._scan_strict_module_fallback_patterns(
             module.STDLIB_ROOT / f"{name}.py"
@@ -950,7 +938,7 @@ def test_real_stdlib_import_fallback_cleanup_modules_stay_clean() -> None:
 def test_bootstrap_strict_closure_allows_intrinsic_partial_root(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     _seed_bootstrap_strict_modules(stdlib_root, partial_modules=("builtins",))
 
@@ -965,7 +953,7 @@ def test_bootstrap_strict_closure_allows_intrinsic_partial_root(
 def test_bootstrap_strict_closure_rejects_transitive_stub_dependency(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     _seed_bootstrap_strict_modules(stdlib_root)
     (stdlib_root / "sys.py").write_text(
@@ -989,7 +977,7 @@ def test_bootstrap_strict_closure_rejects_transitive_stub_dependency(
 def test_bootstrap_strict_closure_rejects_transitive_policy_gate_dependency(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     _seed_bootstrap_strict_modules(stdlib_root)
     (stdlib_root / "sys.py").write_text(
@@ -1020,7 +1008,7 @@ def test_bootstrap_strict_closure_rejects_transitive_policy_gate_dependency(
 def test_intrinsic_runtime_fallback_gate_rejects_swallowed_errors(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1060,7 +1048,7 @@ def parse_value(text: str):
 def test_intrinsic_runtime_fallback_gate_allows_raise_mapping(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1094,7 +1082,7 @@ def parse_value(text: str):
 def test_stdlib_parity_gap_marker_is_classified_intrinsic_partial(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1133,7 +1121,7 @@ def test_stdlib_parity_gap_marker_is_classified_intrinsic_partial(
 def test_stdlib_generic_gap_marker_is_classified_intrinsic_partial(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1172,7 +1160,7 @@ def test_stdlib_generic_gap_marker_is_classified_intrinsic_partial(
 def test_top_level_union_gate_rejects_missing_entries(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1")
@@ -1211,7 +1199,7 @@ def test_top_level_union_gate_rejects_missing_entries(
 def test_top_level_union_gate_rejects_module_package_collision(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1")
@@ -1251,7 +1239,7 @@ def test_top_level_union_gate_rejects_module_package_collision(
 def test_top_level_union_gate_rejects_package_kind_mismatch(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "xml", "VALUE = 1")
@@ -1290,7 +1278,7 @@ def test_top_level_union_gate_rejects_package_kind_mismatch(
 def test_submodule_union_gate_rejects_missing_entries(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     _seed_intrinsic_package(stdlib_root, "alpha")
     _seed_intrinsic_module(stdlib_root, "alpha/beta", "VALUE = 1")
@@ -1329,7 +1317,7 @@ def test_submodule_union_gate_rejects_missing_entries(
 def test_submodule_union_gate_rejects_subpackage_kind_mismatch(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     _seed_intrinsic_package(stdlib_root, "alpha")
     _seed_intrinsic_module(stdlib_root, "alpha/beta", "VALUE = 1")
@@ -1368,7 +1356,7 @@ def test_submodule_union_gate_rejects_subpackage_kind_mismatch(
 def test_intrinsic_partial_ratchet_gate_rejects_regression(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1407,7 +1395,7 @@ def test_intrinsic_partial_ratchet_gate_rejects_regression(
 def test_intrinsic_partial_ratchet_gate_allows_within_budget(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1441,7 +1429,7 @@ def test_intrinsic_partial_ratchet_gate_allows_within_budget(
 def test_host_fallback_import_pattern_rejected(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1479,7 +1467,7 @@ def test_host_fallback_import_pattern_rejected(
 def test_host_fallback_dynamic_import_module_alias_pattern_rejected(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1520,7 +1508,7 @@ def test_host_fallback_dynamic_import_module_alias_pattern_rejected(
 def test_host_fallback_dynamic_import_keyword_name_pattern_rejected(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(
@@ -1560,7 +1548,7 @@ def test_host_fallback_dynamic_import_keyword_name_pattern_rejected(
 def test_full_coverage_attestation_defaults_to_intrinsic_partial(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1\n")
@@ -1615,7 +1603,7 @@ def test_full_coverage_attestation_defaults_to_intrinsic_partial(
 def test_full_coverage_attestation_marks_intrinsic_backed(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1\n")
@@ -1670,7 +1658,7 @@ def test_full_coverage_attestation_marks_intrinsic_backed(
 def test_full_coverage_intrinsic_contract_requires_module_entry(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1\n")
@@ -1715,7 +1703,7 @@ def test_full_coverage_intrinsic_contract_requires_module_entry(
 def test_full_coverage_intrinsic_contract_requires_intrinsic_wiring(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1\n")
@@ -1760,7 +1748,7 @@ def test_full_coverage_intrinsic_contract_requires_intrinsic_wiring(
 def test_full_coverage_intrinsic_contract_accepts_required_intrinsics(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_gate_module()
+    module = check_stdlib_intrinsics
     stdlib_root = tmp_path / "stdlib"
     stdlib_root.mkdir()
     _seed_intrinsic_module(

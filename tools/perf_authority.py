@@ -38,7 +38,6 @@ import datetime as dt
 import functools
 import shlex
 import subprocess
-import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -46,9 +45,7 @@ from typing import Any
 TOOLS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = TOOLS_ROOT.parent
 SRC_ROOT = REPO_ROOT / "src"
-for import_root in (TOOLS_ROOT, SRC_ROOT):
-    if str(import_root) not in sys.path:
-        sys.path.insert(0, str(import_root))
+
 
 from molt.metric_ratios import (  # noqa: E402
     RatioDirection as RatioDirection,
@@ -58,9 +55,9 @@ from molt.metric_ratios import (  # noqa: E402
     signed_ratio as signed_ratio,
     signed_ratio_value as signed_ratio_value,
 )
-import perf_schema as perf_schema  # noqa: E402
-import bench_suites as bench_suites  # noqa: E402
-from git_identity import is_git_object_id  # noqa: E402
+from tools import perf_schema as perf_schema  # noqa: E402
+from tools import bench_suites as bench_suites  # noqa: E402
+from tools.git_identity import is_git_object_id  # noqa: E402
 
 __all__ = [
     "CANONICAL_GATE",
@@ -478,7 +475,7 @@ def canonical_scoreboard_shape_problems(
 
     # Legacy labels cannot prove which producer profile built the selected bytes.
     # Keep historical artifacts readable, but never count unbound cells as E2.
-    from perf_scoreboard_build_profiles import profile_binding_problems
+    from tools.perf_scoreboard_build_profiles import profile_binding_problems
 
     for cell in cells:
         profile = cell.get("profile")

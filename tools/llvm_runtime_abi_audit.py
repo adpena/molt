@@ -32,12 +32,16 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-for source_root in (ROOT / "src", ROOT / "tools"):
-    if str(source_root) not in sys.path:
-        sys.path.insert(0, str(source_root))
+
 
 from tools.op_kinds.paths import OUT_RS as OP_KINDS_GENERATED_RS  # noqa: E402
 
@@ -153,7 +157,7 @@ class AuditResult:
 @lru_cache(maxsize=1)
 def runtime_boxed_abi_facts() -> dict[tuple[str, int], AbiFact]:
     """The normalized semantic projection used by the generator and both audits."""
-    from wasm_abi_gen.manifest import load_manifest, runtime_boxed_call_specs
+    from tools.wasm_abi_gen.manifest import load_manifest, runtime_boxed_call_specs
 
     return {
         (row["runtime_name"], row["arity"]): AbiFact(
@@ -173,7 +177,7 @@ def boxed_runtime_export_issues() -> tuple[ClassifiedFactIssue, ...]:
     That scan owns runtime dependency leaves and conditional export variants;
     the native pointer/custom declaration audit remains separate below.
     """
-    from wasm_abi_gen.manifest import generator_runtime_export_signature_rows
+    from tools.wasm_abi_gen.manifest import generator_runtime_export_signature_rows
 
     issues: list[ClassifiedFactIssue] = []
     exports: dict[str, list[RuntimeSignature]] = {}

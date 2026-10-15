@@ -14,7 +14,6 @@ of truth:
 from __future__ import annotations
 
 import math
-import sys
 import tomllib
 from pathlib import Path
 
@@ -22,11 +21,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import perf_authority as pa  # noqa: E402
-import check_perf_freshness as freshness  # noqa: E402
+
+from tools import perf_authority as pa  # noqa: E402
+from tools import check_perf_freshness as freshness  # noqa: E402
 
 
 # --- safe_speedup: a build failure can never become a ratio ------------------

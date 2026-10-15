@@ -5,21 +5,13 @@ the host these tests run on -- on Windows this exercises the ctypes
 GetProcessMemoryInfo path that fixes the native board's "RSS=0" gap.
 """
 
-import importlib.util
 import sys
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-_MOD_PATH = Path(__file__).resolve().parents[1] / "tools" / "perf_calibration.py"
-_spec = importlib.util.spec_from_file_location("perf_calibration", _MOD_PATH)
-pc = importlib.util.module_from_spec(_spec)
-# Register before exec: `from __future__ import annotations` makes @dataclass resolve
-# string annotations via sys.modules[cls.__module__].
-sys.modules["perf_calibration"] = pc
-_spec.loader.exec_module(pc)
+from tools import perf_calibration as pc
 
 
 def test_host_fingerprint_shape():

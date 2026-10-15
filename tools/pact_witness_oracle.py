@@ -12,14 +12,19 @@ import shutil
 import sys
 import tempfile
 
-from molt.cli.source_build_environment import source_build_environment
-from molt.dx import proof_scratch_root
-from molt.scientific_stack_versions import PACT_WITNESS_DEPENDENCY_GROUP
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.cli.source_build_environment import source_build_environment  # noqa: E402
+from molt.dx import proof_scratch_root  # noqa: E402
+from molt.scientific_stack_versions import PACT_WITNESS_DEPENDENCY_GROUP  # noqa: E402
+
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from wasm_link_fact_provider import WasmFactsProvider
+from tools.wasm_link_fact_provider import WasmFactsProvider
 
 from collections.abc import Mapping, Sequence
 import contextlib
@@ -52,22 +52,22 @@ from molt.wasm_optimizer_identity import (
     wasm_optimizer_attestation_path,
     wasm_optimizer_invocation_identity,
 )
-import wasm_link_callable_table as _callable_table
-import wasm_link_command as _command
-import wasm_link_edit as _edit
-import wasm_link_export_contract as _export_contract
-import wasm_link_fact_provider as _facts
-import wasm_link_format as _format
-from wasm_link_format import CallableTableLayout
-import wasm_link_native_inputs as _native_inputs
-import wasm_link_operations as _operations
-import wasm_link_optimizer_policy as _optimizer
-import wasm_link_optimize as _link_optimize
-import wasm_link_runtime_data as _runtime_data
-from wasm_link_transaction import WasmArtifactState
-import wasm_link_validation as _validation
-from wasm_metrics import wasm_metrics
-from wasm_stub_wasi import stub_wasi_imports
+from tools import wasm_link_callable_table as _callable_table
+from tools import wasm_link_command as _command
+from tools import wasm_link_edit as _edit
+from tools import wasm_link_export_contract as _export_contract
+from tools import wasm_link_fact_provider as _facts
+from tools import wasm_link_format as _format
+from tools.wasm_link_format import CallableTableLayout
+from tools import wasm_link_native_inputs as _native_inputs
+from tools import wasm_link_operations as _operations
+from tools import wasm_link_optimizer_policy as _optimizer
+from tools import wasm_link_optimize as _link_optimize
+from tools import wasm_link_runtime_data as _runtime_data
+from tools.wasm_link_transaction import WasmArtifactState
+from tools import wasm_link_validation as _validation
+from tools.wasm_metrics import wasm_metrics
+from tools.wasm_stub_wasi import stub_wasi_imports
 
 
 TOOLS_ROOT = Path(__file__).resolve().parent

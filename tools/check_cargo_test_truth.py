@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tomllib
 
+
 ROOT = Path(__file__).resolve().parents[1]
 PROOF_PLAN = ROOT / "tools" / "proof_plan.toml"
 RUNNER = ROOT / "tools" / "run_cargo_test_truth.py"

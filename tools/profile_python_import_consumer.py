@@ -21,10 +21,18 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import pytest
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from molt.cli import python_import_resolution, python_source_closure
-from molt.compiler_analysis.python_binding_flow import python_binding_core_computations
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+import pytest  # noqa: E402
+
+from molt.cli import python_import_resolution, python_source_closure  # noqa: E402
+from molt.compiler_analysis.python_binding_flow import python_binding_core_computations  # noqa: E402
 
 
 def _note_diagnostic_failure(

@@ -26,18 +26,21 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOLS_ROOT = ROOT / "tools"
-SRC_ROOT = ROOT / "src"
 BENCH_RESULTS_DIR = ROOT / "bench" / "results"
 DEFAULT_OUTPUT_PATH = BENCH_RESULTS_DIR / "wasm_baseline.json"
 
 # Make tools/ importable for wasm_optimize
-sys.path.insert(0, str(TOOLS_ROOT))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-import harness_memory_guard  # noqa: E402
-import perf_authority  # noqa: E402
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # noqa: E402
+from tools import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 
 BENCH_TMP_ROOT = scratch_dir(ROOT, "bench/wasm")
@@ -285,7 +288,7 @@ def _compile_native(
 
 def _optimize_wasm(wasm_path: Path, out_dir: Path) -> OptimizeResult:
     """Run wasm-opt on a compiled WASM module."""
-    from wasm_optimize import optimize as wasm_opt_optimize
+    from tools.wasm_optimize import optimize as wasm_opt_optimize
 
     opt_path = out_dir / "output.opt.wasm"
     result = wasm_opt_optimize(wasm_path, output_path=opt_path)

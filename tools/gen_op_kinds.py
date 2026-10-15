@@ -46,9 +46,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 
 from tools.op_kinds import render_python as _render_python  # noqa: E402
 from tools.op_kinds import render_rust as _render_rust  # noqa: E402
@@ -60,7 +67,7 @@ from tools.op_kinds.paths import (  # noqa: E402
     OUT_RS,
     TABLE,
     harness_memory_guard,
-)  # noqa: E402
+)
 
 for _module in (_schema, _validate, _render_rust, _render_python):
     for _name in getattr(_module, "__all__", ()):  # re-export generator authority

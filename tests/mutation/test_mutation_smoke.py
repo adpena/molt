@@ -18,7 +18,7 @@ from tests.mutation.process_guard import run_mutation_process
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
-from mutation_test import (  # noqa: E402
+from tools.mutation_test import (  # noqa: E402
     MutationSite,
     apply_single_mutation,
     create_mutant_workspace,

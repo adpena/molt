@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from compat.comparison import (
+from tools.compat.comparison import (
     COMPARISON_LAW_VERSION,
     ComparisonMode,
     ExitLaw,

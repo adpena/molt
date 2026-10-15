@@ -15,18 +15,10 @@ import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from types import ModuleType
 
-try:
-    from tools import memory_guard, process_sentinel
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import memory_guard
-    import process_sentinel
+from tools import memory_guard, process_sentinel
 
-try:
-    from tools.memory_guard_core import harness_outcomes as _harness_outcomes
-    from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
-except (ImportError, ModuleNotFoundError):  # pragma: no cover - direct tools/ import
-    from memory_guard_core import harness_outcomes as _harness_outcomes
-    from memory_guard_core.memory_limits import ResolvedMemoryLimits
+from tools.memory_guard_core import harness_outcomes as _harness_outcomes
+from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
 
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
@@ -41,11 +33,7 @@ CODEX_INTERACTIVE_MAX_PROCESS_RSS_GB = 18.0
 CODEX_INTERACTIVE_MAX_TOTAL_RSS_GB = 24.0
 CODEX_INTERACTIVE_MAX_GLOBAL_RSS_GB = 36.0
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-_SRC_ROOT = _REPO_ROOT / "src"
-if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
+
 
 from molt.dx import (  # noqa: E402
     CANONICAL_ROOT_ENV_KEYS as _CANONICAL_ROOT_ENV_KEYS,

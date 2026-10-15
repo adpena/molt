@@ -4,24 +4,15 @@ gate must FAIL CLOSED when a stdlib-required intrinsic is not registered."""
 from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
+from tools import check_stdlib_intrinsic_surface
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATE = REPO_ROOT / "tools" / "check_stdlib_intrinsic_surface.py"
-
-
-def _load_gate():
-    spec = importlib.util.spec_from_file_location(
-        "check_stdlib_intrinsic_surface", GATE
-    )
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def test_green_on_real_tree_with_check_exits_0() -> None:
@@ -51,7 +42,7 @@ def test_green_on_real_tree_with_check_exits_0() -> None:
 def test_detects_required_but_unregistered(
     tmp_path, monkeypatch, request_source
 ) -> None:
-    gate = _load_gate()
+    gate = check_stdlib_intrinsic_surface
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     (stdlib / "mod.py").write_text(f"x = {request_source}\n", encoding="utf-8")
@@ -70,7 +61,7 @@ def test_detects_required_but_unregistered(
 def test_request_discovery_ignores_non_calls_and_deduplicates(
     tmp_path, monkeypatch
 ) -> None:
-    gate = _load_gate()
+    gate = check_stdlib_intrinsic_surface
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     (stdlib / "mod.py").write_text(
@@ -86,7 +77,7 @@ def test_request_discovery_ignores_non_calls_and_deduplicates(
 
 
 def test_passes_when_registered(tmp_path, monkeypatch) -> None:
-    gate = _load_gate()
+    gate = check_stdlib_intrinsic_surface
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     (stdlib / "mod.py").write_text(

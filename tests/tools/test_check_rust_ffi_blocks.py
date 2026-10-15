@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import importlib.util
 import sys
 import textwrap
 from pathlib import Path
 
-from tools import check_rust_ffi_blocks
-
-ROOT = Path(__file__).resolve().parents[2]
+from tools import check_rust_ffi_blocks, ci_gate
 
 
 def test_rust_ffi_block_checker_rejects_missing_unsafe(tmp_path: Path) -> None:
@@ -56,21 +53,11 @@ def test_rust_ffi_block_checker_ignores_exports_and_embedded_headers(
 
 
 def test_ci_gate_uses_rust_ffi_block_gate_without_compile_slot() -> None:
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_ci_gate_for_rust_ffi_blocks",
-        ROOT / "tools" / "ci_gate.py",
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-
-    check = {entry.name: entry for entry in module._build_checks()}["rust-ffi-blocks"]
+    check = {entry.name: entry for entry in ci_gate._build_checks()}["rust-ffi-blocks"]
 
     assert check.cmd == [
         sys.executable,
-        str(module.TOOLS / "check_rust_ffi_blocks.py"),
+        str(ci_gate.TOOLS / "check_rust_ffi_blocks.py"),
     ]
     assert check.needs_rust is False
     assert check.needs_cargo is False

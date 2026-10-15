@@ -21,16 +21,15 @@ from xml.etree import ElementTree
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 SRC_ROOT = REPO_ROOT / "src"
-for import_root in (REPO_ROOT, SRC_ROOT, TOOLS_ROOT):
-    if str(import_root) not in sys.path:
-        sys.path.insert(0, str(import_root))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.command_execution import (  # noqa: E402
-    CommandExecutor,
-    bind_repository_imports,
-)
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402

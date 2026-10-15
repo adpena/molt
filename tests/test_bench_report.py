@@ -1,26 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import math
-import sys
 from pathlib import Path
+
+import pytest
+
+from tools import bench_report as module
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / "tools" / "bench_report.py"
-
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location(
-        "bench_report_under_test", SCRIPT_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -35,9 +24,9 @@ def _write_manifest(path: Path, payload: dict[str, str]) -> None:
 
 def test_bench_report_updates_status_doc_and_keeps_detailed_report(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
+    monkeypatch.setattr(module, "ROOT", tmp_path)
     native_path = tmp_path / "bench/results/native.json"
     wasm_path = tmp_path / "bench/results/wasm.json"
     out_path = tmp_path / "docs/benchmarks/bench_summary.md"
@@ -150,10 +139,12 @@ def test_bench_report_updates_status_doc_and_keeps_detailed_report(
 
 def test_bench_report_uses_docs_manifest_by_default_when_available(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
-    module.DEFAULT_MANIFEST_PATH = tmp_path / "bench/results/docs_manifest.json"
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        module, "DEFAULT_MANIFEST_PATH", tmp_path / "bench/results/docs_manifest.json"
+    )
     native_path = tmp_path / "bench/results/native.json"
     wasm_path = tmp_path / "bench/results/wasm.json"
     out_path = tmp_path / "docs/benchmarks/bench_summary.md"
@@ -216,7 +207,6 @@ def test_bench_report_uses_docs_manifest_by_default_when_available(
 def test_bench_report_requires_status_markers_when_updating_status_doc(
     tmp_path: Path,
 ) -> None:
-    module = _load_module()
     native_path = tmp_path / "bench/results/native.json"
     wasm_path = tmp_path / "bench/results/wasm.json"
     out_path = tmp_path / "docs/benchmarks/bench_summary.md"
@@ -258,9 +248,10 @@ def test_bench_report_requires_status_markers_when_updating_status_doc(
     )
 
 
-def test_bench_report_check_fails_for_stale_generated_outputs(tmp_path: Path) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
+def test_bench_report_check_fails_for_stale_generated_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
     native_path = tmp_path / "bench/results/native.json"
     wasm_path = tmp_path / "bench/results/wasm.json"
     out_path = tmp_path / "docs/benchmarks/bench_summary.md"
@@ -331,9 +322,10 @@ def test_bench_report_check_fails_for_stale_generated_outputs(tmp_path: Path) ->
     )
 
 
-def test_failed_wasm_zero_time_is_not_reported_as_speed(tmp_path: Path) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
+def test_failed_wasm_zero_time_is_not_reported_as_speed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
     native_path = tmp_path / "bench/results/native.json"
     wasm_path = tmp_path / "bench/results/wasm.json"
     out_path = tmp_path / "docs/benchmarks/bench_summary.md"
@@ -409,17 +401,16 @@ def test_failed_wasm_zero_time_is_not_reported_as_speed(tmp_path: Path) -> None:
 
 
 def test_wasm_time_filter_rejects_invalid_numeric_values() -> None:
-    module = _load_module()
-
     for value in (True, False, 0.0, -1.0, math.nan, math.inf, -math.inf):
         assert module._valid_positive_time(value) is None
 
     assert module._valid_positive_time(1.25) == 1.25
 
 
-def test_failed_native_stale_values_do_not_feed_report_ratios(tmp_path: Path) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
+def test_failed_native_stale_values_do_not_feed_report_ratios(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
     native_path = tmp_path / "native.json"
     wasm_path = tmp_path / "wasm.json"
     native = {
@@ -446,9 +437,9 @@ def test_failed_native_stale_values_do_not_feed_report_ratios(tmp_path: Path) ->
 
 def test_failed_comparator_stale_values_do_not_feed_ratio_tables(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
+    monkeypatch.setattr(module, "ROOT", tmp_path)
     native_path = tmp_path / "native.json"
     wasm_path = tmp_path / "wasm.json"
     native = {
@@ -517,9 +508,10 @@ def _startup_audit_fixture() -> dict:
     }
 
 
-def test_startup_section_renders_cold_start_and_size(tmp_path: Path) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
+def test_startup_section_renders_cold_start_and_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
     native_path = tmp_path / "native.json"
     wasm_path = tmp_path / "wasm.json"
     native = {"benchmarks": {}}
@@ -540,9 +532,10 @@ def test_startup_section_renders_cold_start_and_size(tmp_path: Path) -> None:
     assert "C 3.0ms, CPython 40.0ms" in section
 
 
-def test_startup_section_empty_when_audit_absent(tmp_path: Path) -> None:
-    module = _load_module()
-    module.ROOT = tmp_path
+def test_startup_section_empty_when_audit_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
     native_path = tmp_path / "native.json"
     wasm_path = tmp_path / "wasm.json"
 
@@ -555,7 +548,6 @@ def test_startup_section_empty_when_audit_absent(tmp_path: Path) -> None:
 
 
 def test_status_summary_includes_startup_line() -> None:
-    module = _load_module()
     summary = module._status_summary(
         {"benchmarks": {}},
         {"benchmarks": {}},

@@ -16,10 +16,7 @@ from molt.file_locks import (
     _try_acquire_file_lock,
 )
 
-try:
-    from tools import resource_pressure
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import resource_pressure  # type: ignore
+from tools import resource_pressure  # type: ignore
 
 DEFAULT_MAX_COMPILE_SLOTS = resource_pressure.DEFAULT_MAX_COMPILE_SLOTS
 DEFAULT_WAIT_SECONDS = 180.0

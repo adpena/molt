@@ -218,7 +218,7 @@ def test_reloc_link_failure_retains_child_evidence(
 
 
 # Split app owns its formatter; the combined link already has the reloc one.
-import wasm_link_native_inputs  # noqa: E402
+from tools import wasm_link_native_inputs  # noqa: E402
 from molt.cli.source_extension_link_requirements import (  # noqa: E402
     SourceExtensionLinkRequirements,
     source_extension_link_file,

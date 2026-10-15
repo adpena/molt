@@ -4,27 +4,12 @@ from __future__ import annotations
 import json
 import os
 import tarfile
-from pathlib import Path
-import importlib.util
 
 import pytest
 
 from molt import artifact_publication
 from molt.wasm_bundle import write_wasm_bundle
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _load_bundle_module():
-    path = PROJECT_ROOT / "tools" / "wasm_bundle.py"
-    spec = importlib.util.spec_from_file_location("wasm_bundle", path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-bundle_mod = _load_bundle_module()
+from tools import wasm_bundle as bundle_mod
 
 
 def test_create_bundle_basic(tmp_path):

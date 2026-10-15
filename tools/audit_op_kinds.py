@@ -69,9 +69,16 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 
 from tools.op_kinds.paths import TABLE as OP_KINDS_TOML  # noqa: E402
 from tools.op_kinds.paths import TIR_SRC as OP_KIND_TIR_SRC  # noqa: E402
@@ -736,7 +743,10 @@ def extract_llvm_boxed_runtime_abis():
 def extract_owned_result_runtime_kinds() -> set[str]:
     """Read canonical return custody and exact operation aliases, not i64 shape."""
     import tools.llvm_runtime_abi_audit  # noqa: F401 - puts tools/ on sys.path
-    from wasm_abi_gen.manifest import load_manifest, runtime_operation_return_specs
+    from tools.wasm_abi_gen.manifest import (
+        load_manifest,
+        runtime_operation_return_specs,
+    )
 
     return {
         kind

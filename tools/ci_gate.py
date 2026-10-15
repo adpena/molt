@@ -43,13 +43,11 @@ from pathlib import Path
 from typing import Any
 
 _THIS_FILE = Path(__file__).resolve()
-_REPO_ROOT = _THIS_FILE.parents[1]
-_SRC_ROOT = _REPO_ROOT / "src"
-for _import_root in (_REPO_ROOT, _SRC_ROOT):
-    if str(_import_root) not in sys.path:
-        sys.path.insert(0, str(_import_root))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.command_execution import bind_repository_imports  # noqa: E402
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 

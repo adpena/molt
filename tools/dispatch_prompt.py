@@ -40,19 +40,19 @@ import argparse
 import sys
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 
 def _import_contract():
-    """Import the real contract module, whether run as a script or under pytest."""
-    try:
-        from tools import subagent_contract
-    except ImportError:
-        # Run as `python tools/dispatch_prompt.py`: sys.path[0] is tools/, not the repo
-        # root. Put the repo root on the path and retry -- then let any failure propagate
-        # LOUD (a missing contract module must never degrade to a hand-typed fallback).
-        sys.path.insert(0, str(_REPO))
-        from tools import subagent_contract
+    """Import the real contract module; the bootstrap makes `tools` resolvable."""
+    from tools import subagent_contract
+
     return subagent_contract
 
 

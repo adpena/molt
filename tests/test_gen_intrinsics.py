@@ -6,26 +6,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools import gen_intrinsics
 from tools.intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GEN_INTRINSICS = ROOT / "tools" / "gen_intrinsics.py"
-
-
-def _load_gen_intrinsics_module():
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_gen_intrinsics", GEN_INTRINSICS
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_backend_symbol_overrides_file_is_removed() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     overrides = ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs"
     assert overrides in module.RETIRED_OUTPUTS
     for retired in module.RETIRED_OUTPUTS:
@@ -33,7 +22,7 @@ def test_backend_symbol_overrides_file_is_removed() -> None:
 
 
 def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _raw, entries = module._load_manifest()
     symbols = {entry.name: entry.symbol for entry in entries}
     assert symbols["molt_async_sleep"] == "molt_async_sleep"
@@ -42,7 +31,7 @@ def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:
 def test_all_stdlib_literal_intrinsic_requests_are_manifested() -> None:
     from molt.stdlib_intrinsic_policy import intrinsic_names_from_source
 
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _raw, entries = module._load_manifest()
     declared = {entry.name for entry in entries}
     stdlib = ROOT / "src" / "molt" / "stdlib"
@@ -58,7 +47,7 @@ def test_all_stdlib_literal_intrinsic_requests_are_manifested() -> None:
 
 
 def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _raw, entries = module._load_manifest()
 
     by_name = {entry.name: entry for entry in entries}
@@ -88,7 +77,7 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
 
 
 def test_public_intrinsic_names_are_explicit_declarations() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _raw, entries = module._load_manifest()
     by_name = {entry.name: entry for entry in entries}
     # CPython method declarations differ from runtime spelling and aliases.
@@ -159,7 +148,7 @@ def test_intrinsic_aliases_reject_noncanonical_targets_and_signature_drift(
 
 
 def test_distinct_public_aliases_share_only_the_executable_symbol() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _, entries = module._load_manifest()
     by_name = {entry.name: entry for entry in entries}
     for alias, target, public_name in (
@@ -175,7 +164,7 @@ def test_distinct_public_aliases_share_only_the_executable_symbol() -> None:
 
 
 def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _raw, entries = module._load_manifest()
 
     ssl_symbols = sorted(
@@ -207,7 +196,7 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
 
 
 def test_intrinsic_target_availability_is_toml_owned() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
 
     assert module._target_arch_exclusions_for_symbol("molt_db_query_obj") == ()
     assert module._target_arch_exclusions_for_symbol("molt_sqlite3_connect") == (
@@ -228,7 +217,7 @@ def test_intrinsic_target_availability_is_toml_owned() -> None:
 def test_exact_builtin_category_precedes_feature_and_target_prefixes(
     tmp_path: Path,
 ) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     categories = tmp_path / "categories.toml"
     categories.write_text(
         """
@@ -261,7 +250,7 @@ unsupported_target_arches = ["wasm32"]
 
 
 def test_all_canonical_builtin_symbols_are_ungated() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     builtin_symbols, _internal_prefixes, _stdlib_modules = module._load_categories()
 
     assert builtin_symbols
@@ -282,7 +271,7 @@ def test_all_canonical_builtin_symbols_are_ungated() -> None:
 
 
 def test_runtime_feature_gates_are_generated_from_categories() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     gates_path = ROOT / "src/molt/_runtime_feature_gates.py"
     spec = importlib.util.spec_from_file_location(
         "molt_test_runtime_feature_gates", gates_path
@@ -306,7 +295,7 @@ def test_runtime_feature_gates_are_generated_from_categories() -> None:
 
 
 def test_intrinsic_symbol_table_is_generated_from_manifest() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _raw, entries = module._load_manifest()
     symbols_path = ROOT / "src/molt/_intrinsic_symbols.py"
     spec = importlib.util.spec_from_file_location(
@@ -332,7 +321,7 @@ def test_intrinsic_symbol_table_is_generated_from_manifest() -> None:
 
 
 def test_toml_prefixes_do_not_fall_back_to_extra_prefix_modules() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _builtin_symbols, _internal_prefixes, stdlib_modules = module._load_categories()
     toml_prefixes = [
         (prefix, module_name)
@@ -382,7 +371,7 @@ def test_generated_resolvers_are_split_from_manifest_table() -> None:
 
 
 def test_stringprep_category_is_toml_owned() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
 
     assert stdlib_modules["stringprep"] == ["molt_stringprep_"]
@@ -425,7 +414,7 @@ def test_stringprep_resolver_is_leaf_owned() -> None:
 
 
 def test_collections_categories_are_toml_owned() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
 
     assert stdlib_modules["collections"] == [
@@ -558,7 +547,7 @@ def test_crypto_resolver_is_leaf_owned_with_per_symbol_paths() -> None:
 
 
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     calls: list[dict[str, object]] = []
     first = tmp_path / "a" / "generated.rs"
     second = tmp_path / "b" / "mod.rs"
@@ -599,7 +588,7 @@ def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_rustfmt_failure_reports_guarded_output(monkeypatch, tmp_path: Path) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     target = tmp_path / "generated.rs"
     target.write_text("fn main( {\n", encoding="utf-8")
 
@@ -626,7 +615,7 @@ def test_rustfmt_failure_reports_guarded_output(monkeypatch, tmp_path: Path) -> 
 
 
 def test_rustfmt_batches_stay_inside_the_command_line_budget(monkeypatch) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     # Each path costs len("scratch/N/resolver.rs") + 3 == 24 characters, so a
     # 50-character budget holds exactly two paths per rustfmt invocation.
     monkeypatch.setattr(module, "_RUSTFMT_ARGV_CHAR_BUDGET", 50)
@@ -640,7 +629,7 @@ def test_rustfmt_batches_stay_inside_the_command_line_budget(monkeypatch) -> Non
 def test_format_rust_sources_isolates_each_file_outside_the_output_tree(
     monkeypatch, tmp_path: Path
 ) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     output_root = tmp_path / "tracked-output"
     output_root.mkdir()
     sources = {
@@ -672,7 +661,7 @@ def test_format_rust_sources_isolates_each_file_outside_the_output_tree(
 
 
 def test_orphaned_resolvers_are_reported_not_deleted(tmp_path: Path) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     resolver_root = tmp_path / "generated_resolvers"
     resolver_root.mkdir()
     hidden_temp = resolver_root / ".ssl_resolver.rs.12345.tmp.rs"
@@ -692,7 +681,7 @@ def test_orphaned_resolvers_are_reported_not_deleted(tmp_path: Path) -> None:
 def test_generated_outputs_fail_closed_on_orphaned_resolver(
     monkeypatch, tmp_path: Path
 ) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     resolver_root = tmp_path / "generated_resolvers"
     resolver_root.mkdir()
     stale_resolver = resolver_root / "removed_resolver.rs"
@@ -712,7 +701,7 @@ def test_generated_outputs_fail_closed_on_orphaned_resolver(
 
 
 def test_retired_outputs_fail_closed(monkeypatch, tmp_path: Path) -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     retired = tmp_path / "intrinsic_symbol_overrides.rs"
     monkeypatch.setattr(module, "RETIRED_OUTPUTS", (retired,))
     assert module._stale_generated_files({}, ()) == []
@@ -724,7 +713,7 @@ def test_retired_outputs_fail_closed(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_resolver_render_covers_every_owned_directory() -> None:
-    module = _load_gen_intrinsics_module()
+    module = gen_intrinsics
     _raw, entries = module._load_manifest()
 
     sources, owned_dirs = module._render_generated_rs(entries)

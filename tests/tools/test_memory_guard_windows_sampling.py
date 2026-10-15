@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -10,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tools import memory_guard
 from tools.memory_guard_core import process_custody
 
 from tools.memory_guard_core import windows_snapshot
@@ -28,7 +28,6 @@ pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "tools" / "memory_guard.py"
 # The custody modules call each other: process_custody signals and reads
 # os.getpid, and process_model reads os.getpid for the watched set.
 _CUSTODY_MODULES = (
@@ -46,18 +45,6 @@ def _fake_custody(monkeypatch, attribute: str, real: object, **fakes) -> None:
     each function fake answers only the installing thread.
     """
     install_thread_module_view(monkeypatch, attribute, real, *_CUSTODY_MODULES, **fakes)
-
-
-def _load_memory_guard():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_memory_guard_windows_sampling", SCRIPT_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.fixture(autouse=True)
@@ -98,7 +85,7 @@ def _windows_guard_creationflags(module) -> int:
 
 
 def test_parse_windows_process_snapshot_rows_builds_process_samples() -> None:
-    module = _load_memory_guard()
+    module = memory_guard
     rows = [
         (100, 42, 2, "python.exe", 7, 123456789),
         (101, 100, 0, "", None),
@@ -582,7 +569,7 @@ def test_windows_process_handle_rss_rejects_invalid_handle_values(
 
 
 def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
-    module = _load_memory_guard()
+    module = memory_guard
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     install_module_view(
         monkeypatch,
@@ -603,7 +590,7 @@ def test_windows_wrapper_terminalizes_worker_exit_running_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = memory_guard
     host_run = subprocess.run
     summary_path = tmp_path / "memory_guard.json"
     child_process = module.GuardedChildProcess(
@@ -801,7 +788,7 @@ def test_pytest_bootstrap_handoff_preserves_stdio_under_hidden_console(
 
 
 def test_posix_guarded_popen_uses_new_session(monkeypatch) -> None:
-    module = _load_memory_guard()
+    module = memory_guard
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
 
     assert module._guarded_popen_process_isolation_kwargs() == {
@@ -810,7 +797,7 @@ def test_posix_guarded_popen_uses_new_session(monkeypatch) -> None:
 
 
 def test_windows_sampler_limits_full_command_line_reads_to_launcher_processes() -> None:
-    module = _load_memory_guard()
+    module = memory_guard
 
     assert module._windows_process_needs_full_command_line("python.exe") is True
     assert module._windows_process_needs_full_command_line("UV.EXE") is True
@@ -830,7 +817,7 @@ def test_windows_sampler_limits_full_command_line_reads_to_launcher_processes() 
 
 
 def test_command_executable_name_handles_windows_paths() -> None:
-    module = _load_memory_guard()
+    module = memory_guard
 
     assert (
         module._command_executable_name(
@@ -853,7 +840,7 @@ def test_command_executable_name_handles_windows_paths() -> None:
 
 
 def test_windows_codex_and_claude_processes_are_host_control_plane() -> None:
-    module = _load_memory_guard()
+    module = memory_guard
 
     samples = [
         module.ProcessSample(
@@ -1006,7 +993,7 @@ def test_windows_codex_and_claude_processes_are_host_control_plane() -> None:
 def test_windows_protects_external_codex_descendants_but_not_owned_children(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = memory_guard
     samples = {
         10: module.ProcessSample(
             pid=10,
@@ -1056,7 +1043,7 @@ def test_windows_protects_external_codex_descendants_but_not_owned_children(
 
 
 def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
-    module = _load_memory_guard()
+    module = memory_guard
     host_run = subprocess.run
     calls: dict[str, object] = {}
 
@@ -1412,7 +1399,7 @@ def test_terminate_watched_processes_windows_refuses_external_codex_descendant_r
 def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
     monkeypatch,
 ) -> None:
-    module = _load_memory_guard()
+    module = memory_guard
     samples = {
         100: module.ProcessSample(
             pid=100,

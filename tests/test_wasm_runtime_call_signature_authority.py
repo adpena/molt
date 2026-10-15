@@ -186,7 +186,7 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
         runtime_wasm_generation_path,
     )
     from molt.dx import development_artifact_env
-    from wasm_abi_gen.manifest import load_manifest
+    from tools.wasm_abi_gen.manifest import load_manifest
 
     runtime_env = development_artifact_env(
         ROOT,

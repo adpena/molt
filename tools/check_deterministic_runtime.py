@@ -24,9 +24,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 
 from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from molt.cli.output import (  # noqa: E402

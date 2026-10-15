@@ -11,31 +11,14 @@ and termination re-validates process identity (creation time) at the kill.
 
 from __future__ import annotations
 
-import importlib.util
-from functools import cache
 from pathlib import Path
 import signal
-import sys
 import os
 from tests.process_guard_common import install_module_view
+from tools import orphan_reaper
 from tools.memory_guard_core import process_custody
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "tools" / "orphan_reaper.py"
 WINDOWS_ROOT = Path(r"C:\repo\molt")
-
-
-@cache
-def _load_orphan_reaper():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_orphan_reaper", SCRIPT_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _force_windows_model(module, monkeypatch) -> None:
@@ -82,7 +65,7 @@ def test_non_molt_dead_parent_build_tool_not_selected(monkeypatch) -> None:
     Against the pre-fix reaper this was selected purely by name + dead parent.
     Post-fix it must NOT be selected — it fails the Molt-ownership gate.
     """
-    module = _load_orphan_reaper()
+    module = orphan_reaper
     _force_windows_model(module, monkeypatch)
 
     samples = {
@@ -104,7 +87,7 @@ def test_non_molt_dead_parent_build_tool_not_selected(monkeypatch) -> None:
 
 def test_molt_owned_leaked_build_tool_still_selected(monkeypatch) -> None:
     """The tool must still net a genuinely-Molt-owned leaked build subtree."""
-    module = _load_orphan_reaper()
+    module = orphan_reaper
     _force_windows_model(module, monkeypatch)
 
     samples = {
@@ -126,7 +109,7 @@ def test_molt_owned_leaked_build_tool_still_selected(monkeypatch) -> None:
 
 def test_both_present_only_molt_owned_selected(monkeypatch) -> None:
     """Side-by-side: only the Molt-owned orphan is selected."""
-    module = _load_orphan_reaper()
+    module = orphan_reaper
     _force_windows_model(module, monkeypatch)
 
     samples = {
@@ -141,7 +124,7 @@ def test_both_present_only_molt_owned_selected(monkeypatch) -> None:
 
 def test_molt_owned_but_parent_alive_not_selected(monkeypatch) -> None:
     """An active Molt build (parent alive) is never reaped."""
-    module = _load_orphan_reaper()
+    module = orphan_reaper
     _force_windows_model(module, monkeypatch)
 
     samples = {
@@ -167,14 +150,14 @@ def test_molt_owned_but_parent_alive_not_selected(monkeypatch) -> None:
 def test_conhost_dropped_from_reap_names() -> None:
     """A console host is almost never a leaked Molt build tool; it backs live
     consoles. It must not be a name-matched reap target."""
-    module = _load_orphan_reaper()
+    module = orphan_reaper
     assert "conhost.exe" not in module.REAP_NAMES
 
 
 def test_reap_one_refuses_on_pid_reuse_identity_mismatch(monkeypatch) -> None:
     """PID-reuse gate: if the PID's identity changed between snapshot and kill,
     ``_reap_one`` must NOT deliver a signal (fail closed)."""
-    module = _load_orphan_reaper()
+    module = orphan_reaper
     _force_windows_model(module, monkeypatch)
 
     snapshot_sample = _sample(
@@ -219,7 +202,7 @@ def test_reap_one_refuses_on_pid_reuse_identity_mismatch(monkeypatch) -> None:
 
 def test_reap_one_signals_when_identity_matches(monkeypatch) -> None:
     """Positive control: a stable identity is signalled (SIGTERM then fallback)."""
-    module = _load_orphan_reaper()
+    module = orphan_reaper
     _force_windows_model(module, monkeypatch)
 
     sample = _sample(

@@ -2,24 +2,10 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 from tools import wasm_link_format as fmt
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load_tool():
-    path = REPO_ROOT / "tools" / "wasm_strip_unused.py"
-    spec = importlib.util.spec_from_file_location("wasm_strip_unused_under_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # dataclasses resolve the defining module through sys.modules.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import wasm_strip_unused
 
 
 def _import_module_bytes() -> bytes:
@@ -52,7 +38,7 @@ def _import_module_bytes() -> bytes:
 def test_parse_imports_reports_every_kind_with_function_type_index(
     tmp_path: Path,
 ) -> None:
-    tool = _load_tool()
+    tool = wasm_strip_unused
     module = tmp_path / "module.wasm"
     module.write_bytes(_import_module_bytes())
 
@@ -68,7 +54,7 @@ def test_parse_imports_reports_every_kind_with_function_type_index(
 
 
 def test_parse_imports_of_an_importless_module_is_empty(tmp_path: Path) -> None:
-    tool = _load_tool()
+    tool = wasm_strip_unused
     module = tmp_path / "module.wasm"
     module.write_bytes(fmt._build_sections([]))
 

@@ -135,7 +135,7 @@ def test_empty_orphan_sweep_is_bounded_and_preserves_nonempty(monkeypatch, tmp_p
     unrelated.mkdir()
     (nonempty / "signal.txt").write_text("keep", encoding="utf-8")
     monkeypatch.setattr(dh, "REPO_ROOT", repo_root)
-    monkeypatch.setattr(dh, "_worktree_canonical_molt_root", lambda _root: tmp_path)
+    monkeypatch.setattr(dh, "canonical_molt_root", lambda _root: tmp_path)
     monkeypatch.setattr(dh, "_worktrees", lambda: [])
 
     removed = dh._sweep_empty_orphan_worktree_dirs()

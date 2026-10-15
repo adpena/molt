@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 TOOLS = REPO / "tools"
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
 
-import check_perf_gate_wiring as w  # noqa: E402
+
+from tools import check_perf_gate_wiring as w  # noqa: E402
 
 
 CONTROLLED_EVENTS = '  workflow_dispatch:\n  schedule:\n    - cron: "0 6 * * 1"\n'

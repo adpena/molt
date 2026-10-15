@@ -23,10 +23,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+
 
 from molt.exact_json import canonical_json_sha256  # noqa: E402
 from molt.toolchain_identity import stable_file_sha256  # noqa: E402

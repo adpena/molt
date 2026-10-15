@@ -41,12 +41,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import perf_authority as pa  # noqa: E402
+
+from tools import perf_authority as pa  # noqa: E402
 
 # Top-level bench result snapshots plus recursive bench/results stores are perf
 # artifacts. Benchmark corpus docs, runner source, and baseline schema docs are

@@ -1,29 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
-import sys
-import uuid
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 import shutil
 from tests.process_guard_common import install_module_view
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPO_ROOT / "tools" / "check_luau_static.py"
-
-
-def _load_module() -> ModuleType:
-    name = f"check_luau_static_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import check_luau_static as mod
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +29,6 @@ def _external_volume_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_parse_analyzer_warnings_best_effort() -> None:
-    mod = _load_module()
     output = "\n".join(
         [
             "fixture.luau:1: warning: UnknownGlobal variable 'x'",
@@ -66,7 +49,6 @@ def test_parse_analyzer_warnings_best_effort() -> None:
 
 
 def test_require_analyzer_fails_when_missing(tmp_path: Path, monkeypatch) -> None:
-    mod = _load_module()
     source = tmp_path / "sample.py"
     source.write_text("print('ok')\n", encoding="utf-8")
 
@@ -77,8 +59,6 @@ def test_require_analyzer_fails_when_missing(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_batch_runs_and_writes_json_report(tmp_path: Path, monkeypatch) -> None:
-    mod = _load_module()
-
     batch_dir = tmp_path / "corpus"
     batch_dir.mkdir()
     (batch_dir / "a.py").write_text("print('a')\n", encoding="utf-8")
@@ -137,7 +117,6 @@ def test_missing_analyzer_is_nonfatal_without_requirement(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    mod = _load_module()
     source = tmp_path / "single.py"
     source.write_text("print('ok')\n", encoding="utf-8")
     json_out = tmp_path / "single-report.json"

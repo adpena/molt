@@ -1,27 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
+from tools import tinygrad_upat_static_exec_registry
 
 ROOT = Path(__file__).resolve().parents[2]
-TOOL = ROOT / "tools" / "tinygrad_upat_static_exec_registry.py"
-
-
-def _load_tool() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_tinygrad_upat_static_exec_registry", TOOL
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 MATCHER_SOURCE = """# match for ('tinygrad/uop/spec.py', 153)
@@ -31,7 +18,7 @@ def compiled_match(uop, ctx):
 
 
 def test_rendered_registry_binds_matcher_globals_without_runtime_exec() -> None:
-    tool = _load_tool()
+    tool = tinygrad_upat_static_exec_registry
     record = tool.MatcherRecord(
         source=MATCHER_SOURCE,
         globals_keys=("_fxn", "a0"),
@@ -54,7 +41,7 @@ def test_rendered_registry_binds_matcher_globals_without_runtime_exec() -> None:
 
 
 def test_rendered_registry_fails_closed_for_unknown_matcher_source() -> None:
-    tool = _load_tool()
+    tool = tinygrad_upat_static_exec_registry
     record = tool.MatcherRecord(
         source=MATCHER_SOURCE,
         globals_keys=("_fxn", "a0"),
@@ -67,7 +54,7 @@ def test_rendered_registry_fails_closed_for_unknown_matcher_source() -> None:
 
 
 def test_manifest_output_deduplicates_matcher_records(tmp_path: Path) -> None:
-    tool = _load_tool()
+    tool = tinygrad_upat_static_exec_registry
     record = tool.MatcherRecord(
         source=MATCHER_SOURCE,
         globals_keys=("_fxn", "a0"),
@@ -91,7 +78,7 @@ def test_manifest_output_deduplicates_matcher_records(tmp_path: Path) -> None:
 def test_capture_sweeps_loaded_tinygrad_pattern_matchers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tool = _load_tool()
+    tool = tinygrad_upat_static_exec_registry
     calls: list[tuple[object, object]] = []
 
     class FakePatternMatcher:
@@ -121,7 +108,7 @@ def test_capture_sweeps_loaded_tinygrad_pattern_matchers(
 def test_cli_fails_closed_when_capture_produces_no_records(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    tool = _load_tool()
+    tool = tinygrad_upat_static_exec_registry
 
     def fake_capture(**_: object) -> tuple[int, list[object]]:
         return 0, []

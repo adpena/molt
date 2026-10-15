@@ -18,30 +18,21 @@ Covered:
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
+from tools import gen_cpython_abi_layout
+
 ROOT = Path(__file__).resolve().parents[1]
-GEN = ROOT / "tools" / "gen_cpython_abi_layout.py"
-
-
-def _load():
-    spec = importlib.util.spec_from_file_location("molt_test_gen_abi_layout", GEN)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_gen_abi_layout"] = mod
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def test_check_is_green_on_checked_in_artifact() -> None:
     """The committed _molt_abi_layout.generated.h matches what the authority
     produces right now. If abi_types.rs was edited without regenerating, this
     fails — exactly the drift the gate exists to catch."""
-    gen = _load()
+    gen = gen_cpython_abi_layout
     assert gen.main(["--check"]) == 0, (
         "generated layout artifact is stale vs abi_types.rs authority; run "
         "`python tools/gen_cpython_abi_layout.py --write`"
@@ -49,7 +40,7 @@ def test_check_is_green_on_checked_in_artifact() -> None:
 
 
 def test_authority_parser_extracts_object_model_structs() -> None:
-    gen = _load()
+    gen = gen_cpython_abi_layout
     authority = gen.parse_rust_authority(gen.AUTHORITY_RS.read_text(encoding="utf-8"))
     # The parser must find the object-model spine, with correct field categories.
     assert "PyObject" in authority
@@ -66,7 +57,7 @@ def test_authority_parser_extracts_object_model_structs() -> None:
 
 
 def test_generated_header_pins_pyobject_and_pytypeobject_size() -> None:
-    gen = _load()
+    gen = gen_cpython_abi_layout
     text = gen.build()
     # PyObject is 2 words on LP64/LLP64 native (ob_refcnt + ob_type).
     assert "sizeof(PyObject) == 16u" in text
@@ -77,7 +68,7 @@ def test_generated_header_pins_pyobject_and_pytypeobject_size() -> None:
 
 
 def test_generated_header_pins_truthful_pylistobject_layout() -> None:
-    gen = _load()
+    gen = gen_cpython_abi_layout
     text = gen.build()
     # CPython 3.12: PyVarObject head followed by ob_item and allocated.
     assert "sizeof(PyListObject) == 40u" in text
@@ -94,7 +85,7 @@ def test_generated_header_pins_wasm32_ilp32_layout() -> None:
     for wasm32-wasip1. These values are the ground truth the C compiler produced
     when the LP64-only header was compiled for wasm32 (the drift that blocked the
     numpy _multiarray_umath wasm seal rebuild)."""
-    gen = _load()
+    gen = gen_cpython_abi_layout
     text = gen.build()
     # Pointer-width model select must be present.
     assert "#if SIZEOF_VOID_P == 4" in text
@@ -115,7 +106,7 @@ def test_ilp32_and_lp64_layouts_derive_from_same_authority() -> None:
     """Both pointer-width layouts are computed from the ONE parsed Rust authority
     (no second hand-maintained table). Mutating the authority must move BOTH the
     LP64 and the ILP32 emitted sizes in lock-step."""
-    gen = _load()
+    gen = gen_cpython_abi_layout
     authority = gen.parse_rust_authority(gen.AUTHORITY_RS.read_text(encoding="utf-8"))
     size64, _ = gen._compute_layout("PyObject", authority, gen._PTR_SIZE_LP64)
     size32, _ = gen._compute_layout("PyObject", authority, gen._PTR_SIZE_ILP32)
@@ -131,7 +122,7 @@ def test_ilp32_and_lp64_layouts_derive_from_same_authority() -> None:
 
 
 def test_c_long_is_not_a_pointer_word_and_version_tag_is_unsigned_int() -> None:
-    gen = _load()
+    gen = gen_cpython_abi_layout
     authority = gen.parse_rust_authority(gen.AUTHORITY_RS.read_text(encoding="utf-8"))
     fields = {f.name: f.category for f in authority["PyTypeObject"].fields}
     assert fields["tp_flags"] == gen.LONG
@@ -173,7 +164,7 @@ def test_negative_control_new_field_changes_emitted_layout(
     """Inject a synthetic extra field into the PyObject authority struct and prove
     the emitted parity block reflects the larger struct. If the generator emitted a
     constant, this would not change — proving the gate tracks the real authority."""
-    gen = _load()
+    gen = gen_cpython_abi_layout
     real = gen.AUTHORITY_RS.read_text(encoding="utf-8")
     mutated = real.replace(
         "    pub ob_type: *mut PyTypeObject,\n}",
@@ -196,7 +187,7 @@ def test_negative_control_new_field_changes_emitted_layout(
 
 def test_negative_control_reordered_field_changes_offsets() -> None:
     """Reordering fields must change the emitted offsets (order is layout)."""
-    gen = _load()
+    gen = gen_cpython_abi_layout
     real = gen.AUTHORITY_RS.read_text(encoding="utf-8")
     # Swap ob_refcnt and ob_type in PyObject.
     mutated = real.replace(
@@ -221,7 +212,7 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 def test_generated_header_pins_physical_bound_method_vector_layout() -> None:
-    gen = _load()
+    gen = gen_cpython_abi_layout
     text = gen.build()
     # CPython classobject.h: object head, function, self, weakref head, vector.
     # Weakref capability is not implied by reserving its required layout field.

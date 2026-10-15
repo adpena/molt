@@ -7,14 +7,14 @@ import sys
 from collections.abc import Mapping
 
 
-from wasm_link_edit import _strip_internal_exports
-from wasm_link_fact_provider import WasmFactsProvider
-from wasm_link_facts import (
+from tools.wasm_link_edit import _strip_internal_exports
+from tools.wasm_link_fact_provider import WasmFactsProvider
+from tools.wasm_link_facts import (
     active_function_element_rows,
     fact_index_set,
     table_mutation_rows,
 )
-from wasm_link_format import (
+from tools.wasm_link_format import (
     _TRAP_STUB_BODY,
     _read_string,
     _read_varsint,
@@ -22,7 +22,7 @@ from wasm_link_format import (
     _write_string,
     _write_varuint,
 )
-from wasm_link_operations import (
+from tools.wasm_link_operations import (
     strip_publication_sections,
     build_sections as _build_sections,
     parse_sections as _parse_sections,

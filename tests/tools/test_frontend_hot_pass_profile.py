@@ -1,35 +1,18 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOL_PATH = REPO_ROOT / "tools" / "frontend_hot_pass_profile.py"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_frontend_hot_pass_profile",
-        TOOL_PATH,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import frontend_hot_pass_profile
 
 
 @pytest.mark.parametrize("fail_on_error", [False, True])
 def test_main_summary_reports_actual_exit_code(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], fail_on_error: bool
 ) -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     source = tmp_path / "broken.py"
     source.write_text("def broken(\n", encoding="utf-8")
     args = ["--source", str(source), "--out-dir", str(tmp_path / "profile")]
@@ -43,7 +26,7 @@ def test_main_summary_reports_actual_exit_code(
 
 
 def test_rank_passes_sorts_by_total_ms() -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     aggregate = {
         "cse": {
             "pass": "cse",
@@ -77,7 +60,7 @@ def test_rank_passes_sorts_by_total_ms() -> None:
 
 
 def test_profile_sources_emits_pass_and_cprofile_tables(tmp_path: Path) -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     source = tmp_path / "sample.py"
     source.write_text(
         "\n".join(
@@ -107,7 +90,7 @@ def test_profile_sources_emits_pass_and_cprofile_tables(tmp_path: Path) -> None:
 
 
 def test_corpus_digest_includes_ordered_source_hashes() -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     rows = [
         {"path": "a.py", "sha256": "111"},
         {"path": "b.py", "sha256": "222"},
@@ -123,7 +106,7 @@ def test_corpus_digest_includes_ordered_source_hashes() -> None:
 def test_version_excluded_source_never_reaches_parser_or_generator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     source = tmp_path / "future.py"
     source.write_text(
         "# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8"
@@ -151,7 +134,7 @@ def test_version_excluded_source_never_reaches_parser_or_generator(
 def test_profile_target_reaches_generator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     source = tmp_path / "simple.py"
     source.write_text("# MOLT_META: min_py=3.13\nvalue = 1\n", encoding="utf-8")
     original = tool.SimpleTIRGenerator
@@ -172,7 +155,7 @@ def test_profile_target_reaches_generator(
 def test_cli_version_skip_is_reported_without_fail_on_error_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     source = tmp_path / "future.py"
     source.write_text(
         "# MOLT_META: min_py=3.13\ntype Alias[T = int] = T\n", encoding="utf-8"
@@ -200,7 +183,7 @@ def test_cli_version_skip_is_reported_without_fail_on_error_failure(
 
 
 def test_main_records_manifest_input_custody(tmp_path: Path) -> None:
-    tool = _load_tool()
+    tool = frontend_hot_pass_profile
     source = tmp_path / "sample.py"
     source.write_text("def f():\n    return 1\nprint(f())\n", encoding="utf-8")
     manifest = tmp_path / "manifest.txt"

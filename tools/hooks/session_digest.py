@@ -24,13 +24,15 @@ import json
 import sys
 from pathlib import Path
 
-try:
-    from tools.hooks import _common, landing_gate
-except Exception:  # pragma: no cover - path-invocation fallback
-    import os as _os
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-    sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))))
-    from tools.hooks import _common, landing_gate
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.hooks import _common, landing_gate  # noqa: E402
 
 
 WORKTREE_DEBT_THRESHOLD = 24  # M67: 130+ worktrees = poison; keep the count low.

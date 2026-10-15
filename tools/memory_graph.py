@@ -62,6 +62,14 @@ from typing import Iterable, Optional
 
 # --- constants -------------------------------------------------------------
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 NODE_TYPES = frozenset(
     {"memory", "finding", "tool", "gate", "lane", "decision", "ledger"}
 )
@@ -856,9 +864,7 @@ def _parse_findings(graph: MemoryGraph, repo_root: Path) -> None:
     a consumer (tool/gate/doc that reads it) --consumes--> finding. This is the
     structured backbone of ``what-consumes``."""
     try:
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
-        from tools.findings_registry import query_findings  # type: ignore
+        from tools.findings_registry import query_findings
     except Exception as exc:  # registry absent/broken must not sink the graph
         graph.warnings.append(f"findings-registry-unavailable:{type(exc).__name__}")
         return

@@ -1,29 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import uuid
 from pathlib import Path
-from types import ModuleType
 import pytest
+
+from tools import gen_luau_support_matrix as mod
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPO_ROOT / "tools" / "gen_luau_support_matrix.py"
-
-
-def _load_module() -> ModuleType:
-    name = f"gen_luau_support_matrix_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_classifies_luau_op_arms_from_fixture() -> None:
-    mod = _load_module()
     source = r"""
     fn emit_op(&mut self, op: &OpIR) {
         match op.kind.as_str() {
@@ -144,7 +130,6 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
 def test_check_mode_detects_stale_generated_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    mod = _load_module()
     source = tmp_path / "luau.rs"
     output = tmp_path / "luau_support_matrix.generated.md"
     source.write_text(
@@ -173,7 +158,6 @@ def test_check_mode_detects_stale_generated_output(
 
 
 def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) -> None:
-    mod = _load_module()
     source_dir = tmp_path / "luau"
     source_dir.mkdir()
     (source_dir / "op_alpha.rs").write_text(
@@ -236,7 +220,6 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
 
 
 def test_execution_frames_are_implemented_but_introspection_is_not_admitted() -> None:
-    mod = _load_module()
     source = r"""
     fn emit_op(&mut self, op: &OpIR) {
         match op.kind.as_str() {
@@ -259,7 +242,6 @@ def test_execution_frames_are_implemented_but_introspection_is_not_admitted() ->
 
 
 def test_ordered_mapping_requirement_cannot_be_reported_as_exact() -> None:
-    mod = _load_module()
     row = mod._classify(
         "callargs_expand_kwstar", "molt_callargs_expand_kwstar(builder, value)"
     )
@@ -271,7 +253,6 @@ def test_ordered_mapping_requirement_cannot_be_reported_as_exact() -> None:
 
 
 def test_pending_call_poll_requirement_cannot_be_reported_as_exact() -> None:
-    mod = _load_module()
     source = r"""
     fn emit_op(&mut self, op: &OpIR) {
         match op.kind.as_str() {
@@ -302,14 +283,12 @@ def test_pending_call_poll_requirement_cannot_be_reported_as_exact() -> None:
 )
 @pytest.mark.parametrize("kind", ["const_ellipsis", "const_float", "callargs_new"])
 def test_rejection_only_shared_helper_is_never_reported_implemented(helper, kind):
-    mod = _load_module()
     body = f'"{kind}" => {{ self.{helper}(op, "reason"); }}'
     assert mod._classify(kind, body).status == "compile-error"
 
 
 @pytest.mark.parametrize("kind", ["func_new_closure", "getframe", "state_yield"])
 def test_pre_source_rejection_remains_primary_over_source_helper(kind):
-    mod = _load_module()
     row = mod._classify(kind, f'"{kind}" => {{ self.emit_unsupported_op(op); }}')
     assert row.status == "not-admitted"
     assert "before source generation" in row.note
@@ -319,7 +298,6 @@ def test_pre_source_rejection_remains_primary_over_source_helper(kind):
     "kind", ["const_int", "const_bigint", "add", "callargs_expand_kwstar"]
 )
 def test_declared_limits_preserve_their_specific_conditional_contract(kind):
-    mod = _load_module()
     body = f'"{kind}" => {{ if admitted {{ self.emit_line("value"); }} else {{ self.emit_unsupported_op(op); }} }}'
     row = mod._classify(kind, body)
     assert row.status == "implemented-target-limited"
@@ -328,7 +306,6 @@ def test_declared_limits_preserve_their_specific_conditional_contract(kind):
 
 @pytest.mark.parametrize("kind", ["const_float", "builtin_func", "callargs_new", "box"])
 def test_conditional_rejection_is_not_universal_rejection_or_exact_support(kind):
-    mod = _load_module()
     body = f'"{kind}" => {{ if admitted {{ self.emit_line("value"); }} else {{ self.emit_unsupported_op_with_reason(op, "bad operand"); }} }}'
     assert mod._unsupported_emission_kind(body) == "conditional"
     row = mod._classify(kind, body)
@@ -354,21 +331,18 @@ def test_conditional_rejection_is_not_universal_rejection_or_exact_support(kind)
     ],
 )
 def test_shared_helper_spelling_in_noncode_does_not_lower_support(noncode):
-    mod = _load_module()
     body = f'"const_none" => {{ {noncode} self.emit_line("nil"); }}'
     assert mod._unsupported_emission_kind(body) is None
     assert mod._classify("const_none", body).status == "implemented-exact"
 
 
 def test_supported_branch_before_late_rejection_is_not_universal_rejection():
-    mod = _load_module()
     body = '"const_float" => { if valid { self.emit_line("value"); return true; } self.emit_unsupported_op(op); }'
     assert mod._unsupported_emission_kind(body) == "conditional"
     assert mod._classify("const_float", body).status == "implemented-exact"
 
 
 def test_every_actual_shared_rejection_arm_has_honest_support_status():
-    mod = _load_module()
     source = "\n".join(
         path.read_text(encoding="utf-8") for path in mod._source_files(mod.SOURCE)
     )
@@ -406,7 +380,6 @@ def test_every_actual_shared_rejection_arm_has_honest_support_status():
 def test_luau_classifier_source_family_and_regressions_are_mandatory():
     import tomllib
 
-    mod = _load_module()
     plan = tomllib.loads(
         (REPO_ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
     )
@@ -427,7 +400,6 @@ def test_luau_classifier_source_family_and_regressions_are_mandatory():
 
 
 def test_actual_raw_fallback_report_explicitly_excludes_structured_cfg_acceptance():
-    mod = _load_module()
     output = mod.build_output(mod.SOURCE)
     assert "**Scope:** raw OpIR emitter-arm classification" in output
     assert "whole-function acceptance or execution" in output
@@ -444,7 +416,6 @@ def test_actual_raw_fallback_report_explicitly_excludes_structured_cfg_acceptanc
 
 
 def test_source_reader_excludes_test_code_even_with_emitter_shaped_text(tmp_path):
-    mod = _load_module()
     root = tmp_path / "luau"
     root.mkdir()
     production = root / "op_values.rs"

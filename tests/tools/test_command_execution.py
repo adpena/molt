@@ -172,7 +172,7 @@ def test_executor_loads_process_guard_without_repo_package_importable(
         "result = bootstrap_actionlint._COMMANDS.run([sys.executable, '--version'], "
         "capture_output=True, text=True, check=True)\n"
         "assert result.stdout.startswith('Python ')\n"
-        "from command_execution import _process_guard_authority\n"
+        "from tools.command_execution import _process_guard_authority\n"
         "authority = _process_guard_authority(str(bootstrap_actionlint._COMMANDS.repo_root))\n"
         "normalized, applied = authority.cargo_subprocess_environment("
         "['cargo', '--version'], "

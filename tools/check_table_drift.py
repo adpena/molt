@@ -49,8 +49,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+
 
 from molt.rust_source_scan import (  # noqa: E402
     mask_rust_comments_and_strings,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,15 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[3]
+
+# Only the stdlib import binder runs before Python admission in main().
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 
 def provision(plan, tool) -> None:
@@ -46,8 +54,8 @@ def provision(plan, tool) -> None:
 
 
 def main() -> None:
-    # This check precedes repository imports, including the existing Rust
-    # contract checker. The Python provisioner owns selection and aliases.
+    # This check precedes the Rust contract checker and every molt import.
+    # The Python provisioner owns selection and aliases.
     text = (ROOT / ".python-version").read_text(encoding="utf-8")
     match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)\n?", text)
     if match is None:
@@ -61,13 +69,8 @@ def main() -> None:
     if not os.path.samefile(sys.executable, os.environ["UV_PYTHON"]):
         raise RuntimeError("Rust setup Python differs from the admitted interpreter")
     os.environ["RUSTUP_AUTO_INSTALL"] = "0"
-    path = ROOT / "tools/check_rust_toolchain.py"
-    spec = importlib.util.spec_from_file_location("molt_ci_rust_contract", path)
-    assert spec is not None
-    tool = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = tool
-    # Execute the current checker source, never an unrelated cached bytecode.
-    exec(compile(path.read_bytes(), str(path), "exec"), tool.__dict__)
+    from tools import check_rust_toolchain as tool
+
     plan = tool.installation_plan(
         os.environ["RUST_TOOLCHAIN_ROLE"],
         components=os.environ.get("RUST_COMPONENTS", ""),

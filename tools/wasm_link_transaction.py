@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
-from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
 
 
 _T = TypeVar("_T")

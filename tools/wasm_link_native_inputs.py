@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from wasm_link_fact_provider import WasmFactsProvider
+from tools.wasm_link_fact_provider import WasmFactsProvider
 
 from molt.wasm_artifact import skip_wasm_import_description as _parse_import_desc
 
@@ -32,18 +32,18 @@ from molt.cli.source_extension_link_requirements import (
     merge_source_extension_link_requirements,
     render_source_extension_link_arguments,
 )
-from wasm_link_export_contract import (
+from tools.wasm_link_export_contract import (
     _TRAP_FUNC_BODY,
     _function_body_payloads_by_index,
 )
-from wasm_archive import AR_MAGIC, iter_wasm_object_members
-from wasm_link_format import (
+from tools.wasm_archive import AR_MAGIC, iter_wasm_object_members
+from tools.wasm_link_format import (
     _read_string,
     _read_varuint,
     _write_string,
     _write_varuint,
 )
-from wasm_link_operations import build_sections, parse_sections
+from tools.wasm_link_operations import build_sections, parse_sections
 
 
 def _read_link_allowlist_symbols(path: Path) -> list[str]:

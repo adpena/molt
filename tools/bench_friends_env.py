@@ -3,9 +3,9 @@ import os
 import sys
 from pathlib import Path
 
-from bench_friends_context import REPO_ROOT
+from tools.bench_friends_context import REPO_ROOT
 
-import harness_memory_guard
+from tools import harness_memory_guard
 
 
 def _emit_progress(message: str) -> None:

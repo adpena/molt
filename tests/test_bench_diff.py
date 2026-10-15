@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-BENCH_DIFF_PATH = REPO_ROOT / "tools" / "bench_diff.py"
-BENCH_DIFF_SPEC = importlib.util.spec_from_file_location(
-    "bench_diff_under_test", BENCH_DIFF_PATH
-)
-assert BENCH_DIFF_SPEC is not None and BENCH_DIFF_SPEC.loader is not None
-bench_diff = importlib.util.module_from_spec(BENCH_DIFF_SPEC)
-sys.modules[BENCH_DIFF_SPEC.name] = bench_diff
-BENCH_DIFF_SPEC.loader.exec_module(bench_diff)
+from tools import bench_diff
 
 
 def _benchmarks(entry: dict) -> dict[str, dict]:

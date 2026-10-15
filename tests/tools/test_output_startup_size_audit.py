@@ -1,33 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from molt.node_runtime import NodeRuntime
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-AUDIT_PATH = REPO_ROOT / "tools" / "output_startup_size_audit.py"
-
-
-def _load_audit() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_output_startup_size_audit",
-        AUDIT_PATH,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import output_startup_size_audit
 
 
 def test_stats_are_deterministic() -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
 
     stats = audit._stats([0.3, 0.1, 0.2])
 
@@ -45,7 +27,7 @@ def test_measure_executable_uses_fresh_path_copies(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
     binary = tmp_path / "probe_molt"
     binary.write_text("#!/bin/sh\nprintf '1\\n'\n", encoding="utf-8")
     binary.chmod(0o755)
@@ -85,7 +67,7 @@ def test_measure_cold_first_sighting_runs_artifact_once(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
     binary = tmp_path / "probe_molt"
     binary.write_text("#!/bin/sh\nprintf '1\\n'\n", encoding="utf-8")
     binary.chmod(0o755)
@@ -120,7 +102,7 @@ def test_measure_cold_first_sighting_runs_artifact_once(
 
 
 def test_budget_status_flags_size_and_startup_regressions() -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
 
     status = audit._budget_status(
         binary_bytes=12 * 1024 * 1024,
@@ -135,7 +117,7 @@ def test_budget_status_flags_size_and_startup_regressions() -> None:
 
 
 def test_matrix_cases_expand_native_backends_only() -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
 
     cases = audit._iter_matrix_cases(
         targets=("native", "wasm", "luau", "mlir"),
@@ -155,7 +137,7 @@ def test_matrix_cases_expand_native_backends_only() -> None:
 
 
 def test_wasm_fresh_copy_preserves_linked_suffix(tmp_path: Path) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
     artifact = tmp_path / "output_linked.wasm"
     fresh_dir = tmp_path / ".fresh"
 
@@ -167,7 +149,7 @@ def test_wasm_fresh_copy_preserves_linked_suffix(tmp_path: Path) -> None:
 def test_wasm_fresh_copy_rebases_manifest_to_measured_bytes(
     tmp_path: Path, monkeypatch
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
     artifact = tmp_path / "output_linked.wasm"
     artifact.write_bytes(b"\0asm\x01\0\0\0")
     write_wasm_execution_manifest(tmp_path, linked=artifact)
@@ -204,7 +186,7 @@ def test_wasm_fresh_copy_rebases_manifest_to_measured_bytes(
 def test_wasm_startup_uses_shared_node_selector_and_deterministic_flags(
     tmp_path: Path, monkeypatch
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
     artifact = tmp_path / "output_linked.wasm"
     artifact.write_bytes(b"\0asm\x01\0\0\0")
     write_wasm_execution_manifest(tmp_path, linked=artifact)
@@ -254,7 +236,7 @@ def test_wasm_startup_uses_shared_node_selector_and_deterministic_flags(
 def test_wasm_startup_skips_with_selector_diagnostic_when_node_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
 
     def fake_resolve(**kwargs):  # type: ignore[no-untyped-def]
         raise audit.NodeRuntimeError("Node >= 18 is unavailable on PATH")
@@ -280,7 +262,7 @@ def test_wasm_startup_skips_with_selector_diagnostic_when_node_unavailable(
 def test_wasm_startup_fails_on_unusable_explicit_node_selection(
     tmp_path: Path, monkeypatch
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
 
     def fail_run(command, **kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError(f"unexpected launch: {command}")
@@ -305,7 +287,7 @@ def test_build_molt_artifact_emits_progress_on_stderr(
     monkeypatch,
     capsys,
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
     script = tmp_path / "probe.py"
     script.write_text("print(1)\n", encoding="utf-8")
     out_dir = tmp_path / "out"
@@ -355,7 +337,7 @@ def test_main_writes_json_report_without_running_real_build(
     monkeypatch,
     capsys,
 ) -> None:
-    audit = _load_audit()
+    audit = output_startup_size_audit
     script = tmp_path / "probe.py"
     script.write_text("print(1)\n", encoding="utf-8")
     artifact = tmp_path / "probe_molt"
@@ -460,7 +442,7 @@ def test_main_writes_json_report_without_running_real_build(
 
 
 def test_startup_samples_exclude_descendant_cleanup_wall_time():
-    audit = _load_audit()
+    audit = output_startup_size_audit
     result = SimpleNamespace(
         returncode=0, elapsed_s=12.0, child_elapsed_s=0.02, stdout="", stderr=""
     )
@@ -473,7 +455,7 @@ def test_startup_samples_exclude_descendant_cleanup_wall_time():
 def test_startup_sample_rejects_missing_execution_clock():
     import pytest
 
-    audit = _load_audit()
+    audit = output_startup_size_audit
     with pytest.raises(ValueError, match="execution clock"):
         audit._sample_record(
             index=0,
@@ -483,7 +465,7 @@ def test_startup_sample_rejects_missing_execution_clock():
 
 
 def test_failed_startup_keeps_diagnostics_without_execution_clock():
-    audit = _load_audit()
+    audit = output_startup_size_audit
     result = SimpleNamespace(
         returncode=124,
         elapsed_s=12.0,
@@ -502,7 +484,7 @@ def test_failed_startup_keeps_diagnostics_without_execution_clock():
 def test_successful_startup_rejects_invalid_child_clock():
     import pytest
 
-    audit = _load_audit()
+    audit = output_startup_size_audit
     for value in (None, True, -0.1, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="valid direct-child execution clock"):
             audit._sample_record(

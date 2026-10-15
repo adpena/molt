@@ -6,26 +6,9 @@ construction, written in the exact text form the tool parses.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "tools"))
+from tools import opt_explorer as opt
 
-
-def _load():
-    spec = importlib.util.spec_from_file_location(
-        "molt_opt_explorer", REPO_ROOT / "tools" / "opt_explorer.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-opt = _load()
 
 # An outer loop (0x10-0x34) holding an inner loop (0x18-0x24). Calls: one direct
 # `bl`, one register call through `adrp`+`add`, one through a GOT slot, and one

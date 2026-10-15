@@ -18,7 +18,7 @@ import pytest
 # Ensure tools/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from translation_validator import TranslationValidator
+from tools.translation_validator import TranslationValidator
 
 
 # ---------------------------------------------------------------------------

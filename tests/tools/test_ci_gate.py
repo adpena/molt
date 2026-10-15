@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import sys
@@ -13,6 +12,8 @@ import pytest
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 import subprocess
 
+from tools import ci_gate
+
 # The gate tests patch subprocess and resolve default guard limits, so they
 # run outside hosted custody (which asks git for the checkout) and CI caps.
 # Cargo checks here run fakes; build capacity is not under test.
@@ -21,17 +22,6 @@ pytestmark = pytest.mark.usefixtures(
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CI_GATE = REPO_ROOT / "tools" / "ci_gate.py"
-
-
-def _load_ci_gate():
-    spec = importlib.util.spec_from_file_location("molt_tools_ci_gate", CI_GATE)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _load_ci_gate_in_scratch(monkeypatch, tmp_path: Path):
@@ -41,7 +31,7 @@ def _load_ci_gate_in_scratch(monkeypatch, tmp_path: Path):
     plain CI clone is its own custody root, so a test that resolves an
     environment against the real checkout writes into it.
     """
-    module = _load_ci_gate()
+    module = ci_gate
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     monkeypatch.setattr(module, "ROOT", checkout)
@@ -275,7 +265,7 @@ def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch, tmp_path) -> None
 
 
 def test_ci_gate_finds_uv_run_tool_script_after_interpreter() -> None:
-    module = _load_ci_gate()
+    module = ci_gate
 
     assert (
         module._tool_script_arg(module._uv_run(str(module.TOOLS / "ci_gate.py")))
@@ -394,7 +384,7 @@ def test_main_exits_nonzero_for_required_unmet_prerequisite(
 
 
 def test_parallel_workers_clamped_by_global_memory_budget() -> None:
-    module = _load_ci_gate()
+    module = ci_gate
     limits = module.MemoryGuardLimits(
         enabled=True,
         max_process_rss_gb=2.0,
@@ -408,7 +398,7 @@ def test_parallel_workers_clamped_by_global_memory_budget() -> None:
 
 
 def test_ci_gate_tier1_includes_perf_scoreboard_contract() -> None:
-    module = _load_ci_gate()
+    module = ci_gate
 
     checks = {check.name: check for check in module._build_checks()}
     check = checks["perf-scoreboard-contract"]
@@ -425,7 +415,7 @@ def test_ci_gate_tier1_includes_perf_scoreboard_contract() -> None:
 
 
 def test_ci_gate_tier1_includes_release_exit_contract() -> None:
-    module = _load_ci_gate()
+    module = ci_gate
 
     checks = {check.name: check for check in module._build_checks()}
     check = checks["release-exit-contract"]
@@ -439,7 +429,7 @@ def test_ci_gate_tier1_includes_release_exit_contract() -> None:
 
 
 def test_ci_gate_tier1_includes_ratio_direction_scan() -> None:
-    module = _load_ci_gate()
+    module = ci_gate
 
     checks = {check.name: check for check in module._build_checks()}
     scan = checks["ratio-direction-scan"]
@@ -455,7 +445,7 @@ def test_ci_gate_tier1_includes_ratio_direction_scan() -> None:
 
 
 def test_ci_gate_tier1_includes_structural_audit_ratchet() -> None:
-    module = _load_ci_gate()
+    module = ci_gate
 
     checks = {check.name: check for check in module._build_checks()}
     check = checks["structural-audit-ratchet"]
@@ -470,7 +460,7 @@ def test_ci_gate_tier1_includes_structural_audit_ratchet() -> None:
 
 
 def test_ci_gate_tier3_consumes_the_typed_scheduled_family() -> None:
-    module = _load_ci_gate()
+    module = ci_gate
     tier3 = [check for check in module._build_checks() if check.tier == 3]
 
     assert len(tier3) == 1
@@ -540,7 +530,7 @@ def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch, tmp_path) 
 def test_launch_background_gate_strips_recursive_background_flag(
     tmp_path: Path, monkeypatch
 ) -> None:
-    module = _load_ci_gate()
+    module = ci_gate
     popen_calls: list[dict[str, object]] = []
 
     class FakePopen:

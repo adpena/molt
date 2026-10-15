@@ -21,11 +21,7 @@ from tests.mutation.process_guard import run_mutation_process
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
-from mutation_test import (  # noqa: E402
-    MutationSite,
-    apply_single_mutation,
-    discover_mutations,
-)
+from tools.mutation_test import MutationSite, apply_single_mutation, discover_mutations  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Sample programs exercising different language features

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from wasm_link_fact_provider import WasmFactsProvider
+from tools.wasm_link_fact_provider import WasmFactsProvider
 
 from collections.abc import Mapping, Sequence
 from typing import Literal, cast
@@ -13,13 +13,9 @@ from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLES,
 )
 from molt.wasm_artifact import WasmSplitRuntimeCallableLayout
-from wasm_link_format import (
-    CallableTableLayout,
-    _read_varuint,
-    _write_varuint,
-)
-from wasm_link_facts import callable_table_entry_rows
-from wasm_link_operations import build_sections, parse_sections
+from tools.wasm_link_format import CallableTableLayout, _read_varuint, _write_varuint
+from tools.wasm_link_facts import callable_table_entry_rows
+from tools.wasm_link_operations import build_sections, parse_sections
 
 
 def _callable_layout_from_wasm_facts(

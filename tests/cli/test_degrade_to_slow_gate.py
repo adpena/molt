@@ -12,40 +12,18 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_GATE_PATH = _REPO_ROOT / "tools" / "degrade_to_slow_gate.py"
-
-
-def _load_gate_module():
-    """Import tools/degrade_to_slow_gate.py as a module (it lives outside a
-    package). Fresh import each call so REPO_ROOT/REGISTRY_PATH can be rebound
-    per test without cross-test leakage."""
-    mod_name = "_degrade_gate_under_test"
-    spec = importlib.util.spec_from_file_location(mod_name, _GATE_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec so @dataclass field resolution (which looks up
-    # sys.modules[cls.__module__]) can find the module.
-    sys.modules[mod_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(mod_name, None)
-        raise
-    return module
+from tools import degrade_to_slow_gate as gate
 
 
 # ---------------------------------------------------------------------------
 # The gate is green on the real, checked-in seed.
 # ---------------------------------------------------------------------------
 def test_gate_is_green_on_seeded_registry() -> None:
-    gate = _load_gate_module()
     report = gate.run_gate()
     assert report.ok, "seeded registry must pass the gate; errors:\n" + "\n".join(
         report.errors
@@ -57,7 +35,6 @@ def test_gate_is_green_on_seeded_registry() -> None:
 
 
 def test_seed_registry_rows_are_well_formed() -> None:
-    gate = _load_gate_module()
     rows, baseline = gate.load_registry()
     assert baseline >= 0
     for row in rows:
@@ -72,7 +49,6 @@ def test_seed_registry_rows_are_well_formed() -> None:
 
 def test_every_discovered_site_is_registered_in_seed() -> None:
     """Drift invariant on the real tree: no discovered degrade site lacks a row."""
-    gate = _load_gate_module()
     rows, _ = gate.load_registry()
     registered_files = {r.file for r in rows}
     unregistered = sorted({s.file for s in gate.discover_sites()} - registered_files)
@@ -109,7 +85,6 @@ def _write_synthetic_tree(root: Path, *, with_degrade: bool) -> Path:
 def test_negative_control_unregistered_degrade_site_fails_then_passes(
     tmp_path: Path,
 ) -> None:
-    gate = _load_gate_module()
 
     # --- inject a synthetic unregistered degrade site -> gate FAILS ---------
     registry = _write_synthetic_tree(tmp_path, with_degrade=True)
@@ -140,7 +115,6 @@ def test_negative_control_unregistered_degrade_site_fails_then_passes(
 
 
 def test_telemetry_dictionary_keys_are_not_degrade_decisions(tmp_path: Path) -> None:
-    gate = _load_gate_module()
     cli_dir = tmp_path / "src" / "molt" / "cli"
     cli_dir.mkdir(parents=True, exist_ok=True)
     (cli_dir / "telemetry.py").write_text(
@@ -156,7 +130,6 @@ def test_telemetry_dictionary_keys_are_not_degrade_decisions(tmp_path: Path) -> 
 
 def test_negative_control_ratchet_regression_fails(tmp_path: Path) -> None:
     """A metabug_fix_pending row above the baseline fails the ratchet."""
-    gate = _load_gate_module()
     cli_dir = tmp_path / "src" / "molt" / "cli"
     cli_dir.mkdir(parents=True, exist_ok=True)
     # A real file+anchor so the pending row's anchor check passes; the FAILURE
@@ -186,7 +159,6 @@ def test_negative_control_make_loud_without_diagnostic_fails(
     tmp_path: Path,
 ) -> None:
     """A make_loud row whose file reaches NO diagnostic emit fails the teeth."""
-    gate = _load_gate_module()
     cli_dir = tmp_path / "src" / "molt" / "cli"
     cli_dir.mkdir(parents=True, exist_ok=True)
     # A file that silently degrades with NO warnings.append/logger/print.

@@ -9,7 +9,7 @@ import contextvars
 from molt.wasm_artifact import (
     strip_wasm_publication_sections as _strip_wasm_publication_sections_raw,
 )
-from wasm_link_format import (
+from tools.wasm_link_format import (
     _build_sections as _build_sections_raw,
     _parse_sections as _parse_sections_raw,
 )

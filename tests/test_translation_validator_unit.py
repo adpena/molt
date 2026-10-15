@@ -15,9 +15,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from translation_validator import (
-    TranslationValidator,
-)
+from tools.translation_validator import TranslationValidator
 
 TV_DUMPS = Path(__file__).resolve().parent / "fixtures" / "tv_dumps"
 

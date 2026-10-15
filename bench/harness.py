@@ -51,16 +51,18 @@ DIFF_DIR = REPO_ROOT / "tests" / "differential" / "basic"
 DEFAULT_RESULTS_DIR = BENCH_DIR / "results"
 DEFAULT_OUTPUT = DEFAULT_RESULTS_DIR / "harness.json"
 DEFAULT_BASELINE = DEFAULT_RESULTS_DIR / "harness-baseline.json"
-TOOLS_ROOT = REPO_ROOT / "tools"
-SRC_ROOT = REPO_ROOT / "src"
 
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-import harness_memory_guard  # noqa: E402
-import perf_authority  # noqa: E402
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # noqa: E402
+from tools import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 
 BENCH_MEMORY_PREFIX = "MOLT_BENCH"

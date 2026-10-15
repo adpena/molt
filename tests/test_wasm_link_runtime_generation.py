@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from molt.cli.runtime_wasm_generation import (
 )
 from tests.runtime_build_identity_helper import runtime_build_identity
 from molt.toolchain_identity import stable_regular_file_identity
+from tools import wasm_link
 
 
 @pytest.mark.parametrize(
@@ -21,7 +21,6 @@ from molt.toolchain_identity import stable_regular_file_identity
 def test_link_cli_rejects_changed_producer_inputs_before_link(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, role: str
 ) -> None:
-    wasm_link = _load_wasm_link()
     source = tmp_path / role
     source.write_bytes(b"admitted")
     digest = stable_regular_file_identity(source, label="test input").sha256
@@ -71,7 +70,6 @@ def test_complete_link_output_family_cannot_alias_inputs(
     )
     from molt.link_outputs import link_selection_path
 
-    wasm_link = _load_wasm_link()
     native = tmp_path / "native.o"
     native.write_bytes(b"native input")
     linked = tmp_path / "linked.wasm"
@@ -95,17 +93,7 @@ def test_complete_link_output_family_cannot_alias_inputs(
     assert not linked.exists()
 
 
-def _load_wasm_link():
-    path = Path(__file__).resolve().parents[1] / "tools" / "wasm_link.py"
-    spec = importlib.util.spec_from_file_location("molt_wasm_link_generation", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_linker_requires_caller_trusted_atomic_pair_identity(tmp_path: Path) -> None:
-    wasm_link = _load_wasm_link()
     shared_identity = runtime_build_identity("shared")
     reloc_identity = runtime_build_identity("reloc")
     shared = tmp_path / "deploy" / "molt_runtime.wasm"

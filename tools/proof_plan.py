@@ -32,14 +32,18 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-for import_root in (ROOT, SRC):
-    if str(import_root) not in sys.path:
-        sys.path.insert(0, str(import_root))
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 from tools.command_execution import (  # noqa: E402
     CommandExecutor,
     GUARD_CANCELLATION_OBSERVATION_SECONDS,
-    bind_repository_imports,
 )
 from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
 from tools import proof_receipts  # noqa: E402
@@ -51,7 +55,6 @@ from tools.git_identity import (  # noqa: E402
     require_git_object_id,
 )
 
-bind_repository_imports(__file__)
 _COMMANDS = CommandExecutor(prefix="MOLT_PROOF", repo_root=ROOT)
 
 from molt.cargo_execution_policy import (  # noqa: E402
@@ -61,15 +64,9 @@ from molt.cargo_execution_policy import (  # noqa: E402
     normalize_cargo_environment,
 )
 
-try:
-    from tools.proof_executor import execute_commands as _execute_commands
-except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from proof_executor import execute_commands as _execute_commands
+from tools.proof_executor import execute_commands as _execute_commands  # noqa: E402
 
-try:
-    from tools import proof_plan_cli as _proof_plan_cli
-except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    import proof_plan_cli as _proof_plan_cli  # type: ignore
+from tools import proof_plan_cli as _proof_plan_cli  # type: ignore  # noqa: E402
 
 DEFAULT_MANIFEST = ROOT / "tools" / "proof_plan.toml"
 NULL_SHA = "0" * 40

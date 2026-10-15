@@ -1,28 +1,17 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
-import sys
 
 import pytest
 
+from tools import canonicalization_contract
+
 ROOT = Path(__file__).resolve().parents[2]
-TOOL = ROOT / "tools" / "canonicalization_contract.py"
-
-
-def _load_contract_module():
-    spec = importlib.util.spec_from_file_location("canonicalization_contract", TOOL)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_runtime_support_satellite_is_not_stdlib_duplicate_domain() -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
 
     assert contract.layer_of("molt-stdlib-text") == "stdlib"
     assert contract._stdlib_domain("molt-stdlib-text") == "text"
@@ -96,7 +85,7 @@ def _semantic_fixture(root: Path) -> list[dict]:
 def test_semantics_use_package_identity_not_directory_prefix_or_role(
     tmp_path: Path,
 ) -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     entries = _semantic_fixture(tmp_path)
     semantics = contract.load_runtime_semantics(tmp_path)
     assert contract.layer_of("molt-stdlib-spoof", semantics) == "core"
@@ -132,7 +121,7 @@ def test_semantics_use_package_identity_not_directory_prefix_or_role(
 def test_package_directory_aliases_preserve_dependency_and_domain_checks(
     tmp_path: Path, dependency_table: str
 ) -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     _semantic_fixture(tmp_path)
     _write_crate(
         tmp_path,
@@ -159,7 +148,7 @@ def test_dependency_audit_consumes_shared_local_facts_not_its_own_manifest_scann
 ) -> None:
     from molt.cargo_workspace import LocalCargoDependency, LocalCargoManifestFacts
 
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     _semantic_fixture(tmp_path)
     crates = contract.discover_crates(tmp_path)
     semantics = contract.load_runtime_semantics(tmp_path, crates)
@@ -185,7 +174,7 @@ def test_dependency_audit_consumes_shared_local_facts_not_its_own_manifest_scann
 
 
 def test_inherited_local_edge_uses_root_workspace_path_once(tmp_path: Path) -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     _semantic_fixture(tmp_path)
     root_manifest = tmp_path / "Cargo.toml"
     root_manifest.write_text(
@@ -221,7 +210,7 @@ def test_inherited_local_edge_uses_root_workspace_path_once(tmp_path: Path) -> N
 def test_bad_typed_semantics_are_errors_not_unclassified_crates(
     tmp_path: Path, change: dict, diagnostic: str
 ) -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     entries = _semantic_fixture(tmp_path)
     for key, value in change.items():
         if value is None:
@@ -236,7 +225,7 @@ def test_bad_typed_semantics_are_errors_not_unclassified_crates(
 def test_unregistered_workspace_package_and_stale_graph_identity_fail_clearly(
     tmp_path: Path,
 ) -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     entries = _semantic_fixture(tmp_path)
     _write_graph(tmp_path, entries[:-1])
     with pytest.raises(ValueError, match="missing runtime semantics.*runtime-package"):
@@ -257,7 +246,7 @@ def test_numeric_build_graph_layer_and_human_role_remain_independent(
 ) -> None:
     from tools.build_graph_audit import load_declared_graph
 
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     entries = _semantic_fixture(tmp_path)
     graph = load_declared_graph(tmp_path)
     assert graph.layer_of("codec-package") == 1
@@ -270,7 +259,7 @@ def test_numeric_build_graph_layer_and_human_role_remain_independent(
 
 
 def test_real_package_aliases_and_all_workspace_crates_have_typed_metadata() -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     semantics = contract.load_runtime_semantics(ROOT)
     assert len(semantics) == len(contract.workspace_members(ROOT))
     assert contract.layer_of("molt-obj-model", semantics) == "core"
@@ -283,7 +272,7 @@ def test_real_package_aliases_and_all_workspace_crates_have_typed_metadata() -> 
 def test_json_preserves_check_failure_but_informational_output_stays_successful(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, check: bool
 ) -> None:
-    contract = _load_contract_module()
+    contract = canonicalization_contract
     baseline = tmp_path / contract.BASELINE_REL
     baseline.parent.mkdir(parents=True)
     baseline.write_text("{}\n", encoding="utf-8")

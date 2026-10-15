@@ -14,10 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from dataclasses import dataclass
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct import from tools/
-    import harness_memory_guard  # type: ignore
+from tools import harness_memory_guard  # type: ignore
 
 
 @dataclass(frozen=True, slots=True)

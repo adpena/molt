@@ -21,13 +21,20 @@ import tracemalloc
 from pathlib import Path
 from typing import cast
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 IMPLEMENTATION_ROOT = Path(
     os.environ.get("MOLT_BINDING_PROFILE_SOURCE_ROOT", ROOT)
 ).resolve()
 IMPLEMENTATION_SRC = IMPLEMENTATION_ROOT / "src"
-sys.path.insert(0, str(IMPLEMENTATION_ROOT))
-sys.path.insert(0, str(IMPLEMENTATION_SRC))
+
 
 from molt.compiler_analysis.python_binding_flow import (  # noqa: E402
     PythonBindingPolicy,
@@ -37,10 +44,7 @@ from molt.compiler_analysis.python_binding_flow import (  # noqa: E402
 from molt.compiler_analysis import python_binding_flow  # noqa: E402
 from molt.compiler_analysis.python_source_keys import python_source_digest  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(
     IMPLEMENTATION_ROOT / "tools" / Path(__file__).name

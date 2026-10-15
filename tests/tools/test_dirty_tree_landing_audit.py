@@ -1,28 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOL = REPO_ROOT / "tools" / "dirty_tree_landing_audit.py"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("dirty_tree_landing_audit", TOOL)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import dirty_tree_landing_audit
 
 
 def _git(root: Path, *args: str) -> str:
@@ -56,7 +42,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def test_build_report_fails_when_dirty_source_path_is_missing() -> None:
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
 
     report = tool.build_report(
         source_root=Path("source"),
@@ -75,7 +61,7 @@ def test_build_report_fails_when_dirty_source_path_is_missing() -> None:
 
 
 def test_ignored_paths_do_not_trip_coverage() -> None:
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
 
     report = tool.build_report(
         source_root=Path("source"),
@@ -92,7 +78,7 @@ def test_ignored_paths_do_not_trip_coverage() -> None:
 
 
 def test_fail_on_landed_only_catches_extra_range_paths() -> None:
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
 
     report = tool.build_report(
         source_root=Path("source"),
@@ -113,7 +99,7 @@ def test_main_audits_real_git_dirty_source_against_landed_range(
     tmp_path: Path,
     capsys,
 ) -> None:
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
     source = tmp_path / "source"
     landed = tmp_path / "landed"
     _init_repo(source)
@@ -176,7 +162,7 @@ def test_main_audits_real_git_dirty_source_against_landed_range(
 
 
 def test_real_git_preserves_index_worktree_and_untracked_path_families(tmp_path):
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
     source = tmp_path / "source"
     _init_repo(source)
     initial = {"unstaged.py", "staged.py", "cancelled.py", "deleted.py", "old café.py"}
@@ -209,7 +195,7 @@ def test_real_git_preserves_index_worktree_and_untracked_path_families(tmp_path)
 
 
 def test_index_only_omission_fails_actual_audit_until_path_is_landed(tmp_path):
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
     source, landed = tmp_path / "source", tmp_path / "landed"
     name = "src/staged café.py"
     for root in (source, landed):
@@ -246,7 +232,7 @@ def test_index_only_omission_fails_actual_audit_until_path_is_landed(tmp_path):
 def test_filters_use_native_patterns_without_rewriting_paths(
     monkeypatch, platform, selected, other
 ):
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
     # Model the platform at the pattern boundary without changing the host's
     # filesystem or the canonical Git path identities supplied to the audit.
     monkeypatch.setattr(tool, "os", SimpleNamespace(name=platform))
@@ -273,7 +259,7 @@ def test_filters_use_native_patterns_without_rewriting_paths(
     os.name == "nt", reason="Windows filenames exclude these POSIX characters"
 )
 def test_real_git_and_reports_preserve_literal_path_identities(tmp_path, capsys):
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
     source = tmp_path / "source"
     _init_repo(source)
     names = (
@@ -334,7 +320,7 @@ def test_real_git_and_reports_preserve_literal_path_identities(tmp_path, capsys)
 def test_real_git_rejects_landing_a_different_colliding_path(
     tmp_path, missing, different
 ):
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
     source, landed = tmp_path / "source", tmp_path / "landed"
     for root in (source, landed):
         _init_repo(root)
@@ -371,7 +357,7 @@ def test_real_git_rejects_landing_a_different_colliding_path(
     os.name == "nt", reason="POSIX Git paths can contain non-UTF-8 bytes"
 )
 def test_real_git_index_path_bytes_round_trip_through_json(tmp_path):
-    tool = _load_tool()
+    tool = dirty_tree_landing_audit
     root = tmp_path / "repo"
     _init_repo(root)
     _write(root / "base.py", "base\n")

@@ -7,21 +7,28 @@ import sys
 from pathlib import Path
 from typing import Any
 
-if __package__ in {None, ""}:
-    REPO_ROOT = Path(__file__).resolve().parents[3]
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
 
-from drivers.cloudflare.thin_adapter.verify import (
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from drivers.cloudflare.thin_adapter.verify import (  # noqa: E402
     run_wrangler_check,
     run_wrangler_dry_run,
     validate_bundle_contract,
 )
-from drivers.falcon.browser_webgpu.deploy import (
+from drivers.falcon.browser_webgpu.deploy import (  # noqa: E402
     DEFAULT_WRANGLER_CONFIG,
     discover_wrangler_config,
     materialize_deploy_bundle,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def verify_materialized_bundle(
