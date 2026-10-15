@@ -1327,7 +1327,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_BUILD_DIAGNOSTICS_FILE",
       "owner": "src/molt/cli/build_inputs.py",
-      "summary": "File that receives the build diagnostics JSON when diagnostics are enabled; unset writes diagnostics only to stderr, and --diagnostics-file overrides it.",
+      "summary": "File that receives the build diagnostics JSON when diagnostics are enabled; a value ending in a path separator names a directory that receives one <pid>-<n>.json per build (summarize with tools/build_phase_report.py); unset writes diagnostics only to stderr, and --diagnostics-file overrides it.",
       "values": []
     },
     {

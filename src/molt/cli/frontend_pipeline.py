@@ -519,6 +519,8 @@ def _prepare_build_callbacks(
     diagnostics_path_spec: str,
     artifacts_root: Path,
     image_scope: _BinaryImageScope | None,
+    entry_module: str,
+    entry_path: Path,
 ) -> _PreparedBuildCallbacks:
     binary_image_closure_payload: Mapping[str, Any] | None = None
     binary_image_analysis_payload: dict[str, Any] = {"schema_version": 1}
@@ -591,6 +593,8 @@ def _prepare_build_callbacks(
                 backend_daemon_config_digest=backend_daemon_config_digest,
                 diagnostics_path_spec=diagnostics_path_spec,
                 artifacts_root=artifacts_root,
+                entry_module=entry_module,
+                entry_path=entry_path,
             )
         )
 
@@ -870,6 +874,8 @@ def _prepare_frontend_stage_state(
         diagnostics_path_spec=diagnostics_path_spec,
         artifacts_root=artifacts_root,
         image_scope=resolved_build_entry.image_scope,
+        entry_module=entry_module,
+        entry_path=source_path,
     )
 
     def return_after_build_diagnostics(result: int) -> int:

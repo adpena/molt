@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import sys
@@ -132,13 +133,21 @@ def _build_phase_attribution(
     }
 
 
+_DIAGNOSTICS_SEQUENCE = itertools.count()
+
+
 def _resolve_build_diagnostics_path(
     output_spec: str,
     artifacts_root: Path,
 ) -> Path:
+    """The diagnostics file; a spec ending in a separator names a directory
+    that receives one file per build, so parallel builds never collide."""
     path = Path(output_spec).expanduser()
     if not path.is_absolute():
         path = artifacts_root / path
+    if output_spec.endswith(("/", os.sep)):
+        path.mkdir(parents=True, exist_ok=True)
+        return path / f"{os.getpid()}-{next(_DIAGNOSTICS_SEQUENCE)}.json"
     return path
 
 
@@ -1223,6 +1232,10 @@ def _build_build_diagnostics_payload(
     )
     payload: dict[str, Any] = {
         "enabled": True,
+        "entry": {
+            "module": diagnostics_context.entry_module,
+            "path": os.fspath(diagnostics_context.entry_path),
+        },
         "timing_scope": "build_preamble_to_terminal_result",
         "total_sec": total_sec,
         "phase_sec": phase_sec,
