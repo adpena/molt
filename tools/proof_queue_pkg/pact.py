@@ -489,7 +489,7 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> NamedProofSpec:
         "logical_id": "pact-witness-oracle-parity",
         "reason": (
             "Regenerate the Pact Kernel A fixture/reference pair and prove the "
-            "check_parity.py oracle under queue custody."
+            "shared parity engine accepts it under queue custody."
         ),
         "command": named_lane_argv("pact.witness.oracle"),
         "prepared_named_lane": "pact.witness.oracle",
@@ -498,7 +498,8 @@ def _pact_witness_oracle_spec(timeout: float | None = None) -> NamedProofSpec:
         "scopes": [
             "collab/pact/pact_witness_kernel/make_fixture.py",
             "collab/pact/pact_witness_kernel/field_solve.py",
-            "collab/pact/pact_witness_kernel/check_parity.py",
+            "collab/pact/pact_witness_kernel/field_solve_gates.json",
+            "collab/pact/parity/check_parity.py",
             "tools/pact_witness_oracle.py",
             "pyproject.toml",
             "uv.lock",

@@ -70,11 +70,7 @@ def _default_out_dir() -> Path:
 
 # The ONE shared parity authority (011 parity-harness proposal §2): a
 # declarative <k>_gates.json manifest evaluated by the generalized fail-loud
-# engine, superseding the old per-kernel inline gate dicts in
-# collab/pact/pact_witness_kernel/check_parity.py (kept there only as the
-# frozen equivalence-proof reference for
-# tests/tools/test_pact_parity_engine.py, and for the separate CPython-only
-# pact-witness-oracle sanity lane in tools/pact_witness_oracle.py).
+# engine, which superseded and retired the old per-kernel inline gate dicts.
 PARITY_ENGINE = ROOT / "collab" / "pact" / "parity" / "check_parity.py"
 KERNEL_A_GATES = KERNEL_ROOT / "field_solve_gates.json"
 # A receipt represents the shipped profiles, never an ambient debug override.

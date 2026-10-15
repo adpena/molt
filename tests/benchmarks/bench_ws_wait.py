@@ -6,7 +6,7 @@ import os
 os.environ.setdefault("MOLT_CAPABILITY_TIER", "full")
 os.environ.setdefault("MOLT_CAPABILITIES", "net,net.poll,websocket.connect")
 
-from molt import net
+from moltlib import net
 
 _GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 

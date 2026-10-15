@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """CPython-only Pact Kernel A oracle sanity lane: regenerate the fixture and
-reference pair and prove check_parity.py against them, inside the attested
-locked environment of the pact-witness dependency group."""
+reference pair and prove the shared parity engine accepts the regenerated
+reference against `field_solve_gates.json`, inside the attested locked
+environment of the pact-witness dependency group."""
 
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"
+PARITY_ENGINE = ROOT / "collab" / "pact" / "parity" / "check_parity.py"
+GATES = KERNEL_ROOT / "field_solve_gates.json"
 
 
 def _run(args: list[str], *, cwd: Path) -> None:
@@ -49,12 +52,18 @@ def main() -> int:
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="pact_witness_oracle_", dir=scratch) as raw:
         work = Path(raw)
-        for name in ("make_fixture.py", "field_solve.py", "check_parity.py"):
+        for name in ("make_fixture.py", "field_solve.py"):
             shutil.copy2(KERNEL_ROOT / name, work / name)
 
         _run([sys.executable, "make_fixture.py"], cwd=work)
         _run([sys.executable, "field_solve.py", "lstar_sample.npz"], cwd=work)
-        _run([sys.executable, "check_parity.py", "reference_outputs.npz"], cwd=work)
+        # The engine must accept the regenerated reference as its own candidate:
+        # every declared array present, no extra one, every gate satisfied.
+        reference = "reference_outputs.npz"
+        _run(
+            [sys.executable, str(PARITY_ENGINE), reference, reference, str(GATES)],
+            cwd=work,
+        )
 
     print("pact witness oracle parity PASS")
     return 0

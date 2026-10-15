@@ -1745,7 +1745,7 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
     src.write_text(
         "import asyncio\n"
         "from molt import molt_db\n"
-        "from molt.concurrency import CancellationToken\n"
+        "from moltlib.concurrency import CancellationToken\n"
         "\n"
         "async def main():\n"
         "    resp = await molt_db.db_query(b'fast')\n"

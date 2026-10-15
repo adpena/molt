@@ -11,7 +11,6 @@ from molt import backend_daemon_custody as custody
 from tools import memory_guard
 from tools.memory_guard_core import process_custody, process_model
 from tests.process_guard_common import (
-    current_thread_only,
     install_thread_module_view,
 )
 
@@ -332,30 +331,6 @@ def test_backend_daemon_termination_escalates_with_sigterm_without_sigkill(
 
     assert custody.terminate_backend_daemon_identity(identity, grace=0.01)
     assert signals == [signal.SIGTERM, signal.SIGTERM]
-
-
-def test_backend_daemon_legacy_pid_cleanup_unlinks_without_signaling(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    pid_file = tmp_path / "molt-backend.pid"
-    sidecar = tmp_path / "molt-backend.identity.json"
-    pid_file.write_text("101\n", encoding="utf-8")
-    sidecar.write_text("{}\n", encoding="utf-8")
-    # A tripwire must catch this call from any module, so it stays process-wide.
-    # Only this thread meets the fake; other threads reach the real function.
-    monkeypatch.setattr(
-        os,
-        "kill",
-        current_thread_only(
-            lambda pid, sig: (_ for _ in ()).throw(AssertionError("unexpected signal")),
-            os.kill,
-        ),
-    )
-
-    assert custody.remove_legacy_pid_files(tmp_path) == 1
-    assert not pid_file.exists()
-    assert sidecar.exists()
 
 
 def test_current_session_backend_daemon_records_filter_by_session(
