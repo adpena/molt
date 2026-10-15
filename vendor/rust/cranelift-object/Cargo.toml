@@ -101,7 +101,7 @@ default-features = false
 version = "0.133.3"
 
 [dev-dependencies.cranelift-frontend]
-version = "0.133.3"
+version = "0.136.2"
 
 [lints.clippy]
 allow_attributes_without_reason = "warn"

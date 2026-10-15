@@ -1034,19 +1034,6 @@ dependencies = [
 
 [[package]]
 name = "cranelift-frontend"
-version = "0.133.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1991dc32fefa54f14d2a63570d1e963826257605e478558733f83450b7e7661"
-dependencies = [
- "cranelift-codegen 0.133.3",
- "hashbrown 0.17.1",
- "log",
- "smallvec",
- "target-lexicon",
-]
-
-[[package]]
-name = "cranelift-frontend"
 version = "0.136.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "099361a0919067086dcde624a281ce719834cebf8544d6c24646f5e924107234"
@@ -1111,7 +1098,7 @@ dependencies = [
  "cranelift-codegen 0.133.3",
  "cranelift-control 0.133.3",
  "cranelift-entity 0.133.3",
- "cranelift-frontend 0.133.3",
+ "cranelift-frontend",
  "cranelift-module",
  "gimli",
  "log",
@@ -2608,7 +2595,7 @@ name = "molt-backend-native"
 version = "0.1.0"
 dependencies = [
  "cranelift-codegen 0.133.3",
- "cranelift-frontend 0.133.3",
+ "cranelift-frontend",
  "cranelift-module",
  "cranelift-native 0.133.3",
  "cranelift-object",
@@ -5650,7 +5637,7 @@ dependencies = [
  "cranelift-codegen 0.136.2",
  "cranelift-control 0.136.2",
  "cranelift-entity 0.136.2",
- "cranelift-frontend 0.136.2",
+ "cranelift-frontend",
  "cranelift-native 0.136.2",
  "gimli",
  "itertools 0.14.0",
