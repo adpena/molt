@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import build_diagnostics
@@ -146,3 +147,20 @@ def test_phase_attribution_preserves_observed_seal_duration() -> None:
     )
     assert attribution["phase_sec"]["seal"] == 7.0
     assert attribution["phase_share"]["seal"] == 0.35
+
+
+def test_a_directory_spec_gives_each_build_its_own_diagnostics_file(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.build_diagnostics import _resolve_build_diagnostics_path
+
+    first = _resolve_build_diagnostics_path("diagnostics/", tmp_path)
+    second = _resolve_build_diagnostics_path("diagnostics/", tmp_path)
+
+    assert first.parent == second.parent == tmp_path / "diagnostics"
+    assert first.parent.is_dir()
+    assert first != second
+    # Without the trailing separator the spec stays one file, as before.
+    assert (
+        _resolve_build_diagnostics_path("one.json", tmp_path) == tmp_path / "one.json"
+    )

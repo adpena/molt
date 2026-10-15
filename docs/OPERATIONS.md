@@ -850,7 +850,10 @@ Benchmarks that cannot survive a disconnect are not acceptable.
 
 ### Build time
 - `MOLT_BUILD_DIAGNOSTICS=1` with `MOLT_BUILD_DIAGNOSTICS_FILE=<path>` writes one
-  `molt build`'s phase seconds (`phase_sec`, `ranked_phases`) as JSON.
+  `molt build`'s phase seconds (`phase_sec`, `ranked_phases`) and its entry as
+  JSON. A value ending in `/` names a directory that receives one file per build;
+  `python3 tools/build_phase_report.py <dir>` then ranks phases and the slowest
+  builds across a whole differential run.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
 - Both reach builds that a harness starts, such as `tests/molt_diff.py`, so a

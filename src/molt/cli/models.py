@@ -966,6 +966,8 @@ class _BuildDiagnosticsContext:
     backend_daemon_config_digest: str | None
     diagnostics_path_spec: str | None
     artifacts_root: Path
+    entry_module: str
+    entry_path: Path
 
 
 @dataclass(frozen=True)

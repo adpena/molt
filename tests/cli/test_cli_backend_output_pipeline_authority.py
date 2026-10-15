@@ -92,6 +92,8 @@ def terminal_build(
         backend_daemon_config_digest=None,
         diagnostics_path_spec=str(diagnostics_file),
         artifacts_root=tmp_path,
+        entry_module="app",
+        entry_path=tmp_path / "app.py",
     )
     state = SimpleNamespace(
         clock=clock,

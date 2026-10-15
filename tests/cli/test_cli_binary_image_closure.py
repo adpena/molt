@@ -456,6 +456,8 @@ def test_build_diagnostics_emits_final_binary_image_closure(
         diagnostics_path_spec="",
         artifacts_root=tmp_path / "tmp" / "diagnostics",
         image_scope=import_plan.image_scope,
+        entry_module="app",
+        entry_path=entry,
     )
     callbacks.set_binary_image_closure_payload(narrowed_plan.closure_payload())
     callbacks.record_binary_image_analysis(
@@ -468,6 +470,7 @@ def test_build_diagnostics_emits_final_binary_image_closure(
     assert diagnostics_path is None
     assert payload is not None
     assert payload["binary_image"] == payload["binary_image_closure"]["image"]
+    assert payload["entry"] == {"module": "app", "path": str(entry)}
     assert payload["binary_image"]["root_modules"] == ["app"]
     assert payload["known_module_count"] == len(import_plan.known_modules)
     assert payload["compile_module_count"] == 1
