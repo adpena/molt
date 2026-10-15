@@ -29,6 +29,14 @@ import perf_scoreboard as ps  # noqa: E402
 import perf_scoreboard_measure as measure  # noqa: E402
 
 
+LOCKED_METHODOLOGY = {
+    "methodology_schema": "molt-perf-methodology-v1",
+    "methodology_version": 1,
+    "methodology_sha256": "d" * 64,
+    "methodology_locked": True,
+}
+
+
 def _matching_output_parity() -> dict[str, object]:
     return schema.output_parity_evidence(
         reference_observations=[
@@ -346,7 +354,7 @@ def _board(cells: list[ps.Cell], provenance: dict | None = None) -> dict:
         "local_head_sha": "a" * 40,
         "merge_base_sha": "a" * 40,
         "dirty_tree": False,
-        "benchmark_tool_sha": "b" * 40,
+        **LOCKED_METHODOLOGY,
         "backend_binary_identity": {"native/release-fast": "x|1|2"},
         "runtime_identity": {"native/release-fast": "f" * 64},
         "authoritative": True,
@@ -444,7 +452,7 @@ def test_board_carries_provenance_and_passes_schema() -> None:
         "local_head_sha": "a" * 40,
         "merge_base_sha": "a" * 40,
         "dirty_tree": False,
-        "benchmark_tool_sha": "b" * 40,
+        **LOCKED_METHODOLOGY,
         "backend_binary_identity": {"native/release-fast": "x|1|2"},
         "runtime_identity": {"native/release-fast": "f" * 64},
         "authoritative": True,
@@ -826,9 +834,9 @@ def test_verdict_breakdown_routes_warm_vs_cold() -> None:
 def test_authoritative_reason_lists_causes() -> None:
     assert "origin/main" in ps._authoritative_reason(True, False, False)
     assert "dirty" in ps._authoritative_reason(False, True, False)
-    assert "perf_scoreboard.py" in ps._authoritative_reason(False, False, True)
+    assert "methodology" in ps._authoritative_reason(False, False, True)
     assert ps._authoritative_reason(False, False, False) == (
-        "revision is on origin/main, clean, tool unmodified"
+        "revision is on origin/main, clean, methodology locked"
     )
 
 
@@ -912,13 +920,7 @@ def test_gather_provenance_authoritative_when_clean(monkeypatch) -> None:
     # the board is authoritative.
     monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
     monkeypatch.setattr(
-        ps,
-        "_benchmark_tool_identity",
-        lambda: {
-            "ondisk_blob_sha": "b",
-            "modified_vs_head": "false",
-            "last_commit_sha": "c",
-        },
+        ps.perf_methodology, "identity", lambda: dict(LOCKED_METHODOLOGY)
     )
     prov = ps.gather_provenance(None)
     assert prov["authoritative"] is True
@@ -947,42 +949,13 @@ def test_authority_requires_a_landed_revision_not_the_main_tip(
     monkeypatch.setattr(ps, "_git_output", git)
     monkeypatch.setattr(ps, "_origin_main_sha", lambda: origin)
     monkeypatch.setattr(
-        ps,
-        "_benchmark_tool_identity",
-        lambda: {
-            "ondisk_blob_sha": "b",
-            "modified_vs_head": "false",
-            "last_commit_sha": "c",
-        },
+        ps.perf_methodology, "identity", lambda: dict(LOCKED_METHODOLOGY)
     )
     prov = ps.gather_provenance(None)
     assert prov["authoritative"] is authoritative
     assert prov["diverges_from_origin"] is (not authoritative)
     if not authoritative:
         assert "local HEAD is not on origin/main" in prov["authoritative_reason"]
-
-
-def test_benchmark_tool_identity_uses_git_tree_paths(monkeypatch) -> None:
-    rel = Path(ps.__file__).resolve().relative_to(ps.REPO_ROOT).as_posix()
-    calls: list[tuple[str, ...]] = []
-
-    def fake_git(args: list[str]) -> str | None:
-        calls.append(tuple(args))
-        if args[0] in ("hash-object", "rev-parse"):
-            return "b" * 40
-        if args[0] == "log":
-            return "c" * 40
-        return None
-
-    monkeypatch.setattr(ps, "_git_output", fake_git)
-
-    identity = ps._benchmark_tool_identity()
-
-    assert identity["path"] == "molt-perf-tool-family-v1"
-    assert len(identity["ondisk_blob_sha"]) == 64
-    assert identity["modified_vs_head"] == "false"
-    assert "\\" not in rel
-    assert ("rev-parse", f"HEAD:{rel}") in calls
 
 
 def _fake_git(args: list[str]) -> str | None:
@@ -1718,13 +1691,7 @@ def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
     # even on a clean origin/main tree.
     monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
     monkeypatch.setattr(
-        ps,
-        "_benchmark_tool_identity",
-        lambda: {
-            "ondisk_blob_sha": "b",
-            "modified_vs_head": "false",
-            "last_commit_sha": "c",
-        },
+        ps.perf_methodology, "identity", lambda: dict(LOCKED_METHODOLOGY)
     )
     noisy = {
         "quiet": False,
@@ -2070,13 +2037,7 @@ def test_capture_cycle_profile_documents_unavailable_sampler(monkeypatch) -> Non
 def test_print_provenance_emits_all_new_fields(capsys, monkeypatch) -> None:
     monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
     monkeypatch.setattr(
-        ps,
-        "_benchmark_tool_identity",
-        lambda: {
-            "ondisk_blob_sha": "toolsha",
-            "modified_vs_head": "false",
-            "last_commit_sha": "c",
-        },
+        ps.perf_methodology, "identity", lambda: dict(LOCKED_METHODOLOGY)
     )
     q = {
         "quiet": True,
@@ -2507,9 +2468,7 @@ def _shard_board(benchmark: str, record: dict) -> dict:
     doc = _board(
         [cell],
         provenance={
-            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
-            "benchmark_tool_sha": "c" * 64,
-            "benchmark_tool_modified": False,
+            **LOCKED_METHODOLOGY,
             "diverges_from_origin": False,
             "quiescent": True,
             "require_quiescent": True,

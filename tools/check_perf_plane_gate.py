@@ -78,7 +78,11 @@ def _source(cell: dict[str, object], *, git_rev: str) -> dict:
         "kind": "cpython_floor_scoreboard",
         "generated_at": f"2026-06-24T00:00:0{git_rev[0]}+00:00",
         "git_rev": git_rev,
-        "provenance": {"authoritative": True, "benchmark_tool_sha": "tool" + "0" * 36},
+        "provenance": {
+            "authoritative": True,
+            "methodology_version": 1,
+            "methodology_sha256": "0" * 64,
+        },
         "host": {
             "platform": "linux",
             "arch": "x86_64",

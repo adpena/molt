@@ -191,20 +191,19 @@ jobs:
             --out-dir "bench/scoreboard/plane_${{ matrix.backend }}"
 
       - name: Board-vs-history regression gate (doc 64 Phase 4)
-        # Compare the projected boards against the most-recent AUTHORITATIVE
-        # same-class baseline committed in bench/scoreboard/history/. FAILS CI on
-        # a previously-green cell that regressed (CLAUDE.md triage priority #2).
-        # On a quiescent authoritative run this also records the new baseline so
-        # the next PR diffs against it. A non-authoritative (contended-runner)
-        # board is recorded but never becomes a baseline (Rule 2), and its warm
-        # reds are advisory -- the regression delta is the contamination-robust
-        # axis the per-merge gate trusts.
+        # Compare the projected boards against the most-recent promoted baseline
+        # of the same methodology, suite and host class in the committed
+        # bench/scoreboard/history/. FAILS CI on a previously-green cell that
+        # regressed (CLAUDE.md triage priority #2). CI never records: this
+        # checkout is discarded. A class with no promoted baseline is reported
+        # UNARMED; promote an authoritative board from this run's artifact with
+        # `tools/perf_history.py --promote`.
         run: |
           uv run python3 tools/perf_history.py \
             bench/scoreboard/plane_${{ matrix.backend }}/cpython_*.json \
             bench/scoreboard/plane_${{ matrix.backend }}/backend_*.json \
             bench/scoreboard/plane_${{ matrix.backend }}/profile_*.json \
-            --gate --record
+            --gate
 
       - name: Upload scoreboard + plane artifacts
         if: always() && hashFiles(format('bench/scoreboard/cpython_ci_{0}.json', matrix.backend)) != ''

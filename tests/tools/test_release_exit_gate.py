@@ -16,7 +16,7 @@ from tests.process_guard_common import run_guarded_test_process
 from tests.tools.verified_subset_fixtures import synthetic_validation
 from tests.tools.receipt_engine_fixtures import install_observed_runtime
 from tests.tools.perf_scoreboard_fixtures import write_synthetic_build_observation
-from tools import perf_scoreboard, proof_plan, release_exit_gate, verified_subset
+from tools import proof_plan, release_exit_gate, verified_subset
 from tools.compat import comparison, test_policy
 
 
@@ -321,10 +321,10 @@ def _write_scoreboard(
             "molt_target_python": "3.12",
         },
         "provenance": {
-            "benchmark_tool_identity_schema": "molt-perf-tool-family-v1",
-            "benchmark_tool_sha": perf_scoreboard._benchmark_tool_identity()[
-                "ondisk_blob_sha"
-            ],
+            "methodology_schema": "molt-perf-methodology-v1",
+            "methodology_version": 1,
+            "methodology_sha256": "d" * 64,
+            "methodology_locked": True,
             "origin_sha": source_sha,
             "local_head_sha": source_sha,
             "merge_base_sha": source_sha,

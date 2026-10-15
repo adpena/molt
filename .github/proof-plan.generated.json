@@ -118,6 +118,10 @@
     "tools/check_perf_gate_wiring.py",
     "tools/perf_authority.py",
     "tools/perf_board.py",
+    "tools/perf_causality.py",
+    "tools/perf_methodology.py",
+    "config/perf_methodology.toml",
+    "tools/compat/comparison.py",
     "tools/perf_calibration.py",
     "tools/perf_schema.py",
     "tools/perf_scoreboard.py",
@@ -362,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "9981a356e9692cf4dd5752f26b9b86993a3118e1e40efdc9f10419f068bef0fb",
+  "authority_sha256": "91ff27c2f92f56bece2096132e3413dfc0429ca95f21ebf21cd0c1439ffcd447",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2794,6 +2798,7 @@
         "tests/tools/test_gen_cpython_coverage.py",
         "tests/tools/test_gen_cpython_type_slots.py",
         "tests/tools/test_perf_authority.py",
+        "tests/tools/test_perf_methodology.py",
         "tests/tools/test_perf_profile_selection.py",
         "tests/tools/test_perf_scoreboard.py",
         "tests/tools/test_opt_explorer.py",

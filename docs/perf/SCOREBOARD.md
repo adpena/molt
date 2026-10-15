@@ -90,11 +90,16 @@ Performance-Constitution triage axis — "any previously-green benchmark that
 **regressed**" — needs "previously-green" to be a queryable FACT.
 `tools/perf_history.py` provides it:
 
-- `board_identity = sha256(git_rev ‖ benchmark_tool_blob ‖ suite_hash ‖
-  host_class)` content-addresses each recorded board; `bench/scoreboard/history/`
-  is the durable trail (see its `README.md`).
-- `--gate` compares a candidate board against the **most recent authoritative
-  same-identity-class** baseline: a cell that gated `PASS` then and `FAIL` now is
+- `board_identity = sha256(git_rev ‖ methodology_sha256 ‖ suite_hash ‖
+  host_class)` content-addresses each promoted board; `bench/scoreboard/history/`
+  is the committed trail (see its `README.md`). `--promote` admits only
+  authoritative, methodology-locked boards measured on origin/main; CI never
+  records.
+- `--gate` compares a candidate board against the **most recent promoted
+  baseline of its identity class** (methodology version from
+  `config/perf_methodology.toml` ‖ suite ‖ host), so a refactor that keeps the
+  methodology version keeps history comparable. A class without a baseline is
+  reported UNARMED. A cell that gated `PASS` then and `FAIL` now is
   an **error** regression → the gate exits nonzero (CI fails). A still-passing
   but materially slower (> 5%) cell is a **warn** drift (advisory). A
   within-threshold delta is **not** flagged (the no-false-positive rule).
@@ -119,12 +124,14 @@ against, under the top-level `provenance` block:
   "merge_base_sha":          "<merge-base(HEAD, origin/main)>",
   "dirty_tree":              false,
   "diverges_from_origin":    false,
-  "benchmark_tool_sha":      "<git blob of perf_scoreboard.py on disk>",
-  "benchmark_tool_modified": false,            // tool differs from its committed blob?
+  "methodology_schema":      "molt-perf-methodology-v1",
+  "methodology_version":     1,                // config/perf_methodology.toml
+  "methodology_sha256":      "<digest of the methodology files>",
+  "methodology_locked":      true,             // content matches its version's lock
   "backend_binary_identity": { "native/release-fast": "<digest of the measured compiler bytes>" },
   "runtime_identity":        { "native/release-fast": "<digest of the linked runtime library>" },
   "authoritative":           true,
-  "authoritative_reason":    "revision is on origin/main, clean, tool unmodified"
+  "authoritative_reason":    "revision is on origin/main, clean, methodology locked"
 }
 ```
 

@@ -16,16 +16,16 @@ history/
 
 - `<board>` is one of the five projections emitted by `tools/perf_board.py`.
 - `<id>` is the first 12 hex of `board_identity = sha256(git_rev ||
-  benchmark_tool_blob || suite_hash || host_class)` (`tools/perf_history.py`).
+  methodology_sha256 || suite_hash || host_class)` (`tools/perf_history.py`).
 - `index.json` records `{board, identity, identity_class, git_rev, generated_at,
   authoritative, board_state, path}` per entry, sorted by `generated_at`.
 
 ## How the gate uses it
 
-`tools/perf_history.py --gate` finds the **most recent authoritative** history
-entry of the **same identity-class** (same tool + suite + host; git_rev may
-differ — that comparability is the point) and compares the candidate board
-against it:
+`tools/perf_history.py --gate` finds the **most recent promoted** history
+entry of the **same identity class** (methodology version from
+`config/perf_methodology.toml` + suite + host; git_rev may differ, and that
+comparability is the point) and compares the candidate board against it:
 
 - a cell that gated `PASS` in the baseline and `FAIL` now is an **error**
   regression → the gate exits nonzero (CI fails);
@@ -33,13 +33,19 @@ against it:
   (advisory, does not block);
 - a within-threshold delta is **not** flagged (the no-false-positive rule).
 
-## Authority (Rule 2)
+## Promotion (Rule 2)
 
-Only **authoritative** boards (a clean tree at a revision on origin/main, tool unmodified,
-measured quiescent) ever become a baseline. A non-authoritative board (a
-contended CI runner, a dirty local tree) is recorded for the trail but never
-selected as the regression reference — a noisy source cannot certify a target.
-The history therefore starts empty and **arms itself** on the first authoritative
-`main` run of `.github/workflows/perf-gate.yml`; until then the regression gate
-reports "no baseline" and is silent (the absolute CPython floor in
-`tools/perf_board.py` is what catches a brand-new red).
+CI never writes here: its checkout is discarded. A baseline enters history only
+through an explicit, reviewed promotion of a perf-gate board:
+
+```bash
+gh run download <perf-gate run id> -n cpython-floor-scoreboard-native -D /tmp/perf-native
+python3 tools/perf_history.py --promote /tmp/perf-native/bench/scoreboard/plane_native/cpython_*.json /tmp/perf-native/bench/scoreboard/plane_native/backend_*.json /tmp/perf-native/bench/scoreboard/plane_native/profile_*.json
+```
+
+`--promote` refuses a board that is not authoritative (a clean tree at a
+revision on origin/main, measured quiescent), whose methodology is not locked to
+its version, or whose revision is not an ancestor of origin/main. Land the new
+files like any change. A class with no promoted baseline makes the gate report
+UNARMED (a GitHub warning in CI); the absolute CPython floor in
+`tools/perf_board.py` still catches a brand-new red.

@@ -424,7 +424,13 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
         "tests/tools/test_release_matrix_acceptance.py"
         in commands["repository.release-supply-chain"]["argv"]
     )
-    assert set(scoreboard.PERF_TOOL_IDENTITY_PATHS) <= set(plan["authority_inputs"])
+    import perf_methodology
+
+    assert set(perf_methodology.load().paths) | {
+        "config/perf_methodology.toml",
+        "tools/perf_methodology.py",
+    } <= set(plan["authority_inputs"])
+    assert "tests/tools/test_perf_methodology.py" in docs["argv"]
     assert {
         "tests/tools/test_perf_profile_selection.py",
         "tools/perf_scoreboard_build_profiles.py",
