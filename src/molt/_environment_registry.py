@@ -2808,7 +2808,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_DIFF_BUILD_TIMEOUT",
-      "owner": "tests/molt_diff.py",
+      "owner": "tools/compat/backends.py",
       "summary": "Seconds allowed for one differential test's Molt build; a positive number is used as given, otherwise the limit is twice MOLT_DIFF_TIMEOUT with a 300-second floor, and there is no build limit when MOLT_DIFF_TIMEOUT is also unset.",
       "values": []
     },
@@ -3330,8 +3330,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_DIFF_TIMEOUT",
-      "owner": "tests/molt_diff.py",
-      "summary": "Seconds allowed for one differential test's CPython and Molt run phases; a positive number is enforced and also seeds the build timeout default, while unset, non-numeric or non-positive values mean no run timeout.",
+      "owner": "tools/compat/backends.py",
+      "summary": "Seconds allowed for one differential test's CPython and Molt run phases; a positive number is enforced and also seeds the build timeout default, while unset, non-numeric, non-finite or non-positive values mean no run timeout.",
       "values": []
     },
     {
