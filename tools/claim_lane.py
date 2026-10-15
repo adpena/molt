@@ -42,9 +42,10 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
     import claims_status as cs  # type: ignore
     from command_execution import CommandExecutor  # type: ignore
 
-from tools.release.git_source_snapshot import immutable_git_environment
-
+# Binding the executor binds the repository, so the tools package resolves next.
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
 
 CLAIMS_REL = cs.CLAIMS_REL
 

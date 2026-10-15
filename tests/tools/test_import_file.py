@@ -500,9 +500,15 @@ def _script_launch_failure(script: Path) -> str | None:
             for call in ast.walk(node)
             if isinstance(call, ast.Call)
         }
-        # Binding the repository, or putting a root on sys.path, makes
-        # later tools imports resolve.
-        if calls & {"bind_repository_imports", "sys.path.insert", "sys.path.append"}:
+        # Binding the repository (directly or through the executor, which
+        # binds from its file), or putting a root on sys.path, makes later
+        # tools imports resolve.
+        if calls & {
+            "bind_repository_imports",
+            "CommandExecutor.for_file",
+            "sys.path.insert",
+            "sys.path.append",
+        }:
             bound = True
             if not isinstance(node, (ast.Import, ast.ImportFrom, ast.Try, ast.If)):
                 continue

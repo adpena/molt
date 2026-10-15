@@ -1142,7 +1142,10 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         )
         _say("    would: confirm by fetch + ancestor check (hazard 2)")
         _say("    would: cleanup gate (hazard 3) after confirmation")
-        _ok("dry-run complete: all pre-push checks passed; no mutation performed")
+        _ok(
+            f"dry-run complete: hazard checks passed; {len(gate_cmds)} gate(s) "
+            "listed, none run (--no-push runs them); no mutation performed"
+        )
         return EXIT_OK
     if args.no_push:
         _ok(
