@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2580 s | 120 s | 900 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2640 s | 120 s | 840 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 293 min | 17400 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 23 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -207,6 +207,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.ecosystem.compatibility` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.fail-closed-gate` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
+| `repository.fail-closed-gate.receipt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
+| `repository.degrade-to-slow-gate` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
+| `repository.degrade-to-slow-gate.receipt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.dead-code-ratchet` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.differential.layout` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.suite.honesty` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
@@ -220,7 +223,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.environment-registry` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.structural-debt.receipt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.canonicalization.receipt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
 | `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 5 |
