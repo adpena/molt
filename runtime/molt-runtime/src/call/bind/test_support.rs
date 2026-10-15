@@ -215,68 +215,6 @@ pub(super) extern "C" fn compiled_second_arg_returns_owned_arg(
 // so construct-site propagation guards fire.
 // ------------------------------------------------------------------
 
-// ------------------------------------------------------------------
-// Fused method-call IC: call-plan classification + direct-vs-binder gate.
-//
-// `method_ic_call_plan` returns `(fixed_arity_including_self,
-// n_pos_defaults, needs_binder)`. The fused fast path's `direct_ok` gate is
-//   !needs_binder
-//     && fixed_arity <= DIRECT_ARGV_MAX
-//     && (fixed_arity - n_pos_defaults) <= supplied+1 <= fixed_arity
-// (the `+1` is `self`). When the gate is false the call routes to the
-// cached-bind path (full binder). The load-bearing distinction: POSITIONAL
-// defaults are direct-fillable (gate may be true), while kw-only / `*args` /
-// `**kwargs` set `needs_binder` (gate always false). These tests pin the
-// classifier + gate exhaustively over the reviewer-enumerated shapes:
-// no-default exact arity (direct), positional default (direct, paddable
-// range), kw-only ±default (binder), *args (binder), **kwargs (binder), and
-// an arity mismatch (binder).
-// ------------------------------------------------------------------
-
-/// Mirror of the production `direct_ok` closure in `call_method_ic_dispatch`
-/// (kept in lock-step). `supplied_pos` excludes `self`; the production
-/// `DIRECT_ARGV_MAX` is 16.
-pub(super) fn direct_ok_gate(
-    fixed_arity: u8,
-    n_pos_defaults: u8,
-    needs_binder: bool,
-    supplied_pos: usize,
-) -> bool {
-    if needs_binder {
-        return false;
-    }
-    let fixed_arity = fixed_arity as usize;
-    if fixed_arity > 16 {
-        return false;
-    }
-    let supplied = supplied_pos + 1;
-    let min_supplied = fixed_arity.saturating_sub(n_pos_defaults as usize);
-    supplied >= min_supplied && supplied <= fixed_arity
-}
-
-/// Build a `TYPE_ID_FUNCTION` with the given fixed arity (INCLUDING `self`)
-/// and optional binding metadata, then return its bits. The function never
-/// runs in these tests — only its shape metadata is read.
-pub(super) unsafe fn make_test_function(
-    _py: &crate::PyToken<'_>,
-    arity_including_self: u64,
-    meta: &[(&'static [u8], u64)],
-) -> u64 {
-    use crate::object::builders::alloc_function_obj;
-    // fn_ptr is irrelevant for shape classification; use a dummy non-null.
-    let func_ptr = alloc_function_obj(_py, 1, arity_including_self);
-    assert!(!func_ptr.is_null());
-    for (name, val_bits) in meta.iter().copied() {
-        let attr_bits = intern_metadata_name(_py, name);
-        unsafe {
-            assert!(crate::call::class_init::function_set_attr_bits(
-                _py, func_ptr, attr_bits, val_bits
-            ))
-        };
-    }
-    MoltObject::from_ptr(func_ptr).bits()
-}
-
 /// Use the runtime's canonical attribute-name interning authority. Keeping
 /// another metadata-name allowlist here makes new binder fields fail in the
 /// fixture before they ever reach their production consumer.

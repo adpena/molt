@@ -622,6 +622,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             "CALL_FUNC",
             "CALL_GUARDED",
             "CALL_METHOD",
+            "CALL_LOADED_METHOD",
             "CALL_BIND",
             "CALL_INDIRECT",
         }:
@@ -636,7 +637,9 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             builtin_name = (callee_producer.metadata or {}).get("builtin_name")
             if builtin_name not in BUILTIN_FUNC_SPECS:
                 return
-        custody = ["transferred"] * len(producer.args)
+        # A loaded method call takes the pair's two words, then its arguments.
+        operand_count = len(producer.args) + (producer.kind == "CALL_LOADED_METHOD")
+        custody = ["transferred"] * operand_count
         if producer.kind in {"CALL_BIND", "CALL_INDIRECT"}:
             builder = self._op_by_result.get(producer.args[1].name)
             form = (

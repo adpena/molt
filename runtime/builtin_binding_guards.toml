@@ -13,6 +13,9 @@
 # dynamic call. `pow` and `round` always keep the actual callable for their
 # argument contract, and the reflection gateways (`getattr`, `hasattr`,
 # `setattr`) carry their own capability accounting, so they are not listed.
+# `super` specializes only as the receiver of a method call: zero-argument
+# `super().name(*args)` loads the method pair without a super object, as
+# CPython's LOAD_SUPER_ATTR does after it checks the global `super`.
 #
 # Each name owns one bit of the guard mask, in table order. Module namespaces
 # record, per bit, whether the name was ever bound in them; the builtins
@@ -64,6 +67,7 @@ names = [
     "sorted",
     "str",
     "sum",
+    "super",
     "tuple",
     "type",
     "zip",

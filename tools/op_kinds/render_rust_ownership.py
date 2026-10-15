@@ -40,9 +40,9 @@ def _render_operand_ownership(
       of the consumed operand, resolving ``"last"`` against the op's ``arity``.
       This is the table ``op_transferred_operands`` reads (replacing the
       hand-coded ``matches!(_original_kind, "call_bind" | "call_indirect")``).
-    * ``kind_source_call_first_adopted_operand(kind)`` — the per-SPELLING
-      source call admission (design 20 §1.6): the first operand that a
-      source Python call may adopt through typed ``argument_custody``.
+    * ``kind_is_source_call(kind)`` — the per-SPELLING source call admission
+      (design 20 §1.6): a source Python call may adopt its operands through
+      typed ``argument_custody``.
     * ``kind_source_call_callable_operand(kind)`` — the source call's
       callable operand, which an ordinary call adopts and an expanded call
       borrows (the builder's ``CallArgumentForm``).
@@ -207,19 +207,19 @@ def _render_operand_ownership(
     out.append("        _ => None,\n")
     out.append("    }\n}\n")
     out.append(
-        "\n/// Per-SPELLING source call instruction (design 20 §1.6): the first operand\n"
-        "/// position that a source Python call spelled `kind` may adopt through typed\n"
-        "/// `argument_custody`, or `None` when the spelling adopts nothing. An earlier\n"
-        "/// operand (a `super()` class) always stays borrowed.\n"
+        "\n/// Per-SPELLING source call instruction (design 20 §1.6): whether a source\n"
+        "/// Python call spelled `kind` may adopt its operands through typed\n"
+        "/// `argument_custody`. CALL takes its whole value stack, so every operand\n"
+        "/// position may adopt.\n"
         "#[inline]\n"
-        "pub fn kind_source_call_first_adopted_operand(kind: &str) -> Option<usize> {\n"
-        "    match kind {\n"
+        "pub fn kind_is_source_call(kind: &str) -> bool {\n"
+        "    matches!(\n"
+        "        kind,\n"
     )
-    for row in source_calls:
-        first = int(row["first_adopted_operand"])
-        out.append(f'        "{row["kind"]}" => Some({first}),\n')
-    out.append("        _ => None,\n")
-    out.append("    }\n}\n")
+    out.append(
+        "        " + " | ".join(f'"{row["kind"]}"' for row in source_calls) + "\n"
+    )
+    out.append("    )\n}\n")
     out.append(
         "\n/// Per-SPELLING source call instruction (design 20 §1.6): the operand holding\n"
         "/// the callable. An ordinary call adopts it and an expanded call borrows it,\n"

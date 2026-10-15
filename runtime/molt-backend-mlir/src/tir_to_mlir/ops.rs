@@ -367,7 +367,15 @@ pub(super) fn emit_tir_op<'c, 'a>(
         }
 
         // ---- Call ----
-        (_, OpCode::Call | OpCode::CallBuiltin | OpCode::CallMethod) => {
+        (
+            _,
+            OpCode::Call
+            | OpCode::CallBuiltin
+            | OpCode::CallMethod
+            | OpCode::LoadMethod
+            | OpCode::LoadSuperMethod
+            | OpCode::CallLoadedMethod,
+        ) => {
             // Python calls are dynamic until a later Molt dialect pass proves a
             // concrete symbol/signature. A func.call with an invented symbol is
             // invalid MLIR and loses method/call-site metadata.

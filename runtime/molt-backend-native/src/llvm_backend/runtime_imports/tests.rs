@@ -419,29 +419,28 @@ fn custom_fixed_runtime_import_signatures_are_typed() {
 }
 
 #[test]
-fn fused_method_dispatch_ic_runtime_functions_are_declared() {
+fn method_load_runtime_functions_are_declared() {
     let ctx = Context::create();
-    let module = ctx.create_module("test_method_dispatch_ic");
+    let module = ctx.create_module("test_method_load");
     declare_runtime_functions(&ctx, &module);
 
-    // call_method_icN: site + recv + name_ptr + name_len + N args = 4 + N.
-    // call_super_method_icN: site + class + self + name_ptr + name_len + N
-    // args = 5 + N. `name_ptr` is a native pointer in the LLVM ABI; all other
-    // values are boxed i64 carriers. These dispatch arbitrary user code, so
-    // they carry `nounwind` (catch_unwind boundary) but must NOT carry
-    // `willreturn`.
+    // molt_load_method: site + receiver + name_ptr + name_len + self_out = 5.
+    // molt_load_super_method: site + class + first_arg + name_ptr + name_len
+    // + self_out = 6. `name_ptr` is a native pointer in the LLVM ABI; all
+    // other values are i64 carriers. molt_call_loaded_methodN: callable +
+    // self_or_null + N args; the spilled form takes (pointer, count) words.
+    // Lookups and calls run arbitrary user code, so they carry `nounwind`
+    // (catch_unwind boundary) but must NOT carry `willreturn`.
     let willreturn_kind = Attribute::get_named_enum_kind_id("willreturn");
     for (name, arity, ptr_index) in &[
-        ("molt_call_method_ic0", 4usize, 2usize),
-        ("molt_call_method_ic1", 5, 2),
-        ("molt_call_method_ic2", 6, 2),
-        ("molt_call_method_ic3", 7, 2),
-        ("molt_call_method_ic4", 8, 2),
-        ("molt_call_super_method_ic0", 5, 3),
-        ("molt_call_super_method_ic1", 6, 3),
-        ("molt_call_super_method_ic2", 7, 3),
-        ("molt_call_super_method_ic3", 8, 3),
-        ("molt_call_super_method_ic4", 9, 3),
+        ("molt_load_method", 5usize, Some(2usize)),
+        ("molt_load_super_method", 6, Some(3)),
+        ("molt_call_loaded_method0", 2, None),
+        ("molt_call_loaded_method1", 3, None),
+        ("molt_call_loaded_method2", 4, None),
+        ("molt_call_loaded_method3", 5, None),
+        ("molt_call_loaded_method4", 6, None),
+        ("molt_call_loaded_method_spilled", 4, None),
     ] {
         let func = module
             .get_function(name)
@@ -453,7 +452,7 @@ fn fused_method_dispatch_ic_runtime_functions_are_declared() {
         );
         let params = func.get_type().get_param_types();
         for (idx, param) in params.iter().enumerate() {
-            if idx == *ptr_index {
+            if Some(idx) == *ptr_index {
                 assert!(param.is_pointer_type(), "{name} param {idx} should be ptr");
             } else {
                 assert!(param.is_int_type(), "{name} param {idx} should be integer");

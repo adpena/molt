@@ -2346,14 +2346,6 @@ owner = "runtime/molt-tir/src/passes/guard_elision.rs"
 summary = "Skips elimination of statically satisfied guard tags in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
 
 [[variable]]
-name = "MOLT_DISABLE_METHOD_FUSION"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/method_fusion.rs"
-summary = "Skips method-dispatch fusion in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and the value is part of the backend codegen environment digest."
-
-[[variable]]
 name = "MOLT_DISABLE_RC_COALESCE"
 audience = "user"
 kind = "bool"

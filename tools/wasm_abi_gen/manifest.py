@@ -120,8 +120,6 @@ WASM_BULK_MEMORY_INSTRUCTIONS = {
     "memory_copy": "Copy",
     "memory_fill": "Fill",
 }
-METHOD_IC_SELECTOR_FAMILIES = ("method", "super_method")
-METHOD_IC_MAX_EXTRA_ARGS = 4
 NUMERIC_OP_LOOP_VARIANTS = (
     "Add",
     "Sub",
@@ -2359,57 +2357,6 @@ def validate_loaded_manifest(
                 f"{import_name!r} does not match lir_variant {lir_variant!r} "
                 f"import {lir_import_by_variant[lir_variant]!r}"
             )
-
-    method_ic_selectors = data.get("method_ic_selector", [])
-    if not isinstance(method_ic_selectors, list):
-        raise WasmAbiManifestError("method_ic_selector must be a list of tables")
-    expected_method_ic_selectors = {
-        (family, extra_arg_count)
-        for family in METHOD_IC_SELECTOR_FAMILIES
-        for extra_arg_count in range(METHOD_IC_MAX_EXTRA_ARGS + 1)
-    }
-    seen_method_ic_selectors: set[tuple[str, int]] = set()
-    for idx, entry in enumerate(method_ic_selectors):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"method_ic_selector entry {idx} must be a table"
-            )
-        family = entry.get("family")
-        if not isinstance(family, str) or family not in METHOD_IC_SELECTOR_FAMILIES:
-            raise WasmAbiManifestError(
-                f"method_ic_selector entry {idx} has invalid family {family!r}"
-            )
-        extra_arg_count = entry.get("extra_arg_count")
-        if (
-            not isinstance(extra_arg_count, int)
-            or extra_arg_count < 0
-            or extra_arg_count > METHOD_IC_MAX_EXTRA_ARGS
-        ):
-            raise WasmAbiManifestError(
-                f"method_ic_selector {family!r} has invalid extra_arg_count "
-                f"{extra_arg_count!r}"
-            )
-        selector_key = (family, extra_arg_count)
-        if selector_key in seen_method_ic_selectors:
-            raise WasmAbiManifestError(f"duplicate method_ic_selector {selector_key!r}")
-        seen_method_ic_selectors.add(selector_key)
-        import_name = entry.get("import_name")
-        if not isinstance(import_name, str) or not import_name:
-            raise WasmAbiManifestError(
-                f"method_ic_selector {selector_key!r} has invalid import_name"
-            )
-        if import_name not in seen_imports:
-            raise WasmAbiManifestError(
-                f"method_ic_selector {selector_key!r} references unknown import "
-                f"{import_name!r}"
-            )
-    if seen_method_ic_selectors != expected_method_ic_selectors:
-        missing = sorted(expected_method_ic_selectors - seen_method_ic_selectors)
-        extra = sorted(seen_method_ic_selectors - expected_method_ic_selectors)
-        raise WasmAbiManifestError(
-            "method_ic_selector must declare exactly the method/super arity grid; "
-            f"missing={missing}, extra={extra}"
-        )
 
     numeric_runtime_selectors = _validate_numeric_runtime_selectors(
         data,

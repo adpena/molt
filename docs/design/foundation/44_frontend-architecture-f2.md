@@ -567,10 +567,11 @@ module-import rule for method calls, reading the imports from sema's
 values cannot recover it and the two forms own their arguments differently
 while the callee binds them.
 
-Argument evaluation now sits between a method lookup and its builder.
-`fuse_method_dispatch` moves the lookup to the call only across operations that
-the generated purity, effect and variable-role facts prove inert; otherwise it
-keeps the original lookup.
+Argument evaluation now sits between a method lookup and its call, as in
+CPython: a positional attribute call emits `load_method` (or
+`load_super_method` for zero-argument `super()`) before its arguments and
+`call_loaded_method` after them, so the lookup stays where the source puts it
+(HF-216).
 
 Required condition evaluation remains in the live-statement projection even
 when a successor is impossible. An underscore is not a Python visibility

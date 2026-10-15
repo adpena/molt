@@ -13,7 +13,7 @@ during crate extraction:
 
 | Step | Native | WASM | Luau | Rust |
 |---|---|---|---|---|
-| `rewrite_stateful_loops` .. `fuse_method_dispatch` | yes, parallel | yes, serial | no | no |
+| `rewrite_stateful_loops` .. `elide_safe_exception_checks` | yes, parallel | yes, serial | no | no |
 | `escape_analysis` (marks only Cranelift consumes) | yes | yes, unused | no | no |
 | `fold_constants_cross_block` | yes | missing | no | no |
 | `elide_safe_exception_checks` | yes | missing | no | no |
@@ -44,7 +44,9 @@ parallel over every non-extern function: `rewrite_stateful_loops`,
 `eliminate_unbound_local_checks`, `eliminate_redundant_guard_tags`,
 `elide_dead_struct_allocs`, `escape_analysis`, `rc_coalescing`,
 `fold_constants`, `fold_constants_cross_block`,
-`elide_safe_exception_checks`, `fuse_method_dispatch`.
+`elide_safe_exception_checks`. HF-216 deleted the tenth pass,
+`fuse_method_dispatch`: the frontend emits CPython's two-value method load
+(`load_method`, `load_super_method`, `call_loaded_method`) directly.
 
 Every backend calls `run_simple_ir_pipeline(&mut ir, &target_info)` with its
 `TargetInfo`; the native backend passes its lane's target, Cranelift or LLVM.
@@ -68,7 +70,6 @@ lowering feature it relies on. It runs on a target when both hold:
 |---|---|---|---|---|---|
 | `rewrite_stateful_loops` | `state_*` kinds need `ASYNC_RUNTIME` | yes | yes | yes | no |
 | `escape_analysis` | non-escaping tuple scalarization | yes | no | no | no |
-| `fuse_method_dispatch` | method inline caches | yes | yes | yes | no |
 | the seven others | none: they remove ops or fold to `const`/`const_bool` | yes | yes | yes | yes |
 
 RC coalescing needs no gate: it removes matched `inc_ref`/`dec_ref` pairs, and

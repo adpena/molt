@@ -1,18 +1,18 @@
-"""Purpose: CPython parity for the fused method / super dispatch fast path.
+"""Purpose: CPython parity for method and super() method loads and their calls.
 
-Exercises the `call_method_ic` / `call_super_method_ic` lowering and their
-per-site inline caches.  Every case here must stay byte-identical to CPython:
-deep hierarchies + super chains, super() in __init__, overrides below the static
-receiver type (polymorphic site — the IC must re-resolve per class), instance
-attributes shadowing a method (the IC must defer to the slow path), classmethod
-/ staticmethod dispatch, __slots__ instances, a custom __getattribute__ (must
-defer to the slow path), and an exception raised through a fused method call.
+Exercises `load_method` / `load_super_method` + `call_loaded_method` (HF-216)
+and their per-site inline caches. Every case here must stay byte-identical to
+CPython: deep hierarchies + super chains, super() in __init__, overrides below
+the static receiver type (polymorphic site: the IC must re-resolve per class),
+instance attributes shadowing a method (the load must return the attribute),
+classmethod / staticmethod dispatch, __slots__ instances, a custom
+__getattribute__ (the load must take the generic path), and an exception raised
+through a loaded method call.
 
 NOTE: diamond-inheritance super() ordering, property getters folded at module
 scope, and same-scope `g.method = fn; g.method()` shadowing are tracked
-separately as pre-existing frontend lowering gaps (see the dispatch fix baton);
-they reproduce identically with method fusion disabled, so they are independent
-of this change and intentionally not asserted here.
+separately as frontend lowering gaps; they are independent of the method load
+and intentionally not asserted here.
 """
 
 

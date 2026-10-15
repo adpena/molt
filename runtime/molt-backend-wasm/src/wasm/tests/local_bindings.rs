@@ -40,40 +40,42 @@ fn iterator_result_roles_survive_absent_and_discarded_siblings() {
                 .unwrap();
             let imports = wasm_function_import_indices(&output.wasm);
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
-            let mut expected = Vec::new();
-            if done == Some("done") {
-                expected.push(1);
-            }
-            if value == Some("value") && done != Some("done") {
-                expected.push(0);
-            }
-            let actual: Vec<_> = imports
-                .get("index")
-                .into_iter()
-                .flat_map(|index| {
+            // One step call returns the done flag and writes the value word
+            // (HF-217): no `(value, done)` pair and no `index` calls.
+            let step = format!(
+                "Call {{ function_index: {} }}",
+                imports["iter_next_unboxed"]
+            );
+            let step_positions: Vec<_> = operators
+                .iter()
+                .enumerate()
+                .filter_map(|(i, instruction)| (instruction == &step).then_some(i))
+                .collect();
+            assert_eq!(step_positions.len(), 1, "value={value:?}, done={done:?}");
+            for retired in ["iter_next", "index"] {
+                if let Some(index) = imports.get(retired) {
                     let call = format!("Call {{ function_index: {index} }}");
-                    operators
-                        .iter()
-                        .enumerate()
-                        .filter_map(move |(i, instruction)| (instruction == &call).then_some(i))
-                })
-                .map(|i| operators[i - 1].clone())
-                .collect();
-            let expected: Vec<_> = expected
-                .into_iter()
-                .map(|index| {
-                    format!(
-                        "I64Const {{ value: {} }}",
-                        crate::wasm_values::box_int(index)
-                    )
-                })
-                .collect();
-            assert_eq!(actual, expected, "value={value:?}, done={done:?}");
-            let release = format!("Call {{ function_index: {} }}", imports["dec_ref_obj"]);
+                    assert!(
+                        !operators.contains(&call),
+                        "value={value:?}, done={done:?}: no {retired} call"
+                    );
+                }
+            }
+            let done_bound = done == Some("done");
+            let value_bound = value == Some("value") && !done_bound;
             assert_eq!(
-                operators.iter().filter(|op| *op == &release).count(),
-                1,
-                "the intermediate pair owns both unselected results"
+                operators[step_positions[0] + 1] == "Drop",
+                !done_bound,
+                "an unbound done flag is dropped without a release: value={value:?}, done={done:?}"
+            );
+            let releases = imports.get("dec_ref_obj").map_or(0, |index| {
+                let release = format!("Call {{ function_index: {index} }}");
+                operators.iter().filter(|op| *op == &release).count()
+            });
+            assert_eq!(
+                releases,
+                usize::from(!value_bound),
+                "only an unbound value word is released: value={value:?}, done={done:?}"
             );
         }
     }

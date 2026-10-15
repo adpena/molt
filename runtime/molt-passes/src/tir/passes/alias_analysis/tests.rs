@@ -30,8 +30,7 @@ fn op_kind(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>, kind: 
 const OLD_REFCOUNT_BARRIER_OPCODES: &[OpCode] = &[
     OpCode::Call,
     OpCode::CallMethod,
-    OpCode::CallMethodIc,
-    OpCode::CallSuperMethodIc,
+    OpCode::CallLoadedMethod,
     OpCode::CallBuiltin,
     OpCode::StoreAttr,
     OpCode::StoreIndex,
@@ -44,12 +43,13 @@ const OLD_REFCOUNT_BARRIER_OPCODES: &[OpCode] = &[
 
 const OLD_DSE_DIRECT_OBSERVERS: &[OpCode] = &[
     OpCode::LoadAttr,
+    OpCode::LoadMethod,
+    OpCode::LoadSuperMethod,
     OpCode::Index,
     OpCode::StoreIndex,
     OpCode::Call,
     OpCode::CallMethod,
-    OpCode::CallMethodIc,
-    OpCode::CallSuperMethodIc,
+    OpCode::CallLoadedMethod,
     OpCode::CallBuiltin,
     OpCode::Raise,
     OpCode::Yield,

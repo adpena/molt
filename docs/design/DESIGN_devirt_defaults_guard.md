@@ -3,7 +3,8 @@
 ## Problem (measured)
 - microbench `obj.m(i)` / `def m(self,x,bump=1)`: dormant molt ~0.88s vs CPython 3.14 ~0.19s.
   Cause: defaults-bearing methods are NOT devirtualized to a direct compiled CALL; they go
-  through runtime IC dispatch (`call_method_ic_dispatch`). No-default methods ARE devirtualized.
+  through the runtime method load and call (`load_method` + `call_loaded_method`, HF-216), whose
+  direct path fills the defaults from the live tuple. No-default methods ARE devirtualized.
 - PRE-EXISTING DIVERGENCE (confirmed): module-level `add(5)` after `add.__defaults__=(100,)`
   gives molt 6 / CPython 105. `_apply_default_specs` bakes CONST defaults at compile time via
   `_emit_const_value`, ignoring runtime `__defaults__`/`__kwdefaults__` reassignment.

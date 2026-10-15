@@ -34,8 +34,6 @@ from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
 from tools.wasm_abi_gen.manifest import (  # noqa: E402
     CONTAINER_RUNTIME_SELECTOR_FACTS,
     CONTAINER_RUNTIME_SELECTOR_OPS,
-    METHOD_IC_MAX_EXTRA_ARGS,
-    METHOD_IC_SELECTOR_FAMILIES,
     NUMERIC_OP_LOOP_VARIANTS,
     RUNTIME_RETURN_CONTRACTS,
     WASM_BULK_MEMORY_INSTRUCTIONS,
@@ -424,7 +422,6 @@ def _render_rs_mod() -> str:
             "mod import_registry;\n",
             "mod import_tokens;\n",
             "mod lir_runtime_calls;\n",
-            "mod method_ic_selector;\n",
             "mod numeric_runtime_selector;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
@@ -454,9 +451,6 @@ def _render_rs_mod() -> str:
             "pub(crate) use lir_runtime_calls::{\n",
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
             "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
-            "};\n",
-            "pub(crate) use method_ic_selector::{\n",
-            "    wasm_method_ic_selection, WasmMethodIcFamily, WasmMethodIcSelection,\n",
             "};\n",
             "pub(crate) use numeric_runtime_selector::{\n",
             "    wasm_numeric_runtime_selection, WasmNumericOpLoopKind,\n",
@@ -1301,69 +1295,6 @@ def _render_rs_container_runtime_selector(
     lines.extend(
         [
             "        _ => None,\n",
-            "    }\n",
-            "}\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_method_ic_selector(
-    data: dict, import_variants: Mapping[str, str]
-) -> str:
-    selectors = data.get("method_ic_selector", [])
-    selector_by_key = {
-        (entry["family"], entry["extra_arg_count"]): entry for entry in selectors
-    }
-    family_variants = {
-        family: _rust_pascal_variant(family) for family in METHOD_IC_SELECTOR_FAMILIES
-    }
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmMethodIcFamily {\n",
-        ]
-    )
-    for family in METHOD_IC_SELECTOR_FAMILIES:
-        lines.append(f"    {family_variants[family]},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmMethodIcSelection {\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "}\n\n",
-            f"pub(crate) const WASM_METHOD_IC_MAX_EXTRA_ARGS: usize = {METHOD_IC_MAX_EXTRA_ARGS};\n\n",
-        ]
-    )
-    lines.extend(
-        [
-            "#[inline]\n",
-            "pub(crate) fn wasm_method_ic_selection(\n",
-            "    family: WasmMethodIcFamily,\n",
-            "    extra_arg_count: usize,\n",
-            ") -> WasmMethodIcSelection {\n",
-            "    let capped_extra_arg_count = extra_arg_count.min(WASM_METHOD_IC_MAX_EXTRA_ARGS);\n",
-            "    match (family, capped_extra_arg_count) {\n",
-        ]
-    )
-    for family in METHOD_IC_SELECTOR_FAMILIES:
-        for extra_arg_count in range(METHOD_IC_MAX_EXTRA_ARGS + 1):
-            entry = selector_by_key[(family, extra_arg_count)]
-            lines.extend(
-                [
-                    f"        (WasmMethodIcFamily::{family_variants[family]}, {extra_arg_count}) => {{\n",
-                    "            WasmMethodIcSelection {\n",
-                    f"                import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
-                    "            }\n",
-                    "        }\n",
-                ]
-            )
-    lines.extend(
-        [
-            '        _ => unreachable!("method IC selector grid is generated exhaustively"),\n',
             "    }\n",
             "}\n",
         ]
@@ -2310,7 +2241,6 @@ def render_rs_modules(data: dict) -> dict[str, str]:
         "import_metadata.rs": _render_rs_import_metadata(data, import_variants),
         "import_registry.rs": _render_rs_import_registry(data, import_variants),
         "lir_runtime_calls.rs": _render_rs_lir_runtime_calls(data, import_variants),
-        "method_ic_selector.rs": _render_rs_method_ic_selector(data, import_variants),
         "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(
             data, import_variants
         ),

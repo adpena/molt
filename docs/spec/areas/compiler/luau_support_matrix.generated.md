@@ -10,11 +10,11 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 
 ## Summary
 
-- `compile-error`: `7`
-- `implemented-exact`: `198`
+- `compile-error`: `8`
+- `implemented-exact`: `200`
 - `implemented-target-limited`: `15`
 - `not-admitted`: `205`
-- `total`: `425`
+- `total`: `428`
 
 ## Matrix
 
@@ -73,6 +73,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `call_guarded` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `call_indirect` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `call_internal` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `call_loaded_method` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `call_method` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `callargs_expand_kwstar` | `implemented-target-limited` | Pre-source admission requires canonical ordered-dict provenance; generic Python keys/getitem mappings are not implemented. |
 | `callargs_expand_star` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
@@ -292,6 +293,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `load` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `load_const` | `implemented-target-limited` | Shared target contract admits only concrete integer literals exactly representable by Luau's numeric carrier. |
 | `load_local` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `load_method` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `load_super_method` | `compile-error` | Checked Luau emission rejects this arm through the shared unsupported-operation helper. |
 | `load_var` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `loop_break` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `loop_break_if_exception` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |

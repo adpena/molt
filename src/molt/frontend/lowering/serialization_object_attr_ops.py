@@ -8,6 +8,7 @@ from molt.frontend._types import (
     BuiltinClass,
     MoltOp,
     MoltValue,
+    loaded_method_self_name,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -256,6 +257,23 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
+        elif op.kind in {"LOAD_METHOD", "LOAD_SUPER_METHOD"}:
+            # One frontend value names the pair; the wire op defines both
+            # results: `var` the callable, `out` the self-or-null word.
+            *operands, attr = op.args
+            ctx.json_ops.append(
+                {
+                    "kind": (
+                        "load_method"
+                        if op.kind == "LOAD_METHOD"
+                        else "load_super_method"
+                    ),
+                    "args": [operand.name for operand in operands],
+                    "s_value": attr,
+                    "var": op.result.name,
+                    "out": loaded_method_self_name(op),
+                }
+            )
         elif op.kind == "GETATTR_SPECIAL_OBJ":
             ctx.json_ops.append(
                 {

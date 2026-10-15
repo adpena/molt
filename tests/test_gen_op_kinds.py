@@ -1216,8 +1216,7 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
     assert variable == {
         "Call",
         "CallMethod",
-        "CallMethodIc",
-        "CallSuperMethodIc",
+        "CallLoadedMethod",
         "CallBuiltin",
         "CheckException",
         "Copy",
@@ -1264,8 +1263,9 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
         "WarnStderr": "zero",
         "Call": "variable",
         "CallMethod": "variable",
-        "CallMethodIc": "variable",
-        "CallSuperMethodIc": "variable",
+        "CallLoadedMethod": "variable",
+        "LoadMethod": "two",
+        "LoadSuperMethod": "two",
         "CallBuiltin": "variable",
         "CheckException": "variable",
     }
@@ -1427,8 +1427,8 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
         "DelAttr": "name",
         "CallBuiltin": "name",
         "CallMethod": "method",
-        "CallMethodIc": "method",
-        "CallSuperMethodIc": "method",
+        "LoadMethod": "name",
+        "LoadSuperMethod": "name",
     }
     assert {
         row["opcode"]: row["attr"] for row in data["ssa_s_value_attr_keys"]
@@ -1494,8 +1494,9 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
         "copy_var",
         "call",
         "call_builtin",
-        "call_method_ic",
-        "call_super_method_ic",
+        "load_method",
+        "load_super_method",
+        "call_loaded_method",
     ):
         assert f'"{kind}"' not in preserve_block
 
@@ -1877,8 +1878,7 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
         "ObjectNewBound": "object_type_hint",
         "Call": "call_return_type",
         "CallMethod": "call_return_type",
-        "CallMethodIc": "call_return_type",
-        "CallSuperMethodIc": "call_return_type",
+        "CallLoadedMethod": "call_return_type",
         "TypeGuard": "type_guard",
         "Copy": "copy_original_kind",
     }
@@ -3309,9 +3309,8 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
     expected_rc = {
         "Call",
         "CallBuiltin",
+        "CallLoadedMethod",
         "CallMethod",
-        "CallMethodIc",
-        "CallSuperMethodIc",
         "CheckException",
         "ClosureLoad",
         "ClosureStore",
@@ -3781,8 +3780,8 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
         {"opcode": "Call", "rule": "call_callee"},
         {"opcode": "CallBuiltin", "rule": "call_callee"},
         {"opcode": "CallMethod", "rule": "call_method"},
-        {"opcode": "CallMethodIc", "rule": "call_method"},
-        {"opcode": "CallSuperMethodIc", "rule": "call_method"},
+        {"opcode": "LoadMethod", "rule": "method_load"},
+        {"opcode": "LoadSuperMethod", "rule": "method_load"},
         {"opcode": "UnpackSequence", "rule": "unpack_sequence_shape"},
     ]
     assert "sroa_const_immediate_rules" not in data
@@ -4319,11 +4318,12 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
         "BuildTuple",
         "Call",
         "CallBuiltin",
+        "CallLoadedMethod",
         "CallMethod",
-        "CallMethodIc",
-        "CallSuperMethodIc",
         "Index",
         "LoadAttr",
+        "LoadMethod",
+        "LoadSuperMethod",
         "Raise",
         "StoreIndex",
         "Yield",
@@ -5692,29 +5692,25 @@ def test_consuming_kind_admits_copy_lifted_storage_owners_only() -> None:
 
 
 def test_source_call_kinds_render_and_reject_malformed_rows() -> None:
-    """`[[source_call_kind]]` rows render `kind_source_call_first_adopted_operand`
-    and `kind_source_call_callable_operand`, the tables SimpleIR admission reads
-    to accept typed `argument_custody`. Runtime entries, FFI and builtins get no
-    row. A row on an unknown spelling, one whose borrowed prefix is longer than a
-    `super()` class, or one whose callable could never be adopted fails
-    generation."""
+    """`[[source_call_kind]]` rows render `kind_is_source_call` and
+    `kind_source_call_callable_operand`, the tables SimpleIR admission reads to
+    accept typed `argument_custody`. Runtime entries, FFI and builtins get no
+    row. A row on an unknown spelling, one with an unknown field, or one whose
+    callable is not operand 0 fails generation."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    adopted = _re_search(rendered, "fn kind_source_call_first_adopted_operand").split(
-        "pub fn", 1
-    )[0]
+    adopted = _re_search(rendered, "fn kind_is_source_call").split("pub fn", 1)[0]
     callables = _re_search(rendered, "fn kind_source_call_callable_operand").split(
         "pub fn", 1
     )[0]
     rows = {row["kind"]: row for row in data["source_call_kind"]}
     for kind, row in rows.items():
-        assert f'"{kind}" => Some({row["first_adopted_operand"]}),' in adopted, kind
+        assert f'"{kind}"' in adopted, kind
         if "callable_operand" in row:
             assert f'"{kind}" => Some({row["callable_operand"]}),' in callables, kind
         else:
             assert f'"{kind}"' not in callables, kind
-    assert "_ => None," in adopted
     assert "_ => None," in callables
     assert not {"invoke_ffi", "call_builtin", "call_function"} & rows.keys()
     assert {"call_func", "call_bind"} <= {
@@ -5727,11 +5723,10 @@ def test_source_call_kinds_render_and_reject_malformed_rows() -> None:
             owner[alias] = row["canonical"]
     gen._validate_source_call_kinds(data, owner)
     for bad in (
-        {"kind": "zzz_not_a_real_kind", "first_adopted_operand": 0},
-        {"kind": "call_func", "first_adopted_operand": 2},
-        {"kind": "call_func", "first_adopted_operand": True},
-        {"kind": "call_func", "first_adopted_operand": 0, "callable_operand": 1},
-        {"kind": "call_func", "first_adopted_operand": 1, "callable_operand": 0},
+        {"kind": "zzz_not_a_real_kind"},
+        {"kind": "call_func", "first_adopted_operand": 1},
+        {"kind": "call_func", "callable_operand": 1},
+        {"kind": "call_func", "callable_operand": True},
     ):
         mutated = json.loads(json.dumps(data))
         mutated["source_call_kind"] = [bad]

@@ -142,11 +142,19 @@ impl WasmRuntimeSurfacePlan {
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let kind = op.kind.as_str();
-        if (kind == "call_func" || kind == "invoke_ffi")
+        // The shared call spill region holds every spilled argument vector.
+        // A loaded method call spills its arguments after the loaded pair; a
+        // method load's out-parameter uses the region's first word.
+        let spilled_arguments = match kind {
+            "call_func" | "invoke_ffi" => 1,
+            "call_loaded_method" => 2,
+            _ => 0,
+        };
+        if spilled_arguments != 0
             && let Some(args) = &op.args
-            && !args.is_empty()
+            && args.len() >= spilled_arguments
         {
-            self.max_call_arity = self.max_call_arity.max(args.len() - 1);
+            self.max_call_arity = self.max_call_arity.max(args.len() - spilled_arguments);
         }
         if kind == "class_def"
             && let Some(meta) = op.s_value.as_deref()

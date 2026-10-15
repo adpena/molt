@@ -22,7 +22,6 @@ OUT_RS_FILES = {
     "import_registry.rs": OUT_RS_DIR / "import_registry.rs",
     "lir_runtime_calls.rs": OUT_RS_DIR / "lir_runtime_calls.rs",
     "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
-    "method_ic_selector.rs": OUT_RS_DIR / "method_ic_selector.rs",
     "numeric_runtime_selector.rs": OUT_RS_DIR / "numeric_runtime_selector.rs",
     "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
     "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",

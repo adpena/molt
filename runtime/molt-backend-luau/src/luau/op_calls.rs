@@ -395,6 +395,28 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
+            "call_loaded_method" => {
+                // Luau's method load always yields the attribute and no
+                // `self`, so CPython's CALL after it is an ordinary call.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() < 2 {
+                    self.emit_unsupported_op(op);
+                    return true;
+                }
+                let func_ref = sanitize_ident(&args[0]);
+                let call_args = args[2..]
+                    .iter()
+                    .map(|a| sanitize_ident(a))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let call = checked_call_expr(&func_ref, &call_args);
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = {call}"));
+                } else {
+                    self.emit_line(&call);
+                }
+            }
             "call_method" => {
                 if self.emit_typed_list_method_call(op) {
                     return true;

@@ -215,8 +215,6 @@ pub struct ProfileData {
 /// `TargetTransformInfo` answers target queries, so no backend chooses passes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimpleIrLoweringFeatures {
-    /// Lowers `call_method_ic` and `call_super_method_ic` inline-cache calls.
-    pub method_inline_caches: bool,
     /// Scalarizes the small tuples escape analysis marks `stack_eligible`.
     pub non_escaping_tuple_scalarization: bool,
 }
@@ -309,15 +307,13 @@ impl TargetInfo {
     const fn lowering_for(target: TargetKind) -> SimpleIrLoweringFeatures {
         match target {
             TargetKind::NativeCranelift => SimpleIrLoweringFeatures {
-                method_inline_caches: true,
                 non_escaping_tuple_scalarization: true,
             },
-            TargetKind::Wasm | TargetKind::Llvm => SimpleIrLoweringFeatures {
-                method_inline_caches: true,
-                non_escaping_tuple_scalarization: false,
-            },
-            TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => SimpleIrLoweringFeatures {
-                method_inline_caches: false,
+            TargetKind::Wasm
+            | TargetKind::Llvm
+            | TargetKind::Luau
+            | TargetKind::Rust
+            | TargetKind::Mlir => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
             },
         }

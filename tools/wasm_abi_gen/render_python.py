@@ -264,13 +264,6 @@ def render_py(
             f'"{entry["import_name"]}", {lir_variant_repr}),\n'
         )
     lines.append(")\n\n")
-    lines.append("WASM_METHOD_IC_SELECTORS: tuple[tuple[str, int, str], ...] = (\n")
-    for entry in data.get("method_ic_selector", []):
-        lines.append(
-            f'    ("{entry["family"]}", {entry["extra_arg_count"]}, '
-            f'"{entry["import_name"]}"),\n'
-        )
-    lines.append(")\n\n")
     lines.append(
         "WASM_NUMERIC_RUNTIME_SELECTORS: tuple[tuple[str, str, str, str | None, int | None, tuple[str, ...]], ...] = (\n"
     )

@@ -37,8 +37,7 @@ _VARIABLE_RESULT_ARITY_OPCODES = {
     # statements. The return-value fact is present only when TIR carries a result.
     "Call",
     "CallMethod",
-    "CallMethodIc",
-    "CallSuperMethodIc",
+    "CallLoadedMethod",
     "CallBuiltin",
     # Exception checks can be pure control-transfer polls or produce an explicit
     # flag in older/diagnostic lanes.
@@ -266,6 +265,7 @@ _MODULE_SLOT_ACCESS_ROLES = {
 _TIR_VERIFY_ATTR_RULES = {
     "call_callee": "CallCallee",
     "call_method": "CallMethod",
+    "method_load": "MethodLoad",
     "unpack_sequence_shape": "UnpackSequenceShape",
 }
 _STRENGTH_REDUCTION_RULES = {

@@ -47,12 +47,13 @@ BUILTIN_BINDING_GUARD_BITS: Final[Mapping[str, int]] = MappingProxyType(
         "sorted": 1 << 35,
         "str": 1 << 36,
         "sum": 1 << 37,
-        "tuple": 1 << 38,
-        "type": 1 << 39,
-        "zip": 1 << 40,
+        "super": 1 << 38,
+        "tuple": 1 << 39,
+        "type": 1 << 40,
+        "zip": 1 << 41,
     }
 )
-BUILTIN_BINDING_GUARD_ALL_MASK: Final[int] = 0x1FFFFFFFFFF
+BUILTIN_BINDING_GUARD_ALL_MASK: Final[int] = 0x3FFFFFFFFFF
 
 __all__ = [
     "BUILTIN_BINDING_GUARD_ALL_MASK",

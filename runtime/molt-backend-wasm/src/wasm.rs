@@ -14,7 +14,6 @@ mod function_emitter;
 mod function_frame;
 pub(crate) mod lir_fast;
 mod local_analysis;
-mod method_ic_select;
 mod module_abi;
 mod module_registry;
 mod op_loop;

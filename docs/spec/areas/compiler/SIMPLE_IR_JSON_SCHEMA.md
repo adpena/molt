@@ -256,8 +256,7 @@ symbol identity. The source of these roles and requirements is
   - A raw direct call (`call`, `call_internal`) to a function in the
     document carries exactly its target's parameter custody, skipping a
     leading closure parameter, and a `call` to a runtime entry carries none.
-  - A dynamic source call transfers every argument, and never an operand
-    before the row's `first_adopted_operand` (a `super()` class). It
+  - A dynamic source call transfers every argument. It
     transfers the row's `callable_operand` as well, except that a
     `call_bind` or `call_indirect` whose builder's `callargs_new` has the
     `expanded` call form borrows its callable.

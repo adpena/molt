@@ -1084,11 +1084,29 @@ fn type_propagation_does_not_emit_scalar_type_hint_for_call_result() {
     }
 }
 
+/// A method load is a first-class two-result operation: the lift keeps its
+/// `name`, gives it two SSA results in the `var` (callable) then `out`
+/// (self-or-null) roles, and the lowering re-emits the same roles and the
+/// call that consumes them.
 #[test]
-fn tir_round_trip_preserves_method_ic_as_first_class_ops() {
+fn tir_round_trip_preserves_method_loads_as_first_class_ops() {
+    let load = |kind: &str, args: &[&str], name: &str, callable: &str, self_or_null: &str| OpIR {
+        kind: kind.into(),
+        args: Some(args.iter().map(|arg| arg.to_string()).collect()),
+        s_value: Some(name.into()),
+        var: Some(callable.into()),
+        out: Some(self_or_null.into()),
+        ..OpIR::default()
+    };
+    let call = |callable: &str, self_or_null: &str, out: &str| OpIR {
+        kind: "call_loaded_method".into(),
+        args: Some(vec![callable.into(), self_or_null.into(), "arg".into()]),
+        out: Some(out.into()),
+        ..OpIR::default()
+    };
     let func_ir = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
-        name: "method_ic_roundtrip".into(),
+        name: "method_load_roundtrip".into(),
         params: vec![
             "recv".into(),
             "arg".into(),
@@ -1096,20 +1114,16 @@ fn tir_round_trip_preserves_method_ic_as_first_class_ops() {
             "self_obj".into(),
         ],
         ops: vec![
-            OpIR {
-                kind: "call_method_ic".into(),
-                args: Some(vec!["recv".into(), "arg".into()]),
-                s_value: Some("f".into()),
-                out: Some("r".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "call_super_method_ic".into(),
-                args: Some(vec!["class".into(), "self_obj".into(), "arg".into()]),
-                s_value: Some("g".into()),
-                out: Some("s".into()),
-                ..OpIR::default()
-            },
+            load("load_method", &["recv"], "f", "f_callable", "f_self"),
+            call("f_callable", "f_self", "r"),
+            load(
+                "load_super_method",
+                &["class", "self_obj"],
+                "g",
+                "g_callable",
+                "g_self",
+            ),
+            call("g_callable", "g_self", "s"),
         ],
         param_types: None,
         source_file: None,
@@ -1125,62 +1139,56 @@ fn tir_round_trip_preserves_method_ic_as_first_class_ops() {
         .values()
         .flat_map(|block| &block.ops)
         .collect();
-    let method_op = tir_ops
-        .iter()
-        .copied()
-        .find(|op| op.opcode == OpCode::CallMethodIc)
-        .expect("call_method_ic must lower to a first-class opcode");
-    assert!(
-        !method_op.attrs.contains_key("_original_kind"),
-        "call_method_ic must not remain a Copy/_original_kind bridge"
-    );
-    assert_eq!(
-        method_op.attrs.get("method"),
-        Some(&AttrValue::Str("f".into()))
-    );
-    let super_op = tir_ops
-        .iter()
-        .copied()
-        .find(|op| op.opcode == OpCode::CallSuperMethodIc)
-        .expect("call_super_method_ic must lower to a first-class opcode");
-    assert!(
-        !super_op.attrs.contains_key("_original_kind"),
-        "call_super_method_ic must not remain a Copy/_original_kind bridge"
-    );
-    assert_eq!(
-        super_op.attrs.get("method"),
-        Some(&AttrValue::Str("g".into()))
-    );
+    for (opcode, name, operands) in [
+        (OpCode::LoadMethod, "f", 1),
+        (OpCode::LoadSuperMethod, "g", 2),
+    ] {
+        let load = tir_ops
+            .iter()
+            .copied()
+            .find(|op| op.opcode == opcode)
+            .unwrap_or_else(|| panic!("{opcode:?} must lift to a first-class opcode"));
+        assert!(!load.attrs.contains_key("_original_kind"), "{opcode:?}");
+        assert_eq!(load.attrs.get("name"), Some(&AttrValue::Str(name.into())));
+        assert_eq!(load.operands.len(), operands);
+        assert_eq!(
+            load.results.len(),
+            2,
+            "{opcode:?} defines callable and self"
+        );
+        let call = tir_ops
+            .iter()
+            .copied()
+            .find(|op| {
+                op.opcode == OpCode::CallLoadedMethod && op.operands[..2] == load.results[..]
+            })
+            .unwrap_or_else(|| panic!("the call must consume {opcode:?}'s results in order"));
+        assert_eq!(call.operands.len(), 3);
+    }
 
     let round_tripped = lower_to_simple_ir(&tir_func);
-    let method = round_tripped
-        .iter()
-        .find(|op| op.kind == "call_method_ic")
-        .expect("round-trip should re-emit call_method_ic");
-    assert_eq!(method.s_value.as_deref(), Some("f"));
-    assert_eq!(
-        method.args.as_ref().expect("call_method_ic args"),
-        &vec!["recv".to_string(), "arg".to_string()]
-    );
-    assert_eq!(method.out.as_deref(), Some("r"));
-
-    let super_method = round_tripped
-        .iter()
-        .find(|op| op.kind == "call_super_method_ic")
-        .expect("round-trip should re-emit call_super_method_ic");
-    assert_eq!(super_method.s_value.as_deref(), Some("g"));
-    assert_eq!(
-        super_method
-            .args
-            .as_ref()
-            .expect("call_super_method_ic args"),
-        &vec![
-            "class".to_string(),
-            "self_obj".to_string(),
-            "arg".to_string()
-        ]
-    );
-    assert_eq!(super_method.out.as_deref(), Some("s"));
+    for (kind, name, args) in [
+        ("load_method", "f", vec!["recv"]),
+        ("load_super_method", "g", vec!["class", "self_obj"]),
+    ] {
+        let load = round_tripped
+            .iter()
+            .find(|op| op.kind == kind)
+            .unwrap_or_else(|| panic!("round-trip should re-emit {kind}"));
+        assert_eq!(load.s_value.as_deref(), Some(name));
+        assert_eq!(load.args.as_deref().expect("load args"), args.as_slice());
+        let (callable, self_or_null) = (
+            load.var.clone().expect("callable in var"),
+            load.out.clone().expect("self_or_null in out"),
+        );
+        assert!(round_tripped.iter().any(|op| {
+            op.kind == "call_loaded_method"
+                && op
+                    .args
+                    .as_deref()
+                    .is_some_and(|args| args[..2] == [callable.clone(), self_or_null.clone()])
+        }));
+    }
 }
 
 /// Verify that no type map (empty) means no flags are set.

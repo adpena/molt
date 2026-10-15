@@ -26,7 +26,6 @@ def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     for name, value in (
         ("MOLT_BACKEND_INLINE_EXC_DISABLED", "1"),
         ("MOLT_DISABLE_RC_COALESCE", ""),
-        ("MOLT_DISABLE_METHOD_FUSION", "1"),
         ("MOLT_DISABLE_EXC_ELIDE", "1"),
     ):
         assert _backend_codegen_env_digest(is_wasm=False, env={name: value}) != baseline

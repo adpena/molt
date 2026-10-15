@@ -2,7 +2,7 @@
 // runtime/builtin_binding_guards.toml. DO NOT EDIT BY HAND.
 
 /// Guarded builtin names; a name's bit is its index.
-pub(crate) const BUILTIN_BINDING_GUARD_NAMES: [&str; 41] = [
+pub(crate) const BUILTIN_BINDING_GUARD_NAMES: [&str; 42] = [
     "abs",
     "all",
     "any",
@@ -41,13 +41,14 @@ pub(crate) const BUILTIN_BINDING_GUARD_NAMES: [&str; 41] = [
     "sorted",
     "str",
     "sum",
+    "super",
     "tuple",
     "type",
     "zip",
 ];
 
 /// Every guard bit.
-pub(crate) const BUILTIN_BINDING_GUARD_ALL_MASK: u64 = 0x1ffffffffff;
+pub(crate) const BUILTIN_BINDING_GUARD_ALL_MASK: u64 = 0x3ffffffffff;
 
 /// The guard bit of an exact `str` namespace key, or zero.
 #[inline]
@@ -91,9 +92,10 @@ pub(crate) fn builtin_binding_guard_bit(name: &[u8]) -> u64 {
         b"sorted" => 1 << 35,
         b"str" => 1 << 36,
         b"sum" => 1 << 37,
-        b"tuple" => 1 << 38,
-        b"type" => 1 << 39,
-        b"zip" => 1 << 40,
+        b"super" => 1 << 38,
+        b"tuple" => 1 << 39,
+        b"type" => 1 << 40,
+        b"zip" => 1 << 41,
         _ => 0,
     }
 }

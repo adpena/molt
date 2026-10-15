@@ -296,6 +296,21 @@ class MoltOp:
     source_line: int | None = None
 
 
+def loaded_method_self_name(op: MoltOp) -> str:
+    """The wire name of a method pair's `self_or_null` word.
+
+    A method load (CPython's LOAD_ATTR or LOAD_SUPER_ATTR in method form) is one
+    frontend value, its callable; the second result exists only on the wire.
+    The load and the CALL_LOADED_METHOD that consumes the pair both record it.
+    """
+    if op.kind not in {"LOAD_METHOD", "LOAD_SUPER_METHOD", "CALL_LOADED_METHOD"}:
+        raise AssertionError(f"{op.kind} carries no method pair")
+    name = (op.metadata or {}).get("self_or_null")
+    if not isinstance(name, str) or not name:
+        raise AssertionError(f"{op.kind} {op.result.name} names no self_or_null")
+    return name
+
+
 @dataclass
 class _ClassNsScope:
     """Active class-body namespace while the body is lowered as a block (P0 #50).

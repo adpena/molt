@@ -89,6 +89,7 @@ pub fn verify_function(func: &TirFunction) -> Result<(), Vec<VerifyError>> {
     verify_terminators(func, &mut errors);
     verify_block_args(func, &mut errors);
     verify_ssa(func, &mut errors);
+    verify_loaded_method_pairs(func, &mut errors);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -259,6 +260,14 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         *bid,
                         op_idx,
                         "CallMethod op has no method (attr or operand)",
+                    ));
+                }
+                TirVerifyAttrRule::MethodLoad if !matches!(op.attrs.get("name"), Some(AttrValue::Str(name)) if !name.is_empty()) =>
+                {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        format!("{:?} op has no attribute name", op.opcode),
                     ));
                 }
                 TirVerifyAttrRule::UnpackSequenceShape => {
@@ -567,6 +576,133 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 }
 
 // ---------------------------------------------------------------------------
+// Loaded method pairs: `self_or_null` is visible only to its call
+// ---------------------------------------------------------------------------
+
+/// A method load's second result is CPython's `self` or NULL. NULL is a
+/// sentinel word, not a Python value, so no operation may observe it except
+/// operand 1 of a `CallLoadedMethod`. Edges may carry it: a terminator or an
+/// exception transfer binds it to a block argument, which then carries the
+/// same word. Drop insertion may release it (`DecRef` of the sentinel is a
+/// no-op). The frontend emits one call per load; the number of call
+/// operations is not fixed afterwards, because unreachable-code removal can
+/// delete the call and block cloning (versioning, peeling) can copy it onto
+/// disjoint paths.
+fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>) {
+    use super::ops::OpCode;
+
+    let mut loaded: HashSet<ValueId> = HashSet::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if matches!(op.opcode, OpCode::LoadMethod | OpCode::LoadSuperMethod)
+                && let [_, self_or_null] = op.results[..]
+            {
+                loaded.insert(self_or_null);
+            }
+        }
+    }
+    if loaded.is_empty() {
+        return;
+    }
+    // Close the set over every edge that binds a block argument to it.
+    let exception_targets = dominators::exception_label_to_block(func);
+    let carried = |target: &BlockId, args: &[ValueId], loaded: &mut HashSet<ValueId>| {
+        let Some(block) = func.blocks.get(target) else {
+            return false;
+        };
+        let mut grew = false;
+        for (arg, value) in block.args.iter().zip(args) {
+            if loaded.contains(value) {
+                grew |= loaded.insert(arg.id);
+            }
+        }
+        grew
+    };
+    loop {
+        let mut grew = false;
+        for block in func.blocks.values() {
+            for op in &block.ops {
+                if dominators::is_exception_transfer_edge(op.opcode)
+                    && let Some(AttrValue::Int(label)) = op.attrs.get("value")
+                    && let Some(target) = exception_targets.get(label)
+                {
+                    grew |= carried(target, &op.operands, &mut loaded);
+                }
+            }
+            block.terminator.for_each_edge(|target, args| {
+                grew |= carried(&target, args, &mut loaded);
+            });
+        }
+        if !grew {
+            break;
+        }
+    }
+    for (bid, block) in &func.blocks {
+        for (op_idx, op) in block.ops.iter().enumerate() {
+            if op.opcode == OpCode::DecRef || dominators::is_exception_transfer_edge(op.opcode) {
+                continue;
+            }
+            let observed = if op.opcode == OpCode::CallLoadedMethod {
+                if !op
+                    .operands
+                    .get(1)
+                    .is_some_and(|value| loaded.contains(value))
+                {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        "CallLoadedMethod operand 1 must be a method load's self_or_null",
+                    ));
+                }
+                let mut observed = op.operands.clone();
+                if observed.len() > 1 {
+                    observed.remove(1);
+                }
+                observed
+            } else {
+                op.operands.clone()
+            };
+            for operand in observed {
+                if loaded.contains(&operand) {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_idx,
+                        format!("{:?} observes self_or_null {operand}", op.opcode),
+                    ));
+                }
+            }
+        }
+        if let Some(value) = block_terminator_condition(&block.terminator)
+            && loaded.contains(&value)
+        {
+            errors.push(VerifyError::block(
+                *bid,
+                format!("terminator branches on self_or_null {value}"),
+            ));
+        }
+        if let Terminator::Return { values } = &block.terminator {
+            for value in values {
+                if loaded.contains(value) {
+                    errors.push(VerifyError::block(
+                        *bid,
+                        format!("return observes self_or_null {value}"),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// The value a terminator decides on, if it has one.
+fn block_terminator_condition(terminator: &Terminator) -> Option<ValueId> {
+    match terminator {
+        Terminator::CondBranch { cond, .. } => Some(*cond),
+        Terminator::Switch { value, .. } => Some(*value),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Check 4: branch arg counts match target block param counts
 // ---------------------------------------------------------------------------
 
@@ -847,6 +983,173 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A method load's `self_or_null` is a non-object word (HF-216). The
+    /// verifier admits it as operand 1 of a `CallLoadedMethod`, as a block
+    /// argument carried there, and as a `DecRef` operand, and nowhere else.
+    #[test]
+    fn loaded_method_self_or_null_reaches_only_its_call() {
+        use super::super::blocks::TirBlock;
+        use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
+        use super::super::types::TirType;
+        use super::super::values::TirValue;
+
+        enum Shape {
+            Direct,
+            Carried,
+            Released,
+            Observed,
+            CallOfPlainValue,
+            Returned,
+            Branched,
+            Nameless,
+        }
+        let op = |opcode, operands: Vec<ValueId>, results: Vec<ValueId>, name: Option<&str>| {
+            let mut attrs = AttrDict::new();
+            if let Some(name) = name {
+                attrs.insert("name".into(), AttrValue::Str(name.into()));
+            }
+            TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands,
+                results,
+                attrs,
+                source_span: None,
+            }
+        };
+        let build = |shape: &Shape| {
+            let mut func = TirFunction::new(
+                "loaded_method".into(),
+                vec![TirType::DynBox],
+                TirType::DynBox,
+                crate::FunctionReturnAbi::Value,
+            );
+            let receiver = ValueId(0);
+            let callable = func.fresh_value();
+            let self_or_null = func.fresh_value();
+            let result = func.fresh_value();
+            let name = (!matches!(shape, Shape::Nameless)).then_some("m");
+            let entry = func.entry_block;
+            let load = op(
+                OpCode::LoadMethod,
+                vec![receiver],
+                vec![callable, self_or_null],
+                name,
+            );
+            let call = |callable, self_or_null| {
+                op(
+                    OpCode::CallLoadedMethod,
+                    vec![callable, self_or_null],
+                    vec![result],
+                    None,
+                )
+            };
+            let mut entry_ops = vec![load];
+            let mut terminator = Terminator::Return {
+                values: vec![result],
+            };
+            match shape {
+                Shape::Direct | Shape::Nameless => entry_ops.push(call(callable, self_or_null)),
+                Shape::Carried => {
+                    let target = func.fresh_block();
+                    let carried_callable = func.fresh_value();
+                    let carried_self = func.fresh_value();
+                    func.blocks.insert(
+                        target,
+                        TirBlock {
+                            id: target,
+                            args: vec![
+                                TirValue {
+                                    id: carried_callable,
+                                    ty: TirType::DynBox,
+                                },
+                                TirValue {
+                                    id: carried_self,
+                                    ty: TirType::DynBox,
+                                },
+                            ],
+                            ops: vec![call(carried_callable, carried_self)],
+                            terminator: Terminator::Return {
+                                values: vec![result],
+                            },
+                        },
+                    );
+                    terminator = Terminator::Branch {
+                        target,
+                        args: vec![callable, self_or_null],
+                    };
+                }
+                Shape::Released => {
+                    entry_ops.push(op(OpCode::DecRef, vec![self_or_null], vec![], None));
+                    entry_ops.push(op(OpCode::DecRef, vec![callable], vec![], None));
+                    entry_ops.push(op(OpCode::Copy, vec![receiver], vec![result], None));
+                }
+                Shape::Observed => {
+                    entry_ops.push(op(OpCode::Copy, vec![self_or_null], vec![result], None));
+                    entry_ops.push(op(OpCode::DecRef, vec![callable], vec![], None));
+                }
+                Shape::CallOfPlainValue => entry_ops.push(call(callable, receiver)),
+                Shape::Returned => {
+                    entry_ops.push(op(OpCode::DecRef, vec![callable], vec![], None));
+                    terminator = Terminator::Return {
+                        values: vec![self_or_null],
+                    };
+                }
+                Shape::Branched => {
+                    let target = func.fresh_block();
+                    func.blocks.insert(
+                        target,
+                        TirBlock {
+                            id: target,
+                            args: vec![],
+                            ops: vec![call(callable, self_or_null)],
+                            terminator: Terminator::Return {
+                                values: vec![result],
+                            },
+                        },
+                    );
+                    terminator = Terminator::CondBranch {
+                        cond: self_or_null,
+                        then_block: target,
+                        then_args: vec![],
+                        else_block: target,
+                        else_args: vec![],
+                    };
+                }
+            }
+            let block = func.blocks.get_mut(&entry).unwrap();
+            block.ops = entry_ops;
+            block.terminator = terminator;
+            func
+        };
+        for (shape, expected) in [
+            (Shape::Direct, None),
+            (Shape::Carried, None),
+            (Shape::Released, None),
+            (Shape::Observed, Some("Copy observes self_or_null")),
+            (
+                Shape::CallOfPlainValue,
+                Some("operand 1 must be a method load's self_or_null"),
+            ),
+            (Shape::Returned, Some("return observes self_or_null")),
+            (Shape::Branched, Some("terminator branches on self_or_null")),
+            (Shape::Nameless, Some("has no attribute name")),
+        ] {
+            let func = build(&shape);
+            let result = verify_function(&func);
+            match expected {
+                None => assert!(result.is_ok(), "{func:?}: {result:?}"),
+                Some(message) => {
+                    let errors = result.expect_err(message);
+                    assert!(
+                        errors.iter().any(|error| error.message.contains(message)),
+                        "{message}: {errors:?}"
+                    );
+                }
+            }
+        }
+    }
 
     /// The verifier must admit the identity that lowering actually transports.
     /// Operand presence cannot turn a direct call into a dynamic one, and a

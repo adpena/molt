@@ -12,6 +12,7 @@ from molt.frontend._types import (
     BoundMethodHint,
     MoltOp,
     MoltValue,
+    loaded_method_self_name,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -628,6 +629,26 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                     and runtime_requirement_bits
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
+            ctx.json_ops.append(entry)
+        elif op.kind == "CALL_LOADED_METHOD":
+            # CPython's CALL after a method load. The frontend value names the
+            # loaded pair; the wire call takes both of its results.
+            pair, *arguments = op.args
+            entry = {
+                "kind": "call_loaded_method",
+                "args": [
+                    pair.name,
+                    loaded_method_self_name(op),
+                    *(argument.name for argument in arguments),
+                ],
+                "out": op.result.name,
+            }
+            custody = self._call_argument_custody(
+                op, "call_loaded_method", None, len(op.args) + 1
+            )
+            if custody is None:
+                raise AssertionError("CALL_LOADED_METHOD is always a source call")
+            entry["argument_custody"] = custody
             ctx.json_ops.append(entry)
         elif op.kind == "CALL_BIND":
             entry: dict[str, Any] = {

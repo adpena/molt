@@ -14,7 +14,6 @@ mod escape;
 mod exception_check_elision;
 mod guard_elision;
 mod megafunction_split;
-mod method_fusion;
 mod pipeline;
 mod profile_order;
 mod purity;
@@ -46,7 +45,6 @@ pub use self::guard_elision::{
 pub use self::megafunction_split::{
     split_large_function, split_megafunctions, split_megafunctions_with_filter,
 };
-pub use self::method_fusion::fuse_method_dispatch;
 pub use self::pipeline::{
     SIMPLE_IR_FUNCTION_PASSES, SimpleIrLowering, SimpleIrPass, run_simple_ir_pipeline,
 };
@@ -67,7 +65,5 @@ use self::megafunction_split::{
     is_drop_fact_marker_op, split_chunk_name, verify_split_function_def_use,
     verify_split_generated_ops,
 };
-#[cfg(test)]
-use self::method_fusion::fuse_method_dispatch_inner;
 #[cfg(test)]
 use self::runtime_roots::is_protected_runtime_entrypoint;

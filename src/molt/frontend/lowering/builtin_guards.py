@@ -216,10 +216,48 @@ class BuiltinGuardMixin(GeneratorMixinBase):
                 return False
         return True
 
+    def _try_emit_guarded_super_method_call(self, node: ast.Call) -> Any:
+        """Guard zero-argument ``super().name(*args)``: CPython's LOAD_SUPER_ATTR.
+
+        CPython checks at run time that its global ``super`` is the builtin type
+        before it loads the method without a super object. Here one guard at
+        the ``super`` read proves that binding for the whole call: the fast arm
+        loads the method pair from the ``__class__`` cell and argument zero, and
+        the slow arm calls whatever ``super`` names, as CPython's fallback does.
+        """
+        receiver = self._zero_argument_super_receiver(node)
+        if receiver is None:
+            return CALL_NOT_HANDLED
+        if self._builtin_guard_covers(receiver.func):
+            return self._emit_super_method_call(node)
+        if not self._builtin_guard_may_open(
+            receiver.func
+        ) or not self._builtin_guard_region_duplicable(node):
+            return CALL_NOT_HANDLED
+        covered = frozenset({PythonNodeKey.from_node(receiver.func)})
+        conditional = ast.copy_location(
+            ast.IfExp(
+                test=ast.copy_location(
+                    MoltBuiltinGuardTest(self._builtin_guard_bit(receiver.func)), node
+                ),
+                body=ast.copy_location(
+                    MoltBuiltinGuardArmExpr(node, "fast", covered), node
+                ),
+                orelse=ast.copy_location(
+                    MoltBuiltinGuardArmExpr(node, "slow", frozenset()), node
+                ),
+            ),
+            node,
+        )
+        return self.visit_IfExp(conditional)
+
     def _try_emit_builtin_guarded_call(self, node: ast.Call) -> Any:
         """Guard a builtin call: specialized when proven, dynamic otherwise."""
         if (
-            not self._builtin_guard_may_open(node.func)
+            # A bare `super()` lowers alike in both arms; only its method form
+            # specializes (`_try_emit_guarded_super_method_call`).
+            (isinstance(node.func, ast.Name) and node.func.id == "super")
+            or not self._builtin_guard_may_open(node.func)
             or any(isinstance(arg, ast.Starred) for arg in node.args)
             or any(keyword.arg is None for keyword in node.keywords)
         ):
