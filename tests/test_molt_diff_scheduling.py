@@ -18,6 +18,10 @@ for _path in (_ROOT, _ROOT / "tests", _ROOT / "src"):
 import molt_diff  # noqa: E402
 
 
+def _started(summary: dict) -> list[dict]:
+    return [row for row in summary["item_results"] if row["status"] != "not_run"]
+
+
 @pytest.fixture
 def suite(tmp_path, monkeypatch):
     files = [tmp_path / f"case{index}.py" for index in range(5)]
@@ -157,7 +161,13 @@ def test_fail_fast_stops_admission_and_retains_running_results(
     assert summary["discovered"] == jobs
     assert summary["failed"] == 1
     assert summary["passed"] == (jobs if status == "guard" else jobs - 1)
-    assert len(summary["item_results"]) == jobs
+    # Unstarted tests are named, never dropped.
+    rows = summary["item_results"]
+    assert len(rows) == len(suite.files)
+    assert summary["not_run"] == len(suite.files) - jobs
+    assert {row["reason"] for row in rows if row["status"] == "not_run"} == {
+        "admission stopped"
+    }
 
 
 def test_parallel_success_replenishes_bounded_workers(suite, tmp_path):
@@ -172,6 +182,47 @@ def test_parallel_success_replenishes_bounded_workers(suite, tmp_path):
     assert suite.calls == [str(path) for path in suite.files]
     assert summary["passed"] == len(suite.files)
     assert summary["failed"] == 0
+
+
+@pytest.mark.parametrize("jobs", (1, 2))
+def test_deadline_admits_only_tests_that_can_finish(suite, tmp_path, monkeypatch, jobs):
+    suite.status = "pass"
+    monkeypatch.setenv("MOLT_DIFF_TIMEOUT", "100")
+    # Each test may take build 300 s + run 100 s + CPython 100 s; a 400 s
+    # budget cannot fit one, so nothing starts and every test is named.
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=jobs,
+        failures_output=tmp_path / "failures.txt",
+        deadline_s=400,
+    )
+    assert suite.calls == []
+    assert summary["not_run"] == len(suite.files)
+    assert {row["reason"] for row in summary["item_results"]} == {"deadline"}
+
+    suite.calls.clear()
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=jobs,
+        failures_output=tmp_path / "failures.txt",
+        deadline_s=10_000,
+    )
+    assert suite.calls == [str(path) for path in suite.files]
+    assert (summary["passed"], summary["not_run"]) == (len(suite.files), 0)
+
+
+def test_deadline_requires_a_per_test_bound(suite, tmp_path, monkeypatch):
+    monkeypatch.delenv("MOLT_DIFF_TIMEOUT", raising=False)
+    with pytest.raises(ValueError, match="requires MOLT_DIFF_TIMEOUT"):
+        molt_diff.run_diff(
+            suite.files,
+            sys.executable,
+            jobs=2,
+            failures_output=tmp_path / "failures.txt",
+            deadline_s=10_000,
+        )
 
 
 @pytest.fixture
@@ -370,7 +421,8 @@ def test_typed_signal_stops_without_fail_fast_and_drains_running_results(
     assert summary["guard_signal"] == signal.SIGTERM
     assert summary["failed"] == 1 and summary["passed"] == jobs - 1
     assert summary["item_results"][0]["guard_signal"] == signal.SIGTERM
-    assert len(summary["item_results"]) == jobs
+    assert len(_started(summary)) == jobs
+    assert summary["not_run"] == len(summary["item_results"]) - jobs
     assert summary["config"]["memory_guard"]["admission_stopped"]
     assert len(guarded_suite.exits) == 1
 
@@ -404,7 +456,8 @@ def test_between_commands_signal_defers_exit_until_running_results_drained(
     assert summary["guard_signal"] == signal.SIGTERM
     assert summary["passed"] == jobs and summary["failed"] == 1
     assert summary["failed_files"] == ["<operator_signal>"]
-    assert len(summary["item_results"]) == jobs
+    assert len(_started(summary)) == jobs
+    assert summary["not_run"] == len(summary["item_results"]) - jobs
     assert len(guarded_suite.exits) == 1
     assert signal.getsignal(signal.SIGTERM) is previous
 
@@ -435,7 +488,8 @@ def test_signal_during_warmup_stops_case_and_further_warmup_admission(
     assert warmups == [str(guarded_suite.files[0])]
     assert guarded_suite.calls == []
     assert summary["guard_signal"] == signal.SIGINT
-    assert summary["item_results"] == [] and summary["passed"] == 0
+    assert _started(summary) == [] and summary["passed"] == 0
+    assert summary["not_run"] == len(guarded_suite.files)
     assert summary["failed_files"] == ["<operator_signal>"]
     assert len(guarded_suite.exits) == 1
 

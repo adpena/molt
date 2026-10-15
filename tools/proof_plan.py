@@ -1474,6 +1474,19 @@ class ProofPlan:
                 or shard_count <= 1
             ):
                 errors.append(f"{family.name}: invalid sharded program/count contract")
+            item_timeout = family.data.get("item_timeout_seconds")
+            if item_timeout is not None and (
+                sharded_program is None
+                or not isinstance(item_timeout, int)
+                or isinstance(item_timeout, bool)
+                or not isinstance(shard_timeout, int)
+                or not isinstance(shard_overhead, int)
+                or not 0 < item_timeout < shard_timeout * 60 - shard_overhead
+            ):
+                errors.append(
+                    f"{family.name}: item_timeout_seconds must be a positive "
+                    "per-item bound inside the shard deadline"
+                )
             workflow = ROOT / str(family.data.get("workflow", ""))
             if not workflow.is_file():
                 errors.append(f"{family.name}: workflow does not exist: {workflow}")

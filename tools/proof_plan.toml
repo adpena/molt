@@ -1440,6 +1440,9 @@ shard_count = 16
 # so its evidence is published before the job is killed.
 shard_timeout_minutes = 180
 shard_overhead_seconds = 600
+# Each test's run bound (MOLT_DIFF_TIMEOUT; its build bound derives from it).
+# The harness admits only tests that can finish inside the shard deadline.
+item_timeout_seconds = 300
 
 [[scheduled_family]]
 name = "nightly_regrtest"
@@ -1457,6 +1460,8 @@ shard_count = 4
 # so its evidence is published before the job is killed.
 shard_timeout_minutes = 120
 shard_overhead_seconds = 600
+# regrtest's per-test --timeout.
+item_timeout_seconds = 600
 
 [[scheduled_family]]
 name = "nightly_shard_profile_feedback"

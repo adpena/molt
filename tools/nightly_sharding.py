@@ -57,16 +57,17 @@ AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v3"
 ITEM_STATUSES = ("passed", "failed", "errors", "skipped", "not_run")
 
 
-def _shard_budgets(root: Path = ROOT) -> dict[str, tuple[int, int]]:
-    """Each sharded program's (shard count, shard deadline in seconds).
+def _shard_budgets(root: Path = ROOT) -> dict[str, tuple[int, int, int | None]]:
+    """Each sharded program's (shard count, shard deadline, item timeout) in seconds.
 
-    The proof plan's scheduled families own both numbers; the deadline is the
-    shard job's timeout less its declared setup and publication overhead.
+    The proof plan's scheduled families own all three; the deadline is the
+    shard job's timeout less its declared setup and publication overhead. A
+    program whose harness owns its per-item timeouts declares none.
     """
     authority = tomllib.loads(
         (root / "tools" / "proof_plan.toml").read_text(encoding="utf-8")
     )
-    budgets: dict[str, tuple[int, int]] = {}
+    budgets: dict[str, tuple[int, int, int | None]] = {}
     for family in authority.get("scheduled_family", []):
         program = family.get("sharded_program")
         if program is None:
@@ -75,6 +76,11 @@ def _shard_budgets(root: Path = ROOT) -> dict[str, tuple[int, int]]:
             int(family["shard_count"]),
             int(family["shard_timeout_minutes"]) * 60
             - int(family["shard_overhead_seconds"]),
+            (
+                int(family["item_timeout_seconds"])
+                if "item_timeout_seconds" in family
+                else None
+            ),
         )
     if set(budgets) != {"conformance", "differential", "regrtest"}:
         raise ValueError("proof plan must budget every sharded Nightly program")
@@ -82,10 +88,16 @@ def _shard_budgets(root: Path = ROOT) -> dict[str, tuple[int, int]]:
 
 
 SHARD_BUDGETS = _shard_budgets()
-SHARD_COUNTS = {program: count for program, (count, _) in SHARD_BUDGETS.items()}
+SHARD_COUNTS = {program: count for program, (count, _, _) in SHARD_BUDGETS.items()}
 SHARD_DEADLINES_S = {
-    program: deadline for program, (_, deadline) in SHARD_BUDGETS.items()
+    program: deadline for program, (_, deadline, _) in SHARD_BUDGETS.items()
 }
+SHARD_ITEM_TIMEOUTS_S = {
+    program: item for program, (_, _, item) in SHARD_BUDGETS.items()
+}
+# A harness with a deadline writes its summary within this margin of the
+# shard's hard kill.
+SUMMARY_RESERVE_S = 60
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 WEIGHT_POLICY = {
@@ -419,6 +431,7 @@ def build_plan(
             "entries": entries,
             "shards": lpt_shards(entries, SHARD_COUNTS[name]),
             "shard_deadline_s": SHARD_DEADLINES_S[name],
+            "item_timeout_s": SHARD_ITEM_TIMEOUTS_S[name],
         }
     payload: dict[str, Any] = {
         "schema": PLAN_SCHEMA,
@@ -488,6 +501,8 @@ def validate_plan_envelope(plan: Mapping[str, Any], root: Path = ROOT) -> None:
             raise ValueError(f"{name} program entries or shards are invalid")
         if program.get("shard_deadline_s") != SHARD_DEADLINES_S[name]:
             raise ValueError(f"{name} shard deadline does not match the proof plan")
+        if program.get("item_timeout_s") != SHARD_ITEM_TIMEOUTS_S[name]:
+            raise ValueError(f"{name} item timeout does not match the proof plan")
         paths = []
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
@@ -651,6 +666,9 @@ def build_shard_command(
             str(selection_file),
             "--json-output",
             str(summary_file),
+            # Admit only tests that can finish, so the summary always lands.
+            "--deadline-s",
+            str(SHARD_DEADLINES_S["differential"] - SUMMARY_RESERVE_S),
         ]
     if program == "regrtest":
         if artifact_root is None or plan_file is None:
@@ -670,7 +688,7 @@ def build_shard_command(
             "--uv-python",
             "3.12",
             "--timeout",
-            "600",
+            str(SHARD_ITEM_TIMEOUTS_S["regrtest"]),
             "--no-diff",
             "--tests-from",
             str(selection_file),
@@ -700,6 +718,7 @@ def _item_results(
         "compile_error": "errors",
         "skip": "skipped",
         "skipped": "skipped",
+        "not_run": "not_run",
     }
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("path"), str):
@@ -712,6 +731,17 @@ def _item_results(
             raise ValueError(f"child summary duplicates item result: {path}")
         if status is None:
             raise ValueError(f"child summary has invalid item status: {path}")
+        if status == "not_run":
+            # The harness never started it: no duration, and its own cause.
+            if duration is not None:
+                raise ValueError(f"child summary times an unstarted item: {path}")
+            by_path[path] = {
+                "path": path,
+                "status": status,
+                "duration_s": None,
+                "reason": str(row.get("reason") or "not_run")[:160],
+            }
+            continue
         if (
             isinstance(duration, bool)
             or not isinstance(duration, (int, float))
@@ -910,7 +940,12 @@ def run_shard(
         # The differential harness appends each finished test to this log, so a
         # shard the deadline kills still names what it finished.
         child_env = (
-            {**os.environ, diff_results.RESULTS_ENV: str(results_log)}
+            {
+                **os.environ,
+                diff_results.RESULTS_ENV: str(results_log),
+                # Bounds each test, which the harness's deadline admission needs.
+                "MOLT_DIFF_TIMEOUT": str(SHARD_ITEM_TIMEOUTS_S["differential"]),
+            }
             if program == "differential"
             else None
         )
