@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "549bb7f0d589073897e1a855ab738151430001339afa24a641a3f5bb69c0ec67",
+  "authority_sha256": "27b095efbb12510b45fd0394bd0c221a47074c479347b3a814c63d09f963f868",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -10307,6 +10307,7 @@
     },
     {
       "description": "Full basic and stdlib differential corpus aggregated from sixteen exact digest-bound shards.",
+      "item_timeout_seconds": 300,
       "job": "differential-aggregate",
       "job_reserve_seconds": 300,
       "name": "nightly_differential",
@@ -10323,6 +10324,7 @@
     },
     {
       "description": "Pinned CPython regrtest closure aggregated from four exact digest-bound shards.",
+      "item_timeout_seconds": 600,
       "job": "regrtest-aggregate",
       "job_reserve_seconds": 300,
       "name": "nightly_regrtest",

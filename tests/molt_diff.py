@@ -68,6 +68,7 @@ from molt.memory_guard_paths import memory_guard_state_root  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _FAILURE_STATUSES = frozenset({"fail", "oom", "uncalibrated"})
+_PROCESS_STARTED = time.monotonic()
 _DIFF_RUN_LOCK_HANDLE: file_locks._FileLockHandle | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
@@ -369,6 +370,35 @@ def _diff_timeout() -> float | None:
     except ValueError:
         return None
     return val if val > 0 else None
+
+
+@dataclass(frozen=True, slots=True)
+class _AdmissionDeadline:
+    """Admit a test only if it can finish before the run's wall-clock deadline.
+
+    A test is bounded by its own timeouts: each target's build and run, plus the
+    CPython run. Admitting no test after ``deadline - worst case`` lets a run
+    with a deadline always finish and write its summary instead of being killed.
+    """
+
+    cutoff: float | None
+
+    @classmethod
+    def for_run(cls, deadline_s: float | None, targets: int) -> "_AdmissionDeadline":
+        if deadline_s is None:
+            return cls(None)
+        run_timeout = _diff_timeout()
+        build_timeout = _diff_build_timeout(run_timeout)
+        if run_timeout is None or build_timeout is None:
+            raise ValueError(
+                "--deadline-s requires MOLT_DIFF_TIMEOUT: a test without a time "
+                "bound cannot be fitted to a deadline"
+            )
+        worst = targets * (build_timeout + run_timeout) + run_timeout
+        return cls(_PROCESS_STARTED + deadline_s - worst)
+
+    def admits(self) -> bool:
+        return self.cutoff is None or time.monotonic() < self.cutoff
 
 
 def _diff_build_timeout(run_timeout: float | None) -> float | None:
@@ -4573,6 +4603,7 @@ def _parallel_diff_results(
     jobs: int,
     fail_fast: bool,
     trip_outcome: Callable[[], compat_backends.BackendResult | None] | None = None,
+    admits: Callable[[], bool] = lambda: True,
 ) -> Iterator[dict[str, object]]:
     """Bound admission, stop replenishing on failure, and retain running results."""
     trip_outcome = _memory_guard_trip_outcome if trip_outcome is None else trip_outcome
@@ -4583,7 +4614,7 @@ def _parallel_diff_results(
     while True:
         stopped |= trip_outcome() is not None
         while not stopped and len(pending) < jobs:
-            if trip_outcome() is not None:
+            if trip_outcome() is not None or not admits():
                 stopped = True
                 break
             file_path = next(remaining, None)
@@ -4644,7 +4675,9 @@ def run_diff(
     failures_output: Path | None = None,
     warm_cache: bool = False,
     retry_oom: bool = False,
+    deadline_s: float | None = None,
 ) -> dict:
+    admission = _AdmissionDeadline.for_run(deadline_s, len(targets))
     diff_output_layout.admit(
         os.environ,
         repo_root=_repo_root(),
@@ -4783,7 +4816,7 @@ def run_diff(
                 shared_cache = str(_diff_cache_root())
                 os.environ["MOLT_CACHE"] = shared_cache
             for file_path in test_files:
-                if suite_trip_outcome() is not None:
+                if suite_trip_outcome() is not None or not admission.admits():
                     break
                 context = _backend_execution_context(
                     str(file_path),
@@ -4814,7 +4847,7 @@ def run_diff(
             with _open_log_file(log_file) as log_handle:
                 with _open_log_file(log_aggregate) as aggregate_handle:
                     for file_path in test_files:
-                        if suite_trip_outcome() is not None:
+                        if suite_trip_outcome() is not None or not admission.admits():
                             break
                         _emit_line(f"[RUN] {file_path}", log_handle, echo=True)
                         payload = _diff_run_single(
@@ -4896,6 +4929,7 @@ def run_diff(
                             jobs=jobs,
                             fail_fast=fail_fast,
                             trip_outcome=suite_trip_outcome,
+                            admits=admission.admits,
                         ):
                             if result["guard_signal"] is not None:
                                 defer_suite_signal(result["guard_signal"], None)
@@ -5005,6 +5039,14 @@ def run_diff(
         skipped_files = [
             path for path, status in status_by_path.items() if status == "skip"
         ]
+        # A deadline, fail-fast or a guard trip can stop admission; name every
+        # selected test that never started instead of dropping it.
+        not_run_files = [
+            str(path) for path in test_files if str(path) not in status_by_path
+        ]
+        not_run_cause = "deadline" if not admission.admits() else "admission stopped"
+        if not_run_files:
+            print(f"[NOT RUN] {len(not_run_files)} test(s): {not_run_cause}")
         failed = len(failed_files)
         passed = len([None for status in status_by_path.values() if status == "pass"])
         skipped = len(skipped_files)
@@ -5067,6 +5109,7 @@ def run_diff(
             "guard_infrastructure_failures": guard_infrastructure_failures,
             "guard_signal": guard_signal,
             "skipped": skipped,
+            "not_run": len(not_run_files),
             "failed_files": failed_files,
             "skipped_files": skipped_files,
             "item_results": [
@@ -5082,6 +5125,15 @@ def run_diff(
                 }
                 for path, status in sorted(status_by_path.items())
                 if path in duration_by_path
+            ]
+            + [
+                {
+                    "path": test_policy.normalize_repo_relative(path),
+                    "status": "not_run",
+                    "duration_s": None,
+                    "reason": not_run_cause,
+                }
+                for path in not_run_files
             ],
             "python_exe": _python_command_display(python_exe),
             "jobs": jobs,
@@ -5261,6 +5313,13 @@ if __name__ == "__main__":
         help="Emit per-test status lines as tests complete.",
     )
     parser.add_argument(
+        "--deadline-s",
+        type=float,
+        default=None,
+        help="Wall-clock budget from process start: admit only tests that can "
+        "finish within it (requires MOLT_DIFF_TIMEOUT); report the rest as not_run.",
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Stop admitting tests after a failure, OOM, or unavailable target; "
@@ -5343,6 +5402,7 @@ if __name__ == "__main__":
                 failures_output=failures_output,
                 warm_cache=args.warm_cache or _diff_warm_cache(),
                 retry_oom=retry_oom,
+                deadline_s=args.deadline_s,
             )
         except RuntimeError as exc:
             print(f"[LOCK] {exc}", file=sys.stderr)
@@ -5352,7 +5412,7 @@ if __name__ == "__main__":
             128 + summary["guard_signal"]
             if summary["guard_signal"] is not None
             else 0
-            if summary["failed"] == 0
+            if summary["failed"] == 0 and summary["not_run"] == 0
             else 1
         )
     # Default test
@@ -5385,6 +5445,6 @@ if __name__ == "__main__":
         128 + summary["guard_signal"]
         if summary["guard_signal"] is not None
         else 0
-        if summary["failed"] == 0
+        if summary["failed"] == 0 and summary["not_run"] == 0
         else 1
     )

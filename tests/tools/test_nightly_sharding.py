@@ -729,6 +729,52 @@ def test_skipped_differential_items_count_toward_the_selection(
     assert skipped["reason"] == "skip"
 
 
+def test_differential_shard_bounds_each_test_and_names_unstarted_ones(
+    tmp_path: Path,
+) -> None:
+    # The harness receives the plan's per-test bound and deadline, admits only
+    # tests that can finish, and names the rest in a complete summary.
+    root = _differential_repo(tmp_path)
+    plan = _plan(root)
+    entries = nightly_sharding.shard_entries(plan, "differential", 0)
+    command = nightly_sharding.build_shard_command(
+        root, "differential", Path("{selection}"), Path("{summary}")
+    )
+    deadline = command[command.index("--deadline-s") + 1]
+    assert float(deadline) == (
+        plan["programs"]["differential"]["shard_deadline_s"]
+        - nightly_sharding.SUMMARY_RESERVE_S
+    )
+    script = (
+        "import json, os, sys\n"
+        "assert os.environ['MOLT_DIFF_TIMEOUT'] == '300', os.environ.get('MOLT_DIFF_TIMEOUT')\n"
+        "entries = open(sys.argv[1], encoding='utf-8').read().split()\n"
+        "rows = [{'path': entries[0], 'status': 'pass', 'duration_s': 0.1}]\n"
+        "rows += [{'path': p, 'status': 'not_run', 'duration_s': None,\n"
+        "          'reason': 'deadline'} for p in entries[1:]]\n"
+        "summary = {'total': 1, 'passed': 1, 'failed': 0, 'skipped': 0,\n"
+        "           'not_run': len(entries) - 1, 'item_results': rows}\n"
+        "json.dump(summary, open(sys.argv[2], 'w', encoding='utf-8'))\n"
+        "sys.exit(1)\n"
+    )
+    evidence = tmp_path / "evidence"
+    raw = nightly_sharding.run_shard(
+        plan,
+        root=root,
+        program="differential",
+        shard_id=0,
+        raw_out=evidence / "shard-00.raw.json",
+        checkpoint_out=evidence / "shard-00.checkpoint.json",
+        command=[sys.executable, "-c", script, "{selection}", "{summary}"],
+    )
+    assert raw["summary_error"] is None
+    assert (raw["passed"], raw["not_run"]) == (1, len(entries) - 1)
+    unstarted = [row for row in raw["item_results"] if row["status"] == "not_run"]
+    assert {(row["duration_s"], row["reason"]) for row in unstarted} == {
+        (None, "deadline")
+    }
+
+
 def test_shard_deadline_is_the_proof_plan_budget_less_its_overhead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -214,6 +214,9 @@ def _summary_statuses(summary: Mapping[str, Any]) -> dict[str, str]:
             )
         path = item.get("path")
         status = item.get("status")
+        if status == "not_run":
+            # Never executed: the closure check below names it as missing.
+            continue
         if not isinstance(path, str) or status not in RESULT_STATUSES:
             raise ValueError(
                 f"verified-subset harness item_results[{index}] is invalid"
