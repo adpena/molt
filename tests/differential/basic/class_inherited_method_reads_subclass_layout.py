@@ -19,9 +19,16 @@ class Child(Base):
 
 
 class Other:
+    # The same methods as Base give Other Base's layout version.
     def __init__(self):
         self.pad = 7
         self.a = 3
+
+    def get_a(self):
+        return self.a
+
+    def set_a(self, value):
+        self.a = value
 
 
 c = Child()
