@@ -26,21 +26,27 @@ import tempfile
 import time
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 TOOLS_ROOT = Path(__file__).resolve().parent
 BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
-for _import_root in (SRC_ROOT, TOOLS_ROOT):
-    if str(_import_root) not in sys.path:
-        sys.path.insert(0, str(_import_root))
 
-from bench_metadata import benchmark_reference_contract  # noqa: E402
-import harness_memory_guard  # noqa: E402
-import bench_suites  # noqa: E402
+
+from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
+from tools import bench_suites  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.build_state_layout import project_build_state_root  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
-import perf_authority  # noqa: E402
+from tools import perf_authority  # noqa: E402
 
 BENCH_TMP_ROOT = scratch_dir(REPO_ROOT, "bench")
 

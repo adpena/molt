@@ -35,13 +35,18 @@ from typing import Any
 # Project layout
 # ---------------------------------------------------------------------------
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 MOLT_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = MOLT_ROOT / "tools"
 SRC_DIR = MOLT_ROOT / "src"
-if str(MOLT_ROOT) not in sys.path:
-    sys.path.insert(0, str(MOLT_ROOT))
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+
 
 from molt.cli.build_output_layout import _wasm_runtime_root  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402

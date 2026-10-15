@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -12,28 +11,17 @@ import pytest
 
 from molt import target_features as TF
 from tests.process_guard_common import run_guarded_test_process
+from tools import gen_target_feature_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GEN = ROOT / "tools" / "gen_target_feature_manifest.py"
 OUT_PY = ROOT / "src" / "molt" / "_target_feature_manifest.py"
 OUT_JSON = ROOT / "wasm" / "target_feature_manifest.json"
 OUT_JS = ROOT / "wasm" / "target_feature_constants.generated.js"
 
 
-def _load_generator():
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_gen_target_feature_manifest", GEN
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_gen_target_feature_manifest"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_target_feature_manifest_is_in_sync() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     model = gen.build_model()
     assert OUT_PY.read_text(encoding="utf-8") == gen.render_python(model)
     assert OUT_JSON.read_text(encoding="utf-8") == gen.render_json(model)
@@ -41,7 +29,7 @@ def test_target_feature_manifest_is_in_sync() -> None:
 
 
 def test_check_mode_is_green() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     assert gen.main(["--check"]) == 0
 
 
@@ -109,7 +97,7 @@ def test_generated_js_constants_module_carries_derived_constants() -> None:
 
 
 def test_generator_rejects_missing_webgpu_browser_host_selector() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     for target in data["target"]:
         if target["id"] == "wasm-browser-webgpu":
@@ -120,7 +108,7 @@ def test_generator_rejects_missing_webgpu_browser_host_selector() -> None:
 
 
 def test_generator_rejects_wasm_browser_requiring_webgpu_host_import() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     for target in data["target"]:
         if target["id"] == "wasm-browser":
@@ -131,7 +119,7 @@ def test_generator_rejects_wasm_browser_requiring_webgpu_host_import() -> None:
 
 
 def test_generator_rejects_missing_browser_default() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     for target in data["target"]:
         if target["id"] == "wasm-browser":
@@ -217,7 +205,7 @@ def test_json_artifact_matches_public_manifest() -> None:
 
 
 def test_generator_rejects_unknown_target_feature() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     data["target"][0]["feature"][0]["id"] = "wasm.ghost_feature"
     with pytest.raises(gen.TargetFeatureManifestError, match="unknown feature"):
@@ -225,7 +213,7 @@ def test_generator_rejects_unknown_target_feature() -> None:
 
 
 def test_generator_rejects_relaxed_simd_as_baseline() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     for target in data["target"]:
         if target["id"] == "wasm-browser":
@@ -239,7 +227,7 @@ def test_generator_rejects_relaxed_simd_as_baseline() -> None:
 
 
 def test_generator_rejects_webgpu_webnn_conflation() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     for target in data["target"]:
         if target["id"] == "wasm-browser-webgpu":
@@ -253,7 +241,7 @@ def test_generator_rejects_webgpu_webnn_conflation() -> None:
 
 
 def test_generator_rejects_missing_doc_71_wasm_feature_envelope() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     for target in data["target"]:
         if target["id"] == "wasm-browser":
@@ -268,7 +256,7 @@ def test_generator_rejects_missing_doc_71_wasm_feature_envelope() -> None:
 
 
 def test_generator_rejects_missing_webgpu_browser_probe() -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     data = copy.deepcopy(gen.load_source())
     for feature in data["feature"]:
         if feature["id"] == "webgpu.f16":
@@ -279,7 +267,7 @@ def test_generator_rejects_missing_webgpu_browser_probe() -> None:
 
 
 def test_generated_python_is_formatter_stable(tmp_path: Path) -> None:
-    gen = _load_generator()
+    gen = gen_target_feature_manifest
     generated = tmp_path / "target_feature_manifest.py"
     generated.write_text(gen.render_python(gen.build_model()), encoding="utf-8")
     result = run_guarded_test_process(

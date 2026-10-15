@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import perf_causality as causality  # noqa: E402
-import perf_schema as schema  # noqa: E402
+
+from tools import perf_causality as causality  # noqa: E402
+from tools import perf_schema as schema  # noqa: E402
 
 
 def test_hot_profile_fixture_reproduces_verified_attributions() -> None:

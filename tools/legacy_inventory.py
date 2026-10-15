@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / "config" / "legacy_inventory.toml"
 SCHEMA = "molt.legacy-inventory.v1"

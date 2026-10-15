@@ -4074,7 +4074,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_L7_AFFINITY_MASK",
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
-      "summary": "tools/bench/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it for the release attestation test binaries; the tests read it as a hexadecimal CPU mask (optional 0x prefix) that must select exactly one logical CPU, pin the benchmark thread to it, and panic when it is missing or empty.",
+      "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it for the release attestation test binaries; the tests read it as a hexadecimal CPU mask (optional 0x prefix) that must select exactly one logical CPU, pin the benchmark thread to it, and panic when it is missing or empty.",
       "values": []
     },
     {
@@ -4083,7 +4083,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_L7_BUILD_FINGERPRINT",
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
-      "summary": "tools/bench/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the built test artifact's fingerprint; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
+      "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the built test artifact's fingerprint; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
     },
     {
@@ -4092,7 +4092,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_L7_GIT_COMMIT",
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
-      "summary": "tools/bench/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the source git commit; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
+      "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the source git commit; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
     },
     {
@@ -4101,7 +4101,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_L7_GIT_DIRTY",
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
-      "summary": "tools/bench/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to true or false from the git worktree state; the release attestation tests record true as a dirty source tree, treat any other value as clean, and panic when it is missing or empty.",
+      "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to true or false from the git worktree state; the release attestation tests record true as a dirty source tree, treat any other value as clean, and panic when it is missing or empty.",
       "values": []
     },
     {
@@ -4110,7 +4110,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_L7_RUN_NONCE",
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
-      "summary": "tools/bench/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the run nonce that names the run's capsules; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
+      "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the run nonce that names the run's capsules; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
     },
     {
@@ -4119,7 +4119,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_L7_RUSTC",
       "owner": "runtime/molt-cpython-abi/tests/l7_numeric_perf_attestation.rs",
-      "summary": "tools/bench/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the rustc version string of the build; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
+      "summary": "tools/numeric_attestation/run_l7_numeric_attestation.py and run_list_delta_attestation.py set it to the rustc version string of the build; the release attestation tests copy it into the attestation JSON source block and panic when it is missing or empty.",
       "values": []
     },
     {

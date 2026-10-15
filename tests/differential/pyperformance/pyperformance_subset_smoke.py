@@ -8,7 +8,7 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
-import pyperformance_adapter  # noqa: E402
+from tools import pyperformance_adapter  # noqa: E402
 
 
 SUITE_ROOT = Path(__file__).resolve().parent / "fixtures" / "pyperformance_smoke"

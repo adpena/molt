@@ -4,7 +4,7 @@ from collections.abc import Callable
 import json
 from pathlib import Path
 
-from bench_evidence import comparable_run_metadata_errors
+from tools.bench_evidence import comparable_run_metadata_errors
 
 
 MAX_FAILURE_DETAIL_RECORDS = 32

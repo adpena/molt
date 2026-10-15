@@ -1,22 +1,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import importlib.util
 import sys
 from pathlib import Path
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load_tool(name: str, relative_path: str):
-    path = REPO_ROOT / relative_path
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import check_translation_validation, parity_gate
 
 
 def _fake_scope(calls: list[dict[str, object]]):
@@ -36,10 +24,7 @@ def _fake_scope(calls: list[dict[str, object]]):
 def test_check_translation_validation_uses_conformance_guard_scope(
     monkeypatch, tmp_path: Path
 ) -> None:
-    module = _load_tool(
-        "check_translation_validation_under_test",
-        "tools/check_translation_validation.py",
-    )
+    module = check_translation_validation
     src = tmp_path / "case.py"
     src.write_text("print('ok')\n", encoding="utf-8")
     calls: list[dict[str, object]] = []
@@ -73,7 +58,7 @@ def test_check_translation_validation_uses_conformance_guard_scope(
 
 
 def test_parity_gate_uses_conformance_guard_scope(monkeypatch, tmp_path: Path) -> None:
-    module = _load_tool("parity_gate_under_test", "tools/parity_gate.py")
+    module = parity_gate
     test_dir = tmp_path / "diff"
     test_dir.mkdir()
     case = test_dir / "case.py"

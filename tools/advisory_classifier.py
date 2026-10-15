@@ -9,10 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # type: ignore
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

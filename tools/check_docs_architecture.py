@@ -8,14 +8,15 @@ import tomllib
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
-from markdown_it import MarkdownIt
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-if __package__ in (None, ""):
-    from import_file import bind_repository_imports
-else:
-    from tools.import_file import bind_repository_imports
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+from markdown_it import MarkdownIt  # noqa: E402
 
 from tools import finding_status  # noqa: E402
 

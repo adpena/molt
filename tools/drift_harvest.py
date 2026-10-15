@@ -44,25 +44,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
 
-if __package__ in (None, ""):
-    from import_file import bind_repository_imports, load_module_from_path
-else:
-    from tools.import_file import bind_repository_imports, load_module_from_path
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.dx import canonical_molt_root  # noqa: E402
 from tools import lane_maturity  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
-
-
-def _worktree_canonical_molt_root(repo_root: Path) -> Path:
-    """Load the invoking worktree's authority despite an older editable install."""
-    module_path = SRC_ROOT / "molt" / "dx.py"
-    module = load_module_from_path("_molt_worktree_dx", module_path)
-    return module.canonical_molt_root(repo_root)
 
 
 # Worktrees that must never be pruned regardless of freshness.
@@ -94,7 +89,7 @@ def _leave_prune_targets(targets: list[Path]) -> Path:
 def _sweep_empty_orphan_worktree_dirs() -> list[Path]:
     registered = {Path(row["path"]).resolve() for row in _worktrees()}
     removed: list[Path] = []
-    canonical_root = _worktree_canonical_molt_root(REPO_ROOT)
+    canonical_root = canonical_molt_root(REPO_ROOT)
     roots = (canonical_root, (canonical_root / "worktrees").resolve())
     for root in roots:
         if not root.is_dir():
@@ -360,7 +355,7 @@ def main() -> int:
     if args.bundle or args.prune:
         # Signal custody follows the checkout family, never scratch/build env.
         # An explicit --bundle is an operator-chosen export destination.
-        default_root = _worktree_canonical_molt_root(REPO_ROOT)
+        default_root = canonical_molt_root(REPO_ROOT)
         bundle_path = Path(
             args.bundle
             or (default_root / "drift-bundles" / f"drift-harvest-{int(now)}.bundle")

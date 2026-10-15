@@ -10,14 +10,22 @@ import os
 import sys
 from pathlib import Path
 
-from proof_plan import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.proof_plan import (  # noqa: E402
     DEFAULT_MANIFEST,
     ProofPlan,
     _authority_sha256,
     local_gate_commands,
 )
-from generator_io import generator_main, write_generated_texts
-from molt.cargo_execution_policy import (
+from tools.generator_io import generator_main, write_generated_texts  # noqa: E402
+from molt.cargo_execution_policy import (  # noqa: E402
     PROOF_COMMAND_TIMEOUT_ENV,
     load_ci_cargo_policy,
 )

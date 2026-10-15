@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from wasm_link_fact_provider import WasmFactsProvider
+from tools.wasm_link_fact_provider import WasmFactsProvider
 
 import os
 from molt.temporary_artifacts import OwnedTemporaryDirectory
@@ -26,10 +26,10 @@ from molt.wasm_linking_symbols import (
     FLAG_BINDING_LOCAL,
     FLAG_UNDEFINED,
 )
-from wasm_archive import iter_wasm_object_members
-from wasm_link_native_inputs import native_link_input_is_eager
+from tools.wasm_archive import iter_wasm_object_members
+from tools.wasm_link_native_inputs import native_link_input_is_eager
 from molt.cli.source_extension_link_requirements import SourceExtensionLinkRequirements
-from wasm_link_format import (
+from tools.wasm_link_format import (
     FLAG_EXPLICIT_NAME,
     SYMTAB_SUBSECTION_ID,
     _ESSENTIAL_EXPORTS,
@@ -41,7 +41,7 @@ from wasm_link_format import (
     _write_string,
     _write_varuint,
 )
-from wasm_link_operations import (
+from tools.wasm_link_operations import (
     build_sections as _build_sections,
     parse_sections as _parse_sections,
 )

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+
 REGISTRY = Path(".molt/state/triality_registry.json")
 LEGS = ("dag", "dsl", "equations")
 

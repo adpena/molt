@@ -66,10 +66,15 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ script execution
-    import harness_memory_guard  # type: ignore
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import project_cargo_target_dir  # noqa: E402

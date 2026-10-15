@@ -4,9 +4,17 @@ import json
 import sys
 from pathlib import Path
 
-import harness_memory_guard
-import bench_wasm
-from molt.node_runtime import resolve_node_runtime
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # noqa: E402
+from tools import bench_wasm  # noqa: E402
+from molt.node_runtime import resolve_node_runtime  # noqa: E402
 
 
 def _resolve_bench(spec: str) -> str:

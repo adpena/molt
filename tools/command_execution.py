@@ -20,16 +20,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any
 
-try:
-    from tools.import_file import (
-        bind_repository_imports,
-        load_sibling_package_module_from_path,
-    )
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from import_file import (
-        bind_repository_imports,
-        load_sibling_package_module_from_path,
-    )
+from tools.import_file import (
+    bind_repository_imports,
+    load_sibling_package_module_from_path,
+)
 
 
 def _harness_memory_guard() -> Any:

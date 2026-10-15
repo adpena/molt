@@ -18,13 +18,20 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 RESULTS = ROOT / "bench" / "results"
 NODE_PROBE = ROOT / "tools" / "startup_node_probe.js"
 WASM_RUNNER = ROOT / "wasm" / "run_wasm.js"
 DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
 from molt.python_interpreter import PythonInterpreter, probe_python_command  # noqa: E402
@@ -37,10 +44,7 @@ from molt.dx import scratch_dir  # noqa: E402
 
 TMP = scratch_dir(ROOT, "startup_bench")
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

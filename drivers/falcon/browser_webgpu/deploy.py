@@ -8,16 +8,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-if __package__ in {None, ""}:
-    REPO_ROOT = Path(__file__).resolve().parents[3]
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
-else:
-    REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
 
 from drivers._shared.artifacts import artifact_record, directory_records  # noqa: E402
 from drivers._shared.cloudflare import (  # noqa: E402

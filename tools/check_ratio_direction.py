@@ -51,6 +51,7 @@ import os
 import sys
 from pathlib import Path
 
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # The ONE module permitted to divide a time by a time: the source authority.

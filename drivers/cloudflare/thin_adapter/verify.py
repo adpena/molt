@@ -3,20 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-import harness_memory_guard  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,

@@ -53,27 +53,17 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 # UTF-8 backstop (M43): this tool relays CLAIMS.md notes that carry em-dashes and
 # other non-cp1252 bytes; a stray byte must never abort the report on Windows.
-try:  # pragma: no cover - trivial import shim
-    from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio
-except Exception:  # pragma: no cover - path-invocation fallback
-    import os as _os
-
-    sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-    try:
-        from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio
-    except Exception:
-
-        def _force_utf8_stdio(*, errors: str = "backslashreplace") -> None:
-            for stream in (sys.stdout, sys.stderr):
-                reconfigure = getattr(stream, "reconfigure", None)
-                if reconfigure is None:
-                    continue
-                try:
-                    reconfigure(encoding="utf-8", errors=errors)
-                except (AttributeError, ValueError, OSError):
-                    pass
+from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

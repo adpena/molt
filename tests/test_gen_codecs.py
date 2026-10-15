@@ -1,25 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
+from tools import gen_codecs
+
 ROOT = Path(__file__).resolve().parents[1]
-GEN_CODECS = ROOT / "tools" / "gen_codecs.py"
-
-
-def _load_gen_codecs():
-    spec = importlib.util.spec_from_file_location("molt_test_gen_codecs", GEN_CODECS)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_charmap_codecs_generated_file_is_in_sync() -> None:
-    gen = _load_gen_codecs()
+    gen = gen_codecs
     current = gen.OUT_RS.read_text(encoding="utf-8")
     assert current == gen.render()
     aliases_current = gen.OUT_ALIASES_RS.read_text(encoding="utf-8")
@@ -27,7 +16,7 @@ def test_charmap_codecs_generated_file_is_in_sync() -> None:
 
 
 def test_charmap_codec_tables_cover_declared_codecs() -> None:
-    gen = _load_gen_codecs()
+    gen = gen_codecs
     rendered = gen.render()
     for codec in gen.CHARMAP_CODECS:
         assert f"EncodingKind::{codec.kind}" in rendered
@@ -37,7 +26,7 @@ def test_charmap_codec_tables_cover_declared_codecs() -> None:
 
 
 def test_charmap_codec_set_is_derived_from_text_registry() -> None:
-    gen = _load_gen_codecs()
+    gen = gen_codecs
     registry = gen.REGISTRY.read_text(encoding="utf-8")
     assert tuple(codec.kind for codec in gen.CHARMAP_CODECS) == gen._charmap_kinds(
         registry
@@ -45,14 +34,14 @@ def test_charmap_codec_set_is_derived_from_text_registry() -> None:
 
 
 def test_charmap_codec_tables_are_ascii_compatible() -> None:
-    gen = _load_gen_codecs()
+    gen = gen_codecs
     for codec in gen.CHARMAP_CODECS:
         table = gen._raw_decoding_table(codec.module)
         assert all(ord(ch) == idx for idx, ch in enumerate(table[:0x80]))
 
 
 def test_generated_aliases_cover_supported_cpython_static_aliases() -> None:
-    gen = _load_gen_codecs()
+    gen = gen_codecs
     aliases = dict(gen._alias_entries())
     module_to_kind = {
         descriptor.module: descriptor.kind for descriptor in gen.CODEC_DESCRIPTORS
@@ -65,7 +54,7 @@ def test_generated_aliases_cover_supported_cpython_static_aliases() -> None:
 
 
 def test_generated_python_aliases_cover_local_encoding_modules() -> None:
-    gen = _load_gen_codecs()
+    gen = gen_codecs
     aliases = dict(gen._python_alias_entries())
     available_modules = {
         path.stem

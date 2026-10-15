@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from wasm_abi_gen.manifest import (
+from tools.wasm_abi_gen.manifest import (
     CPYTHON_ABI_LINK_IMPORT_CLASS,
     WasmAbiManifestError,
     _call_indirect_imports,

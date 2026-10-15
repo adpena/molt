@@ -9,20 +9,21 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-_TOOLS_ROOT = Path(__file__).resolve().parent
-_SRC_ROOT = REPO_ROOT / "src"
-for _path_root in (_TOOLS_ROOT, _SRC_ROOT):
-    _path_text = str(_path_root)
-    if _path_root.exists() and _path_text not in sys.path:
-        sys.path.insert(0, _path_text)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-import harness_memory_guard
-import bench as bench_tool
-from molt import backend_daemon_custody as daemon_custody
+from tools.import_file import bind_repository_imports  # noqa: E402
 
-from bench_friends_context import REPO_ROOT
-from bench_friends_types import (
+bind_repository_imports(__file__)
+
+
+from tools import harness_memory_guard  # noqa: E402
+from tools import bench as bench_tool  # noqa: E402
+from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+
+from tools.bench_friends_context import REPO_ROOT  # noqa: E402
+from tools.bench_friends_types import (
     MAX_FAILURE_DETAIL_RECORDS,
     MAX_FAILURE_MESSAGE_CHARS,
     RUNNER_NAME_RE,
@@ -38,7 +39,7 @@ from bench_friends_types import (
     SuiteResult,
     SuiteSpec,
 )
-from bench_friends_env import (
+from tools.bench_friends_env import (
     _base_run_env,
     _default_output_root,
     _emit_progress,
@@ -46,7 +47,7 @@ from bench_friends_env import (
     _path_is_under,
     _project_python,
 )
-from bench_friends_manifest import (
+from tools.bench_friends_manifest import (
     _apply_runner_filter,
     _load_manifest,
     _optional_str,
@@ -62,7 +63,7 @@ from bench_friends_manifest import (
     _select_suites,
     _validate_override_targets,
 )
-from bench_friends_phase import (
+from tools.bench_friends_phase import (
     _as_float,
     _bounded_failure_text,
     _extract_structured_elapsed,
@@ -75,7 +76,7 @@ from bench_friends_phase import (
     _run_command,
     _metric_slug,
 )
-from bench_friends_custody import (
+from tools.bench_friends_custody import (
     _acquire_suite,
     _combine_suite_reasons,
     _is_placeholder_ref,
@@ -83,13 +84,13 @@ from bench_friends_custody import (
     _run_git,
     _verify_git_source_custody,
 )
-from bench_friends_runner import (
+from tools.bench_friends_runner import (
     _run_prepare_steps,
     _run_runner,
     _suite_metrics,
     _suite_status,
 )
-from bench_friends_output import (
+from tools.bench_friends_output import (
     _append_event_jsonl,
     _cleanup_backend_daemons,
     _custody_artifacts,

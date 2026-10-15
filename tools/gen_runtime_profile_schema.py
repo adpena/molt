@@ -9,12 +9,17 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from generator_io import generator_main, rustfmt_source
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
+
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

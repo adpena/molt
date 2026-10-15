@@ -10,26 +10,14 @@ import tomllib
 
 import pytest
 from tests.process_guard_common import install_module_view
+import tools
+from tools import check_rust_toolchain, ci_gate
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECK_RUST_TOOLCHAIN = ROOT / "tools" / "check_rust_toolchain.py"
-
-
-def _load_check_rust_toolchain():
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_check_rust_toolchain",
-        CHECK_RUST_TOOLCHAIN,
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_repository_rust_toolchain_contract_is_canonical() -> None:
-    tool = _load_check_rust_toolchain()
+    tool = check_rust_toolchain
 
     report = tool.check_repository_contract()
 
@@ -46,28 +34,18 @@ def test_workspace_clippy_configuration_stops_at_tracked_default_root() -> None:
 
 
 def test_ci_gate_uses_repo_rust_toolchain_gate_without_compile_slot() -> None:
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_ci_gate_for_rust_toolchain",
-        ROOT / "tools" / "ci_gate.py",
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-
-    check = {entry.name: entry for entry in module._build_checks()}["rust-toolchain"]
+    check = {entry.name: entry for entry in ci_gate._build_checks()}["rust-toolchain"]
 
     assert check.cmd == [
         sys.executable,
-        str(module.TOOLS / "check_rust_toolchain.py"),
+        str(ci_gate.TOOLS / "check_rust_toolchain.py"),
     ]
     assert check.needs_rust is False
     assert check.needs_cargo is True
 
 
 def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
-    tool = _load_check_rust_toolchain()
+    tool = check_rust_toolchain
     captured: dict[str, object] = {}
 
     def fake_run(_command: list[str], **kwargs: object):
@@ -85,7 +63,7 @@ def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
 
 
 def test_selected_compiler_meets_workspace_minimum() -> None:
-    tool = _load_check_rust_toolchain()
+    tool = check_rust_toolchain
     pinned = tool.RUST_VERSION
     major, minor, _patch = (int(part) for part in pinned.split("."))
     assert not tool.check_compiler_version(
@@ -104,14 +82,14 @@ def test_selected_compiler_meets_workspace_minimum() -> None:
 def test_pinned_version_is_the_rust_toolchain_channel() -> None:
     import tomllib
 
-    tool = _load_check_rust_toolchain()
+    tool = check_rust_toolchain
     toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text("utf-8"))
 
     assert tool.RUST_VERSION == toolchain["toolchain"]["channel"]
 
 
 def test_workflows_name_rust_toolchain_roles_not_versions() -> None:
-    tool = _load_check_rust_toolchain()
+    tool = check_rust_toolchain
     workflow = Path(".github/workflows/fixture.yml")
     text = (
         "jobs:\n"
@@ -138,7 +116,7 @@ def test_workflows_name_rust_toolchain_roles_not_versions() -> None:
 
 
 def _installation_fixture(tmp_path, monkeypatch):
-    tool = _load_check_rust_toolchain()
+    tool = check_rust_toolchain
     (tmp_path / "config").mkdir()
     (tmp_path / "config/rust_nightly_toolchain.txt").write_text(
         "nightly-2026-10-01\n", encoding="utf-8"
@@ -522,11 +500,10 @@ def test_rust_setup_rejects_unadmitted_python_before_repository_import(
     monkeypatch.setenv(
         "UV_PYTHON", str(other) if failure == "selected" else sys.executable
     )
-    monkeypatch.setattr(
-        provisioner.importlib.util,
-        "spec_from_file_location",
-        lambda *_args: pytest.fail("repository imported before Python admission"),
-    )
+    # Importing the checker before admission raises ImportError, not the
+    # admission RuntimeError.
+    monkeypatch.delattr(tools, "check_rust_toolchain", raising=False)
+    monkeypatch.setitem(sys.modules, "tools.check_rust_toolchain", None)
     with pytest.raises(RuntimeError):
         provisioner.main()
 

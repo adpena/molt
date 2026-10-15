@@ -33,6 +33,7 @@ from typing import Any
 # Serialised-IR helpers
 # ---------------------------------------------------------------------------
 
+
 # An "op dict" is the JSON-round-trippable form of MoltOp:
 #   {"kind": str, "args": [...], "result": {"name": str, "type_hint": str},
 #    "metadata": {...} | null}

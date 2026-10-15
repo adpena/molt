@@ -16,16 +16,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 TOOLS_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-import bench_suites  # noqa: E402
-import harness_memory_guard  # noqa: E402
+
+from tools import bench_suites  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.cli.build_output_layout import _wasm_runtime_root  # noqa: E402

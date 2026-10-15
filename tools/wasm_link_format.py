@@ -2,18 +2,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from wasm_link_fact_provider import WasmFactsProvider
+    from tools.wasm_link_fact_provider import WasmFactsProvider
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+
 
 from molt import _wasm_abi_generated as _WASM_ABI  # noqa: E402
 from molt import _wasm_runtime_exports as _runtime_exports  # noqa: E402

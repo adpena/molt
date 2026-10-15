@@ -26,7 +26,6 @@ from tests.process_guard_common import (
 )
 
 from concurrent.futures import ThreadPoolExecutor
-import importlib.util
 import shlex
 import sys
 from pathlib import Path
@@ -34,6 +33,7 @@ import time
 
 import pytest
 
+from tools import check_generator_manifest as CGM
 from tools.generator_io import (
     generated_file_matches,
     write_generated_text,
@@ -41,19 +41,6 @@ from tools.generator_io import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "tools" / "check_generator_manifest.py"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("molt_test_generator_manifest", TOOL)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_generator_manifest"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-CGM = _load_tool()
 
 
 def test_repository_text_checkout_has_one_cross_platform_eol_authority() -> None:
@@ -163,9 +150,7 @@ def test_manifest_generators_implement_the_generator_io_contract() -> None:
 
 
 def _observe_release_matrix_import(root: Path) -> None:
-    # Editable site startup imports Molt's guard, binding the installed molt
-    # package before -c. Reimport only this observer's package/dependency from
-    # the requested source; retain every guard module and installed hook.
+    # Import the generator from the requested source tree only.
     code = (
         "import sys\n"
         "from pathlib import Path\n"
@@ -189,8 +174,10 @@ def _observe_release_matrix_import(root: Path) -> None:
     )
     result = run_guarded_test_process(
         # Isolation ignores environment bytecode controls, so the read-only
-        # observer carries its no-write policy in the interpreter argv.
-        [sys.executable, "-B", "-I", "-c", code, str(root)],
+        # observer carries its no-write policy in the interpreter argv. No site
+        # startup: the editable install would load this checkout's molt, and
+        # the generator's repository binding refuses to mix two checkouts.
+        [sys.executable, "-B", "-I", "-S", "-c", code, str(root)],
         cwd=root,
         capture_output=True,
         check=False,
@@ -215,7 +202,11 @@ def test_release_matrix_import_preserves_fresh_source_tree(
     for relative in (
         "tools/gen_release_matrix.py",
         "tools/generator_io.py",
+        "tools/import_file.py",
+        # The repository marker the bootstrap's root search requires.
+        "pyproject.toml",
         "src/molt/__init__.py",
+        "src/molt/package_import_custody.py",
         "src/molt/target_python.py",
     ):
         destination = disposable / relative

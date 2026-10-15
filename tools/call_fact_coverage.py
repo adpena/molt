@@ -45,6 +45,7 @@ import tomllib
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
+
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 BASELINE_REL = "tools/call_fact_coverage_baseline.json"
 OP_KINDS_REL = "runtime/molt-ir/src/tir/op_kinds.toml"

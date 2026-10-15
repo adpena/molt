@@ -9,18 +9,28 @@ import tempfile
 import time
 from pathlib import Path
 
-from molt.cli.atomic_io import _atomic_copy_file
-from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
-from molt.cli.runtime_wasm_cache import (
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.cli.atomic_io import _atomic_copy_file  # noqa: E402
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
+from molt.cli.runtime_wasm_cache import (  # noqa: E402
     _shared_runtime_wasm_cache_root,
     hydrate_runtime_wasm_pair_from_shared_cache,
 )
-from molt.cli.runtime_wasm_generation import (
+from molt.cli.runtime_wasm_generation import (  # noqa: E402
     RuntimeWasmGeneration,
     read_runtime_wasm_generation,
     runtime_wasm_generation_identities,
 )
-from molt.cli.runtime_wasm_validation import (
+from molt.cli.runtime_wasm_validation import (  # noqa: E402
     runtime_wasm_generation_admission,
     _is_valid_runtime_wasm_artifact,
     _is_valid_shared_runtime_wasm_artifact,

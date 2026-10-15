@@ -14,10 +14,11 @@ import platform
 import sys
 from pathlib import Path
 
-if __package__ in (None, ""):
-    from import_file import bind_repository_imports
-else:
-    from tools.import_file import bind_repository_imports
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
@@ -32,10 +33,7 @@ from molt.cli.source_extension_target import resolve_source_extension_target_pla
 from molt.target_python import _parse_target_python_version  # noqa: E402
 from tools.perf_calibration import run_and_measure  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

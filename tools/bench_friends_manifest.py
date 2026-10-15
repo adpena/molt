@@ -3,7 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from bench_friends_types import (
+from tools.bench_friends_types import (
     RUNNER_NAME_RE,
     SUPPORTED_RUNNER_ROLES,
     SUPPORTED_SEMANTIC_MODES,

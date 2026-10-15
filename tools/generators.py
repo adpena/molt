@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
-import importlib.util
+import importlib
 import os
 import sys
 import time
@@ -35,14 +35,21 @@ from types import ModuleType
 from typing import Any
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-for _import_root in (ROOT, ROOT / "src", ROOT / "tools"):
-    if str(_import_root) not in sys.path:
-        sys.path.insert(0, str(_import_root))
+
 
 from molt.python_runtime_admission import BuildPythonAdmission  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.generator_io import display_path, stale_outputs, write_outputs  # noqa: E402
+from tools.import_file import tool_module_name  # noqa: E402
 from tools.proof_plan import (  # noqa: E402
     load_toolchain_policies,
     toolchain_closure,
@@ -99,14 +106,10 @@ def manifest_generators(manifest: Path = MANIFEST) -> list[Generator]:
 
 
 def load_generator(tool: str) -> ModuleType:
-    path = ROOT / tool
-    name = "_molt_generator_" + path.stem
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise SystemExit(f"cannot import generator {tool}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
+    name = tool_module_name(ROOT / tool)
+    if name is None:
+        raise SystemExit(f"generator {tool} is not a repository tool module")
+    module = importlib.import_module(name)
     if not callable(getattr(module, "generated_outputs", None)):
         raise SystemExit(f"{tool} does not define generated_outputs()")
     return module

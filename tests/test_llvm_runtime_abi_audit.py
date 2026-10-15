@@ -1,26 +1,11 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from tools import llvm_runtime_abi_audit as AUDIT
+
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "tools" / "llvm_runtime_abi_audit.py"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_llvm_runtime_abi_audit", TOOL
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_llvm_runtime_abi_audit"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-AUDIT = _load_tool()
 
 
 def test_llvm_runtime_abi_audit_passes_current_repo() -> None:

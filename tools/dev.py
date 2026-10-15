@@ -13,22 +13,19 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
+
+from molt.dx import DX_ENV_KEYS, TEST_PYTHONS, DxProject, render_env  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
-from tools.import_file import load_module_from_path  # noqa: E402
-
-
-def _load_dx_module():
-    dx_path = ROOT / "src" / "molt" / "dx.py"
-    return load_module_from_path("molt_dx_project", dx_path)
-
-
-_DX_MODULE = _load_dx_module()
-TEST_PYTHONS = _DX_MODULE.TEST_PYTHONS
-DxProject = _DX_MODULE.DxProject
 
 DX = DxProject(ROOT)
 
@@ -248,8 +245,8 @@ def _require_project_python(env: Mapping[str, str]) -> Path:
 
 
 def _print_canonical_env(env: dict[str, str]) -> None:
-    keys = tuple(key for key in _DX_MODULE.DX_ENV_KEYS if key in env)
-    print(_DX_MODULE.render_env(env, keys, "posix"))
+    keys = tuple(key for key in DX_ENV_KEYS if key in env)
+    print(render_env(env, keys, "posix"))
 
 
 def _default_gates_summary_path() -> Path:

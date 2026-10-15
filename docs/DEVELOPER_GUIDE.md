@@ -535,6 +535,17 @@ We recommend reading them in this order:
     - `molt-worker/`: The execution harness for compiled binaries/workers.
 - **`crates/`**: Rust helper crates that support tree shaking, lazy loading, and related compile-time packaging concerns.
 - **`tools/`**: Development tooling and shared utility scripts (`dev.py`, `bench.py`, `tools/scripts/`).
+  - a file under `tools/` has one module identity, `tools.<dotted path>`
+    (`tools.import_file.tool_module_name` computes it). Repository scripts in
+    `tools/`, `bench/`, `deploy/`, `drivers/` and the other host roots import
+    tools only by that name. Every script that imports repository code starts
+    with the repository bootstrap (`_REPO_ROOT` at the file's own depth, ending
+    in `bind_repository_imports(__file__)`), and library modules never edit
+    `sys.path`. So `python tools/x.py` and `python -m tools.x` load the same
+    modules. `tests/tools/test_import_file.py` enforces these rules.
+  - tests import tools by name, never by path: the test session refuses a
+    `spec_from_file_location` load of a `tools/` file under any other name.
+    Read a generated data file, such as the stdlib union, with `runpy.run_path`.
   - legacy debug wrappers remain additive-only while the canonical `molt debug`
     surface absorbs their behavior.
 - **`bench/`**: Benchmark harnesses, friend suites, benchmark-specific helper scripts, and benchmark result artifacts.

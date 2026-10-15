@@ -1,36 +1,24 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
+
+from tools import bench_individual as bench
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_bench_individual() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_bench_individual",
-        ROOT / "tools" / "bench_individual.py",
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_bench_individual_reuses_backend_daemon_by_default(
     tmp_path: Path, monkeypatch
 ) -> None:
-    bench = _load_bench_individual()
     cleanups = 0
 
     def fake_cleanup(*, quiet: bool = False) -> None:
@@ -80,7 +68,6 @@ def test_bench_individual_reuses_backend_daemon_by_default(
 def test_bench_individual_can_opt_into_cold_daemon_isolation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    bench = _load_bench_individual()
     cleanups = 0
 
     def fake_cleanup(*, quiet: bool = False) -> None:
@@ -140,7 +127,6 @@ def daemon_control_environment(tmp_path: Path, monkeypatch) -> None:
 def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     tmp_path: Path, monkeypatch, daemon_control_environment
 ) -> None:
-    bench = _load_bench_individual()
     environment = bench.harness_memory_guard.canonical_harness_env(
         os.environ, repo_root=ROOT
     )
@@ -237,7 +223,6 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
 def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
     tmp_path: Path, monkeypatch, daemon_control_environment
 ) -> None:
-    bench = _load_bench_individual()
     environment = bench.harness_memory_guard.canonical_harness_env(
         os.environ, repo_root=ROOT
     )
@@ -285,7 +270,6 @@ def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
 def test_bench_individual_rejects_partial_sample_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
-    bench = _load_bench_individual()
     calls = 0
 
     monkeypatch.setattr(
@@ -333,8 +317,6 @@ def test_bench_individual_rejects_partial_sample_failure(
 def test_bench_individual_records_molt_run_failure_detail(
     tmp_path: Path, monkeypatch
 ) -> None:
-    bench = _load_bench_individual()
-
     monkeypatch.setattr(
         bench,
         "molt_build",
@@ -375,8 +357,6 @@ def test_bench_individual_records_molt_run_failure_detail(
 def test_bench_individual_marks_intrinsic_benchmarks_molt_only(
     tmp_path: Path, monkeypatch
 ) -> None:
-    bench = _load_bench_individual()
-
     monkeypatch.setattr(
         bench,
         "molt_build",
@@ -422,7 +402,6 @@ def test_bench_individual_marks_intrinsic_benchmarks_molt_only(
 def test_bench_individual_custom_same_basename_keeps_cpython_reference(
     tmp_path: Path, monkeypatch
 ) -> None:
-    bench = _load_bench_individual()
     custom = tmp_path / "bench_ptr_registry.py"
     custom.write_text("print('custom')\n", encoding="utf-8")
 
@@ -463,7 +442,6 @@ def test_bench_individual_custom_same_basename_keeps_cpython_reference(
 def test_bench_individual_process_helpers_use_molt_bench_guard(
     tmp_path: Path, monkeypatch, daemon_control_environment
 ) -> None:
-    bench = _load_bench_individual()
     binary = tmp_path / "bench_molt"
     binary.write_text("", encoding="utf-8")
     script = tmp_path / "bench.py"
@@ -523,7 +501,6 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
 def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
     tmp_path: Path, monkeypatch
 ) -> None:
-    bench = _load_bench_individual()
     limits = object()
     bench_calls: list[dict[str, object]] = []
     sentinel_calls: list[dict[str, object]] = []

@@ -6,11 +6,16 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TOOLS_ROOT = ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import harness_memory_guard  # noqa: E402
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 def main() -> int:

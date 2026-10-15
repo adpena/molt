@@ -95,10 +95,7 @@ def rustfmt_source(source: str, *, label: str) -> str:
     the generator memory guard; inside ``tools/generators.py`` that guard
     shares the run's repository sentinel. ``label`` names the output in errors.
     """
-    try:  # the package module shares the generator runner's sentinel state
-        from tools import harness_memory_guard
-    except ModuleNotFoundError:  # a generator launched by path
-        import harness_memory_guard  # type: ignore[no-redef]
+    from tools import harness_memory_guard  # type: ignore[no-redef]
 
     try:
         result = harness_memory_guard.guarded_completed_process(

@@ -14,10 +14,10 @@ from molt.python_runtime_identity import (
     capture_current_python_runtime,
     validate_python_runtime_identity,
 )
-import harness_memory_guard
-from perf_scoreboard_measure import _cpython_run_env
-from perf_scoreboard_model import Cell
-from shard_partition import lpt_shards
+from tools import harness_memory_guard
+from tools.perf_scoreboard_measure import _cpython_run_env
+from tools.perf_scoreboard_model import Cell
+from tools.shard_partition import lpt_shards
 
 
 def _observe_cpython_runtime(cmd: tuple[str, ...]) -> dict[str, object]:
@@ -652,7 +652,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
                         emit_cycle_profile=ns.emit_cycle_profile,
                     )
                     if cell.build_ok:
-                        from perf_scoreboard_build_profiles import (
+                        from tools.perf_scoreboard_build_profiles import (
                             record_measured_build_identity,
                         )
 

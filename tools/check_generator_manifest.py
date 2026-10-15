@@ -64,13 +64,11 @@ ROOT_DEFAULT = Path(__file__).resolve().parents[1]
 MANIFEST_REL = "tools/generator_manifest.toml"
 PROOF_PLAN_REL = "tools/proof_plan.toml"
 
-if str(ROOT_DEFAULT) not in sys.path:
-    sys.path.insert(0, str(ROOT_DEFAULT))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.import_file import (  # noqa: E402
-    bind_repository_imports,
-    load_module_from_path,
-)
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
@@ -82,11 +80,10 @@ bind_repository_imports(__file__)
 
 
 def _load_structural_audit():
-    """Load the canonical repository scanner implementation."""
-    return load_module_from_path(
-        "tools.structural_audit",
-        ROOT_DEFAULT / "tools" / "structural_audit.py",
-    )
+    """The canonical repository scanner, imported on first use."""
+    from tools import structural_audit
+
+    return structural_audit
 
 
 # ---------------------------------------------------------------------------

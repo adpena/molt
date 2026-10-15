@@ -16,9 +16,9 @@ from molt.wasm_artifact import (
     parse_wasm_section_spans,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
-import wasm_link_validation
-from wasm_link_fact_provider import WasmImportFact
-import wasm_stub_wasi as stub_mod
+from tools import wasm_link_validation
+from tools.wasm_link_fact_provider import WasmImportFact
+from tools import wasm_stub_wasi as stub_mod
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "freestanding_hello.py"

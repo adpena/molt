@@ -14,7 +14,17 @@ import tarfile
 import tempfile
 import urllib.request
 
-from molt.binaryen_identity import (
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.binaryen_identity import (  # noqa: E402
     INSTALL_RECEIPT_FILENAME,
     INSTALL_RECEIPT_SCHEMA,
     MAX_TREE_BYTES,
@@ -28,9 +38,9 @@ from molt.binaryen_identity import (
     read_binaryen_version,
     validate_binaryen_install_receipt,
 )
-from molt.binaryen_toolchain import BinaryenHostAsset, binaryen_host_asset
-from molt.file_publication import durable_publish_directory_exclusive
-from molt.portable_paths import portable_path_identity, portable_relative_path
+from molt.binaryen_toolchain import BinaryenHostAsset, binaryen_host_asset  # noqa: E402
+from molt.file_publication import durable_publish_directory_exclusive  # noqa: E402
+from molt.portable_paths import portable_path_identity, portable_relative_path  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

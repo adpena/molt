@@ -23,32 +23,15 @@ The poison classes and their injected fixtures:
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import sys
 from pathlib import Path
 
 import pytest
 
+from tools import fail_closed_gate as gate
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_GATE_PATH = _REPO_ROOT / "tools" / "fail_closed_gate.py"
-
-
-def _load_gate_module():
-    """Import tools/fail_closed_gate.py as a module (it lives outside a package).
-    Fresh import each call so nothing leaks across tests."""
-    mod_name = "_fail_closed_gate_under_test"
-    spec = importlib.util.spec_from_file_location(mod_name, _GATE_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec so @dataclass field resolution can find the module.
-    sys.modules[mod_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(mod_name, None)
-        raise
-    return module
 
 
 _EMPTY_REGISTRY = (
@@ -74,7 +57,6 @@ def _write_empty_registry(root: Path) -> Path:
 # The gate is green on the real, checked-in seed.
 # ---------------------------------------------------------------------------
 def test_gate_is_green_on_seeded_registry() -> None:
-    gate = _load_gate_module()
     violations = gate.run_gate()
     assert not violations, (
         "seeded registry must pass the gate; violations:\n"
@@ -83,7 +65,6 @@ def test_gate_is_green_on_seeded_registry() -> None:
 
 
 def test_seed_registry_rows_are_well_formed() -> None:
-    gate = _load_gate_module()
     registry = gate.load_registry()
     assert registry.rows, "registry must have rows"
     seen_ids: set[str] = set()
@@ -97,7 +78,6 @@ def test_seed_registry_rows_are_well_formed() -> None:
 
 def test_every_discovered_site_is_registered_in_seed() -> None:
     """Drift invariant on the real tree: no discovered poison site lacks a row."""
-    gate = _load_gate_module()
     registry = gate.load_registry()
     unmatched = [
         f"[{s.cls}] {s.file}:{s.line} {s.signature!r}"
@@ -112,7 +92,6 @@ def test_every_discovered_site_is_registered_in_seed() -> None:
 def test_tinygrad_reference_clone_is_quarantined() -> None:
     """The former Molt-owned tinygrad package clone is kept only as a
     demos/reference fixture, never as a shipped stdlib package root."""
-    gate = _load_gate_module()
     assert not (_REPO_ROOT / "src" / "molt" / "stdlib" / "tinygrad").exists()
     assert (
         _REPO_ROOT
@@ -141,7 +120,6 @@ def test_tinygrad_reference_clone_is_quarantined() -> None:
 def test_negative_control_research_quarantine_usage_fails_then_passes(
     tmp_path: Path,
 ) -> None:
-    gate = _load_gate_module()
     quarantine = tmp_path / "demos" / "tinygrad" / "reference_stdlib"
     (quarantine / "tinygrad").mkdir(parents=True)
     (quarantine / ".molt-research-quarantine").write_text(
@@ -168,7 +146,6 @@ def test_negative_control_research_quarantine_usage_fails_then_passes(
 def test_negative_control_research_quarantine_loader_import_fails_for_production(
     tmp_path: Path,
 ) -> None:
-    gate = _load_gate_module()
     quarantine = tmp_path / "demos" / "tinygrad" / "reference_stdlib"
     (quarantine / "tinygrad").mkdir(parents=True)
     (quarantine / ".molt-research-quarantine").write_text(
@@ -213,7 +190,6 @@ def test_registry_rows_use_only_known_classes() -> None:
     fully burned down — that is the goal of the ratchet, not a failure (e.g.
     todo_as_plan reached 0). Each class's scanner teeth are exercised by the
     negative-control tests below, independent of whether a live row exists."""
-    gate = _load_gate_module()
     registry = gate.load_registry()
     classes = {row.cls for row in registry.rows}
     unknown = classes - gate._VALID_CLASSES
@@ -224,7 +200,6 @@ def test_registry_rows_use_only_known_classes() -> None:
 # Negative control A — ecosystem_baked
 # ---------------------------------------------------------------------------
 def test_negative_control_ecosystem_baked_fails_then_passes(tmp_path: Path) -> None:
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     hdr = tmp_path / "include" / "numpy" / "synthetic.h"
     hdr.parent.mkdir(parents=True, exist_ok=True)
@@ -262,7 +237,6 @@ def test_negative_control_ecosystem_baked_fails_then_passes(tmp_path: Path) -> N
 def test_negative_control_ecosystem_build_crutch_fails_then_passes(
     tmp_path: Path,
 ) -> None:
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     helper = tmp_path / "tools" / "regen_scipy_ndimage_source_plan.py"
     helper.parent.mkdir(parents=True, exist_ok=True)
@@ -327,7 +301,6 @@ def test_negative_control_ecosystem_build_crutch_fails_then_passes(
 def test_negative_control_ecosystem_reimplementation_fails_then_passes(
     tmp_path: Path,
 ) -> None:
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     package = tmp_path / "src" / "molt" / "stdlib" / "numpy" / "__init__.py"
     package.parent.mkdir(parents=True, exist_ok=True)
@@ -361,7 +334,6 @@ def test_negative_control_ecosystem_reimplementation_fails_then_passes(
 def test_negative_control_reference_quarantine_fails_then_passes(
     tmp_path: Path,
 ) -> None:
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     package = (
         tmp_path
@@ -408,7 +380,6 @@ def test_negative_control_reference_quarantine_fails_then_passes(
 # Negative control B — fail_open_stub
 # ---------------------------------------------------------------------------
 def test_negative_control_fail_open_abi_fails_then_passes(tmp_path: Path) -> None:
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     api_dir = tmp_path / "runtime" / "molt-cpython-abi" / "src" / "api"
     api_dir.mkdir(parents=True, exist_ok=True)
@@ -452,7 +423,6 @@ def test_negative_control_fail_open_abi_fails_then_passes(tmp_path: Path) -> Non
 # Negative control C — todo_as_plan
 # ---------------------------------------------------------------------------
 def test_negative_control_todo_as_plan_fails_then_passes(tmp_path: Path) -> None:
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     mod = tmp_path / "src" / "molt" / "stdlib" / "synthetic.py"
     mod.parent.mkdir(parents=True, exist_ok=True)
@@ -495,7 +465,6 @@ def test_negative_control_todo_as_plan_fails_then_passes(tmp_path: Path) -> None
 def test_negative_control_module_level_todo_is_honest(tmp_path: Path) -> None:
     """A module-level status:partial header (an honest scope declaration, not a
     per-call divergence) must NOT be flagged — the gate must not fight honesty."""
-    gate = _load_gate_module()
     _write_empty_registry(tmp_path)
     mod = tmp_path / "src" / "molt" / "stdlib" / "honest.py"
     mod.parent.mkdir(parents=True, exist_ok=True)
@@ -512,7 +481,6 @@ def test_negative_control_module_level_todo_is_honest(tmp_path: Path) -> None:
 def test_negative_control_status_planned_is_honest(tmp_path: Path) -> None:
     """status:planned is an honest not-yet-supported declaration and is EXCLUDED
     even inside a def body (it does not claim the capability works)."""
-    gate = _load_gate_module()
     _write_empty_registry(tmp_path)
     mod = tmp_path / "src" / "molt" / "stdlib" / "planned.py"
     mod.parent.mkdir(parents=True, exist_ok=True)
@@ -531,7 +499,6 @@ def test_negative_control_status_planned_is_honest(tmp_path: Path) -> None:
 # Negative control D — duplicate_authority
 # ---------------------------------------------------------------------------
 def test_negative_control_duplicate_authority_fails_then_passes(tmp_path: Path) -> None:
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     # The SAME CPython header, substantive on both sides, in both authority trees.
     body = "#ifndef SYN_PYERRORS_H\n#define SYN_PYERRORS_H\n" + (
@@ -570,7 +537,6 @@ def test_negative_control_backend_dispatch_fails_then_passes(tmp_path: Path) -> 
     for an unlowered op (a `local x = nil` / `MoltValue::None` placeholder) must
     make the gate FAIL; ripping it to a fail-closed emit makes it PASS. This is the
     mutation proof for the silent-wrong-codegen class the accumulator fix closes."""
-    gate = _load_gate_module()
     registry = _write_empty_registry(tmp_path)
     # A synthetic backend op-emitter with a fail-open catch-all in one of the
     # scanned dispatch files.
@@ -620,7 +586,6 @@ def test_backend_dispatch_ignores_legit_none_fill_value(tmp_path: Path) -> None:
     """A legitimate Python-`None` fill element (e.g. `list_fill_new`'s default
     fill) carries NO unsupported/stub marker and must NOT be flagged — the scan
     keys on the fabricated-result-for-unlowered-op shape, not every `MoltValue::None`."""
-    gate = _load_gate_module()
     _write_empty_registry(tmp_path)
     src = (
         tmp_path
@@ -651,7 +616,6 @@ def test_backend_dispatch_ignores_legit_none_fill_value(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 def test_negative_control_ratchet_regression_fails(tmp_path: Path) -> None:
     """One more registered row of a class than its baseline fails the ratchet."""
-    gate = _load_gate_module()
     # A real anchored file so the row's anchor check passes; the FAILURE under test
     # is the ratchet, not a missing anchor.
     hdr = tmp_path / "include" / "numpy" / "real.h"
@@ -684,7 +648,6 @@ def test_negative_control_ratchet_regression_fails(tmp_path: Path) -> None:
 def test_negative_control_anchor_drift_fails(tmp_path: Path) -> None:
     """A registered row whose anchor no longer exists in its file fails the anchor
     integrity check (a site cannot silently move out from under its row)."""
-    gate = _load_gate_module()
     hdr = tmp_path / "include" / "numpy" / "real.h"
     hdr.parent.mkdir(parents=True, exist_ok=True)
     hdr.write_text("/* the baked typedef was ripped */\n", encoding="utf-8")

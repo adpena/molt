@@ -13,28 +13,15 @@ CI : python3 tools/call_fact_coverage.py --check
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
+from tools import call_fact_coverage as CFC
+
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "tools" / "call_fact_coverage.py"
 BASELINE = ROOT / "tools" / "call_fact_coverage_baseline.json"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("molt_test_call_fact_coverage", TOOL)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_call_fact_coverage"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-CFC = _load_tool()
 
 
 def test_registry_evidence_is_not_stale():

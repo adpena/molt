@@ -34,6 +34,14 @@ from typing import Any
 # Constants
 # ---------------------------------------------------------------------------
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

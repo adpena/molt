@@ -18,8 +18,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+
 
 from molt.cargo_execution_policy import require_cargo_build_capacity  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402

@@ -16,10 +16,11 @@ from pathlib import Path
 import secrets
 import sys
 
-if __package__ in (None, ""):
-    from import_file import bind_repository_imports, load_module_from_path
-else:
-    from tools.import_file import bind_repository_imports, load_module_from_path
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 ROOT = bind_repository_imports(__file__)
 
@@ -34,14 +35,9 @@ from tools.run_cargo_test_truth import (  # noqa: E402
 )
 from tools.runtime_descendant_receipts import _parent_capture  # noqa: E402
 
-# The benchmark directory shares its name with tools/bench.py. Bind both files
-# explicitly so the list owner's import reuses this exact numeric module.
-l7 = load_module_from_path(
-    "run_l7_numeric_attestation", ROOT / "tools/bench/run_l7_numeric_attestation.py"
-)
-lists = load_module_from_path(
-    "run_list_delta_attestation", ROOT / "tools/bench/run_list_delta_attestation.py"
-)
+from tools.numeric_attestation import run_l7_numeric_attestation as l7  # noqa: E402
+from tools.numeric_attestation import run_list_delta_attestation as lists  # noqa: E402
+
 OUTPUT = ROOT / "proof-receipts/evidence/candidate-runtime-costs"
 STORAGE_TEST = "shared_hash_storage_performance_attestation"
 STORAGE_PREFIX = "SHARED_HASH_STORAGE_ATTESTATION="

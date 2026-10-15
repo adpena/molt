@@ -64,8 +64,16 @@ from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 
-import perf_scoreboard_cli as _perf_scoreboard_cli
-from perf_scoreboard_model import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import perf_scoreboard_cli as _perf_scoreboard_cli  # noqa: E402
+from tools.perf_scoreboard_model import (  # noqa: E402
     BACKENDS_BY_NAME as BACKENDS_BY_NAME,
     COLD_START_BUDGET_PATH as COLD_START_BUDGET_PATH,
     DEFAULT_RUN_RSS_MB as DEFAULT_RUN_RSS_MB,
@@ -110,22 +118,17 @@ from perf_scoreboard_model import (
 )
 
 
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
 # Reuse the canonical build + suite machinery rather than rebuilding a timing
 # loop. bench.py owns the daemon batch build, the memory guard, and the
 # binary-size / compile-time capture; bench_suites owns the curated suite.
-import bench  # noqa: E402
-import bench_suites  # noqa: E402
-import perf_methodology  # noqa: E402
-import harness_memory_guard  # noqa: E402
-from sample_profile import read_self_time  # noqa: E402
+from tools import bench  # noqa: E402
+from tools import bench_suites  # noqa: E402
+from tools import perf_methodology  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
+from tools.sample_profile import read_self_time  # noqa: E402
 from molt.backend_binary_identity import identify_backend_binary  # noqa: E402
 from molt.backend_executable_names import is_backend_executable_name  # noqa: E402
-from perf_schema import (  # noqa: E402
+from tools.perf_schema import (  # noqa: E402
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
     CLASS_INFRA,
@@ -151,7 +154,7 @@ from perf_schema import (  # noqa: E402
     verdict_fails_gate as verdict_fails_gate,
 )
 
-from perf_scoreboard_measure import (  # noqa: E402
+from tools.perf_scoreboard_measure import (  # noqa: E402
     _build_wasm_only as _build_wasm_only,
     _cpython_run_env as _cpython_run_env,
     _max_opt as _max_opt,
@@ -162,7 +165,7 @@ from perf_scoreboard_measure import (  # noqa: E402
     _write_log as _write_log,
     measure_cell as measure_cell,
 )
-from perf_scoreboard_profile import (  # noqa: E402
+from tools.perf_scoreboard_profile import (  # noqa: E402
     DEFAULT_INNER_REPEAT as DEFAULT_INNER_REPEAT,
     HOT_SAMPLE_WARMUP_S as HOT_SAMPLE_WARMUP_S,
     HOT_SAMPLE_WINDOW_S as HOT_SAMPLE_WINDOW_S,
@@ -181,7 +184,7 @@ from perf_scoreboard_profile import (  # noqa: E402
     classify_launch_dominance as classify_launch_dominance,
     top_in_binary_frames as top_in_binary_frames,
 )
-from perf_scoreboard_report import (  # noqa: E402
+from tools.perf_scoreboard_report import (  # noqa: E402
     _cell_key as _cell_key,
     _checkpoint as _checkpoint,
     _fastest_next_unlock as _fastest_next_unlock,
@@ -202,7 +205,7 @@ from perf_scoreboard_report import (  # noqa: E402
     diff_against_baseline as diff_against_baseline,
     print_summary as print_summary,
 )
-from perf_scoreboard_resolver import (  # noqa: E402
+from tools.perf_scoreboard_resolver import (  # noqa: E402
     _canonical_interpreter_cmd as _canonical_interpreter_cmd,
     _format_cmd as _format_cmd,
     _is_project_managed_interpreter as _is_project_managed_interpreter,
@@ -1223,7 +1226,7 @@ def _resolve_backend_binary_path(spec: "BackendSpec", profile: str) -> Path | No
     Guest artifact profiles do not name the host compiler's Cargo directory.
     Ambient target roots and legacy aliases are not provenance for this run.
     """
-    from perf_scoreboard_build_profiles import profile_selection
+    from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
     env = _perfscore_build_env(spec, profile)
@@ -1386,7 +1389,7 @@ def build_scoreboard_doc(
 
     # The gate-failing set (the hard reds). FAIL_STALE is conditional (depends
     # on --allow-nonauthoritative), so it is reported separately, not summed in.
-    from perf_authority import release_cell_problems
+    from tools.perf_authority import release_cell_problems
 
     gate_failing = [c for c in cells if release_cell_problems(asdict(c))]
     stale_cells = [c for c in cells if c.verdict == VERDICT_FAIL_STALE]
@@ -1761,7 +1764,7 @@ def _merge_boards(
             print(f"--merge: invalid producer invocations in {src}", file=sys.stderr)
             return 3
         merged_invocations.extend(invocations)
-        from perf_authority import perf_methodology_problems
+        from tools.perf_authority import perf_methodology_problems
 
         identity_problems = perf_methodology_problems(prov)
         if identity_problems:
@@ -1899,7 +1902,7 @@ def _merge_boards(
                         "reason": cell.note or "CPython baseline could not run",
                     }
                 )
-    from perf_authority import CANONICAL_PERF_BENCHMARKS
+    from tools.perf_authority import CANONICAL_PERF_BENCHMARKS
 
     doc = build_scoreboard_doc(
         cells,

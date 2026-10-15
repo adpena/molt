@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 from tests.runtime_profile_fixtures import (
@@ -12,17 +10,7 @@ from tests.runtime_profile_fixtures import (
 )
 import shutil
 from tests.process_guard_common import install_module_view
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PROFILE_TOOL_PATH = REPO_ROOT / "tools" / "profile.py"
-PROFILE_TOOL_SPEC = importlib.util.spec_from_file_location(
-    "profile_tool_under_test", PROFILE_TOOL_PATH
-)
-assert PROFILE_TOOL_SPEC is not None and PROFILE_TOOL_SPEC.loader is not None
-profile_tool = importlib.util.module_from_spec(PROFILE_TOOL_SPEC)
-sys.modules[PROFILE_TOOL_SPEC.name] = profile_tool
-PROFILE_TOOL_SPEC.loader.exec_module(profile_tool)
+from tools import profile as profile_tool
 
 
 def _profile_tool_process_fixture() -> dict[str, object]:

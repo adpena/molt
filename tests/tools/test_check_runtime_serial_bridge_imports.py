@@ -1,26 +1,12 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
-
-def _load_tool():
-    root = Path(__file__).resolve().parents[2]
-    path = root / "tools" / "check_runtime_serial_bridge_imports.py"
-    spec = importlib.util.spec_from_file_location(
-        "check_runtime_serial_bridge_imports_under_test", path
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+from tools import check_runtime_serial_bridge_imports
 
 
 def test_rejects_direct_molt_host_import(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_runtime_serial_bridge_imports
     serial = tmp_path / "runtime" / "molt-runtime-serial" / "src"
     (serial / "datetime.rs").parent.mkdir(parents=True)
     (serial / "datetime.rs").write_text(
@@ -44,7 +30,7 @@ unsafe extern "C" {
 
 
 def test_allows_serial_vtable_getter(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_runtime_serial_bridge_imports
     serial = tmp_path / "runtime" / "molt-runtime-serial" / "src"
     (serial / "bridge.rs").parent.mkdir(parents=True)
     (serial / "bridge.rs").write_text(
@@ -60,7 +46,7 @@ unsafe extern "C" {
 
 
 def test_allows_explicit_windows_crt_exception(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_runtime_serial_bridge_imports
     serial = tmp_path / "runtime" / "molt-runtime-serial" / "src"
     (serial / "datetime.rs").parent.mkdir(parents=True)
     (serial / "datetime.rs").write_text(

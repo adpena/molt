@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from bench_friends_types import SourceCustody, SuiteAcquisition, SuiteSpec
+from tools.bench_friends_types import SourceCustody, SuiteAcquisition, SuiteSpec
 
-import harness_memory_guard
+from tools import harness_memory_guard
 
 
 def _run_git(

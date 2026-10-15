@@ -11,21 +11,21 @@ from molt.cli.app_export_contract import (
     excluded_app_symbols,
     exported_app_symbols,
 )
-from wasm_link_edit import (
+from tools.wasm_link_edit import (
     _ensure_function_exports_by_symbol_names,
     _rename_export_names,
     _restore_output_export_aliases,
     _strip_internal_exports,
     _validate_app_export_adapters,
 )
-from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
-from wasm_link_format import (
+from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+from tools.wasm_link_format import (
     _insert_standard_section,
     _read_varuint,
     _write_string,
     _write_varuint,
 )
-from wasm_link_operations import (
+from tools.wasm_link_operations import (
     build_sections as _build_sections,
     parse_sections as _parse_sections,
     strip_publication_sections as strip_wasm_publication_sections,

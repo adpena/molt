@@ -19,20 +19,31 @@ snapshot's Git identity, which the bundle must match.
 
 from __future__ import annotations
 
-from molt.temporary_artifacts import OwnedTemporaryDirectory
-
-import argparse
-from collections.abc import Iterator
-import contextlib
-from dataclasses import dataclass
-import json
-import os
-from pathlib import Path
-import shutil
 import sys
-from typing import Any, Mapping, Sequence
+from pathlib import Path
 
-from molt.release_lanes import capture_release_lanes
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+
+import argparse  # noqa: E402
+from collections.abc import Iterator  # noqa: E402
+import contextlib  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+from pathlib import Path  # noqa: E402
+import shutil  # noqa: E402
+import sys  # noqa: E402
+from typing import Any, Mapping, Sequence  # noqa: E402
+
+from molt.release_lanes import capture_release_lanes  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_NAME = "runtime-inventory.json"

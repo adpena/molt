@@ -17,6 +17,14 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = REPO_ROOT / "src"
@@ -70,23 +78,18 @@ def _append_event_jsonl(path: Path, payload: dict[str, object]) -> None:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-
-from batch_compile_client import (  # noqa: E402
+from tools.batch_compile_client import (  # noqa: E402
     BatchCompileProtocolError,
     BatchCompileServerClient,
 )
-from bench_metadata import benchmark_reference_contract  # noqa: E402
-import harness_memory_guard  # noqa: E402
-import memory_guard  # noqa: E402
-import bench_suites  # noqa: E402
-import bench_reporting  # noqa: E402
+from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
+from tools import memory_guard  # noqa: E402
+from tools import bench_suites  # noqa: E402
+from tools import bench_reporting  # noqa: E402
 
 MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
-import perf_authority  # noqa: E402
+from tools import perf_authority  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,

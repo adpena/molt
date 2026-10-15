@@ -1,24 +1,12 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
-
-def _load_tool():
-    root = Path(__file__).resolve().parents[2]
-    path = root / "tools" / "check_satellite_parity.py"
-    spec = importlib.util.spec_from_file_location(
-        "check_satellite_parity_under_test", path
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+from tools import check_satellite_parity
 
 
 def test_normalize_ignores_cfg_test_items(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_satellite_parity
     source = tmp_path / "runtime.rs"
     source.write_text(
         "\n".join(

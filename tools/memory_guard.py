@@ -20,6 +20,14 @@ from types import FrameType
 from typing import Any, Unpack, cast
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
 DEFAULT_FAST_START_DURATION_SEC = 2.0
@@ -69,11 +77,9 @@ def paced_poll_interval(poll_interval: float, last_sample_cost_s: float) -> floa
 
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 SRC_ROOT = ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp  # noqa: E402
 from tools.memory_guard_core.active_custody import (  # noqa: E402
     ACTIVE_GUARD_MARKER_SCHEMA_VERSION,

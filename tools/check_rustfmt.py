@@ -18,6 +18,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED_HEAD_LINES = 12
 WINDOWS_COMMAND_LINE_SOFT_LIMIT = 24_000

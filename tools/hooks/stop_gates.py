@@ -26,15 +26,18 @@ from __future__ import annotations
 import json
 import sys
 
-try:
-    from tools.hooks import _common, landing_gate, session_learning
-    from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate
-except Exception:  # pragma: no cover - path-invocation fallback
-    import os as _os
+from pathlib import Path
 
-    sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))))
-    from tools.hooks import _common, landing_gate, session_learning
-    from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.hooks import _common, landing_gate, session_learning  # noqa: E402
+from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate  # noqa: E402
 
 
 # Ordered Stop-leg gates. Each is a ``(name, evaluate(data, root) -> str|None)``

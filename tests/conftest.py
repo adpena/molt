@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 import pytest
+
+from tools.import_file import require_tool_identity
 
 if TYPE_CHECKING:
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
@@ -311,6 +314,25 @@ def _reject_molt_stdlib_import_root(request: pytest.FixtureRequest) -> Iterator[
                 owner=request.node.nodeid, root=MOLT_STDLIB_ROOT
             )
         )
+
+
+_spec_from_file_location = importlib.util.spec_from_file_location
+
+
+def _one_tool_identity(name, location=None, *args, **kwargs):  # type: ignore[no-untyped-def]
+    """``spec_from_file_location`` that refuses a second tool identity (HF-221).
+
+    A file under ``tools/`` is the module ``tools.<path>``. Loading it by path
+    under another name builds a second copy of its state and types, so the
+    test or tool that does so fails at the load. Normal imports use the import
+    system's own binding of this function and never come here.
+    """
+    if location is not None:
+        require_tool_identity(name, location)
+    return _spec_from_file_location(name, location, *args, **kwargs)
+
+
+importlib.util.spec_from_file_location = _one_tool_identity
 
 
 @dataclass(frozen=True)

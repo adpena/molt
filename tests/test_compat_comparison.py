@@ -15,17 +15,15 @@ extraction. These tests:
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TOOLS = _REPO_ROOT / "tools"
-if str(_TOOLS) not in sys.path:
-    sys.path.insert(0, str(_TOOLS))
 
-from compat import comparison as c  # noqa: E402
+
+from tools.compat import comparison as c  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

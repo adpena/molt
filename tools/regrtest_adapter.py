@@ -60,12 +60,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import perf_calibration as pc  # noqa: E402  (C1-C4 calibration substrate)
+
+from tools import perf_calibration as pc  # noqa: E402  (C1-C4 calibration substrate)
 
 
 # ---------------------------------------------------------------------------

@@ -10,13 +10,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 _RANDOM_PLUGIN = "tools.pytest_random_order_plugin"
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import harness_memory_guard  # type: ignore
+from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
 
 def _log(msg: str) -> None:

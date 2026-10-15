@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-from functools import cache
 import os
 import sys
 import time
@@ -12,11 +10,10 @@ from tests.process_guard_common import (
     install_module_view,
     install_thread_module_view,
 )
-from tools import guarded_entrypoints
+from tools import guarded_entrypoints, process_sentinel
 from tools.memory_guard_core import process_custody
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "tools" / "process_sentinel.py"
 WINDOWS_ROOT = Path("C:/repo/molt")
 
 
@@ -43,21 +40,8 @@ def _windows_backend_command() -> str:
     return r"C:\repo\molt\target\dev-fast\molt-backend.exe --owned"
 
 
-@cache
-def _load_process_sentinel():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_process_sentinel", SCRIPT_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_process_groups_include_full_matched_group() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -95,7 +79,7 @@ def test_process_groups_include_full_matched_group() -> None:
 
 
 def test_process_groups_exclude_current_process_group() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -113,7 +97,7 @@ def test_process_groups_exclude_current_process_group() -> None:
 
 
 def test_process_groups_ignore_process_inspection_commands() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -152,7 +136,7 @@ def test_process_groups_ignore_process_inspection_commands() -> None:
 
 
 def test_process_groups_does_not_match_repo_root_alone() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -177,7 +161,7 @@ def test_process_groups_does_not_match_repo_root_alone() -> None:
 
 
 def test_process_groups_require_repo_context_for_generic_molt_names() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -209,7 +193,7 @@ def test_process_groups_require_repo_context_for_generic_molt_names() -> None:
 
 
 def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
 
     assert set(module.GUARDED_ENTRYPOINT_TOKENS) == (
         set(guarded_entrypoints.guarded_entrypoint_tokens(REPO_ROOT))
@@ -285,7 +269,7 @@ def test_guarded_entrypoint_scan_skips_vendor_and_result_roots(
 
 
 def test_process_groups_match_guarded_entrypoints() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         idx: module.memory_guard.ProcessSample(
@@ -304,7 +288,7 @@ def test_process_groups_match_guarded_entrypoints() -> None:
 
 
 def test_process_groups_match_repo_scoped_cached_binary() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -323,7 +307,7 @@ def test_process_groups_match_repo_scoped_cached_binary() -> None:
 
 
 def test_molt_command_classification_cache_is_keyed_by_token_authority() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     module._cached_molt_command_classification.cache_clear()
     command = "/repo/molt/target/dev-fast/custom-worker --owned"
@@ -352,7 +336,7 @@ def test_molt_command_classification_cache_is_keyed_by_token_authority() -> None
 
 
 def test_is_molt_process_reuses_command_classification_cache() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     module._cached_molt_command_classification.cache_clear()
     sample = module.memory_guard.ProcessSample(
@@ -369,7 +353,7 @@ def test_is_molt_process_reuses_command_classification_cache() -> None:
 
 
 def test_process_groups_match_canonical_artifact_roots() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -401,7 +385,7 @@ def test_process_groups_match_canonical_artifact_roots() -> None:
 
 
 def test_process_groups_do_not_treat_generic_repo_artifact_paths_as_ownership() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -454,7 +438,7 @@ def test_process_groups_do_not_treat_generic_repo_artifact_paths_as_ownership() 
 
 
 def test_process_groups_match_windows_canonical_artifact_roots() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("C:/Users/adpen/OneDrive/Documents/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -485,7 +469,7 @@ def test_process_groups_match_windows_canonical_artifact_roots() -> None:
 
 
 def test_process_groups_propagate_to_nested_child_sessions() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -521,7 +505,7 @@ def test_process_groups_propagate_to_nested_child_sessions() -> None:
 
 
 def test_process_groups_keep_observed_child_group_after_reparenting() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         12: module.memory_guard.ProcessSample(
@@ -548,7 +532,7 @@ def test_process_groups_keep_observed_child_group_after_reparenting() -> None:
 
 
 def test_process_groups_owned_filter_excludes_repo_matching_peer() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         20: module.memory_guard.ProcessSample(
@@ -579,7 +563,7 @@ def test_process_groups_owned_filter_excludes_repo_matching_peer() -> None:
 
 
 def test_process_groups_exclude_mixed_custody_group_with_owned_child() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         101: module.memory_guard.ProcessSample(
@@ -611,7 +595,7 @@ def test_process_groups_explicit_custody_excludes_repo_scoped_shell() -> None:
     # is NEVER signalled. This is why the per-command guard takes no stale
     # preflight census at all: it could never terminate a process it cannot
     # prove it owns.
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -634,7 +618,7 @@ def test_process_groups_explicit_custody_excludes_repo_scoped_shell() -> None:
 
 
 def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -686,7 +670,7 @@ def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> Non
 def test_process_groups_protect_codex_spawned_molt_launcher_parent_present(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     samples = {
@@ -724,7 +708,7 @@ def test_process_groups_protect_codex_spawned_molt_launcher_parent_present(
 def test_process_groups_protect_molt_launcher_with_absent_parent(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     samples = {
@@ -742,7 +726,7 @@ def test_process_groups_protect_molt_launcher_with_absent_parent(
 
 
 def test_process_groups_keep_confirmed_orphan_build_killable(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     samples = {
         501: module.memory_guard.ProcessSample(
@@ -762,7 +746,7 @@ def test_process_groups_keep_confirmed_orphan_build_killable(monkeypatch) -> Non
 def test_process_groups_explicit_ownership_overrides_incomplete_ancestry(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     samples = {
         20: module.memory_guard.ProcessSample(
@@ -788,7 +772,7 @@ def test_process_groups_explicit_ownership_overrides_incomplete_ancestry(
 def test_process_groups_exclude_windows_snapshot_helper_descendants(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("C:/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -828,7 +812,7 @@ def test_process_groups_exclude_windows_snapshot_helper_descendants(
 def test_process_groups_exclude_explicitly_owned_windows_snapshot_helper_tree(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("C:/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -871,7 +855,7 @@ def test_process_groups_exclude_explicitly_owned_windows_snapshot_helper_tree(
 
 
 def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -932,7 +916,7 @@ def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
 
 
 def test_process_groups_exclude_claude_group_even_with_repo_child() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -978,7 +962,7 @@ def test_process_groups_exclude_claude_group_even_with_repo_child() -> None:
 def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child() -> (
     None
 ):
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -1045,7 +1029,7 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
 def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_child() -> (
     None
 ):
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -1112,7 +1096,7 @@ def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_chi
 def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned_child(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("C:/Users/adpen/OneDrive/Documents/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -1194,7 +1178,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
 def test_process_groups_exclude_windows_codex_claude_helper_paths(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("C:/Users/adpen/OneDrive/Documents/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -1249,7 +1233,7 @@ def test_process_groups_exclude_windows_codex_claude_helper_paths(
 
 
 def test_process_groups_keep_admitted_worktree_child_and_refuse_unowned_peers() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample
     for agent_home in (".codex", ".claude"):
         root = Path(f"/home/operator/{agent_home}/worktrees/molt")
@@ -1300,7 +1284,7 @@ def test_process_groups_keep_admitted_worktree_child_and_refuse_unowned_peers() 
 def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child() -> (
     None
 ):
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -1365,7 +1349,7 @@ def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child(
 
 
 def test_process_groups_exclude_ancestor_process_group() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("/repo/molt")
     samples = {
         10: module.memory_guard.ProcessSample(
@@ -1410,7 +1394,7 @@ def test_process_groups_exclude_ancestor_process_group() -> None:
 
 
 def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     samples = {
         100: module.memory_guard.ProcessSample(
             pid=100,
@@ -1446,7 +1430,7 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
 def test_terminate_group_refuses_posix_group_without_expected_identities(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     samples = {
         100: module.memory_guard.ProcessSample(
             pid=100,
@@ -1474,7 +1458,7 @@ def test_terminate_group_refuses_posix_group_without_expected_identities(
 
 
 def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample(
         pid=100,
         ppid=1,
@@ -1514,7 +1498,7 @@ def test_terminate_group_report_only_env_skips_windows_termination(
     monkeypatch,
     capsys,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample(
         pid=100,
         ppid=1,
@@ -1554,7 +1538,7 @@ def test_terminate_group_report_only_env_skips_windows_termination(
 def test_terminate_group_refuses_windows_group_without_expected_identity(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     samples = {
         100: module.memory_guard.ProcessSample(
             pid=100,
@@ -1583,7 +1567,7 @@ def test_terminate_group_refuses_windows_group_without_expected_identity(
 
 
 def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     selected = module.memory_guard.ProcessSample(
         pid=100,
         ppid=1,
@@ -1626,7 +1610,7 @@ def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> Non
 
 
 def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     samples = {
         100: module.memory_guard.ProcessSample(
             pid=100,
@@ -1671,7 +1655,7 @@ def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
 def test_terminate_group_windows_refuses_external_codex_descendant_repo_command(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     samples = {
         100: module.memory_guard.ProcessSample(
             pid=100,
@@ -1726,7 +1710,7 @@ def test_terminate_group_windows_refuses_external_codex_descendant_repo_command(
 def test_terminate_group_windows_keeps_current_sentinel_child_killable(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     root = Path("C:/Users/adpen/OneDrive/Documents/molt")
     samples = {
         100: module.memory_guard.ProcessSample(
@@ -1790,7 +1774,7 @@ def test_terminate_group_report_only_env_skips_posix_termination(
     monkeypatch,
     capsys,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample(
         pid=100,
         ppid=1,
@@ -1824,7 +1808,7 @@ def test_terminate_group_report_only_env_skips_posix_termination(
 
 
 def test_terminate_group_rechecks_protection_before_sigterm(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     first = {
         100: module.memory_guard.ProcessSample(
             pid=100,
@@ -1867,7 +1851,7 @@ def test_terminate_group_rechecks_protection_before_sigterm(monkeypatch) -> None
 
 
 def test_find_violations_can_kill_all_or_threshold() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     group = module.ProcessGroup(
         pgid=10,
         matched=True,
@@ -1938,7 +1922,7 @@ def test_find_violations_can_kill_all_or_threshold() -> None:
 
 
 def test_find_violations_marks_only_stale_orphaned_groups() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     stale_orphan = module.ProcessGroup(
         pgid=10,
         matched=True,
@@ -1986,7 +1970,7 @@ def test_find_violations_marks_only_stale_orphaned_groups() -> None:
 
 
 def test_find_violations_uses_shorter_pytest_stale_threshold() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     group = module.ProcessGroup(
         pgid=10,
         matched=True,
@@ -2017,7 +2001,7 @@ def test_find_violations_uses_shorter_pytest_stale_threshold() -> None:
 
 
 def test_find_violations_catches_aggregate_global_rss() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     groups = [
         module.ProcessGroup(
             pgid=10,
@@ -2064,7 +2048,7 @@ def test_find_violations_catches_aggregate_global_rss() -> None:
 def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     group = module.ProcessGroup(
         pgid=10,
         matched=True,
@@ -2128,7 +2112,7 @@ def test_main_once_refreshes_adaptive_limits_with_matched_group_rss(
 
 
 def test_parser_accepts_group_and_tree_rss_aliases() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
 
     group_args = module._parser().parse_args(["--once", "--max-group-rss-gb", "2.5"])
     tree_args = module._parser().parse_args(["--once", "--max-tree-rss-gb", "3.5"])
@@ -2138,7 +2122,7 @@ def test_parser_accepts_group_and_tree_rss_aliases() -> None:
 
 
 def test_sample_processes_for_sentinel_uses_windows_hard_sampler(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample(
         pid=7,
         ppid=1,
@@ -2164,7 +2148,7 @@ def test_sample_processes_for_sentinel_uses_windows_hard_sampler(monkeypatch) ->
 def test_sample_processes_for_sentinel_uses_default_sampler_on_posix(
     monkeypatch,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample(
         pid=7,
         ppid=1,
@@ -2188,7 +2172,7 @@ def test_sample_processes_for_sentinel_uses_default_sampler_on_posix(
 
 
 def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     terminated: list[int] = []
 
     monkeypatch.setattr(
@@ -2221,7 +2205,7 @@ def test_main_once_reports_repo_match_without_terminating(
     monkeypatch,
     capsys,
 ) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     terminated: list[tuple[int, float]] = []
     clock = 100.0
 
@@ -2263,7 +2247,7 @@ def test_main_once_reports_repo_match_without_terminating(
 
 
 def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
 
     monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
     install_module_view(monkeypatch, "time", time, module, monotonic=lambda: 50.0)
@@ -2333,7 +2317,7 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
 
 
 def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     calls = 0
     clock = 0.0
     terminated: list[int] = []
@@ -2391,7 +2375,7 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
 
 
 def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     calls = 0
     clock = 0.0
     matched_pgid = 1_000_021
@@ -2439,7 +2423,7 @@ def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
 
 
 def test_main_rejects_once_with_until_clean(capsys) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
 
     rc = module.main(["--once", "--until-clean-sec", "1"])
 
@@ -2448,7 +2432,7 @@ def test_main_rejects_once_with_until_clean(capsys) -> None:
 
 
 def test_main_rejects_implausible_process_cap_with_scope(capsys) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
 
     rc = module.main(["--once", "--max-process-rss-gb", "112"])
 
@@ -2457,7 +2441,7 @@ def test_main_rejects_implausible_process_cap_with_scope(capsys) -> None:
 
 
 def test_main_rejects_implausible_group_cap_with_scope(capsys) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
 
     rc = module.main(["--once", "--max-group-rss-gb", "112"])
 
@@ -2466,7 +2450,7 @@ def test_main_rejects_implausible_group_cap_with_scope(capsys) -> None:
 
 
 def test_main_rejects_implausible_global_cap_without_margin(capsys) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
 
     rc = module.main(["--once", "--max-global-rss-gb", "4096"])
 
@@ -2475,7 +2459,7 @@ def test_main_rejects_implausible_global_cap_without_margin(capsys) -> None:
 
 
 def test_normalized_repo_tokens_cached_matches_uncached(tmp_path: Path) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     module._normalized_repo_tokens.cache_clear()
     for root in (tmp_path, WINDOWS_ROOT, Path("/repo/molt")):
         fresh = module._normalized_repo_tokens.__wrapped__(root)
@@ -2485,7 +2469,7 @@ def test_normalized_repo_tokens_cached_matches_uncached(tmp_path: Path) -> None:
 
 
 def test_molt_command_classification_cache_matches_uncached() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     module._cached_molt_command_classification.cache_clear()
     commands = (
         _windows_backend_command(),
@@ -2515,7 +2499,7 @@ def test_molt_command_classification_cache_matches_uncached() -> None:
 
 
 def test_is_molt_process_verdicts_are_immune_to_pid_reuse(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     molt = module.memory_guard.ProcessSample(
@@ -2543,7 +2527,7 @@ def test_is_molt_process_verdicts_are_immune_to_pid_reuse(monkeypatch) -> None:
 
 
 def test_is_molt_process_self_pid_exclusion_is_not_cached(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     sample = module.memory_guard.ProcessSample(
@@ -2559,7 +2543,7 @@ def test_is_molt_process_self_pid_exclusion_is_not_cached(monkeypatch) -> None:
 
 
 def test_is_molt_process_cache_keys_on_process_model(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     upper_command = _windows_backend_command().upper()
     sample = module.memory_guard.ProcessSample(
         pid=500,
@@ -2579,7 +2563,7 @@ def test_is_molt_process_cache_keys_on_process_model(monkeypatch) -> None:
 
 
 def test_is_molt_process_cache_keys_on_token_authorities(monkeypatch) -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
     sample = module.memory_guard.ProcessSample(
@@ -2601,7 +2585,7 @@ def test_is_molt_process_cache_keys_on_token_authorities(monkeypatch) -> None:
 
 
 def test_sentinel_ownership_fences_all_seed_families_and_allowed_paths() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample
     root = Path("/repo/molt")
     rows = [
@@ -2665,7 +2649,7 @@ def test_sentinel_ownership_fences_all_seed_families_and_allowed_paths() -> None
 
 
 def test_sentinel_keeps_explicit_roots_without_inventing_birth_edges() -> None:
-    module = _load_process_sentinel()
+    module = process_sentinel
     sample = module.memory_guard.ProcessSample
     for parent_birth, child_birth in (
         (None, 200),
@@ -2708,7 +2692,7 @@ def test_current_tree_decisions_read_argv_only_for_the_tree_and_its_ancestry() -
     Molt group of its own tree, the protection of that group, and which tree
     groups protection skipped.
     """
-    module = _load_process_sentinel()
+    module = process_sentinel
     model = sys.modules["tools.memory_guard_core.process_model"]
     root = Path("/repo/molt")
     bound: list[int] = []

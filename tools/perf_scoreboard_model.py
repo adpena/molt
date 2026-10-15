@@ -10,9 +10,9 @@ from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import harness_memory_guard
-import perf_causality
-from perf_schema import (
+from tools import harness_memory_guard
+from tools import perf_causality
+from tools.perf_schema import (
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
     CLASS_INFRA,
@@ -42,8 +42,6 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 SRC_ROOT = REPO_ROOT / "src"
 
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
 from molt.llvm_toolchain import (  # noqa: E402
     LlvmToolchainConfigError,
@@ -154,7 +152,9 @@ BACKENDS_BY_NAME = {
     "wasm": WASM,
 }
 
-from perf_scoreboard_build_profiles import profile_build_flags as profile_build_flags  # noqa: E402
+from tools.perf_scoreboard_build_profiles import (  # noqa: E402
+    profile_build_flags as profile_build_flags,
+)
 
 
 def _llvm_backend_pin():

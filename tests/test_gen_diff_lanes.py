@@ -2,24 +2,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
+from tools import gen_diff_lanes
 from tools.generator_io import stale_outputs
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def _generator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.syspath_prepend(str(ROOT / "tools"))
-    spec = importlib.util.spec_from_file_location(
-        "diff_lane_generator_test", ROOT / "tools/gen_diff_lanes.py"
-    )
-    assert spec is not None and spec.loader is not None
-    gen = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(gen)
+    gen = gen_diff_lanes
     for lane in ("basic", "stdlib", "pyperformance"):
         (tmp_path / "tests/differential" / lane).mkdir(parents=True)
     monkeypatch.setattr(gen, "ROOT", tmp_path)

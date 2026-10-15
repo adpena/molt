@@ -83,16 +83,22 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from collections.abc import Callable
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 # Repo root: tools/cross_run.py -> tools -> repo
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_INVENTORY = REPO / "tools" / "cross_hosts.toml"
 DEFAULT_REPORT_DIR = REPO / "reports"
 TOOLS_ROOT = REPO / "tools"
 
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import harness_memory_guard  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 from molt.dx import ARTIFACT_ROOT_ENV, artifact_root  # noqa: E402
 
 VALID_SHELLS = ("bash", "sh", "powershell")

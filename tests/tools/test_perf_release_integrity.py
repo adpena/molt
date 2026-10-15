@@ -7,11 +7,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from perf_authority import release_cell_problems, CANONICAL_PERF_BENCHMARKS  # noqa: E402
+from tools.perf_authority import release_cell_problems, CANONICAL_PERF_BENCHMARKS  # noqa: E402
 
 
 def winning_cell():
-    import perf_schema
+    from tools import perf_schema
 
     return dict(
         build_ok=True,
@@ -58,7 +58,7 @@ def test_median_or_unknown_cannot_establish_release_win(field, value):
 
 
 def test_authoritative_projection_uses_same_required_cell_rule():
-    from perf_board import _gate_cpython
+    from tools.perf_board import _gate_cpython
 
     cell = winning_cell()
     assert _gate_cpython(cell, board_authoritative=True).verdict == "PASS"
@@ -100,7 +100,7 @@ def _merge_source(backend, benchmark):
 
 def _merge(tmp_path, documents):
     import json
-    import perf_scoreboard as ps
+    from tools import perf_scoreboard as ps
 
     paths = []
     for i, doc in enumerate(documents):
@@ -152,7 +152,7 @@ def test_merge_preserves_canonical_order_oldest_age_and_backend_union(tmp_path):
 
 
 def test_gate_does_not_trust_forged_summary():
-    import perf_scoreboard as ps
+    from tools import perf_scoreboard as ps
 
     doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
     cell = next(
@@ -165,7 +165,7 @@ def test_gate_does_not_trust_forged_summary():
 
 @pytest.mark.parametrize("value", [None, True, -1, float("nan"), float("inf"), "100"])
 def test_missing_or_invalid_startup_budget_is_not_accepted(value):
-    from perf_scoreboard_model import _budget_ms_for
+    from tools.perf_scoreboard_model import _budget_ms_for
 
     with pytest.raises(ValueError, match="budget missing or invalid"):
         _budget_ms_for(
@@ -176,7 +176,7 @@ def test_missing_or_invalid_startup_budget_is_not_accepted(value):
 
 
 def test_missing_budget_policy_fails_closed(monkeypatch, tmp_path):
-    import perf_scoreboard_model as model
+    from tools import perf_scoreboard_model as model
 
     monkeypatch.setattr(model, "COLD_START_BUDGET_PATH", tmp_path / "missing.json")
     with pytest.raises(ValueError, match="budget policy"):
@@ -187,7 +187,7 @@ def test_summary_rebuild_cannot_fill_unrecorded_measurement_identities(
     tmp_path, monkeypatch
 ):
     import json
-    import perf_scoreboard as ps
+    from tools import perf_scoreboard as ps
 
     doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
     doc["provenance"]["backend_binary_identity"]["native/release-fast"] = None
@@ -206,7 +206,7 @@ def test_summary_rebuild_cannot_fill_unrecorded_measurement_identities(
 
 
 def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):
-    import perf_scoreboard_measure as measure
+    from tools import perf_scoreboard_measure as measure
 
     captured = {}
 
@@ -238,7 +238,7 @@ def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):
 
 def test_wasm_measurement_build_uses_same_oracle_minor(monkeypatch, tmp_path):
     import subprocess
-    import perf_scoreboard_measure as measure
+    from tools import perf_scoreboard_measure as measure
 
     captured = []
     monkeypatch.setattr(measure.bench, "BENCH_TMP_ROOT", tmp_path)
@@ -256,7 +256,7 @@ def test_wasm_measurement_build_uses_same_oracle_minor(monkeypatch, tmp_path):
 
 
 def test_board_must_name_a_locked_methodology():
-    from perf_authority import perf_methodology_problems
+    from tools.perf_authority import perf_methodology_problems
 
     locked = {
         "methodology_schema": "molt-perf-methodology-v1",
@@ -365,7 +365,7 @@ def test_oracle_runtime_probe_uses_selected_command_and_baseline_environment(
     monkeypatch,
 ):
     import subprocess
-    import perf_scoreboard_cli as cli
+    from tools import perf_scoreboard_cli as cli
 
     seen = {}
 
@@ -385,7 +385,7 @@ def test_oracle_runtime_probe_uses_selected_command_and_baseline_environment(
 
 def test_oracle_runtime_probe_rejects_error_and_untyped_runtime(monkeypatch):
     import subprocess
-    import perf_scoreboard_cli as cli
+    from tools import perf_scoreboard_cli as cli
 
     for code, payload in ((1, "{}"), (0, "{}"), (0, "not-json")):
         monkeypatch.setattr(
@@ -401,11 +401,11 @@ def test_oracle_runtime_probe_rejects_error_and_untyped_runtime(monkeypatch):
 
 @pytest.mark.parametrize("forged_verified", (False, True))
 def test_documented_default_cli_gate_rejects_unadmitted_toolchain(forged_verified):
-    import perf_scoreboard as ps
+    from tools import perf_scoreboard as ps
 
     doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
     if forged_verified:
-        from perf_schema import flatten_cells
+        from tools.perf_schema import flatten_cells
 
         for cell in flatten_cells(doc):
             cell["build_observation"] = {
@@ -417,7 +417,7 @@ def test_documented_default_cli_gate_rejects_unadmitted_toolchain(forged_verifie
 
 
 def test_exploratory_board_marks_statistical_scope_and_unadmitted_e2():
-    from perf_board import project_all
+    from tools.perf_board import project_all
 
     doc = _merge_source("native", CANONICAL_PERF_BENCHMARKS[0])
     boards = project_all(doc)
@@ -433,7 +433,7 @@ def test_exploratory_board_marks_statistical_scope_and_unadmitted_e2():
 def _revision_problems(doc) -> list[str]:
     import datetime as dt
 
-    import perf_authority as pa
+    from tools import perf_authority as pa
 
     return [
         problem

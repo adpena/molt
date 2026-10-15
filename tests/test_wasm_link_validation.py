@@ -38,6 +38,24 @@ from molt.wasi_sdk_identity import (
     wasi_sdk_tree_identity,
 )
 from tests.process_guard_common import install_module_view
+from tools import (
+    wasm_archive,
+    wasm_link,
+    wasm_link_callable_table,
+    wasm_link_command,
+    wasm_link_edit,
+    wasm_link_export_contract,
+    wasm_link_fact_provider,
+    wasm_link_format,
+    wasm_link_native_inputs,
+    wasm_link_operations,
+    wasm_link_optimize,
+    wasm_link_optimizer_policy,
+    wasm_link_pipeline,
+    wasm_link_runtime_data,
+    wasm_link_transaction,
+    wasm_link_validation,
+)
 from molt import wasm_artifact
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_name_for_import,
@@ -79,33 +97,6 @@ def _compiler_rt_sdk_fixture(tmp_path: Path, *, libc: bytes | None = None):
     )
     return runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
 
-
-def _load_wasm_link():
-    root = Path(__file__).resolve().parents[1]
-    path = root / "tools" / "wasm_link.py"
-    spec = importlib.util.spec_from_file_location("molt_wasm_link", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-wasm_link = _load_wasm_link()
-wasm_link_callable_table = importlib.import_module("wasm_link_callable_table")
-wasm_archive = importlib.import_module("wasm_archive")
-wasm_link_command = importlib.import_module("wasm_link_command")
-wasm_link_edit = importlib.import_module("wasm_link_edit")
-wasm_link_export_contract = importlib.import_module("wasm_link_export_contract")
-wasm_link_fact_provider = importlib.import_module("wasm_link_fact_provider")
-wasm_link_format = importlib.import_module("wasm_link_format")
-wasm_link_native_inputs = importlib.import_module("wasm_link_native_inputs")
-wasm_link_operations = importlib.import_module("wasm_link_operations")
-wasm_link_optimize = importlib.import_module("wasm_link_optimize")
-wasm_link_optimizer_policy = importlib.import_module("wasm_link_optimizer_policy")
-wasm_link_pipeline = importlib.import_module("wasm_link_pipeline")
-wasm_link_runtime_data = importlib.import_module("wasm_link_runtime_data")
-wasm_link_transaction = importlib.import_module("wasm_link_transaction")
-wasm_link_validation = importlib.import_module("wasm_link_validation")
 
 _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = (
     wasm_link_fact_provider.make_rust_wasm_facts_provider
@@ -329,7 +320,7 @@ def test_split_link_pipeline_projects_typed_source_extension_requirements() -> N
         "molt.cli.source_extension_link_requirements",
         "render_source_extension_link_arguments",
     ) in direct_imports
-    assert ("wasm_stub_wasi", "stub_wasi_imports") in direct_imports
+    assert ("tools.wasm_stub_wasi", "stub_wasi_imports") in direct_imports
     assert "render_source_extension_link_arguments" in direct_calls
     assert "stub_wasi_imports" in direct_calls
     assert not any(
@@ -364,12 +355,13 @@ def test_wasm_link_cache_bench_imports_owner_authorities_directly() -> None:
     }
 
     assert {
-        "wasm_link_runtime_data",
-        "wasm_link_fact_provider",
-        "wasm_link_optimizer_policy",
-        "wasm_metrics",
+        "tools.wasm_link_runtime_data",
+        "tools.wasm_link_fact_provider",
+        "tools.wasm_link_optimizer_policy",
+        "tools.wasm_metrics",
     }.issubset(direct_modules)
     assert "wasm_link" not in imported_names
+    assert "tools.wasm_link" not in direct_modules
     assert not any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)

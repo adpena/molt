@@ -1,34 +1,27 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
+import importlib
 import json
 import re
 import subprocess
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 from tests.process_guard_common import install_module_view
 
-ROOT = Path(__file__).resolve().parents[1]
-GEN_WASM_ABI = ROOT / "tools" / "gen_wasm_abi.py"
-WASM_ABI_GEN_ROOT = ROOT / "tools"
-
-if str(WASM_ABI_GEN_ROOT) not in sys.path:
-    sys.path.insert(0, str(WASM_ABI_GEN_ROOT))
-
-from generator_io import generated_file_matches, stale_outputs  # noqa: E402
-from wasm_abi_gen import manifest  # noqa: E402
-from wasm_abi_gen.paths import (  # noqa: E402
+from tools import gen_wasm_abi
+from tools.generator_io import generated_file_matches, stale_outputs
+from tools.wasm_abi_gen import manifest
+from tools.wasm_abi_gen.paths import (
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_BOXED_ABI_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
 )
 
-_GEN_CACHE: object | None = None
+ROOT = Path(__file__).resolve().parents[1]
 _MANIFEST_CACHE: dict | None = None
 _MANIFEST_CACHE_BASELINE: dict | None = None
 _RENDERED_RS_MODULES_CACHE: dict[str, str] | None = None
@@ -38,20 +31,17 @@ _RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
 _RENDERED_ALLOWED_IMPORTS_CACHE: str | None = None
 
 
-def _load_gen_wasm_abi():
-    global _GEN_CACHE
-    if _GEN_CACHE is not None:
-        return _GEN_CACHE
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_gen_wasm_abi", GEN_WASM_ABI
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    _install_gen_cache(module)
-    _GEN_CACHE = module
-    return module
+@pytest.fixture(scope="module", autouse=True)
+def _gen_render_cache():
+    """Memoize the generator's manifest load and renders for this module only.
+
+    The wrappers replace ``tools.gen_wasm_abi`` globals so the generator's own
+    internal calls hit the cache too; the context restores the originals when
+    this module's tests finish.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        _install_gen_cache(gen_wasm_abi, patch)
+        yield
 
 
 def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
@@ -117,7 +107,7 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
 
 
 def test_intrinsic_aliases_share_one_wasm_executable_import() -> None:
-    data = _load_gen_wasm_abi().load_manifest()
+    data = gen_wasm_abi.load_manifest()
     runtime_names = [entry.get("runtime_name") for entry in data["import"]]
     declarations = manifest._intrinsic_manifest_names()
     for alias, symbol in (
@@ -131,7 +121,7 @@ def test_intrinsic_aliases_share_one_wasm_executable_import() -> None:
 
 
 def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     specs = data["runtime_callable_abi"]
     symbols = {spec["runtime_name"]: spec for spec in specs}
@@ -174,7 +164,7 @@ def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> N
 
 
 def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     specs = data["runtime_raw_abi"]
     symbols = {spec["runtime_name"]: spec["arity"] for spec in specs}
@@ -214,7 +204,7 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
 
 
 def test_runtime_callable_abi_rejects_transport_arity_drift() -> None:
-    data = copy.deepcopy(_load_gen_wasm_abi().load_manifest())
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
     entry = next(
         row for row in data["import"] if row.get("runtime_name") == "molt_abs_builtin"
     )
@@ -226,7 +216,7 @@ def test_runtime_callable_abi_rejects_transport_arity_drift() -> None:
 
 
 def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     specs = manifest.runtime_boxed_call_specs(data)
     symbols = {spec["runtime_name"]: spec for spec in specs}
@@ -326,7 +316,7 @@ def _contextvars_provider_arities() -> dict[str, int]:
 
 
 def test_contextvars_callable_family_has_one_boxed_return_authority() -> None:
-    data = _load_gen_wasm_abi().load_manifest()
+    data = gen_wasm_abi.load_manifest()
     expected = _contextvars_provider_arities()
     entries = {
         entry["name"]: entry
@@ -366,7 +356,7 @@ def test_contextvars_callable_family_has_one_boxed_return_authority() -> None:
 
 
 def test_compiler_only_boxed_abi_keeps_owned_results_private() -> None:
-    data = _load_gen_wasm_abi().load_manifest()
+    data = gen_wasm_abi.load_manifest()
     entries = {entry["name"]: entry for entry in data["import"]}
     specs = {
         spec["runtime_name"]: spec for spec in manifest.runtime_boxed_call_specs(data)
@@ -638,7 +628,7 @@ def test_op_loop_cannot_redeclare_return_sink_policy(section: str) -> None:
 def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_projection() -> (
     None
 ):
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     contracts = manifest.runtime_import_return_specs(data)
     assert len(contracts) == len(data["import"])
@@ -729,7 +719,7 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
 
 
 def test_fixed_arity_constructors_take_raw_word_ranges_not_boxed_operands() -> None:
-    data = _load_gen_wasm_abi().load_manifest()
+    data = gen_wasm_abi.load_manifest()
     imports = {entry["name"]: entry for entry in data["import"]}
     contracts = manifest.runtime_import_return_specs(data)
     boxed = {row["runtime_name"] for row in manifest.runtime_boxed_call_specs(data)}
@@ -760,7 +750,7 @@ def test_fixed_arity_constructors_take_raw_word_ranges_not_boxed_operands() -> N
 def test_op_loop_rejects_returns_that_require_a_dedicated_lifetime_protocol(
     import_name: str,
 ) -> None:
-    data = copy.deepcopy(_load_gen_wasm_abi().load_manifest())
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
     data["op_loop_runtime_call"].append(
         {"kind": "synthetic_forbidden_sink", "import_name": import_name, "args": []}
     )
@@ -769,7 +759,7 @@ def test_op_loop_rejects_returns_that_require_a_dedicated_lifetime_protocol(
 
 
 def test_op_loop_rejects_a_marked_import_with_a_different_return_contract() -> None:
-    data = copy.deepcopy(_load_gen_wasm_abi().load_manifest())
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
     observer = next(
         row
         for row in data["op_loop_runtime_call"]
@@ -782,7 +772,7 @@ def test_op_loop_rejects_a_marked_import_with_a_different_return_contract() -> N
         manifest.validate_loaded_manifest(data)
 
 
-def _install_gen_cache(gen) -> None:
+def _install_gen_cache(gen, patch: pytest.MonkeyPatch) -> None:
     uncached_load_manifest = gen.load_manifest
     uncached_render_rs_modules = gen.render_rs_modules
     uncached_render_runtime_callables_rs = gen.render_runtime_callables_rs
@@ -841,12 +831,14 @@ def _install_gen_cache(gen) -> None:
             return _RENDERED_ALLOWED_IMPORTS_CACHE
         return uncached_render_allowed_imports(data)
 
-    gen.load_manifest = load_manifest_cached
-    gen.render_rs_modules = render_rs_modules_cached
-    gen.render_runtime_callables_rs = render_runtime_callables_rs_cached
-    gen.render_py = render_py_cached
-    gen.render_table_layout_inc = render_table_layout_inc_cached
-    gen.render_allowed_imports = render_allowed_imports_cached
+    patch.setattr(gen, "load_manifest", load_manifest_cached)
+    patch.setattr(gen, "render_rs_modules", render_rs_modules_cached)
+    patch.setattr(
+        gen, "render_runtime_callables_rs", render_runtime_callables_rs_cached
+    )
+    patch.setattr(gen, "render_py", render_py_cached)
+    patch.setattr(gen, "render_table_layout_inc", render_table_layout_inc_cached)
+    patch.setattr(gen, "render_allowed_imports", render_allowed_imports_cached)
 
 
 def _reset_render_caches() -> None:
@@ -880,7 +872,7 @@ def _manifest_cache_is_read_only():
 
 
 def test_runtime_import_variants_are_fresh_immutable_render_inputs() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = {"import": [{"name": "first_import"}]}
     first = gen._runtime_import_variants(data)
     assert dict(first) == {"first_import": "FirstImport"}
@@ -899,7 +891,7 @@ def test_runtime_import_variants_are_fresh_immutable_render_inputs() -> None:
 
 @pytest.mark.parametrize("names", [("test_name", "test__name"), ("same", "same")])
 def test_runtime_import_variant_collisions_keep_exact_diagnostics(names) -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = {"import": [{"name": names[0]}]}
     gen._runtime_import_variants(data)
     data["import"].append({"name": names[1]})
@@ -915,7 +907,7 @@ def test_runtime_import_variant_collisions_keep_exact_diagnostics(names) -> None
 def test_rust_render_derives_import_variants_once_per_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = copy.deepcopy(gen.load_manifest())
     calls = 0
     derive = gen._runtime_import_variants
@@ -961,7 +953,7 @@ def _exec_rendered_py(rendered_py: str) -> dict[str, object]:
 
 
 def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     modules = {
         "mod.rs": "mod child;\n",
         "child.rs": "pub(crate) fn child() {}\n",
@@ -992,7 +984,7 @@ def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
 
 
 def test_wasm_abi_generated_files_are_in_sync() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     assert gen._stale_generated_files() == []
     # Render from source (bypassing the render cache) so the renderer itself is
     # proven, then compare paths rather than text: pytest's text diff can take
@@ -1006,7 +998,7 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
 def test_generated_projection_diagnostic_is_bounded(
     tmp_path, capsys, monkeypatch, state
 ) -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     path = tmp_path / "large_generated.py"
     expected = 'callable = ("i64", "i64")\n' * 60_000
     if state == "stale":
@@ -1031,7 +1023,7 @@ def test_generated_projection_diagnostic_is_bounded(
 def test_retired_outputs_fail_closed_without_deletion(
     tmp_path, monkeypatch, retired
 ) -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     out_dir = tmp_path / "wasm_abi_generated"
     out_dir.mkdir()
     legacy = tmp_path / "wasm_abi_generated.rs"
@@ -1063,7 +1055,7 @@ def test_retired_outputs_fail_closed_without_deletion(
 def test_render_cache_round_trips_exactly_the_generated_outputs(
     tmp_path, monkeypatch
 ) -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     monkeypatch.setattr(gen, "WASM_ABI_GEN_CACHE", tmp_path / "cache")
     outputs = {path: f"// {path.name}\n" for path in gen.OUTPUT_PATHS}
 
@@ -1117,7 +1109,7 @@ def test_linked_shared_header_declaration_changes_signatures_and_cache_key(
     assert shared_header in {
         path.resolve() for path in manifest.generator_input_files()
     }
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     monkeypatch.setattr(gen, "generator_runtime_export_signature_rows", lambda: ())
     monkeypatch.setattr(gen, "generator_cpython_abi_link_import_kinds", lambda: ())
     original_read_bytes = Path.read_bytes
@@ -1185,7 +1177,7 @@ def test_linked_header_closure_rejects_missing_local_dependency(
 
 
 def test_external_native_function_signature_authority_is_complete() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     cpython_signatures = {
         name: (params, results)
@@ -1243,7 +1235,7 @@ def test_external_native_function_signature_authority_is_complete() -> None:
 
 
 def test_wasm_abi_manifest_owns_static_type_section() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     static_types = data["static_type"]
     static_type_count = len(static_types)
@@ -1283,7 +1275,7 @@ def test_wasm_abi_manifest_owns_static_type_section() -> None:
 
 
 def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     manifest_names = {entry["name"] for entry in data["import"]}
     imports_by_name = {entry["name"]: entry for entry in data["import"]}
@@ -1446,8 +1438,8 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
 
 
 def test_runtime_export_sources_follow_cargo_dependency_authority() -> None:
-    gen = _load_gen_wasm_abi()
-    manifest = importlib.import_module("wasm_abi_gen.manifest")
+    gen = gen_wasm_abi
+    manifest = importlib.import_module("tools.wasm_abi_gen.manifest")
 
     roots = set(manifest._runtime_crate_dependency_roots())
     assert ROOT / "runtime/molt-runtime" in roots
@@ -1472,7 +1464,7 @@ def test_runtime_export_sources_follow_cargo_dependency_authority() -> None:
 
 
 def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     prefixes = {entry["prefix"] for entry in data["pure_skip_prefix"]}
     assert {"process_", "socket", "db_", "ws_", "time_"} <= prefixes
@@ -1482,7 +1474,7 @@ def test_wasm_abi_manifest_owns_pure_profile_prefixes() -> None:
 
 
 def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     assert "runtime_feature" not in manifest.MANIFEST.read_text(encoding="utf-8")
     imports = {entry["name"]: entry for entry in data["import"]}
@@ -1897,7 +1889,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
 
 
 def test_native_poll_keys_follow_manifest_slots_in_runtime_and_compiler() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = copy.deepcopy(gen.load_manifest())
     poll = next(entry for entry in data["import"] if "poll_table_slot" in entry)
     added = copy.deepcopy(poll)
@@ -1938,7 +1930,7 @@ def test_native_poll_keys_follow_manifest_slots_in_runtime_and_compiler() -> Non
 def test_python_builtin_module_metadata_matches_cpython() -> None:
     import builtins
 
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     entries = gen._python_builtin_global_callables(gen.load_manifest())
     assert entries
     for entry in entries:
@@ -1982,7 +1974,7 @@ def test_wasm_trampoline_keeps_the_cross_target_owned_result_contract() -> None:
 
 
 def test_runtime_features_are_derived_not_manifest_owned() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     loaded = gen.load_manifest()
     manifest.validate_loaded_manifest(copy.deepcopy(loaded))
     loaded_imports = {entry["name"]: entry for entry in loaded["import"]}
@@ -2020,7 +2012,7 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
 
 
 def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
 
     rematerialized = copy.deepcopy(data)
@@ -2078,7 +2070,7 @@ def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> No
 
 
 def test_witness_frontier_runtime_callables_must_be_reserved() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
 
     broken = copy.deepcopy(data)
@@ -2098,7 +2090,7 @@ def test_witness_frontier_runtime_callables_must_be_reserved() -> None:
 
 
 def test_dynamic_builtin_family_uses_shared_python_specs_and_reserved_abi() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     rows = {
         entry["python_name"]: entry
         for entry in gen._python_builtin_global_callables(gen.load_manifest())
@@ -2129,7 +2121,7 @@ def test_dynamic_builtin_family_uses_shared_python_specs_and_reserved_abi() -> N
 
 
 def test_wasm_abi_runtime_import_aliases_are_unambiguous() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
 
     broken = copy.deepcopy(data)
@@ -2142,7 +2134,7 @@ def test_wasm_abi_runtime_import_aliases_are_unambiguous() -> None:
 
 
 def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     imports = {entry["name"]: entry for entry in data["import"]}
     runtime_callables = {
@@ -2187,7 +2179,7 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
 
 
 def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
 
     # load_manifest performs the full Rust-export ABI validation; keep readable
@@ -2297,7 +2289,7 @@ def test_python_callable_abi_and_cache_include_native_only_providers(
 
 
 def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     calls = {entry["variant"]: entry for entry in data["lir_runtime_call"]}
     op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
@@ -2486,7 +2478,7 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
 
 
 def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     selectors = {
         (entry["op"], entry["fact"]): (
@@ -2559,7 +2551,7 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
 
 
 def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     selectors = {
         (entry["family"], entry["extra_arg_count"]): entry["import_name"]
@@ -2623,7 +2615,7 @@ def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
 
 
 def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     selectors = {
         entry["kind"]: (
@@ -2715,7 +2707,7 @@ def test_wasm_abi_manifest_owns_numeric_runtime_selector() -> None:
 
 
 def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     static_types = data["static_type"]
     imports = {entry["name"]: entry for entry in data["import"]}
@@ -2765,7 +2757,7 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
 
 
 def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     op_loop_calls = {entry["kind"]: entry for entry in data["op_loop_runtime_call"]}
 
@@ -2791,7 +2783,7 @@ def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
 
 
 def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     ops = {entry["kind"]: entry for entry in data["wasm_bulk_memory_op"]}
 
@@ -2851,7 +2843,7 @@ def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
 
 
 def test_wasm_abi_policy_projects_ir_owned_literals() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     policies = {entry["kind"]: entry for entry in data["const_op_policy"]}
 
@@ -2897,7 +2889,7 @@ def test_wasm_abi_policy_projects_ir_owned_literals() -> None:
 
 
 def test_wasm_abi_manifest_rejects_retired_parse_scalar_literal_policy() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     broken = copy.deepcopy(data)
     broken["const_op_policy"][0]["parse_scalar_literal"] = False
@@ -2911,7 +2903,7 @@ def test_wasm_abi_manifest_rejects_retired_parse_scalar_literal_policy() -> None
 def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matchers() -> (
     None
 ):
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
 
     rendered_rs = _rendered_rs(gen, data)
@@ -2930,7 +2922,7 @@ def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matcher
 
 
 def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
 
     poll_slots = {
@@ -3030,7 +3022,7 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
 
 
 def test_wasm_abi_manifest_owns_host_import_policy() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
 
     allowed = [entry["name"] for entry in data["link_allowed_import"]]
@@ -3140,7 +3132,7 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
 
 
 def test_wasm_abi_manifest_owns_link_export_policy() -> None:
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = gen.load_manifest()
     policy = data["output_export_policy"]
 
@@ -3224,7 +3216,7 @@ def test_wasm_literal_projection_includes_aliases_and_rejects_local_drift() -> N
         "literal": "bytes",
         "alias": "bytes",
     }
-    gen = _load_gen_wasm_abi()
+    gen = gen_wasm_abi
     data = copy.deepcopy(gen.load_manifest())
     next(row for row in data["const_op_policy"] if row["kind"] == "const_str")[
         "literal_payload"

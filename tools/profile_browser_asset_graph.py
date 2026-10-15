@@ -6,8 +6,18 @@ import json
 import time
 from pathlib import Path
 
-from gen_browser_asset_graph import AssetSource, _read_manifest, scan_sources
-from molt.dx import scratch_dir
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.gen_browser_asset_graph import AssetSource, _read_manifest, scan_sources  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

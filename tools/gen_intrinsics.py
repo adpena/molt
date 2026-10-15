@@ -16,14 +16,21 @@ import re
 import sys
 import tempfile
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 
 from tools.wasm_abi_gen.intrinsic_availability import (  # noqa: E402
     load_intrinsic_availability,
@@ -301,12 +308,8 @@ _HARNESS_MEMORY_GUARD = None
 def _load_harness_memory_guard():
     global _HARNESS_MEMORY_GUARD
     if _HARNESS_MEMORY_GUARD is None:
-        try:
-            from tools import harness_memory_guard
-        except (
-            ModuleNotFoundError
-        ):  # pragma: no cover - direct script import from tools/
-            import harness_memory_guard  # type: ignore
+        from tools import harness_memory_guard  # type: ignore
+
         _HARNESS_MEMORY_GUARD = harness_memory_guard
     return _HARNESS_MEMORY_GUARD
 

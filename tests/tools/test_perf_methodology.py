@@ -11,7 +11,7 @@ for _root in (REPO_ROOT / "tools", REPO_ROOT / "src"):
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
-import perf_methodology as pm  # noqa: E402
+from tools import perf_methodology as pm  # noqa: E402
 from molt.cli.python_import_resolution import (  # noqa: E402
     LocalPythonModuleResolver,
     PythonImportPolicy,

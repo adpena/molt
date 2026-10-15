@@ -27,13 +27,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import harness_memory_guard  # noqa: E402
-import perf_calibration  # noqa: E402
+
+from tools import harness_memory_guard  # noqa: E402
+from tools import perf_calibration  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
@@ -41,10 +48,7 @@ from molt.memory_guard_paths import (  # noqa: E402
 )
 from molt.temporary_artifacts import SCRATCH_ENV  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

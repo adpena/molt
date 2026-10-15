@@ -1,53 +1,34 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import json
 import math
 import struct
 import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
+from tools.numeric_attestation import run_l7_numeric_attestation as runner
+
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNER_PATH = ROOT / "tools" / "bench" / "run_l7_numeric_attestation.py"
-SPEC = importlib.util.spec_from_file_location(
-    "l7_numeric_attestation_runner", RUNNER_PATH
-)
-assert SPEC is not None and SPEC.loader is not None
-runner = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = runner
-SPEC.loader.exec_module(runner)
+RUNNER_PATH = ROOT / "tools" / "numeric_attestation" / "run_l7_numeric_attestation.py"
 
 SHA = "a" * 64
 NONCE = "b" * 32
 
 
-def test_candidate_entrypoint_selects_its_own_benchmark_modules(monkeypatch):
-    from tools.import_file import load_module_from_path
+def test_candidate_entrypoint_shares_one_numeric_attestation_module():
+    from tools import run_candidate_runtime_costs as candidate
 
-    for name in (
-        "run_l7_numeric_attestation",
-        "run_list_delta_attestation",
-        "tools._candidate_import_probe",
-    ):
-        foreign = ModuleType(name)
-        foreign.__file__ = f"/foreign-checkout/{name}.py"
-        monkeypatch.setitem(sys.modules, name, foreign)
-    candidate = load_module_from_path(
-        "tools._candidate_import_probe", ROOT / "tools/run_candidate_runtime_costs.py"
-    )
     assert Path(candidate.l7.__file__).resolve() == RUNNER_PATH.resolve()
     assert (
         Path(candidate.lists.__file__).resolve()
-        == (ROOT / "tools/bench/run_list_delta_attestation.py").resolve()
+        == (ROOT / "tools/numeric_attestation/run_list_delta_attestation.py").resolve()
     )
-    assert candidate.lists.l7 is candidate.l7
-    assert sys.modules["run_l7_numeric_attestation"] is candidate.l7
-    assert sys.modules["run_list_delta_attestation"] is candidate.lists
+    assert candidate.lists.l7 is candidate.l7 is runner
 
 
 def _reported(values: list[float]) -> dict[str, float]:
@@ -228,7 +209,7 @@ def _bundle() -> dict:
         "kind": runner.BUNDLE_KIND,
         "generated_at_utc": "2026-07-13T00:00:00+00:00",
         "runner": {
-            "path": "tools/bench/run_l7_numeric_attestation.py",
+            "path": "tools/numeric_attestation/run_l7_numeric_attestation.py",
             "runs_per_component": runs,
             "timing_scope": runner.TIMING_SCOPE,
             "case_order": "exact",

@@ -72,12 +72,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
 
-import harness_memory_guard  # noqa: E402
+
+from tools import harness_memory_guard  # noqa: E402
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
@@ -208,11 +215,7 @@ def _build_one(case: SmokeCase, *, out_dir: Path, rebuild: bool) -> Path:
 
     # Reuse the canonical helper used by the wasm parity tests so we don't
     # diverge from the in-repo build pipeline.
-    sys.path.insert(0, str(REPO_ROOT))
-    try:
-        from tests.wasm_linked_runner import build_wasm_linked  # type: ignore
-    finally:
-        sys.path.pop(0)
+    from tests.wasm_linked_runner import build_wasm_linked
 
     case_dir = out_dir / case.name
     case_dir.mkdir(parents=True, exist_ok=True)

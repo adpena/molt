@@ -1,26 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
-import sys
 from types import ModuleType
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TOOL_PATH = REPO_ROOT / "tools" / "check_runtime_bridge_test_stubs.py"
-
-
-def _load_tool() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_check_runtime_bridge_test_stubs",
-        TOOL_PATH,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import check_runtime_bridge_test_stubs
 
 
 def _write_fixture(root: Path, *, stub_body: str = "") -> Path:
@@ -69,7 +52,7 @@ def _point_tool_at(tool: ModuleType, monkeypatch, root: Path, stub: Path) -> Non
 
 
 def test_parser_covers_core_plain_and_unsafe_externs(monkeypatch, tmp_path):
-    tool = _load_tool()
+    tool = check_runtime_bridge_test_stubs
     stub = _write_fixture(tmp_path)
     _point_tool_at(tool, monkeypatch, tmp_path, stub)
 
@@ -81,7 +64,7 @@ def test_parser_covers_core_plain_and_unsafe_externs(monkeypatch, tmp_path):
 
 
 def test_write_publishes_canonical_stub(monkeypatch, tmp_path):
-    tool = _load_tool()
+    tool = check_runtime_bridge_test_stubs
     stub = _write_fixture(tmp_path)
     _point_tool_at(tool, monkeypatch, tmp_path, stub)
 
@@ -99,7 +82,7 @@ def test_write_publishes_canonical_stub(monkeypatch, tmp_path):
 
 
 def test_missing_stub_fails_closed(monkeypatch, tmp_path, capsys):
-    tool = _load_tool()
+    tool = check_runtime_bridge_test_stubs
     stub = _write_fixture(
         tmp_path,
         stub_body="aborting_bridge_stub!(molt_core_symbol);\n",
@@ -115,7 +98,7 @@ def test_missing_stub_fails_closed(monkeypatch, tmp_path, capsys):
 
 
 def test_live_stub_file_is_in_sync():
-    tool = _load_tool()
+    tool = check_runtime_bridge_test_stubs
 
     assert tool.main(["--check"]) == 0
     symbols = tool.declared_bridge_symbols()

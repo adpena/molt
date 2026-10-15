@@ -1,22 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
-
-def _load_tool():
-    root = Path(__file__).resolve().parents[2]
-    path = root / "tools" / "check_tk_import_authority.py"
-    spec = importlib.util.spec_from_file_location(
-        "check_tk_import_authority_under_test", path
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+from tools import check_tk_import_authority
 
 
 def _write_minimal_tree(tmp_path: Path, *, root_use: bool = False) -> tuple[Path, Path]:
@@ -47,14 +33,14 @@ def _write_minimal_tree(tmp_path: Path, *, root_use: bool = False) -> tuple[Path
 
 
 def test_accepts_explicit_import_authority(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_tk_import_authority
     root, tk_dir = _write_minimal_tree(tmp_path)
 
     assert module.find_tk_import_authority_violations(tk_root=root, tk_dir=tk_dir) == []
 
 
 def test_rejects_private_root_import_authority(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_tk_import_authority
     root, tk_dir = _write_minimal_tree(tmp_path, root_use=True)
 
     violations = module.find_tk_import_authority_violations(tk_root=root, tk_dir=tk_dir)
@@ -68,7 +54,7 @@ def test_rejects_private_root_import_authority(tmp_path: Path) -> None:
 
 
 def test_rejects_tk_prelude_module_and_file(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_tk_import_authority
     root, tk_dir = _write_minimal_tree(tmp_path)
     root.write_text(
         "mod args;\nmod prelude;\npub use intrinsics::*;\n", encoding="utf-8"
@@ -90,7 +76,7 @@ def test_rejects_tk_prelude_module_and_file(tmp_path: Path) -> None:
 
 
 def test_rejects_child_and_widget_prelude_imports(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_tk_import_authority
     root, tk_dir = _write_minimal_tree(tmp_path)
     (tk_dir / "args.rs").write_text("use super::prelude::*;\n", encoding="utf-8")
     (tk_dir / "widgets" / "common.rs").write_text(
@@ -107,7 +93,7 @@ def test_rejects_child_and_widget_prelude_imports(tmp_path: Path) -> None:
 
 
 def test_rejects_root_wildcards_and_widget_common_reexport(tmp_path: Path) -> None:
-    module = _load_tool()
+    module = check_tk_import_authority
     root, tk_dir = _write_minimal_tree(tmp_path)
     (tk_dir / "args.rs").write_text("use super::*;\n", encoding="utf-8")
     (tk_dir / "widgets" / "common.rs").write_text(

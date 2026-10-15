@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
 
 from collections.abc import Iterable, Mapping, Sequence
 import contextlib
@@ -13,7 +13,7 @@ import tempfile
 from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 
-from command_execution import CommandExecutor
+from tools.command_execution import CommandExecutor
 from molt.wasm_linking_symbols import (
     FLAG_BINDING_GLOBAL,
     FLAG_BINDING_WEAK,
@@ -22,7 +22,7 @@ from molt.wasm_linking_symbols import (
     SYMBOL_BINDING_MASK,
     WasmLinkingSymbol,
 )
-from wasm_link_format import (
+from tools.wasm_link_format import (
     FLAG_UNDEFINED,
     _append_linking_function_symbols,
     _is_wasm_binary,

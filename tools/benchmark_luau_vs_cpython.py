@@ -33,16 +33,21 @@ import tempfile
 import time
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_ROOT = REPO_ROOT / "tools"
 SRC_ROOT = REPO_ROOT / "src"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-import harness_memory_guard  # noqa: E402
-import perf_authority  # noqa: E402
+
+from tools import harness_memory_guard  # noqa: E402
+from tools import perf_authority  # noqa: E402
 from molt.dx import configured_artifact_root, development_artifact_env  # noqa: E402
 
 

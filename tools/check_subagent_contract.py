@@ -25,7 +25,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-_REPO = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 
 # --- The gate's OWN authority (independent of the module under audit) ----------------------
 #
@@ -77,12 +84,9 @@ class AuditResult:
 
 
 def _import_contract():
-    """Import the real contract module (works as a script and under pytest)."""
-    try:
-        from tools import subagent_contract
-    except ImportError:
-        sys.path.insert(0, str(_REPO))
-        from tools import subagent_contract
+    """Import the real contract module; the bootstrap makes `tools` resolvable."""
+    from tools import subagent_contract
+
     return subagent_contract
 
 

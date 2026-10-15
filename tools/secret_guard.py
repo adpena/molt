@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+
 ALLOW_MARKER = "secret-guard: allow"
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 ASSIGNMENT_HEAD_RE = re.compile(

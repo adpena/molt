@@ -1,30 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
 import datetime as dt
-import sys
-import uuid
 from types import SimpleNamespace
 from pathlib import Path
-from types import ModuleType
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "tools" / "bench_backend_incremental.py"
-
-
-def _load_module() -> ModuleType:
-    name = f"bench_backend_incremental_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import bench_backend_incremental as mod
 
 
 def test_case_env_uses_canonical_internal_roots(tmp_path: Path, monkeypatch) -> None:
-    mod = _load_module()
     case_root = tmp_path / "case"
     ext_root = tmp_path / "ext"
 
@@ -63,7 +46,6 @@ def test_case_env_uses_canonical_internal_roots(tmp_path: Path, monkeypatch) -> 
 
 
 def test_resolve_output_root_defaults_under_tmp(tmp_path: Path, monkeypatch) -> None:
-    mod = _load_module()
     ext_root = tmp_path / "ext"
     ext_root.mkdir()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
@@ -84,7 +66,6 @@ def test_resolve_output_root_defaults_under_tmp(tmp_path: Path, monkeypatch) -> 
 
 
 def test_backend_incremental_uses_shared_phase_result_schema() -> None:
-    mod = _load_module()
     from tools import throughput_measurement
 
     assert mod.PhaseResult is throughput_measurement.PhaseResult
@@ -94,7 +75,6 @@ def test_run_command_records_shared_measurement_payload(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    mod = _load_module()
     output = tmp_path / "program.rs"
     output.write_bytes(b"compiled")
 

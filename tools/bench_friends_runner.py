@@ -1,18 +1,18 @@
 import statistics
 from pathlib import Path
 
-from bench_friends_env import _materialize_output_env_paths
-from bench_friends_manifest import _resolve_env, _resolve_tokenized
-from bench_friends_phase import (
+from tools.bench_friends_env import _materialize_output_env_paths
+from tools.bench_friends_manifest import _resolve_env, _resolve_tokenized
+from tools.bench_friends_phase import (
     _extract_structured_elapsed,
     _metric_slug,
     _molt_failure_reason_suffix,
     _run_command,
 )
-from bench_friends_types import RunnerResult, RunnerSpec, SuiteSpec
+from tools.bench_friends_types import RunnerResult, RunnerSpec, SuiteSpec
 
-import harness_memory_guard
-import perf_authority
+from tools import harness_memory_guard
+from tools import perf_authority
 
 
 def _run_prepare_steps(

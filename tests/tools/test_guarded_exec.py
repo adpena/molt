@@ -1,27 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
+from tools import guarded_exec
+
 # Cargo runs here are fakes; the admission test patches the probe itself.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-GUARDED_EXEC = REPO_ROOT / "tools" / "guarded_exec.py"
-
-
-def _load_guarded_exec():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_guarded_exec", GUARDED_EXEC
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _install_fake_context(module, monkeypatch, result=None):
@@ -81,7 +68,7 @@ def _install_fake_context(module, monkeypatch, result=None):
 def test_guarded_exec_metrics_preserve_child_and_infrastructure_outcomes(
     tmp_path, monkeypatch
 ) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     guard = module.harness_memory_guard.memory_guard
     failure = guard.GuardInfrastructureFailure(
         phase="temporary_artifact_custody", details=("invalid index",)
@@ -117,7 +104,7 @@ def test_guarded_exec_signal_metrics_drive_executor_failure_scope(
     from tools import proof_plan
     from tools.memory_guard_core import reporting
 
-    module = _load_guarded_exec()
+    module = guarded_exec
     for returncode, expected in ((128, "partition"), (143, "global")):
         result = module.harness_memory_guard.GuardedCompletedProcess(
             ["fixture"],
@@ -148,7 +135,7 @@ def test_guarded_exec_signal_metrics_drive_executor_failure_scope(
 
 
 def test_guarded_exec_uses_family_timeout_env(monkeypatch) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
     monkeypatch.setenv("MOLT_WASM_TEST_TIMEOUT_SEC", "123.5")
 
@@ -160,7 +147,7 @@ def test_guarded_exec_uses_family_timeout_env(monkeypatch) -> None:
 
 
 def test_guarded_exec_cli_timeout_overrides_family_env(monkeypatch) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
     monkeypatch.setenv("MOLT_WASM_TEST_TIMEOUT_SEC", "123.5")
 
@@ -182,7 +169,7 @@ def test_guarded_exec_cli_timeout_overrides_family_env(monkeypatch) -> None:
 
 
 def test_guarded_exec_timeout_env_remains_fallback(monkeypatch) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
     monkeypatch.delenv("MOLT_WASM_TEST_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("MOLT_TEST_PROCESS_TIMEOUT_SEC", raising=False)
@@ -206,7 +193,7 @@ def test_guarded_exec_timeout_env_remains_fallback(monkeypatch) -> None:
 
 
 def test_guarded_exec_family_timeout_can_disable_fallback(monkeypatch) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
     monkeypatch.setenv("MOLT_WASM_TEST_TIMEOUT_SEC", "0")
     monkeypatch.setenv("CUSTOM_TIMEOUT_SEC", "88")
@@ -229,7 +216,7 @@ def test_guarded_exec_family_timeout_can_disable_fallback(monkeypatch) -> None:
 
 
 def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
     monkeypatch.setattr(
         module,
@@ -265,7 +252,7 @@ def test_guarded_exec_preflights_backend_llvm_toolchain(monkeypatch, capsys) -> 
 def test_guarded_exec_projects_verified_llvm_environment_into_cargo(
     monkeypatch,
 ) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
 
     def project(_root, *, environ):
@@ -298,7 +285,7 @@ def test_guarded_exec_projects_verified_llvm_environment_into_cargo(
 
 
 def test_guarded_exec_does_not_preflight_tir_all_features(monkeypatch) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
     rc = module.main(
         [
@@ -326,7 +313,7 @@ def test_guarded_exec_does_not_preflight_tir_all_features(monkeypatch) -> None:
 def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(
     tmp_path, monkeypatch
 ) -> None:
-    module = _load_guarded_exec()
+    module = guarded_exec
     guard = module.harness_memory_guard.memory_guard
     quarantine = guard.CargoIncrementalQuarantine(
         reason="timeout",
@@ -363,7 +350,7 @@ def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(
 
 
 def test_guarded_exec_forwards_sticky_cancel_and_worker_custody(tmp_path, monkeypatch):
-    module = _load_guarded_exec()
+    module = guarded_exec
     guard = module.harness_memory_guard.memory_guard
     cancel = tmp_path / "cancel"
     startup = tmp_path / "startup.json"
@@ -388,7 +375,7 @@ def test_guarded_exec_refuses_a_cargo_compile_below_the_capacity_floor(
 ) -> None:
     from molt import disk_capacity
 
-    module = _load_guarded_exec()
+    module = guarded_exec
     captured = _install_fake_context(module, monkeypatch)
     measured: list[Path] = []
 

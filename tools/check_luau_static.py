@@ -32,6 +32,14 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 _WARNING_CLASS_PATTERNS = (
     re.compile(r"\bWarning\[(?P<class>[A-Za-z_][A-Za-z0-9_]*)\]"),
     re.compile(
@@ -99,8 +107,7 @@ def _repo_root() -> Path:
 
 
 REPO_ROOT = _repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+
 
 from tools import harness_memory_guard  # noqa: E402
 

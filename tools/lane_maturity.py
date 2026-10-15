@@ -12,6 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 LEVELS = tuple(f"L{i}" for i in range(8))
 REQUIRED_EVIDENCE = {
     "L0": (),

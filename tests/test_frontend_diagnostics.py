@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -22,24 +21,10 @@ from molt.frontend.frontend_diagnostics_generated import (
     FRONTEND_DIAGNOSTIC_METADATA,
     RETIRED_FRONTEND_DIAGNOSTIC_CODES,
 )
+from tools import gen_frontend_diagnostics as GEN
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GENERATOR = ROOT / "tools/gen_frontend_diagnostics.py"
-
-
-def _load_generator():
-    spec = importlib.util.spec_from_file_location(
-        "molt_test_gen_frontend_diagnostics", GENERATOR
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-GEN = _load_generator()
 
 
 def test_generated_frontend_diagnostics_are_in_sync() -> None:

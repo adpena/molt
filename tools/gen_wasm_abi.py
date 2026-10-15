@@ -20,10 +20,18 @@ import tempfile
 from pathlib import Path
 from types import MappingProxyType
 
-from generator_io import display_path, generator_main, rustfmt_source
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from wasm_abi_gen import render_python as _render_python
-from wasm_abi_gen.manifest import (
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.generator_io import display_path, generator_main, rustfmt_source  # noqa: E402
+
+from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
+from tools.wasm_abi_gen.manifest import (  # noqa: E402
     CONTAINER_RUNTIME_SELECTOR_FACTS,
     CONTAINER_RUNTIME_SELECTOR_OPS,
     METHOD_IC_MAX_EXTRA_ARGS,
@@ -44,7 +52,7 @@ from wasm_abi_gen.manifest import (
     runtime_import_return_specs,
     runtime_export_name,
 )
-from wasm_abi_gen.paths import (
+from tools.wasm_abi_gen.paths import (  # noqa: E402
     LEGACY_OUT_RS,
     OUT_ALLOWED_IMPORTS,
     OUT_JS_ABI,
@@ -1842,9 +1850,6 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
 
 
 def _python_builtin_global_callables(data: dict) -> list[dict]:
-    src_root = ROOT / "src"
-    if str(src_root) not in sys.path:
-        sys.path.insert(0, str(src_root))
     from molt.frontend._types import (  # noqa: PLC0415
         BUILTIN_FUNC_SPECS,
         MOLT_BIND_KIND_CLINIC_NAMED,

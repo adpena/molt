@@ -11,15 +11,20 @@ from pathlib import Path
 from collections.abc import Iterable
 from typing import cast
 
-from generator_io import generator_main, rustfmt_source
-from molt.cli.build_output_layout import _DEPLOY_PROFILE_CHOICES
-from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
-from molt.wasi_sysroot import WASI_TARGET_INCLUDE_DIRS
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
+from molt.cli.build_output_layout import _DEPLOY_PROFILE_CHOICES  # noqa: E402
+from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS  # noqa: E402
+from molt.wasi_sysroot import WASI_TARGET_INCLUDE_DIRS  # noqa: E402
+
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

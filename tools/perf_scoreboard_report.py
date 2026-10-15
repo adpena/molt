@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from perf_schema import (
+from tools.perf_schema import (
     CLASS_DIMENSIONAL_WIN,
     CLASS_GREEN,
     CLASS_INFRA,
@@ -15,7 +15,7 @@ from perf_schema import (
     flatten_cells,
     validate_board,
 )
-from perf_scoreboard_model import (
+from tools.perf_scoreboard_model import (
     SCOREBOARD_DIR,
     VERDICT_BUILD_FAILED,
     VERDICT_CPY_INCOMPAT,
@@ -147,7 +147,7 @@ def print_summary(doc: dict) -> None:
         )
     print("-" * 100)
 
-    from perf_authority import scoreboard_release_eligibility
+    from tools.perf_authority import scoreboard_release_eligibility
 
     admission = scoreboard_release_eligibility(doc)
     print(
@@ -409,7 +409,7 @@ def diff_against_baseline(
         new_ratio = c.get("warm_speedup")
         old_ratio = old.get("warm_speedup")
         # "Newly gating" = a green-or-warn cell that became a hard gate fail.
-        from perf_authority import release_cell_problems
+        from tools.perf_authority import release_cell_problems
 
         was_green = not release_cell_problems(old)
         now_fails = bool(release_cell_problems(c))
@@ -468,7 +468,7 @@ def _gate_exit_code(
     """
     if no_gate:
         return 0
-    from perf_authority import scoreboard_release_eligibility
+    from tools.perf_authority import scoreboard_release_eligibility
 
     if not scoreboard_release_eligibility(doc)["eligible"]:
         return 1
@@ -634,7 +634,7 @@ def _checkpoint(
     pypy_version: str | None = None,
     codon_version: str | None = None,
 ) -> None:
-    from perf_scoreboard import build_scoreboard_doc
+    from tools.perf_scoreboard import build_scoreboard_doc
 
     doc = build_scoreboard_doc(
         cells,

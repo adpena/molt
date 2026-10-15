@@ -6,12 +6,11 @@ import json
 import sys
 from pathlib import Path
 
+
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_DIR = ROOT / "collab" / "pact" / "pact_witness_kernel"
-if str(KERNEL_DIR) not in sys.path:
-    sys.path.insert(0, str(KERNEL_DIR))
 
 
 def _import(name: str, path: Path):

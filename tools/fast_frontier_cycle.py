@@ -43,10 +43,15 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -55,10 +60,8 @@ from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 # Windows consoles default to cp1252 and choke on non-ASCII; force UTF-8 so this
 # tool never dies on an encode error while relaying subprocess output (recurring
 # Windows bug class). One shared primitive backstops it.
-try:  # importable whether launched as a script (tools/ on path) or as tools.X
-    from _io_utf8 import force_utf8_stdio
-except ModuleNotFoundError:
-    from tools._io_utf8 import force_utf8_stdio
+from tools._io_utf8 import force_utf8_stdio  # noqa: E402
+
 force_utf8_stdio()
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

@@ -21,26 +21,16 @@ See ``docs/design/foundation/67_compat_tinygrad_dflash.md`` §1.2.1 and §3.1.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from tools import gen_gpu_op_contract
+
 
 ROOT = Path(__file__).resolve().parents[1]
-GEN = ROOT / "tools" / "gen_gpu_op_contract.py"
 OUT = ROOT / "runtime/molt-gpu/op_contract.toml"
-
-
-def _load_generator():
-    spec = importlib.util.spec_from_file_location("molt_test_gen_gpu_op_contract", GEN)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_gen_gpu_op_contract"] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +39,7 @@ def _load_generator():
 
 
 def test_op_contract_is_in_sync() -> None:
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     model = gen.reconcile()
     rendered = gen.render_toml(model)
     checked_in = OUT.read_text(encoding="utf-8")
@@ -59,7 +49,7 @@ def test_op_contract_is_in_sync() -> None:
 
 
 def test_check_mode_is_green() -> None:
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     assert gen.main(["--check"]) == 0
 
 
@@ -69,7 +59,7 @@ def test_check_mode_is_green() -> None:
 
 
 def test_disposition_table_covers_primitive_op_all() -> None:
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     molt_ops = set(gen.parse_molt_primitive_ops())
     table_ops = set(gen.MOLT_OP_DISPOSITIONS)
     assert molt_ops == table_ops, (
@@ -89,7 +79,7 @@ def test_disposition_table_covers_primitive_op_all() -> None:
 def test_drift_caught_when_max_gains_code_for_op(monkeypatch) -> None:
     """If upstream gives MAX a code_for_op entry, the `rewrite` disposition for
     molt `Max` is now WRONG — the gate must catch it (reclassify as mapped)."""
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     real_code_for_op = gen.parse_code_for_op()
     drifted = dict(real_code_for_op)
     drifted["MAX"] = "max({a},{b})"  # upstream grew a renderer entry
@@ -104,7 +94,7 @@ def test_drift_caught_when_cmod_cpattern_changes(monkeypatch) -> None:
     """If upstream changes the CMOD C-pattern, the rendered contract changes; the
     byte-exact --check would go stale. Here we prove the *pattern* is sourced from
     upstream (not hardcoded) by mutating it and observing the rendered TOML move."""
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     real = gen.parse_code_for_op()
     drifted = dict(real)
     drifted["CMOD"] = "MOD_CHANGED({a},{b})"
@@ -122,7 +112,7 @@ def test_drift_caught_when_new_upstream_alu_op_appears(monkeypatch) -> None:
     """A NEW upstream GroupOp.ALU member that molt neither maps nor records a
     disposition for must FAIL as `unclassified` (the FDIV/POW-class drift). This
     is the check that would have flagged the §1.2.1 ops on day one."""
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     real_sets = gen.parse_group_op_sets()
     real_members = gen.parse_ops_enum()
     drifted_sets = dict(real_sets)
@@ -139,7 +129,7 @@ def test_drift_caught_when_new_upstream_alu_op_appears(monkeypatch) -> None:
 def test_drift_caught_when_mapped_upstream_op_disappears(monkeypatch) -> None:
     """If a molt op's claimed upstream Ops member vanishes from the pinned enum
     (an upstream rename/removal), the gate must catch the dangling claim."""
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     real_members = gen.parse_ops_enum()
     # Drop CDIV (which molt `Idiv` maps to) from the enum.
     drifted = [m for m in real_members if m != "CDIV"]
@@ -153,7 +143,7 @@ def test_drift_caught_when_mapped_upstream_op_disappears(monkeypatch) -> None:
 def test_drift_caught_when_molt_op_added_without_disposition(monkeypatch) -> None:
     """A new molt PrimitiveOp without a reconciliation row must FAIL (symmetry:
     molt cannot grow an op the contract does not classify against upstream)."""
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     real = gen.parse_molt_primitive_ops()
     monkeypatch.setattr(gen, "parse_molt_primitive_ops", lambda: real + ["NewMoltOp"])
     with pytest.raises(gen.OpContractError) as exc:
@@ -168,7 +158,7 @@ def test_real_run_is_green_after_drift_tests() -> None:
     Proves the drift tests above did not leave global state mutated (the real
     run is GREEN). Ordering-independent because each loader gives a fresh module.
     """
-    gen = _load_generator()
+    gen = gen_gpu_op_contract
     model = gen.reconcile()
     assert gen.render_toml(model) == OUT.read_text(encoding="utf-8")
 

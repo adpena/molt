@@ -42,14 +42,17 @@ from pathlib import Path
 from subprocess import SubprocessError
 from typing import Any, Callable, Optional, Sequence
 
-try:
-    from tools import harness_memory_guard
-    from tools.command_execution import CommandExecutor
-    from tools.windows_process_api import bind_process_query_api
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    import harness_memory_guard
-    from command_execution import CommandExecutor
-    from windows_process_api import bind_process_query_api
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools import harness_memory_guard  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.windows_process_api import bind_process_query_api  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

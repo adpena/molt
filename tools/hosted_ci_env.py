@@ -33,17 +33,24 @@ from pathlib import Path
 import shlex
 import sys
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = ROOT / "src"
-if str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
+
 
 from molt import dx  # noqa: E402
 
 if __package__:
     from . import ci_resource_env
 else:  # pragma: no cover - direct script execution
-    import ci_resource_env  # type: ignore
+    from tools import ci_resource_env  # type: ignore
 
 REPOSITORY = "adpena/molt"
 _RUNNER_ARCH = {

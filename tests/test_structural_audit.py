@@ -17,28 +17,15 @@ CI : python3 tools/structural_audit.py --check  (the same gate, exit-coded)
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
+from tools import structural_audit as SA
+
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "tools" / "structural_audit.py"
 BASELINE = ROOT / "tools" / "structural_audit_baseline.json"
-
-
-def _load_tool():
-    spec = importlib.util.spec_from_file_location("molt_test_structural_audit", TOOL)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["molt_test_structural_audit"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-SA = _load_tool()
 
 
 # --- 1. the ratchet gate --------------------------------------------------

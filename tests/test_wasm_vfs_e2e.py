@@ -7,20 +7,14 @@ import tarfile
 from pathlib import Path
 import pytest
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tools import wasm_bundle
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _create_bundle(src_dir: Path, output: Path) -> None:
     """Create a bundle.tar from a source directory."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "wasm_bundle", PROJECT_ROOT / "tools" / "wasm_bundle.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.create_bundle(src_dir, output)
+    wasm_bundle.create_bundle(src_dir, output)
 
 
 def test_bundle_creation_produces_valid_tar(tmp_path):

@@ -5,7 +5,7 @@
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
 version = 1
-content_sha256 = "662b25c2c15e0c2294a4385119af225ff78e9d50a685ac6d6e2947bbf9b555a4"
+content_sha256 = "983d3e6fd27a9b39361a8abc5d2c7743088245b785df1c52b91026d5bb4bae30"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -93,6 +93,10 @@ reason = "resolves benchmark paths"
 [[mechanics]]
 path = "tools/perf_methodology.py"
 reason = "this lock"
+
+[[mechanics]]
+path = "tools/import_file.py"
+reason = "binds the repository for a by-path launch"
 
 [[mechanics]]
 path = "tools/sample_profile.py"

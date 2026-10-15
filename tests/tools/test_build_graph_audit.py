@@ -26,10 +26,9 @@ from tests.process_guard_common import install_module_view
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import build_graph_audit as bga  # noqa: E402
+
+from tools import build_graph_audit as bga  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +446,7 @@ def _load_ci_gate():
     src = REPO_ROOT / "src"
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
-    import ci_gate
+    from tools import ci_gate
 
     return ci_gate
 

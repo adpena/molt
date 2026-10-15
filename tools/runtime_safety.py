@@ -9,6 +9,14 @@ import sys
 from pathlib import Path
 from collections.abc import Mapping
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 RUST_NIGHTLY = (
     (ROOT / "config" / "rust_nightly_toolchain.txt").read_text(encoding="utf-8").strip()
@@ -17,10 +25,7 @@ RUNTIME_DIR = ROOT / "runtime/molt-runtime"
 ROOT_FUZZ_DIR = ROOT / "fuzz"
 RUNTIME_FUZZ_DIR = RUNTIME_DIR / "fuzz"
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import harness_memory_guard  # type: ignore
+from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402

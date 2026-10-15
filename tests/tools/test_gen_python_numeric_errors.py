@@ -9,7 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-import gen_python_numeric_errors as policy  # noqa: E402
+from tools import gen_python_numeric_errors as policy  # noqa: E402
 from tests.process_guard_common import run_guarded_test_process  # noqa: E402
 
 

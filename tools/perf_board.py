@@ -29,7 +29,18 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from perf_schema import (
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.perf_schema import (  # noqa: E402
     CLASS_RED_STABLE,
     RED_THRESHOLD,
     SCHEMA_VERSION,
@@ -101,7 +112,7 @@ def _is_stable(cell: Mapping[str, Any]) -> bool:
 
 def _gate_cpython(cell: Mapping[str, Any], *, board_authoritative: bool) -> GateOutcome:
     """A required cell passes only with authoritative statistical win evidence."""
-    from perf_authority import release_cell_problems
+    from tools.perf_authority import release_cell_problems
 
     problems = release_cell_problems(cell)
     if not problems and board_authoritative:
@@ -455,7 +466,7 @@ def project_all(
         if isinstance(provenance, Mapping)
         else True
     )
-    from perf_authority import scoreboard_release_eligibility
+    from tools.perf_authority import scoreboard_release_eligibility
 
     source_meta = {
         "e2_eligibility": scoreboard_release_eligibility(source_doc),

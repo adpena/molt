@@ -17,13 +17,19 @@ import time
 from typing import Mapping, Sequence, cast
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 # This file is launched by absolute path from an arbitrary proof cwd.  Establish
 # the two source-layout roots before importing the owning authority modules.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_SOURCE_ROOT = _REPO_ROOT / "src"
-for _import_root in (_REPO_ROOT, _PYTHON_SOURCE_ROOT):
-    if str(_import_root) not in sys.path:
-        sys.path.insert(0, str(_import_root))
+
 _loaded_molt = sys.modules.get("molt")
 if _loaded_molt is not None and hasattr(_loaded_molt, "__path__"):
     _local_molt_root = str(_PYTHON_SOURCE_ROOT / "molt")

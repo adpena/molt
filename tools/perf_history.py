@@ -40,11 +40,21 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HISTORY_DIR = REPO_ROOT / "bench" / "scoreboard" / "history"
 
-from command_execution import CommandExecutor  # noqa: E402
-from perf_authority import perf_methodology_problems  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.perf_authority import perf_methodology_problems  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

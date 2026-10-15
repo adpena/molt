@@ -19,9 +19,9 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
-from intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
+from tools.intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
 
-from wasm_abi_gen.paths import (
+from tools.wasm_abi_gen.paths import (
     CPYTHON_ABI_SOURCE_ROOT,
     CPYTHON_ABI_VARIADIC_SHIM,
     INTRINSIC_CATEGORIES,
@@ -33,7 +33,7 @@ from wasm_abi_gen.paths import (
     ROOT,
     RUNTIME_ROOT,
 )
-from wasm_abi_gen.intrinsic_availability import (
+from tools.wasm_abi_gen.intrinsic_availability import (
     IntrinsicAvailability,
     load_intrinsic_availability,
 )

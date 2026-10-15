@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+
 PASS_DELTA_SCHEMA_VERSION = 2
 PASS_DELTA_KIND = "molt_tir_pass_delta"
 DASHBOARD_KIND = "molt_tir_pass_delta_dashboard"

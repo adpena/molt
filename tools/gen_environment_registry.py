@@ -25,12 +25,18 @@ import sys
 import tomllib
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-for _import_root in (ROOT / "tools", ROOT / "src"):
-    if str(_import_root) not in sys.path:
-        sys.path.insert(0, str(_import_root))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from generator_io import generator_main, stale_outputs  # noqa: E402
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+from tools.generator_io import generator_main, stale_outputs  # noqa: E402
 from molt.environment_registry import (  # noqa: E402
     AUDIENCES,
     KINDS,

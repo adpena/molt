@@ -25,10 +25,17 @@ from collections.abc import Callable
 from multiprocessing.connection import Connection, wait as wait_connections
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 ROOT = Path(__file__).resolve().parents[1]
 POOL_POLICY = ROOT / "config" / "ir_verification_pool.toml"
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
 
 from molt.artifact_publication import atomic_write_json  # noqa: E402
 from tools.check_ir_structure import verify_frontend_tir  # noqa: E402

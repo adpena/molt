@@ -25,8 +25,18 @@ from collections.abc import Sequence
 import runpy
 from pathlib import Path
 
-from generator_io import generator_main
-from molt.stdlib_intrinsic_policy import STDLIB_STUB_MARKER, is_stdlib_stub_source
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.generator_io import generator_main  # noqa: E402
+from molt.stdlib_intrinsic_policy import STDLIB_STUB_MARKER, is_stdlib_stub_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = ROOT / "src" / "molt" / "stdlib"

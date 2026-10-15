@@ -47,7 +47,6 @@ Hazard -> proving test(s):
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shlex
 import os
@@ -60,11 +59,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
 
-import dirty_tree_policy  # noqa: E402
-from molt_dev_common import _run_fast_captured_command  # noqa: E402
+
+from tools import dirty_tree_policy, molt_dev  # noqa: E402
+from tools.molt_dev_common import _run_fast_captured_command  # noqa: E402
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
@@ -72,18 +70,9 @@ RUNTIME_GENERATION_MANIFEST = "wasm/molt_runtime.generation.json"
 CUSTOM_IGNORED_PATH = "tmp/operator-scratch.txt"
 
 
-def _load_driver():
-    spec = importlib.util.spec_from_file_location("molt_dev_under_test", SCRIPT_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture
 def drv():
-    return _load_driver()
+    return molt_dev
 
 
 # --------------------------------------------------------------------------

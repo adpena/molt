@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 from io import StringIO
 import json
@@ -15,16 +14,30 @@ import pytest
 
 from tests import runtime_descendant_test_support as descendants
 from tests.process_guard_common import install_module_view, run_guarded_test_process
+from tools import cargo_test_binary_runner, run_cargo_test_truth
+from tools import check_cargo_test_truth as MODULE
 
 # Cargo runs in this file are fakes; build capacity is not under test.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = ROOT / "tools" / "check_cargo_test_truth.py"
-SPEC = importlib.util.spec_from_file_location("check_cargo_test_truth", MODULE_PATH)
-assert SPEC is not None and SPEC.loader is not None
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+
+
+@pytest.fixture(autouse=True)
+def _binary_runner_process_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start each test from the binary runner's import-time process state.
+
+    ``main()`` binds the evidence directory and child environment as module
+    globals for the life of its process, and ``execute_binary`` creates one
+    fallback evidence directory lazily. Tests share one module, so each test
+    gets the unset state and the previous values come back afterwards.
+    """
+    for name in (
+        "_ACTIVE_EVIDENCE_DIR",
+        "_ACTIVE_CHILD_ENVIRONMENT",
+        "_FALLBACK_EVIDENCE_TEMP",
+    ):
+        monkeypatch.setattr(cargo_test_binary_runner, name, None)
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +84,7 @@ def test_truth_command_admission_precedes_campaign(
     argv: list[str],
     exit_code: int,
 ) -> None:
-    runner = _load_tool("truth_cli_admission", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     monkeypatch.setattr(
         runner, "_main", lambda: pytest.fail("command admission launched a campaign")
     )
@@ -254,11 +267,7 @@ argv = ["cargo", "test", "--locked", "-p", "molt-ir", "--lib"]
 
 
 def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
-    runner_path = ROOT / "tools" / "run_cargo_test_truth.py"
-    spec = importlib.util.spec_from_file_location("run_cargo_test_truth", runner_path)
-    assert spec is not None and spec.loader is not None
-    runner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runner)
+    runner = run_cargo_test_truth
     context = {"platform": "windows", "target": "default"}
     registered = [
         entry["identity"]
@@ -326,13 +335,7 @@ def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
 
 
 def test_truth_runner_rejects_compile_failures_without_test_identity() -> None:
-    runner_path = ROOT / "tools" / "run_cargo_test_truth.py"
-    spec = importlib.util.spec_from_file_location(
-        "run_cargo_test_truth_compile", runner_path
-    )
-    assert spec is not None and spec.loader is not None
-    runner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runner)
+    runner = run_cargo_test_truth
     problems = runner.verdict(
         "error[E0004]: non-exhaustive patterns\nerror: could not compile `molt`",
         101,
@@ -343,20 +346,10 @@ def test_truth_runner_rejects_compile_failures_without_test_identity() -> None:
     assert any("compiler error" in problem for problem in problems)
 
 
-def _load_tool(name: str, filename: str):
-    path = ROOT / "tools" / filename
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_truth_runner_owns_only_the_root_workspace_and_binary_runner_custody(
     tmp_path: Path,
 ) -> None:
-    runner = _load_tool("run_cargo_test_truth_prefetch", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
 
     assert runner.WORKSPACE_MANIFEST == ROOT / "Cargo.toml"
     config = runner.target_runner_config("x86_64-unknown-linux-gnu", tmp_path)
@@ -382,9 +375,7 @@ def test_truth_runner_owns_only_the_root_workspace_and_binary_runner_custody(
 def test_truth_runner_traverses_the_root_workspace_exactly_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publish_binary: bool | str
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_workspace_execution", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
     monkeypatch.setattr(runner, "run_identity", lambda _started: "root-workspace")
@@ -550,9 +541,7 @@ def test_truth_runner_preflight_failure_is_terminal_without_starting_tests(
     termination: dict,
     problem: str,
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_preflight_failure", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
     monkeypatch.setattr(runner, "run_identity", lambda _started: failure)
@@ -600,7 +589,7 @@ def test_truth_runner_preflight_failure_is_terminal_without_starting_tests(
 
 
 def test_truth_runner_derives_complete_binary_coverage_from_cargo_json() -> None:
-    runner = _load_tool("run_cargo_test_truth_coverage", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     first = str((ROOT / "target" / "deps" / "one-test").resolve())
     second = str((ROOT / "target" / "deps" / "two-test").resolve())
     output = "\n".join(
@@ -672,7 +661,7 @@ def test_truth_runner_derives_complete_binary_coverage_from_cargo_json() -> None
     ],
 )
 def test_cargo_artifact_decoder_respects_compiler_vs_test_stdout_authority(raw):
-    runner = _load_tool("run_cargo_test_truth_exact_records", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     with pytest.raises(RuntimeError, match="Cargo compiler evidence"):
         list(runner.compiler_artifacts(raw, source_context="compiler-only"))
     # Arbitrary child output cannot be identified as corrupt Cargo or credited
@@ -688,9 +677,7 @@ def test_cargo_artifact_decoder_respects_compiler_vs_test_stdout_authority(raw):
 
 
 def test_cargo_artifact_decoder_keeps_dependency_records_for_feature_authority():
-    runner = _load_tool(
-        "run_cargo_test_truth_dependency_records", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     artifact = {
         "reason": "compiler-artifact",
         "profile": {"test": False},
@@ -707,7 +694,7 @@ def test_cargo_artifact_decoder_keeps_dependency_records_for_feature_authority()
 
 
 def test_truth_runner_uses_metadata_for_version_only_and_renamed_path_ids() -> None:
-    runner = _load_tool("run_cargo_test_truth_metadata_ids", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     ordinary_id = "path+file:///molt/runtime/molt-runtime#0.1.0"
     renamed_id = (
         "path+file:///molt/runtime/molt-cpython-abi#molt-lang-cpython-abi@0.1.0"
@@ -752,7 +739,7 @@ def test_truth_runner_uses_metadata_for_version_only_and_renamed_path_ids() -> N
 
 
 def test_truth_verdict_namespaces_same_test_by_package_target_and_executable() -> None:
-    runner = _load_tool("run_cargo_test_truth_namespace", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     first = str((ROOT / "target" / "deps" / "one-test").resolve())
     second = str((ROOT / "target" / "deps" / "two-test").resolve())
     expected = {
@@ -829,9 +816,7 @@ def test_truth_verdict_namespaces_same_test_by_package_target_and_executable() -
 def test_truth_structural_candidate_sets_are_red_but_never_known_red_eligible(
     kind: str,
 ) -> None:
-    runner = _load_tool(
-        f"run_cargo_test_truth_structural_{kind}", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     executable = str((ROOT / "target" / "deps" / "runtime-test").resolve())
     expected = {
         runner._executable_key(executable): {
@@ -872,9 +857,7 @@ def test_truth_structural_candidate_sets_are_red_but_never_known_red_eligible(
     "location", ["status", "diagnosis", "execution", "malformed", "missing"]
 )
 def test_truth_excludes_entire_infrastructure_receipt_from_semantic_evidence(location):
-    runner = _load_tool(
-        "run_cargo_test_truth_infrastructure", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     executable = str((ROOT / "target" / "deps" / "runtime-test").resolve())
     expected = {
         runner._executable_key(executable): {
@@ -920,7 +903,7 @@ def test_truth_excludes_entire_infrastructure_receipt_from_semantic_evidence(loc
 
 
 def test_truth_does_not_infer_infrastructure_from_exit_125():
-    runner = _load_tool("run_cargo_test_truth_exit125", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     assert (
         runner._receipt_infrastructure_problem(
             {
@@ -936,7 +919,7 @@ def test_truth_does_not_infer_infrastructure_from_exit_125():
 def test_truth_runner_retains_explicit_run_identity_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = _load_tool("run_cargo_test_truth_run_identity", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
 
     first = runner.prepare_run_directory("run-123")
@@ -954,9 +937,7 @@ def test_truth_runner_retains_explicit_run_identity_evidence(
 def test_truth_runner_terminal_failure_retains_diagnostics_and_termination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_terminal_failure", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
     started = runner.datetime.now(runner.timezone.utc)
     phase = {
@@ -997,9 +978,7 @@ def test_truth_runner_terminal_failure_retains_diagnostics_and_termination(
 def test_truth_runner_main_finalizes_compile_failure_before_attribution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_compile_checkpoint", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     monkeypatch.setattr(runner, "RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr(runner, "RECEIPT", tmp_path / "latest.json")
     monkeypatch.setattr(runner, "run_identity", lambda _started: "run-compile-failure")
@@ -1072,9 +1051,7 @@ def test_truth_runner_main_finalizes_compile_failure_before_attribution(
 def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw_test_output: str
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_bounded_stream", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     artifact = (
         json.dumps(
             {
@@ -1152,9 +1129,7 @@ def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
 def test_streamed_workspace_failure_still_waits_closes_and_publishes_partial_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_partial_stream", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     lifecycle: list[str] = []
 
     class BrokenStream:
@@ -1203,9 +1178,7 @@ def test_streamed_workspace_failure_still_waits_closes_and_publishes_partial_evi
 def test_resource_binary_runner_isolates_each_test_and_continues_after_failure(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_isolation", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     calls: list[list[str]] = []
 
     def fake_run(argv, **kwargs):
@@ -1252,9 +1225,7 @@ def test_resource_binary_runner_isolates_each_test_and_continues_after_failure(
 def test_resource_timeout_remains_structural_and_not_known_red(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_resource_structural", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     discovery = binary_runner.BinaryExecution(
         argv=("resource_enforcement", "--list"),
         returncode=0,
@@ -1317,9 +1288,7 @@ def test_resource_timeout_remains_structural_and_not_known_red(
 
 
 def test_resource_binary_detection_does_not_capture_sibling_targets() -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_detection", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
 
     assert binary_runner.is_resource_test_binary(
         "/tmp/deps/resource_enforcement-a1b2c3"
@@ -1346,9 +1315,7 @@ def test_libtest_failure_is_normalized_by_shared_authority() -> None:
 
 
 def test_binary_runner_preserves_posix_signal_and_windows_fast_fail() -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_termination", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
 
     assert binary_runner.termination_payload(-6, timed_out=False) == {
         "kind": "signal",
@@ -1378,9 +1345,7 @@ def test_binary_runner_preserves_posix_signal_and_windows_fast_fail() -> None:
 def test_binary_runner_exact_diagnosis_canonicalizes_inherited_libtest_controls() -> (
     None
 ):
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_exact_args", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     argv = binary_runner._exact_argv(
         "runtime-test",
         [
@@ -1450,9 +1415,7 @@ def test_binary_runner_exact_diagnosis_canonicalizes_inherited_libtest_controls(
 
 
 def test_binary_runner_harness_error_is_not_an_isolated_failure() -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_harness_error", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     harness_error = binary_runner.BinaryExecution(
         argv=("runtime-test", "--exact", "candidate"),
         returncode=101,
@@ -1501,9 +1464,7 @@ def test_binary_runner_harness_error_is_not_an_isolated_failure() -> None:
 def test_binary_runner_timeout_is_bounded_and_keeps_captured_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_timeout", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
 
     def fake_run(argv, **kwargs):
         error = subprocess.TimeoutExpired(
@@ -1539,9 +1500,7 @@ def test_binary_runner_records_normal_reported_failure_identities(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_reported_failure", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
 
     def fake_execute(argv: list[str], _timeout: float):
         return binary_runner.BinaryExecution(
@@ -1583,10 +1542,7 @@ def test_binary_runner_keeps_structural_candidates_out_of_known_red_identity(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_structural_candidate",
-        "cargo_test_binary_runner.py",
-    )
+    binary_runner = cargo_test_binary_runner
     baseline = binary_runner.BinaryExecution(
         argv=("molt_runtime-hash",),
         returncode=-6,
@@ -1639,9 +1595,7 @@ def test_binary_runner_keeps_structural_candidates_out_of_known_red_identity(
 def test_binary_runner_receipts_are_append_only_per_invocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_append_only", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
 
     def success(argv: list[str], _timeout: float):
         return binary_runner.BinaryExecution(
@@ -1680,9 +1634,7 @@ def test_binary_runner_receipts_are_append_only_per_invocation(
 
 
 def test_binary_runner_immutable_publish_refuses_collision(tmp_path: Path) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_immutable_collision", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     path = tmp_path / "receipt.json"
     binary_runner.write_receipt(path, {"generation": 1})
     with pytest.raises(FileExistsError):
@@ -1695,9 +1647,7 @@ def test_binary_runner_reduces_abort_to_exact_test_and_writes_receipt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_reduction", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
 
     def result(argv: list[str], returncode: int, stdout: str = ""):
         return binary_runner.BinaryExecution(
@@ -1773,9 +1723,7 @@ def test_binary_runner_stops_every_diagnostic_phase_on_guard_infrastructure(
     from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
     from tools.proof_queue_pkg import diagnostic_engine
 
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_infrastructure", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     failure = GuardInfrastructureFailure(
         "temporary_artifact_custody", ("receipt unavailable",)
     )
@@ -1940,9 +1888,7 @@ def test_binary_runner_preserves_guard_result_without_reclassifying_child(
     from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
     from types import SimpleNamespace
 
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_guard_fields", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     failure = GuardInfrastructureFailure(
         "temporary_artifact_custody", ("receipt unavailable",)
     )
@@ -1970,9 +1916,7 @@ def test_binary_runner_preserves_guard_result_without_reclassifying_child(
 def test_binary_runner_uses_bounded_serial_attribution_when_skip_argv_is_too_long(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_command_limit", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     culprit = "lifecycle::tests::shutdown_culprit"
     tests = [f"module_{index}::tests::{('x' * 80)}" for index in range(4)]
     tests.append(culprit)
@@ -2018,9 +1962,7 @@ def test_binary_runner_uses_bounded_serial_attribution_when_skip_argv_is_too_lon
 def test_binary_runner_diagnostics_share_one_absolute_binary_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_deadline", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     tests = [f"module::tests::test_{index:02d}" for index in range(64)]
     clock = [0.0]
     requested_timeouts: list[float] = []
@@ -2063,9 +2005,7 @@ def test_binary_runner_diagnostics_share_one_absolute_binary_deadline(
 def test_binary_runner_partition_timeout_remains_unattributed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_partition_timeout", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     tests = ["module::tests::slow", "module::tests::other"]
 
     def result(argv: list[str], *, timed_out: bool, stdout: str = ""):
@@ -2106,9 +2046,7 @@ def test_binary_runner_reserves_attribution_inside_one_binary_deadline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_baseline_reserve", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     clock = [0.0]
     baseline_timeouts: list[float] = []
 
@@ -2168,9 +2106,7 @@ def test_binary_runner_reserves_attribution_inside_one_binary_deadline(
 
 
 def test_truth_runner_loads_only_typed_atomic_binary_receipts(tmp_path: Path) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_binary_receipts", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     receipt = tmp_path / "one.json"
     payload = descendants.binary_receipt(
         tmp_path,
@@ -2192,7 +2128,7 @@ def test_truth_runner_loads_only_typed_atomic_binary_receipts(tmp_path: Path) ->
 def test_truth_runner_cannot_erase_infrastructure_status_with_duplicate_json_keys(
     tmp_path,
 ):
-    runner = _load_tool("run_cargo_test_truth_exact_outcome", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     (tmp_path / "one.json").write_text(
         '{"schema":"molt.cargo-test-binary.v3","invocation_id":"one",'
         '"status":"infrastructure_error","status":"success"}',
@@ -2205,9 +2141,7 @@ def test_truth_runner_cannot_erase_infrastructure_status_with_duplicate_json_key
 def test_truth_runner_revalidates_exact_executable_bytes_at_collection(
     tmp_path: Path,
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_executable_identity", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     executable = tmp_path / "molt-runtime-test"
     executable.write_bytes(b"original executable bytes")
     size, digest = runner._file_identity(executable)
@@ -2245,9 +2179,7 @@ def test_truth_runner_revalidates_exact_executable_bytes_at_collection(
 def test_truth_runner_rejects_binary_receipt_from_different_source_snapshot(
     tmp_path: Path,
 ) -> None:
-    runner = _load_tool(
-        "run_cargo_test_truth_source_identity", "run_cargo_test_truth.py"
-    )
+    runner = run_cargo_test_truth
     executable = tmp_path / "molt-runtime-test"
     executable.write_bytes(b"executable")
     size, digest = runner._file_identity(executable)
@@ -2281,9 +2213,7 @@ def test_truth_runner_rejects_binary_receipt_from_different_source_snapshot(
 def test_binary_runner_carries_exact_source_identity_into_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_source_identity", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     source_identity = {"schema": "molt.git-source.v1", "head": "abc123"}
     monkeypatch.setattr(
         binary_runner,
@@ -2330,9 +2260,7 @@ def _run_descendant_owner_binary(
     returncode: int,
 ):
     """Drive the real runner main/execute path; only the guarded spawn is faked."""
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_descendants", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     seen: list[dict] = []
 
     def fake_run(argv, **kwargs):
@@ -2404,7 +2332,7 @@ def test_binary_runner_binds_runtime_descendants_from_real_captures(
     assert [json.loads(env["MOLT_TEST_SOURCE_IDENTITY_JSON"]) for env in seen] == [
         descendants.SOURCE
     ]
-    truth = _load_tool("run_cargo_test_truth_descendants", "run_cargo_test_truth.py")
+    truth = run_cargo_test_truth
     [loaded] = truth.load_binary_receipts(
         receipts, expected_run_id="run", expected_source_identity=descendants.SOURCE
     )
@@ -2470,7 +2398,7 @@ def test_descendant_failure_never_overwrites_unrelated_failure_attribution(
     assert receipt["diagnosis"] is None
     assert receipt["failure_identities"] == ["ordinary::parallel_case"]
     assert receipt["runtime_descendants"]["status"] == "failed"
-    truth = _load_tool("run_cargo_test_truth_attribution", "run_cargo_test_truth.py")
+    truth = run_cargo_test_truth
     [loaded] = truth.load_binary_receipts(receipts, expected_run_id="run")
     assert loaded["failure_identities"] == ["ordinary::parallel_case"]
     metadata = {
@@ -2504,7 +2432,7 @@ def test_truth_loader_rederives_descendants_instead_of_saved_summaries(
     receipt = json.loads(path.read_text(encoding="utf-8"))
     receipt["runtime_descendants"] = {"status": "verified", "children": 99}
     path.write_text(json.dumps(receipt), encoding="utf-8")
-    truth = _load_tool("run_cargo_test_truth_rederive", "run_cargo_test_truth.py")
+    truth = run_cargo_test_truth
     [loaded] = truth.load_binary_receipts(receipts, expected_run_id="run")
     assert loaded["runtime_descendants"]["children"] == 2
     descendants.corrupt_retained_file(receipt, Path(records[0]["stderr"]["path"]))
@@ -2743,9 +2671,7 @@ def test_libtest_truncated_protocol_prefixes_never_supply_missing_structure(dama
 
 
 def test_binary_runner_reads_complete_stdout_not_tail_or_stderr(tmp_path):
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_stdout_authority", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     stdout = tmp_path / "stdout.log"
     stderr = tmp_path / "stderr.log"
     stdout.write_text(_libtest_output("real"), encoding="utf-8")
@@ -2781,9 +2707,7 @@ def test_binary_runner_reads_complete_stdout_not_tail_or_stderr(tmp_path):
 def test_binary_runner_exit_zero_does_not_bless_missing_accounting(
     tmp_path, monkeypatch, output
 ):
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_incomplete", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     monkeypatch.setattr(
         binary_runner,
         "execute_binary",
@@ -2845,9 +2769,7 @@ def test_binary_runner_exit_zero_does_not_bless_missing_accounting(
 def test_binary_runner_required_witness_uses_complete_exact_pass_results(
     tmp_path, monkeypatch, required, output, child_code, expected_code
 ):
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_required_witness", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     calls = []
 
     def execute(argv, _timeout):
@@ -2936,9 +2858,7 @@ def test_binary_runner_cli_enforces_required_witness_on_actual_child_capture(
 def test_binary_runner_rejects_blank_required_witness_before_execution(
     tmp_path, monkeypatch
 ):
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_blank_witness", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     monkeypatch.setattr(
         binary_runner,
         "execute_binary",
@@ -2965,9 +2885,7 @@ def test_binary_runner_rejects_blank_required_witness_before_execution(
 
 
 def test_resource_exit_zero_without_exact_result_is_structural(monkeypatch):
-    binary_runner = _load_tool(
-        "cargo_test_binary_runner_resource_accounting", "cargo_test_binary_runner.py"
-    )
+    binary_runner = cargo_test_binary_runner
     discovery = binary_runner.BinaryExecution(
         ("resource_enforcement", "--list"),
         0,
@@ -3013,7 +2931,7 @@ def test_resource_exit_zero_without_exact_result_is_structural(monkeypatch):
     ],
 )
 def test_truth_rejects_success_without_complete_v2_accounting(mutation):
-    runner = _load_tool("run_cargo_test_truth_accounting", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     executable = str((ROOT / "target" / "fixture").resolve())
     expected = {
         runner._executable_key(executable): dict(
@@ -3049,7 +2967,7 @@ def test_truth_rejects_success_without_complete_v2_accounting(mutation):
 
 
 def test_truth_keeps_ignored_in_receipt_but_not_execution_reality():
-    runner = _load_tool("run_cargo_test_truth_ignored", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     executable = str((ROOT / "target" / "fixture").resolve())
     expected = {
         runner._executable_key(executable): dict(
@@ -3080,7 +2998,7 @@ def test_libtest_duplicate_identity_or_run_is_ambiguous(extra):
 
 
 def test_truth_loader_rejects_old_schema_instead_of_upgrading_evidence(tmp_path):
-    runner = _load_tool("run_cargo_test_truth_old_schema", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     historical = dict(
         schema="molt.cargo-test-binary.v2", invocation_id="old", status="success"
     )
@@ -3110,7 +3028,7 @@ def test_truth_loader_rejects_old_schema_instead_of_upgrading_evidence(tmp_path)
     ],
 )
 def test_truth_rejects_duplicate_empty_or_malformed_v2_rows(rows):
-    runner = _load_tool("run_cargo_test_truth_invalid_rows", "run_cargo_test_truth.py")
+    runner = run_cargo_test_truth
     executable = str((ROOT / "target" / "fixture").resolve())
     expected = {
         runner._executable_key(executable): dict(
@@ -3138,8 +3056,8 @@ def test_truth_rejects_duplicate_empty_or_malformed_v2_rows(rows):
 def test_known_failure_cannot_mask_incomplete_binary_cohort(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated: bool, termination: str
 ) -> None:
-    binary_runner = _load_tool("binary_mixed_failure", "cargo_test_binary_runner.py")
-    runner = _load_tool("truth_mixed_failure", "run_cargo_test_truth.py")
+    binary_runner = cargo_test_binary_runner
+    runner = run_cargo_test_truth
     executable = str(tmp_path / ("resource_enforcement" if isolated else "fixture"))
 
     def execution(argv, output, code, *, timed_out=False):

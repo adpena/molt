@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 import inspect
 import json
@@ -11,24 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools import dx_build_timer
+
 # Cargo runs in this file are fakes; build capacity is not under test.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DX_BUILD_TIMER = REPO_ROOT / "tools" / "dx_build_timer.py"
-
-
-def _load_dx_build_timer():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_dx_build_timer",
-        DX_BUILD_TIMER,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _build_success(cmd, content: bytes = b"mock artifact") -> str:
@@ -83,7 +71,7 @@ def _mock_build_execution(monkeypatch, module, completed_process):
 
 
 def test_run_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     calls: list[dict[str, object]] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
@@ -124,7 +112,7 @@ def test_run_can_reuse_outer_memory_guard_for_molt_build_phases(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
 
     def unexpected_inner_guard(*_args, **_kwargs):
         raise AssertionError("molt-build phase should reuse the active outer guard")
@@ -156,7 +144,7 @@ def test_run_can_reuse_outer_memory_guard_for_molt_build_phases(
 
 
 def test_touch_journal_restores_and_recovers_crash_left_marker(tmp_path: Path) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "value_range.rs"
     original = b"fn value_range() {}\n"
     source.write_bytes(original)
@@ -176,7 +164,7 @@ def test_touch_journal_restores_and_recovers_crash_left_marker(tmp_path: Path) -
 
 
 def test_touch_journal_refuses_to_overwrite_external_edit(tmp_path: Path) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "function_compiler.rs"
     source.write_bytes(b"fn before() {}\n")
     journal = module.TouchJournal(tmp_path / "target" / ".dx_build_timer_touches.json")
@@ -190,7 +178,7 @@ def test_touch_journal_refuses_to_overwrite_external_edit(tmp_path: Path) -> Non
 
 
 def test_default_touch_files_track_current_split_modules() -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     touch_files = module._touch_files(REPO_ROOT)
 
     assert touch_files["value_range"] == (
@@ -222,7 +210,7 @@ def test_default_touch_files_track_current_split_modules() -> None:
 def test_scenario_preflight_fails_before_prime_for_stale_touch_path(
     tmp_path: Path,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     errors = module._scenario_preflight_errors(
         ["inc-value_range", "molt-build-unknown", "unknown-shape"],
         {"value_range": tmp_path / "missing_value_range.rs"},
@@ -240,7 +228,7 @@ def test_scenario_preflight_fails_before_prime_for_stale_touch_path(
 
 
 def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     out = tmp_path / "timer.json"
     args = SimpleNamespace(
         profile="release-fast",
@@ -276,7 +264,7 @@ def test_write_snapshot_records_active_command(tmp_path: Path) -> None:
 
 
 def test_build_cmd_scopes_to_daemon_binary() -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     args = SimpleNamespace(
         profile="release-fast",
         package="molt-backend",
@@ -299,7 +287,7 @@ def test_build_cmd_scopes_to_daemon_binary() -> None:
 
 
 def test_test_lib_cmd_scopes_to_library_target() -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     args = SimpleNamespace(
         profile="release-fast",
         test_profile="dev-fast",
@@ -322,7 +310,7 @@ def test_test_lib_cmd_scopes_to_library_target() -> None:
 
 
 def test_molt_build_command_wires_split_runtime_diagnostics(tmp_path: Path) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "hello.py"
     out_dir = tmp_path / "out"
     diagnostics = tmp_path / "diagnostics.json"
@@ -359,7 +347,7 @@ def test_molt_build_command_wires_split_runtime_diagnostics(tmp_path: Path) -> N
 
 
 def test_molt_build_python_prefers_uv_project_environment(tmp_path: Path) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     uv_env = tmp_path / "uv-project"
     python = uv_env / "Scripts" / "python.exe"
     python.parent.mkdir(parents=True)
@@ -383,7 +371,7 @@ def test_trial_cache_overrides_project_config_through_real_dispatch(
     from molt.cli import entrypoint_dispatch, entrypoint_parser
     from molt.cli.build_output_layout import _resolve_cache_root
 
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     trial = tmp_path / "trial-cache"
     shared = tmp_path / "shared-project-cache"
     monkeypatch.setenv("MOLT_CACHE", str(trial))
@@ -434,7 +422,7 @@ def test_trial_cache_overrides_project_config_through_real_dispatch(
 def test_molt_build_output_root_defaults_to_json_stem_for_evidence_custody(
     tmp_path: Path,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
 
     assert (
         module._molt_build_output_root(
@@ -463,7 +451,7 @@ def test_main_repairs_target_after_restored_touch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     target = tmp_path / "target"
     out = tmp_path / "timer.json"
     source = tmp_path / "value_range.rs"
@@ -537,7 +525,7 @@ def test_main_molt_build_scenario_skips_daemon_prime_and_records_phases(
     tmp_path: Path,
     outer_guard: bool,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "hello.py"
     source.write_text("print(42)\n", encoding="utf-8")
     target = tmp_path / "target"
@@ -646,7 +634,7 @@ def test_main_molt_build_default_output_root_records_real_diagnostics_paths(
     tmp_path: Path,
     proof_queue: bool,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "hello.py"
     source.write_text("print(42)\n", encoding="utf-8")
     target = tmp_path / "target"
@@ -715,7 +703,7 @@ def test_guest_cache_isolation_retains_compiler_home_and_original_witnesses(
     cold_clean: bool,
     relative_override: str | None,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "hello.py"
     original = b"print(42)\n"
     source.write_bytes(original)
@@ -829,7 +817,7 @@ def test_invalid_build_preserves_failure_evidence_and_stops_phases(
     tmp_path: Path,
     defect: str,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "hello.py"
     source.write_bytes(b"print(42)\n")
     out = tmp_path / "result.json"
@@ -905,7 +893,7 @@ def test_edit_rejects_source_mutation_without_adopting_it_as_expected(
     tmp_path: Path,
     mutation_point: str,
 ) -> None:
-    module = _load_dx_build_timer()
+    module = dx_build_timer
     source = tmp_path / "hello.py"
     original = b"print(42)\n"
     source.write_bytes(original)

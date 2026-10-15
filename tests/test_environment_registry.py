@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(ROOT / "tools"))
 
-import gen_environment_registry as G  # noqa: E402
+from tools import gen_environment_registry as G  # noqa: E402
 
 REGISTRY_TOML = ROOT / "src" / "molt" / "environment_registry.toml"
 

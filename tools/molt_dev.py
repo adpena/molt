@@ -137,15 +137,19 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from import_file import bind_repository_imports
-
 # Bind both tools and molt before loading any repository module; an editable
 # installation or an unrelated cwd must not select another checkout.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
 bind_repository_imports(__file__)
 
 from molt import python_interpreter  # noqa: E402
 
-from molt_dev_common import (  # noqa: E402
+from tools.molt_dev_common import (  # noqa: E402
     DEFAULT_REPO,
     EXIT_FAIL,
     EXIT_OK,
@@ -169,13 +173,13 @@ from tools.git_identity import (  # noqa: E402
 )
 from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
 
-from molt_dev_detached import (  # noqa: E402
+from tools.molt_dev_detached import (  # noqa: E402
     DETACHED_STATE_ROOT,
     cmd_detached_run,
     cmd_detached_verify,
 )
-from molt_dev_probe import probe_path, probe_pid  # noqa: E402
-from dirty_tree_policy import (  # noqa: E402
+from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
+from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
 )

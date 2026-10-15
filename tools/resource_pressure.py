@@ -8,7 +8,7 @@ import os
 if __package__:
     from . import memory_guard
 else:  # pragma: no cover - direct script import from tools/
-    import memory_guard  # type: ignore
+    from tools import memory_guard  # type: ignore
 
 
 SCHEMA_VERSION = "molt.resource_pressure.v2"

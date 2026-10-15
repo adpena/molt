@@ -1,24 +1,10 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
+import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / "tools" / "update_status_blocks.py"
-
-
-def _load_module():
-    spec = importlib.util.spec_from_file_location(
-        "update_status_blocks_under_test", SCRIPT_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import update_status_blocks as module
 
 
 def _write_file(path: Path, text: str) -> None:
@@ -28,8 +14,8 @@ def _write_file(path: Path, text: str) -> None:
 
 def test_write_updates_generated_compat_summary_block(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_module()
     status_doc = tmp_path / "docs/spec/STATUS.md"
     audit_doc = (
         tmp_path
@@ -85,9 +71,9 @@ def test_write_updates_generated_compat_summary_block(
         ),
     )
 
-    module.STATUS_DOC = status_doc
-    module.STDLIB_AUDIT_DOC = audit_doc
-    module.STDLIB_PLATFORM_DOC = platform_doc
+    monkeypatch.setattr(module, "STATUS_DOC", status_doc)
+    monkeypatch.setattr(module, "STDLIB_AUDIT_DOC", audit_doc)
+    monkeypatch.setattr(module, "STDLIB_PLATFORM_DOC", platform_doc)
 
     assert module.main(["--write"]) == 0
 
@@ -107,8 +93,8 @@ def test_write_updates_generated_compat_summary_block(
 
 def test_check_fails_when_generated_compat_summary_block_is_stale(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_module()
     status_doc = tmp_path / "docs/spec/STATUS.md"
     audit_doc = (
         tmp_path
@@ -164,17 +150,17 @@ def test_check_fails_when_generated_compat_summary_block_is_stale(
         ),
     )
 
-    module.STATUS_DOC = status_doc
-    module.STDLIB_AUDIT_DOC = audit_doc
-    module.STDLIB_PLATFORM_DOC = platform_doc
+    monkeypatch.setattr(module, "STATUS_DOC", status_doc)
+    monkeypatch.setattr(module, "STDLIB_AUDIT_DOC", audit_doc)
+    monkeypatch.setattr(module, "STDLIB_PLATFORM_DOC", platform_doc)
 
     assert module.main(["--check"]) == 1
 
 
 def test_check_passes_after_write(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _load_module()
     status_doc = tmp_path / "docs/spec/STATUS.md"
     audit_doc = (
         tmp_path
@@ -230,9 +216,9 @@ def test_check_passes_after_write(
         ),
     )
 
-    module.STATUS_DOC = status_doc
-    module.STDLIB_AUDIT_DOC = audit_doc
-    module.STDLIB_PLATFORM_DOC = platform_doc
+    monkeypatch.setattr(module, "STATUS_DOC", status_doc)
+    monkeypatch.setattr(module, "STDLIB_AUDIT_DOC", audit_doc)
+    monkeypatch.setattr(module, "STDLIB_PLATFORM_DOC", platform_doc)
 
     assert module.main(["--write"]) == 0
     assert module.main(["--check"]) == 0

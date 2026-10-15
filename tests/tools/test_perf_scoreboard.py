@@ -23,10 +23,10 @@ for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import harness_memory_guard  # noqa: E402
-import perf_schema as schema  # noqa: E402
-import perf_scoreboard as ps  # noqa: E402
-import perf_scoreboard_measure as measure  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
+from tools import perf_schema as schema  # noqa: E402
+from tools import perf_scoreboard as ps  # noqa: E402
+from tools import perf_scoreboard_measure as measure  # noqa: E402
 
 
 LOCKED_METHODOLOGY = {
@@ -399,7 +399,7 @@ def test_statistical_green_without_complete_evidence_blocks_release() -> None:
     _release_evidence(g)
     doc = _board([g])
     from dataclasses import asdict
-    from perf_authority import release_cell_problems
+    from tools.perf_authority import release_cell_problems
 
     assert release_cell_problems(asdict(g)) == []
     assert ps._gate_exit_code(doc, no_gate=False) == 1
@@ -2073,7 +2073,7 @@ def test_print_provenance_emits_all_new_fields(capsys, monkeypatch) -> None:
 # #76 warm-hot cycle attribution: inner-repeat + launch-dominance + refusal
 # ===========================================================================
 
-import perf_inner_repeat as ir  # noqa: E402
+from tools import perf_inner_repeat as ir  # noqa: E402
 
 
 _LOOPABLE_BENCH = (
@@ -2385,7 +2385,7 @@ def _shard_api() -> dict:
 
 @pytest.mark.parametrize("count", [1, 3, 4, 10])
 def test_shards_cover_the_benchmark_set_exactly_once(count: int) -> None:
-    import perf_scoreboard_cli as cli
+    from tools import perf_scoreboard_cli as cli
 
     scripts = [Path(f"tests/benchmarks/bench_{name}.py") for name in "abcdefghij"]
     selections = [
@@ -2408,7 +2408,7 @@ def test_shards_cover_the_benchmark_set_exactly_once(count: int) -> None:
 def test_shard_spec_rejects_ids_outside_the_count(spec: str) -> None:
     import argparse
 
-    import perf_scoreboard_cli as cli
+    from tools import perf_scoreboard_cli as cli
 
     with pytest.raises(argparse.ArgumentTypeError):
         cli._parse_shard(spec)

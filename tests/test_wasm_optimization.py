@@ -40,10 +40,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Import project tools (added to path so they are importable)
 sys.path.insert(0, str(ROOT / "tools"))
-from wasm_link_edit import _standard_section_order_error  # noqa: E402
-from wasm_metrics import wasm_metrics  # noqa: E402
-from wasm_optimize import _export_names, find_wasm_opt, optimize  # noqa: E402
-from wasm_size_audit import parse_sections  # noqa: E402
+from tools.wasm_link_edit import _standard_section_order_error  # noqa: E402
+from tools.wasm_metrics import wasm_metrics  # noqa: E402
+from tools.wasm_optimize import _export_names, find_wasm_opt, optimize  # noqa: E402
+from tools.wasm_size_audit import parse_sections  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -34,29 +34,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # type: ignore
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 # --- UTF-8 backstop (M43) --------------------------------------------------
-# Reuse the landed helper if importable; otherwise degrade to a local copy so a
-# hook is never blocked merely because sys.path did not include the repo root.
-try:  # pragma: no cover - trivial import shim
-    from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio
-except Exception:  # pragma: no cover - fallback path
-
-    def _force_utf8_stdio(*, errors: str = "backslashreplace") -> None:
-        for stream in (sys.stdout, sys.stderr):
-            reconfigure = getattr(stream, "reconfigure", None)
-            if reconfigure is None:
-                continue
-            try:
-                reconfigure(encoding="utf-8", errors=errors)
-            except (AttributeError, ValueError, OSError):
-                pass
+from tools._io_utf8 import force_utf8_stdio as _force_utf8_stdio  # noqa: E402
 
 
 def force_utf8() -> None:

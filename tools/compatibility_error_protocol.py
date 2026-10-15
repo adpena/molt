@@ -14,10 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-if __package__ in (None, ""):
-    from import_file import bind_repository_imports
-else:
-    from tools.import_file import bind_repository_imports
+import sys
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
 
 ROOT = bind_repository_imports(__file__)
 

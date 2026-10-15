@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sys
 
+
 ROOT = Path(__file__).resolve().parents[1]
 # The waiver registry, relative to the scanned checkout.
 REGISTRY_RELPATH = Path("tools") / "dead_code_allow_baseline.json"

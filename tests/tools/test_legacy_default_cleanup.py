@@ -1,27 +1,16 @@
 from __future__ import annotations
 
-import importlib.util
 import sys
-import uuid
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
 from molt.dx import checkout_component
+from tools import mutation_test, wasm_strip_unused
+from tools import test_report as test_report_tool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _load_tool_module(path: Path) -> ModuleType:
-    name = f"{path.stem}_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_browser_html_defaults_point_to_dist_outputs() -> None:
@@ -45,7 +34,7 @@ def test_test_report_reads_reports_under_the_artifact_root(
 ) -> None:
     from molt import dx
 
-    mod = _load_tool_module(REPO_ROOT / "tools" / "test_report.py")
+    mod = test_report_tool
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     assert mod._reports_root() == dx.artifact_root(REPO_ROOT) / "test_reports"
@@ -62,7 +51,7 @@ def test_mutation_defaults_use_the_artifact_root_and_its_scratch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    mod = _load_tool_module(REPO_ROOT / "tools" / "mutation_test.py")
+    mod = mutation_test
 
     ext_root = tmp_path / "external"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
@@ -85,7 +74,7 @@ def test_wasm_strip_unused_defaults_output_next_to_input(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    mod = _load_tool_module(REPO_ROOT / "tools" / "wasm_strip_unused.py")
+    mod = wasm_strip_unused
 
     wasm_path = tmp_path / "dist" / "sample.wasm"
     wasm_path.parent.mkdir(parents=True, exist_ok=True)
@@ -119,7 +108,7 @@ def test_wasm_strip_unused_copy_fallback_publishes_atomically(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    mod = _load_tool_module(REPO_ROOT / "tools" / "wasm_strip_unused.py")
+    mod = wasm_strip_unused
 
     wasm_path = tmp_path / "input.wasm"
     output_path = tmp_path / "output.wasm"
@@ -160,7 +149,7 @@ def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    mod = _load_tool_module(REPO_ROOT / "tools" / "wasm_strip_unused.py")
+    mod = wasm_strip_unused
 
     wasm_path = tmp_path / "input.wasm"
     output_path = tmp_path / "output.wasm"

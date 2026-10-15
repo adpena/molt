@@ -61,15 +61,21 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 SRC_ROOT = REPO_ROOT / "src"
-for _p in (TOOLS_ROOT, SRC_ROOT):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import bench  # noqa: E402
-import harness_memory_guard  # noqa: E402
+
+from tools import bench  # noqa: E402
+from tools import harness_memory_guard  # noqa: E402
 
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 DOCS_COLD_START = REPO_ROOT / "docs" / "perf" / "COLD_START.md"

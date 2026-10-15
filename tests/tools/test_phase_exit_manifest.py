@@ -59,7 +59,7 @@ for _import_root in (REPO_ROOT / "tools", REPO_ROOT / "src"):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
 
-import perf_scoreboard as ps  # noqa: E402
+from tools import perf_scoreboard as ps  # noqa: E402
 
 reg = pem.reg
 rcr = pem.rcr

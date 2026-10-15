@@ -2,29 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import importlib.util
-import sys
 import os
 
 import pytest
 from tests.process_guard_common import install_module_view
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-CI_RESOURCE_ENV = REPO_ROOT / "tools" / "ci_resource_env.py"
-
-
-def _load_ci_resource_env():
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_ci_resource_env",
-        CI_RESOURCE_ENV,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import ci_resource_env
 
 
 def _budget(module, *, physical_gb: float, available_gb: float, reserve_gb: float):
@@ -40,7 +22,7 @@ def _budget(module, *, physical_gb: float, available_gb: float, reserve_gb: floa
 
 
 def test_policy_derives_cargo_memory_from_attested_receipt() -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
 
     policy = module.load_ci_resource_policy()
 
@@ -52,7 +34,7 @@ def test_policy_derives_cargo_memory_from_attested_receipt() -> None:
 
 
 def test_plan_uses_four_cargo_jobs_on_calibrated_hosted_runner_shape() -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
 
     plan = module.plan_ci_resources(
         environ={},
@@ -71,7 +53,7 @@ def test_plan_uses_four_cargo_jobs_on_calibrated_hosted_runner_shape() -> None:
 
 
 def test_plan_clamps_to_one_job_when_memory_is_pressured() -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
 
     plan = module.plan_ci_resources(
         environ={},
@@ -83,7 +65,7 @@ def test_plan_clamps_to_one_job_when_memory_is_pressured() -> None:
 
 
 def test_plan_allows_larger_self_hosted_runners_with_explicit_cap() -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
 
     plan = module.plan_ci_resources(
         environ={
@@ -101,7 +83,7 @@ def test_plan_allows_larger_self_hosted_runners_with_explicit_cap() -> None:
 
 
 def test_write_github_env_emits_cargo_jobs_and_resource_reason(tmp_path: Path) -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     env_path = tmp_path / "github_env"
     plan = module.plan_ci_resources(
         environ={},
@@ -133,7 +115,7 @@ def test_main_json_dry_run_does_not_write_github_env(
     monkeypatch,
     capsys,
 ) -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     env_path = tmp_path / "github_env"
     budget = _budget(module, physical_gb=16.0, available_gb=14.0, reserve_gb=1.0)
     monkeypatch.setattr(
@@ -150,7 +132,7 @@ def test_main_json_dry_run_does_not_write_github_env(
 
 
 def test_policy_rejects_unattested_memory_shape(tmp_path: Path) -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     policy_path = tmp_path / "ci_resource_policy.toml"
     policy_path.write_text(
         """
@@ -191,7 +173,7 @@ measurement_command = "cargo build --locked --profile dev-fast -p molt-wasm-host
 
 
 def test_cargo_execution_budget_is_receipt_calibrated() -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
 
     policy = module.load_ci_cargo_policy().execution_budgets
 
@@ -210,7 +192,7 @@ def test_cargo_execution_budget_is_receipt_calibrated() -> None:
 
 
 def test_cargo_environment_policy_retains_native_incident_receipt() -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
 
     policy = module.load_ci_cargo_policy().environment
 
@@ -234,7 +216,7 @@ def test_cargo_environment_policy_retains_native_incident_receipt() -> None:
     ],
 )
 def test_plan_rejects_invalid_resource_overrides(environ: dict[str, str]) -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
 
     with pytest.raises(ValueError, match="positive"):
         module.plan_ci_resources(
@@ -253,7 +235,7 @@ def test_guard_caps_admit_the_calibrated_need_of_the_job_a_small_runner_plans() 
     # The 7 GB macOS runner: 3.22 GB available, 1 GB reserve. Capping the one
     # admitted Cargo job at the 2.22 GB usable snapshot killed it at 2.23 GB,
     # below its receipt-calibrated 3.06 GB need.
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     budget = _budget(module, physical_gb=7.0, available_gb=3.22, reserve_gb=1.0)
     plan = module.plan_ci_resources(environ={}, cpu_count=3, budget=budget)
 
@@ -267,7 +249,7 @@ def test_guard_caps_admit_the_calibrated_need_of_the_job_a_small_runner_plans() 
 def test_guard_caps_stay_below_physical_memory_less_the_reserve() -> None:
     # A runner too small for even the calibrated need: the caps stop at the
     # host ceiling rather than at the need.
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     budget = _budget(module, physical_gb=3.0, available_gb=2.5, reserve_gb=1.0)
     plan = module.plan_ci_resources(environ={}, cpu_count=2, budget=budget)
 
@@ -279,7 +261,7 @@ def test_guard_caps_stay_below_physical_memory_less_the_reserve() -> None:
 def test_guard_caps_never_fall_below_the_guard_defaults() -> None:
     # A 16 GB runner with four jobs: usable / jobs is below the guard's own
     # process cap, which stays.
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     budget = _budget(module, physical_gb=16.0, available_gb=14.0, reserve_gb=1.0)
     plan = module.plan_ci_resources(environ={}, cpu_count=4, budget=budget)
 
@@ -289,7 +271,7 @@ def test_guard_caps_never_fall_below_the_guard_defaults() -> None:
 
 
 def test_github_env_carries_the_guard_caps(tmp_path: Path) -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     plan = module.plan_ci_resources(
         environ={},
         cpu_count=3,
@@ -321,7 +303,7 @@ def test_github_env_sizes_pytest_auto_workers_from_the_plan(
     workers_expected: int,
 ) -> None:
     # `pytest -n auto` reads this variable, so one plan sizes test workers.
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     plan = module.plan_ci_resources(
         environ={},
         cpu_count=cpus,
@@ -346,7 +328,7 @@ def test_github_env_sizes_pytest_auto_workers_from_the_plan(
 
 
 def test_darwin_breakdown_names_every_page_class_and_the_counted_ones() -> None:
-    module = _load_ci_resource_env()
+    module = ci_resource_env
     pages = {
         "Pages free": 65536,
         "Pages active": 131072,

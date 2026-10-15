@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,9 +19,9 @@ from molt.scientific_stack_versions import (
     scientific_extension_variant,
     validate_scientific_extension_seals,
 )
+from tools import bench_friends_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
-TOOLS = ROOT / "tools"
 
 
 def _variant_tables(cpython: str, targets: tuple[str, ...], *, digit: str) -> str:
@@ -121,17 +119,6 @@ extension_sets = ["numpy/pact-witness", "scipy/pact-witness"]
         encoding="utf-8",
     )
     return scientific
-
-
-def _load_tool(name: str, *, filename: str | None = None):
-    spec = importlib.util.spec_from_file_location(
-        name, TOOLS / f"{filename or name}.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_current_verified_stack_consumes_generic_registry() -> None:
@@ -435,7 +422,7 @@ def test_oracle_environment_group_pins_the_selected_stack(
     assert "numpy==9.9.9" not in group
     assert "scipy==8.8.8" not in group
 
-    bench_manifest = _load_tool("bench_friends_manifest")
+    bench_manifest = bench_friends_manifest
     _, suites = bench_manifest._load_manifest(
         ROOT / "bench" / "friends" / "manifest.toml"
     )

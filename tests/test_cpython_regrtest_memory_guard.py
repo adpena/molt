@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
 import subprocess
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,25 +10,14 @@ import molt.dx as molt_dx
 from molt import custody_layout
 import pytest
 
+from tools import cpython_regrtest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REGRTEST_TOOL_PATH = REPO_ROOT / "tools" / "cpython_regrtest.py"
-
-
-def _load_regrtest_module():
-    spec = importlib.util.spec_from_file_location(
-        "cpython_regrtest_memory_guard_under_test", REGRTEST_TOOL_PATH
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_cpython_source_authority_is_commit_pinned() -> None:
-    module = _load_regrtest_module()
+    module = cpython_regrtest
     sources = module.load_cpython_sources()
 
     assert sources == {
@@ -61,7 +48,7 @@ def test_existing_cpython_checkout_fails_closed_on_revision_drift(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_regrtest_module()
+    module = cpython_regrtest
     checkout = tmp_path / "cpython"
     checkout.mkdir()
     source = next(iter(module.load_cpython_sources().values()))
@@ -86,7 +73,7 @@ def test_existing_cpython_checkout_fails_closed_on_revision_drift(
 
 
 def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
-    module = _load_regrtest_module()
+    module = cpython_regrtest
     contexts: list[dict[str, object]] = []
     calls: list[dict[str, object]] = []
 
@@ -152,7 +139,7 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_regrtest_module()
+    module = cpython_regrtest
     # Ambient roots must stay writable: the live pytest guard plugin also reads
     # this process environment while the test body runs.
     ambient = tmp_path / "ambient"
@@ -229,7 +216,7 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
 
 
 def test_write_summary_records_memory_guard(tmp_path: Path) -> None:
-    module = _load_regrtest_module()
+    module = cpython_regrtest
     config = module.RegrtestConfig(
         repo_root=tmp_path,
         cpython_dir=tmp_path / "cpython",

@@ -32,6 +32,7 @@ from pathlib import Path
 import re
 import sys
 
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover

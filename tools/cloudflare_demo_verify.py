@@ -18,16 +18,21 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from molt.dx import scratch_dir
-from molt.wasm_artifact import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.dx import scratch_dir  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
     read_wasm_callable_table_attestation,
     wasm_callable_table_manifest_summary,
 )
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    import harness_memory_guard  # type: ignore
+from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
 _WORKER_URL_RE = re.compile(r"https://[^\s\"'<>]+\.workers\.dev[^\s\"'<>]*")
 _EXPECTED_PROBE_PATHS = (

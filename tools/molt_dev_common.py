@@ -8,12 +8,9 @@ import os
 import sys
 from pathlib import Path
 
-import harness_memory_guard
+from tools import harness_memory_guard
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # type: ignore
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

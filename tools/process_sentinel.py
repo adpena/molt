@@ -14,10 +14,17 @@ import signal
 import sys
 import time
 
-_THIS_FILE = Path(__file__).resolve()
-_REPO_ROOT = _THIS_FILE.parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+_THIS_FILE = Path(__file__).resolve()
+_REPO_ROOT = _THIS_FILE.parents[1]
+
 
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
 from tools.memory_guard_core.process_model import (  # noqa: E402

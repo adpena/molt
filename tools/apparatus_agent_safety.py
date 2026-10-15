@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_PATHS = (
     "tools/hooks/_common.py",

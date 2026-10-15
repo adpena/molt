@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
-import sys
-from types import ModuleType
 
 import pytest
 
@@ -15,23 +12,7 @@ from molt.compiler_analysis.schema import (
     SOURCE_SITE_CARRIER,
     TIR_BOUNDARY_CARRIER,
 )
-
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-CAPSULE_PATH = REPO_ROOT / "tools" / "analysis_capsule.py"
-
-
-def _load_capsule() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "molt_tools_analysis_capsule",
-        CAPSULE_PATH,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from tools import analysis_capsule
 
 
 def _build_diagnostics() -> dict[str, object]:
@@ -269,7 +250,7 @@ def _fact_graph() -> dict[str, object]:
 
 
 def test_build_capsule_bridges_frontend_tir_allocation_and_binary() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
 
     capsule = capsule_mod.build_capsule(
         build_diagnostics=_build_diagnostics(),
@@ -346,7 +327,7 @@ def test_build_capsule_bridges_frontend_tir_allocation_and_binary() -> None:
 
 
 def test_build_capsule_fails_closed_on_compile_modules_outside_known() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     closure = diagnostics["binary_image_closure"]
     assert isinstance(closure, dict)
@@ -366,7 +347,7 @@ def test_build_capsule_fails_closed_on_compile_modules_outside_known() -> None:
 
 
 def test_build_capsule_rejects_binary_image_analysis_closure_mismatch() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -390,7 +371,7 @@ def test_build_capsule_rejects_binary_image_analysis_closure_mismatch() -> None:
 
 
 def test_build_capsule_rejects_missing_binary_image_analysis() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     diagnostics.pop("binary_image_analysis")
 
@@ -408,7 +389,7 @@ def test_build_capsule_rejects_missing_binary_image_analysis() -> None:
 
 
 def test_build_capsule_rejects_missing_or_unknown_analysis_stage() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -435,7 +416,7 @@ def test_build_capsule_rejects_missing_or_unknown_analysis_stage() -> None:
 
 
 def test_build_capsule_rejects_malformed_closure_lists() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     closure = diagnostics["binary_image_closure"]
     assert isinstance(closure, dict)
@@ -465,7 +446,7 @@ def test_build_capsule_rejects_malformed_closure_lists() -> None:
 
 
 def test_build_capsule_rejects_backend_source_site_coverage_mismatch() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -489,7 +470,7 @@ def test_build_capsule_rejects_backend_source_site_coverage_mismatch() -> None:
 
 
 def test_build_capsule_rejects_malformed_backend_source_site_fields() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -529,7 +510,7 @@ def test_build_capsule_rejects_malformed_backend_source_site_fields() -> None:
 
 
 def test_build_capsule_rejects_noncanonical_backend_carriers_and_ranges() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -578,7 +559,7 @@ def test_build_capsule_rejects_noncanonical_backend_carriers_and_ranges() -> Non
 
 
 def test_build_capsule_rejects_backend_allocation_ownership_mismatch() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -602,7 +583,7 @@ def test_build_capsule_rejects_backend_allocation_ownership_mismatch() -> None:
 
 
 def test_build_capsule_rejects_malformed_backend_allocation_fields() -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -657,7 +638,7 @@ def test_build_capsule_rejects_malformed_backend_allocation_fields() -> None:
 def test_build_capsule_rejects_empty_allocation_categories_with_positive_events() -> (
     None
 ):
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics = _build_diagnostics()
     binary_analysis = diagnostics["binary_image_analysis"]
     assert isinstance(binary_analysis, dict)
@@ -682,7 +663,7 @@ def test_build_capsule_rejects_empty_allocation_categories_with_positive_events(
 
 
 def test_load_json_rejects_nonstandard_json_constants(tmp_path: Path) -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics_path = tmp_path / "diag.json"
     diagnostics_path.write_text('{"coverage_ratio": NaN}', encoding="utf-8")
 
@@ -691,7 +672,7 @@ def test_load_json_rejects_nonstandard_json_constants(tmp_path: Path) -> None:
 
 
 def test_analysis_capsule_cli_writes_json(tmp_path: Path) -> None:
-    capsule_mod = _load_capsule()
+    capsule_mod = analysis_capsule
     diagnostics_path = tmp_path / "diag.json"
     binary_size_path = tmp_path / "binary-size.json"
     out_path = tmp_path / "capsule.json"
@@ -728,7 +709,7 @@ def test_analysis_capsule_cli_writes_json(tmp_path: Path) -> None:
 
 
 def test_native_capsule_retains_byte_denominator_unknown_and_unavailable_extents():
-    capsule = _load_capsule()
+    capsule = analysis_capsule
     attribution = {
         "schema_version": 1,
         "method": "disjoint-file-intervals-v1",
@@ -770,7 +751,7 @@ def test_native_capsule_retains_byte_denominator_unknown_and_unavailable_extents
 
 
 def test_native_capsule_rejects_retired_symbol_sum_artifact():
-    capsule = _load_capsule()
+    capsule = analysis_capsule
     with pytest.raises(capsule.CapsuleError, match="regenerate"):
         capsule._summarize_binary(
             {
@@ -786,7 +767,7 @@ def test_native_capsule_rejects_retired_symbol_sum_artifact():
 def test_capsule_native_direct_consumer_preserves_explicit_scanner(
     tmp_path, monkeypatch
 ):
-    capsule = _load_capsule()
+    capsule = analysis_capsule
     image = tmp_path / "image"
     image.write_bytes(b"\x7fELF")
     selected = tmp_path / "molt-backend"
