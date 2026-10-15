@@ -27,7 +27,7 @@ recorded in the ``tools/proof_plan.toml`` ``[[gate_flip]]`` registry
 (``name = "findings_memo_lint"``, ``strict_when = "live_count == 0"``,
 ``count_detector = "findings_memo_lint"``) and read by
 ``tools/check_gate_flips.py``: once the backlog is burned to zero, set
-``state = "strict"`` and flip the ci_gate check to ``--strict``.
+``state = "strict"`` and run ``--strict`` as a landing gate.
 
 Run::
 

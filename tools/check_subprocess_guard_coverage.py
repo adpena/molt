@@ -324,12 +324,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata probe used before static file correspondence checks",
     ),
     AllowedRawSubprocessUse(
-        "tools/ci_gate.py",
-        "launch_background_gate",
-        "Popen",
-        "background launcher execs tools/guarded_exec.py as the direct child",
-    ),
-    AllowedRawSubprocessUse(
         "tools/code_search.py",
         "main",
         "run",

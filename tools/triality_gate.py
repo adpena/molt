@@ -298,7 +298,7 @@ def evaluate(data: dict, root: Path) -> str | None:
 
 
 # --------------------------------- CI self-test --------------------------------
-# ``--check`` is the falsifiable CI mode (wired into ci_gate tier-1): it feeds the
+# ``--check`` is the falsifiable CI mode (tests/tools/test_triality_gate.py runs it): it feeds the
 # PURE classifier known-BAD and known-GOOD fixtures and fails (exit 1) if the gate
 # no longer FIRES on drift or no longer PASSES a consistent window -- the "a gate
 # that cannot fail certifies nothing" meta-bug (M34/M42), pointed at this gate.

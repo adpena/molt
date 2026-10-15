@@ -221,7 +221,6 @@ authority_inputs = [
   "tools/check_cargo_test_truth.py",
   "tools/check_deterministic_runtime.py",
   "tools/check_reproducible_build.py",
-  "tools/ci_gate.py",
   "tools/cpython_regrtest.py",
   "tools/molt_dev.py",
   "tools/fuzz_compiler.py",
@@ -352,7 +351,6 @@ authority_inputs = [
   "tests/tools/test_nightly_shard_profile.py",
   "tests/tools/test_nightly_sharding.py",
   "tests/tools/test_cargo_test_truth.py",
-  "tests/tools/test_ci_gate.py",
   "tests/tools/test_guarded_exec.py",
   "tests/tools/test_proof_queue.py",
   "tests/tools/test_proof_supervisor_generation.py",
@@ -402,6 +400,15 @@ always = [
   "python3 tools/venv_exec.py python tools/check_github_actions.py",
   "python3 tools/venv_exec.py python tools/check_commit_attribution.py --range origin/main..HEAD",
   "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
+  "python3 tools/venv_exec.py python tools/check_stdlib_intrinsic_surface.py --check",
+  "python3 tools/venv_exec.py python tools/build_graph_audit.py --check",
+  "python3 tools/venv_exec.py python tools/check_runtime_symbol_owners.py",
+  "python3 tools/venv_exec.py python tools/check_runtime_serial_bridge_imports.py",
+  "python3 tools/venv_exec.py python tools/check_tk_import_authority.py",
+  "python3 tools/venv_exec.py python tools/check_perf_gate_wiring.py",
+  "python3 tools/venv_exec.py python tools/check_ratio_direction.py",
+  "python3 tools/venv_exec.py python tools/check_subagent_contract.py",
+  "python3 tools/venv_exec.py python tools/check_perf_plane_gate.py",
 ]
 
 receipt_schema = "molt.proof-receipt.v4"
@@ -2156,6 +2163,123 @@ dependencies = []
 argv = ["uv", "run", "python3", "tools/encoding_gate.py", "--check"]
 toolchains = ["python", "uv"]
 
+# Stdlib modules reach runtime behavior only through declared intrinsics.
+[[command]]
+id = "repository.stdlib-intrinsic-surface"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_stdlib_intrinsic_surface.py", "--check"]
+toolchains = ["python", "uv"]
+
+# The crate dependency graph stays within its audited layering.
+[[command]]
+id = "repository.build-graph"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/build_graph_audit.py", "--check"]
+toolchains = ["python", "uv"]
+
+# Every exported runtime symbol has exactly one owning crate.
+[[command]]
+id = "repository.runtime-symbol-owners"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_runtime_symbol_owners.py"]
+toolchains = ["python", "uv"]
+
+# Runtime satellite crates import serial bridges only through their owner.
+[[command]]
+id = "repository.runtime-serial-bridge-imports"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_runtime_serial_bridge_imports.py"]
+toolchains = ["python", "uv"]
+
+# Tk bindings import only through the Tk runtime authority.
+[[command]]
+id = "repository.tk-import-authority"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_tk_import_authority.py"]
+toolchains = ["python", "uv"]
+
+# The perf-gate workflow shards and merges every planned scoreboard cell.
+[[command]]
+id = "repository.perf-gate-wiring"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_perf_gate_wiring.py"]
+toolchains = ["python", "uv"]
+
+# Every timing ratio names its direction.
+[[command]]
+id = "repository.ratio-direction"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_ratio_direction.py"]
+toolchains = ["python", "uv"]
+
+# The subagent dispatch contract keeps its load-bearing blocks.
+[[command]]
+id = "repository.subagent-contract"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_subagent_contract.py"]
+toolchains = ["python", "uv"]
+
+# The perf board and history gates reject a synthetic CPython-red cell.
+[[command]]
+id = "repository.perf-plane-gate"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_perf_plane_gate.py"]
+toolchains = ["python", "uv"]
+
 # The environment registry (one name per MOLT_* fact): every name the source
 # reads is registered, no retired alias survives, and the generated projection
 # plus reference page are current. Strict at zero.
@@ -2302,7 +2426,7 @@ resource_class = "repository-policy"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rust_ffi_blocks.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_satellite_parity.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_tk_import_authority.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_gate.py", "tests/tools/test_ci_triage.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_history.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/tools/test_diff_results.py", "tests/tools/test_build_phase_report.py", "tests/tools/test_regrtest_results.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_orphan_reaper.py", "tests/tools/test_artifact_cleanup.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_queue_run_retention.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rust_ffi_blocks.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_satellite_parity.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_tk_import_authority.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_triage.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_history.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/tools/test_diff_results.py", "tests/tools/test_build_phase_report.py", "tests/tools/test_regrtest_results.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_orphan_reaper.py", "tests/tools/test_artifact_cleanup.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_queue_run_retention.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 # Agent coordination: the claims ledger, landing and commit guards, session
@@ -4101,7 +4225,6 @@ globs = [
   "tools/check_formal_methods.py",
   "tools/check_correspondence.py",
   "tools/translation_validate.py",
-  "tools/ci_gate.py",
   "tools/ci_resource_env.py",
   "tools/resource_pressure.py",
   "tests/test_generator_manifest.py",
@@ -4118,7 +4241,6 @@ globs = [
   "tests/tools/test_ci_triage.py",
   "tests/test_resource_pressure.py",
   "tests/test_translation_validate_roots.py",
-  "tests/tools/test_ci_gate.py",
   "tests/tools/test_fuzz_compiler_cli.py",
   "tests/tools/test_formal_correspondence_truth.py",
   "tests/tools/test_reproducible_build_truth.py",
@@ -4126,7 +4248,7 @@ globs = [
 ]
 gates = [
   "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-  "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
 ]
 
 # --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------
@@ -4739,30 +4861,29 @@ rationale = "check_gate_liveness must always fire on known-bad fixtures; a canar
 # Lands WARN-ONLY: molt carries an existing backlog of docs/agent + memory lines
 # stating a measured finding (speedup / residual / bench / parity) with no
 # finding_id reference. live_count = that backlog (findings_memo_lint.py --count).
-# ci_gate runs the check `findings-memo-lint-warn` (warn mode). Flip = burn the
-# backlog to zero (formalize each via tools/findings_registry.py + cite its
+# The count detector reports the backlog; no gate runs the warn mode. Flip = burn
+# the backlog to zero (formalize each via tools/findings_registry.py + cite its
 # finding_id, or waive the line with '# FORMALIZATION_PENDING:<why>'), set
-# state = "strict" here, and swap the ci_gate cmd to `findings_memo_lint.py --strict`.
+# state = "strict" here, and add `findings_memo_lint.py --strict` as a landing gate.
 [[gate_flip]]
 name = "findings_memo_lint"
 state = "warn"
 strict_when = "live_count == 0"
 count_detector = "findings_memo_lint"
-rationale = "APPARATUS A4 memo->registry lint (ci_gate check findings-memo-lint-warn). A docs/agent or memory line stating a measured finding with no finding_id reference is un-formalized prose that will rot. live_count is the current backlog; flip to strict once it reaches zero."
+rationale = "APPARATUS A4 memo->registry lint (warn-only; its count detector reports the backlog). A docs/agent or memory line stating a measured finding with no finding_id reference is un-formalized prose that will rot. live_count is the current backlog; flip to strict once it reaches zero."
 
 # --- APPARATUS A10 memory-graph integrity (warn-only; A9 [[gate_flip]] entry) ---
 # The memory corpus is a [[wikilink]] graph with an M## hook index resolved by
 # POINTERS.md. `tools/check_memory_graph.py --check` REPORTS (a) dangling
 # [[wikilinks]] -- which the memory system EXPLICITLY ALLOWS as "worth writing
 # later", so they are never a failure -- and (b) any M## in MEMORY.md not
-# resolved by POINTERS.md (a real index break). ci_gate runs the warn-only check
-# `memory-graph-integrity` (required=False; ALWAYS exits 0).
+# resolved by POINTERS.md (a real index break). The warn-only check ALWAYS exits 0.
 #
 # strict_when is a MANUAL-REVIEW (free-text) token, NOT a machine `live_count ==
 # 0`: the live corpus is Claude's auto-memory dir, which CI cannot see
 # (discover_memory_dir -> None -> 0/0 in CI), so `live_count == 0` would be
 # vacuously met in CI and falsely flagged should-flip. Only the operator, looking
-# at the real corpus, can decide to tighten (swap the ci_gate check to
+# at the real corpus, can decide to tighten (add a landing gate running
 # `check_memory_graph.py --strict`, which fails on unresolved M## while danglers
 # stay warn-only even then). count_detector remains for the visible live count.
 [[gate_flip]]
@@ -4770,7 +4891,7 @@ name = "memory_graph_integrity"
 state = "warn"
 strict_when = "manual: unresolved M## sustained at 0 on the live auto-memory corpus AND dangling-link triage reviewed (operator-box only; CI cannot see the corpus)"
 count_detector = "memory_graph_integrity"
-rationale = "APPARATUS A10 memory-graph integrity (ci_gate check memory-graph-integrity, warn-only). Reports dangling [[wikilinks]] (ALLOWED) + unresolved MEMORY.md M## (index break). Free-text manual strict_when because CI cannot see the auto-memory corpus; flip is an operator decision made against the live corpus."
+rationale = "APPARATUS A10 memory-graph integrity (warn-only). Reports dangling [[wikilinks]] (ALLOWED) + unresolved MEMORY.md M## (index break). Free-text manual strict_when because CI cannot see the auto-memory corpus; flip is an operator decision made against the live corpus."
 
 # --- APPARATUS Wave 4 A11 claims/preflight/serializer (self-tests land strict) ---
 # The three A11 tools ship falsifiable `--check` self-tests + gate-liveness
@@ -4782,23 +4903,22 @@ rationale = "APPARATUS A10 memory-graph integrity (ci_gate check memory-graph-in
 name = "claims_status_self_test"
 state = "strict"
 strict_when = "landed_functional"
-rationale = "APPARATUS A11 (ci_gate check apparatus-claims-status-self-test). The terminal/stale classifier's falsifiable --check lands strict: it only fails if a FALSIFIED/SUPERSEDED/... row stops classifying RETIRED or a stale CLAIMED stops classifying STALE (M34/M42). Additive; nothing to flip."
+rationale = "APPARATUS A11 (the claims_status --check landing gate). The terminal/stale classifier's falsifiable --check lands strict: it only fails if a FALSIFIED/SUPERSEDED/... row stops classifying RETIRED or a stale CLAIMED stops classifying STALE (M34/M42). Additive; nothing to flip."
 
 [[gate_flip]]
 name = "check_sister_landed_self_test"
 state = "strict"
 strict_when = "landed_functional"
-rationale = "APPARATUS A11 (ci_gate check apparatus-check-sister-landed-self-test). The premise-verification classifier's falsifiable --check lands strict: it only fails if 8 (landed) / 9 (mid-flight) / 0 (clean) precedence rots. Additive; nothing to flip."
+rationale = "APPARATUS A11 (the check_sister_landed --check landing gate). The premise-verification classifier's falsifiable --check lands strict: it only fails if 8 (landed) / 9 (mid-flight) / 0 (clean) precedence rots. Additive; nothing to flip."
 
 [[gate_flip]]
 name = "commit_serializer_self_test"
 state = "strict"
 strict_when = "landed_functional"
-rationale = "APPARATUS A11 (ci_gate check apparatus-commit-serializer-self-test). The named-files-only / expected-sha guard's falsifiable --check lands strict: it only fails if a sweep pathspec (-A / . / *) or a stale sha stops being refused. Additive; nothing to flip."
+rationale = "APPARATUS A11 (the commit_serializer --check landing gate). The named-files-only / expected-sha guard's falsifiable --check lands strict: it only fails if a sweep pathspec (-A / . / *) or a stale sha stops being refused. Additive; nothing to flip."
 
 # --- APPARATUS A11 claims-custody stale report (warn-only; A9 [[gate_flip]]) ---
-# `tools/claims_status.py` (ci_gate check apparatus-claims-status-warn,
-# required=False) reports live/retired/stale CLAIMS counts and FLAGS any stale
+# `tools/claims_status.py` (warn-only) reports live/retired/stale CLAIMS counts and FLAGS any stale
 # CLAIMED lane (no fresh PROGRESS for > 4h). It ALWAYS exits 0: staleness is
 # advisory, NEVER a hard CI failure -- a silent worktree may still be alive, so
 # CLAIMS.md 6 requires an OBJECTIVE-liveness check before any RECLAIM, which CI
@@ -4811,7 +4931,7 @@ name = "claims_status_stale"
 state = "warn"
 strict_when = "manual: a stale CLAIMED lane is advisory only (CLAIMS.md 6 objective-liveness bar); CI cannot prove a silent worktree dead, so this never flips to a hard fail -- the operator drives any RECLAIM"
 count_detector = "claims_status_stale"
-rationale = "APPARATUS A11 claims-custody stale flag (ci_gate check apparatus-claims-status-warn, warn-only). Reports live/retired/stale counts so stale custody cannot silently block a lane, but staleness is never a hard failure: CLAIMS.md 6 needs objective-liveness evidence CI does not have. Free-text manual strict_when; the operator reclaims."
+rationale = "APPARATUS A11 claims-custody stale flag (warn-only). Reports live/retired/stale counts so stale custody cannot silently block a lane, but staleness is never a hard failure: CLAIMS.md 6 needs objective-liveness evidence CI does not have. Free-text manual strict_when; the operator reclaims."
 
 [[gate_flip]]
 name = "lane_maturity_admission"

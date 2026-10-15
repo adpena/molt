@@ -25,7 +25,7 @@ warn-only even then).
 Run::
 
     python tools/check_memory_graph.py            # warn-only report, exit 0
-    python tools/check_memory_graph.py --check    # same (ci_gate mode), exit 0
+    python tools/check_memory_graph.py --check    # same (proof-plan rule gate), exit 0
     python tools/check_memory_graph.py --strict   # exit 1 if unresolved M## > 0
     python tools/check_memory_graph.py --count     # integer unresolved-M## count
     python tools/check_memory_graph.py --json
@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--check",
         action="store_true",
-        help="warn-only report (ci_gate mode); ALWAYS exits 0",
+        help="warn-only report (the proof-plan rule gate); ALWAYS exits 0",
     )
     ap.add_argument(
         "--strict",

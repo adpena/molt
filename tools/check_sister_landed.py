@@ -31,7 +31,7 @@ CLAIMS + the recent landings and reassess", not a hard abort. Fail-open: any
 git/parse hiccup yields no matches -> exit 0 (a preflight must never block a lane
 because it could not read the ledger).
 
-``--check`` is the falsifiable self-test (wired into ci_gate tier-1 + a
+``--check`` is the falsifiable self-test (a proof-plan landing gate + a
 check_gate_liveness canary): a synthetic already-landed CLAIMS row for the target
 files MUST return 8, a mid-flight CLAIMED row MUST return 9, an unrelated surface
 MUST return 0. Pure classifier + pure matcher; ASCII + UTF-8-explicit (M43).

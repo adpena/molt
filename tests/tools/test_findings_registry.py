@@ -378,7 +378,7 @@ def test_lint_real_tree_backlog_is_reportable():
     violations = lint.scan_tree()
     assert isinstance(violations, list)
     # There IS existing un-formalized debt (the gate is warn-only for a reason);
-    # if this ever hits 0 the ci_gate check should be flipped to --strict.
+    # if this ever hits 0 the landing gate should run --strict.
     assert len(violations) >= 0
 
 

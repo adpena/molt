@@ -476,11 +476,6 @@ _REGISTRY_JSON = r"""{
       "summary": "Guard scope for CI resource planning (memory budgets exported to workflow steps)."
     },
     {
-      "name": "MOLT_CI_GATE",
-      "owner": "tools/ci_gate.py",
-      "summary": "Guard scope for the unified CI gate runner and the checks it launches."
-    },
-    {
       "name": "MOLT_CLI",
       "owner": "src/molt/cli/typecheck.py",
       "summary": "Guard scope for helper processes the `molt` CLI launches outside a build (typecheck, backend memory budgets)."

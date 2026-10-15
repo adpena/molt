@@ -19,9 +19,9 @@ typed DAG under guarded custody and writes hash-bound receipts. A
 `github-matrix` family (`python_unit`, `platform_portability`) runs one job per
 runner cell; locally `--run-family` runs the cell that matches the host OS and
 architecture, or takes `--matrix-cell <cell>`. Workflows own
-runner setup and artifact transport only. `tools/ci_gate.py` remains the local
-tier aggregator; its Tier 3 entry consumes `nightly_verification_t3` rather than
-redeclaring the five heavy commands.
+runner setup and artifact transport only. Its `always` list and path `rule`s are
+the landing gates `tools/molt_dev.py integrate` runs; locally,
+`tools/proof_plan.py --run-command <id>` runs any single row.
 
 Nightly shard execution is one authority family: `tools/nightly_prepare.py`
 builds the immutable runtime and digest-bound plan, `tools/nightly_sharding.py`
@@ -41,7 +41,7 @@ self-commits or invents an external scheduling authority.
 
 ## Catalog (by purpose)
 
-### Verify / drift-gates (wired in ci_gate tier-1 — fail closed)
+### Verify / drift-gates (proof-plan landing gates and `repository_policy` rows — fail closed)
 - `tools/structural_audit.py --check` - duplicate-authority / kitchen-sink and undecomposed-god-file ratchet. Use `--path <file-or-dir> [--json]` for fast diagnostic attribution on touched files; `--path` is intentionally refused with ratchet-writing/checking modes.
 - `tools/build_graph_audit.py --check` - recompile-blast-radius ratchet (doc 56 FACT-A): fails if a cross-crate dep re-couples a layer (back-edge) or widens a crate's downstream recompile cone past `tools/build_graph_baseline.json`. Declared DAG = `runtime/crate_graph.toml`; reads `cargo metadata` only (no compile). `--write-board` -> `docs/design/foundation/BUILD_GRAPH_BOARD.md`.
 - `tools/check_runtime_symbol_owners.py` - one `#[no_mangle] extern "C"` owner per runtime satellite symbol.
@@ -72,8 +72,8 @@ self-commits or invents an external scheduling authority.
   regression gate (doc 64 Phase 4): fails on a previously-green cell that
   regressed; only authoritative boards become baselines (Rule 2).
 - `tools/check_perf_plane_gate.py` — falsifiable self-proof that the plane gate
-  FAILS on a synthetic CPython-red (ci_gate Tier 1; a gate that cannot fail is
-  vacuous).
+  FAILS on a synthetic CPython-red (`repository.perf-plane-gate`; a gate that
+  cannot fail is vacuous).
 - `molt.metric_ratios.signed_ratio` — the SOLE ratio authority (explicit direction).
 - `tools/perf_causality.py` + `tools/pass_delta_dashboard.py` — attribute a CPython-RED
   to its missing IR fact (do not re-derive perf causality by hand).
@@ -139,10 +139,8 @@ self-commits or invents an external scheduling authority.
 - `docs/design/foundation/` — the 100-year executable plans (21a-e, 54-67).
 - The memory index (`MEMORY.md`) — load-bearing facts not derivable from a quick read.
 
-## The discoverability contract (drift-gate — enforced, not aspirational)
-A tool is "real" only when it is (1) **wired** (run by `ci_gate` / a workflow /
-the build pipeline), (2) **fast** (under its tier wall-clock budget), and (3)
-**registered here**. A `check_tool_registry` gate (ci_gate tier-1) fails closed if
-a high-signal `tools/*.py` / diagnostic bin is not listed here and run by the
-entry point — so a potent tool can never again go undiscovered, unrun, or rebuilt.
-(Inventory completion + the gate land from the wiring audit `w3esr1q6s`.)
+## The discoverability contract
+A tool is "real" only when it is (1) **wired** (run by a proof-plan row or
+landing gate, a workflow, or the build pipeline), (2) **fast** (under its tier
+wall-clock budget), and (3) **registered here**. No gate enforces registration
+yet: a high-signal `tools/*.py` missing from this catalog is a defect to fix here.

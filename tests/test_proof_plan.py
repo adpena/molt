@@ -4272,7 +4272,6 @@ def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
         "tools/cpython_regrtest.py",
         "tools/check_deterministic_runtime.py",
         "tools/verify_ir_suite.py",
-        "tools/ci_gate.py --tier",
     ):
         assert forbidden not in workflow
 

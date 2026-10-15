@@ -33,7 +33,8 @@ molt_time"`` direction LABEL, which a naive grep would falsely flag). A
 division hidden in an f-string - which the audit's sketched regex would have
 MISSED - is caught here because the AST sees the real BinOp.
 
-Wired into ci_gate tier-1 via tests/tools/test_signed_ratio.py so an unguarded
+Runs as an ``always`` landing gate and the ``repository.ratio-direction``
+proof-plan command (tests: tests/tools/test_signed_ratio.py), so an unguarded
 ``time/time`` re-introduction cannot silently regress.
 
 Usage::
@@ -72,7 +73,7 @@ EXEMPT_RELATIVE = {
 # scratch; scanning them is both wrong (they are separate checkouts, not THIS
 # tree's source, so this gate governs THIS working tree only) and catastrophically
 # slow (it would walk every sibling's target/). The gate guards the canonical
-# tree; each worktree's own ci_gate run guards itself.
+# tree; each worktree's own landing gates guard it.
 SKIP_DIR_PARTS = {
     ".git",
     ".claude",

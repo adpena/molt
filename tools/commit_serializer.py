@@ -37,8 +37,8 @@ Return codes (``serialized_commit`` / CLI):
   2 usage error                 4 expected-sha mismatch (file changed since read)
   5 git commit failed           6 could not acquire the serializer lock
 
-``--check`` is the falsifiable self-test (ci_gate tier-1 + a check_gate_liveness
-canary): ``-A`` and ``.`` and a stale sha MUST be refused, and a clean named-file
+``--check`` is the falsifiable self-test (a proof-plan landing gate + a
+check_gate_liveness canary): ``-A`` and ``.`` and a stale sha MUST be refused, and a clean named-file
 pathspec MUST be allowed. Stdlib-only; ASCII + UTF-8-explicit (M43).
 """
 

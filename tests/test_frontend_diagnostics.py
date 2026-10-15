@@ -31,7 +31,7 @@ def test_generated_frontend_diagnostics_are_in_sync() -> None:
     assert GEN.main(["--check"]) == 0
 
 
-def test_frontend_diagnostic_generator_is_registered_and_ci_gated() -> None:
+def test_frontend_diagnostic_generator_is_registered_and_checked() -> None:
     manifest = tomllib.loads(
         (ROOT / "tools/generator_manifest.toml").read_text(encoding="utf-8")
     )

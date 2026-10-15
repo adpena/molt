@@ -147,19 +147,6 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "developer command runner must guard test-suite children",
     ),
     TokenContract(
-        "tools/ci_gate.py",
-        (
-            "harness_memory_guard",
-            "guarded_completed_process",
-            "_resolve_memory_limits",
-            "compile_governor.compile_slot",
-            "MOLT_CI_GATE",
-            "guarded_exec.py",
-        ),
-        "tiered CI gate must guard child checks, clamp parallelism, and launch "
-        "background runs through guarded_exec",
-    ),
-    TokenContract(
         "tools/dev_test_runner.py",
         (
             "harness_memory_guard",

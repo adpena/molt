@@ -11,7 +11,23 @@ import tomllib
 import pytest
 from tests.process_guard_common import install_module_view
 import tools
-from tools import check_rust_toolchain, ci_gate
+from tools import check_rust_toolchain, proof_plan
+
+PLAN = proof_plan.ProofPlan.load()
+
+
+def _plan_gate_toolchains(gate: str) -> set[str]:
+    """The toolchain closure of every plan rule or landing gate that runs ``gate``."""
+    closures = [
+        set(PLAN.toolchain_closure(rule["toolchains"]))
+        for rule in PLAN.local_rules
+        if gate in rule.get("gates", ())
+    ]
+    if gate in PLAN.always:
+        closures.append(set(PLAN.toolchain_closure(PLAN.always_toolchains)))
+    assert closures, f"no proof-plan gate runs {gate!r}"
+    return set().union(*closures)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,17 +47,6 @@ def test_workspace_clippy_configuration_stops_at_tracked_default_root() -> None:
     members = workspace_member_manifests(ROOT)
     assert members
     assert all(manifest.resolve().is_relative_to(ROOT) for manifest in members)
-
-
-def test_ci_gate_uses_repo_rust_toolchain_gate_without_compile_slot() -> None:
-    check = {entry.name: entry for entry in ci_gate._build_checks()}["rust-toolchain"]
-
-    assert check.cmd == [
-        sys.executable,
-        str(ci_gate.TOOLS / "check_rust_toolchain.py"),
-    ]
-    assert check.needs_rust is False
-    assert check.needs_cargo is True
 
 
 def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
@@ -537,3 +542,10 @@ def test_dated_nightly_requires_nightly_compiler_and_complete_source(
             ("cargo-miri", ("miri", "--version")),
             ("miri", ("--version", "--verbose")),
         }
+
+
+def test_plan_runs_the_rust_toolchain_gate_without_cargo() -> None:
+    # A static check reads sources; it must never wait for a Cargo build slot.
+    assert not {"cargo", "rustc"} & _plan_gate_toolchains(
+        "python3 tools/venv_exec.py python tools/check_rust_toolchain.py"
+    )

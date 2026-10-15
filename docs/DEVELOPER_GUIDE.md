@@ -108,7 +108,7 @@ the architecture is still mid-move.
 
 `tools/structural_audit.py --check` is the automated kitchen-sink,
 undecomposed-god-file, duplicate-authority, and structural-debt ratchet, and
-`tools/ci_gate.py --tier 1` runs it by default. Raw large-file size is board
+Every landing and the `repository.structural-debt` proof-plan row run it. Raw large-file size is board
 triage; CI gates concern-mixing files plus lone undecomposed monoliths. Use it
 to keep structural growth honest: split new authority into coherent
 modules/packages, keep multiple large extraction regions out of one file, do not
