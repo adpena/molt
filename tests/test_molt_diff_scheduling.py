@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import concurrent.futures
+import gc
 import sys
 import signal
+import weakref
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +37,7 @@ def suite(tmp_path, monkeypatch):
         trip_failure=None,
         guard_signal=None,
         original_trip_outcome=molt_diff._memory_guard_trip_outcome,
+        original_run_single=molt_diff._diff_run_single,
     )
     for name in (
         "_ensure_diff_run_lock",
@@ -63,6 +66,7 @@ def suite(tmp_path, monkeypatch):
     monkeypatch.setattr(molt_diff, "_diff_run_id", lambda: "scheduler-test")
     monkeypatch.setattr(molt_diff, "_diff_max_tasks_per_child", lambda: None)
     monkeypatch.setattr(molt_diff, "_diff_prune_every", lambda: 0)
+    monkeypatch.setattr(molt_diff, "_diff_log_passes", lambda: False)
     monkeypatch.setattr(molt_diff, "_top_rss_entries", lambda *a, **k: [])
     monkeypatch.setattr(molt_diff, "_aggregate_rss_metrics", lambda *a: {})
     monkeypatch.setattr(molt_diff, "_config_payload", lambda *a: {})
@@ -184,6 +188,189 @@ def test_parallel_success_replenishes_bounded_workers(suite, tmp_path):
     assert suite.calls == [str(path) for path in suite.files]
     assert summary["passed"] == len(suite.files)
     assert summary["failed"] == 0
+
+
+@pytest.mark.parametrize("live", (False, True))
+@pytest.mark.parametrize("retry_oom", (False, True))
+def test_parallel_diagnostics_publish_at_completion_without_retaining_history(
+    suite, tmp_path, monkeypatch, capsys, live, retry_oom
+):
+    class CapturedText(str):
+        pass
+
+    retained = []
+    statuses = ["fail", "oom", "uncalibrated", "pass", "skip"]
+
+    def completions(_executor, files, _python, _profile, targets, _version, **kwargs):
+        assert targets == ("native", "wasm")
+        for index, (path, status) in enumerate(zip(files, statuses, strict=True)):
+            result = {
+                "path": str(path),
+                "status": status,
+                "guard_signal": None,
+                "duration_s": 0.25,
+                "stdout": CapturedText(f"detail-out-{index}\n"),
+                "stderr": CapturedText(f"detail-error-{index}\n"),
+            }
+            retained.append(weakref.ref(result["stdout"]))
+            yield result
+            # Observe before another completion can hide missing diagnostics.
+            captured = capsys.readouterr()
+            assert f"[{status.upper()}] {path}" in captured.out
+            if status in {"fail", "oom", "uncalibrated"}:
+                assert captured.out.count(f"detail-out-{index}\n") == 1
+                assert captured.err == f"detail-error-{index}\n"
+            else:
+                assert "detail-out" not in captured.out and not captured.err
+            del result
+            gc.collect()
+            # The loop may still own its current payload, never older history.
+            assert all(reference() is None for reference in retained[:-1])
+
+    monkeypatch.setattr(molt_diff, "_parallel_diff_results", completions)
+    status_log = tmp_path / "status.log"
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=2,
+        targets=("native", "wasm"),
+        live=live,
+        retry_oom=retry_oom,
+        log_file=status_log,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert summary["discovered"] == len(statuses)
+    assert summary["failed"] == (2 if retry_oom else 3)
+    assert suite.calls == ([str(suite.files[1])] if retry_oom else [])
+    assert all(reference() is None for reference in retained)
+    assert "detail-out" not in status_log.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("sink", ("directory", "aggregate", "unusable-directory"))
+@pytest.mark.parametrize("live", (False, True))
+def test_parallel_detail_sink_owns_payload_or_console_receives_it(
+    suite, tmp_path, capsys, sink, live
+):
+    log_dir = tmp_path / "details" if sink != "aggregate" else None
+    aggregate = tmp_path / "aggregate.log" if sink == "aggregate" else None
+    stale_pass_log = None
+    if sink == "unusable-directory":
+        log_dir.write_text("occupied", encoding="utf-8")
+    elif log_dir is not None:
+        log_dir.mkdir()
+        stale_pass_log = molt_diff._log_path_for_test(log_dir, str(suite.files[1]))
+        stale_pass_log.write_text("stale pass details", encoding="utf-8")
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=2,
+        live=live,
+        log_dir=log_dir,
+        log_aggregate=aggregate,
+        failures_output=tmp_path / "failures.txt",
+    )
+    captured = capsys.readouterr()
+    assert summary["failed"] == 1
+    if stale_pass_log is not None:
+        assert not stale_pass_log.exists()
+    if sink == "unusable-directory":
+        assert captured.out.count("worker output") == 1
+        assert "Warning: failed to create log dir" in captured.out
+    else:
+        assert "worker output" not in captured.out
+        detail_path = (
+            aggregate
+            if aggregate is not None
+            else molt_diff._log_path_for_test(log_dir, str(suite.files[0]))
+        )
+        assert detail_path.read_text(encoding="utf-8").count("worker output") == 1
+
+
+@pytest.mark.parametrize("absolute_log_dir", (False, True))
+def test_case_log_identity_is_contained_bounded_and_unambiguous(
+    tmp_path, monkeypatch, absolute_log_dir
+):
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    monkeypatch.chdir(invocation)
+    monkeypatch.setattr(molt_diff, "_repo_root", lambda: repo)
+    log_dir = invocation / "logs" if absolute_log_dir else Path("logs")
+    inside = "tests/differential/basic/one.py"
+    canonical = molt_diff._log_path_for_test(log_dir, inside)
+    assert canonical == molt_diff._log_path_for_test(log_dir, str(repo / inside))
+    assert canonical == molt_diff._log_path_for_test(
+        log_dir, "tests/differential/basic/../basic/one.py"
+    )
+    external = tmp_path / "external" / "one.py"
+    assert molt_diff._log_path_for_test(log_dir, str(external)) == (
+        molt_diff._log_path_for_test(log_dir, "../external/one.py")
+    )
+    cases = [
+        inside,
+        str(external),
+        str(tmp_path / "other-external" / "one.py"),
+        "a_/b.py",
+        "a/_b.py",
+        "a__b.py",
+        "CON.py",
+        "Case.py",
+        "case.py",
+        "unicode-雪.py",
+        "/".join(["deep" * 30] * 4 + ["one.py"]),
+    ]
+    paths = []
+    for index, case in enumerate(cases):
+        path = molt_diff._write_test_log(
+            log_dir, case, f"out-{index}\n", f"err-{index}\n"
+        )
+        paths.append(path)
+        assert path.parent == log_dir
+        assert path.resolve().is_relative_to(log_dir.resolve())
+        assert len(path.name.encode("ascii")) == 68
+        assert path.suffix == ".log"
+        assert set(path.stem) <= set("0123456789abcdef")
+        assert path.read_text(encoding="utf-8") == (
+            f"STDOUT:\nout-{index}\n\nSTDERR:\nerr-{index}\n"
+        )
+    assert len(set(paths)) == len(cases)
+    assert len(list(log_dir.iterdir())) == len(cases)
+
+
+@pytest.mark.parametrize("jobs", (1, 2))
+def test_serial_and_oom_retry_tee_diagnostics_are_not_replayed(
+    suite, tmp_path, monkeypatch, capsys, jobs
+):
+    suite.files[:] = suite.files[:2]
+    suite.status = "oom"
+    serial_calls = []
+
+    def diagnostic_case(path, _python, **kwargs):
+        serial_calls.append(path)
+        print("serial-out")
+        print("serial-error", file=sys.stderr)
+        return {"resolved_status": "pass", "guard_signal": None}
+
+    monkeypatch.setattr(molt_diff, "diff_test", diagnostic_case)
+    monkeypatch.setattr(molt_diff, "_diff_run_single", suite.original_run_single)
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=jobs,
+        retry_oom=True,
+        failures_output=tmp_path / "failures.txt",
+    )
+    captured = capsys.readouterr()
+    assert summary["passed"] == 2 and summary["failed"] == 0
+    expected = 2 if jobs == 1 else 1
+    assert len(serial_calls) == expected
+    assert captured.out.count("serial-out\n") == expected
+    assert captured.err.count("serial-error\n") == expected
+    if jobs == 2:
+        assert captured.out.count("worker output") == 1
+        assert captured.out.index("worker output") < captured.out.index("[RETRY-OOM]")
+        assert captured.out.index("[RETRY-OOM]") < captured.out.index("serial-out")
 
 
 @pytest.mark.parametrize("jobs", (1, 2))
