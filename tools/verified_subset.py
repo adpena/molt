@@ -45,7 +45,7 @@ from molt.verified_subset import (  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
-from tools.compat import test_policy  # noqa: E402
+from tools.compat import diff_results, test_policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 _MAX_RECEIPT_BYTES = 4 * 1024 * 1024
@@ -226,27 +226,12 @@ def _summary_statuses(summary: Mapping[str, Any]) -> dict[str, str]:
 
 def _load_result_rows(path: Path) -> tuple[Mapping[str, Any], ...]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(f"verified-subset raw results are unreadable: {exc}") from exc
-    rows: list[Mapping[str, Any]] = []
-    for line_number, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
-        try:
-            row = loads_exact(line)
-        except (json.JSONDecodeError, ExactJsonError) as exc:
-            raise ValueError(
-                f"verified-subset raw result line {line_number} is invalid: {exc}"
-            ) from exc
-        if not isinstance(row, Mapping):
-            raise ValueError(
-                f"verified-subset raw result line {line_number} is not an object"
-            )
-        rows.append(row)
+        rows = diff_results.load_rows(path)
+    except ValueError as exc:
+        raise ValueError(f"verified-subset raw results: {exc}") from exc
     if not rows:
         raise ValueError("verified-subset raw results are empty")
-    return tuple(rows)
+    return rows
 
 
 def _result_outcomes(

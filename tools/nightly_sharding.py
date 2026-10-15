@@ -42,15 +42,18 @@ from molt.artifact_publication import (  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools import nightly_shard_profile  # noqa: E402
 from tools.shard_partition import lpt_shards  # noqa: E402
-from tools.compat import test_policy  # noqa: E402
+from tools.compat import diff_results, test_policy  # noqa: E402
 from molt.verified_subset import load_verified_subset_policy  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTOR = CommandExecutor.for_file(__file__)
 PLAN_SCHEMA = "molt.nightly-shard-plan.v2"
-EVIDENCE_SCHEMA = "molt.nightly-shard-evidence.v1"
-AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v2"
+EVIDENCE_SCHEMA = "molt.nightly-shard-evidence.v2"
+AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v3"
+# An item that finished has a duration; ``not_run`` names one the shard
+# deadline or a harness failure left unfinished.
+ITEM_STATUSES = ("passed", "failed", "errors", "skipped", "not_run")
 
 
 def _shard_budgets(root: Path = ROOT) -> dict[str, tuple[int, int]]:
@@ -676,43 +679,6 @@ def build_shard_command(
     raise ValueError(f"unknown nightly program: {program}")
 
 
-def _counts(
-    program: str, summary: Mapping[str, Any], returncode: int, selected: int
-) -> dict[str, int]:
-    if program == "conformance":
-        values = {
-            "selected": summary.get("total", 0),
-            "passed": summary.get("passed", 0),
-            "failed": summary.get("failed", 0),
-            "errors": int(summary.get("compile_error", 0))
-            + int(summary.get("timeout", 0)),
-            "skipped": summary.get("skipped", 0),
-        }
-    elif program == "differential":
-        failed = summary.get("failed", 0)
-        values = {
-            "selected": summary.get("total", 0),
-            "passed": summary.get("passed", 0),
-            "failed": failed,
-            "errors": summary.get("errors", summary.get("oom", 0)),
-            "skipped": summary.get("skipped", 0),
-        }
-    else:
-        values = {
-            "selected": selected,
-            "passed": selected if returncode == 0 else 0,
-            "failed": 0 if returncode == 0 else selected,
-            "errors": 0,
-            "skipped": 0,
-        }
-    normalized: dict[str, int] = {}
-    for name, value in values.items():
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"child summary {name} must be a nonnegative integer")
-        normalized[name] = value
-    return normalized
-
-
 def _item_results(
     summary: Mapping[str, Any], expected_entries: Sequence[str]
 ) -> list[dict[str, Any]]:
@@ -728,6 +694,7 @@ def _item_results(
         "error": "errors",
         "errors": "errors",
         "oom": "errors",
+        "uncalibrated": "errors",
         "timeout": "errors",
         "compile_error": "errors",
         "skip": "skipped",
@@ -737,7 +704,8 @@ def _item_results(
         if not isinstance(row, dict) or not isinstance(row.get("path"), str):
             raise ValueError("child summary item result row is invalid")
         path = str(row["path"]).replace("\\", "/")
-        status = status_aliases.get(str(row.get("status", "")).lower())
+        child_status = str(row.get("status", "")).lower()
+        status = status_aliases.get(child_status)
         duration = row.get("duration_s")
         if path in by_path:
             raise ValueError(f"child summary duplicates item result: {path}")
@@ -753,6 +721,9 @@ def _item_results(
             "path": path,
             "status": status,
             "duration_s": float(duration),
+            # The child's own status word is the reason until a richer
+            # authority (the differential result log) names one.
+            "reason": "" if status == "passed" else child_status,
         }
     if set(by_path) != set(expected_entries):
         missing = sorted(set(expected_entries).difference(by_path))[:3]
@@ -838,6 +809,59 @@ def _validate_artifact_archive(path: Path, rows: Any) -> None:
         raise ValueError("artifact archive file closure mismatch")
 
 
+def _with_diff_outcomes(
+    items: list[dict[str, Any]] | None,
+    entries: Sequence[str],
+    outcomes: Mapping[str, diff_results.DiffOutcome],
+    *,
+    unfinished_reason: str,
+) -> list[dict[str, Any]]:
+    """Name why each item did not pass; recover finished items a kill lost.
+
+    The child's summary, when present, is the item authority. Without it, the
+    per-test result log the child appended as each test finished is: those
+    items keep their status, and the rest did not run.
+    """
+    if items is not None:
+        return [
+            {
+                **row,
+                **(
+                    {
+                        "reason": outcomes[row["path"]].reason or row["reason"],
+                        "detail": outcomes[row["path"]].detail,
+                    }
+                    if row["status"] != "passed" and row["path"] in outcomes
+                    else {}
+                ),
+            }
+            for row in items
+        ]
+    recovered: list[dict[str, Any]] = []
+    for path in entries:
+        outcome = outcomes.get(path)
+        if outcome is None or outcome.duration_s is None or outcome.duration_s <= 0:
+            recovered.append(
+                {
+                    "path": path,
+                    "status": "not_run",
+                    "duration_s": None,
+                    "reason": unfinished_reason,
+                }
+            )
+            continue
+        row: dict[str, Any] = {
+            "path": path,
+            "status": outcome.status,
+            "duration_s": float(outcome.duration_s),
+            "reason": outcome.reason,
+        }
+        if outcome.status != "passed":
+            row["detail"] = outcome.detail
+        recovered.append(row)
+    return recovered
+
+
 def run_shard(
     plan: Mapping[str, Any],
     *,
@@ -863,6 +887,7 @@ def run_shard(
         temporary_root = Path(temporary)
         selection = temporary_root / "selection.txt"
         summary_path = temporary_root / "summary.json"
+        results_log = temporary_root / "results.jsonl"
         selection.write_text("\n".join(entries) + "\n", encoding="utf-8")
         argv = (
             list(command)
@@ -881,11 +906,19 @@ def run_shard(
                         "{summary}", str(summary_path)
                     )
                 )
+        # The differential harness appends each finished test to this log, so a
+        # shard the deadline kills still names what it finished.
+        child_env = (
+            {**os.environ, diff_results.RESULTS_ENV: str(results_log)}
+            if program == "differential"
+            else None
+        )
         started = time.monotonic()
         try:
             completed = EXECUTOR.run(
                 expanded,
                 cwd=root,
+                env=child_env,
                 capture_output=True,
                 # The guard keeps only these tails in memory; full output goes
                 # to the files, which the temporary directory owns.
@@ -914,39 +947,41 @@ def run_shard(
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             summary = {}
             summary_error = str(exc)
+        items: list[dict[str, Any]] | None
         try:
-            counts = _counts(program, summary, returncode, len(entries))
             items = _item_results(summary, entries)
-            observed_statuses = {
-                status: sum(row["status"] == status for row in items)
-                for status in ("passed", "failed", "errors", "skipped")
-            }
-            if program == "regrtest":
-                counts = {"selected": len(items), **observed_statuses}
-            if any(
-                counts[status] != value for status, value in observed_statuses.items()
-            ):
-                raise ValueError(
-                    "child summary counts do not match item result statuses"
-                )
         except (TypeError, ValueError) as exc:
-            summary_error = str(exc)
-            items = []
-            counts = {
-                "selected": len(entries),
-                "passed": 0,
-                "failed": 0,
-                "errors": len(entries),
-                "skipped": 0,
-            }
-        if summary_error is not None and counts["errors"] == 0:
-            counts = {
-                **counts,
-                "passed": 0,
-                "failed": 0,
-                "errors": len(entries),
-                "skipped": 0,
-            }
+            summary_error = summary_error or str(exc)
+            items = None
+        unfinished = (
+            "shard deadline" if returncode == 124 else (summary_error or "unfinished")
+        )[:160]
+        if program == "differential" and results_log.is_file():
+            try:
+                outcomes = diff_results.outcomes(diff_results.load_rows(results_log))
+            except ValueError as exc:
+                summary_error = summary_error or f"result log: {exc}"
+            else:
+                items = _with_diff_outcomes(
+                    items, entries, outcomes, unfinished_reason=unfinished
+                )
+        if items is None:
+            items = [
+                {
+                    "path": path,
+                    "status": "not_run",
+                    "duration_s": None,
+                    "reason": unfinished,
+                }
+                for path in entries
+            ]
+        counts = {
+            "selected": len(entries),
+            **{
+                status: sum(row["status"] == status for row in items)
+                for status in ITEM_STATUSES
+            },
+        }
         artifact = None
         staged_artifact = None
         if program == "regrtest":
@@ -1016,8 +1051,7 @@ def run_shard(
 
 def shard_report(raw: Mapping[str, Any], *, tail_lines: int = 40) -> list[str]:
     """The lines a shard job prints: its verdict, then why it failed."""
-    fields = ("program", "shard", "returncode", "selected", "passed", "failed")
-    fields += ("errors", "skipped")
+    fields = ("program", "shard", "returncode", "selected", *ITEM_STATUSES)
     lines = [
         "nightly-shard: "
         + " ".join(f"{field}={raw.get(field)}" for field in fields)
@@ -1025,6 +1059,14 @@ def shard_report(raw: Mapping[str, Any], *, tail_lines: int = 40) -> list[str]:
     ]
     if raw.get("summary_error"):
         lines.append(f"  summary_error: {raw['summary_error']}")
+    items = raw.get("item_results") or []
+    lines.extend(
+        _reason_groups(
+            {row["path"]: row["status"] for row in items},
+            {row["path"]: row.get("reason", "") for row in items},
+            examples=3,
+        )
+    )
     if raw.get("returncode") != 0 or raw.get("summary_error"):
         for stream in ("stderr_tail", "stdout_tail"):
             tail = str(raw.get(stream) or "").splitlines()[-tail_lines:]
@@ -1042,7 +1084,7 @@ def aggregate(
     validate_plan(plan, root)
     projected = plan["programs"][program]
     expected_paths = {str(entry["path"]) for entry in projected["entries"]}
-    totals = {name: 0 for name in ("selected", "passed", "failed", "errors", "skipped")}
+    totals = {name: 0 for name in ("selected", *ITEM_STATUSES)}
     observed_paths: set[str] = set()
     observed_items: dict[str, dict[str, Any]] = {}
     integrity_errors: list[str] = []
@@ -1122,9 +1164,7 @@ def aggregate(
             totals[name] += value
         if raw.get("selected") != len(expected_entries):
             integrity_errors.append(f"shard {shard_id}: selected count mismatch")
-        if sum(
-            int(raw.get(name, 0)) for name in ("passed", "failed", "errors", "skipped")
-        ) != raw.get("selected"):
+        if sum(int(raw.get(name, 0)) for name in ITEM_STATUSES) != raw.get("selected"):
             integrity_errors.append(f"shard {shard_id}: result accounting mismatch")
         if checkpoint.get("returncode") != raw.get("returncode"):
             integrity_errors.append(f"shard {shard_id}: returncode mismatch")
@@ -1145,29 +1185,35 @@ def aggregate(
                     f"shard {shard_id}: duplicate item telemetry for {path}"
                 )
                 continue
-            if status not in {"passed", "failed", "errors", "skipped"}:
+            if status not in ITEM_STATUSES:
                 integrity_errors.append(
                     f"shard {shard_id}: invalid item status for {path}"
                 )
                 continue
-            if (
-                isinstance(duration, bool)
-                or not isinstance(duration, (int, float))
-                or duration <= 0
+            # A finished item has a positive duration; an unfinished one none.
+            if (duration is None) != (status == "not_run") or (
+                duration is not None and not _positive_seconds(duration)
             ):
                 integrity_errors.append(
                     f"shard {shard_id}: invalid item duration for {path}"
                 )
                 continue
+            reason = item.get("reason", "")
+            if not isinstance(reason, str) or (status == "passed") != (not reason):
+                integrity_errors.append(
+                    f"shard {shard_id}: invalid item reason for {path}"
+                )
+                continue
             shard_items[path] = {
                 "status": status,
-                "duration_s": float(duration),
+                "duration_s": None if duration is None else float(duration),
+                "reason": reason,
             }
         if set(shard_items) != set(expected_entries):
             integrity_errors.append(
                 f"shard {shard_id}: item telemetry closure mismatch"
             )
-        for status in ("passed", "failed", "errors", "skipped"):
+        for status in ITEM_STATUSES:
             if sum(
                 item["status"] == status for item in shard_items.values()
             ) != raw.get(status):
@@ -1224,6 +1270,7 @@ def aggregate(
         and totals["selected"] == int(projected["selected"])
         and totals["passed"] == totals["selected"]
         and totals["failed"] == totals["errors"] == totals["skipped"] == 0
+        and totals["not_run"] == 0
         and len(records) == SHARD_COUNTS[program]
         and all(record["returncode"] == 0 for record in records)
     )
@@ -1239,10 +1286,17 @@ def aggregate(
         **totals,
         "integrity_errors": integrity_errors,
         "item_durations_s": {
-            path: observed_items[path]["duration_s"] for path in sorted(observed_items)
+            path: observed_items[path]["duration_s"]
+            for path in sorted(observed_items)
+            if observed_items[path]["duration_s"] is not None
         },
         "status_by_path": {
             path: observed_items[path]["status"] for path in sorted(observed_items)
+        },
+        "reason_by_path": {
+            path: observed_items[path]["reason"]
+            for path in sorted(observed_items)
+            if observed_items[path]["reason"]
         },
         "shards": records,
     }
@@ -1282,6 +1336,7 @@ def aggregate_contract_problems(
     expected_paths = {str(entry["path"]) for entry in expected["entries"]}
     durations = payload.get("item_durations_s")
     statuses = payload.get("status_by_path")
+    reasons = payload.get("reason_by_path")
     shards = payload.get("shards")
     integrity_errors = payload.get("integrity_errors")
     recorded_failure = (
@@ -1312,26 +1367,30 @@ def aggregate_contract_problems(
     ]
     if not isinstance(integrity_errors, list):
         problems.append("integrity_errors is not a list")
-    if not isinstance(durations, dict) or not isinstance(statuses, dict):
+    if (
+        not isinstance(durations, dict)
+        or not isinstance(statuses, dict)
+        or not isinstance(reasons, dict)
+    ):
         problems.append("item telemetry is not a mapping")
         return problems
-    if set(statuses) != set(durations):
-        problems.append("item statuses and durations name different items")
-    unknown = sorted(set(durations) - expected_paths)
+    finished = {path for path, status in statuses.items() if status != "not_run"}
+    if set(durations) != finished:
+        problems.append("item durations do not name exactly the finished items")
+    unknown = sorted(set(statuses) - expected_paths)
     if unknown:
         problems.append(f"item telemetry names items outside the plan: {unknown[:3]}")
-    complete = set(durations) == expected_paths
+    if set(reasons) != {p for p, status in statuses.items() if status != "passed"}:
+        problems.append("item reasons do not name exactly the non-passing items")
+    complete = set(statuses) == expected_paths
     if not complete and not recorded_failure:
         problems.append("partial item telemetry is not recorded as a failure")
     if complete and payload.get("selected") != expected.get("selected"):
         problems.append("selected does not match the plan")
-    for path in sorted(durations):
-        if not _positive_seconds(durations[path]) or statuses.get(path) not in {
-            "passed",
-            "failed",
-            "errors",
-            "skipped",
-        }:
+    for path in sorted(statuses):
+        if statuses[path] not in ITEM_STATUSES or (
+            path in durations and not _positive_seconds(durations[path])
+        ):
             problems.append(f"item telemetry is invalid: {path}")
     if not isinstance(shards, list) or (
         len(shards) != SHARD_COUNTS[program] and not recorded_failure
@@ -1365,60 +1424,80 @@ def validate_aggregate(
     plan: Mapping[str, Any],
     payload: Mapping[str, Any],
     *,
-    require_complete: bool = False,
+    telemetry_only: bool = False,
 ) -> None:
     """Refuse a malformed aggregate, then refuse a failed Nightly program.
 
-    ``require_complete`` is for consumers of item telemetry, such as the cost
-    model fit, which must see every planned item.
+    ``telemetry_only`` is for consumers of item timing, such as the cost model
+    fit. A finished item's duration is a valid cost whatever its verdict, so
+    they need an integrity-clean aggregate in which every planned item
+    finished, not a green one.
     """
     problems = aggregate_contract_problems(plan, payload)
     program = payload.get("program")
-    if not problems and require_complete:
+    if not problems and telemetry_only:
         expected_paths = {
             str(entry["path"]) for entry in plan["programs"][program]["entries"]
         }
+        if payload["integrity_errors"]:
+            problems.append("aggregate integrity failed")
         if set(payload["item_durations_s"]) != expected_paths:
             problems.append("item telemetry is incomplete")
     if problems:
         raise ValueError(
             "nightly aggregate contract is invalid: " + "; ".join(problems)
         )
+    if telemetry_only:
+        return
     if payload.get("ok") is not True or any(
         shard.get("returncode") != 0 for shard in payload["shards"]
     ):
         raise RuntimeError(
             f"nightly {program} failed: failures={payload.get('failed')} "
-            f"errors={payload.get('errors')} integrity={payload.get('integrity_errors')}"
+            f"errors={payload.get('errors')} not_run={payload.get('not_run')} "
+            f"integrity={payload.get('integrity_errors')}"
         )
 
 
-def aggregate_report(payload: Mapping[str, Any], *, limit: int = 200) -> list[str]:
-    """Human-readable lines naming a program's verdict and every failing item."""
+def _reason_groups(
+    statuses: Mapping[str, str], reasons: Mapping[str, str], *, examples: int
+) -> list[str]:
+    groups: dict[tuple[str, str], list[str]] = {}
+    for path in sorted(statuses):
+        if statuses[path] != "passed":
+            key = (statuses[path], reasons.get(path, ""))
+            groups.setdefault(key, []).append(path)
+    return [
+        f"  {status}/{reason or '-'}: {len(paths)}  e.g. {', '.join(paths[:examples])}"
+        for (status, reason), paths in sorted(
+            groups.items(), key=lambda item: (-len(item[1]), item[0])
+        )
+    ]
+
+
+def aggregate_report(payload: Mapping[str, Any], *, examples: int = 3) -> list[str]:
+    """A program's verdict, then its non-passing items grouped by status and reason.
+
+    Every item stays in the aggregate JSON; the log names each failure class
+    once, with a few examples, so a red Nightly reads in a screenful.
+    """
     lines = [
         "nightly-aggregate: "
         + " ".join(
             f"{field}={payload.get(field)}"
-            for field in (
-                "program",
-                "ok",
-                "selected",
-                "passed",
-                "failed",
-                "errors",
-                "skipped",
-            )
+            for field in ("program", "ok", "selected", *ITEM_STATUSES)
         )
     ]
-    errors = payload.get("integrity_errors") or []
-    lines.extend(f"  integrity: {error}" for error in list(errors)[:limit])
-    statuses = payload.get("status_by_path") or {}
-    failing = sorted(
-        (status, path) for path, status in statuses.items() if status != "passed"
+    lines.extend(
+        f"  integrity: {error}" for error in payload.get("integrity_errors") or []
     )
-    lines.extend(f"  {status}: {path}" for status, path in failing[:limit])
-    if len(failing) > limit:
-        lines.append(f"  ... {len(failing) - limit} more non-passing items")
+    lines.extend(
+        _reason_groups(
+            payload.get("status_by_path") or {},
+            payload.get("reason_by_path") or {},
+            examples=examples,
+        )
+    )
     return lines
 
 

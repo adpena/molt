@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "91ff27c2f92f56bece2096132e3413dfc0429ca95f21ebf21cd0c1439ffcd447",
+  "authority_sha256": "2d53257aeb96963b436d92417fd7b6d831881a5c9caef85c23f6444c3d6300cd",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2956,6 +2956,7 @@
         "tests/tools/test_nightly_profile_feedback.py",
         "tests/tools/test_nightly_shard_profile.py",
         "tests/tools/test_nightly_sharding.py",
+        "tests/tools/test_diff_results.py",
         "tests/test_audit_op_kinds.py",
         "tests/test_gen_codecs.py",
         "tests/test_gen_host_capabilities.py",

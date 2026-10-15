@@ -85,7 +85,7 @@ def fit_feedback(
         raise ValueError("current shard profile does not match the measured plan")
     for program in programs:
         nightly_sharding.validate_aggregate(
-            plan, aggregates[program], require_complete=True
+            plan, aggregates[program], telemetry_only=True
         )
     durations_by_program = nightly_shard_profile.validated_durations(plan, aggregates)
     candidate = nightly_shard_profile.fit_profile(plan, aggregates)

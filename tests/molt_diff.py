@@ -4258,6 +4258,7 @@ def diff_test(
             diff_output_layout.enforce_child(os.environ, repo_root=_repo_root())
     # Mutable record the inner finalizer fills in; emitted once on every exit
     # path (skip / oom / pass / fail). raw_status is authoritative for honesty.
+    started = time.monotonic()
     record: dict[str, object] = {
         "record_type": "test",
         "file": test_policy.normalize_repo_relative(file_path),
@@ -4557,6 +4558,7 @@ def diff_test(
         _impl()
         return record
     finally:
+        record["duration_s"] = round(time.monotonic() - started, 6)
         _record_diff_result(record)
 
 

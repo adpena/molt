@@ -167,7 +167,7 @@ def test_measurement_contract_drift_falls_back_to_source_bytes() -> None:
     )
 
 
-def test_profile_feedback_reports_non_regressing_measured_makespan() -> None:
+def _measured_feedback_inputs():
     plan, aggregates = _training_inputs()
     current = _blank_profile()
     plan["schema"] = nightly_sharding.PLAN_SCHEMA
@@ -191,6 +191,7 @@ def test_profile_feedback_reports_non_regressing_measured_makespan() -> None:
                 "status_by_path": {
                     path: "passed" for path in aggregate["item_durations_s"]
                 },
+                "reason_by_path": {},
                 "shards": [
                     {
                         "duration_s": 1.0 + index,
@@ -206,6 +207,12 @@ def test_profile_feedback_reports_non_regressing_measured_makespan() -> None:
             }
         )
 
+    return plan, aggregates, current
+
+
+def test_profile_feedback_reports_non_regressing_measured_makespan() -> None:
+    plan, aggregates, current = _measured_feedback_inputs()
+
     candidate, report = nightly_profile_feedback.fit_feedback(plan, aggregates, current)
 
     nightly_shard_profile.validate_profile(candidate, PROGRAMS)
@@ -218,3 +225,27 @@ def test_profile_feedback_reports_non_regressing_measured_makespan() -> None:
         for row in report["programs"].values()
     )
     assert nightly_profile_feedback.promote(candidate, report) == candidate
+
+
+def test_profile_learns_from_finished_items_whatever_their_verdict() -> None:
+    # A failing or timed-out test still costs its runtime; a red Nightly is
+    # valid timing evidence as long as its accounting holds.
+    plan, aggregates, current = _measured_feedback_inputs()
+    for program in PROGRAMS:
+        aggregate = aggregates[program]
+        failing = sorted(aggregate["status_by_path"])[0]
+        aggregate["ok"] = False
+        aggregate["status_by_path"][failing] = "failed"
+        aggregate["reason_by_path"] = {failing: "mismatch"}
+    candidate, _report = nightly_profile_feedback.fit_feedback(
+        plan, aggregates, current
+    )
+    nightly_shard_profile.validate_profile(candidate, PROGRAMS)
+
+    broken = copy.deepcopy(aggregates)
+    broken[PROGRAMS[0]]["integrity_errors"] = [
+        "shard 0: item telemetry closure mismatch"
+    ]
+    broken[PROGRAMS[0]]["ok"] = False
+    with pytest.raises(ValueError, match="aggregate integrity failed"):
+        nightly_profile_feedback.fit_feedback(plan, broken, current)

@@ -246,19 +246,17 @@ def validated_durations(
         expected_paths = {
             str(entry["path"]) for entry in plan["programs"][program]["entries"]
         }
+        # A finished item's duration is its cost whatever its verdict; only an
+        # integrity failure or an unfinished item makes timing unusable.
         durations = aggregate.get("item_durations_s")
-        statuses = aggregate.get("status_by_path")
         if (
-            aggregate.get("ok") is not True
+            aggregate.get("integrity_errors")
             or aggregate.get("program") != program
             or aggregate.get("plan_sha256") != plan.get("plan_sha256")
             or aggregate.get("source_commit") != plan.get("source_commit")
             or aggregate.get("authority_sha256") != plan.get("authority_sha256")
             or not isinstance(durations, dict)
             or set(durations) != expected_paths
-            or not isinstance(statuses, dict)
-            or set(statuses) != expected_paths
-            or any(status != "passed" for status in statuses.values())
         ):
             raise ValueError(f"nightly {program} profile telemetry is invalid")
         result[program] = {
