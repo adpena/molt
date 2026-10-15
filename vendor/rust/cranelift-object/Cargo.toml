@@ -48,7 +48,7 @@ version = "1.0.100"
 default-features = false
 
 [dependencies.cranelift-codegen]
-version = "0.133.3"
+version = "0.136.2"
 features = [
     "unwind",
     "std",
@@ -89,7 +89,7 @@ default-features = false
 version = "0.13.3"
 
 [dev-dependencies.cranelift-codegen]
-version = "0.133.3"
+version = "0.136.2"
 features = [
     "unwind",
     "x86",

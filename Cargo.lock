@@ -1108,7 +1108,7 @@ name = "cranelift-object"
 version = "0.133.3"
 dependencies = [
  "anyhow",
- "cranelift-codegen 0.133.3",
+ "cranelift-codegen 0.136.2",
  "cranelift-control 0.133.3",
  "cranelift-entity 0.133.3",
  "cranelift-frontend 0.133.3",
@@ -2607,7 +2607,7 @@ dependencies = [
 name = "molt-backend-native"
 version = "0.1.0"
 dependencies = [
- "cranelift-codegen 0.133.3",
+ "cranelift-codegen 0.136.2",
  "cranelift-frontend 0.133.3",
  "cranelift-module",
  "cranelift-native 0.133.3",
