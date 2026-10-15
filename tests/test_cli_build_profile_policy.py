@@ -419,8 +419,8 @@ def test_incremental_family_key_excludes_link_args_and_separates_configs() -> No
 def test_incremental_target_root_is_session_independent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    developer_host_context: None,
 ) -> None:
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.setenv("MOLT_SESSION_ID", "session-abc")
     root = cli_runtime_build._runtime_wasm_incremental_target_root(
         tmp_path, "release-output-deadbeef"
