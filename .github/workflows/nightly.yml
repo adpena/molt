@@ -51,7 +51,7 @@ jobs:
 
       - name: Upload immutable shard inputs
         if: always() && hashFiles('proof-results/nightly/prepare/shard-plan.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-shard-inputs
           path: |
@@ -61,7 +61,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload compact shard plan
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-shard-plan
           path: proof-results/nightly/prepare/shard-plan.json
@@ -69,7 +69,7 @@ jobs:
 
       - name: Upload preparation proof receipt
         if: always() && hashFiles('proof-receipts/nightly-shard-prepare.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-nightly-prepare
           path: |
@@ -106,7 +106,7 @@ jobs:
           sync-groups: dev
 
       - name: Download immutable shard inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nightly-shard-inputs
           path: .
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload conformance shard evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-shard-conformance-${{ matrix.shard }}
           path: proof-results/nightly/conformance/*
@@ -162,7 +162,7 @@ jobs:
           sync-groups: dev
 
       - name: Download immutable shard inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nightly-shard-inputs
           path: .
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload differential shard evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-shard-differential-${{ matrix.shard }}
           path: proof-results/nightly/differential/*
@@ -219,7 +219,7 @@ jobs:
           sync-frozen: "true"
 
       - name: Download immutable shard inputs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nightly-shard-inputs
           path: .
@@ -241,7 +241,7 @@ jobs:
 
       - name: Upload regrtest shard evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-shard-regrtest-${{ matrix.shard }}
           path: proof-results/nightly/regrtest/*
@@ -260,9 +260,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: ./.github/actions/setup-project
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: nightly-shard-inputs, path: . }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: nightly-shard-conformance-*
           path: proof-results/nightly/conformance
@@ -271,7 +271,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-family nightly_conformance --receipt proof-receipts/nightly-conformance.json
       - name: Upload conformance aggregate receipt
         if: always() && hashFiles('proof-receipts/nightly-conformance.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-nightly-conformance
           path: |
@@ -289,9 +289,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: ./.github/actions/setup-project
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: nightly-shard-inputs, path: . }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: nightly-shard-differential-*
           path: proof-results/nightly/differential
@@ -300,7 +300,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-family nightly_differential --receipt proof-receipts/nightly-differential.json
       - name: Upload differential aggregate receipt
         if: always() && hashFiles('proof-receipts/nightly-differential.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-nightly-differential
           path: |
@@ -318,9 +318,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: ./.github/actions/setup-project
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: nightly-shard-inputs, path: . }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: nightly-shard-regrtest-*
           path: proof-results/nightly/regrtest
@@ -329,7 +329,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-family nightly_regrtest --receipt proof-receipts/nightly-regrtest.json
       - name: Upload regrtest aggregate receipt
         if: always() && hashFiles('proof-receipts/nightly-regrtest.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-nightly-regrtest
           path: |
@@ -351,19 +351,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: ./.github/actions/setup-project
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: nightly-shard-plan, path: . }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: proof-receipt-nightly-conformance, path: . }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: proof-receipt-nightly-differential, path: . }
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: proof-receipt-nightly-regrtest, path: . }
       - name: Fit compact digest-bound cost authority
         run: python3 tools/proof_plan.py --run-family nightly_shard_profile_feedback --receipt proof-receipts/nightly-shard-profile-feedback.json
       - name: Upload measured profile candidate and receipt
         if: always() && hashFiles('proof-receipts/nightly-shard-profile-feedback.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-nightly-shard-profile-feedback
           path: |
@@ -401,7 +401,7 @@ jobs:
 
       - name: Upload determinism proof results
         if: always() && hashFiles('proof-receipts/nightly-determinism.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-nightly-determinism
           path: |
@@ -445,7 +445,7 @@ jobs:
 
       - name: Upload Tier 3 gate results
         if: always() && hashFiles('proof-receipts/nightly-verification-t3.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-nightly-tier3
           path: |
@@ -485,7 +485,7 @@ jobs:
           cache-uv: "false"
 
       - name: Download nightly proof artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: proof-receipt-*
           path: nightly-artifacts

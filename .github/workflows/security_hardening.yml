@@ -56,7 +56,7 @@ jobs:
         run: uv run python3 tools/proof_plan.py --run-family python_security --receipt proof-receipts/python_security.json
       - name: Upload Python security receipt
         if: always() && hashFiles('proof-receipts/python_security.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-python-security
           path: proof-receipts/python_security.json
@@ -86,7 +86,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-family rust_security --receipt proof-receipts/rust_security.json
       - name: Upload Rust security receipt
         if: always() && hashFiles('proof-receipts/rust_security.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-rust-security
           path: proof-receipts/rust_security.json
