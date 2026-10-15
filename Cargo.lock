@@ -1109,7 +1109,7 @@ version = "0.133.3"
 dependencies = [
  "anyhow",
  "cranelift-codegen 0.133.3",
- "cranelift-control 0.133.3",
+ "cranelift-control 0.136.2",
  "cranelift-entity 0.133.3",
  "cranelift-frontend 0.133.3",
  "cranelift-module",
