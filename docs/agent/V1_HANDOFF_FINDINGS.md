@@ -151,6 +151,25 @@ These are developer/build-time contracts. Clean-host selected integration and
 installed-package, live-watch and other platform qualification remain explicit
 acceptance work; this does not add an admitted Python target version.
 
+Runtime and environment custody now share CPython's standard-library archive
+name rule, derived from the captured version, OS and build flags. Capture,
+startup selection and receipt validation move together; replay never substitutes
+the verifier's host ABI. The actual macOS CPython 3.14.4 free-threaded capture
+and reuse pass, alongside 375 owning consumer controls with five platform skips.
+Literal positive and negative controls cover POSIX free-threaded and Windows
+debug naming. Windows debug execution and broader support cells remain
+unqualified; this repairs development interpreter admission, not target support.
+
+Local integration orders source/tooling rule families before the intact
+build-bearing and mixed families, preserving every command, profile,
+prerequisite and freshness requirement. Eighteen selection and actual driver
+controls pass, including an early failing gate that prevents a later build
+sentinel. Tests that invoke Cargo still own those child compilations. Generator
+fixtures declare their real prerequisites and require their fault-specific
+diagnostics; selected-toolchain failures retain exception notes alongside every
+independent and blocked prerequisite. These development checks add no work to
+emitted binaries.
+
 Proof-receipt serialization and evidence verification now share one developer-side
 owner. Declared outputs and downloaded artifacts reuse the canonical portable
 path grammar and lexical ownership checks; cleanup admits the entire output set

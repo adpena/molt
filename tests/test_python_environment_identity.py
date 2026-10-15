@@ -229,8 +229,23 @@ def test_runtime_session_eof_closes_context_without_recapture(tmp_path, monkeypa
 @pytest.mark.parametrize(
     "change", ["archive", "new-pyvenv", "new-pth", "pyvenv-rewrite"]
 )
+@pytest.mark.parametrize(
+    "operating_system,py_debug,gil_disabled,archive_name,wrong_archive",
+    [
+        ("windows", False, False, "python314.zip", "python314t.zip"),
+        ("windows", True, True, "python314_d.zip", "python314t_d.zip"),
+        ("macos", True, True, "python314t.zip", "python314_d.zip"),
+    ],
+)
 def test_runtime_capture_fences_import_and_startup_selection(
-    tmp_path, monkeypatch, change
+    tmp_path,
+    monkeypatch,
+    change,
+    operating_system,
+    py_debug,
+    gil_disabled,
+    archive_name,
+    wrong_archive,
 ):
     from molt import python_runtime_identity as runtime
 
@@ -243,7 +258,7 @@ def test_runtime_capture_fences_import_and_startup_selection(
     if change == "pyvenv-rewrite":
         pyvenv.write_bytes(b"home = original")
         original_config = pyvenv.stat()
-    archive = tmp_path / f"python{sys.version_info.major}{sys.version_info.minor}.zip"
+    archive = tmp_path / archive_name
     monkeypatch.setattr(
         runtime,
         "sys",
@@ -259,7 +274,13 @@ def test_runtime_capture_fences_import_and_startup_selection(
     monkeypatch.setattr(
         runtime,
         "_platform_identity",
-        lambda: {"operating_system": "windows", "architecture": "x86_64"},
+        lambda: {
+            "operating_system": operating_system,
+            "architecture": "x86_64",
+            "version": "3.14.4",
+            "py_debug": py_debug,
+            "gil_disabled": gil_disabled,
+        },
     )
     monkeypatch.setattr(runtime, "_base_runtime_paths", lambda: {"stdlib": library})
     monkeypatch.setattr(runtime, "_runtime_library", lambda: None)
@@ -289,10 +310,37 @@ def test_runtime_capture_fences_import_and_startup_selection(
         ),
     )
     context = files.PythonFileCaptureContext()
-    payload, _roots, _pool, _explicit = runtime._capture_runtime_with_context(
+    payload, roots, pool, _explicit = runtime._capture_runtime_with_context(
         capture_context=context
     )
-    assert payload["import_roots"][-1]["kind"] == "absent-archive"
+    assert payload["import_roots"][-1] == {
+        "kind": "absent-archive",
+        "filename": archive_name,
+    }
+    environment_sys = SimpleNamespace(
+        flags=SimpleNamespace(
+            isolated=True, ignore_environment=True, no_user_site=True, safe_path=True
+        ),
+        path=[str(library), str(archive)],
+    )
+    monkeypatch.setattr(environment, "sys", environment_sys)
+    active, _capabilities = environment._active_environment_import_roots(
+        tmp_path / "environment", (), payload, roots, pool
+    )
+    assert active[-1] == {
+        "role": "runtime-import-1",
+        "owner": "runtime",
+        "kind": "absent-archive",
+        "filename": archive_name,
+    }
+    # Even a matching forged runtime row cannot admit the other OS/ABI name.
+    wrong_payload = copy.deepcopy(payload)
+    wrong_payload["import_roots"][-1]["filename"] = wrong_archive
+    environment_sys.path[-1] = str(tmp_path / wrong_archive)
+    with pytest.raises(PythonEnvironmentIdentityError, match="unsupported or absent"):
+        environment._active_environment_import_roots(
+            tmp_path / "environment", (), wrong_payload, roots, pool
+        )
     context.verify()
     if change == "archive":
         changed = archive
@@ -1417,7 +1465,9 @@ def test_runtime_startup_projection_preserves_actual_native_selection(
     )
     monkeypatch.setattr(runtime, "_runtime_library", lambda: first_image)
     monkeypatch.setattr(runtime, "_base_runtime_paths", lambda: {"stdlib": tmp_path})
-    monkeypatch.setattr(runtime, "_runtime_import_candidates", lambda _base: ([], []))
+    monkeypatch.setattr(
+        runtime, "_runtime_import_candidates", lambda _base, _platform: ([], [])
+    )
     monkeypatch.setattr(
         runtime,
         "sys",

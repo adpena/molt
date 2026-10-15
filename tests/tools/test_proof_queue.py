@@ -1324,11 +1324,13 @@ def test_locked_esm_package_admission_and_existing_full_capture_receiver(
                 "main": "require.cjs",
                 "exports": {"import": "./import.mjs", "require": "./require.cjs"},
             }
-        )
+        ),
+        encoding="utf-8",
     )
-    (package / "require.cjs").write_text("module.exports = {};\n")
+    (package / "require.cjs").write_text("module.exports = {};\n", encoding="utf-8")
     (tools / "parser/package-lock.json").write_text(
-        json.dumps({"packages": {"node_modules/acorn": {"version": "1.0.0"}}})
+        json.dumps({"packages": {"node_modules/acorn": {"version": "1.0.0"}}}),
+        encoding="utf-8",
     )
     policy_source = """
 [[toolchain_policy]]
@@ -1343,7 +1345,7 @@ node_package_mode = "import"
 package_lock = "tools/parser/package-lock.json"
 dependencies = ["node"]
 """
-    (tools / "proof_plan.toml").write_text(policy_source)
+    (tools / "proof_plan.toml").write_text(policy_source, encoding="utf-8")
     monkeypatch.setattr(generators, "ROOT", tmp_path)
     monkeypatch.setattr(
         generators,
@@ -1362,7 +1364,7 @@ dependencies = ["node"]
     assert "browser-acorn" in capsys.readouterr().err
 
     entry = package / "import.mjs"
-    entry.write_text("export const parse = () => {};\n")
+    entry.write_text("export const parse = () => {};\n", encoding="utf-8")
     policies = proof_plan.load_toolchain_policies(
         tomllib.loads(policy_source), root=tmp_path
     )
@@ -1417,13 +1419,15 @@ dependencies = ["node"]
             plan, "browser-acorn", wrong_mode, full_capture=True
         )
     original = entry.read_bytes()
-    entry.write_text("export const changed = 1;\n")
+    entry.write_text("export const changed = 1;\n", encoding="utf-8")
     with pytest.raises(
         ValueError, match="process image changed while live custody armed"
     ):
         full_capture(before)
     entry.write_bytes(original)
-    (package / "new-member.mjs").write_text("export const extra = 1;\n")
+    (package / "new-member.mjs").write_text(
+        "export const extra = 1;\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="membership or content changed"):
         full_capture(full)
 

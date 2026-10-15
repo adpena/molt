@@ -5954,7 +5954,9 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
     def probe(policy):
         calls.append(policy.name)
         if policy.name == "raises":
-            raise OSError("independent injected probe failure")
+            failure = OSError("independent injected probe failure")
+            failure.add_note("selected runtime archive is outside admitted custody")
+            raise failure
         if policy.name == "missing":
             return None
         if policy.name == "dependent":
@@ -5973,6 +5975,7 @@ def test_selected_toolchains_aggregate_raising_missing_mismatch_and_blocked(
         "raises",
         "OSError",
         "independent injected",
+        "selected runtime archive is outside admitted custody",
         "missing",
         "wrong",
         "old",
@@ -6019,7 +6022,9 @@ def test_selected_target_python_family_uses_canonical_catalog(monkeypatch, tmp_p
 
     source = tmp_path / "src/molt/target_python.py"
     source.parent.mkdir(parents=True)
-    source.write_text("SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.12', '3.15')\n")
+    source.write_text(
+        "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS = ('3.12', '3.15')\n", encoding="utf-8"
+    )
     driver_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     driver_path = list(sys.path)
     policies = proof_plan.load_toolchain_policies(
@@ -6137,7 +6142,8 @@ def test_selected_node_package_version_is_derived_from_lock(tmp_path):
     lock = tmp_path / "parser/package-lock.json"
     lock.parent.mkdir()
     lock.write_text(
-        json.dumps({"packages": {"node_modules/parser": {"version": "9.7.1"}}})
+        json.dumps({"packages": {"node_modules/parser": {"version": "9.7.1"}}}),
+        encoding="utf-8",
     )
     policies = proof_plan.load_toolchain_policies(
         {
@@ -6180,16 +6186,18 @@ def test_locked_node_package_admission_reports_real_node_missing_and_version_mis
                     "node_modules/mismatch": {"version": "1.0.0"},
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     def install(name, version):
         package = root / "node_modules" / name
         package.mkdir(parents=True, exist_ok=True)
         (package / "package.json").write_text(
-            json.dumps({"name": name, "version": version, "main": "index.js"})
+            json.dumps({"name": name, "version": version, "main": "index.js"}),
+            encoding="utf-8",
         )
-        (package / "index.js").write_text("module.exports = {};\n")
+        (package / "index.js").write_text("module.exports = {};\n", encoding="utf-8")
 
     install("mismatch", "2.0.0")
     policies = proof_plan.load_toolchain_policies(
@@ -6277,19 +6285,19 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
     for sibling in PLAN.commands:
         if sibling.family == command.family and sibling.id != command.id:
             (receipt_root / f"{sibling.id}.json").write_text(
-                json.dumps(_receipt_for(sibling, receipt_root))
+                json.dumps(_receipt_for(sibling, receipt_root)), encoding="utf-8"
             )
     receipt = _receipt_for(command, receipt_root)
     receipt["toolchains"][fixture.policy.name] = after
     path = receipt_root / "selected-python.json"
-    path.write_text(json.dumps(receipt))
+    path.write_text(json.dumps(receipt), encoding="utf-8")
     assert _verify_receipts(PLAN, [command.family], receipt_root) == []
     for missing in ("python_runtime", "python_runtime_sha256"):
         broken = copy.deepcopy(receipt)
         identity = broken["toolchains"][fixture.policy.name]
         identity.pop(missing)
         identity["identity_sha256"] = proof_plan._toolchain_fingerprint_digest(identity)
-        path.write_text(json.dumps(broken))
+        path.write_text(json.dumps(broken), encoding="utf-8")
         assert any(
             "runtime fingerprint is invalid" in error
             for error in _verify_receipts(PLAN, [command.family], receipt_root)

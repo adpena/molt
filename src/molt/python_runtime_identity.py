@@ -325,16 +325,25 @@ def _is_runtime_import_path(path: Path, base_prefix: Path) -> bool:
     )
 
 
+def _stdlib_archive_name(platform_identity: Mapping[str, object]) -> str:
+    """CPython getpath's ZIP_LANDMARK basename for captured runtime metadata."""
+    major, minor, *_ = str(platform_identity["version"]).split(".")
+    if platform_identity["operating_system"] == "windows":
+        suffix = "_d" if platform_identity["py_debug"] else ""
+    else:
+        suffix = "t" if platform_identity["gil_disabled"] else ""
+    return f"python{major}{minor}{suffix}.zip"
+
+
 def _runtime_import_candidates(
     base_prefix: Path,
+    platform_identity: Mapping[str, object],
 ) -> tuple[list[tuple[str, Path, int]], list[tuple[str, Path | None, int]]]:
     directories: list[tuple[str, Path, int]] = []
     archives: list[tuple[str, Path | None, int]] = []
     seen_directories: set[str] = set()
     seen_archives: set[str] = set()
-    expected_archive = re.compile(
-        rf"python{sys.version_info.major}{sys.version_info.minor}\.zip$", re.I
-    )
+    expected_archive = _stdlib_archive_name(platform_identity).casefold()
     for position, raw in enumerate(sys.path):
         if not raw:
             continue
@@ -362,7 +371,7 @@ def _runtime_import_candidates(
                 seen_archives.add(key)
                 archives.append((lexical.name, resolved, position))
             continue
-        if not lexical.exists() and expected_archive.fullmatch(lexical.name):
+        if not lexical.exists() and lexical.name.casefold() == expected_archive:
             try:
                 parent = lexical.parent.resolve(strict=True)
             except OSError:
@@ -432,7 +441,7 @@ def current_python_runtime_selection() -> dict[str, object]:
     base = Path(getattr(sys, "_base_executable", None) or sys.executable)
     base_prefix = Path(sys.base_prefix).resolve(strict=True)
     library = _runtime_library()
-    directories, archives = _runtime_import_candidates(base_prefix)
+    directories, archives = _runtime_import_candidates(base_prefix, platform_payload)
 
     def location(path: Path) -> dict[str, object]:
         lexical = Path(os.path.abspath(path))
@@ -517,7 +526,9 @@ def _capture_runtime_with_context(
                 f"CPython capability requires missing runtime root role {role}: {path}"
             )
         root_candidates.append((role, path.resolve(strict=True)))
-    import_directories, import_archives = _runtime_import_candidates(base_prefix)
+    import_directories, import_archives = _runtime_import_candidates(
+        base_prefix, platform_payload
+    )
     root_candidates.extend((role, path) for role, path, _position in import_directories)
     roots, all_role_references = _root_forest(
         [(role, path.resolve(strict=True)) for role, path in root_candidates],
@@ -931,7 +942,7 @@ def validate_python_runtime_identity(payload: object) -> dict[str, object]:
             "Python runtime import-root closure is invalid"
         )
     seen_import_roots: set[bytes] = set()
-    expected_archive = f"python{version[0]}{version[1]}.zip".casefold()
+    expected_archive = _stdlib_archive_name(payload).casefold()
     for row in import_roots:
         if not isinstance(row, Mapping):
             raise PythonEnvironmentIdentityError(

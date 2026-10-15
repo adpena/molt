@@ -320,30 +320,17 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 | Rule | Input globs | Commands | Fresh toolchain |
 |---|---:|---:|---:|
-| `backend-native` | 8 | 2 | yes |
-| `native-object-emission` | 5 | 1 | yes |
-| `backend-llvm` | 2 | 1 | yes |
-| `tir-midend` | 9 | 2 | yes |
-| `wasm-host` | 5 | 2 | yes |
-| `gpu-core` | 3 | 1 | no |
-| `gpu-runtime` | 3 | 2 | no |
-| `runtime-vfs` | 4 | 3 | yes |
-| `runtime-lib` | 3 | 2 | yes |
 | `frontend-python` | 1 | 3 | no |
 | `bootstrap-stdlib` | 4 | 2 | no |
 | `heap-kind-lifetime-authority` | 7 | 2 | no |
-| `python-effect-capability-authority` | 6 | 3 | no |
-| `builtin-binding-guard-authority` | 9 | 3 | no |
 | `host-capability-authority` | 7 | 2 | no |
 | `runtime-profile-schema-authority` | 6 | 2 | no |
-| `native-callable-abi` | 19 | 5 | no |
 | `op-kind-registry` | 18 | 3 | no |
 | `frontend-diagnostics` | 6 | 2 | no |
 | `wasm-abi-registry` | 13 | 2 | no |
 | `tinygrad-op-contract` | 9 | 3 | no |
 | `intrinsic-registry` | 9 | 2 | no |
 | `codec-tables` | 7 | 2 | no |
-| `stringprep-leaf` | 2 | 1 | no |
 | `stringprep-tables` | 3 | 2 | no |
 | `llvm-runtime-abi` | 8 | 2 | no |
 | `source-extension-package-sets` | 54 | 3 | no |
@@ -365,6 +352,19 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `import-symbol-gate` | 2 | 2 | no |
 | `phase-exit-manifest` | 7 | 2 | no |
 | `public-contract` | 19 | 2 | no |
+| `backend-native` | 8 | 2 | yes |
+| `native-object-emission` | 5 | 1 | yes |
+| `backend-llvm` | 2 | 1 | yes |
+| `tir-midend` | 9 | 2 | yes |
+| `wasm-host` | 5 | 2 | yes |
+| `gpu-core` | 3 | 1 | no |
+| `gpu-runtime` | 3 | 2 | no |
+| `runtime-vfs` | 4 | 3 | yes |
+| `runtime-lib` | 3 | 2 | yes |
+| `python-effect-capability-authority` | 6 | 3 | no |
+| `builtin-binding-guard-authority` | 9 | 3 | no |
+| `native-callable-abi` | 19 | 5 | no |
+| `stringprep-leaf` | 2 | 1 | no |
 
 ## Selection contract
 

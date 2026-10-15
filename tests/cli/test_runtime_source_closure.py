@@ -198,25 +198,35 @@ def test_path_patch_admission_fails_closed(tmp_path: Path, defect: str) -> None:
     elif defect == "identity":
         manifest = patched / "Cargo.toml"
         manifest.write_text(
-            manifest.read_text().replace('name="object"', 'name="impostor"')
+            manifest.read_text(encoding="utf-8").replace(
+                'name="object"', 'name="impostor"'
+            ),
+            encoding="utf-8",
         )
     elif defect == "stale-version":
         manifest = patched / "Cargo.toml"
         manifest.write_text(
-            manifest.read_text().replace('version="0.39.1"', 'version="0.39.2"')
+            manifest.read_text(encoding="utf-8").replace(
+                'version="0.39.1"', 'version="0.39.2"'
+            ),
+            encoding="utf-8",
         )
     elif defect == "bad-path":
         manifest = tmp_path / "Cargo.toml"
         manifest.write_text(
-            manifest.read_text().replace('path="vendor/patched"', "path=7")
+            manifest.read_text(encoding="utf-8").replace(
+                'path="vendor/patched"', "path=7"
+            ),
+            encoding="utf-8",
         )
     else:
         lock = tmp_path / "Cargo.lock"
         lock.write_text(
-            lock.read_text().replace(
+            lock.read_text(encoding="utf-8").replace(
                 'name="object"\nversion="0.39.1"\n',
                 'name="object"\nversion="0.39.1"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n',
-            )
+            ),
+            encoding="utf-8",
         )
     with pytest.raises((OSError, ValueError)):
         _patched_source_digest(tmp_path, compiler)
@@ -227,14 +237,19 @@ def test_patch_symlink_escape_is_rejected(tmp_path: Path) -> None:
     compiler, _, patched = _patched_cargo_tree(root)
     external = tmp_path / "external"
     external.mkdir()
-    (external / "Cargo.toml").write_text('[package]\nname="object"\nversion="0.39.1"\n')
+    (external / "Cargo.toml").write_text(
+        '[package]\nname="object"\nversion="0.39.1"\n', encoding="utf-8"
+    )
     alias = root / "vendor/escape"
     try:
         alias.symlink_to(external, target_is_directory=True)
     except OSError as error:
         pytest.skip(f"Host cannot create directory symlinks: {error}")
     manifest = root / "Cargo.toml"
-    manifest.write_text(manifest.read_text().replace("vendor/patched", "vendor/escape"))
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("vendor/patched", "vendor/escape"),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="escapes"):
         _patched_source_digest(root, compiler)
 
@@ -245,15 +260,16 @@ def test_cargo_unused_patch_record_does_not_claim_registry_package_bytes(
     compiler, _, patched = _patched_cargo_tree(tmp_path)
     lock = tmp_path / "Cargo.lock"
     lock.write_text(
-        lock.read_text().replace(
+        lock.read_text(encoding="utf-8").replace(
             'name="object"\nversion="0.39.1"\n',
             'name="object"\nversion="0.39.1"\nsource="registry+https://other.invalid/index"\n',
         )
-        + '\n[[patch.unused]]\nname="object"\nversion="0.39.1"\n'
+        + '\n[[patch.unused]]\nname="object"\nversion="0.39.1"\n',
+        encoding="utf-8",
     )
     paths, before = _patched_source_digest(tmp_path, compiler)
     assert paths == [compiler]
-    (patched / "src/lib.rs").write_text("pub fn unused_edit() {}\n")
+    (patched / "src/lib.rs").write_text("pub fn unused_edit() {}\n", encoding="utf-8")
     assert _patched_source_digest(tmp_path, compiler)[1] == before
 
 
@@ -263,16 +279,22 @@ def test_selected_patch_follows_workspace_inherited_local_dependency(
     compiler, _, patched = _patched_cargo_tree(tmp_path)
     workspace = tmp_path / "Cargo.toml"
     workspace.write_text(
-        workspace.read_text()
-        + '\n[workspace.dependencies]\nleaf={path="vendor/leaf"}\n'
+        workspace.read_text(encoding="utf-8")
+        + '\n[workspace.dependencies]\nleaf={path="vendor/leaf"}\n',
+        encoding="utf-8",
     )
     manifest = patched / "Cargo.toml"
     manifest.write_text(
-        manifest.read_text().replace('path="../leaf"', "workspace=true")
+        manifest.read_text(encoding="utf-8").replace(
+            'path="../leaf"', "workspace=true"
+        ),
+        encoding="utf-8",
     )
     paths, before = _patched_source_digest(tmp_path, compiler)
     assert tmp_path / "vendor/leaf" in paths
-    (tmp_path / "vendor/leaf/src/lib.rs").write_text("pub fn changed_inherited() {}\n")
+    (tmp_path / "vendor/leaf/src/lib.rs").write_text(
+        "pub fn changed_inherited() {}\n", encoding="utf-8"
+    )
     assert _patched_source_digest(tmp_path, compiler)[1] != before
 
 
@@ -282,12 +304,16 @@ def test_workspace_inherited_patch_dependency_rejects_invalid_features(
     compiler, _, patched = _patched_cargo_tree(tmp_path)
     workspace = tmp_path / "Cargo.toml"
     workspace.write_text(
-        workspace.read_text()
-        + '\n[workspace.dependencies]\nleaf={path="vendor/leaf", features="invalid"}\n'
+        workspace.read_text(encoding="utf-8")
+        + '\n[workspace.dependencies]\nleaf={path="vendor/leaf", features="invalid"}\n',
+        encoding="utf-8",
     )
     manifest = patched / "Cargo.toml"
     manifest.write_text(
-        manifest.read_text().replace('path="../leaf"', "workspace=true")
+        manifest.read_text(encoding="utf-8").replace(
+            'path="../leaf"', "workspace=true"
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="Invalid Cargo dependency features"):
         _patched_source_digest(tmp_path, compiler)

@@ -182,7 +182,7 @@ def test_committed_gate_manifest_is_valid(drv):
 def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
-    assert [r.name for r in matched] == ["tir-midend", "rust-ffi-blocks"]
+    assert [r.name for r in matched] == ["rust-ffi-blocks", "tir-midend"]
     cargo = [shlex.split(gate) for gate in gates if gate.startswith("cargo ")]
     assert len(cargo) == 2
     assert [command[1] for command in cargo] == ["clippy", "test"]
@@ -224,6 +224,46 @@ def test_committed_native_policy_includes_owning_crate(drv, path):
     assert tests[tests.index("--profile") + 1] == "release-fast"
 
 
+def test_committed_source_checks_precede_complete_native_build_selection(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select(
+        [
+            "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
+            "runtime/molt-ir/src/tir/op_kinds.toml",
+            "tools/proof_plan.toml",
+        ]
+    )
+    # These independent families must survive reordering, including every
+    # native build owner and its requirement for a fresh toolchain.
+    source_names = {
+        "op-kind-registry",
+        "source-extension-package-sets",
+        "dev-tooling",
+        "rust-ffi-blocks",
+        "ci-wiring",
+    }
+    build_names = ["backend-native", "native-object-emission", "tir-midend"]
+    assert {rule.name for rule in matched} == source_names | set(build_names)
+    source_rules = [rule for rule in matched if rule.name in source_names]
+    build_rules = [rule for rule in matched if rule.name in build_names]
+    assert [rule.name for rule in build_rules] == build_names
+    assert {rule.name for rule in matched if rule.require_fresh_toolchain} == {
+        "backend-native",
+        "native-object-emission",
+        "tir-midend",
+    }
+    source_gates = {gate for rule in source_rules for gate in rule.gates}
+    build_gates = [gate for rule in build_rules for gate in rule.gates]
+    assert source_gates <= set(gates)
+    assert set(build_gates) <= set(gates)
+    assert gates[: len(cfg.always)] == cfg.always
+    assert max(gates.index(gate) for gate in source_gates) < min(
+        gates.index(gate) for gate in build_gates
+    )
+    assert gates[-len(build_gates) :] == build_gates
+    assert len(gates) == len(set(gates))
+
+
 def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["tools/op_kinds/render_rust.py"])
@@ -233,7 +273,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     assert "python3 tools/audit_op_kinds.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/op_kinds.toml"])
-    assert [r.name for r in matched] == ["tir-midend", "op-kind-registry"]
+    assert [r.name for r in matched] == ["op-kind-registry", "tir-midend"]
     assert "python3 tools/gen_op_kinds.py --check" in gates
     assert "python3 tools/audit_op_kinds.py --check" in gates
 
@@ -247,9 +287,9 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
     )
 
     assert [r.name for r in matched] == [
-        "backend-llvm",
         "op-kind-registry",
         "rust-ffi-blocks",
+        "backend-llvm",
     ]
     assert (
         "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
@@ -292,7 +332,7 @@ def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
     cfg = drv.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
 
-    assert [r.name for r in matched] == ["wasm-host", "rust-ffi-blocks"]
+    assert [r.name for r in matched] == ["rust-ffi-blocks", "wasm-host"]
     assert "cargo clippy --locked -p molt-wasm-host -- -D warnings" in gates
     assert "cargo build --locked --profile release-fast -p molt-wasm-host" in gates
 
@@ -982,11 +1022,27 @@ def test_probe_requires_target(drv):
 def test_integrate_runs_selected_gate_and_halts_on_failure(
     drv, origin_and_clone, tmp_path
 ):
-    # A gate that exits non-zero must halt integrate BEFORE push.
+    # A selected source check must stop the real driver before a later build
+    # gate can execute or integration can push. The sentinel uses no compiler.
     origin, work = origin_and_clone
     _commit_file(work, "src/molt/m.py", "x = 1\n", "feat: py change")
     _commit_file(
-        work, "tools/proof_plan.toml", 'always = ["exit 3"]\n', "failing policy"
+        work,
+        "tools/proof_plan.toml",
+        """
+always = []
+
+[[rule]]
+name = "source-check"
+globs = ["src/molt/**/*.py"]
+gates = ["exit 3"]
+
+[[rule]]
+name = "build-consumer"
+globs = ["src/molt/**/*.py"]
+gates = ["echo build-started > build-started.txt"]
+""",
+        "failing source check before build consumer",
     )
     ns = _integrate_ns(
         drv,
@@ -996,7 +1052,8 @@ def test_integrate_runs_selected_gate_and_halts_on_failure(
     # A failing gate halts integrate LOUDLY (DriverError) BEFORE push.
     with pytest.raises(drv.DriverError) as exc:
         drv.cmd_integrate(ns)
-    assert "gate failed" in str(exc.value)
+    assert "gate failed (exit 3): exit 3" in str(exc.value)
+    assert not (work / "build-started.txt").exists()
     # Nothing was pushed (origin unchanged).
     origin_main = _git(work, "rev-parse", "origin/main").stdout.strip()
     seed = _git(work, "rev-list", "--max-parents=0", "origin/main").stdout.strip()

@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import tomllib
+import traceback
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Literal, Mapping
 
 if TYPE_CHECKING:
@@ -2995,7 +2996,8 @@ def toolchain_fingerprints(
                     None,
                 )
             except Exception as exc:
-                results[name] = (None, f"probe raised {type(exc).__name__}: {exc}")
+                detail = "".join(traceback.format_exception_only(exc)).strip()
+                results[name] = (None, f"probe raised {detail}")
         return results
 
     with ThreadPoolExecutor(max_workers=min(4, max(1, len(names)))) as executor:
@@ -3057,7 +3059,9 @@ def toolchain_fingerprints(
                                     policy, fingerprint
                                 )
                             except (KeyError, TypeError, ValueError) as exc:
-                                errors[name] = str(exc)
+                                errors[name] = "".join(
+                                    traceback.format_exception_only(exc)
+                                ).strip()
                                 continue
                         fingerprints[name] = fingerprint
             next_ready = []

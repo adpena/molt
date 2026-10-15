@@ -96,18 +96,77 @@ def test_runtime_import_candidates_exclude_environment_distribution_roots(
     nested.mkdir(parents=True)
     archive = distributions / "extra.zip"
     archive.write_bytes(b"fixture; contents not read")
-    absent = (
-        distributions
-        / f"python{runtime.sys.version_info.major}{runtime.sys.version_info.minor}.zip"
-    )
+    absent = distributions / "python314.zip"
     monkeypatch.setattr(
         runtime.sys,
         "path",
         [str(stdlib), str(distributions), str(nested), str(archive), str(absent)],
     )
-    directories, archives = runtime._runtime_import_candidates(tmp_path)
+    directories, archives = runtime._runtime_import_candidates(
+        tmp_path, _runtime_payload(version="3.14.4")
+    )
     assert directories == [("import-directory-0", stdlib.resolve(), 0)]
     assert archives == []
+
+
+@pytest.mark.parametrize("version", ["3.14.4", "3.15.0"])
+@pytest.mark.parametrize(
+    "operating_system,py_debug,gil_disabled,archive_names",
+    [
+        ("linux", False, False, ("python314.zip", "python315.zip")),
+        ("linux", True, False, ("python314.zip", "python315.zip")),
+        ("linux", False, True, ("python314t.zip", "python315t.zip")),
+        ("linux", True, True, ("python314t.zip", "python315t.zip")),
+        ("macos", False, False, ("python314.zip", "python315.zip")),
+        ("macos", True, False, ("python314.zip", "python315.zip")),
+        ("macos", False, True, ("python314t.zip", "python315t.zip")),
+        ("macos", True, True, ("python314t.zip", "python315t.zip")),
+        ("windows", False, False, ("python314.zip", "python315.zip")),
+        ("windows", True, False, ("python314_d.zip", "python315_d.zip")),
+        ("windows", False, True, ("python314.zip", "python315.zip")),
+        ("windows", True, True, ("python314_d.zip", "python315_d.zip")),
+    ],
+)
+def test_absent_stdlib_archive_capture_and_receipt_follow_cpython_abi(
+    tmp_path,
+    monkeypatch,
+    version,
+    operating_system,
+    py_debug,
+    gil_disabled,
+    archive_names,
+):
+    # Literal CPython getpath landmarks, independent of Molt's spelling helper.
+    filename = archive_names[0 if version == "3.14.4" else 1]
+    payload = _runtime_payload(operating_system=operating_system, version=version)
+    payload.update(py_debug=py_debug, gil_disabled=gil_disabled)
+    payload["import_roots"].append({"kind": "absent-archive", "filename": filename})
+    _reseal(payload)
+    assert runtime.validate_python_runtime_identity(payload) == payload
+
+    # No host version/ABI fields are available: capture must use its already
+    # selected metadata, as replay validation does for the received identity.
+    selected_sys = SimpleNamespace(path=[str(tmp_path / filename)])
+    monkeypatch.setattr(runtime, "sys", selected_sys)
+    assert runtime._runtime_import_candidates(tmp_path, payload) == (
+        [],
+        [(filename, None, 0)],
+    )
+    wrong_names = (
+        ("python314.zip", "python314t.zip", "python314_d.zip", "python314t_d.zip")
+        if version == "3.14.4"
+        else ("python315.zip", "python315t.zip", "python315_d.zip", "python315t_d.zip")
+    )
+    for wrong_name in (*wrong_names, "python999.zip", "unrelated.zip"):
+        if wrong_name == filename:
+            continue
+        selected_sys.path = [str(tmp_path / wrong_name)]
+        with pytest.raises(PythonEnvironmentIdentityError, match="import root"):
+            runtime._runtime_import_candidates(tmp_path, payload)
+        payload["import_roots"][-1]["filename"] = wrong_name
+        _reseal(payload)
+        with pytest.raises(PythonEnvironmentIdentityError, match="import-root"):
+            runtime.validate_python_runtime_identity(payload)
 
 
 def _reseal(payload: dict[str, Any]) -> None:
