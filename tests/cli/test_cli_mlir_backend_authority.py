@@ -25,7 +25,8 @@ def _backend_name() -> str:
 
 def test_cli_mlir_backend_authority_is_single_home() -> None:
     for name in _MLIR_BACKEND_NAMES:
-        assert getattr(cli, name) is getattr(mlir_backend, name)
+        assert hasattr(mlir_backend, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for name in _MLIR_BACKEND_NAMES:

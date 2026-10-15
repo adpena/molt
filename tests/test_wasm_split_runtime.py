@@ -215,7 +215,7 @@ def test_split_worker_popen_kwargs_apply_child_rlimit(
 
 
 def test_generate_split_worker_js_lifecycle_contract() -> None:
-    from molt.cli import _generate_split_worker_js
+    from molt.cli.wasm import _generate_split_worker_js
     from molt.capability_manifest import CapabilityManifest
 
     worker_js = _generate_split_worker_js(

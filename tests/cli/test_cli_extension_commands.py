@@ -63,6 +63,11 @@ from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
 from tests.process_guard_common import install_module_view
+from molt.cli import extension_audit as cli_extension_audit
+from molt.cli import extension_scan as cli_extension_scan
+from molt.cli import extension_seal as cli_extension_seal
+from molt.cli import external_native as cli_external_native
+from molt.cli import package_distribution as cli_package_distribution
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -1278,7 +1283,7 @@ def test_extension_scan_reports_missing_symbols_without_gate(
     project_root.mkdir()
     _write_extension_scan_project(project_root)
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         fail_on_missing=False,
         json_output=True,
@@ -1334,7 +1339,7 @@ def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) ->
     project_root.mkdir()
     _write_extension_scan_project(project_root)
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         fail_on_missing=True,
         json_output=True,
@@ -1374,7 +1379,7 @@ def test_extension_scan_accepts_source_directories_deterministically(
         "PyObject_Repr should not be scanned\n", encoding="utf-8"
     )
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         sources=[str(src)],
         fail_on_missing=False,
@@ -1417,7 +1422,7 @@ def test_extension_scan_excludes_non_build_source_directories(
         encoding="utf-8",
     )
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         sources=[str(src)],
         exclude_dirs=["tests"],
@@ -1449,7 +1454,7 @@ def test_extension_scan_reads_non_utf8_source_deterministically(
         b"PyObject *ok(void) { return PyLong_FromLong(1); }\n"
     )
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         sources=[str(src)],
         fail_on_missing=True,
@@ -1538,7 +1543,7 @@ def test_extension_scan_resolves_package_defined_py_symbols(
         encoding="utf-8",
     )
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         sources=[str(src)],
         fail_on_missing=True,
@@ -1595,7 +1600,7 @@ def test_extension_scan_preserves_guarded_body_symbols(tmp_path: Path, capsys) -
         encoding="utf-8",
     )
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         sources=[str(src)],
         fail_on_missing=False,
@@ -1642,7 +1647,7 @@ def test_extension_scan_macro_bodies_do_not_define_called_apis(
         encoding="utf-8",
     )
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         sources=[str(src)],
         fail_on_missing=False,
@@ -1688,7 +1693,7 @@ def test_extension_scan_classifies_project_generated_c_api_symbols(
         encoding="utf-8",
     )
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         sources=[str(src)],
         fail_on_missing=False,
@@ -1725,7 +1730,7 @@ def test_extension_scan_numpy_surface_fails_closed_without_package_headers(
     project_root.mkdir()
     _write_extension_numpy_project(project_root)
 
-    rc = cli.extension_scan(
+    rc = cli_extension_scan.extension_scan(
         project=str(project_root),
         fail_on_missing=True,
         json_output=True,
@@ -2716,7 +2721,7 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
         source.unlink(missing_ok=True)
     resealed = tmp_path / "resealed"
     assert (
-        cli.extension_seal(
+        cli_extension_seal.extension_seal(
             path=str(extracted / "extension_manifest.json"),
             out_dir=str(resealed),
             json_output=True,
@@ -4777,7 +4782,7 @@ def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
 
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(out_dir),
         require_capabilities=True,
         require_abi=str(int(_default_molt_c_api_version(ROOT)) + 1),
@@ -4810,7 +4815,7 @@ def test_extension_audit_accepts_embedded_manifest(tmp_path: Path) -> None:
         zf.writestr("demoext.so", b"shared")
         zf.writestr("extension_manifest.json", json.dumps(manifest))
 
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(wheel_path),
         require_capabilities=True,
         require_abi=_default_molt_c_api_version(ROOT),
@@ -4824,7 +4829,7 @@ def test_extension_audit_requires_checksums_when_requested(tmp_path: Path) -> No
     _manifest_path, wheel_path = _write_extension_wheel(
         tmp_path, include_checksums=False
     )
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(wheel_path),
         require_capabilities=True,
         require_abi=_default_molt_c_api_version(ROOT),
@@ -4862,7 +4867,7 @@ def test_extension_audit_requires_manifest_python_export(
         encoding="utf-8",
     )
 
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(out_dir),
         require_python_export=["numpy"],
         json_output=False,
@@ -4912,7 +4917,7 @@ def test_extension_audit_reports_required_callable_exports_json(
         encoding="utf-8",
     )
 
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(out_dir),
         require_python_export=["scipy.ndimage.distance_transform_edt"],
         require_callable_export=["scipy.ndimage.distance_transform_edt"],
@@ -4995,7 +5000,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(sealed_root),
         python_export=["numpy"],
@@ -5019,7 +5024,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
     assert (sealed_root / "numpy" / "__init__.py").exists()
     assert (sealed_root / "numpy" / "_core" / "__init__.py").exists()
 
-    plan, errors = cli._resolve_external_package_native_artifact_plan(
+    plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(sealed_root,),
         admitted_packages={"numpy"},
         target="wasm",
@@ -5118,7 +5123,7 @@ def test_extension_seal_rejects_stale_compiled_layout(
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(sealed_root),
         python_export=["numpy"],
@@ -5151,7 +5156,7 @@ def test_extension_seal_fails_closed_on_future_abi(
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(tmp_path / "sealed"),
         python_export=["numpy"],
@@ -5239,7 +5244,7 @@ def test_extension_seal_derives_source_capsule_requirements_for_static_artifact(
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(sealed_root),
         python_export=["scipy.ndimage._nd_image"],
@@ -5343,7 +5348,7 @@ def test_extension_seal_persists_runtime_python_import_modules_for_static_artifa
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(sealed_root),
         python_export=["numpy"],
@@ -5489,7 +5494,7 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(sealed_root),
         python_export=["numpy"],
@@ -5541,7 +5546,7 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
             else "resealed-artifact"
         )
         assert (
-            cli.extension_seal(
+            cli_extension_seal.extension_seal(
                 path=str(sealed_manifest_path),
                 out_dir=str(resealed_root),
                 python_export=["numpy"],
@@ -5624,7 +5629,7 @@ def test_extension_seal_rejects_stale_sealed_sources_without_runtime_import_cust
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(tmp_path / "sealed"),
         python_export=["numpy"],
@@ -5717,7 +5722,7 @@ def test_extension_seal_rejects_fake_module_attr_callable_export(
     manifest_path = source_root / "extension_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(tmp_path / "sealed"),
         python_export=["scipy.ndimage.distance_transform_edt"],
@@ -5868,7 +5873,7 @@ def test_extension_seal_publishes_provider_module_support_source(
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     sealed_root = tmp_path / "sealed"
 
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(sealed_root),
         python_export=["scipy.ndimage.distance_transform_edt"],
@@ -5927,7 +5932,7 @@ def test_extension_seal_publishes_provider_module_support_source(
             "deterministic": False,
         }
     ]
-    plan, errors = cli._resolve_external_package_native_artifact_plan(
+    plan, errors = cli_external_native._resolve_external_package_native_artifact_plan(
         external_module_roots=(sealed_root,),
         admitted_packages={"scipy"},
         target="wasm",
@@ -5944,7 +5949,7 @@ def test_extension_seal_publishes_provider_module_support_source(
     )
 
     alias_root = tmp_path / "sealed_alias"
-    rc = cli.extension_seal(
+    rc = cli_extension_seal.extension_seal(
         path=str(manifest_path),
         out_dir=str(alias_root),
         python_export=["scipy.ndimage.distance_transform_edt"],
@@ -6070,7 +6075,7 @@ def _audit_static_link_manifest(
     *,
     require_object_closure: bool,
 ) -> tuple[int, dict[str, object]]:
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(out_dir),
         require_loader_kind="libmolt_source",
         require_runtime_linkage="static_link",
@@ -6123,7 +6128,7 @@ def test_extension_audit_requires_static_link_artifact_custody(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
     )
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(out_dir),
         json_output=True,
         verbose=False,
@@ -6340,7 +6345,7 @@ def test_extension_audit_rejects_static_link_artifact_hash_mismatch(
         encoding="utf-8",
     )
 
-    rc = cli.extension_audit(
+    rc = cli_extension_audit.extension_audit(
         path=str(out_dir),
         require_loader_kind="libmolt_source",
         require_runtime_linkage="static_link",
@@ -6361,7 +6366,7 @@ def test_verify_extension_manifest_requires_checksums(tmp_path: Path) -> None:
     manifest_path, wheel_path = _write_extension_wheel(
         tmp_path, capabilities=[], include_checksums=False
     )
-    rc = cli.verify(
+    rc = cli_package_distribution.verify(
         package_path=None,
         manifest_path=str(manifest_path),
         artifact_path=str(wheel_path),
@@ -6375,7 +6380,7 @@ def test_verify_extension_manifest_json_payload(tmp_path: Path, capsys) -> None:
     manifest_path, wheel_path = _write_extension_wheel(
         tmp_path, capabilities=[], include_checksums=True
     )
-    rc = cli.verify(
+    rc = cli_package_distribution.verify(
         package_path=None,
         manifest_path=str(manifest_path),
         artifact_path=str(wheel_path),
@@ -6397,7 +6402,7 @@ def test_publish_extension_wheel_requires_checksum_verification(tmp_path: Path) 
     )
     registry = tmp_path / "registry"
     registry.mkdir()
-    rc = cli.publish(
+    rc = cli_package_distribution.publish(
         package_path=str(wheel_path),
         registry=str(registry),
         dry_run=False,
@@ -6416,7 +6421,7 @@ def test_publish_extension_wheel_succeeds_with_checksums(tmp_path: Path) -> None
     )
     registry = tmp_path / "registry"
     registry.mkdir()
-    rc = cli.publish(
+    rc = cli_package_distribution.publish(
         package_path=str(wheel_path),
         registry=str(registry),
         dry_run=False,

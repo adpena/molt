@@ -1,28 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 from pathlib import Path
-from typing import Any
 
 from molt.cli.build_output_layout import _BUILD_PROFILE_CHOICES
 from molt.cli.completion import _completion_script
-
-
-def _cli_module() -> Any:
-    return importlib.import_module("molt.cli")
-
-
-def _fail(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._fail(*args, **kwargs)
-
-
-def _json_payload(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._json_payload(*args, **kwargs)
-
-
-def _emit_json(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._emit_json(*args, **kwargs)
+from molt.cli.output import emit_json as _emit_json
+from molt.cli.output import fail as _fail
+from molt.cli.output import json_payload as _json_payload
 
 
 def _build_profile_choices() -> tuple[str, ...]:

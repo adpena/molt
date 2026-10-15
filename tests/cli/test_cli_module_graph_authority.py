@@ -25,7 +25,8 @@ _MODULE_GRAPH_CORE_DEFINITIONS = (
 
 def test_cli_module_graph_core_authority_is_single_home() -> None:
     for name in _MODULE_GRAPH_CORE_NAMES:
-        assert getattr(cli, name) is getattr(module_graph, name)
+        assert hasattr(module_graph, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for marker in _MODULE_GRAPH_CORE_DEFINITIONS:

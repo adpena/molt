@@ -5,7 +5,7 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from molt.cli import build_inputs as _build_inputs
 from molt.cli.config_resolution import (
@@ -45,6 +45,18 @@ def _cli_profile() -> Generator[None]:
         profiler.dump_stats(path)
 
 
+def _build(*args: Any, **kwargs: Any) -> int:
+    """Run `build_command.build`, importing the build pipeline only now.
+
+    Commands that never build, such as ``molt --version``, then skip the
+    frontend and backend imports. The lookup happens per call, so a test that
+    patches ``build_command.build`` reaches this path.
+    """
+    from molt.cli import build_command
+
+    return build_command.build(*args, **kwargs)
+
+
 def main(build_fn: Callable[..., int] | None = None) -> int:
     try:
         require_frontend_python()
@@ -57,9 +69,7 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
         print(f"molt: error: {exc}", file=sys.stderr)
         return 2
     if build_fn is None:
-        from molt import cli as _cli
-
-        build_fn = _cli.build
+        build_fn = _build
 
     parser = _build_entrypoint_parser()
     args = parser.parse_args()

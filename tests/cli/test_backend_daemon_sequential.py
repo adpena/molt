@@ -20,11 +20,11 @@ import time
 from pathlib import Path
 
 import pytest
-import molt.cli as cli
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import backend_binary as cli_backend_binary
 
 from tests.cli.process_guard import cli_test_popen_kwargs, close_cli_test_process_group
+from molt.cli import backend_execution as cli_backend_execution
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,7 +42,7 @@ _STARTUP_TIMEOUT_S = 10.0
 def _candidate_daemon_binaries() -> list[Path]:
     """Return the canonical native daemon binary in priority order."""
     profile = "dev-fast"
-    path = cli._backend_bin_path(ROOT, profile, ("native-backend",))
+    path = cli_backend_execution._backend_bin_path(ROOT, profile, ("native-backend",))
     try:
         if cli_backend_binary._ensure_backend_binary(
             path,

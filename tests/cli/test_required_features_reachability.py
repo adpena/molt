@@ -25,6 +25,7 @@ from molt.cli import required_features as RF
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS,
 )
+from molt.cli import compiler_metadata as cli_compiler_metadata
 
 
 def _const_str(out: str, value: str) -> dict[str, object]:
@@ -390,7 +391,7 @@ def test_refusal_ignores_unreached_intrinsic_user() -> None:
 
 
 def _rust_source(relative: str) -> str:
-    root = cli._compiler_root()
+    root = cli_compiler_metadata._compiler_root()
     return (root / relative).read_text(encoding="utf-8")
 
 

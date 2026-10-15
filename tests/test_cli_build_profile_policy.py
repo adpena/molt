@@ -15,6 +15,9 @@ from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import script_commands as cli_commands
 from molt.cli import runtime_wasm_build_policy as cli_runtime_build
 from molt.cli import wrapper_build
+from molt.cli import output as cli_output
+from molt.cli import build_command as cli_build_command
+from molt.cli import arg_helpers as cli_arg_helpers
 
 
 def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
@@ -178,14 +181,14 @@ def test_build_profile_flag_routes_to_build_profile(
     entry = tmp_path / "main.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str] = []
-    build_signature = inspect.signature(cli.build)
+    build_signature = inspect.signature(cli_build_command.build)
 
     def fake_build(*args: Any, **kwargs: Any) -> int:
         bound = build_signature.bind_partial(*args, **kwargs)
         seen_profiles.append(cast(str, bound.arguments["profile"]))
         return 0
 
-    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setattr(cli_build_command, "build", fake_build)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     monkeypatch.setattr(
         sys,
@@ -198,12 +201,12 @@ def test_build_profile_flag_routes_to_build_profile(
 
 
 def test_build_args_profile_detection_keeps_platform_profile_separate() -> None:
-    assert not cli._build_args_has_profile_flag(["--profile", "browser"])
-    assert not cli._build_args_has_profile_flag(["--profile=browser"])
-    assert cli._build_args_has_profile_flag(["--profile", "dev"])
-    assert cli._build_args_has_profile_flag(["--profile=release"])
-    assert cli._build_args_has_profile_flag(["--build-profile", "dev"])
-    assert cli._build_args_has_profile_flag(
+    assert not cli_arg_helpers._build_args_has_profile_flag(["--profile", "browser"])
+    assert not cli_arg_helpers._build_args_has_profile_flag(["--profile=browser"])
+    assert cli_arg_helpers._build_args_has_profile_flag(["--profile", "dev"])
+    assert cli_arg_helpers._build_args_has_profile_flag(["--profile=release"])
+    assert cli_arg_helpers._build_args_has_profile_flag(["--build-profile", "dev"])
+    assert cli_arg_helpers._build_args_has_profile_flag(
         ["--profile", "browser", "--build-profile", "dev"]
     )
 
@@ -227,7 +230,7 @@ def test_nested_build_keeps_platform_profile_and_forwards_build_profile(
     output_binary = tmp_path / "bin" / "main_molt"
     output_binary.parent.mkdir(parents=True)
     output_binary.write_text("", encoding="utf-8")
-    payload = cli._json_payload(
+    payload = cli_output.json_payload(
         "build",
         "ok",
         data={

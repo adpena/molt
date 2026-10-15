@@ -28,6 +28,7 @@ from molt.cli.source_extension_link_requirements import (
     source_extension_link_file,
 )
 from tests.process_guard_common import install_module_view
+from molt.cli import build_command as cli_build_command
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -759,7 +760,7 @@ def test_cli_threads_bolt_intent_into_the_single_build_pipeline(
         received.update(kwargs)
         return 0
 
-    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setattr(cli_build_command, "build", fake_build)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     monkeypatch.setattr(
         sys,

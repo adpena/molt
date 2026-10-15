@@ -33,11 +33,11 @@ from tests.runtime_build_identity_helper import (
 
 import pytest
 
-import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from tests.cli.process_guard import run_cli_test_process
+from molt.cli import command_runtime as cli_command_runtime
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
@@ -367,7 +367,7 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
 def test_run_subprocess_captured_to_tempfiles_respects_cwd(tmp_path: Path) -> None:
     workdir = tmp_path / "work"
     workdir.mkdir()
-    result = cli._run_subprocess_captured_to_tempfiles(
+    result = cli_command_runtime._run_subprocess_captured_to_tempfiles(
         [
             sys.executable,
             "-c",

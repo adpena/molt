@@ -13,6 +13,9 @@ import molt.cli as cli
 from molt.backend_environment import CodegenSelection
 from molt.cli import factgraph as factgraph_module
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.cli import config_resolution as cli_config_resolution
+from molt.cli import output as cli_output
+from molt.cli import build_command as cli_build_command
 
 
 def test_factgraph_cli_dispatches_typed_backend_request(
@@ -28,7 +31,7 @@ def test_factgraph_cli_dispatches_typed_backend_request(
         captured.update(kwargs)
         return 0
 
-    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setattr(cli_build_command, "build", fake_build)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     monkeypatch.delenv("MOLT_BACKEND", raising=False)
     monkeypatch.setattr(
@@ -81,7 +84,7 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
         captured.update(kwargs)
         return 0
 
-    monkeypatch.setattr(cli, "build", fake_build)
+    monkeypatch.setattr(cli_build_command, "build", fake_build)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     monkeypatch.setattr(
         sys,
@@ -153,9 +156,9 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         entry_module="pkg.app",
         ensure_backend_ir_file_path=lambda: ir_file,
         run_subprocess_captured_to_tempfiles=fake_run,
-        subprocess_output_text=cli._subprocess_output_text,
-        fail=cli._fail,
-        entry_override_env=cli.ENTRY_OVERRIDE_ENV,
+        subprocess_output_text=cli_output.subprocess_output_text,
+        fail=cli_output.fail,
+        entry_override_env=cli_config_resolution.ENTRY_OVERRIDE_ENV,
     )
 
     assert error is None
@@ -172,7 +175,7 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
     ]
     env = cast(dict[str, str], seen["env"])
     assert env["MOLT_WASM_DATA_BASE"] == "67108864"
-    assert env[cli.ENTRY_OVERRIDE_ENV] == "pkg.app"
+    assert env[cli_config_resolution.ENTRY_OVERRIDE_ENV] == "pkg.app"
     assert seen["timeout"] == 7.0
     assert output.is_file()
 
@@ -316,11 +319,11 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         ensure_backend_ir_file_path=lambda: ir_file,
         cleanup_backend_ir_file_path=lambda: cleaned.append(True),
         run_subprocess_captured_to_tempfiles=fake_run,
-        subprocess_output_text=cli._subprocess_output_text,
-        fail=cli._fail,
+        subprocess_output_text=cli_output.subprocess_output_text,
+        fail=cli_output.fail,
         emit_json=fake_emit_json,
-        json_payload=cli._json_payload,
-        entry_override_env=cli.ENTRY_OVERRIDE_ENV,
+        json_payload=cli_output.json_payload,
+        entry_override_env=cli_config_resolution.ENTRY_OVERRIDE_ENV,
         finalize_inputs=finalize_inputs,
     )
 

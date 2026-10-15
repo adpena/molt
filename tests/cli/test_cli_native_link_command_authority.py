@@ -65,7 +65,8 @@ def test_cross_compiler_environment_preserves_native_quoted_command(
 
 def test_cli_native_link_command_authority_is_single_home() -> None:
     for name in _NATIVE_LINK_COMMAND_NAMES:
-        assert getattr(cli, name) is getattr(native_link_command, name)
+        assert hasattr(native_link_command, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for marker in _NATIVE_LINK_COMMAND_DEFINITIONS:

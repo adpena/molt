@@ -37,6 +37,7 @@ from molt.cli.config_resolution import (
     STDLIB_PROFILE_CHOICES,
     resolve_stdlib_profile,
 )
+from molt.cli import build_command as cli_build_command
 
 _CLI_DIR = Path(__file__).resolve().parents[2] / "src" / "molt" / "cli"
 
@@ -221,7 +222,6 @@ def test_build_passes_resolved_profile_to_module_graph(monkeypatch) -> None:
 
     import os
 
-    import molt.cli as cli
     from molt.cli import build_inputs, frontend_pipeline
 
     for env_value, expected in (("full", "full"), (None, DEFAULT_STDLIB_PROFILE)):
@@ -245,7 +245,7 @@ def test_build_passes_resolved_profile_to_module_graph(monkeypatch) -> None:
         monkeypatch.setattr(
             frontend_pipeline, "_prepare_frontend_pipeline", fake_frontend
         )
-        assert cli.build("examples/hello.py", stdlib_profile=None) == 7
+        assert cli_build_command.build("examples/hello.py", stdlib_profile=None) == 7
 
         assert captured["stdlib_profile"] == expected
         assert captured["env_at_inputs"] == env_value

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import molt.cli as cli
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import native_link_command
@@ -23,6 +22,8 @@ from tests.cli.native_link_test_support import (
     write_test_static_archive,
 )
 from tests.native_artifact_fixtures import native_relocatable_object
+from molt import file_hashing as molt_file_hashing
+from molt.cli import backend_cache as cli_backend_cache
 
 
 @pytest.fixture(
@@ -75,25 +76,27 @@ def _assert_owned_link_operand(
 def _write_complete_stdlib_contract(
     stdlib_obj: Path, cache_key: str, target_triple: str
 ) -> str:
-    manifest = cli._shared_stdlib_manifest(
+    manifest = cli_backend_cache._shared_stdlib_manifest(
         cache_key=cache_key,
         cache_variant="test",
         target_triple=target_triple,
         compiler_fingerprint="test",
     )
     assert manifest is not None
-    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
         f"{cache_key}\n", encoding="utf-8"
     )
-    cli._stdlib_object_manifest_sidecar_path(stdlib_obj).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(stdlib_obj).write_text(
         manifest + "\n", encoding="utf-8"
     )
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_obj).write_text(
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_obj
+    ).write_text(
         '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
-    cli._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(
-        cli._sha256_file(stdlib_obj) + "\n", encoding="utf-8"
+    cli_backend_cache._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(
+        molt_file_hashing._sha256_file(stdlib_obj) + "\n", encoding="utf-8"
     )
     return manifest
 
@@ -141,10 +144,10 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
     owned_files = [stdlib_obj] + [
         sidecar(stdlib_obj)
         for sidecar in (
-            cli._stdlib_object_key_sidecar_path,
-            cli._stdlib_object_manifest_sidecar_path,
-            cli._stdlib_object_partition_manifest_sidecar_path,
-            cli._stdlib_object_digest_sidecar_path,
+            cli_backend_cache._stdlib_object_key_sidecar_path,
+            cli_backend_cache._stdlib_object_manifest_sidecar_path,
+            cli_backend_cache._stdlib_object_partition_manifest_sidecar_path,
+            cli_backend_cache._stdlib_object_digest_sidecar_path,
         )
     ]
     owned_bytes = {path: path.read_bytes() for path in owned_files}

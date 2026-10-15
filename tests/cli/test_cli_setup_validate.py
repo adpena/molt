@@ -20,6 +20,11 @@ from molt.node_runtime import NodeRuntime
 from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
 from tests.process_guard_common import install_module_view
+from molt.cli import deps as cli_deps
+from molt.cli import models as cli_models
+from molt.cli import debug_helpers as cli_debug_helpers
+from molt.cli import backend_cache as cli_backend_cache
+from molt.cli import wrapper_build as cli_wrapper_build
 
 # These cases build synthetic projects and assert developer-host roots and
 # guard limits; hosted custody has its own cases in
@@ -59,15 +64,8 @@ def _python_executable() -> str:
 
 def _patch_memory_guard_loader(
     monkeypatch: pytest.MonkeyPatch,
-    cli_module: object,
     loader: object,
 ) -> None:
-    monkeypatch.setattr(
-        cli_module,
-        "_load_cli_harness_memory_guard",
-        loader,
-        raising=True,
-    )
     monkeypatch.setattr(
         COMMAND_RUNTIME,
         "_load_cli_harness_memory_guard",
@@ -404,7 +402,6 @@ def test_cli_validate_check_json_writes_explicit_summary_out(
 def test_cli_run_command_uses_memory_guard_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
 
@@ -413,10 +410,11 @@ def test_cli_run_command_uses_memory_guard_prefix(
 
     _patch_memory_guard_loader(
         monkeypatch,
-        cli,
         lambda cwd: _fake_cli_harness(calls),
     )
-    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, COMMAND_RUNTIME, run=fail_raw_run
+    )
 
     rc = process_execution._run_command(
         ["python3", "-c", "print('ok')"],
@@ -441,7 +439,6 @@ def test_cli_run_command_uses_memory_guard_prefix(
 def test_cli_timed_command_uses_memory_guard_elapsed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
 
@@ -455,10 +452,11 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
 
     _patch_memory_guard_loader(
         monkeypatch,
-        cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
-    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, COMMAND_RUNTIME, run=fail_raw_run
+    )
 
     result = process_execution._run_command_timed(
         ["python3", "-c", "print('ok')"],
@@ -480,21 +478,19 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
 def test_cli_guard_preserves_operator_limits_for_sanitized_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
 
     monkeypatch.setenv("MOLT_CLI_MAX_PROCESS_RSS_GB", "0.05")
     _patch_memory_guard_loader(
         monkeypatch,
-        cli,
         lambda cwd: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
         ),
     )
 
-    result = cli._run_completed_command(
+    result = COMMAND_RUNTIME._run_completed_command(
         ["python3", "-c", "pass"],
         cwd=ROOT,
         env={"PATH": "/usr/bin"},
@@ -516,7 +512,6 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     admitted_build_capacity: None,
     tmp_path: Path,
 ) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
 
@@ -542,7 +537,6 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     )
     _patch_memory_guard_loader(
         monkeypatch,
-        cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
 
@@ -604,7 +598,6 @@ def test_cli_wrapper_build_uses_default_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
 
     entry = tmp_path / "main.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
@@ -629,12 +622,13 @@ def test_cli_wrapper_build_uses_default_memory_guard(
 
     _patch_memory_guard_loader(
         monkeypatch,
-        cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
-    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, COMMAND_RUNTIME, run=fail_raw_run
+    )
 
-    contract, duration, error = cli._run_wrapper_build(
+    contract, duration, error = cli_wrapper_build._run_wrapper_build(
         file_path=str(entry),
         module=None,
         build_args=[],
@@ -659,7 +653,6 @@ def test_cli_wrapper_build_uses_default_memory_guard(
 def test_cli_build_toolchain_probes_use_memory_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
     rustc = tmp_path / "rustc"
@@ -743,7 +736,7 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     COMPILER_METADATA._rustc_version.cache_clear()
     wasm_link_inputs.clear_rust_target_libdir_cache()
 
-    assert cli._git_rev(ROOT) == "abc123"
+    assert COMPILER_METADATA._git_rev(ROOT) == "abc123"
     assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
     monkeypatch.setattr(
         RUNTIME_WASM_VALIDATION,
@@ -755,7 +748,7 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         wasm_link_inputs.rust_target_libdir("wasm32-wasip1") == target_libdir.resolve()
     )
     assert (
-        cli._is_valid_cached_backend_artifact(
+        cli_backend_cache._is_valid_cached_backend_artifact(
             obj_path,
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
@@ -763,8 +756,11 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         )
         is False
     )
-    assert cli._detect_macos_arch(obj_path) is None
-    assert cli._resolve_macos_sdk_root() == "/Applications/Xcode.app/SDKs/MacOSX.sdk"
+    assert NATIVE_TOOLCHAIN._detect_macos_arch(obj_path) is None
+    assert (
+        NATIVE_TOOLCHAIN._resolve_macos_sdk_root()
+        == "/Applications/Xcode.app/SDKs/MacOSX.sdk"
+    )
 
     prefixes = [call["memory_guard_prefix"] for call in calls]
     assert prefixes[0] == "MOLT_CLI"
@@ -886,7 +882,6 @@ def test_cli_cross_run_uses_cross_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt import cli
     from molt.cli import build_inputs as cli_build_inputs
 
     project = tmp_path / "project"
@@ -907,7 +902,7 @@ def test_cli_cross_run_uses_cross_memory_guard(
     def fake_run_wrapper_build(**kwargs: object):
         build_calls.append(kwargs)
         return (
-            cli._WrapperBuildContract(
+            cli_models._WrapperBuildContract(
                 output=artifact,
                 consumer_output=artifact,
                 bundle_root=None,
@@ -1027,11 +1022,10 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
     steps = [
-        cli._ValidationStep(
+        cli_models._ValidationStep(
             "conformance-step",
             ["python3", "-c", "pass"],
             ROOT,
@@ -1040,7 +1034,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
             ("dev",),
             "smoke",
         ),
-        cli._ValidationStep(
+        cli_models._ValidationStep(
             "bench-step",
             ["python3", "-c", "pass"],
             ROOT,
@@ -1049,7 +1043,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
             ("dev",),
             "smoke",
         ),
-        cli._ValidationStep(
+        cli_models._ValidationStep(
             "correctness-step",
             ["python3", "-c", "pass"],
             ROOT,
@@ -1074,7 +1068,6 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
     )
     _patch_memory_guard_loader(
         monkeypatch,
-        cli,
         lambda cwd: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
@@ -1084,7 +1077,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
     summary_path = tmp_path / "validate-summary.json"
 
     assert (
-        cli.validate(
+        TOOLCHAIN_VALIDATION.validate(
             suite="smoke",
             json_output=True,
             summary_out=str(summary_path),
@@ -1134,11 +1127,10 @@ def test_cli_validate_defaults_execution_summary_to_logs(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
     steps = [
-        cli._ValidationStep(
+        cli_models._ValidationStep(
             "correctness-step",
             ["python3", "-c", "pass"],
             tmp_path,
@@ -1169,7 +1161,6 @@ def test_cli_validate_defaults_execution_summary_to_logs(
     )
     _patch_memory_guard_loader(
         monkeypatch,
-        cli,
         lambda cwd: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
@@ -1177,7 +1168,7 @@ def test_cli_validate_defaults_execution_summary_to_logs(
     )
 
     assert (
-        cli.validate(
+        TOOLCHAIN_VALIDATION.validate(
             suite="smoke",
             backend="native",
             profile="dev",
@@ -1249,10 +1240,9 @@ def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    from molt import cli
 
     calls: list[dict[str, object]] = []
-    step = cli._MaintenanceStep(
+    step = cli_models._MaintenanceStep(
         "probe",
         ["python3", "-c", "print('ok')"],
         ROOT,
@@ -1282,7 +1272,7 @@ def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> N
         raising=True,
     )
 
-    assert cli.update_repo(json_output=True) == 0
+    assert TOOLCHAIN_VALIDATION.update_repo(json_output=True) == 0
     assert calls == [
         {
             "cmd": ["python3", "-c", "print('ok')"],
@@ -1596,7 +1586,6 @@ def test_cli_repl_command_delegates_to_guarded_repl(
 def test_cli_install_uses_memory_guard_for_venv_and_uv(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from molt import cli
 
     deps = importlib.import_module("molt.cli.deps")
     calls: list[dict[str, object]] = []
@@ -1614,7 +1603,7 @@ def test_cli_install_uses_memory_guard_for_venv_and_uv(
         deps, "_run_completed_command", fake_run_completed, raising=True
     )
 
-    assert cli.install(["attrs"], json_output=True) == 0
+    assert cli_deps.install(["attrs"], json_output=True) == 0
 
     assert [call["memory_guard_prefix"] for call in calls] == [
         "MOLT_CLI",
@@ -1635,7 +1624,6 @@ def test_cli_debug_eval_command_uses_guarded_timeout(
     The old evaluator also read a returned 124 with a guard-like stderr line as
     a timeout, so a command that printed that line and exited 124 was misread.
     """
-    from molt import cli
 
     calls: list[dict[str, object]] = []
 
@@ -1652,9 +1640,11 @@ def test_cli_debug_eval_command_uses_guarded_timeout(
             "memory_guard: timeout after 1.00s\n",
         )
 
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed, raising=True)
+    monkeypatch.setattr(
+        cli_debug_helpers, "_run_completed_command", fake_run_completed, raising=True
+    )
 
-    result = cli._run_debug_eval_command(
+    result = cli_debug_helpers._run_debug_eval_command(
         "python3 -c pass",
         cwd=tmp_path,
         env_updates={},

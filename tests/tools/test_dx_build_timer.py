@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import dx_build_timer
+from molt.cli import build_command as cli_build_command
 
 # Cargo runs in this file are fakes; build capacity is not under test.
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
@@ -367,7 +368,6 @@ def test_trial_cache_overrides_project_config_through_real_dispatch(
     tmp_path: Path,
     config_key: str,
 ) -> None:
-    from molt import cli
     from molt.cli import entrypoint_dispatch, entrypoint_parser
     from molt.cli.build_output_layout import _resolve_cache_root
 
@@ -387,7 +387,9 @@ def test_trial_cache_overrides_project_config_through_real_dispatch(
 
     def observe_build(*args, **kwargs):
         selected = (
-            inspect.signature(cli.build).bind(*args, **kwargs).arguments["cache_dir"]
+            inspect.signature(cli_build_command.build)
+            .bind(*args, **kwargs)
+            .arguments["cache_dir"]
         )
         resolved.append(_resolve_cache_root(tmp_path, selected))
         return 0

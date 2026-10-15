@@ -22,7 +22,8 @@ _PROFILE_FEEDBACK_DEFINITIONS = (
 
 def test_cli_profile_feedback_authority_is_single_home() -> None:
     for name in _PROFILE_FEEDBACK_NAMES:
-        assert getattr(cli, name) is getattr(profile_feedback, name)
+        assert hasattr(profile_feedback, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for marker in _PROFILE_FEEDBACK_DEFINITIONS:

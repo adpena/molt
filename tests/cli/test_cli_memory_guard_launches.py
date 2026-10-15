@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-import molt.cli as cli
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import typecheck as cli_typecheck
 from tests.process_guard_common import install_module_view
@@ -48,7 +47,7 @@ def test_uv_lock_check_uses_build_memory_guard(
     )
     monkeypatch.setattr(LOCKFILES, "_run_completed_command", fake_run)
 
-    assert cli._verify_uv_lock(tmp_path) is None
+    assert LOCKFILES._verify_uv_lock(tmp_path) is None
     assert captured["cmd"] == ["uv", "lock", "--check"]
     assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_BUILD"
     assert captured["kwargs"]["cwd"] == tmp_path
@@ -79,7 +78,7 @@ def test_cargo_lock_check_uses_build_memory_guard(
     )
     monkeypatch.setattr(LOCKFILES, "_run_completed_command", fake_run)
 
-    assert cli._verify_cargo_lock(tmp_path) is None
+    assert LOCKFILES._verify_cargo_lock(tmp_path) is None
     assert captured["cmd"] == [
         "cargo",
         "metadata",
@@ -222,7 +221,7 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
         fake_tempfiles,
     )
 
-    rc = cli._run_mlir_backend_pipeline(
+    rc = MLIR_BACKEND._run_mlir_backend_pipeline(
         ir={"functions": []},
         output_artifact=output,
         project_root=tmp_path,
@@ -390,7 +389,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         lambda pid: f"{backend} --daemon --socket {socket_path}",
     )
 
-    ok = cli._start_backend_daemon(
+    ok = BACKEND_EXECUTION._start_backend_daemon(
         backend,
         socket_path,
         cargo_profile="dev-fast",
@@ -478,7 +477,7 @@ def test_backend_daemon_request_uses_request_scoped_sentinel(
         BACKEND_EXECUTION.socket, "socket", lambda *args, **kwargs: FakeSocket()
     )
 
-    daemon_identity = cli._BackendDaemonIdentity(
+    daemon_identity = BACKEND_EXECUTION._BackendDaemonIdentity(
         pid=1234,
         socket_path=tmp_path / "daemon.sock",
         project_root=tmp_path,
@@ -488,7 +487,7 @@ def test_backend_daemon_request_uses_request_scoped_sentinel(
         created_at=1_700_000_000.0,
     )
 
-    response, err = cli._backend_daemon_request_bytes(
+    response, err = BACKEND_EXECUTION._backend_daemon_request_bytes(
         tmp_path / "daemon.sock",
         b'{"version": 1}\n',
         timeout=None,

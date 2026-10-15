@@ -10,7 +10,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import molt.cli as cli
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_execution as cli_backend_execution
@@ -18,6 +17,7 @@ from molt.backend_executable_names import backend_executable_name
 from molt.cli.backend_compile import _backend_environment_with_compiler_fingerprint
 from molt.exact_json import canonical_json_sha256
 import pytest
+from molt.cli import runtime_fingerprints as cli_runtime_fingerprints
 
 
 def _fingerprint() -> dict[str, str]:
@@ -138,7 +138,7 @@ def test_rebuild_disabled_still_admits_backend_identity_and_features(
             stored = dict(fingerprint)
             if state == "wrong-source":
                 stored["hash"] = canonical_json_sha256("old-source")
-            cli._write_runtime_fingerprint(
+            cli_runtime_fingerprints._write_runtime_fingerprint(
                 cli_backend_binary._backend_fingerprint_path(
                     tmp_path, selected, "dev-fast"
                 ),
@@ -311,7 +311,9 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_only_from_admitted
     fingerprint_path = cli_backend_binary._backend_fingerprint_path(
         tmp_path, backend_bin, "dev-fast"
     )
-    cli._write_runtime_fingerprint(fingerprint_path, fingerprint, artifact=backend_bin)
+    cli_runtime_fingerprints._write_runtime_fingerprint(
+        fingerprint_path, fingerprint, artifact=backend_bin
+    )
     if mutation == "replacement":
         replacement = cargo_output.with_name("replacement")
         replacement.write_bytes(new_bytes)
@@ -327,7 +329,7 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_only_from_admitted
         candidate_fingerprint = dict(fingerprint)
         if mutation == "wrong-source":
             candidate_fingerprint["hash"] = canonical_json_sha256("other-source")
-        cli._write_runtime_fingerprint(
+        cli_runtime_fingerprints._write_runtime_fingerprint(
             cli_backend_binary._backend_fingerprint_path(
                 tmp_path, cargo_output, "dev-fast"
             ),
@@ -388,7 +390,9 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
         backend_bin,
         "dev-fast",
     )
-    cli._write_runtime_fingerprint(fingerprint_path, fingerprint, artifact=backend_bin)
+    cli_runtime_fingerprints._write_runtime_fingerprint(
+        fingerprint_path, fingerprint, artifact=backend_bin
+    )
     probe_calls = 0
 
     def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
@@ -455,7 +459,7 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
     if mutation != "receipt":
         # An admitted new build has current source/content provenance, but its
         # previous feature-probe receipt must not authorize the changed bytes.
-        cli._write_runtime_fingerprint(
+        cli_runtime_fingerprints._write_runtime_fingerprint(
             fingerprint_path, fingerprint, artifact=backend_bin
         )
     after_result = cli_backend_binary._ensure_backend_binary(
@@ -556,7 +560,9 @@ def test_backend_probe_cannot_publish_receipt_for_binary_changed_during_probe(
     fingerprint_path = cli_backend_binary._backend_fingerprint_path(
         tmp_path, backend_bin, "dev-fast"
     )
-    cli._write_runtime_fingerprint(fingerprint_path, fingerprint, artifact=backend_bin)
+    cli_runtime_fingerprints._write_runtime_fingerprint(
+        fingerprint_path, fingerprint, artifact=backend_bin
+    )
     probe_calls = 0
 
     def mutate_during_probe(
@@ -620,7 +626,7 @@ def test_backend_probe_publication_failure_is_typed_without_rebuild(
     backend_bin.parent.mkdir(parents=True)
     backend_bin.write_bytes(b"backend")
     fingerprint = _fingerprint()
-    cli._write_runtime_fingerprint(
+    cli_runtime_fingerprints._write_runtime_fingerprint(
         cli_backend_binary._backend_fingerprint_path(tmp_path, backend_bin, "dev-fast"),
         fingerprint,
         artifact=backend_bin,
@@ -679,7 +685,7 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
         tmp_path, cargo_output, "dev-fast"
     )
     if receipt != "missing":
-        cli._write_runtime_fingerprint(
+        cli_runtime_fingerprints._write_runtime_fingerprint(
             cargo_receipt,
             fingerprint,
             artifact=cargo_output if receipt == "stale-content" else None,
@@ -777,7 +783,7 @@ def test_backend_alias_replacement_during_publication_cannot_acquire_provenance(
         tmp_path, backend_bin, "dev-fast"
     )
     if admitted_source:
-        cli._write_runtime_fingerprint(
+        cli_runtime_fingerprints._write_runtime_fingerprint(
             cli_backend_binary._backend_fingerprint_path(
                 tmp_path, cargo_output, "dev-fast"
             ),

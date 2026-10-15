@@ -10,6 +10,7 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import arg_helpers
+from molt.cli import build_command
 from molt.cli import entrypoint
 from molt.cli import entrypoint_dispatch
 from molt.cli import entrypoint_parser
@@ -26,7 +27,7 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
     root_main_source = inspect.getsource(cli.main)
     assert "ArgumentParser" not in root_main_source
     assert "add_parser" not in root_main_source
-    assert "_entrypoint.main" in root_main_source
+    assert "entrypoint.main()" in root_main_source
 
     entrypoint_source = inspect.getsource(entrypoint)
     assert "ArgumentParser(" not in entrypoint_source
@@ -45,8 +46,9 @@ def test_cli_entrypoint_dispatch_and_parser_authorities_are_single_home() -> Non
     assert ".add_parser(" in parser_source
 
     root_module_source = inspect.getsource(cli)
-    assert "def build(" in root_module_source
+    assert "def build(" not in root_module_source
     assert "def main(" in root_module_source
+    assert "def build(" in inspect.getsource(build_command)
     assert "if args.command ==" not in root_module_source
     assert "ArgumentParser(" not in root_module_source
 

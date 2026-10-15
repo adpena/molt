@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import importlib
 import ipaddress
 import os
 import platform
@@ -25,51 +24,25 @@ from molt import process_guard as _process_guard
 from molt.cli.project_roots import _find_project_root, _require_project_root
 from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.lockfiles import _check_lockfiles
+from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
+from molt.cli.command_runtime import _run_completed_command
+from molt.cli.output import emit_json as _emit_json
+from molt.cli.output import fail as _fail
+from molt.cli.output import json_payload as _json_payload
+from molt.default_paths import _default_molt_cache
 
 MOLT_VENV_DIR = ".molt-venv"
 _CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
-
-
-def _cli_module() -> Any:
-    return importlib.import_module("molt.cli")
 
 
 def _molt_venv_path(project_root: Path) -> Path:
     return project_root / MOLT_VENV_DIR
 
 
-def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._run_completed_command(*args, **kwargs)
-
-
-def _json_payload(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._json_payload(*args, **kwargs)
-
-
-def _emit_json(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._emit_json(*args, **kwargs)
-
-
-def _fail(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._fail(*args, **kwargs)
-
-
 def _replace_directory_tree_from_source(*args: Any, **kwargs: Any) -> Any:
     from molt.cli import non_native_output as _non_native_output
 
     return _non_native_output._replace_directory_tree_from_source(*args, **kwargs)
-
-
-def _atomic_write_bytes(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._atomic_write_bytes(*args, **kwargs)
-
-
-def _atomic_write_json(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._atomic_write_json(*args, **kwargs)
-
-
-def _default_molt_cache() -> Path:
-    return _cli_module()._default_molt_cache()
 
 
 def _summarize_tiers(rows: list[dict[str, Any]]) -> dict[str, int]:

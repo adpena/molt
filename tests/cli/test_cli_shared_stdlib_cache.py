@@ -14,7 +14,6 @@ from molt.backend_environment import CodegenSelection
 from molt.cli import native_link_plan, native_symbol_inspection
 import pytest
 
-import molt.cli as cli
 from molt.backend_binary_identity import identify_backend_binary
 from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli.native_main_stub import _render_native_main_stub
@@ -35,6 +34,10 @@ from tests.compiler_identity_helper import (
     stub_compiler_admission,
     write_compiler_source,
 )
+from molt.cli import models as cli_models
+from molt import file_hashing as molt_file_hashing
+from molt import target_python as molt_target_python
+from molt.cli import backend_cache as cli_backend_cache
 
 # Key algebra consumes explicit content identities. Filesystem fingerprinting has
 # separate producer tests; rereading the live compiler here both repeats expensive
@@ -302,7 +305,7 @@ def _cache_variant(
         stdlib_split=True,
         codegen_env=codegen_env,
         linked=False,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target_python=molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
         backend_binary_identity=backend_binary_identity,
     )
 
@@ -332,8 +335,8 @@ def _partition_manifest(name: str = "partition-a") -> str:
 
 
 def _write_object_digest_sidecar(stdlib_object: Path) -> None:
-    cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
-        cli._sha256_file(stdlib_object) + "\n", encoding="utf-8"
+    cli_backend_cache._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
+        molt_file_hashing._sha256_file(stdlib_object) + "\n", encoding="utf-8"
     )
 
 
@@ -350,11 +353,13 @@ def _write_stdlib_archive_fixture(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_stdlib_archive_fixture(target_triple=target_triple))
-    cli._stdlib_object_key_sidecar_path(path).write_text(key, encoding="utf-8")
-    cli._stdlib_object_manifest_sidecar_path(path).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(path).write_text(
+        key, encoding="utf-8"
+    )
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(path).write_text(
         _manifest(key), encoding="utf-8"
     )
-    cli._stdlib_object_partition_manifest_sidecar_path(path).write_text(
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(path).write_text(
         _partition_manifest(), encoding="utf-8"
     )
     _write_object_digest_sidecar(path)
@@ -373,7 +378,7 @@ def _payload_digest_cache_key(
             payload_ir,
             sort_keys=True,
             separators=(",", ":"),
-            default=cli._json_ir_default,
+            default=CACHE_KEYS._json_ir_default,
         ).encode("utf-8")
     ).hexdigest()
     suffix = target_triple or target
@@ -418,7 +423,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
         ],
     )
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -426,7 +431,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -474,7 +479,7 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
         assert keys[0] != keys[1], key_builder.__name__
 
     payloads = [
-        cli._shared_stdlib_cache_payload_ir(
+        cli_backend_cache._shared_stdlib_cache_payload_ir(
             program,
             entry_module="app",
             stdlib_module_symbols=stdlib_modules,
@@ -486,7 +491,7 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
     assert payloads[0]["functions"] == [first["functions"][-1]]
     assert "code_slots" not in payloads[0]
     keys = [
-        cli._shared_stdlib_cache_key(
+        cli_backend_cache._shared_stdlib_cache_key(
             program,
             **_KEY_FINGERPRINTS,
             entry_module="app",
@@ -513,13 +518,13 @@ def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
             }
         ],
     )
-    payload_ir = cli._shared_stdlib_cache_payload_ir(
+    payload_ir = cli_backend_cache._shared_stdlib_cache_payload_ir(
         ir,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
         compiler_fingerprint="compiler-fingerprint",
     )
-    assert cli._shared_stdlib_cache_key(
+    assert cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -560,7 +565,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
         ],
     )
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -568,7 +573,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -576,7 +581,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
         target_triple=None,
         cache_variant=variant,
     )
-    key_c = cli._shared_stdlib_cache_key(
+    key_c = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -587,9 +592,9 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
 
     assert key_a != key_b
     assert key_a != key_c
-    assert cli._stdlib_object_cache_path(
+    assert cli_backend_cache._stdlib_object_cache_path(
         Path("cache"), key_a
-    ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
+    ) != cli_backend_cache._stdlib_object_cache_path(Path("cache"), key_b)
 
 
 def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
@@ -606,7 +611,7 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
         ],
     )
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -615,7 +620,7 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
         cache_variant=variant,
         compiler_fingerprint="compiler-a",
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -653,7 +658,7 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
             }
         ],
     )
-    module_graph_metadata = cli._ModuleGraphMetadata(
+    module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
         module_is_namespace_by_module={},
@@ -682,7 +687,7 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
         warnings=[],
         entry_module="app",
         module_graph_metadata=module_graph_metadata,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target_python=molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
         # Compiler identity is an independent input, fixed here to avoid the
         # Rust toolchain while exercising the real backend cache setup.
@@ -815,7 +820,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
             }
         ],
     )
-    module_graph_metadata = cli._ModuleGraphMetadata(
+    module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
         module_is_namespace_by_module={},
@@ -845,7 +850,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         warnings=[],
         entry_module="app",
         module_graph_metadata=module_graph_metadata,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target_python=molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
         stage_timings_ms=stage_timings_ms,
         codegen=CodegenSelection(),
@@ -921,7 +926,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
             }
         ],
     )
-    module_graph_metadata = cli._ModuleGraphMetadata(
+    module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
         module_is_namespace_by_module={},
@@ -950,7 +955,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         warnings=[],
         entry_module="app",
         module_graph_metadata=module_graph_metadata,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target_python=molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
     )
 
@@ -1023,7 +1028,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
             }
         ],
     )
-    module_graph_metadata = cli._ModuleGraphMetadata(
+    module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
         module_is_namespace_by_module={},
@@ -1053,7 +1058,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         warnings=[],
         entry_module="app",
         module_graph_metadata=module_graph_metadata,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target_python=molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
     )
 
@@ -1130,7 +1135,7 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
             }
         ],
     )
-    module_graph_metadata = cli._ModuleGraphMetadata(
+    module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
         module_is_namespace_by_module={},
@@ -1161,7 +1166,7 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
             warnings=[],
             entry_module="app",
             module_graph_metadata=module_graph_metadata,
-            target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            target_python=molt_target_python._DEFAULT_TARGET_PYTHON_VERSION,
             stdlib_profile="micro",
             backend_compiler_fingerprint=backend_compiler_fingerprint,
             codegen=CodegenSelection(),
@@ -1211,7 +1216,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
     ir_a["entry_metadata"] = {"driver": "stage5"}
     ir_b["entry_metadata"] = {"driver": "stage8"}
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1219,7 +1224,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1303,7 +1308,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
         ],
     }
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1311,7 +1316,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1377,7 +1382,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
         ],
     }
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1385,7 +1390,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1469,7 +1474,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
         ],
     }
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1477,7 +1482,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1543,7 +1548,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
         ],
     }
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1551,7 +1556,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1576,7 +1581,7 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
         ],
     )
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1584,7 +1589,7 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
         target_triple=None,
         cache_variant=variant,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1621,7 +1626,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
         "importlib", "importlib_machinery", "importlib_util", "sys"
     )
 
-    key_base = cli._shared_stdlib_cache_key(
+    key_base = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1629,7 +1634,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
         target_triple=None,
         cache_variant=variant,
     )
-    key_support = cli._shared_stdlib_cache_key(
+    key_support = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -1637,7 +1642,7 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
         target_triple=None,
         cache_variant=variant,
     )
-    payload = cli._shared_stdlib_cache_payload_ir(
+    payload = cli_backend_cache._shared_stdlib_cache_payload_ir(
         ir,
         entry_module="app",
         stdlib_module_symbols=runtime_support_symbols,
@@ -1661,60 +1666,62 @@ def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
     stdlib_object = tmp_path / "stdlib_shared_test.a"
     stdlib_object.write_bytes(_stdlib_archive_fixture())
 
-    assert not cli._shared_stdlib_cache_matches_key(
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
     )
 
-    key_sidecar = cli._stdlib_object_key_sidecar_path(stdlib_object)
+    key_sidecar = cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object)
     key_sidecar.write_text("wrong-key\n", encoding="utf-8")
-    assert not cli._shared_stdlib_cache_matches_key(
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
     )
 
     key_sidecar.write_text("abc123\n", encoding="utf-8")
-    assert not cli._shared_stdlib_cache_matches_key(
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
     )
 
-    manifest_sidecar = cli._stdlib_object_manifest_sidecar_path(stdlib_object)
+    manifest_sidecar = cli_backend_cache._stdlib_object_manifest_sidecar_path(
+        stdlib_object
+    )
     manifest_sidecar.write_text(_manifest("wrong-key") + "\n", encoding="utf-8")
-    assert not cli._shared_stdlib_cache_matches_key(
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
     )
 
     manifest_sidecar.write_text(_manifest("abc123") + "\n", encoding="utf-8")
-    assert not cli._shared_stdlib_cache_matches_key(
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
     )
 
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest() + "\n", encoding="utf-8"
-    )
-    assert not cli._shared_stdlib_cache_matches_key(
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest() + "\n", encoding="utf-8")
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
     )
 
     _write_object_digest_sidecar(stdlib_object)
-    assert cli._shared_stdlib_cache_matches_key(
+    assert cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
     )
 
     stdlib_object.write_bytes(b"changed")
-    assert not cli._shared_stdlib_cache_matches_key(
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
@@ -1735,18 +1742,18 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     home_bin_sentinel.write_text("owned by another session\n", encoding="utf-8")
     stdlib_object = cache_root / "stdlib_shared_deadbeef.o"
     stdlib_object.write_bytes(b"shared-stdlib")
-    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "2073\n", encoding="utf-8"
     )
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "stdlib-cache-key\n", encoding="utf-8"
     )
-    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
         _manifest("stdlib-cache-key") + "\n", encoding="utf-8"
     )
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest() + "\n", encoding="utf-8"
-    )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest() + "\n", encoding="utf-8")
     _write_object_digest_sidecar(stdlib_object)
     module_object = cache_root / "module_cache_old.o"
     module_object.write_bytes(b"module-object")
@@ -1816,10 +1823,14 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         ]
     ]
     assert stdlib_object.exists()
-    assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
+    assert cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
     assert module_object.exists()
     assert wasm_object.exists()
     assert fingerprint_sidecar.exists()
@@ -1837,18 +1848,18 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ne
 
     stdlib_object = cache_root / "stdlib_shared_active.a"
     stdlib_object.write_bytes(_stdlib_archive_fixture())
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "active-key\n", encoding="utf-8"
     )
-    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
         _manifest("active-key") + "\n", encoding="utf-8"
     )
-    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "1\n", encoding="utf-8"
     )
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest() + "\n", encoding="utf-8"
-    )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest() + "\n", encoding="utf-8")
     _write_object_digest_sidecar(stdlib_object)
 
     backend_bin = target_root / "dev-fast" / "molt-backend"
@@ -1866,7 +1877,7 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ne
     os.utime(backend_bin, (current, current))
     os.utime(runtime_lib, (current, current))
 
-    cli._validate_shared_stdlib_cache_contract(
+    cli_backend_cache._validate_shared_stdlib_cache_contract(
         stdlib_object,
         project_root,
         expected_key="active-key",
@@ -1874,10 +1885,14 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ne
     )
 
     assert stdlib_object.exists()
-    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
+    assert cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
 
 
 def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
@@ -1887,15 +1902,15 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
     stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
     stdlib_object.parent.mkdir(parents=True)
     stdlib_object.write_bytes(_stdlib_archive_fixture())
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "active-key\n", encoding="utf-8"
     )
-    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
         _manifest("active-key") + "\n", encoding="utf-8"
     )
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest("partition-a") + "\n", encoding="utf-8"
-    )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest("partition-a") + "\n", encoding="utf-8")
     _write_object_digest_sidecar(stdlib_object)
     calls = 0
 
@@ -1911,7 +1926,7 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
         fake_symbol_closure_issue,
     )
 
-    assert cli._validate_shared_stdlib_cache_contract(
+    assert cli_backend_cache._validate_shared_stdlib_cache_contract(
         stdlib_object,
         tmp_path,
         expected_key="active-key",
@@ -1924,7 +1939,7 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
     ).exists()
 
     stage_timings_ms: dict[str, float] = {}
-    assert cli._validate_shared_stdlib_cache_contract(
+    assert cli_backend_cache._validate_shared_stdlib_cache_contract(
         stdlib_object,
         tmp_path,
         expected_key="active-key",
@@ -1936,10 +1951,10 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
     assert "backend_cache_stdlib_contract_symbol_token" in stage_timings_ms
     assert "backend_cache_stdlib_contract_symbols" not in stage_timings_ms
 
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest("partition-b") + "\n", encoding="utf-8"
-    )
-    assert cli._validate_shared_stdlib_cache_contract(
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest("partition-b") + "\n", encoding="utf-8")
+    assert cli_backend_cache._validate_shared_stdlib_cache_contract(
         stdlib_object,
         tmp_path,
         expected_key="active-key",
@@ -1964,18 +1979,18 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ta
 
     stdlib_object = cache_root / "stdlib_shared_target.a"
     stdlib_object.write_bytes(_stdlib_archive_fixture(target_triple=target_triple))
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "target-key\n", encoding="utf-8"
     )
-    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
         _manifest("target-key") + "\n", encoding="utf-8"
     )
-    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "1\n", encoding="utf-8"
     )
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest() + "\n", encoding="utf-8"
-    )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest() + "\n", encoding="utf-8")
     _write_object_digest_sidecar(stdlib_object)
 
     runtime_lib = (
@@ -1992,7 +2007,7 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ta
     os.utime(stdlib_object, (old, old))
     os.utime(runtime_lib, (current, current))
 
-    cli._validate_shared_stdlib_cache_contract(
+    cli_backend_cache._validate_shared_stdlib_cache_contract(
         stdlib_object,
         project_root,
         expected_key="target-key",
@@ -2001,10 +2016,14 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ta
     )
 
     assert stdlib_object.exists()
-    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
-    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
+    assert cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
 
 
 def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
@@ -2015,33 +2034,37 @@ def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
 
     active = cache_root / "stdlib_shared_active.a"
     active.write_bytes(_stdlib_archive_fixture())
-    cli._stdlib_object_key_sidecar_path(active).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(active).write_text(
         "active-key\n", encoding="utf-8"
     )
-    cli._stdlib_object_manifest_sidecar_path(active).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(active).write_text(
         _manifest("active-key") + "\n", encoding="utf-8"
     )
-    cli._stdlib_object_count_sidecar_path(active).write_text("1\n", encoding="utf-8")
-    cli._stdlib_object_partition_manifest_sidecar_path(active).write_text(
+    cli_backend_cache._stdlib_object_count_sidecar_path(active).write_text(
+        "1\n", encoding="utf-8"
+    )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(active).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
     _write_object_digest_sidecar(active)
 
     sibling = cache_root / "stdlib_shared_sibling.o"
     sibling.write_bytes(b"sibling")
-    cli._stdlib_object_key_sidecar_path(sibling).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(sibling).write_text(
         "sibling-key\n", encoding="utf-8"
     )
-    cli._stdlib_object_manifest_sidecar_path(sibling).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(sibling).write_text(
         _manifest("sibling-key") + "\n", encoding="utf-8"
     )
-    cli._stdlib_object_count_sidecar_path(sibling).write_text("2\n", encoding="utf-8")
-    cli._stdlib_object_partition_manifest_sidecar_path(sibling).write_text(
-        _partition_manifest("partition-b") + "\n", encoding="utf-8"
+    cli_backend_cache._stdlib_object_count_sidecar_path(sibling).write_text(
+        "2\n", encoding="utf-8"
     )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        sibling
+    ).write_text(_partition_manifest("partition-b") + "\n", encoding="utf-8")
     _write_object_digest_sidecar(sibling)
 
-    cli._validate_shared_stdlib_cache_contract(
+    cli_backend_cache._validate_shared_stdlib_cache_contract(
         active,
         project_root=tmp_path,
         expected_key="active-key",
@@ -2050,10 +2073,12 @@ def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
 
     assert active.exists()
     assert sibling.exists()
-    assert cli._stdlib_object_key_sidecar_path(sibling).exists()
-    assert cli._stdlib_object_count_sidecar_path(sibling).exists()
-    assert cli._stdlib_object_manifest_sidecar_path(sibling).exists()
-    assert cli._stdlib_object_partition_manifest_sidecar_path(sibling).exists()
+    assert cli_backend_cache._stdlib_object_key_sidecar_path(sibling).exists()
+    assert cli_backend_cache._stdlib_object_count_sidecar_path(sibling).exists()
+    assert cli_backend_cache._stdlib_object_manifest_sidecar_path(sibling).exists()
+    assert cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        sibling
+    ).exists()
 
 
 def test_validate_shared_stdlib_cache_contract_does_not_unlink_mismatched_exact_key_entry(
@@ -2061,16 +2086,18 @@ def test_validate_shared_stdlib_cache_contract_does_not_unlink_mismatched_exact_
 ) -> None:
     stdlib_object = tmp_path / "stdlib_shared_active.a"
     stdlib_object.write_bytes(_stdlib_archive_fixture())
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
 
     def fail_remove(path: Path) -> None:
         raise AssertionError(f"unexpected stdlib cache deletion: {path}")
 
-    monkeypatch.setattr(cli, "_remove_shared_stdlib_cache_artifacts", fail_remove)
+    monkeypatch.setattr(
+        cli_backend_cache, "_remove_shared_stdlib_cache_artifacts", fail_remove
+    )
 
-    cli._validate_shared_stdlib_cache_contract(
+    cli_backend_cache._validate_shared_stdlib_cache_contract(
         stdlib_object,
         project_root=tmp_path,
         expected_key="active-key",
@@ -2078,7 +2105,7 @@ def test_validate_shared_stdlib_cache_contract_does_not_unlink_mismatched_exact_
     )
 
     assert stdlib_object.exists()
-    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).exists()
 
 
 def test_shared_stdlib_cache_publish_lock_excludes_competing_process(
@@ -2116,7 +2143,7 @@ finally:
     os.close(fd)
 """
 
-    with cli._shared_stdlib_cache_lock(stdlib_object):
+    with cli_backend_cache._shared_stdlib_cache_lock(stdlib_object):
         blocked = run_cli_test_process(
             [sys.executable, "-c", probe_code, str(stdlib_object)],
             cwd=str(ROOT),
@@ -2127,18 +2154,18 @@ finally:
         )
         assert blocked.returncode == 75, (blocked.stdout, blocked.stderr)
         assert blocked.stdout.strip() == "blocked"
-        cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
             key + "\n", encoding="utf-8"
         )
-        cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+        cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).write_text(
             "1\n", encoding="utf-8"
         )
-        cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
-            manifest + "\n", encoding="utf-8"
-        )
-        cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-            partition_manifest + "\n", encoding="utf-8"
-        )
+        cli_backend_cache._stdlib_object_manifest_sidecar_path(
+            stdlib_object
+        ).write_text(manifest + "\n", encoding="utf-8")
+        cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+            stdlib_object
+        ).write_text(partition_manifest + "\n", encoding="utf-8")
         _write_object_digest_sidecar(stdlib_object)
 
     acquired = run_cli_test_process(
@@ -2152,7 +2179,7 @@ finally:
     assert acquired.returncode == 0, (acquired.stdout, acquired.stderr)
     assert acquired.stdout.strip() == "acquired"
 
-    cli._validate_shared_stdlib_cache_contract(
+    cli_backend_cache._validate_shared_stdlib_cache_contract(
         stdlib_object,
         project_root=tmp_path,
         expected_key=key,
@@ -2161,18 +2188,20 @@ finally:
 
     assert stdlib_object.exists()
     assert (
-        cli._stdlib_object_key_sidecar_path(stdlib_object)
+        cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object)
         .read_text(encoding="utf-8")
         .strip()
         == key
     )
     assert (
-        cli._stdlib_object_manifest_sidecar_path(stdlib_object)
+        cli_backend_cache._stdlib_object_manifest_sidecar_path(stdlib_object)
         .read_text(encoding="utf-8")
         .strip()
         == manifest
     )
-    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
 
 
 def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
@@ -2182,7 +2211,7 @@ def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
     stdlib_object = tmp_path / ".molt_cache" / f"stdlib_shared_active{contract.suffix}"
     stdlib_object.parent.mkdir(parents=True)
     stdlib_object.write_bytes(b"stdlib")
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
     candidate = tmp_path / ".molt_cache" / f"module_cache{contract.suffix}"
@@ -2201,9 +2230,11 @@ def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
     def fail_remove(path: Path) -> None:
         raise AssertionError(f"unexpected stdlib cache deletion: {path}")
 
-    monkeypatch.setattr(cli, "_remove_shared_stdlib_cache_artifacts", fail_remove)
+    monkeypatch.setattr(
+        cli_backend_cache, "_remove_shared_stdlib_cache_artifacts", fail_remove
+    )
 
-    cache_hit, tier = cli._try_cached_backend_candidates(
+    cache_hit, tier = cli_backend_cache._try_cached_backend_candidates(
         project_root=tmp_path,
         cache_candidates=(("module", candidate),),
         output_artifact=output_artifact,
@@ -2220,7 +2251,7 @@ def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
     assert (cache_hit, tier) == (False, None)
     assert any("mismatched contract" in warning for warning in warnings)
     assert stdlib_object.exists()
-    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).exists()
 
 
 @pytest.mark.parametrize("same_root", [False, True])
@@ -2313,7 +2344,7 @@ def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
     artifacts_root = tmp_path / "artifacts"
 
     assert (
-        cli._hydrate_shared_stdlib_archive(
+        cli_backend_cache._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
@@ -2322,11 +2353,11 @@ def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
         is None
     )
 
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
     assert (
-        cli._hydrate_shared_stdlib_archive(
+        cli_backend_cache._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
@@ -2335,14 +2366,14 @@ def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
         is None
     )
 
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "abc123\n", encoding="utf-8"
     )
-    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "7\n", encoding="utf-8"
     )
     assert (
-        cli._hydrate_shared_stdlib_archive(
+        cli_backend_cache._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
@@ -2351,11 +2382,11 @@ def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
         is None
     )
 
-    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+    cli_backend_cache._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
         _manifest("abc123") + "\n", encoding="utf-8"
     )
     assert (
-        cli._hydrate_shared_stdlib_archive(
+        cli_backend_cache._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
@@ -2364,11 +2395,11 @@ def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
         is None
     )
 
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest() + "\n", encoding="utf-8"
-    )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest() + "\n", encoding="utf-8")
     assert (
-        cli._hydrate_shared_stdlib_archive(
+        cli_backend_cache._hydrate_shared_stdlib_archive(
             stdlib_object,
             stdlib_object_cache_key="abc123",
             stdlib_object_manifest=_manifest("abc123"),
@@ -2379,7 +2410,7 @@ def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
 
     _write_object_digest_sidecar(stdlib_object)
 
-    staged = cli._hydrate_shared_stdlib_archive(
+    staged = cli_backend_cache._hydrate_shared_stdlib_archive(
         stdlib_object,
         stdlib_object_cache_key="abc123",
         stdlib_object_manifest=_manifest("abc123"),
@@ -2388,26 +2419,34 @@ def test_hydrate_shared_stdlib_archive_requires_matching_source_key_sidecar(
 
     assert staged.exists()
     assert (
-        cli._stdlib_object_key_sidecar_path(staged).read_text(encoding="utf-8")
+        cli_backend_cache._stdlib_object_key_sidecar_path(staged).read_text(
+            encoding="utf-8"
+        )
         == "abc123\n"
     )
     assert (
-        cli._stdlib_object_count_sidecar_path(staged).read_text(encoding="utf-8")
+        cli_backend_cache._stdlib_object_count_sidecar_path(staged).read_text(
+            encoding="utf-8"
+        )
         == "7\n"
     )
     assert (
-        cli._stdlib_object_manifest_sidecar_path(staged).read_text(encoding="utf-8")
+        cli_backend_cache._stdlib_object_manifest_sidecar_path(staged).read_text(
+            encoding="utf-8"
+        )
         == _manifest("abc123") + "\n"
     )
     assert (
-        cli._stdlib_object_partition_manifest_sidecar_path(staged).read_text(
-            encoding="utf-8"
-        )
+        cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+            staged
+        ).read_text(encoding="utf-8")
         == _partition_manifest() + "\n"
     )
     assert (
-        cli._stdlib_object_digest_sidecar_path(staged).read_text(encoding="utf-8")
-        == cli._sha256_file(staged) + "\n"
+        cli_backend_cache._stdlib_object_digest_sidecar_path(staged).read_text(
+            encoding="utf-8"
+        )
+        == molt_file_hashing._sha256_file(staged) + "\n"
     )
 
 
@@ -2621,9 +2660,9 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
         target_triple=contract.target_triple,
     )
     assert token is not None
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        _partition_manifest("replacement-generation"), encoding="utf-8"
-    )
+    cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).write_text(_partition_manifest("replacement-generation"), encoding="utf-8")
     validate = BACKEND_CACHE._shared_stdlib_cache_matches_key
 
     def revalidate(*args: object, **kwargs: object) -> bool:
@@ -2698,7 +2737,9 @@ def test_native_object_symbol_sets_read_target_objects_in_process(
     )
     reads = _counted_symbol_reads(monkeypatch)
 
-    symbols = cli._native_object_global_symbol_sets(obj, target_triple=target_triple)
+    symbols = native_symbol_inspection._native_object_global_symbol_sets(
+        obj, target_triple=target_triple
+    )
 
     assert reads == [obj.stat().st_size]
     assert symbols is not None
@@ -2714,7 +2755,10 @@ def test_native_object_symbol_sets_accept_empty_objects(
     obj.write_bytes(native_relocatable_object())
     _counted_symbol_reads(monkeypatch)
 
-    assert cli._native_object_global_symbol_sets(obj) == (set(), set())
+    assert native_symbol_inspection._native_object_global_symbol_sets(obj) == (
+        set(),
+        set(),
+    )
 
 
 def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_siblings(
@@ -2731,11 +2775,11 @@ def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_s
     contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
     reads = _counted_symbol_reads(monkeypatch)
 
-    assert cli._is_valid_cached_backend_artifact(
+    assert cli_backend_cache._is_valid_cached_backend_artifact(
         obj,
         artifact_contract=contract,
     )
-    assert not cli._native_object_has_unresolved_module_chunks(
+    assert not cli_backend_cache._native_object_has_unresolved_module_chunks(
         obj, None, target_triple=contract.target_triple
     )
     assert len(reads) == 1
@@ -2823,7 +2867,7 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
         native_symbol_inspection._native_object_global_symbol_facts(obj, publish=True)
         is not None
     )
-    assert cli._native_object_global_symbol_sets(obj) is not None
+    assert native_symbol_inspection._native_object_global_symbol_sets(obj) is not None
     assert len(reads) == 1
     assert native_symbol_inspection._native_object_symbol_facts_sidecar_path(
         obj
@@ -2834,7 +2878,7 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
     os.utime(sidecar, (old, old))
     before = sidecar.read_bytes()
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    assert cli._native_object_global_symbol_sets(obj) is not None
+    assert native_symbol_inspection._native_object_global_symbol_sets(obj) is not None
     assert len(reads) == 1
     assert sidecar.stat().st_mtime > old
     assert sidecar.read_bytes() == before
@@ -2843,7 +2887,10 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
     os.utime(sidecar, (old, old))
     obj.write_bytes(native_relocatable_object(symbols=("changed",)))
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    assert cli._native_object_global_symbol_sets(obj) == ({"changed"}, set())
+    assert native_symbol_inspection._native_object_global_symbol_sets(obj) == (
+        {"changed"},
+        set(),
+    )
     assert len(reads) == 2
     assert sidecar.stat().st_mtime == old
 
@@ -2912,13 +2959,17 @@ def test_native_symbol_normalization_is_platform_explicit(
     # The host target triple is the only platform read on this path.
     install_module_view(monkeypatch, "sys", sys, native_link_plan, platform="win32")
     assert (
-        cli._normalize_native_symbol_name("__future_____Feature___init__")
+        native_symbol_inspection._normalize_native_symbol_name(
+            "__future_____Feature___init__"
+        )
         == "__future_____Feature___init__"
     )
 
     monkeypatch.setattr(native_link_plan.sys, "platform", "darwin")
     assert (
-        cli._normalize_native_symbol_name("___future_____Feature___init__")
+        native_symbol_inspection._normalize_native_symbol_name(
+            "___future_____Feature___init__"
+        )
         == "__future_____Feature___init__"
     )
 
@@ -2930,7 +2981,7 @@ def test_cached_native_artifact_validation_reads_symbols_in_process(
     obj.write_bytes(native_relocatable_object(symbols=("molt_main",)))
     reads = _counted_symbol_reads(monkeypatch)
 
-    assert cli._is_valid_cached_backend_artifact(
+    assert cli_backend_cache._is_valid_cached_backend_artifact(
         obj,
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
@@ -2967,7 +3018,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     variant_a = _cache_variant("/molt-backend|1700000000000000000|10000000")
     variant_b = _cache_variant("/molt-backend|1700000009000000000|10000000")
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -2975,7 +3026,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
         target_triple=None,
         cache_variant=variant_a,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -2988,9 +3039,9 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     # identity differs (a rebuild). The cache key (and the .o path) must change so
     # the stale object compiled by the prior binary is never linked.
     assert key_a != key_b
-    assert cli._stdlib_object_cache_path(
+    assert cli_backend_cache._stdlib_object_cache_path(
         Path("cache"), key_a
-    ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
+    ) != cli_backend_cache._stdlib_object_cache_path(Path("cache"), key_b)
 
 
 def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
@@ -3024,7 +3075,7 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
         )
     )
 
-    key_a = cli._shared_stdlib_cache_key(
+    key_a = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
@@ -3032,7 +3083,7 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
         target_triple=None,
         cache_variant=variant_a,
     )
-    key_b = cli._shared_stdlib_cache_key(
+    key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         entry_module="app",
         stdlib_module_symbols=stdlib_modules,
@@ -3042,9 +3093,9 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
     )
 
     assert key_a == key_b
-    assert cli._stdlib_object_cache_path(
+    assert cli_backend_cache._stdlib_object_cache_path(
         Path("cache"), key_a
-    ) == cli._stdlib_object_cache_path(Path("cache"), key_b)
+    ) == cli_backend_cache._stdlib_object_cache_path(Path("cache"), key_b)
 
 
 def test_backend_binary_identity_tracks_content_and_fails_safe(tmp_path: Path) -> None:
@@ -3113,56 +3164,56 @@ def test_backend_features_for_target_single_source_of_truth(
 ) -> None:
     # The process environment never selects the backend (HF-60).
     monkeypatch.setenv("MOLT_BACKEND", "llvm")
-    assert cli._backend_features_for_target(
+    assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=False,
         is_rust_transpile=False,
         codegen_backend="cranelift",
     ) == ("native-backend",)
-    assert cli._backend_features_for_target(
+    assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=True,
         is_luau_transpile=False,
         is_rust_transpile=False,
         codegen_backend="cranelift",
     ) == ("wasm-backend",)
     # luau implies rust-transpile too; luau wins.
-    assert cli._backend_features_for_target(
+    assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=True,
         is_rust_transpile=True,
         codegen_backend="cranelift",
     ) == ("luau-backend",)
-    assert cli._backend_features_for_target(
+    assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=False,
         is_rust_transpile=True,
         codegen_backend="cranelift",
     ) == ("rust-backend",)
     # The llvm feature folds in and changes both codegen and the binary path.
-    assert cli._backend_features_for_target(
+    assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=False,
         is_rust_transpile=False,
         codegen_backend="llvm",
     ) == ("native-backend", "llvm")
     with pytest.raises(ValueError, match="unknown codegen backend"):
-        cli._backend_features_for_target(
+        BACKEND_EXECUTION._backend_features_for_target(
             is_wasm=False,
             is_luau_transpile=False,
             is_rust_transpile=False,
             codegen_backend="gcc",  # type: ignore[arg-type]
         )
     # The target-string wrapper derives the booleans purely from `target`.
-    assert cli._backend_features_for_build_target(
+    assert BACKEND_EXECUTION._backend_features_for_build_target(
         target="native", is_wasm=False, codegen_backend="cranelift"
     ) == ("native-backend",)
-    assert cli._backend_features_for_build_target(
+    assert BACKEND_EXECUTION._backend_features_for_build_target(
         target="luau", is_wasm=False, codegen_backend="cranelift"
     ) == ("luau-backend",)
-    assert cli._backend_features_for_build_target(
+    assert BACKEND_EXECUTION._backend_features_for_build_target(
         target="rust", is_wasm=False, codegen_backend="cranelift"
     ) == ("rust-backend",)
-    assert cli._backend_features_for_build_target(
+    assert BACKEND_EXECUTION._backend_features_for_build_target(
         target="wasm", is_wasm=True, codegen_backend="cranelift"
     ) == ("wasm-backend",)
 

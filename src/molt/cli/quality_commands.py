@@ -142,9 +142,9 @@ def _internal_batch_build_server(
             with _temporary_env_overrides(env_overrides):
                 with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
                     if build_fn is None:
-                        from molt import cli as _cli
+                        from molt.cli import build_command
 
-                        active_build_fn = _cli.build
+                        active_build_fn = build_command.build
                     else:
                         active_build_fn = build_fn
                     rc = active_build_fn(

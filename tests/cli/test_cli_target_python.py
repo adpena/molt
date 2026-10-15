@@ -4,12 +4,15 @@ from pathlib import Path
 
 import pytest
 
-import molt.cli as cli
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_ir as cli_backend_ir
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.cli import models as cli_models
+from molt.cli import output as cli_output
+from molt import frontend as molt_frontend
+from molt import target_python as molt_target_python
 
 
 def test_newer_target_diagnostic_uses_installed_commands(monkeypatch) -> None:
@@ -45,7 +48,7 @@ def test_target_python_defaults_to_lowest_supported_project_floor(
         encoding="utf-8",
     )
 
-    target = cli._resolve_target_python_version(
+    target = molt_target_python._resolve_target_python_version(
         explicit=None,
         build_config=None,
         project_root=tmp_path,
@@ -60,7 +63,7 @@ def test_target_python_uses_project_requires_python_floor(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    target = cli._resolve_target_python_version(
+    target = molt_target_python._resolve_target_python_version(
         explicit=None,
         build_config=None,
         project_root=tmp_path,
@@ -77,7 +80,7 @@ def test_target_python_uses_intermediate_project_requires_python_floor(
         encoding="utf-8",
     )
 
-    target = cli._resolve_target_python_version(
+    target = molt_target_python._resolve_target_python_version(
         explicit=None,
         build_config=None,
         project_root=tmp_path,
@@ -92,7 +95,7 @@ def test_target_python_cli_overrides_project_requires_python(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    target = cli._resolve_target_python_version(
+    target = molt_target_python._resolve_target_python_version(
         explicit="3.13",
         build_config=None,
         project_root=tmp_path,
@@ -109,7 +112,7 @@ def test_target_python_build_config_overrides_project_requires_python(
         encoding="utf-8",
     )
 
-    target = cli._resolve_target_python_version(
+    target = molt_target_python._resolve_target_python_version(
         explicit=None,
         build_config={"python-version": "3.14"},
         project_root=tmp_path,
@@ -125,7 +128,7 @@ def test_target_python_rejects_invalid_pyproject_toml(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="invalid pyproject.toml"):
-        cli._resolve_target_python_version(
+        molt_target_python._resolve_target_python_version(
             explicit=None,
             build_config=None,
             project_root=tmp_path,
@@ -140,7 +143,7 @@ def test_target_python_rejects_non_string_project_requires_python(
     )
 
     with pytest.raises(ValueError, match="project.requires-python"):
-        cli._resolve_target_python_version(
+        molt_target_python._resolve_target_python_version(
             explicit=None,
             build_config=None,
             project_root=tmp_path,
@@ -151,7 +154,7 @@ def test_target_python_rejects_non_string_build_config_version(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="python-version"):
-        cli._resolve_target_python_version(
+        molt_target_python._resolve_target_python_version(
             explicit=None,
             build_config={"python-version": 3.14},
             project_root=tmp_path,
@@ -160,7 +163,7 @@ def test_target_python_rejects_non_string_build_config_version(
 
 def test_target_python_rejects_empty_build_config_version(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="python-version"):
-        cli._resolve_target_python_version(
+        molt_target_python._resolve_target_python_version(
             explicit=None,
             build_config={"python-version": "  "},
             project_root=tmp_path,
@@ -168,7 +171,7 @@ def test_target_python_rejects_empty_build_config_version(tmp_path: Path) -> Non
 
 
 def test_target_python_micro_release_selects_minor_line() -> None:
-    target = cli._parse_target_python_version("3.14.4")
+    target = molt_target_python._parse_target_python_version("3.14.4")
 
     assert target.short == "3.14"
 
@@ -179,7 +182,7 @@ def test_target_python_rejects_unsupported_project_floor(tmp_path: Path) -> None
     )
 
     with pytest.raises(ValueError, match="does not admit"):
-        cli._resolve_target_python_version(
+        molt_target_python._resolve_target_python_version(
             explicit=None,
             build_config=None,
             project_root=tmp_path,
@@ -207,7 +210,7 @@ def test_wrapper_build_entry_uses_python_version_build_arg(tmp_path: Path) -> No
 def test_wrapper_target_python_reads_build_arg_without_host_parse(
     tmp_path: Path,
 ) -> None:
-    target = cli._wrapper_target_python(
+    target = cli_wrapper_build._wrapper_target_python(
         ["--python-version", "3.14"],
         project_root=tmp_path,
     )
@@ -228,11 +231,11 @@ def test_backend_cache_variant_changes_with_target_python() -> None:
 
     py312 = cli_backend_cache_setup._build_cache_variant(
         **common,
-        target_python=cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"],
+        target_python=molt_target_python._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.12"],
     )
     py314 = cli_backend_cache_setup._build_cache_variant(
         **common,
-        target_python=cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"],
+        target_python=molt_target_python._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.14"],
     )
 
     assert py312 != py314
@@ -302,13 +305,13 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
     assert entry312 is not None
     assert entry314 is not None
 
-    payload312, key312 = cli._wrapper_build_cache_input(
+    payload312, key312 = cli_wrapper_build._wrapper_build_cache_input(
         resolved_build_entry=entry312,
         build_args=["--python-version", "3.12"],
         env={},
         project_root=tmp_path,
     ) or ({}, "")
-    payload314, key314 = cli._wrapper_build_cache_input(
+    payload314, key314 = cli_wrapper_build._wrapper_build_cache_input(
         resolved_build_entry=entry314,
         build_args=["--python-version", "3.14"],
         env={},
@@ -358,7 +361,7 @@ def test_wrapper_cache_key_binds_the_child_build_rust_cpu_policy(
             build_args=build_args,
         )
         assert error is None and entry is not None
-        cache_input = cli._wrapper_build_cache_input(
+        cache_input = cli_wrapper_build._wrapper_build_cache_input(
             resolved_build_entry=entry,
             build_args=build_args,
             env=env,
@@ -387,8 +390,8 @@ def test_wrapper_cache_key_binds_the_child_build_rust_cpu_policy(
 def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) -> None:
     source_path = tmp_path / "main.py"
     source_path.write_text("print('ok')\n", encoding="utf-8")
-    entry_init = cli.SimpleTIRGenerator.module_init_symbol("__main__")
-    integration_state = cli._FrontendIntegrationState(
+    entry_init = molt_frontend.SimpleTIRGenerator.module_init_symbol("__main__")
+    integration_state = cli_models._FrontendIntegrationState(
         functions=[
             {
                 "name": entry_init,
@@ -405,7 +408,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         known_modules={"__main__"},
         stdlib_allowlist=set(),
         integration_state=integration_state,
-        fail=cli._fail,
+        fail=cli_output.fail,
         json_output=True,
         module_order=["__main__"],
         runtime_import_dispatch_roots=set(),
@@ -413,7 +416,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         pgo_profile_summary=None,
         runtime_feedback_summary=None,
         emit_ir_path=None,
-        target_python=cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"],
+        target_python=molt_target_python._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"],
     )
 
     assert error is None

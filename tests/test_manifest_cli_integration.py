@@ -3,6 +3,8 @@
 import os
 import sys
 from pathlib import Path
+from molt.cli import backend_cache as cli_backend_cache
+from molt.cli import cargo_execution as cli_cargo_execution
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -114,7 +116,6 @@ def test_build_lock_creates_cross_platform_lock_file(monkeypatch, tmp_path: Path
 
 
 def test_shared_locks_create_cross_platform_lock_files(tmp_path: Path):
-    from molt import cli
 
     cache_root = tmp_path / "cache"
     stdlib_object = tmp_path / "stdlib.o"
@@ -124,19 +125,18 @@ def test_shared_locks_create_cross_platform_lock_files(tmp_path: Path):
     with _shared_cache_lock("unit", cache_root=cache_root):
         assert (cache_root / "locks" / "unit.lock").exists()
 
-    with cli._shared_stdlib_cache_lock(stdlib_object):
+    with cli_backend_cache._shared_stdlib_cache_lock(stdlib_object):
         assert (tmp_path / "stdlib.o.publish.lock").exists()
 
 
 def test_cargo_build_env_pins_build_python(monkeypatch):
-    from molt import cli
 
     monkeypatch.delenv("MOLT_BUILD_PYTHON", raising=False)
-    env = cli._cargo_build_env()
+    env = cli_cargo_execution._cargo_build_env()
     assert env["MOLT_BUILD_PYTHON"] == sys.executable
 
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "custom-python")
-    env = cli._cargo_build_env()
+    env = cli_cargo_execution._cargo_build_env()
     assert env["MOLT_BUILD_PYTHON"] == "custom-python"
 
 

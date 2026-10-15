@@ -23,7 +23,8 @@ _NATIVE_MAIN_STUB_NAMES = (
 
 def test_cli_native_main_stub_authority_is_single_home() -> None:
     for name in _NATIVE_MAIN_STUB_NAMES:
-        assert getattr(cli, name) is getattr(native_main_stub, name)
+        assert hasattr(native_main_stub, name), name
+        assert not hasattr(cli, name), name
 
     cli_source = inspect.getsource(cli)
     for name in _NATIVE_MAIN_STUB_NAMES:
