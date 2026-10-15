@@ -1518,7 +1518,11 @@ unsafe fn load_super_method(
 
 /// Write a method load's `self_or_null` word and return its callable. The
 /// out word is written last, after every Python callback the load ran, so a
-/// target may pass a call scratch slot those callbacks reuse.
+/// target may pass a call scratch slot those callbacks reuse. Every path with
+/// a valid address writes it; a failed load writes the null sentinel. An
+/// address the target cannot reach raises without a write, so native and
+/// LLVM code store the sentinel in their slot before the call, and WASM
+/// passes a static scratch word.
 fn publish_loaded_method(
     py: &PyToken<'_>,
     self_out_bits: u64,

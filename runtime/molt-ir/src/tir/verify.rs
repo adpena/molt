@@ -579,6 +579,25 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 // Loaded method pairs: `self_or_null` is visible only to its call
 // ---------------------------------------------------------------------------
 
+/// Where a word of a method pair comes from: no reachable edge yet, exactly
+/// one load (its block and op index), or a mix of loads and other values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PairOrigin {
+    Unreached,
+    Load(BlockId, usize),
+    Mixed,
+}
+
+impl PairOrigin {
+    fn meet(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unreached, origin) | (origin, Self::Unreached) => origin,
+            (left, right) if left == right => left,
+            _ => Self::Mixed,
+        }
+    }
+}
+
 /// A method load's second result is CPython's `self` or NULL. NULL is a
 /// sentinel word, not a Python value, so no operation may observe it except
 /// operand 1 of a `CallLoadedMethod`. Edges may carry it: a terminator or an
@@ -588,71 +607,126 @@ fn verify_terminators(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 /// operations is not fixed afterwards, because unreachable-code removal can
 /// delete the call and block cloning (versioning, peeling) can copy it onto
 /// disjoint paths.
+///
+/// A call's operands 0 and 1 are the callable and `self_or_null` of one
+/// load: each is that load's result, or a block argument whose every
+/// reachable incoming edge carries that load's result. A merge with another
+/// load's word or any other value (a resume edge that lost the word, for
+/// example) would call the wrong function or pass the wrong `self`.
 fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     use super::ops::OpCode;
 
-    let mut loaded: HashSet<ValueId> = HashSet::new();
-    for block in func.blocks.values() {
-        for op in &block.ops {
+    let mut origins: [HashMap<ValueId, PairOrigin>; 2] = [HashMap::new(), HashMap::new()];
+    for (bid, block) in &func.blocks {
+        for (op_idx, op) in block.ops.iter().enumerate() {
             if matches!(op.opcode, OpCode::LoadMethod | OpCode::LoadSuperMethod)
-                && let [_, self_or_null] = op.results[..]
+                && let [callable, self_or_null] = op.results[..]
             {
-                loaded.insert(self_or_null);
+                origins[0].insert(callable, PairOrigin::Load(*bid, op_idx));
+                origins[1].insert(self_or_null, PairOrigin::Load(*bid, op_idx));
             }
         }
     }
-    if loaded.is_empty() {
+    if origins[1].is_empty() {
         return;
     }
-    // Close the set over every edge that binds a block argument to it.
+    // Every edge that binds block arguments: terminators and exception
+    // transfers.
     let exception_targets = dominators::exception_label_to_block(func);
-    let carried = |target: &BlockId, args: &[ValueId], loaded: &mut HashSet<ValueId>| {
-        let Some(block) = func.blocks.get(target) else {
-            return false;
-        };
-        let mut grew = false;
-        for (arg, value) in block.args.iter().zip(args) {
-            if loaded.contains(value) {
-                grew |= loaded.insert(arg.id);
+    let mut edges: Vec<(BlockId, Vec<ValueId>)> = Vec::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if dominators::is_exception_transfer_edge(op.opcode)
+                && let Some(AttrValue::Int(label)) = op.attrs.get("value")
+                && let Some(target) = exception_targets.get(label)
+            {
+                edges.push((*target, op.operands.clone()));
             }
         }
-        grew
+        block
+            .terminator
+            .for_each_edge(|target, args| edges.push((target, args.to_vec())));
+    }
+    // Entry block arguments are the function's parameters, defined by the
+    // call rather than by an edge.
+    let block_args: HashSet<ValueId> = func
+        .blocks
+        .iter()
+        .filter(|(bid, _)| **bid != func.entry_block)
+        .flat_map(|(_, block)| block.args.iter().map(|arg| arg.id))
+        .collect();
+    let origin_of = |origins: &HashMap<ValueId, PairOrigin>, value: ValueId| {
+        origins
+            .get(&value)
+            .copied()
+            .unwrap_or(if block_args.contains(&value) {
+                PairOrigin::Unreached
+            } else {
+                PairOrigin::Mixed
+            })
     };
+
+    // `loaded`: every value that may hold a `self_or_null` word.
+    let mut loaded: HashSet<ValueId> = origins[1].keys().copied().collect();
     loop {
-        let mut grew = false;
-        for block in func.blocks.values() {
-            for op in &block.ops {
-                if dominators::is_exception_transfer_edge(op.opcode)
-                    && let Some(AttrValue::Int(label)) = op.attrs.get("value")
-                    && let Some(target) = exception_targets.get(label)
-                {
-                    grew |= carried(target, &op.operands, &mut loaded);
+        let mut changed = false;
+        for (target, args) in &edges {
+            let Some(block) = func.blocks.get(target) else {
+                continue;
+            };
+            for (arg, value) in block.args.iter().zip(args.iter()) {
+                if loaded.contains(value) {
+                    changed |= loaded.insert(arg.id);
+                }
+                for role in &mut origins {
+                    let merged = origin_of(role, arg.id).meet(origin_of(role, *value));
+                    if merged != origin_of(role, arg.id) {
+                        role.insert(arg.id, merged);
+                        changed = true;
+                    }
                 }
             }
-            block.terminator.for_each_edge(|target, args| {
-                grew |= carried(&target, args, &mut loaded);
-            });
         }
-        if !grew {
+        if !changed {
             break;
         }
     }
+
     for (bid, block) in &func.blocks {
         for (op_idx, op) in block.ops.iter().enumerate() {
             if op.opcode == OpCode::DecRef || dominators::is_exception_transfer_edge(op.opcode) {
                 continue;
             }
             let observed = if op.opcode == OpCode::CallLoadedMethod {
-                if !op
-                    .operands
-                    .get(1)
-                    .is_some_and(|value| loaded.contains(value))
-                {
-                    errors.push(VerifyError::op(
+                let pair = (op.operands.first().copied(), op.operands.get(1).copied());
+                match pair {
+                    (Some(callable), Some(self_or_null)) if loaded.contains(&self_or_null) => {
+                        match (
+                            origin_of(&origins[0], callable),
+                            origin_of(&origins[1], self_or_null),
+                        ) {
+                            (_, PairOrigin::Unreached) => {}
+                            (callable_origin, PairOrigin::Load(..))
+                                if callable_origin == origin_of(&origins[1], self_or_null) => {}
+                            (_, PairOrigin::Mixed) => errors.push(VerifyError::op(
+                                *bid,
+                                op_idx,
+                                "CallLoadedMethod operand 1 merges self_or_null with words of \
+                                 another load or other values",
+                            )),
+                            _ => errors.push(VerifyError::op(
+                                *bid,
+                                op_idx,
+                                "CallLoadedMethod operands 0 and 1 must be the callable and \
+                                 self_or_null of one method load",
+                            )),
+                        }
+                    }
+                    _ => errors.push(VerifyError::op(
                         *bid,
                         op_idx,
                         "CallLoadedMethod operand 1 must be a method load's self_or_null",
-                    ));
+                    )),
                 }
                 let mut observed = op.operands.clone();
                 if observed.len() > 1 {
@@ -698,7 +772,11 @@ fn block_terminator_condition(terminator: &Terminator) -> Option<ValueId> {
     match terminator {
         Terminator::CondBranch { cond, .. } => Some(*cond),
         Terminator::Switch { value, .. } => Some(*value),
-        _ => None,
+        // StateDispatch decides on the frame's resume state, not an SSA value.
+        Terminator::StateDispatch { .. }
+        | Terminator::Branch { .. }
+        | Terminator::Return { .. }
+        | Terminator::Unreachable => None,
     }
 }
 
@@ -987,6 +1065,7 @@ mod tests {
     /// A method load's `self_or_null` is a non-object word (HF-216). The
     /// verifier admits it as operand 1 of a `CallLoadedMethod`, as a block
     /// argument carried there, and as a `DecRef` operand, and nowhere else.
+    /// A call takes both words of one load, also through a loop header.
     #[test]
     fn loaded_method_self_or_null_reaches_only_its_call() {
         use super::super::blocks::TirBlock;
@@ -1003,6 +1082,9 @@ mod tests {
             Returned,
             Branched,
             Nameless,
+            Crossed,
+            MergedWithReceiver,
+            LoopCarried,
         }
         let op = |opcode, operands: Vec<ValueId>, results: Vec<ValueId>, name: Option<&str>| {
             let mut attrs = AttrDict::new();
@@ -1048,6 +1130,18 @@ mod tests {
             let mut entry_ops = vec![load];
             let mut terminator = Terminator::Return {
                 values: vec![result],
+            };
+            let pair_args = |func: &mut TirFunction| {
+                let ids = [func.fresh_value(), func.fresh_value()];
+                (
+                    ids,
+                    ids.iter()
+                        .map(|&id| TirValue {
+                            id,
+                            ty: TirType::DynBox,
+                        })
+                        .collect::<Vec<_>>(),
+                )
             };
             match shape {
                 Shape::Direct | Shape::Nameless => entry_ops.push(call(callable, self_or_null)),
@@ -1096,6 +1190,89 @@ mod tests {
                         values: vec![self_or_null],
                     };
                 }
+                Shape::Crossed => {
+                    let other_callable = func.fresh_value();
+                    let other_self = func.fresh_value();
+                    entry_ops.push(op(
+                        OpCode::LoadMethod,
+                        vec![receiver],
+                        vec![other_callable, other_self],
+                        Some("other"),
+                    ));
+                    entry_ops.push(call(callable, other_self));
+                    entry_ops.push(op(OpCode::DecRef, vec![other_callable], vec![], None));
+                    entry_ops.push(op(OpCode::DecRef, vec![self_or_null], vec![], None));
+                }
+                Shape::MergedWithReceiver => {
+                    let join = func.fresh_block();
+                    let ([joined_callable, joined_self], args) = pair_args(&mut func);
+                    func.blocks.insert(
+                        join,
+                        TirBlock {
+                            id: join,
+                            args,
+                            ops: vec![call(joined_callable, joined_self)],
+                            terminator: Terminator::Return {
+                                values: vec![result],
+                            },
+                        },
+                    );
+                    terminator = Terminator::CondBranch {
+                        cond: receiver,
+                        then_block: join,
+                        then_args: vec![callable, self_or_null],
+                        else_block: join,
+                        else_args: vec![callable, receiver],
+                    };
+                }
+                Shape::LoopCarried => {
+                    let header = func.fresh_block();
+                    let body = func.fresh_block();
+                    let exit = func.fresh_block();
+                    let ([header_callable, header_self], args) = pair_args(&mut func);
+                    func.blocks.insert(
+                        header,
+                        TirBlock {
+                            id: header,
+                            args,
+                            ops: vec![],
+                            terminator: Terminator::CondBranch {
+                                cond: receiver,
+                                then_block: body,
+                                then_args: vec![],
+                                else_block: exit,
+                                else_args: vec![],
+                            },
+                        },
+                    );
+                    func.blocks.insert(
+                        body,
+                        TirBlock {
+                            id: body,
+                            args: vec![],
+                            ops: vec![],
+                            terminator: Terminator::Branch {
+                                target: header,
+                                args: vec![header_callable, header_self],
+                            },
+                        },
+                    );
+                    func.blocks.insert(
+                        exit,
+                        TirBlock {
+                            id: exit,
+                            args: vec![],
+                            ops: vec![call(header_callable, header_self)],
+                            terminator: Terminator::Return {
+                                values: vec![result],
+                            },
+                        },
+                    );
+                    terminator = Terminator::Branch {
+                        target: header,
+                        args: vec![callable, self_or_null],
+                    };
+                }
                 Shape::Branched => {
                     let target = func.fresh_block();
                     func.blocks.insert(
@@ -1135,6 +1312,12 @@ mod tests {
             (Shape::Returned, Some("return observes self_or_null")),
             (Shape::Branched, Some("terminator branches on self_or_null")),
             (Shape::Nameless, Some("has no attribute name")),
+            (
+                Shape::Crossed,
+                Some("must be the callable and self_or_null of one method load"),
+            ),
+            (Shape::MergedWithReceiver, Some("merges self_or_null")),
+            (Shape::LoopCarried, None),
         ] {
             let func = build(&shape);
             let result = verify_function(&func);

@@ -36,6 +36,7 @@ from molt.frontend._types import (
     ScratchCell,
     TryScope,
     TypeHint,
+    loaded_method_self_name,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -69,6 +70,9 @@ class _ResumeLiveness:
         self.names: list[str] = []
         self.def_sites: dict[str, list[int]] = {}
         self.type_hints: dict[str, TypeHint] = {}
+        # A method load's `self_or_null` word is a wire name, not a frontend
+        # value; it is tracked here so that a resume can never lose it.
+        self.loaded_method_selves: set[str] = set()
         index: dict[str, int] = {}
 
         def bit(value: MoltValue) -> int:
@@ -92,15 +96,21 @@ class _ResumeLiveness:
                 first_output = SIMPLEIR_FIRST_TRAILING_RESULT_ARG.get(
                     op.kind.lower(), len(op.args)
                 )
-                for arg in op.args[:first_output]:
-                    if (
-                        isinstance(arg, MoltValue)
-                        and arg.name not in _RESUME_LIVENESS_EXEMPT
-                    ):
+                operands = [
+                    arg for arg in op.args[:first_output] if isinstance(arg, MoltValue)
+                ]
+                outputs = [op.result, *op.args[first_output:]]
+                if op.kind == "CALL_LOADED_METHOD":
+                    operands.append(MoltValue(loaded_method_self_name(op)))
+                elif op.kind in {"LOAD_METHOD", "LOAD_SUPER_METHOD"}:
+                    self_name = loaded_method_self_name(op)
+                    self.loaded_method_selves.add(self_name)
+                    outputs.append(MoltValue(self_name))
+                for arg in operands:
+                    if arg.name not in _RESUME_LIVENESS_EXEMPT:
                         mask = bit(arg)
                         if not defined & mask:
                             used |= mask
-                outputs = [op.result, *op.args[first_output:]]
                 for output in outputs:
                     if (
                         isinstance(output, MoltValue)
@@ -1240,9 +1250,9 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             self._async_local_offset(name)
 
     def _expr_may_yield(self, node: ast.AST) -> bool:
-        return (
-            self.is_async()
-            and self._lexical_dependencies().expression_contains_await(node)
+        """Whether evaluating ``node`` can suspend this stateful frame."""
+        return self.is_async() and self._lexical_dependencies().expression_may_suspend(
+            node
         )
 
     def _spill_async_value(self, value: MoltValue) -> int:
@@ -1313,6 +1323,17 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     Diagnostic.INTERNAL_INVARIANT,
                     f"{self.current_func_name}: values {mixed} are defined both "
                     "before and after STATE_SWITCH and live into a resume label",
+                )
+            # Frame storage cannot hold the null sentinel, so a method call
+            # whose arguments can suspend takes the generic call lowering.
+            suspended_selves = [
+                name for name in names if name in live.loaded_method_selves
+            ]
+            if suspended_selves:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    f"{self.current_func_name}: method-load self_or_null "
+                    f"{suspended_selves} is live into a resume label",
                 )
             label_spills[label_idx] = names
             spill_names.update(names)

@@ -221,6 +221,12 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 8,
                 3,
             ));
+            // The slot holds the null sentinel until the runtime writes it, so
+            // a call that raises before its write leaves a releasable word.
+            let null = builder
+                .ins()
+                .iconst(types::I64, molt_codegen_abi::loaded_method_null_bits());
+            builder.ins().stack_store(null, self_slot, 0);
             let self_out = builder.ins().stack_addr(types::I64, self_slot, 0);
             let mut call_args = vec![site_bits];
             call_args.extend_from_slice(&operands);

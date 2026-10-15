@@ -618,13 +618,19 @@ class LocalBindingMixin(GeneratorMixinBase):
         self._emit_cell_set(cell, value)
         return True
 
+    def _free_var_cell_available(self, name: str) -> bool:
+        """Whether `_load_free_var_cell(name)` finds a cell, without emitting."""
+        return name in self.free_vars and (
+            self.compiler_bindings.get(_MOLT_CLOSURE_PARAM) is not None
+            or (self.is_async() and self.async_closure_offset is not None)
+        )
+
     def _load_free_var_cell(self, name: str) -> MoltValue | None:
+        if not self._free_var_cell_available(name):
+            return None
         closure = self.compiler_bindings.get(_MOLT_CLOSURE_PARAM)
-        if (
-            closure is None
-            and self.is_async()
-            and self.async_closure_offset is not None
-        ):
+        if closure is None:
+            assert self.async_closure_offset is not None
             closure = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(
                 MoltOp(
@@ -633,11 +639,7 @@ class LocalBindingMixin(GeneratorMixinBase):
                     result=closure,
                 )
             )
-        if closure is None:
-            return None
-        idx = self.free_vars.get(name)
-        if idx is None:
-            return None
+        idx = self.free_vars[name]
         idx_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[idx], result=idx_val))
         cell = MoltValue(self.next_var(), type_hint="cell")

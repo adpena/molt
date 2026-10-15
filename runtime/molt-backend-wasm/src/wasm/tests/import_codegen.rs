@@ -137,6 +137,59 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
     }
 }
 
+/// A method load reads its scratch word before it releases a discarded
+/// callable: the release can run `__del__`, whose compiled code may reuse the
+/// word (HF-216).
+#[test]
+fn method_load_reads_its_out_word_before_releasing_a_discarded_callable() {
+    let load = OpIR {
+        kind: "load_method".to_string(),
+        var: Some("unused_callable".to_string()),
+        out: Some("unused_self".to_string()),
+        args: Some(vec!["receiver".to_string()]),
+        s_value: Some("selected_method".to_string()),
+        source_op_idx: Some(0),
+        ..OpIR::default()
+    };
+    let ir = SimpleIR {
+        functions: vec![wasm_test_function(
+            "molt_main",
+            vec!["receiver"],
+            None,
+            vec![
+                load,
+                wasm_test_op("const_none", Some("nothing"), vec![]),
+                wasm_test_op("ret", None, vec!["nothing"]),
+            ],
+        )],
+        profile: None,
+    };
+    let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, Default::default());
+    wasmparser::Validator::new()
+        .validate_all(&output.wasm)
+        .unwrap();
+    let imports = wasm_function_import_indices(&output.wasm);
+    let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
+    let call = |name: &str| format!("Call {{ function_index: {} }}", imports[name]);
+    let load_position = operators
+        .iter()
+        .position(|operator| operator == &call("load_method"))
+        .unwrap_or_else(|| panic!("missing the load call; operators={operators:?}"));
+    let after_load = &operators[load_position + 1..];
+    let word_read = after_load
+        .iter()
+        .position(|operator| operator.starts_with("I64Load {"))
+        .unwrap_or_else(|| panic!("the scratch word is never read; operators={operators:?}"));
+    let release = after_load
+        .iter()
+        .position(|operator| operator == &call("dec_ref_obj"))
+        .unwrap_or_else(|| panic!("the discarded words are not released; operators={operators:?}"));
+    assert!(
+        word_read < release,
+        "the scratch word must be read before the first release; operators={operators:?}"
+    );
+}
+
 /// An unboxed iterator step is one `molt_iter_next_unboxed` call whose value
 /// comes back through the scratch word (HF-217): no `(value, done)` tuple
 /// from `iter_next` and no `index` calls to take it apart.

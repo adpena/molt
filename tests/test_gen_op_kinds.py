@@ -1754,6 +1754,9 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
             "IterNextUnboxed": ["operand", "bool"],
             "ExceptionPending": ["bool"],
             "IsPending": ["bool"],
+            # CPython's method-load pair: the callable and self-or-null.
+            "LoadMethod": ["dynbox", "dynbox"],
+            "LoadSuperMethod": ["dynbox", "dynbox"],
         }
     )
     table = {
@@ -5917,13 +5920,15 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
         "checked_add",
         "checked_mul",
         "iter_next_unboxed",
+        "load_method",
+        "load_super_method",
     ]
     assert data["simpleir_trailing_arg_result"] == [
         {"kind": "unpack_sequence", "first_result_arg": 1}
     ]
     assert (
-        '"checked_add" | "checked_mul" | "iter_next_unboxed" => '
-        "SimpleIrVarFieldRole::Result"
+        '"checked_add" | "checked_mul" | "iter_next_unboxed" | "load_method"\n'
+        '        | "load_super_method" => SimpleIrVarFieldRole::Result'
     ) in rendered_rs
     assert '"unpack_sequence" => Some(1)' in rendered_rs
     assert "SIMPLEIR_VAR_RESULT_KINDS" in rendered_py
