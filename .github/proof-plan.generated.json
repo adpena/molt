@@ -212,7 +212,6 @@
     "tools/check_cargo_test_truth.py",
     "tools/check_deterministic_runtime.py",
     "tools/check_reproducible_build.py",
-    "tools/ci_gate.py",
     "tools/cpython_regrtest.py",
     "tools/molt_dev.py",
     "tools/fuzz_compiler.py",
@@ -343,7 +342,6 @@
     "tests/tools/test_nightly_shard_profile.py",
     "tests/tools/test_nightly_sharding.py",
     "tests/tools/test_cargo_test_truth.py",
-    "tests/tools/test_ci_gate.py",
     "tests/tools/test_guarded_exec.py",
     "tests/tools/test_proof_queue.py",
     "tests/tools/test_proof_supervisor_generation.py",
@@ -366,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "9d583c9a8d33aba61a3be9edebc5f01924afb6ac5fd58cb275b7fa455867ce5d",
+  "authority_sha256": "69c67c448e601461edf7e84fbd2f47d4612267e26047be92d029c2cfde54583b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2525,6 +2523,224 @@
         "uv",
         "run",
         "python3",
+        "tools/check_stdlib_intrinsic_surface.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.stdlib-intrinsic-surface",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/build_graph_audit.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.build-graph",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_runtime_symbol_owners.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.runtime-symbol-owners",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_runtime_serial_bridge_imports.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.runtime-serial-bridge-imports",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_tk_import_authority.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.tk-import-authority",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_perf_gate_wiring.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.perf-gate-wiring",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_ratio_direction.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.ratio-direction",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_subagent_contract.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.subagent-contract",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_perf_plane_gate.py"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.perf-plane-gate",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/check_test_ownership.py",
         "--check"
       ],
@@ -2882,7 +3098,6 @@
         "tests/tools/test_check_stdlib_intrinsic_surface.py",
         "tests/tools/test_check_tk_import_authority.py",
         "tests/tools/test_check_type_coverage_todos.py",
-        "tests/tools/test_ci_gate.py",
         "tests/tools/test_ci_triage.py",
         "tests/tools/test_command_execution.py",
         "tests/tools/test_conformance_guard_scopes.py",
@@ -7740,12 +7955,12 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1800,
-        "headroom_seconds": 840,
+        "headroom_seconds": 660,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2640,
-        "required_job_seconds": 2760,
+        "projected_makespan_seconds": 2820,
+        "required_job_seconds": 2940,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2415
+          "repository-policy": 2685
         }
       },
       "rust": {
@@ -8026,7 +8241,16 @@
       "python3 tools/venv_exec.py python tools/check_cargo_test_truth.py",
       "python3 tools/venv_exec.py python tools/check_github_actions.py",
       "python3 tools/venv_exec.py python tools/check_commit_attribution.py --range origin/main..HEAD",
-      "python3 tools/venv_exec.py python tools/public_contract_gate.py --check"
+      "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
+      "python3 tools/venv_exec.py python tools/check_stdlib_intrinsic_surface.py --check",
+      "python3 tools/venv_exec.py python tools/build_graph_audit.py --check",
+      "python3 tools/venv_exec.py python tools/check_runtime_symbol_owners.py",
+      "python3 tools/venv_exec.py python tools/check_runtime_serial_bridge_imports.py",
+      "python3 tools/venv_exec.py python tools/check_tk_import_authority.py",
+      "python3 tools/venv_exec.py python tools/check_perf_gate_wiring.py",
+      "python3 tools/venv_exec.py python tools/check_ratio_direction.py",
+      "python3 tools/venv_exec.py python tools/check_subagent_contract.py",
+      "python3 tools/venv_exec.py python tools/check_perf_plane_gate.py"
     ],
     "always_command_ids": [
       "local.always.0",
@@ -8044,7 +8268,16 @@
       "local.always.12",
       "local.always.13",
       "local.always.14",
-      "local.always.15"
+      "local.always.15",
+      "local.always.16",
+      "local.always.17",
+      "local.always.18",
+      "local.always.19",
+      "local.always.20",
+      "local.always.21",
+      "local.always.22",
+      "local.always.23",
+      "local.always.24"
     ],
     "commands": {
       "local.always.0": "python3 tools/venv_exec.py python -m ruff check .",
@@ -8055,7 +8288,16 @@
       "local.always.13": "python3 tools/venv_exec.py python tools/check_github_actions.py",
       "local.always.14": "python3 tools/venv_exec.py python tools/check_commit_attribution.py --range origin/main..HEAD",
       "local.always.15": "python3 tools/venv_exec.py python tools/public_contract_gate.py --check",
+      "local.always.16": "python3 tools/venv_exec.py python tools/check_stdlib_intrinsic_surface.py --check",
+      "local.always.17": "python3 tools/venv_exec.py python tools/build_graph_audit.py --check",
+      "local.always.18": "python3 tools/venv_exec.py python tools/check_runtime_symbol_owners.py",
+      "local.always.19": "python3 tools/venv_exec.py python tools/check_runtime_serial_bridge_imports.py",
       "local.always.2": "python3 tools/venv_exec.py python tools/check_rust_toolchain.py",
+      "local.always.20": "python3 tools/venv_exec.py python tools/check_tk_import_authority.py",
+      "local.always.21": "python3 tools/venv_exec.py python tools/check_perf_gate_wiring.py",
+      "local.always.22": "python3 tools/venv_exec.py python tools/check_ratio_direction.py",
+      "local.always.23": "python3 tools/venv_exec.py python tools/check_subagent_contract.py",
+      "local.always.24": "python3 tools/venv_exec.py python tools/check_perf_plane_gate.py",
       "local.always.3": "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed",
       "local.always.4": "python3 tools/venv_exec.py python tools/generators.py check",
       "local.always.5": "python3 tools/venv_exec.py python tools/check_environment_registry.py --check",
@@ -8086,7 +8328,7 @@
       "local.builtin-binding-guard-authority.1": "python3 -m pytest -q tests/test_gen_builtin_binding_guards.py tests/test_frontend_builtin_binding_guards.py",
       "local.builtin-binding-guard-authority.2": "cargo test --locked -p molt-runtime --lib binding_guards",
       "local.ci-wiring.0": "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-      "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
+      "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.0": "python3 tools/gen_codecs.py --check",
       "local.codec-tables.1": "uv run python -m pytest -q tests/test_gen_codecs.py",
       "local.dev-tooling.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_setup_project_inputs.py",
@@ -8818,7 +9060,7 @@
         "description": "CI workflows or pyproject: the CI-topology contract test.",
         "gates": [
           "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
-          "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py"
+          "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py"
         ],
         "globs": [
           ".github/actions/**",
@@ -8859,7 +9101,6 @@
           "tools/check_formal_methods.py",
           "tools/check_correspondence.py",
           "tools/translation_validate.py",
-          "tools/ci_gate.py",
           "tools/ci_resource_env.py",
           "tools/resource_pressure.py",
           "tests/test_generator_manifest.py",
@@ -8876,7 +9117,6 @@
           "tests/tools/test_ci_triage.py",
           "tests/test_resource_pressure.py",
           "tests/test_translation_validate_roots.py",
-          "tests/tools/test_ci_gate.py",
           "tests/tools/test_fuzz_compiler_cli.py",
           "tests/tools/test_formal_correspondence_truth.py",
           "tests/tools/test_reproducible_build_truth.py",
@@ -9520,7 +9760,106 @@
         "browser-acorn",
         "node"
       ],
+      "local.always.16": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.17": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.18": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.19": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
       "local.always.2": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.20": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.21": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.22": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.23": [
+        "python",
+        "git",
+        "target-pythons.3.12",
+        "uv",
+        "target-pythons.3.13",
+        "target-pythons.3.14",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.24": [
         "python",
         "git",
         "target-pythons.3.12",

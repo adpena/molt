@@ -14,7 +14,8 @@ CPython floor, and assert BOTH:
 
 If either gate would pass a CPython-red, the perf plane certifies nothing and CI
 must fail HERE (the proxy-measurement meta-bug class: a gate that cannot fail is
-a vacuous gate). This checker is wired into ci_gate Tier 1 and reuses the SAME
+a vacuous gate). This checker runs as an `always` landing gate and the
+`repository.perf-plane-gate` proof-plan command, and reuses the SAME
 projection + history authority the real CI workflow uses — it is not a parallel
 re-implementation.
 """
@@ -66,6 +67,11 @@ def _green_cell() -> dict[str, object]:
         "compile_time_s": 0.4,
         "stable": True,
         "measured_quiescent": True,
+        # A real green carries a repeat confidence interval wholly above 1.0.
+        "repeat_passes": 5,
+        "repeat_ci_lo": 1.5,
+        "repeat_ci_hi": 2.5,
+        "repeat_stability": "STABLE_ABOVE",
         "pypy_ratio": None,
         "codon_ratio": None,
         "codon_equivalent": None,
@@ -122,6 +128,9 @@ def check() -> list[str]:
     red = copy.deepcopy(_green_cell())
     red["warm_speedup"] = 0.75
     red["cold_speedup"] = 0.75
+    red["repeat_ci_lo"] = 0.70
+    red["repeat_ci_hi"] = 0.80
+    red["repeat_stability"] = "STABLE_BELOW"
     red["verdict"] = schema.VERDICT_FAIL_ENGINE
     cand = _source(red, git_rev="d" * 40)
     cand_boards = pb.project_all(cand)

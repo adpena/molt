@@ -1,9 +1,23 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-from tools import check_rustfmt, ci_gate
+from tools import check_rustfmt, proof_plan
+
+PLAN = proof_plan.ProofPlan.load()
+
+
+def _plan_gate_toolchains(gate: str) -> set[str]:
+    """The toolchain closure of every plan rule or landing gate that runs ``gate``."""
+    closures = [
+        set(PLAN.toolchain_closure(rule["toolchains"]))
+        for rule in PLAN.local_rules
+        if gate in rule.get("gates", ())
+    ]
+    if gate in PLAN.always:
+        closures.append(set(PLAN.toolchain_closure(PLAN.always_toolchains)))
+    assert closures, f"no proof-plan gate runs {gate!r}"
+    return set().union(*closures)
 
 
 def test_generated_rust_is_classified_by_header(tmp_path) -> None:
@@ -141,13 +155,8 @@ def test_write_mode_rewrites_real_format_drift(monkeypatch, tmp_path) -> None:
     assert source.read_text(encoding="utf-8") == 'fn main() {\n    println!("ok");\n}\n'
 
 
-def test_ci_gate_uses_repo_rustfmt_gate_without_compile_slot() -> None:
-    check = {entry.name: entry for entry in ci_gate._build_checks()}["rustfmt"]
-
-    assert check.cmd == [
-        sys.executable,
-        str(ci_gate.TOOLS / "check_rustfmt.py"),
-        "--all",
-    ]
-    assert check.needs_rust is False
-    assert check.needs_cargo is False
+def test_plan_runs_the_rustfmt_gate_without_cargo() -> None:
+    # A static check reads sources; it must never wait for a Cargo build slot.
+    assert not {"cargo", "rustc"} & _plan_gate_toolchains(
+        "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed"
+    )

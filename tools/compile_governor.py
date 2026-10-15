@@ -141,7 +141,7 @@ def _load_1m() -> float | None:
     # the 1-minute load signal is simply unavailable; the caller already treats
     # None as "no load-pressure signal" (load_1m is not None guard). Catching
     # only OSError let the AttributeError escape on Windows and abort every
-    # needs_rust ci_gate check inside compile_slot.
+    # Rust-needing check inside compile_slot.
     getloadavg = getattr(os, "getloadavg", None)
     if getloadavg is None:
         return None

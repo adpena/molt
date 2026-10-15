@@ -76,7 +76,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 # Dogfood the runtime backstop: this gate prints subprocess-style diagnostics and
-# runs inside ci_gate (high traffic), so it must not itself trip the very cp1252
+# runs as an always landing gate (high traffic), so it must not itself trip the cp1252
 # crash it guards against. force_utf8_stdio() is idempotent and never raises.
 from tools._io_utf8 import force_utf8_stdio  # noqa: E402
 

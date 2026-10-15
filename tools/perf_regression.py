@@ -844,93 +844,6 @@ def print_report(report: RegressionReport) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Public API for ci_gate.py integration
-# ---------------------------------------------------------------------------
-
-
-def check_perf_regression(
-    current_path: Path | str | None = None,
-    baseline_path: Path | str | None = None,
-    baseline_dir: Path | str | None = None,
-    thresholds: dict[str, tuple[float, float]] | None = None,
-) -> tuple[bool, RegressionReport]:
-    """Run regression check and return (passed, report).
-
-    Suitable for calling from tools/ci_gate.py as a T2 check.
-    Returns True if no error-level regressions are found.
-    """
-    if current_path is None:
-        current_path = ROOT / "bench" / "results" / "bench.json"
-    current_path = Path(current_path)
-
-    if not current_path.exists():
-        report = RegressionReport(
-            created_at=datetime.now(timezone.utc).isoformat(),
-            summary={"error": f"current file not found: {current_path}"},
-        )
-        return (True, report)  # No data = no regression (skip)
-
-    current = _load_json(current_path)
-    resolved_thresholds = dict(DEFAULT_THRESHOLDS)
-    if thresholds:
-        resolved_thresholds.update(thresholds)
-
-    # Resolve baseline
-    baseline: dict[str, Any] | None = None
-    resolved_baseline_path: Path | None = None
-    baselines: list[tuple[Path, dict[str, Any]]] | None = None
-
-    if baseline_path is not None:
-        resolved_baseline_path = Path(baseline_path)
-        if resolved_baseline_path.exists():
-            baseline = _load_json(resolved_baseline_path)
-    elif baseline_dir is not None:
-        bdir = Path(baseline_dir)
-        if bdir.is_dir():
-            baselines = _load_baselines_from_dir(bdir)
-            if baselines:
-                resolved_baseline_path = baselines[-1][0]
-                baseline = baselines[-1][1]
-    else:
-        # Default: try bench/baseline.json
-        default = ROOT / "bench" / "baseline.json"
-        if default.exists():
-            resolved_baseline_path = default
-            baseline = _load_json(default)
-
-    if baseline is None:
-        report = RegressionReport(
-            created_at=datetime.now(timezone.utc).isoformat(),
-            current_file=str(current_path),
-            summary={"note": "no baseline available, skipping regression check"},
-        )
-        return (True, report)
-
-    try:
-        report = build_report(
-            current_path,
-            current,
-            resolved_baseline_path,
-            baseline,
-            baselines,
-            resolved_thresholds,
-        )
-    except ValueError as exc:
-        report = RegressionReport(
-            created_at=datetime.now(timezone.utc).isoformat(),
-            current_file=str(current_path),
-            baseline_file=str(resolved_baseline_path) if resolved_baseline_path else "",
-            current_git_rev=current.get("git_rev"),
-            baseline_git_rev=baseline.get("git_rev"),
-            thresholds=dict(resolved_thresholds),
-            summary={"error": str(exc)},
-        )
-        return (False, report)
-
-    return (not report.has_errors, report)
-
-
-# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -990,7 +903,7 @@ def main() -> None:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print JSON report to stdout (for ci_gate.py integration).",
+        help="Print the JSON report to stdout.",
     )
     parser.add_argument(
         "--threshold",

@@ -40,7 +40,8 @@ Modes (mirrors tools/structural_audit.py / tools/gen_op_kinds.py CI convention):
   build_graph_audit.py --check          exit 1 if a back-edge appears or any blast radius widened
   build_graph_audit.py --update-baseline  re-pin tools/build_graph_baseline.json
 
-Wired into tools/ci_gate.py (tier 1) next to structural-audit-ratchet.
+Runs as an `always` landing gate and the `repository.build-graph` proof-plan
+command, beside the structural-audit ratchet.
 
 WHY `cargo metadata` and not `cargo build --timings`/`--build-plan`: the reverse
 transitive dependency closure over the crate graph IS the lib-recompile set

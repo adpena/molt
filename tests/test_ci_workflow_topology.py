@@ -1846,11 +1846,7 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
 
     assert nightly_text.count("python3 tools/proof_plan.py --run-family") == 7
     assert "run: cargo build -p molt-runtime --profile dev-fast" not in nightly_text
-    assert "tools/ci_gate.py --tier" not in nightly_text
     assert "uses: ./.github/workflows/formal.yml" in nightly_text
-    assert '"formal-methods-full"' not in _read("tools/ci_gate.py")
-    assert '"formal-methods-quint-only"' not in _read("tools/ci_gate.py")
-    assert '"correspondence-check"' not in _read("tools/ci_gate.py")
     assert "quint verify formal/quint/" not in nightly_text
     assert "run: cargo install cargo-deny --locked" not in nightly_text
     assert "run: cargo deny check" not in nightly_text
@@ -1903,16 +1899,11 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
 def test_named_proof_lanes_fail_closed_and_share_counted_verdict_authority() -> None:
     nightly_text = _read(".github/workflows/nightly.yml")
     formal_text = _read(".github/workflows/formal.yml")
-    ci_gate_text = _read("tools/ci_gate.py")
 
     for workflow_text in (nightly_text, formal_text):
         assert "continue-on-error: true" not in workflow_text
     assert "SKIP: build failed" not in nightly_text
     assert "if-no-files-found: ignore" not in nightly_text
-    assert '"--no-fail"' not in ci_gate_text
-    assert '"success": passed + failed + errored > 0' in ci_gate_text
-    assert '"zero_work": passed + failed + errored == 0' in ci_gate_text
-    assert '"required": r.name in required_names' in ci_gate_text
     for tool in (
         "tools/check_deterministic_runtime.py",
         "tools/check_reproducible_build.py",

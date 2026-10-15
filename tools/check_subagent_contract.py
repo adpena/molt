@@ -8,7 +8,8 @@ contract module's own registry -- so deleting, renaming, or blanking a constant
 (or emptying ``CONTRACT_CONSTANT_NAMES`` to hide the deletion) fails the gate
 rather than self-waiving it. A removed constant cannot certify its own absence.
 
-Wired into ``tools/ci_gate.py`` as a tier-1 check (``subagent-contract-integrity``);
+Runs as an ``always`` landing gate and the ``repository.subagent-contract``
+proof-plan command;
 its teeth are proven by ``tests/tools/test_subagent_contract.py``.
 
 Run:

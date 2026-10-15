@@ -436,35 +436,8 @@ def test_cli_check_exits_zero_on_clean_tree():
 
 
 # ---------------------------------------------------------------------------
-# ci_gate wiring (the discoverability/wired contract)
+# Proof-plan wiring (the discoverability/wired contract)
 # ---------------------------------------------------------------------------
-
-
-def _load_ci_gate():
-    if str(TOOLS_ROOT) not in sys.path:
-        sys.path.insert(0, str(TOOLS_ROOT))
-    src = REPO_ROOT / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-    from tools import ci_gate
-
-    return ci_gate
-
-
-def test_ci_gate_tier1_includes_build_graph_ratchet():
-    module = _load_ci_gate()
-    checks = {check.name: check for check in module._build_checks()}
-    check = checks["build-graph-ratchet"]
-
-    assert check.tier == 1
-    assert check.required is True
-    assert check.needs_pytest is False
-    # A metadata-only check needs cargo PRESENT but must NOT take a compile slot
-    # (needs_rust would starve it behind real builds).
-    assert check.needs_rust is False
-    assert check.needs_cargo is True
-    assert str(module.TOOLS / "build_graph_audit.py") in check.cmd
-    assert "--check" in check.cmd
 
 
 def test_metadata_probe_normalizes_workspace_wrapper(
@@ -486,52 +459,13 @@ def test_metadata_probe_normalizes_workspace_wrapper(
     assert captured["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
 
 
-def test_ci_gate_tier1_includes_build_graph_audit_contract():
-    module = _load_ci_gate()
-    checks = {check.name: check for check in module._build_checks()}
-    check = checks["build-graph-audit-contract"]
+def test_proof_plan_runs_the_build_graph_ratchet() -> None:
+    from tools import proof_plan
 
-    assert check.tier == 1
-    assert check.required is True
-    assert check.needs_pytest is True
-    assert str(module.TESTS / "tools" / "test_build_graph_audit.py") in check.cmd
-
-
-def test_run_check_does_not_acquire_compile_slot_for_needs_cargo(monkeypatch):
-    """A needs_cargo check (cargo metadata) must NOT enter compile_slot, so it is
-    never starved waiting for compile capacity behind real builds."""
-    module = _load_ci_gate()
-    slot_calls: list[dict[str, object]] = []
-
-    def fake_compile_slot(**kwargs):
-        slot_calls.append(kwargs)
-        raise AssertionError("needs_cargo check must not acquire a compile slot")
-
-    def fake_guarded_completed_process(command, **kwargs):
-        return module.harness_memory_guard.GuardedCompletedProcess(
-            command,
-            0,
-            "metadata ok\n",
-            "",
-            elapsed_s=0.1,
-            child_stderr="",
-        )
-
-    monkeypatch.setattr(module.compile_governor, "compile_slot", fake_compile_slot)
-    monkeypatch.setattr(
-        module.harness_memory_guard,
-        "guarded_completed_process",
-        fake_guarded_completed_process,
+    plan = proof_plan.ProofPlan.load()
+    assert (
+        "python3 tools/venv_exec.py python tools/build_graph_audit.py --check"
+        in plan.always
     )
-
-    result = module._run_check(
-        module.Check(
-            name="cargo-metadata-check",
-            tier=1,
-            cmd=["cargo", "metadata"],
-            needs_cargo=True,
-        )
-    )
-
-    assert result.status == "pass"
-    assert slot_calls == []  # never entered compile_slot
+    command = next(c for c in plan.commands if c.id == "repository.build-graph")
+    assert command.data["argv"][-2:] == ["tools/build_graph_audit.py", "--check"]

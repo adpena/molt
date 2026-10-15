@@ -68,7 +68,8 @@ Molt expects production-grade changes, not opportunistic patches.
 - **No god files by default.** `tools/structural_audit.py --check` is the
   automated ratchet for god-file count, maximum god-file size,
   structural-god-file region pressure, duplicate-authority drift, and
-  structural-debt markers. `tools/ci_gate.py --tier 1` runs it by default. New
+  structural-debt markers. Every landing and the
+  `repository.structural-debt` proof-plan row run it. New
   packages/modules should keep one authority per file cluster; do not repin
   `tools/structural_audit_baseline.json` unless a maintainer explicitly accepts
   the debt and records the retirement path.

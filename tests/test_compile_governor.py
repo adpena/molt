@@ -32,7 +32,7 @@ def test_compile_governor_authority_is_not_duplicated_in_runtime_async() -> None
 def test_load_1m_returns_none_when_getloadavg_absent(monkeypatch) -> None:
     """os.getloadavg does not exist on Windows. _load_1m must return None (the
     caller's "no load signal" contract), not let AttributeError escape and abort
-    every needs_rust ci_gate check inside compile_slot."""
+    every caller inside compile_slot."""
     monkeypatch.delattr(os, "getloadavg", raising=False)
     assert compile_governor._load_1m() is None
 

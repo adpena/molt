@@ -7,8 +7,8 @@ of runner time while repeated main updates cancelled every result. This audit
 keeps one honest contract: scheduled and explicit controlled runs invoke the real
 blocking scoreboard; push/PR allocation and active-run cancellation are forbidden.
 
-It is wired into ci_gate tier-1 so trigger, queueing, and blocking semantics cannot
-silently regress while a separate fast PR performance plane is developed.
+The proof plan runs it as a landing gate and as ``repository.perf-gate-wiring``,
+so trigger, queueing, and blocking semantics cannot silently regress while a separate fast PR performance plane is developed.
 """
 
 from __future__ import annotations

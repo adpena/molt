@@ -107,8 +107,8 @@ Performance-Constitution triage axis — "any previously-green benchmark that
   empty and **arms** on the first authoritative `main` run; until then the
   regression gate is silent and the absolute floor is the sole gate.
 
-Both gates are proven falsifiable by `tools/check_perf_plane_gate.py` (ci_gate
-Tier 1): it synthesizes a CPython-red and asserts BOTH the absolute-floor gate
+Both gates are proven falsifiable by `tools/check_perf_plane_gate.py` (a
+landing gate and the `repository.perf-plane-gate` proof-plan row): it synthesizes a CPython-red and asserts BOTH the absolute-floor gate
 and the regression gate reject it, and that an unchanged re-run is not flagged. A
 gate that cannot fail certifies nothing.
 

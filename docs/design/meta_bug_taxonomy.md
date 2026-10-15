@@ -39,15 +39,15 @@ verdict is computed from anything but that authority.
    wall-clock ratio implementation authority (`tools/perf_authority.py`
    re-exports them for benchmark tooling), every serialized ratio carries
    `RatioDirection` metadata, degenerate operands produce `None`, and
-   `tools/check_ratio_direction.py` is an AST drift-gate in `ci_gate.py` tier-1
-   rejecting raw `<x>_time / <y>_time` outside the source authority.
+   `tools/check_ratio_direction.py` is an AST drift-gate (a landing gate and the
+   `repository.ratio-direction` proof-plan row) rejecting raw `<x>_time / <y>_time` outside the source authority.
 3. **[META] Leak detector aggregate → rate-of-growth** — `assert_no_leak_at_exit` 200K fixed ceiling (`metrics.rs:28`) launders bounded resurrection leaks. → per-object `alloc_epoch`; a bounded-leaker test MUST fail.
 4. **[META] Single-source object-death** — move `DEALLOC_COUNT` to the dealloc TAIL (after weakref_clear + interior free); `weakref.rs:199` `rc<=2` heuristic consults the DEALLOC authority instead.
 5. **[META] Dual-channel freshness** — emit the stale/provenance header into BOTH JSON and markdown from one emitter; `check_perf_freshness.py` checks both.
 6. **[META] Collective budget pool** for `molt_diff --jobs>1` (kills the parallel-contention FALSE-FAIL corrupting differential verdicts).
 7. **[CLASS] Finalizer-aware lifetime on the ownership lattice** (kills the resurrection-at-a-distance UAF class) — part of Spine-4 Outcome 1 (#23).
 8. **[CLASS] Repr-authority coherence audit** (`repr_audit()` before `lower_function_to_lir`: RawI64Safe⇒fits_inline_int47, FullDeopt⇒range-outside-inline) — part of int-unification (#20).
-9. **[CLASS] Per-lane coverage audit** (`repr_lane_coverage_audit.py`, wired into ci_gate tier-1).
+9. **[CLASS] Per-lane coverage audit** (`repr_lane_coverage_audit.py`; not implemented yet).
 10. **[CLASS] Build-success prerequisite + stderr-aware conftest** (kills green-on-red atop a broken compiler).
 11. **[CLASS] Panic-invariant assertion** — replace `isolates.rs` `let _ = catch_unwind(...)` with an asserting form + a shipped-profile=abort gate.
 

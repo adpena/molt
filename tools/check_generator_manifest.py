@@ -45,7 +45,7 @@ Usage::
         # committed output equals a fresh render in THIS environment)
     python3 tools/check_generator_manifest.py --json      # machine-readable
 
-Wired into ``tools/ci_gate.py`` (tier 1) and the repository-policy family in
+Run as a landing gate and by the repository-policy family in
 ``tools/proof_plan.toml``.
 """
 

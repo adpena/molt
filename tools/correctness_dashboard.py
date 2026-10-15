@@ -43,7 +43,6 @@ FORMAL_LEAN = ROOT / "formal" / "lean"
 FORMAL_QUINT = ROOT / "formal" / "quint"
 TESTS = ROOT / "tests"
 TOOLS = ROOT / "tools"
-CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 IS_TTY = sys.stdout.isatty()
 
@@ -350,115 +349,25 @@ def collect_test_coverage() -> dict[str, Any]:
 # 4. Verification Pass Chain (CI gates)
 # ---------------------------------------------------------------------------
 
-# Classification heuristics for CI step names
-_GATE_CLASSIFIERS: list[tuple[str, list[str]]] = [
-    ("formal", ["formal", "lean", "quint", "proof", "lake"]),
-    (
-        "correctness",
-        [
-            "diff",
-            "translation",
-            "deterministic",
-            "determinism",
-            "reproducible",
-            "correspondence",
-            "verified",
-            "ir-structure",
-            "property",
-            "mutation",
-            "fuzz",
-            "model-based",
-            "gate",
-            "molt-diff",
-            "core-lane",
-            "ir-probe",
-            "coverage",
-        ],
-    ),
-    ("performance", ["perf", "bench", "throughput", "k6"]),
-    ("security", ["secret", "audit", "capabilities", "trust"]),
-]
 
+def collect_proof_plan_checks() -> dict[str, Any]:
+    """Count checks from the proof plan, the one CI and landing check registry."""
+    from tools import proof_plan
 
-def _classify_gate(step_name: str) -> str:
-    """Classify a CI gate into a category."""
-    name_lower = step_name.lower()
-    for category, keywords in _GATE_CLASSIFIERS:
-        if any(kw in name_lower for kw in keywords):
-            return category
-    return "other"
-
-
-def collect_ci_gates() -> dict[str, Any]:
-    """Parse CI workflow and classify gates."""
-    if not CI_WORKFLOW.exists():
-        return {"total": 0, "by_category": {}, "gates": []}
-
-    try:
-        text = CI_WORKFLOW.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {"total": 0, "by_category": {}, "gates": []}
-
-    # Extract step names (- name: ...)
-    step_names = re.findall(r"^\s*-\s+name:\s+(.+)$", text, re.MULTILINE)
-
-    # Filter to actual verification steps (not setup/install/upload steps)
-    setup_keywords = [
-        "install",
-        "set up",
-        "cache",
-        "checkout",
-        "upload",
-        "ensure clang",
-        "ensure zig",
-        "rust cache",
-        "create extension",
-        "prepare external",
-        "export external",
-        "build extension",
-    ]
-    gates: list[dict[str, str]] = []
-    for name in step_names:
-        name_clean = name.strip().strip('"').strip("'")
-        name_lower = name_clean.lower()
-        if any(kw in name_lower for kw in setup_keywords):
-            continue
-        category = _classify_gate(name_clean)
-        gates.append({"name": name_clean, "category": category})
-
-    by_category: dict[str, int] = {}
-    for g in gates:
-        cat = g["category"]
-        by_category[cat] = by_category.get(cat, 0) + 1
-
-    # Also classify by tier based on ci_gate.py structure
-    # Tier 1: checks in _build_checks with tier=1
-    # We read ci_gate.py to count tiers
-    tier_counts = _count_ci_gate_tiers()
-
+    plan = proof_plan.ProofPlan.load()
+    tier_counts: dict[str, int] = {}
+    by_family: dict[str, int] = {}
+    for command in plan.commands:
+        # Scheduled families (nightly, weekly) run outside the push tiers.
+        for tier in command.data.get("tiers", ("scheduled",)):
+            tier_counts[tier] = tier_counts.get(tier, 0) + 1
+        by_family[command.family] = by_family.get(command.family, 0) + 1
     return {
-        "total": len(gates),
-        "by_category": by_category,
-        "tier_counts": tier_counts,
-        "gates": gates,
+        "total": len(plan.commands),
+        "landing_gates": len(plan.always),
+        "tier_counts": dict(sorted(tier_counts.items())),
+        "by_family": dict(sorted(by_family.items())),
     }
-
-
-def _count_ci_gate_tiers() -> dict[str, int]:
-    """Count checks per tier from ci_gate.py."""
-    ci_gate = TOOLS / "ci_gate.py"
-    if not ci_gate.exists():
-        return {}
-    try:
-        text = ci_gate.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {}
-
-    tiers: dict[str, int] = {}
-    for match in re.finditer(r"tier=(\d+)", text):
-        tier_key = f"tier_{match.group(1)}"
-        tiers[tier_key] = tiers.get(tier_key, 0) + 1
-    return tiers
 
 
 # ---------------------------------------------------------------------------
@@ -611,24 +520,11 @@ def render_human(
     print(f"  Fuzz targets:         {tests['fuzz_targets']}")
 
     # -- CI Gates --
-    print(f"\n{bold('CI Gates:')}")
-    tiers = ci.get("tier_counts", {})
-    t1 = tiers.get("tier_1", 0)
-    t2 = tiers.get("tier_2", 0)
-    t3 = tiers.get("tier_3", 0)
-    print(f"  Tier 1 (per-commit):  {t1} gates")
-    print(f"  Tier 2 (per-PR):      {t2} gates")
-    print(f"  Tier 3 (nightly):     {t3} gates")
-
-    by_cat = ci.get("by_category", {})
-    if by_cat:
-        parts = []
-        for cat in ("formal", "correctness", "performance", "security", "other"):
-            count = by_cat.get(cat, 0)
-            if count > 0:
-                parts.append(f"{count} {cat}")
-        if parts:
-            print(f"  Workflow steps:       {ci['total']} total ({', '.join(parts)})")
+    print(f"\n{bold('CI Gates (proof plan):')}")
+    print(f"  Commands:             {ci['total']}")
+    print(f"  Landing gates:        {ci['landing_gates']}")
+    for tier, count in ci["tier_counts"].items():
+        print(f"  {tier + ':':21} {count} commands")
 
     # -- Proof Chain Status --
     print(f"\n{bold('Proof Chain Status:')}")
@@ -662,7 +558,7 @@ def build_json_output(
             "kani_harnesses": _count_kani_harnesses(),
         },
         "testing": tests,
-        "ci_gates": ci,
+        "proof_plan_checks": ci,
         "proof_chain": chain,
     }
 
@@ -700,7 +596,7 @@ def flatten_dashboard_state(
     flat["test_fuzz_targets"] = tests.get("fuzz_targets", 0)
     flat["test_kani_harnesses"] = tests.get("kani_harnesses", 0)
     # CI
-    flat["ci_gate_total"] = ci.get("total", 0)
+    flat["proof_plan_check_total"] = ci.get("total", 0)
     # Chain completeness
     complete = sum(1 for link in chain if link.get("status") == "complete")
     flat["proof_chain_complete"] = complete
@@ -757,7 +653,7 @@ def main() -> None:
     lean = collect_lean_coverage()
     quint = collect_quint_coverage()
     tests = collect_test_coverage()
-    ci = collect_ci_gates()
+    ci = collect_proof_plan_checks()
     chain = collect_proof_chain()
 
     if args.delta_snapshot:

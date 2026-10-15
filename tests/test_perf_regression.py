@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -110,23 +109,6 @@ def test_incompatible_run_metadata_fails_closed() -> None:
             baseline,
             perf_regression.DEFAULT_THRESHOLDS,
         )
-
-
-def test_check_perf_regression_reports_incompatible_metadata(tmp_path) -> None:
-    current_path = tmp_path / "current.json"
-    baseline_path = tmp_path / "baseline.json"
-    current_path.write_text(json.dumps(_payload(value=1.2)), encoding="utf-8")
-    baseline = _payload(value=1.0)
-    baseline["samples"] = 1
-    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
-
-    passed, report = perf_regression.check_perf_regression(
-        current_path=current_path,
-        baseline_path=baseline_path,
-    )
-
-    assert not passed
-    assert "incompatible benchmark baseline" in report.summary["error"]
 
 
 @pytest.mark.parametrize(

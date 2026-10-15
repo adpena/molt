@@ -16,8 +16,8 @@ is present in the generated runtime registry. The canonical declarations live in
 projects them into `generated.rs` and the compiler's Python symbol map.
 Request discovery uses the same AST policy as the stdlib audit, including loader
 aliases, keyword names and lazy requests; comments and strings are not requests.
-Static, cargo-free, fail-closed. Wire as a tier-1 `--check` alongside
-`check_table_drift.py` in `tools/ci_gate.py`.
+Static, cargo-free, fail-closed. Runs as an `always` landing gate and the
+`repository.stdlib-intrinsic-surface` proof-plan command.
 
 Exit 0 = every stdlib-required intrinsic is registered.
 Exit 1 = at least one required-but-unregistered intrinsic (broken surface).
