@@ -114,11 +114,16 @@ from tests.cli.test_source_extension_producer import (
 _RUST_CHANNEL = rust_toolchain.rust_channel(
     (Path(__file__).resolve().parents[2] / "rust-toolchain.toml").read_bytes()
 )
-# The synthetic Quint install reports the version the proof plan pins.
+# Synthetic Quint and uv installs report the versions the proof plan pins.
 _QUINT_PIN = next(
     policy.data["setup_value"]
     for policy in proof_plan.ProofPlan.load().toolchain_policies
     if policy.name == "quint"
+)
+_UV_PIN = next(
+    policy.data["setup_value"]
+    for policy in proof_plan.ProofPlan.load().toolchain_policies
+    if policy.name == "uv"
 )
 
 
@@ -1062,7 +1067,20 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
     assert plan.commands
+    source_bound = [command for command in plan.commands if command.binds_source_commit]
+    assert source_bound
     for command in plan.commands:
+        if command.binds_source_commit:
+            # Only the plan executor binds the verified checkout commit, so ad
+            # hoc admission refuses the template and every hand-bound spelling.
+            hand_bound = tuple(
+                "0" * 40 if part == proof_plan.PROOF_SOURCE_COMMIT_PLACEHOLDER else part
+                for part in command.argv
+            )
+            for argv in (command.argv, hand_bound):
+                with pytest.raises(ValueError, match="near-match would discard"):
+                    command_admission.envelope_for_command(argv)
+            continue
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
         assert command.id in envelope["proof_plan_command_ids"]
@@ -1924,14 +1942,21 @@ def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
     assert envelope["toolchains"] == ["python", "uv", "cargo", "rustc", "git"]
 
 
+def _python_policy_with_version(pattern: str) -> proof_plan.ToolchainPolicy:
+    """The loaded python policy, with its derived identity role, and one pattern."""
+    loaded = next(
+        policy
+        for policy in proof_plan.ProofPlan.load().toolchain_policies
+        if policy.name == "python"
+    )
+    return proof_plan.ToolchainPolicy(
+        name="python", data={**loaded.data, "version_pattern": pattern}
+    )
+
+
 def test_toolchain_identity_rejects_incomplete_python_closure() -> None:
     plan = SimpleNamespace(
-        toolchain_policies=(
-            proof_plan.ToolchainPolicy(
-                name="python",
-                data={"version_pattern": r"^Python 3\.12\."},
-            ),
-        )
+        toolchain_policies=(_python_policy_with_version(r"^Python 3\.12\."),)
     )
     with pytest.raises(ValueError, match="complete environment closure"):
         command_identity._validate_toolchain_identity(
@@ -1970,19 +1995,11 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version(
     )
     assert captured is not None
     admitted_plan = SimpleNamespace(
-        toolchain_policies=(
-            proof_plan.ToolchainPolicy(
-                name="python", data={"version_pattern": r"^Python 3\."}
-            ),
-        )
+        toolchain_policies=(_python_policy_with_version(r"^Python 3\."),)
     )
     command_identity._validate_toolchain_identity(admitted_plan, "python", captured)
     plan = SimpleNamespace(
-        toolchain_policies=(
-            proof_plan.ToolchainPolicy(
-                name="python", data={"version_pattern": r"^Python 0\.0\."}
-            ),
-        )
+        toolchain_policies=(_python_policy_with_version(r"^Python 0\.0\."),)
     )
     with pytest.raises(ValueError, match="violates canonical policy"):
         command_identity._validate_toolchain_identity(plan, "python", captured)
@@ -2227,7 +2244,7 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
             str(process_image_capture.custody_path(executable)),
             "--version",
         ]
-        return subprocess.CompletedProcess(command, 0, "uv 0.12.23 (fixture)\n", "")
+        return subprocess.CompletedProcess(command, 0, f"uv {_UV_PIN} (fixture)\n", "")
 
     monkeypatch.setattr(command_identity, "_run_captured", version)
     located = command_identity._tool_identity(
@@ -2266,7 +2283,7 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
         if change == "selection-serializer":
             substituted["uv"]["identity_sha256"] = selection_digest
         else:
-            substituted["uv"]["version"] = "uv 0.12.23 (changed fixture)"
+            substituted["uv"]["version"] = f"uv {_UV_PIN} (changed fixture)"
         with pytest.raises(
             ValueError, match="uv operational owner identity digest is invalid"
         ):
