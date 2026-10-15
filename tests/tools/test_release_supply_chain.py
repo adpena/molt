@@ -516,7 +516,9 @@ def test_compiler_snapshot_excludes_only_development_evidence_before_blob_reads(
     # Generic/staged consumers retain the old default; the release owner alone
     # declares this omission. Exercise the real Git reader, not an alias filter.
     monkeypatch.setattr(git_source_snapshot, "_map_git_blobs", original)
-    complete = git_source_snapshot.capture_git_source_snapshot(root, commit, **arguments)
+    complete = git_source_snapshot.capture_git_source_snapshot(
+        root, commit, **arguments
+    )
     full_files = {entry.relative.as_posix(): entry for entry in complete.files}
     assert full_files[omitted].sha256 == hashlib.sha256(evidence).hexdigest()
     assert full_files.keys() == files.keys() | {omitted}
@@ -808,7 +810,10 @@ def test_bundle_archives_are_byte_reproducible(
     release_source = _prepare_release_source(
         tmp_path,
         monkeypatch,
-        extra_files={omitted: b"development-only evidence", retained: b"retained config"},
+        extra_files={
+            omitted: b"development-only evidence",
+            retained: b"retained config",
+        },
     )
     pure_wheel = _wheel(tmp_path / "molt-0.0.1-py3-none-any.whl", "0.0.1")
     wheels = []
@@ -859,7 +864,9 @@ def test_bundle_archives_are_byte_reproducible(
         source = "molt-0.0.1.data/data/share/molt/distribution/source/"
         assert source + omitted not in archive.namelist()
         assert archive.read(source + retained) == b"retained config"
-        wheel_manifest = json.loads(archive.read(source + compiler_payload.MANIFEST_NAME))
+        wheel_manifest = json.loads(
+            archive.read(source + compiler_payload.MANIFEST_NAME)
+        )
         assert wheel_manifest == manifest
 
 
