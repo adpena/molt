@@ -2172,8 +2172,13 @@ def verify_llvm_toolchain_prefix(
                 f"live={_attestation_value_summary(live)}"
                 for key, (attested, live) in mismatches.items()
             )
+            # Custody depends on the toolchain selection, so a prefix attested
+            # under another selection drifts without any byte changing.
             raise LlvmToolchainConfigError(
-                f"managed LLVM/MLIR attestation drift at {path}: {details}"
+                f"managed LLVM/MLIR attestation drift at {path}: {details}. "
+                "Re-attest an unchanged prefix under the selection that uses it "
+                "with `python tools/bootstrap_llvm.py --reattest`; it refuses "
+                "changed content, which needs a rebuild."
             )
         attested_content = payload.get("content_facts")
         attested_digest = payload.get("content_digest")
