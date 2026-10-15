@@ -45,11 +45,12 @@ def test_parse_audit_log_flag_accepts_all_valid_sinks():
         assert env["MOLT_AUDIT_SINK"] == sink
 
 
-def test_build_slot_dir_never_lands_in_the_checkout(monkeypatch, tmp_path: Path):
+def test_build_slot_dir_never_lands_in_the_checkout(
+    monkeypatch, tmp_path: Path, developer_host_context: None
+):
     from molt import custody_layout, dx
     from molt.cli import cargo_execution
 
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.setattr(cargo_execution, "compiler_source_root", lambda: tmp_path)
     # The synthetic checkout is a plain clone, not explicit host scratch.
     monkeypatch.setattr(
