@@ -2572,7 +2572,7 @@ def test_llvm_existing_probe_apis_consume_one_external_budget(monkeypatch):
         remaining[0] -= 1
         return SimpleNamespace(stdout="22.1.8", stderr="", returncode=0)
 
-    monkeypatch.setattr(llvm_toolchain.subprocess, "run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     assert (
         llvm_toolchain._run_llvm_config(
             Path("fixture"), "--version", probe_timeout=limit
