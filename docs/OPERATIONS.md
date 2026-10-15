@@ -848,6 +848,24 @@ Regrtest runs set `MOLT_CAPABILITIES=fs.read,env.read` by default; override with
 
 Benchmarks that cannot survive a disconnect are not acceptable.
 
+### Build time
+- `MOLT_BUILD_DIAGNOSTICS=1` with `MOLT_BUILD_DIAGNOSTICS_FILE=<path>` writes one
+  `molt build`'s phase seconds (`phase_sec`, `ranked_phases`) as JSON.
+- `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
+  `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
+- Both reach builds that a harness starts, such as `tests/molt_diff.py`, so a
+  differential run measures exactly the builds it makes.
+- Run differential suites with `--jobs` near the core count; builds are mostly
+  single-threaded. Set `MOLT_DIFF_RESULTS_JSONL=<path>` for one row per test and
+  per backend, which is the per-target evidence (parallel console lines name
+  only the file).
+- Toolchain provenance is reused, not re-proved: a process captures each root set
+  (Rust sysroot, LLVM SDK, C search paths such as the macOS SDK) once, and later
+  fences verify it by directory and file stat tokens. File digests persist in a
+  stat-keyed store under the Molt cache (`file-digests/v1.sqlite`) with the
+  racy-git rule; Windows always hashes, because its ChangeTime can repeat within
+  one clock tick.
+
 ### Profiling harness
 - Use `tools/profile_hotspots.py` first when the question is dev/CI wall clock:
   it reads the default guarded-command profile log and sorts slow subprocesses

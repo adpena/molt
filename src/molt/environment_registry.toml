@@ -778,6 +778,14 @@ owner = "tools/ci_resource_env.py"
 summary = "Exported to GITHUB_ENV by tools/ci_resource_env.py: the one-line reason behind the CI resource plan, for inspection in later workflow steps."
 
 [[variable]]
+name = "MOLT_CLI_PROFILE"
+audience = "user"
+kind = "path"
+default = ""
+owner = "src/molt/cli/entrypoint.py"
+summary = "cProfile stats file for one molt CLI command; {pid} expands to the process id, so parallel builds write separate files. Read it with python -m pstats."
+
+[[variable]]
 name = "MOLT_CODEC"
 audience = "developer"
 kind = "enum"

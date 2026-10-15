@@ -1631,6 +1631,15 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "user",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_CLI_PROFILE",
+      "owner": "src/molt/cli/entrypoint.py",
+      "summary": "cProfile stats file for one molt CLI command; {pid} expands to the process id, so parallel builds write separate files. Read it with python -m pstats.",
+      "values": []
+    },
+    {
       "audience": "developer",
       "default": "msgpack",
       "kind": "enum",

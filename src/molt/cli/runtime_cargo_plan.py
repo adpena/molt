@@ -14,6 +14,7 @@ import shutil
 import sys
 import stat
 import tempfile
+import time
 import tomllib
 from collections.abc import Generator, Iterator, MutableMapping
 from contextlib import ExitStack, contextmanager
@@ -58,10 +59,15 @@ from molt.llvm_toolchain import (
 )
 from molt.source_root import compiler_source_root
 from molt.wasi_sdk_identity import WasiCAbiProjection, wasi_c_abi_projection
+from molt.cache_eviction import resolve_budget
+from molt.default_paths import _default_molt_cache, file_digest_cache_path
 from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
+    DIGEST_RACY_WINDOW_NS,
     capture_stable_regular_file,
+    file_digest_cache,
+    verify_stable_regular_file_metadata,
     resolve_executable,
     executable_content_path,
     stable_executable_probe,
@@ -129,11 +135,6 @@ class CargoFileCustody:
     entrypoint: Path
     identity: StableRegularFileIdentity
 
-    @classmethod
-    def capture(cls, label: str, path: Path) -> CargoFileCustody:
-        with stable_executable_probe(path, label=label) as (entrypoint, identity):
-            return cls(label, entrypoint, identity)
-
     def verify(self) -> None:
         if (
             executable_content_path(self.entrypoint, label=self.label)
@@ -166,6 +167,41 @@ class CargoExecutableCustody(CargoFileCustody):
 
 
 @dataclass(frozen=True, slots=True)
+class CargoResourceEntry:
+    """One selected file: its label, lexical entrypoint and resolved content."""
+
+    label: str
+    entrypoint: Path
+    content: Path
+
+
+_DirectoryToken = tuple[int, int, int, int]
+
+
+def _directory_token(path: Path) -> _DirectoryToken:
+    """Adding, removing or renaming an entry changes its directory's mtime."""
+    metadata = path.stat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CargoResourceWalk:
+    """One root's selected files, and every directory the walk listed."""
+
+    entries: tuple[CargoResourceEntry, ...]
+    resolved_root: Path | None
+    directories: tuple[tuple[Path, _DirectoryToken], ...]
+    # A directory changed within the racy window of the walk may change again
+    # within one timestamp tick, so its token cannot prove an unchanged list.
+    racy: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class CargoResourceRoot:
     label: str
     path: Path
@@ -173,8 +209,13 @@ class CargoResourceRoot:
     required: bool = True
     dynamic_libraries_only: bool = False
 
-    def files(self) -> tuple[tuple[str, Path], ...]:
-        """Capture lexical file edges without unfolding directory backedges."""
+    def walk(self) -> CargoResourceWalk:
+        """Capture lexical file edges without unfolding directory backedges.
+
+        Each directory is resolved once; a file reached through real
+        directories resolves to its resolved directory plus its name, so only
+        symlinks need their own resolution.
+        """
         try:
             metadata = self.path.lstat()
         except FileNotFoundError:
@@ -182,57 +223,130 @@ class CargoResourceRoot:
                 raise ValueError(
                     f"required runtime resource is missing: {self.path}"
                 ) from None
-            return ()
+            return CargoResourceWalk((), None, ())
         if stat.S_ISREG(metadata.st_mode) or self.path.is_file():
-            return ((self.label, self.path),)
+            content = executable_content_path(self.path, label=self.label)
+            return CargoResourceWalk(
+                (CargoResourceEntry(self.label, self.path, content),), content, ()
+            )
         if not self.path.is_dir():
             raise ValueError(f"runtime resource root is not a directory: {self.path}")
-        result: list[tuple[str, Path]] = []
+        result: list[CargoResourceEntry] = []
+        directories: list[tuple[Path, _DirectoryToken]] = []
 
-        def visit(directory: Path, ancestors: frozenset[Path]) -> None:
-            resolved = directory.resolve(strict=True)
+        def visit(
+            directory: Path,
+            resolved: Path,
+            relative: str,
+            ancestors: frozenset[Path],
+        ) -> None:
             if resolved in ancestors:
                 return
             ancestors = ancestors | {resolved}
-            for path in sorted(directory.iterdir()):
+            directories.append((resolved, _directory_token(resolved)))
+            with os.scandir(directory) as iterator:
+                entries = sorted(
+                    iterator, key=lambda entry: os.path.normcase(entry.name)
+                )
+            for entry in entries:
+                name = entry.name
                 if self.dynamic_libraries_only and not (
-                    path.suffix.casefold() in {".dll", ".dylib", ".so"}
-                    or ".so." in path.name
+                    Path(name).suffix.casefold() in {".dll", ".dylib", ".so"}
+                    or ".so." in name
                 ):
                     continue
-                if path.is_file():
+                lexical = directory / name
+                if entry.is_symlink() or entry.is_junction():
+                    try:
+                        target = lexical.resolve(strict=True)
+                    except OSError:
+                        raise ValueError(
+                            f"runtime resource is not a regular file: {lexical}"
+                        ) from None
+                    is_file = target.is_file() and not target.is_symlink()
+                    is_dir = not is_file and target.is_dir()
+                else:
+                    target = resolved / name
+                    is_file = entry.is_file(follow_symlinks=False)
+                    is_dir = not is_file and entry.is_dir(follow_symlinks=False)
+                if is_file:
                     result.append(
-                        (
-                            self.label + "/" + path.relative_to(self.path).as_posix(),
-                            path,
+                        CargoResourceEntry(
+                            self.label + "/" + relative + name, lexical, target
                         )
                     )
-                elif path.is_dir():
+                elif is_dir:
                     if self.recursive:
-                        visit(path, ancestors)
+                        visit(lexical, target, relative + name + "/", ancestors)
                 else:
-                    raise ValueError(f"runtime resource is not a regular file: {path}")
+                    raise ValueError(
+                        f"runtime resource is not a regular file: {lexical}"
+                    )
 
-        visit(self.path, frozenset())
-        return tuple(result)
+        started_ns = time.time_ns()
+        resolved_root = self.path.resolve(strict=True)
+        visit(self.path, resolved_root, "", frozenset())
+        return CargoResourceWalk(
+            tuple(result),
+            resolved_root,
+            tuple(directories),
+            racy=any(
+                max(token[2], token[3]) >= started_ns - DIGEST_RACY_WINDOW_NS
+                for _path, token in directories
+            ),
+        )
+
+
+# This process's captures by root set; see CargoResourceCustody.capture.
+_CAPTURED_RESOURCES: dict[tuple[CargoResourceRoot, ...], CargoResourceCustody] = {}
 
 
 @dataclass(frozen=True, slots=True)
 class CargoResourceCustody:
     roots: tuple[CargoResourceRoot, ...]
     files: tuple[CargoFileCustody, ...]
+    walks: tuple[CargoResourceWalk, ...]
 
     @classmethod
     def capture(
         cls,
         roots: tuple[CargoResourceRoot, ...],
     ) -> CargoResourceCustody:
+        """Capture these roots, or reuse this process's still-current capture.
+
+        A build captures the same toolchain roots at several fences. A verified
+        earlier capture is the same generation; one that no longer verifies is
+        a new generation and is captured afresh.
+        """
+        cached = _CAPTURED_RESOURCES.get(roots)
+        if cached is not None:
+            try:
+                cached.verify()
+            except ValueError:
+                _CAPTURED_RESOURCES.pop(roots, None)
+            else:
+                return cached
+        result = cls._capture(roots)
+        _CAPTURED_RESOURCES[roots] = result
+        return result
+
+    @classmethod
+    def _capture(
+        cls,
+        roots: tuple[CargoResourceRoot, ...],
+    ) -> CargoResourceCustody:
         snapshots: dict[Path, StableRegularFileIdentity] = {}
         files: list[CargoFileCustody] = []
+        _max_gb, max_age_days = resolve_budget(None, None, os.environ)
+        digests = file_digest_cache(
+            file_digest_cache_path(_default_molt_cache()),
+            max_age_ns=max_age_days * 86_400 * 1_000_000_000,
+        )
+        walks = tuple(root.walk() for root in roots)
         selected = tuple(
-            (label, path, executable_content_path(path, label=label))
-            for root in roots
-            for label, path in root.files()
+            (entry.label, entry.entrypoint, entry.content)
+            for walk in walks
+            for entry in walk.entries
         )
         response_paths = {
             content_path
@@ -255,29 +369,64 @@ class CargoResourceCustody:
                 runtime_link_response_arguments(content)
                 captured = CargoFileCustody(label, path, identity)
             else:
-                captured = CargoFileCustody.capture(label, path)
+                # The walk proved the entrypoint selects this content; only its
+                # identity is captured, through the host's digest cache.
+                captured = CargoFileCustody(
+                    label, path, digests.identity(content_path, label=label)
+                )
             snapshots[captured.identity.path] = captured.identity
             files.append(captured)
-        result = cls(roots, tuple(files))
+        digests.flush()
+        result = cls(roots, tuple(files), walks)
         result.verify()
         return result
 
     def verify(self) -> None:
-        selected = tuple(
-            (label, path) for root in self.roots for label, path in root.files()
-        )
-        if selected != tuple((item.label, item.entrypoint) for item in self.files):
-            raise ValueError("runtime Rust resource selection changed during build")
+        """Prove the captured selection and content are still current.
+
+        On POSIX, unchanged directory tokens prove an unchanged selection and
+        an equal stat token proves unchanged content, as git's index does.
+        Otherwise the roots are walked and compared exactly.
+        """
+        if os.name == "nt" or not self._selection_unchanged():
+            selected = tuple(
+                entry for root in self.roots for entry in root.walk().entries
+            )
+            if tuple((entry.label, entry.entrypoint) for entry in selected) != tuple(
+                (item.label, item.entrypoint) for item in self.files
+            ):
+                raise ValueError("runtime Rust resource selection changed during build")
+            for entry, item in zip(selected, self.files, strict=True):
+                if entry.content != item.identity.path:
+                    raise ValueError(f"{item.label} selected content changed")
         verified: set[Path] = set()
         for item in self.files:
-            if (
-                executable_content_path(item.entrypoint, label=item.label)
-                != item.identity.path
-            ):
-                raise ValueError(f"{item.label} selected content changed")
-            if item.identity.path not in verified:
+            if item.identity.path in verified:
+                continue
+            if os.name == "nt":
                 verify_stable_regular_file_identity(item.identity, label=item.label)
-                verified.add(item.identity.path)
+            else:
+                verify_stable_regular_file_metadata(item.identity, label=item.label)
+            verified.add(item.identity.path)
+
+    def _selection_unchanged(self) -> bool:
+        for root, walk in zip(self.roots, self.walks, strict=True):
+            if walk.racy:
+                return False
+            if walk.resolved_root is None:
+                if root.path.exists() or root.path.is_symlink():
+                    return False
+                continue
+            try:
+                if root.path.resolve(strict=True) != walk.resolved_root:
+                    return False
+                if any(
+                    _directory_token(path) != token for path, token in walk.directories
+                ):
+                    return False
+            except OSError:
+                return False
+        return True
 
     def file_identity(self, path: Path) -> StableRegularFileIdentity:
         """Project a captured lexical resource; never select or hash a new file."""

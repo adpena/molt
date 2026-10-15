@@ -6,6 +6,7 @@ import hashlib
 import os
 from pathlib import Path
 import subprocess
+import time
 from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
@@ -1257,3 +1258,107 @@ def test_hashing_does_not_keep_previous_read_buffer_live(tmp_path):
     # A suspended producer or consuming loop must not retain its prior block
     # while the next block is allocated. This measures live Python allocation.
     assert observed["peak"] < 384 * 1024
+
+
+def _settled_file(path: Path, data: bytes) -> Path:
+    """A file whose timestamps precede any cache created after this returns."""
+    path.write_bytes(data)
+    time.sleep(0.01)
+    return path
+
+
+def _no_rehash(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a current recorded digest was rehashed")
+
+    monkeypatch.setattr(identity, "stable_regular_file_identity", refuse)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_reuses_a_recorded_digest_across_processes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    data = b"stable toolchain header"
+    header = _settled_file(tmp_path / "api.h", data)
+    store = tmp_path / "digests.sqlite"
+    first = identity.FileDigestCache(store, max_age_ns=10**18)
+    recorded = first.identity(header, label="header")
+    first.flush()
+
+    _no_rehash(monkeypatch)
+    reused = identity.FileDigestCache(store, max_age_ns=10**18).identity(
+        header, label="header"
+    )
+
+    assert reused.sha256 == hashlib.sha256(data).hexdigest() == recorded.sha256
+    assert reused == recorded
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_misses_a_same_size_rewrite_with_restored_mtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    header = _settled_file(tmp_path / "api.h", b"version one")
+    store = tmp_path / "digests.sqlite"
+    cache = identity.FileDigestCache(store, max_age_ns=10**18)
+    cache.identity(header, label="header")
+    cache.flush()
+    before = header.stat()
+    header.write_bytes(b"version two")
+    os.utime(header, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    # The kernel moved ctime, so the recorded token no longer matches.
+    current = identity.FileDigestCache(store, max_age_ns=10**18).identity(
+        header, label="header"
+    )
+
+    assert current.sha256 == hashlib.sha256(b"version two").hexdigest()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_never_records_a_racy_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    header = tmp_path / "api.h"
+    header.write_bytes(b"written this tick")
+    store = tmp_path / "digests.sqlite"
+    cache = identity.FileDigestCache(store, max_age_ns=10**18)
+    cache.identity(header, label="header")
+    cache.flush()
+
+    hashed = []
+    original = identity.stable_regular_file_identity
+
+    def counted(path, **kwargs):
+        hashed.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(identity, "stable_regular_file_identity", counted)
+    identity.FileDigestCache(store, max_age_ns=10**18).identity(header, label="header")
+
+    assert hashed == [header]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_prunes_rows_past_the_age_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    old = _settled_file(tmp_path / "old.h", b"old")
+    new = _settled_file(tmp_path / "new.h", b"new")
+    store = tmp_path / "digests.sqlite"
+    first = identity.FileDigestCache(store, max_age_ns=1)
+    first.identity(old, label="old")
+    first.flush()
+    time.sleep(0.01)
+    second = identity.FileDigestCache(store, max_age_ns=1)
+    second.identity(new, label="new")
+    second.flush()
+
+    with sqlite3.connect(store) as connection:
+        paths = {row[0] for row in connection.execute("SELECT path FROM digests")}
+    assert paths == {os.fspath(new)}

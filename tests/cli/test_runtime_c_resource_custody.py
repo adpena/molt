@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import shlex
+import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +22,10 @@ from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_carg
 TARGET = "wasm32-wasip1"
 
 
+def _selection(resource: CargoResourceRoot) -> tuple[tuple[str, Path], ...]:
+    return tuple((entry.label, entry.entrypoint) for entry in resource.walk().entries)
+
+
 def test_llvm_install_directory_backedge_preserves_resource_custody(
     tmp_path: Path,
 ) -> None:
@@ -30,7 +37,7 @@ def test_llvm_install_directory_backedge_preserves_resource_custody(
     alias = root / "build" / "Debug+Asserts"
     alias.symlink_to("..", target_is_directory=True)
     resource = CargoResourceRoot("llvm/install", root)
-    assert resource.files() == (("llvm/install/lib/libLLVM.so.22.1", library),)
+    assert _selection(resource) == (("llvm/install/lib/libLLVM.so.22.1", library),)
     custody = CargoResourceCustody.capture((resource,))
     assert custody.content_identity()["file_count"] == 1
     custody.verify()
@@ -50,7 +57,7 @@ def test_directory_backedges_do_not_hide_sibling_aliases_or_new_resources(
     (include / "install").symlink_to("..", target_is_directory=True)
     (root / "alias").symlink_to("include", target_is_directory=True)
     resource = CargoResourceRoot("toolchain", root)
-    assert resource.files() == (
+    assert _selection(resource) == (
         ("toolchain/alias/api.h", root / "alias" / "api.h"),
         ("toolchain/include/api.h", header),
     )
@@ -460,3 +467,53 @@ def test_c_implicit_prefix_options_require_their_own_selection_authority(
         ValueError, match="unbound sysroot/include-prefix resource selection"
     ):
         _resolve_c_build_resources(env, target=TARGET)
+
+
+def test_a_process_reuses_a_current_capture_and_recaptures_a_changed_one(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sdk"
+    root.mkdir()
+    header = root / "api.h"
+    header.write_bytes(b"first generation")
+    roots = (CargoResourceRoot("c/SDKROOT", root),)
+
+    first = CargoResourceCustody.capture(roots)
+    assert CargoResourceCustody.capture(roots) is first
+
+    header.write_bytes(b"second generation, longer")
+    second = CargoResourceCustody.capture(roots)
+    assert second is not first
+    assert (
+        second.file_identity(header).sha256
+        == hashlib.sha256(b"second generation, longer").hexdigest()
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows always walks exactly")
+def test_settled_directory_tokens_detect_a_new_resource(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import runtime_cargo_plan
+
+    # Close the racy window so the directory-token proof itself is exercised.
+    monkeypatch.setattr(runtime_cargo_plan, "DIGEST_RACY_WINDOW_NS", 0)
+    root = tmp_path / "sdk"
+    (root / "include").mkdir(parents=True)
+    (root / "include" / "api.h").write_bytes(b"header")
+    time.sleep(0.01)
+    custody = CargoResourceCustody.capture((CargoResourceRoot("c/SDKROOT", root),))
+    assert not custody.walks[0].racy
+    custody.verify()
+
+    (root / "include" / "new.h").write_bytes(b"new resource")
+    with pytest.raises(ValueError, match="resource selection changed"):
+        custody.verify()
+
+
+def test_a_freshly_changed_tree_is_always_walked_exactly(tmp_path: Path) -> None:
+    root = tmp_path / "sdk"
+    root.mkdir()
+    (root / "api.h").write_bytes(b"header")
+    walk = CargoResourceRoot("c/SDKROOT", root).walk()
+    assert walk.racy
