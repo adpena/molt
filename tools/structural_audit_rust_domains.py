@@ -490,6 +490,7 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
         validate_registered_op_kind(&op.kind)?;
         validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
         validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;
+        validate_class_definition_symbol(&op.kind, op.class_definition.as_deref())?;
         if op.kind == "module_slot"
             && op.out.as_deref().is_none_or(|out| out.is_empty() || out == "none")
         {
