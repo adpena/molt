@@ -1749,3 +1749,163 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
         assert actual == environment
         assert context["inputs"]["selected_flags"] == flags
         assert "CARGO_ENCODED_RUSTFLAGS" not in actual
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (
+            "semantic",
+            [
+                (
+                    "runtime",
+                    "cargo",
+                    "native",
+                    [
+                        "-p",
+                        "molt-runtime",
+                        "--lib",
+                        "--no-run",
+                        "--message-format=json",
+                    ],
+                )
+            ],
+        ),
+        (
+            "allocation-observer",
+            [
+                (
+                    "runtime",
+                    "cargo",
+                    "native",
+                    [
+                        "-p",
+                        "molt-runtime",
+                        "--lib",
+                        "--no-run",
+                        "--message-format=json",
+                        "--test",
+                        "l7_numeric_runtime_perf_attestation",
+                        "--features",
+                        "l7-attestation-probe",
+                    ],
+                )
+            ],
+        ),
+        (
+            "zlib-wasi",
+            [
+                (
+                    "provider",
+                    "zlib-wasi",
+                    "none",
+                    [
+                        "-p",
+                        "zlib-rs@0.6.8",
+                        "--lib",
+                        "--target",
+                        "wasm32-wasip1",
+                        "--no-default-features",
+                        "--features",
+                        "rust-allocator",
+                        "--no-run",
+                        "--message-format=json",
+                    ],
+                )
+            ],
+        ),
+        (
+            "wasi-lifecycle",
+            [
+                (
+                    "runtime",
+                    "runtime-wasi",
+                    "managed-wasi",
+                    [
+                        "-p",
+                        "molt-runtime",
+                        "--target",
+                        "wasm32-wasip1",
+                        "--no-run",
+                        "--message-format=json",
+                        "--lib",
+                        "--no-default-features",
+                        "--features",
+                        "stdlib_micro",
+                    ],
+                ),
+                (
+                    "host",
+                    "cargo",
+                    "native",
+                    [
+                        "-p",
+                        "molt-wasm-host",
+                        "--target",
+                        "aarch64-unknown-linux-gnu",
+                        "--no-run",
+                        "--message-format=json",
+                        "--test",
+                        "wasi_runtime_lifecycle",
+                    ],
+                ),
+            ],
+        ),
+    ],
+)
+def test_runtime_cargo_operation_contract_has_exact_commands_and_c_ownership(
+    policy, expected
+):
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    operations = cargo_operations(
+        policy,
+        "dev-fast",
+        cargo="/selected/cargo",
+        compiler_host="aarch64-unknown-linux-gnu",
+    )
+    assert [
+        (item.role, item.environment, item.c_units, list(item.command))
+        for item in operations
+    ] == [
+        (
+            role,
+            environment,
+            c_units,
+            ["/selected/cargo", "test", "--locked", "--profile", "dev-fast", *tail],
+        )
+        for role, environment, c_units, tail in expected
+    ]
+    assert [item.native_requirements for item in operations] == [
+        {} if policy == "zlib-wasi" else {"target": ["c"]} for _ in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    "policy,profile,host",
+    [
+        ("unknown", "dev-fast", "host"),
+        ("zlib-wasi", "release", "host"),
+        ("wasi-lifecycle", "dev-fast", None),
+    ],
+)
+def test_runtime_cargo_operation_contract_refuses_unknown_or_incomplete_policy(
+    policy, profile, host
+):
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    with pytest.raises(ValueError):
+        cargo_operations(policy, profile, cargo="/selected/cargo", compiler_host=host)
+
+
+def test_runtime_cargo_operation_c_declaration_preserves_supersets_and_roles():
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    (native,) = cargo_operations("semantic", "release-output", cargo="cargo")
+    assert native.admits_native_requirements({"target": ["c", "c++"]})
+    assert not native.admits_native_requirements({})
+    assert not native.admits_native_requirements({"host": ["c"]})
+    assert not native.admits_native_requirements({"target": ["c++"]})
+    (provider,) = cargo_operations("zlib-wasi", "dev-fast", cargo="cargo")
+    assert provider.admits_native_requirements({})
+    assert not provider.admits_native_requirements({"target": ["c"]})

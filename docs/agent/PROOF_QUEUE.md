@@ -18,6 +18,25 @@ payload also owns the child `CARGO` value; an inherited selector cannot redirect
 its build scripts. A missing selected executable fails during execution setup,
 before the proof child starts; the queue does not substitute a PATH proxy.
 
+Runtime test drivers share one pure argument and Cargo-operation plan with
+prelaunch admission. Capture follows every actual operation's target, profile,
+features and environment; a host binary is distinct from a host build script or
+proc-macro. Managed WASI C translation retains its SDK and C-ABI plan, while
+native C units retain their native tool plan. A pure-Rust WASI provider uses its
+selected Rust target and bundled linker. Compiler-owned linker resolution stays
+in `RustToolSearch`; no executable-name allowlist replaces target selection.
+This follows [Cargo's host/target separation](https://doc.rust-lang.org/cargo/reference/build-cache.html)
+and [configuration precedence](https://doc.rust-lang.org/cargo/reference/config.html#buildtarget).
+Cargo's [artifact messages](https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages)
+bind observed images to that plan; a successful process exit alone does not.
+These are development proof contracts and add no work to emitted programs.
+
+LLVM's local and registered unit proof uses the same complete implementation
+image and checked driver target under `release-fast`. Build, test, link and
+Clippy share that profile. The unused string-based LLVM PGO prototype is removed;
+its tests no longer require an external profiling tool. Real profile-guided
+optimization remains owned by the compiler foundation roadmap.
+
 Executable lookup uses captured environment values and the command working
 directory, including relative PATH entries and explicit `./tool` paths. Windows
 suffix candidates follow CPython `shutil.which` with executable access required.
@@ -83,7 +102,7 @@ Both prepared build modes validate the active locked environment and the pinned
 source/submodules before destination mutation or publication locking. Git
 inspection disables optional index writes. Missing or stale prerequisites fail
 without repair under proof custody. One typed invocation owns CLI
-options, locked re-execution, and queue argv. Envelope v6 declares Python, Git,
+options, locked re-execution, and queue argv. The source-extension envelope declares Python, Git,
 and the target-derived compiler family; ordinary Python proofs remain leaves.
 Persisted command envelopes, execution requests and supervisor policies/receipts
 use the exact-JSON codec end to end; duplicate keys and non-finite numbers are

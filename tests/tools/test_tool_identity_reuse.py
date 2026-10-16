@@ -1490,3 +1490,50 @@ def test_selected_runtime_reuse_binds_unicode_and_runtime_inputs(
         assert telemetry[-1]["state"] == "miss"
     assert fixture.uv.read_bytes() == uv_bytes
     assert fixture.selected[0].read_bytes() == interpreter_bytes
+
+
+@pytest.mark.parametrize("policy", ["semantic", "zlib-wasi", "wasi-lifecycle"])
+@pytest.mark.parametrize("mutation", [None, "missing-operation", "selected-image"])
+def test_runtime_gate_reuse_preserves_actual_operation_inventory_without_reprobe(
+    tmp_path, monkeypatch, policy, mutation
+):
+    from tests.tools.test_toolchain_capture import (
+        _native_build_capture_fixture,
+        _runtime_gate_registered_command,
+    )
+    from tools.proof_queue_pkg import toolchain_capture
+    from molt.exact_json import canonical_json_sha256
+
+    submitted = _runtime_gate_registered_command(policy)
+    identity, tools, env, command, calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, registered_command=submitted, armed=False
+    )
+    requirements = command_admission.envelope_for_command(submitted)[
+        "cargo_native_units"
+    ]
+    monkeypatch.setattr(
+        command_identity, "_tool_configuration_identities", lambda *args, **kwargs: []
+    )
+    before = list(calls)
+    if mutation == "missing-operation":
+        identity["link_selection"]["operations"].pop()
+        identity.pop("identity_sha256")
+        identity["identity_sha256"] = canonical_json_sha256(identity)
+    elif mutation == "selected-image":
+        tools["linker"].write_bytes(b"different host linker")
+    monkeypatch.setattr(
+        toolchain_capture,
+        "_run_rust_link_probe",
+        lambda *args, **kwargs: pytest.fail(
+            "warm runtime-gate reuse executed a compiler probe"
+        ),
+    )
+    assert command_identity._reused_identity_is_current(
+        proof_plan.ToolchainPolicy("rustc", {}),
+        identity,
+        cwd=tmp_path,
+        env=env,
+        command_argv=command,
+        native_units=requirements,
+    ) is (mutation is None)
+    assert calls == before

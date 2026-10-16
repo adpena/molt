@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import argparse
 import functools
 import os
 from pathlib import Path
@@ -1259,6 +1260,44 @@ def cargo_invocation_for_envelope(
     ):
         return None
     raise ValueError("Cargo policy requires a Cargo payload or declared Python driver")
+
+
+def runtime_gate_arguments(
+    envelope: Mapping[str, object],
+) -> argparse.Namespace | None:
+    """Select the registered helper by source identity, then use its real parser."""
+    owner = envelope.get("delegated") or envelope
+    if not isinstance(owner, Mapping) or owner.get("kind") not in {
+        "proof-plan",
+        "named-lane",
+    }:
+        return None
+    python = owner.get("python")
+    if not isinstance(python, Mapping):
+        return None
+    argv = owner["argv"]
+    if not isinstance(argv, list) or any(not isinstance(value, str) for value in argv):
+        raise ValueError("runtime gate requires its admitted Python argv")
+    invocation = parse_python_invocation(_python_invocation_argv(argv, python))
+    if invocation.mode == "script":
+        candidate = Path(str(invocation.target))
+        if not candidate.is_absolute():
+            candidate = _REPO_ROOT / candidate
+        if candidate.resolve(strict=True) != (
+            _REPO_ROOT / "tools/run_runtime_test_gate.py"
+        ).resolve(strict=True):
+            return None
+    elif (
+        invocation.mode != "module"
+        or invocation.target != "tools.run_runtime_test_gate"
+    ):
+        return None
+    from tools.runtime_test_gate_plan import parse_arguments
+
+    try:
+        return parse_arguments(invocation.arguments)
+    except SystemExit as exc:
+        raise ValueError("invalid registered runtime gate invocation") from exc
 
 
 def cargo_cache_domain(envelope: Mapping[str, object]) -> str:

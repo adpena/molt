@@ -1,0 +1,147 @@
+"""Pure invocation and Cargo-operation authority for the runtime test gate."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import math
+import os
+from pathlib import Path
+from typing import Literal, Mapping, Sequence
+
+WASI_TARGET = "wasm32-wasip1"
+OBSERVER_FEATURE = "l7-attestation-probe"
+RuntimeGatePolicy = Literal[
+    "semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"
+]
+
+
+def argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", default="release-output")
+    parser.add_argument(
+        "--policy",
+        choices=("semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"),
+        default="semantic",
+    )
+    parser.add_argument(
+        "--parallel-threads", type=int, default=max(2, min(8, os.cpu_count() or 2))
+    )
+    parser.add_argument("--build-timeout-seconds", type=float, default=6300)
+    parser.add_argument("--child-timeout-seconds", type=float, default=120)
+    parser.add_argument("--receipt-root", type=Path)
+    return parser
+
+
+def parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argument_parser()
+    args = parser.parse_args(arguments)
+    if (args.policy == "semantic" and args.parallel_threads < 2) or any(
+        not math.isfinite(value) or value <= 0
+        for value in (args.build_timeout_seconds, args.child_timeout_seconds)
+    ):
+        parser.error("positive timeouts and at least two parallel threads are required")
+    return args
+
+
+@dataclass(frozen=True)
+class CargoOperation:
+    role: Literal["runtime", "host", "provider"]
+    command: tuple[str, ...]
+    environment: Literal["cargo", "runtime-wasi", "zlib-wasi"]
+    c_units: Literal["native", "managed-wasi", "none"]
+
+    @property
+    def native_requirements(self) -> dict[str, list[str]]:
+        # ABI and ABI-test-support build scripts compile C in runtime libtests;
+        # the native Wasmtime host also has C build dependencies. zlib is Rust.
+        return {} if self.c_units == "none" else {"target": ["c"]}
+
+    def admits_native_requirements(self, declared: Mapping[str, Sequence[str]]) -> bool:
+        if self.c_units == "none":
+            return not declared
+        return "c" in declared.get("target", ())
+
+
+def cargo_operations(
+    policy: RuntimeGatePolicy,
+    profile: str,
+    *,
+    cargo: str,
+    compiler_host: str | None = None,
+) -> tuple[CargoOperation, ...]:
+    """Construct the actual child commands before any build or artifact effect."""
+    base = (cargo, "test", "--locked", "--profile", profile)
+    tail = ("--no-run", "--message-format=json")
+    if policy == "zlib-wasi":
+        if profile != "dev-fast":
+            raise ValueError("zlib-wasi requires the checked dev-fast profile")
+        return (
+            CargoOperation(
+                "provider",
+                (
+                    *base,
+                    "-p",
+                    "zlib-rs@0.6.8",
+                    "--lib",
+                    "--target",
+                    WASI_TARGET,
+                    "--no-default-features",
+                    "--features",
+                    "rust-allocator",
+                    *tail,
+                ),
+                "zlib-wasi",
+                "none",
+            ),
+        )
+    if policy == "wasi-lifecycle":
+        if not compiler_host:
+            raise ValueError(
+                "WASI lifecycle Cargo operations require the compiler host"
+            )
+        return (
+            CargoOperation(
+                "runtime",
+                (
+                    *base,
+                    "-p",
+                    "molt-runtime",
+                    "--target",
+                    WASI_TARGET,
+                    *tail,
+                    "--lib",
+                    "--no-default-features",
+                    "--features",
+                    "stdlib_micro",
+                ),
+                "runtime-wasi",
+                "managed-wasi",
+            ),
+            CargoOperation(
+                "host",
+                (
+                    *base,
+                    "-p",
+                    "molt-wasm-host",
+                    "--target",
+                    compiler_host,
+                    *tail,
+                    "--test",
+                    "wasi_runtime_lifecycle",
+                ),
+                "cargo",
+                "native",
+            ),
+        )
+    if policy not in {"semantic", "allocation-observer"}:
+        raise ValueError(f"unknown runtime gate policy: {policy!r}")
+    command = (*base, "-p", "molt-runtime", "--lib", *tail)
+    if policy == "allocation-observer":
+        command += (
+            "--test",
+            "l7_numeric_runtime_perf_attestation",
+            "--features",
+            OBSERVER_FEATURE,
+        )
+    return (CargoOperation("runtime", command, "cargo", "native"),)

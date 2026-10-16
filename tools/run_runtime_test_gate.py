@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import os
 import re
 import subprocess
@@ -44,6 +43,12 @@ from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
+from tools.runtime_test_gate_plan import (  # noqa: E402
+    OBSERVER_FEATURE,
+    WASI_TARGET,
+    cargo_operations,
+    parse_arguments,
+)
 
 COMMANDS = CommandExecutor.for_file(__file__)
 ISOLATED = (
@@ -97,7 +102,6 @@ PROBE_PLATFORMS: dict[str, frozenset[str]] = {
 
 # These are semantic obligations and isolation policy, not inventory snapshots.
 # Cargo owns image paths/features; libtest owns the discovered test identities.
-OBSERVER_FEATURE = "l7-attestation-probe"
 OBSERVER_CASES = {
     "molt_runtime": (
         "builtins::frames::namespace_tests::task_growth_refusal::both_task_producers_refuse_actual_late_map_growth_and_restore_owners",
@@ -651,7 +655,6 @@ def execute_child(
     return child, receipts
 
 
-WASI_TARGET = "wasm32-wasip1"
 WASI_CONSUMER = "actual_wasi_runtime_lifecycle_cases_through_production_host"
 
 
@@ -726,7 +729,9 @@ def cargo_build(
 def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
     # Keep Rust's CASES as the sole semantic roster. The Python policy owns only
     # its three-image production/handoff and the exact native integration consumer.
-    from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+    from tools.proof_queue_pkg.toolchain_capture import (
+        resolve_runtime_gate_cargo_operation,
+    )
 
     source = truth.git_source_identity()
     aggregate["source_identity"] = source
@@ -752,41 +757,16 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         ("molt-runtime", "molt_runtime", "rlib", WASI_TARGET),
         ("molt-wasm-host", "wasi_runtime_lifecycle", "test", host_target),
     ):
-        command = [
-            cargo,
-            "test",
-            "--locked",
-            "--profile",
-            args.profile,
-            "-p",
-            package,
-            "--target",
-            triple,
-            "--no-run",
-            "--message-format=json",
-        ]
-        environment = dict(os.environ)
-        plan = None
-        if triple == WASI_TARGET:
-            command.extend(
-                ["--lib", "--no-default-features", "--features", "stdlib_micro"]
+        operation = next(
+            operation
+            for operation in cargo_operations(
+                args.policy, args.profile, cargo=cargo, compiler_host=host_target
             )
-            plan = resolve_runtime_cargo_plan(
-                ROOT,
-                env=environment,
-                cargo_command=command,
-                requested_target=WASI_TARGET,
-                host_target=host_target,
-                rustflags_transform=lambda flags: (
-                    *flags,
-                    "-C",
-                    "link-arg=--export-table",
-                ),
-            )
-            plan.verify()
-            command, environment = list(plan.command), dict(plan.environment)
-        else:
-            command.extend(["--test", target])
+            if operation.role == ("runtime" if triple == WASI_TARGET else "host")
+        )
+        command, environment, plan = resolve_runtime_gate_cargo_operation(
+            operation, cwd=ROOT, env=dict(os.environ), compiler_host=host_target
+        )
         directory = run / target
         directory.mkdir()
         image = aggregate["images"][target] = {
@@ -1088,23 +1068,8 @@ def run_zlib_wasi(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
     ).stdout
     (run / "cargo.metadata.json").write_text(metadata, encoding="utf-8")
     aggregate["metadata_sha256"] = hashlib.sha256(metadata.encode()).hexdigest()
-    command = [
-        cargo,
-        "test",
-        "--locked",
-        "--profile",
-        args.profile,
-        "-p",
-        "zlib-rs@0.6.8",
-        "--lib",
-        "--target",
-        WASI_TARGET,
-        "--no-default-features",
-        "--features",
-        "rust-allocator",
-        "--no-run",
-        "--message-format=json",
-    ]
+    (operation,) = cargo_operations(args.policy, args.profile, cargo=cargo)
+    command = list(operation.command)
     context, environment = zlib_wasi_flags(command, environment)
     aggregate["cargo_flags"] = context
     if environment.get("NODE_OPTIONS", "") != node_options:
@@ -1225,34 +1190,13 @@ def finish_aggregate(run: Path, aggregate: dict) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", default="release-output")
-    parser.add_argument(
-        "--policy",
-        choices=("semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"),
-        default="semantic",
-    )
-    parser.add_argument(
-        "--parallel-threads", type=int, default=max(2, min(8, os.cpu_count() or 2))
-    )
-    parser.add_argument("--build-timeout-seconds", type=float, default=6300)
-    parser.add_argument("--child-timeout-seconds", type=float, default=120)
-    parser.add_argument(
-        "--receipt-root",
-        type=Path,
-        default=(
+    args = parse_arguments(argv)
+    if args.receipt_root is None:
+        args.receipt_root = (
             proof_scratch_root(ROOT)
             if os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip()
             else ROOT / "proof-receipts/evidence"
-        )
-        / "runtime-gate-runs",
-    )
-    args = parser.parse_args(argv)
-    if (args.policy == "semantic" and args.parallel_threads < 2) or any(
-        not math.isfinite(value) or value <= 0
-        for value in (args.build_timeout_seconds, args.child_timeout_seconds)
-    ):
-        parser.error("positive timeouts and at least two parallel threads are required")
+        ) / "runtime-gate-runs"
     run_id = "runtime-" + uuid.uuid4().hex
     run = args.receipt_root / run_id
     run.mkdir(parents=True, exist_ok=False)
@@ -1282,27 +1226,8 @@ def main(argv: list[str] | None = None) -> int:
         source = truth.git_source_identity()
         aggregate["source_identity"] = source
         cargo = os.environ.get("CARGO", "cargo")
-        command = [
-            cargo,
-            "test",
-            "--locked",
-            "--profile",
-            args.profile,
-            "-p",
-            "molt-runtime",
-            "--lib",
-            "--no-run",
-            "--message-format=json",
-        ]
-        if args.policy == "allocation-observer":
-            command.extend(
-                [
-                    "--test",
-                    "l7_numeric_runtime_perf_attestation",
-                    "--features",
-                    OBSERVER_FEATURE,
-                ]
-            )
+        (operation,) = cargo_operations(args.policy, args.profile, cargo=cargo)
+        command = list(operation.command)
         metadata = COMMANDS.run(
             [cargo, "metadata", "--locked", "--format-version=1", "--no-deps"],
             cwd=ROOT,

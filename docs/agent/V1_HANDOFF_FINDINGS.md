@@ -81,6 +81,13 @@ Every repair must retire its replaced implementation and move all consumers
 together. A source review, unit pass or generator check does not establish
 target execution.
 
+The current integration removes the unused LLVM PGO prototype and its six
+self-contained helper tests. No production caller consumed its string IR or
+profile parser; the obsolete helper alone required an external profile tool.
+The [typed PGO design](../design/foundation/06_W1-pgo.md) remains an open
+performance obligation under V1-07. Prototype removal does not qualify PGO or
+change the actual compiler profile transport.
+
 Structural delivery follows [Century section 4.4](../design/CENTURY_SYSTEMS_PLAN.md#44-compiler-runtime-abi-and-backends)
 and [the compiler foundation order](../design/compiler_foundation_gap_analysis.md).
 The pass/analysis manager, generated effects, module/callgraph phase,

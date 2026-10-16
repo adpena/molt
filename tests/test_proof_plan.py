@@ -678,8 +678,38 @@ def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -
         assert argv[argv.index("--profile") + 1] == "release-fast", command_id
     local = next(rule for rule in PLAN.local_rules if rule["name"] == "backend-llvm")
     assert tuple(shlex.split(local["gates"][0])) == lowering
+    assert "llvm-profdata" not in commands["llvm.test.lowering"].toolchains
+    assert "llvm-profdata" not in local["toolchains"]
+    for command_id in (
+        "llvm.build.backend",
+        "llvm.clippy.backend",
+        "linker.test.generated-object-admission",
+    ):
+        assert "llvm-profdata" not in commands[command_id].toolchains
     linkage = commands["linker.test.generated-object-admission"].argv
     assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"
+
+
+def test_cpython_abi_owner_has_an_independent_unfiltered_link_consumer() -> None:
+    command = next(
+        row for row in PLAN.commands if row.id == "rust.test.cpython-abi-authorities"
+    )
+    argv = command.argv
+    assert argv[:2] == ("cargo", "test")
+    assert argv[argv.index("--manifest-path") + 1] == (
+        "runtime/molt-cpython-abi/Cargo.toml"
+    )
+    assert "--lib" in argv
+    assert argv[argv.index("--") + 1 :] == ("--test-threads=1",)
+    assert proof_plan.cargo_native_units(command.data) == {"target": ["c"]}
+    local = next(
+        rule for rule in PLAN.local_rules if rule["name"] == "cpython-abi-authorities"
+    )
+    assert tuple(shlex.split(local["gates"][0])) == argv
+    assert {
+        "runtime/molt-cpython-abi/**",
+        "runtime/molt-cpython-abi-test-support/**",
+    } <= set(local["globs"])
 
 
 def test_python_source_change_selects_split_proof_topology() -> None:
@@ -5774,60 +5804,58 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
     declared = {
         row.id for row in plan.commands if proof_plan.cargo_native_units(row.data)
     }
-    assert declared == {
-        "wasm.build.host",
-        "rust.test.wasi-runtime-lifecycle",
-        "rust.clippy.workspace-default",
-        "portability.rust.linux-aarch64.clippy-workspace",
-        "portability.rust.macos.clippy-workspace",
-        "rust.test.default-truth",
-        "rust.test.runtime-extension-admission",
-        "runtime.cost.candidate",
-        "native.integration.bench-cli",
-        "native.integration.capability-manifest",
-        "native.integration.cli-smoke",
-        "llvm.test.differential",
-        "llvm.build.backend",
-        "mlir.test.backend",
-        "llvm.test.lowering",
-        "linker.test.generated-object-admission",
-        "llvm.clippy.backend",
-        "rust.test.compiler-authorities",
-        "wasm.test.finally-pending-observer-parity.native",
-        "rust.test.ir-wasm-runtime-authorities",
-        "portability.rust.macos.runtime-gate",
-        "rust.test.runtime-cold-lifecycle",
-        "nightly.shards.prepare",
-        "nightly.determinism.compiler-prewarm",
-        "nightly.determinism.runtime",
-        "nightly.verification-t3.compiler-prewarm",
-        "nightly.verification-t3.reproducibility",
-        "nightly.verification-t3.fuzz-compiler",
-        "nightly.verification-t3.translation",
-        "wasm.test.runtime-import-conformance",
+    # Each confirmed builder appears once in this independent source oracle.
+    # Native wrappers/ABI shims use C; full runtimes also compile simdutf.
+    expected = {
+        name: {"target": ["c"]}
+        for name in {
+            "linker.test.generated-object-admission",
+            "llvm.build.backend",
+            "llvm.clippy.backend",
+            "llvm.test.lowering",
+            "rust.test.compiler-authorities",
+            "rust.test.cpython-abi-authorities",
+            "rust.test.ir-wasm-runtime-authorities",
+            "rust.test.wasi-runtime-lifecycle",
+            "wasm.build.host",
+        }
     }
-    # Actual wrapper/alloca/native-micro producers use C only. Full-capable
-    # runtime operations additionally compile simdutf; TableGen is host C++.
-    c_only = {
-        "wasm.build.host",
-        "rust.test.wasi-runtime-lifecycle",
-        "rust.test.compiler-authorities",
-        "rust.test.ir-wasm-runtime-authorities",
-        "llvm.build.backend",
-        "llvm.test.lowering",
-        "linker.test.generated-object-admission",
-        "llvm.clippy.backend",
-    }
+    expected.update(
+        {
+            name: {"target": ["c", "c++"]}
+            for name in {
+                "llvm.test.differential",
+                "native.integration.bench-cli",
+                "native.integration.capability-manifest",
+                "native.integration.cli-smoke",
+                "nightly.determinism.compiler-prewarm",
+                "nightly.determinism.runtime",
+                "nightly.shards.prepare",
+                "nightly.verification-t3.compiler-prewarm",
+                "nightly.verification-t3.fuzz-compiler",
+                "nightly.verification-t3.reproducibility",
+                "nightly.verification-t3.translation",
+                "portability.rust.linux-aarch64.clippy-workspace",
+                "portability.rust.macos.clippy-workspace",
+                "portability.rust.macos.runtime-gate",
+                "runtime.cost.candidate",
+                "rust.clippy.workspace-default",
+                "rust.test.default-truth",
+                "rust.test.runtime-cold-lifecycle",
+                "rust.test.runtime-extension-admission",
+                "wasm.test.finally-pending-observer-parity.native",
+                "wasm.test.runtime-import-conformance",
+            }
+        }
+    )
+    expected["mlir.test.backend"] = {"host": ["c++"]}  # TableGen
+    assert declared == set(expected)
     from tools.proof_queue_pkg.policy import _canonical_cargo_proof_command
 
     for row in plan.commands:
         if row.id not in declared:
             continue
-        required = (
-            {"host": ["c++"]}
-            if row.id == "mlir.test.backend"
-            else {"target": ["c"] if row.id in c_only else ["c", "c++"]}
-        )
+        required = expected[row.id]
         envelope = command_admission.envelope_for_command(list(row.argv))
         assert row.id in envelope["proof_plan_command_ids"]
         assert envelope["cargo_native_units"] == required
