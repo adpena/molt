@@ -2092,7 +2092,7 @@ mod tests {
                 dec_ref_bits(py, captured);
                 for value in [Some(MoltObject::from_int(42).bits()), None] {
                     assert!(
-                        crate::builtins::types::native_descriptors::native_descriptor_set(
+                        crate::builtins::types::native_descriptors::native_descriptor_mutate(
                             py, descriptor, function, value
                         )
                         .is_err()

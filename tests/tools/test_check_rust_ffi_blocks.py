@@ -81,5 +81,5 @@ def test_repository_rust_ffi_blocks_are_unsafe() -> None:
 def test_plan_runs_the_rust_ffi_block_gate_without_cargo() -> None:
     # A static check reads sources; it must never wait for a Cargo build slot.
     assert not {"cargo", "rustc"} & _plan_gate_toolchains(
-        "python3 tools/venv_exec.py python tools/check_rust_ffi_blocks.py"
+        "python tools/check_rust_ffi_blocks.py"
     )
