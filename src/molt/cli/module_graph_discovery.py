@@ -1195,11 +1195,10 @@ def _load_module_import_scan(
         module_name, path.resolve()
     ):
         runtime_import_custody = None
+    runtime_catalog_owner = runtime_import_custody is not None
     if runtime_import_custody is not None:
         if source_owner is not None:
             raise ValueError("runtime import custody requires full-depth owner scans")
-        project_root = None
-    if runtime_import_custody is not None:
         runtime_import_custody.validate_scan_mode(
             module_name, path.resolve(), import_scan_mode
         )
@@ -1283,6 +1282,14 @@ def _load_module_import_scan(
         resolution_cache.source_cache[resolution_cache.resolved_path(path)] = source
 
     def complete(requests: _ImportScanRequests) -> _CompleteImportScan:
+        if runtime_import_custody is not None:
+            requests = runtime_import_custody.complete_owner_scan(
+                module_name, path.resolve(), requests
+            )
+        elif requests.runtime_catalog is not None:
+            raise ValueError(
+                f"a runtime catalog deferral requires runtime import custody: {module_name!r}"
+            )
         return _module_import_scanner._complete_import_scan(
             requests,
             source_path=path,
@@ -1306,6 +1313,7 @@ def _load_module_import_scan(
             target_python=target_python,
             namespace_premise=namespace_premise,
             native_support_function_roots=native_support_function_roots,
+            runtime_catalog_owner=runtime_catalog_owner,
         )
         if persisted is not None:
             return _LoadedModuleImportScan(
@@ -1383,6 +1391,7 @@ def _load_module_import_scan(
                 target_python=target_python,
                 namespace_premise=namespace_premise,
                 native_support_function_roots=native_support_function_roots,
+                runtime_catalog_owner=runtime_catalog_owner,
             )
     return _LoadedModuleImportScan(
         complete(requests), False, source_parsed, source, tree, snapshot, source_pruned

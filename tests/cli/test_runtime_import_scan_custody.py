@@ -23,6 +23,7 @@ from molt.compiler_analysis.python_import_scan import (
     _sealed_import_modules,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
+from tests.runtime_import_owner_test_support import scan_as_runtime_owner
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis.python_source_keys import (
     _PythonAstDigestAdmission,
@@ -35,6 +36,7 @@ from molt.compiler_analysis.python_imports import (
     StaticMetadataValue,
     UnresolvedStaticImportError,
     UNKNOWN_VALUE,
+    _ImportScanRequests,
 )
 
 
@@ -51,6 +53,23 @@ def _custody(
         catalog=(("pkg.entry", owner), ("admitted.target", target)),
         owner_ast_digests=(("pkg.entry", python_ast_digest(ast.parse(source))),),
     )
+
+
+def _assert_not_admitted(
+    requests: _ImportScanRequests,
+    tree: ast.AST,
+    module_name: str,
+    *,
+    error: str = "runtime import custody",
+    catalog_only: str = "admitted.target",
+) -> None:
+    """Custody that does not own this exact source grants nothing: the scan
+    stays strict, with no catalog deferral or catalog-only row, and strict
+    acceptance still rejects the runtime-dependent import."""
+    assert requests.runtime_catalog is None
+    assert catalog_only not in requests.imports
+    with pytest.raises(UnresolvedStaticImportError, match=error):
+        _collect_imports(tree, module_name)
 
 
 @pytest.mark.parametrize(
@@ -125,22 +144,23 @@ def test_dynamic_import_operands_require_exact_runtime_source_custody(
     if claim == "ast":
         tree = ast.parse(source + "changed = True\n")
 
-    def collect() -> list[str]:
-        return _collect_imports(
+    module_name = "other.entry" if claim == "name" else "pkg.entry"
+
+    def collect() -> _ImportScanRequests:
+        return scan_as_runtime_owner(
             tree,
-            "other.entry" if claim == "name" else "pkg.entry",
-            runtime_import_custody=None if claim == "missing" else custody,
+            module_name,
             source_path=tmp_path / "other.py" if claim == "path" else owner,
+            custody=None if claim == "missing" else custody,
         )
 
     if claim == "matching":
-        assert set(custody.modules) <= set(collect())
+        assert set(custody.modules) <= set(collect().imports)
     elif claim == "ast":
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
     else:
-        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-            collect()
+        _assert_not_admitted(collect(), tree, module_name)
 
 
 @pytest.mark.parametrize(
@@ -225,22 +245,10 @@ def test_dynamic_package_uses_complete_catalog_not_lexical_package(
     source = f"__package__ = choose_package()\n{statement}\n"
     owner, custody = _custody(tmp_path, source)
     tree = ast.parse(source)
-    imports = _collect_imports(
-        tree,
-        "pkg.entry",
-        runtime_import_custody=custody,
-        source_path=owner,
-    )
-    assert set(imports) == set(custody.modules)
+    scan = scan_as_runtime_owner(tree, "pkg.entry", source_path=owner, custody=custody)
+    assert set(scan.imports) == set(custody.modules)
     if statement.endswith("*"):
-        assert set(
-            _collect_import_star_modules(
-                tree,
-                "pkg.entry",
-                runtime_import_custody=custody,
-                source_path=owner,
-            )
-        ) == set(custody.modules)
+        assert set(scan.star_modules) == set(custody.modules)
 
 
 @pytest.mark.parametrize("wrong_owner", ["name", "path", "missing"])
@@ -249,19 +257,20 @@ def test_runtime_custody_cannot_escape_source_owner(
 ) -> None:
     owner, custody = _custody(tmp_path)
     tree = ast.parse("__package__ = choose_package()\nfrom . import child\n")
-    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        _collect_imports(
-            tree,
-            "other.entry" if wrong_owner == "name" else "pkg.entry",
-            runtime_import_custody=custody,
-            source_path=(
-                None
-                if wrong_owner == "missing"
-                else tmp_path / "other.py"
-                if wrong_owner == "path"
-                else owner
-            ),
-        )
+    module_name = "other.entry" if wrong_owner == "name" else "pkg.entry"
+    scan = scan_as_runtime_owner(
+        tree,
+        module_name,
+        source_path=(
+            tmp_path / "missing.py"
+            if wrong_owner == "missing"
+            else tmp_path / "other.py"
+            if wrong_owner == "path"
+            else owner
+        ),
+        custody=custody,
+    )
+    _assert_not_admitted(scan, tree, module_name)
 
 
 @pytest.mark.parametrize("claim", ["matching", "name", "path", "ast", "missing"])
@@ -278,16 +287,18 @@ def test_intrinsic_globals_escape_requires_exact_runtime_source_custody(
         source.replace("molt_demo", "molt_other") if claim == "ast" else source
     )
 
-    def collect() -> list[str]:
-        return _collect_imports(
+    module_name = "other.entry" if claim == "name" else "pkg.entry"
+
+    def collect() -> _ImportScanRequests:
+        return scan_as_runtime_owner(
             tree,
-            "other.entry" if claim == "name" else "pkg.entry",
-            runtime_import_custody=None if claim == "missing" else custody,
+            module_name,
             source_path=tmp_path / "other.py" if claim == "path" else owner,
+            custody=None if claim == "missing" else custody,
         )
 
     if claim == "matching":
-        assert set(collect()) == set(custody.modules) | {
+        assert set(collect().imports) == set(custody.modules) | {
             "_intrinsics",
             "_intrinsics.require_intrinsic",
         }
@@ -295,8 +306,7 @@ def test_intrinsic_globals_escape_requires_exact_runtime_source_custody(
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
     else:
-        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-            collect()
+        _assert_not_admitted(collect(), tree, module_name)
 
 
 def test_graph_cache_keeps_custody_separate_from_strict_acceptance(
@@ -312,7 +322,14 @@ def test_graph_cache_keeps_custody_separate_from_strict_acceptance(
         module_name="pkg.entry",
         runtime_import_custody=custody,
     )
-    assert set(custodied.imports) == set(custody.modules)
+    # The owner scan is source-pure: it defers to the catalog without naming it.
+    assert custodied.runtime_catalog is not None and custodied.runtime_catalog.imports
+    assert not set(custodied.imports) & set(custody.modules)
+    assert set(
+        scan_as_runtime_owner(
+            tree, "pkg.entry", source_path=owner, custody=custody
+        ).imports
+    ) == set(custody.modules)
     uncustodied = cache.collect_graph_imports(
         owner, tree, collector=_collect_imports_for_graph, module_name="pkg.entry"
     )
@@ -320,7 +337,7 @@ def test_graph_cache_keeps_custody_separate_from_strict_acceptance(
     assert uncustodied != custodied
     assert uncustodied.requires_runtime_package_anchor
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        _collect_imports(tree, "pkg.entry", source_path=owner)
+        _collect_imports(tree, "pkg.entry")
 
 
 @pytest.mark.parametrize(
@@ -437,7 +454,7 @@ def test_graph_scan_cache_is_ast_digest_keyed_without_certifying_strict_imports(
     assert "pkg.second" in second_projection.dynamic_relative_import_candidates
     assert first_projection != second_projection
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        _collect_imports(tree, "pkg.entry", source_path=owner)
+        _collect_imports(tree, "pkg.entry")
 
 
 def test_custody_seed_preserves_alias_names_for_one_shared_source(
@@ -592,12 +609,9 @@ def test_real_importlib_machinery_keeps_strict_finalizer_boundary() -> None:
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         _collect_imports(tree, "importlib.machinery")
     assert set(custody.modules).issubset(
-        _collect_imports(
-            tree,
-            "importlib.machinery",
-            runtime_import_custody=custody,
-            source_path=owner,
-        )
+        scan_as_runtime_owner(
+            tree, "importlib.machinery", source_path=owner, custody=custody
+        ).imports
     )
 
     projection = _collect_imports_for_graph(tree, "importlib.machinery")
@@ -694,68 +708,103 @@ def test_source_claim_cannot_authorize_substituted_ast_or_cache_hit(
             module_name="pkg.entry",
             runtime_import_custody=custody,
         )
-    with pytest.raises(ValueError, match="source AST changed"):
-        _collect_imports(
-            substituted_tree,
-            "pkg.entry",
+
+    def owner_scan(tree: ast.AST) -> _ImportScanRequests:
+        return _collect_import_scan_requests(
+            _collect_imports_for_graph(tree, "pkg.entry", runtime_catalog_owner=True),
+            tree,
             source_path=owner,
-            runtime_import_custody=custody,
+            module_name="pkg.entry",
+            import_scan_mode="full",
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+            ast_digest_admission=_PythonAstDigestAdmission(tree),
         )
+
+    # A source-pure owner scan of another AST, fresh or persisted, names that
+    # AST: this custody cannot complete it.
+    with pytest.raises(ValueError, match="source AST changed"):
+        custody.complete_owner_scan("pkg.entry", owner, owner_scan(substituted_tree))
     admitted_tree = ast.parse(owner.read_text(encoding="utf-8"))
     admission = _PythonAstDigestAdmission(admitted_tree)
     with pytest.raises(ValueError, match="different tree"):
-        _collect_imports(
-            substituted_tree,
-            "pkg.entry",
-            source_path=owner,
-            runtime_import_custody=custody,
-            ast_digest_admission=admission,
-        )
+        _collect_imports(substituted_tree, "pkg.entry", ast_digest_admission=admission)
     imported = next(
         node for node in ast.walk(admitted_tree) if isinstance(node, ast.ImportFrom)
     )
     imported.names[0].name = "mutated"
     with pytest.raises(ValueError, match="source AST changed"):
-        _collect_imports(
-            admitted_tree,
-            "pkg.entry",
-            source_path=owner,
-            runtime_import_custody=custody,
+        custody.complete_owner_scan("pkg.entry", owner, owner_scan(admitted_tree))
+
+
+def _widened(custody: _RuntimeImportScanCustody, tmp_path: Path):
+    later = (tmp_path / "later.py").resolve()
+    later.write_text("", encoding="utf-8")
+    return _RuntimeImportScanCustody(
+        owners=custody.owners,
+        catalog=(*custody.catalog, ("admitted.later", later)),
+        owner_ast_digests=custody.owner_ast_digests,
+    )
+
+
+def test_custody_generations_share_one_owner_scan(tmp_path: Path) -> None:
+    owner, custody = _custody(tmp_path)
+    widened = _widened(custody, tmp_path)
+    tree = ast.parse(owner.read_text(encoding="utf-8"))
+    cache = _ModuleResolutionCache()
+
+    def projection(generation: _RuntimeImportScanCustody):
+        return cache.collect_graph_imports(
+            owner,
+            tree,
+            collector=_collect_imports_for_graph,
+            module_name="pkg.entry",
+            runtime_import_custody=generation,
         )
 
+    assert projection(widened) is projection(custody), "the scan names no catalog"
+    assert set(
+        scan_as_runtime_owner(
+            tree, "pkg.entry", source_path=owner, custody=widened
+        ).imports
+    ) == set(widened.modules)
 
-def test_full_module_analysis_keeps_custody_out_of_persisted_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+
+def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
+    tmp_path: Path,
 ) -> None:
     from molt.cli import module_cache, module_graph_cache
 
     owner, custody = _custody(tmp_path)
+    widened = _widened(custody, tmp_path)
 
-    def forbidden_persisted_access(*args: object, **kwargs: object) -> None:
-        raise AssertionError("custodied owner analysis must not use strict persistence")
+    def analyze(generation: _RuntimeImportScanCustody):
+        return module_cache._load_module_analysis(
+            owner,
+            module_name="pkg.entry",
+            is_package=False,
+            import_scan_mode="full",
+            source=None,
+            logical_source_path=str(owner),
+            resolution_cache=_ModuleResolutionCache(),
+            project_root=tmp_path,
+            runtime_import_custody=generation,
+        )
 
-    for name in (
-        "_read_persisted_module_analysis",
-        "_write_persisted_module_analysis",
-    ):
-        monkeypatch.setattr(module_cache, name, forbidden_persisted_access)
-    for name in (
-        "_read_persisted_import_scan_record",
-        "_write_persisted_import_scan",
-    ):
-        monkeypatch.setattr(module_graph_cache, name, forbidden_persisted_access)
-    result = module_cache._load_module_analysis(
+    first = analyze(custody)
+    assert set(first[1]) == set(custody.modules)
+    assert first[5] is False, "the first analysis scans the owner"
+    second = analyze(widened)
+    assert second[5] is True, "a later custody generation reuses the persisted scan"
+    assert set(second[1]) == set(widened.modules)
+    record = module_graph_cache._import_scan_cache_path(
+        tmp_path,
         owner,
         module_name="pkg.entry",
         is_package=False,
         import_scan_mode="full",
-        source=None,
-        logical_source_path=str(owner),
-        resolution_cache=_ModuleResolutionCache(),
-        project_root=tmp_path,
-        runtime_import_custody=custody,
-    )
-    assert set(result[1]) == set(custody.modules)
+        runtime_catalog_owner=True,
+    ).read_text(encoding="utf-8")
+    assert "admitted.target" not in record and "admitted.later" not in record
 
 
 @pytest.mark.parametrize(
@@ -840,7 +889,7 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
 
 
 @pytest.mark.parametrize("mode", ["module_init"])
-@pytest.mark.parametrize("consumer", ["imports", "stars", "cache", "loader"])
+@pytest.mark.parametrize("consumer", ["scanner", "cache", "loader"])
 def test_every_owner_scan_entry_rejects_incomplete_depth(
     tmp_path: Path,
     mode: ImportScanMode,
@@ -851,21 +900,9 @@ def test_every_owner_scan_entry_rejects_incomplete_depth(
     owner, custody = _custody(tmp_path)
     tree = ast.parse(owner.read_text(encoding="utf-8"))
     with pytest.raises(ValueError, match="full-depth owner scans"):
-        if consumer == "imports":
-            _collect_imports(
-                tree,
-                "pkg.entry",
-                import_scan_mode=mode,
-                runtime_import_custody=custody,
-                source_path=owner,
-            )
-        elif consumer == "stars":
-            _collect_import_star_modules(
-                tree,
-                "pkg.entry",
-                import_scan_mode=mode,
-                runtime_import_custody=custody,
-                source_path=owner,
+        if consumer == "scanner":
+            _collect_imports_for_graph(
+                tree, "pkg.entry", import_scan_mode=mode, runtime_catalog_owner=True
             )
         elif consumer == "cache":
             _ModuleResolutionCache().collect_graph_imports(
@@ -907,11 +944,11 @@ def test_dynamic_fromlist_keeps_known_relative_level(
     assert "child" not in projection.imports
     assert "pkg.child" not in projection.imports
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        _collect_imports(tree, "pkg.entry", source_path=owner)
+        _collect_imports(tree, "pkg.entry")
     assert set(custody.modules) <= set(
-        _collect_imports(
-            tree, "pkg.entry", source_path=owner, runtime_import_custody=custody
-        )
+        scan_as_runtime_owner(
+            tree, "pkg.entry", source_path=owner, custody=custody
+        ).imports
     )
 
 
@@ -1093,22 +1130,23 @@ def test_catchable_call_resolution_errors_require_exact_custody(
     if claim == "ast":
         tree = ast.parse(source + "changed = True\n")
 
-    def collect():
-        return _collect_imports(
+    module_name = "other.entry" if claim == "name" else "pkg.entry"
+
+    def collect() -> _ImportScanRequests:
+        return scan_as_runtime_owner(
             tree,
-            "other.entry" if claim == "name" else "pkg.entry",
+            module_name,
             source_path=tmp_path / "other.py" if claim == "path" else owner,
-            runtime_import_custody=None if claim == "missing" else custody,
+            custody=None if claim == "missing" else custody,
         )
 
     if claim == "matching":
-        assert set(custody.modules) <= set(collect())
+        assert set(custody.modules) <= set(collect().imports)
     elif claim == "ast":
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
     else:
-        with pytest.raises(UnresolvedStaticImportError, match=error):
-            collect()
+        _assert_not_admitted(collect(), tree, module_name, error=error)
 
 
 @pytest.mark.parametrize(
@@ -1137,22 +1175,23 @@ def test_catchable_relative_statement_errors_require_exact_custody(
     if claim == "ast":
         tree = ast.parse(source + "changed = True\n")
 
-    def collect():
-        return _collect_imports(
+    module_name = "other.entry" if claim == "name" else "pkg.entry"
+
+    def collect() -> _ImportScanRequests:
+        return scan_as_runtime_owner(
             tree,
-            "other.entry" if claim == "name" else "pkg.entry",
+            module_name,
             source_path=tmp_path / "other.py" if claim == "path" else owner,
-            runtime_import_custody=None if claim == "missing" else custody,
+            custody=None if claim == "missing" else custody,
         )
 
     if claim == "matching":
-        assert set(custody.modules) <= set(collect())
+        assert set(custody.modules) <= set(collect().imports)
     elif claim == "ast":
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
     else:
-        with pytest.raises(UnresolvedStaticImportError, match=error):
-            collect()
+        _assert_not_admitted(collect(), tree, module_name, error=error)
 
 
 def test_relative_statement_invalid_metadata_stays_rejected_under_custody(
@@ -1164,9 +1203,7 @@ def test_relative_statement_invalid_metadata_stays_rejected_under_custody(
     with pytest.raises(UnresolvedStaticImportError, match="invalid_package"):
         _collect_imports_for_graph(tree, "pkg.entry")
     with pytest.raises(UnresolvedStaticImportError, match="invalid_package"):
-        _collect_imports(
-            tree, "pkg.entry", source_path=owner, runtime_import_custody=custody
-        )
+        scan_as_runtime_owner(tree, "pkg.entry", source_path=owner, custody=custody)
 
 
 @pytest.mark.parametrize("damage", [None, "missing", "invalid", "old_schema"])
@@ -1290,22 +1327,23 @@ def test_known_scalar_import_errors_keep_no_candidate_and_exact_custody(
     if claim == "ast":
         tree = ast.parse(source + "changed = True\n")
 
-    def collect():
-        return _collect_imports(
+    module_name = "other.entry" if claim == "name" else "pkg.entry"
+
+    def collect() -> _ImportScanRequests:
+        return scan_as_runtime_owner(
             tree,
-            "other.entry" if claim == "name" else "pkg.entry",
+            module_name,
             source_path=tmp_path / "other.py" if claim == "path" else owner,
-            runtime_import_custody=None if claim == "missing" else custody,
+            custody=None if claim == "missing" else custody,
         )
 
     if claim == "matching":
-        assert set(custody.modules) <= set(collect())
+        assert set(custody.modules) <= set(collect().imports)
     elif claim == "ast":
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
     else:
-        with pytest.raises(UnresolvedStaticImportError, match=error):
-            collect()
+        _assert_not_admitted(collect(), tree, module_name, error=error)
 
 
 @pytest.mark.parametrize("level", ["+1", "-(-1)", "~~1", "True", "+True"])
@@ -1573,19 +1611,20 @@ def test_statement_and_expression_metadata_share_exact_catalog_custody(
     if claim == "ast":
         tree = ast.parse(source + "changed = True\n")
 
-    def collect():
-        return _collect_imports(
+    module_name = "other.entry" if claim == "name" else "pkg.entry"
+
+    def collect() -> _ImportScanRequests:
+        return scan_as_runtime_owner(
             tree,
-            "other.entry" if claim == "name" else "pkg.entry",
-            runtime_import_custody=None if claim == "missing" else custody,
+            module_name,
             source_path=tmp_path / "other.py" if claim == "path" else owner,
+            custody=None if claim == "missing" else custody,
         )
 
     if claim == "matching":
-        assert set(custody.modules) <= set(collect())
+        assert set(custody.modules) <= set(collect().imports)
     elif claim == "ast":
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
     else:
-        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-            collect()
+        _assert_not_admitted(collect(), tree, module_name)

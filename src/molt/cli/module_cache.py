@@ -1234,13 +1234,13 @@ def _load_module_analysis(
         # Caller-supplied text is an operation-local generation, not proof that
         # the path still contains the bytes which produced it.
         project_root = None
-    if runtime_import_custody is not None:
-        if runtime_import_custody.owns(module_name, path.resolve()):
-            # Owner analysis embeds catalog-dependent edges. Persisted module
-            # analysis belongs exclusively to strict scans.
-            project_root = None
-        else:
-            runtime_import_custody = None
+    if runtime_import_custody is not None and not runtime_import_custody.owns(
+        module_name, path.resolve()
+    ):
+        runtime_import_custody = None
+    # An owner's scan is source-pure and its completion applies the live catalog,
+    # so owner analysis persists like any other; function metadata never
+    # depended on the catalog.
     if path_stat is None and project_root is not None:
         with contextlib.suppress(OSError):
             path_stat = resolution_cache.path_stat(path)
