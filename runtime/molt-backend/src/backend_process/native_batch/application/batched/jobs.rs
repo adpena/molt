@@ -8,7 +8,6 @@ use super::super::super::{
     append_referenced_external_declarations, batch_external_function_names,
 };
 use super::plan::NativeApplicationBatchPlan;
-use crate::backend_process::io_limits::write_json_artifact;
 
 pub(super) fn materialize_native_application_batch_jobs(
     tmp_dir: &Path,
@@ -36,37 +35,34 @@ pub(super) fn materialize_native_application_batch_jobs(
             &mut batch_ir.functions,
             &plan.external_function_declarations,
         );
-        let job_path = tmp_dir.join(format!("batch_{batch_idx}.json"));
         let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
-        write_json_artifact(
-            &job_path,
-            &NativeBatchObjectJob {
-                ir: batch_ir,
-                code_slots: (batch_idx == 0).then(|| std::mem::take(&mut options.code_slots)),
-                module_context: NativeBackendModuleContext::default(),
-                codegen_environment:
-                    molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,
-                target_triple: options.target_triple.map(str::to_owned),
-                emit_app_callable_resolver: batch_idx == 0,
-                app_callable_manifest: if batch_idx == 0 {
-                    options.app_callable_manifest.take()
-                } else {
-                    None
-                },
-                external_function_names,
-                // The resolver-emitting batch is the main application object;
-                // it also owns the module registry blob. Init functions in
-                // sibling batches resolve through Import relocations at link.
-                module_registry: if batch_idx == 0 {
-                    options.module_registry.take()
-                } else {
-                    None
-                },
-            }
-            .close_dependencies(&plan.module_context),
-        )?;
+        let job = NativeBatchObjectJob {
+            ir: batch_ir,
+            code_slots: (batch_idx == 0).then(|| std::mem::take(&mut options.code_slots)),
+            module_context: NativeBackendModuleContext::default(),
+            codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,
+            target_triple: options.target_triple.map(str::to_owned),
+            emit_app_callable_resolver: batch_idx == 0,
+            app_callable_manifest: if batch_idx == 0 {
+                options.app_callable_manifest.take()
+            } else {
+                None
+            },
+            external_function_names,
+            // The resolver-emitting batch is the main application object;
+            // it also owns the module registry blob. Init functions in
+            // sibling batches resolve through Import relocations at link.
+            module_registry: if batch_idx == 0 {
+                options.module_registry.take()
+            } else {
+                None
+            },
+        }
+        .close_dependencies(&plan.module_context)
+        .encode()?;
         batch_specs.push(NativeBatchJobSpec {
-            job_path,
+            job_name: format!("batch_{batch_idx}.json"),
+            job,
             object_path: batch_path,
         });
     }

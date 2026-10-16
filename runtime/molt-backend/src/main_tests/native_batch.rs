@@ -146,31 +146,29 @@ fn native_batch_failure_artifact_retains_closed_context_for_replay() {
     std::fs::create_dir_all(&source_dir).expect("create source batch dir");
     unsafe { std::env::set_var("MOLT_DEBUG_ARTIFACT_DIR", &debug_dir) };
 
-    let job_path = source_dir.join("batch_7.json");
-    write_json_artifact(
-        &job_path,
-        &NativeBatchObjectJob {
-            code_slots: None,
-            ir: SimpleIR {
-                functions: vec![],
-                profile: None,
-            },
-            module_context: molt_backend::NativeBackendModuleContext::default(),
-            codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()
-                .unwrap(),
-            target_triple: None,
-            emit_app_callable_resolver: false,
-            app_callable_manifest: None,
-            external_function_names: std::collections::BTreeSet::new(),
-            module_registry: None,
+    let job = NativeBatchObjectJob {
+        code_slots: None,
+        ir: SimpleIR {
+            functions: vec![],
+            profile: None,
         },
-    )
-    .expect("write source job");
+        module_context: molt_backend::NativeBackendModuleContext::default(),
+        codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()
+            .unwrap(),
+        target_triple: None,
+        emit_app_callable_resolver: false,
+        app_callable_manifest: None,
+        external_function_names: std::collections::BTreeSet::new(),
+        module_registry: None,
+    }
+    .encode()
+    .expect("encode source job");
     let object_path = source_dir.join("batch_7.o");
 
     let artifact_dir = preserve_native_batch_worker_failure_artifacts(
         "native application batch worker",
-        &job_path,
+        &job,
+        "batch_7.json",
         &object_path,
     )
     .expect("preserve failed worker artifacts");

@@ -17,7 +17,8 @@ pub(crate) enum BackendCommand<'a> {
     /// `--daemon --socket PATH`: serve compile jobs on a Unix socket.
     #[cfg(molt_backend_daemon)]
     Daemon { socket_path: &'a str },
-    /// `--native-batch-job-file JOB --output OBJECT`: one batch worker job.
+    /// `--native-batch-job-file JOB --output OBJECT`: one batch worker job, read
+    /// from stdin when JOB is `-` or from a preserved replay file.
     #[cfg(feature = "native-backend")]
     NativeBatchJob {
         job_file: &'a str,

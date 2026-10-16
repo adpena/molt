@@ -19,7 +19,8 @@ pub(super) fn run_native_application_batches(
         .iter()
         .enumerate()
         .map(|(batch_idx, spec)| NativeBatchWork {
-            job_path: &spec.job_path,
+            job: &spec.job,
+            job_name: &spec.job_name,
             object_path: &spec.object_path,
             progress: format!(
                 "{log_prefix}: compiling materialized batch {}/{}",

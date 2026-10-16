@@ -43,7 +43,7 @@ use super::{
     shared_stdlib_cache_matches, shared_stdlib_partition_closure_issue,
     shared_stdlib_partition_manifest, stdlib_cache_count_sidecar_path,
     stdlib_cache_partition_manifest_sidecar_path, validate_shared_stdlib_partition,
-    with_shared_stdlib_cache_publish_lock, write_json_artifact, write_shared_stdlib_cache_sidecars,
+    with_shared_stdlib_cache_publish_lock, write_shared_stdlib_cache_sidecars,
 };
 #[cfg(feature = "native-backend")]
 use super::{NativeArtifactKind, NativeTargetOptions};
