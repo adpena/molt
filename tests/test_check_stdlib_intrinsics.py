@@ -2804,11 +2804,15 @@ def test_activation_target_sources_preserve_physical_reference_observations(
         "replace-globals": (
             "replace-globals\n['left_provider', 'right_provider']\n"
             "True\n[True]\n[True, True, True, True, True, True, True]\n"
+            "[True, True, True, True, True, True, True, True, True, "
+            "True, True, True, True, True, True, True, True, True]\n"
         ),
         "replace-builtins": (
             "replace-builtins\n['left_provider', 'right_provider']\n"
             "True\n[True]\n"
             "[True, True, True, True, True, True, True, True, True, True, True]\n"
+            "[True, True, True, True, True, True, True, True, True, "
+            "True, True, True, True, True, True, True, True, True]\n"
         ),
     }[route]
     for module, source in activation_target_sources(route).items():

@@ -1,4 +1,5 @@
 use super::*;
+use crate::{TYPE_ID_OBJECT, alloc_code_obj, dict_set_in_place};
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -340,6 +341,210 @@ fn function_type_constructor_binds_named_defaults_and_retains_identity_by_target
                 dec_ref_bits(py, bits);
             }
             assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            use crate::object::function_metadata::FunctionMetadataField as Field;
+            let text = |value: &[u8]| crate::attr_name_bits_from_bytes(py, value).unwrap();
+            let name = text(b"inner");
+            let qualname = text(b"outer.<locals>.inner");
+            let doc = text(b"declaration documentation");
+            let mutable = text(b"mutable display metadata");
+            let renamed = text(b"renamed");
+            let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+            let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let none = MoltObject::none().bits();
+            for packed in [false, true] {
+                let source = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        function_constructor_probe as *const (),
+                    ),
+                    0,
+                );
+                let source_bits = MoltObject::from_ptr(source).bits();
+                let code = alloc_code_obj(py, name, name, 1, none, empty, empty, 0, 0, 0);
+                let code_bits = MoltObject::from_ptr(code).bits();
+                if packed {
+                    let metadata = MoltObject::from_ptr(alloc_tuple(
+                        py,
+                        &[
+                            name,
+                            qualname,
+                            none,
+                            empty,
+                            MoltObject::from_int(0).bits(),
+                            empty,
+                            none,
+                            none,
+                            none,
+                            none,
+                            doc,
+                            MoltObject::from_int(0).bits(),
+                            empty,
+                            empty,
+                        ],
+                    ))
+                    .bits();
+                    crate::builtins::functions::molt_function_init_metadata_packed(
+                        source_bits,
+                        metadata,
+                        code_bits,
+                        none,
+                    );
+                    dec_ref_bits(py, metadata);
+                } else {
+                    crate::builtins::functions::molt_function_init_metadata(
+                        source_bits,
+                        name,
+                        qualname,
+                        none,
+                        empty,
+                        MoltObject::from_int(0).bits(),
+                        empty,
+                        none,
+                        none,
+                        none,
+                        none,
+                        doc,
+                        code_bits,
+                        none,
+                    );
+                }
+                assert!(!exception_pending(py));
+                assert!(crate::object::layout::code_declaration_is_published(code));
+                for field in [b"__name__".as_slice(), b"__qualname__", b"__doc__"] {
+                    let key = text(field);
+                    crate::molt_set_attr_name(source_bits, key, mutable);
+                    dec_ref_bits(py, key);
+                    assert!(!exception_pending(py));
+                }
+                assert_eq!(Field::QualName.load(source), Some(mutable));
+                assert_eq!(Field::Doc.load(source), Some(mutable));
+                let attribute = text(b"co_qualname");
+                let observed = crate::molt_get_attr_name(code_bits, attribute);
+                assert!(!exception_pending(py));
+                assert_eq!(observed, qualname);
+                dec_ref_bits(py, observed);
+                dec_ref_bits(py, attribute);
+                let other = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        function_constructor_probe as *const (),
+                    ),
+                    0,
+                );
+                let other_code = crate::object::layout::ensure_function_code_bits(py, other);
+                for direct_new in [false, true] {
+                    let result = function_constructor_call(
+                        py,
+                        direct_new,
+                        &[code_bits, globals],
+                        &[(b"name", renamed)],
+                    );
+                    assert!(!exception_pending(py));
+                    let function = obj_from_bits(result).as_ptr().unwrap();
+                    assert_eq!(Field::Name.load(function), Some(renamed));
+                    assert_eq!(
+                        Field::QualName.load(function),
+                        Some(qualname),
+                        "supplied name changes __name__ only"
+                    );
+                    assert_eq!(Field::Doc.load(function), Some(doc));
+                    let key = text(b"__code__");
+                    crate::molt_set_attr_name(result, key, other_code);
+                    dec_ref_bits(py, key);
+                    assert!(!exception_pending(py));
+                    assert_eq!(crate::function_code_bits(function), other_code);
+                    assert_eq!(Field::Name.load(function), Some(renamed));
+                    assert_eq!(
+                        Field::QualName.load(function),
+                        Some(qualname),
+                        "code replacement does not replace the function's display metadata"
+                    );
+                    assert_eq!(Field::Doc.load(function), Some(doc));
+                    assert_eq!(crate::object::layout::code_qualname_bits(code), qualname);
+                    assert_eq!(crate::object::layout::code_doc_bits(code), doc);
+                    dec_ref_bits(py, result);
+                }
+                for bits in [source_bits, code_bits, MoltObject::from_ptr(other).bits()] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+            for bits in [name, qualname, doc, mutable, renamed, empty, globals] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn function_type_code_declaration_rejects_mutable_native_string_subclasses() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = crate::attr_name_bits_from_bytes(py, b"inner").unwrap();
+            let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+            let classes = builtin_classes(py);
+            let subclass = empty_type(
+                py,
+                b"MutableDeclarationText",
+                classes.type_obj,
+                &[classes.str],
+            );
+            let builder = molt_callargs_new(1, 0);
+            molt_callargs_push_pos(builder, name);
+            let mutable = molt_call_bind(subclass, builder);
+            assert!(!exception_pending(py));
+            let mutable_ptr = obj_from_bits(mutable).as_ptr().unwrap();
+            assert_eq!(object_type_id(mutable_ptr), TYPE_ID_STRING);
+            assert_eq!(crate::object_class_bits(mutable_ptr), subclass);
+            let code = alloc_code_obj(
+                py,
+                name,
+                name,
+                1,
+                MoltObject::none().bits(),
+                empty,
+                empty,
+                0,
+                0,
+                0,
+            );
+            let before = (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot();
+            for (qualname, doc) in [(mutable, MoltObject::none().bits()), (name, mutable)] {
+                assert!(
+                    crate::object::layout::code_publish_declaration_metadata(
+                        py, code, qualname, doc
+                    )
+                    .is_err()
+                );
+                assert!(exception_pending(py));
+                crate::molt_exception_clear();
+                assert!(!crate::object::layout::code_declaration_is_published(code));
+                assert_eq!(*code.cast::<u64>().add(23), 0);
+                assert_eq!(*code.cast::<u64>().add(24), 0);
+                assert_eq!(
+                    (*crate::header_from_obj_ptr(mutable_ptr)).ref_count_snapshot(),
+                    before
+                );
+            }
+            for bits in [
+                name,
+                empty,
+                subclass,
+                mutable,
+                MoltObject::from_ptr(code).bits(),
+            ] {
+                dec_ref_bits(py, bits);
+            }
         }
     });
 }

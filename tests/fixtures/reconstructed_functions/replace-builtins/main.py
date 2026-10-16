@@ -14,3 +14,4 @@ checks = [consumer.a.__globals__ is consumer.left_namespace, consumer.b.__global
 checks.extend([len(consumer.replacement_code.co_freevars) == 1, consumer.a.__closure__ is consumer.retained_closure, consumer.b.__closure__ is consumer.retained_closure, consumer.a.__code__ is consumer.replacement_code, consumer.b.__code__ is consumer.replacement_code])
 checks.extend([consumer.a.__builtins__ is consumer.left_builtins, consumer.b.__builtins__ is consumer.right_builtins, consumer.a.__globals__['__builtins__'] is consumer.right_builtins, consumer.b.__globals__['__builtins__'] is consumer.left_builtins])
 print(checks)
+print(consumer.metadata_checks)

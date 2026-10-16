@@ -1599,13 +1599,14 @@ pub(crate) fn alloc_code_obj(
     // 18 selects the generated execution trampoline policy, 19..20 own the
     // immutable freevar/cellvar positional-name contracts, and 21 is the
     // immutable callable-context provenance paired with slots 9..11. Slot 22
-    // owns optional immutable GPU body metadata; no function payload grows.
+    // owns optional immutable GPU body metadata; 23..24 own declaration
+    // qualname/doc once packed metadata publishes them. No function grows.
     let empty_lexical_ptr = alloc_tuple(_py, &[]);
     if empty_lexical_ptr.is_null() {
         return std::ptr::null_mut();
     }
     let empty_lexical_bits = MoltObject::from_ptr(empty_lexical_ptr).bits();
-    let total = std::mem::size_of::<MoltHeader>() + 23 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 25 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         dec_ref_bits(_py, empty_lexical_bits);
@@ -1637,6 +1638,8 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(20 * std::mem::size_of::<u64>()) as *mut u64) = empty_lexical_bits;
         *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) = u64::MAX;
         *(ptr.add(22 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(23 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(24 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
         }
@@ -1682,6 +1685,18 @@ pub(crate) unsafe fn clone_code_obj_with_protocol_flags(
         );
         if clone.is_null() {
             return clone;
+        }
+        if crate::object::layout::code_declaration_is_published(source)
+            && crate::object::layout::code_publish_declaration_metadata(
+                _py,
+                clone,
+                crate::object::layout::code_qualname_bits(source),
+                crate::object::layout::code_doc_bits(source),
+            )
+            .is_err()
+        {
+            dec_ref_bits(_py, MoltObject::from_ptr(clone).bits());
+            return std::ptr::null_mut();
         }
         let signature = [
             code_arg_names_bits(source),
@@ -3402,7 +3417,7 @@ mod tests {
     }
 
     #[test]
-    fn code_clone_retains_exact_lexical_metadata_tuples() {
+    fn function_type_code_clone_retains_declaration_and_lexical_metadata() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let name = alloc_string(py, b"clone_lexical");
@@ -3440,6 +3455,38 @@ mod tests {
             let source_owner = super::PtrDropGuard::preserving(source);
             assert!(!source.is_null());
             unsafe {
+                let unpublished = clone_code_obj_with_protocol_flags(py, source, 0);
+                assert!(!unpublished.is_null());
+                assert!(!crate::object::layout::code_declaration_is_published(
+                    unpublished
+                ));
+                assert_eq!(
+                    crate::object::layout::code_qualname_bits(unpublished),
+                    name_bits
+                );
+                assert!(
+                    MoltObject::from_bits(crate::object::layout::code_doc_bits(unpublished))
+                        .is_none()
+                );
+                drop(super::PtrDropGuard::preserving(unpublished));
+                let qualname = alloc_string(py, b"outer.<locals>.clone_lexical");
+                let doc = alloc_string(py, b"clone declaration doc");
+                let _qualname_owner = super::PtrDropGuard::preserving(qualname);
+                let _doc_owner = super::PtrDropGuard::preserving(doc);
+                let qualname_bits = MoltObject::from_ptr(qualname).bits();
+                let doc_bits = MoltObject::from_ptr(doc).bits();
+                crate::object::layout::code_publish_declaration_metadata(
+                    py,
+                    source,
+                    qualname_bits,
+                    doc_bits,
+                )
+                .unwrap();
+                let declaration_refs = || {
+                    [qualname, doc]
+                        .map(|ptr| (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot())
+                };
+                assert_eq!(declaration_refs(), [2, 2]);
                 assert!(code_publish_lexical_metadata(
                     py,
                     source,
@@ -3471,6 +3518,13 @@ mod tests {
                 assert_eq!(code_freevars_bits(clone), freevars_bits);
                 assert_eq!(code_cellvars_bits(clone), cellvars_bits);
                 assert_eq!(code_callable_identity(clone), Some(identity));
+                assert!(crate::object::layout::code_declaration_is_published(clone));
+                assert_eq!(
+                    crate::object::layout::code_qualname_bits(clone),
+                    qualname_bits
+                );
+                assert_eq!(crate::object::layout::code_doc_bits(clone), doc_bits);
+                assert_eq!(declaration_refs(), [3, 3]);
                 assert_eq!(
                     crate::object::layout::code_gpu_descriptor_bits(clone),
                     descriptor_bits
@@ -3478,6 +3532,11 @@ mod tests {
                 assert_eq!(refs(), 3);
                 drop(clone_owner);
                 drop(source_owner);
+                assert_eq!(
+                    declaration_refs(),
+                    [1, 1],
+                    "both code owners retire both declaration edges exactly once"
+                );
                 assert_eq!(
                     refs(),
                     1,

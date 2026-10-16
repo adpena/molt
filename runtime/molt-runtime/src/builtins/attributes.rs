@@ -1055,6 +1055,11 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                     inc_ref_bits(_py, bits);
                     return Ok(Some(bits));
                 }
+                "co_qualname" => {
+                    let bits = crate::object::layout::code_qualname_bits(obj_ptr);
+                    inc_ref_bits(_py, bits);
+                    return Ok(Some(bits));
+                }
                 "co_firstlineno" => {
                     return Ok(Some(MoltObject::from_int(code_firstlineno(obj_ptr)).bits()));
                 }

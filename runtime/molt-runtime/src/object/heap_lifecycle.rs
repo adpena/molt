@@ -730,7 +730,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
                 visit_bits(super::instance_dict_bits(ptr), visit);
             }
             HeapLifecycleHandler::Code => {
-                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22] {
+                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22, 23, 24] {
                     visit_bits(
                         *(ptr.add(slot * std::mem::size_of::<u64>()) as *const u64),
                         visit,
@@ -1672,9 +1672,11 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                 let payload = ptr.add(2 * std::mem::size_of::<*const ()>()) as *mut u64;
                 sink.detach_if_heap(payload.replace(MoltObject::none().bits()));
             }
-            HeapLifecycleHandler::Code => {
-                detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22], sink)
-            }
+            HeapLifecycleHandler::Code => detach_slots(
+                ptr,
+                [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22, 23, 24],
+                sink,
+            ),
             HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
             HeapLifecycleHandler::ListBuilder => {
                 let values = *(ptr as *mut *mut Vec<u64>);

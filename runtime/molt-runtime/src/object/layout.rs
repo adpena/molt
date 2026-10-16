@@ -1206,6 +1206,7 @@ pub(crate) unsafe fn prepare_function_code_bits(
             signature: None,
             lexical: None,
             execution_kind: None,
+            declaration: None,
         };
         if let Some(code_ptr) = obj_from_bits(bits).as_ptr()
             && object_type_id(code_ptr) == TYPE_ID_CODE
@@ -1248,6 +1249,7 @@ pub(crate) struct PreparedFunctionCode {
     signature: Option<PreparedCodeSignature>,
     lexical: Option<[u64; 2]>,
     execution_kind: Option<CodeExecutionKind>,
+    declaration: Option<PreparedCodeDeclaration>,
 }
 
 #[must_use = "displaced code and signature owners must be released after publication"]
@@ -1259,6 +1261,21 @@ pub(crate) struct DisplacedFunctionCode {
 }
 
 impl PreparedFunctionCode {
+    pub(crate) unsafe fn with_declaration_metadata(
+        mut self,
+        py: &PyToken<'_>,
+        qualname: u64,
+        doc: u64,
+    ) -> Result<Self, ()> {
+        unsafe {
+            let (code, _) = self
+                .code
+                .expect("declaration metadata requires a code object");
+            self.declaration = Some(prepare_code_declaration(py, code, qualname, doc)?);
+            Ok(self)
+        }
+    }
+
     pub(crate) unsafe fn with_lexical_metadata(
         mut self,
         py: &PyToken<'_>,
@@ -1296,6 +1313,9 @@ impl PreparedFunctionCode {
             let mut displaced_signature = [0; 5];
             let mut displaced_lexical = [0; 2];
             if let Some((code_ptr, identity)) = self.code {
+                if let Some(declaration) = self.declaration {
+                    declaration.publish(py, code_ptr);
+                }
                 if let Some(signature) = self.signature {
                     displaced_signature = signature.publish(py, code_ptr);
                 }
@@ -1422,13 +1442,16 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
         }
         let mut name_bits = function_name_bits(_py, func_ptr);
         let mut owned_name = false;
-        let name_ok = if let Some(name_ptr) = obj_from_bits(name_bits).as_ptr() {
-            object_type_id(name_ptr) == TYPE_ID_STRING
-        } else {
-            false
-        };
+        let name_ok = super::ops::exact_string_bytes(_py, name_bits).is_some();
         if !name_ok {
-            let name_ptr = alloc_string(_py, b"<unknown>");
+            let name = obj_from_bits(name_bits)
+                .as_ptr()
+                .filter(|ptr| object_type_id(*ptr) == TYPE_ID_STRING)
+                .map(|ptr| {
+                    std::slice::from_raw_parts(super::string_bytes(ptr), super::string_len(ptr))
+                })
+                .unwrap_or(b"<unknown>");
+            let name_ptr = alloc_string(_py, name);
             if name_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -1484,6 +1507,19 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
             return MoltObject::none().bits();
         }
         let code_bits = MoltObject::from_ptr(code_ptr).bits();
+        // This producer has no compiled declaration. Seal only the synthetic
+        // code's own name/None defaults, never mutable qualname/doc attributes.
+        if code_publish_declaration_metadata(
+            _py,
+            code_ptr,
+            code_name_bits(code_ptr),
+            MoltObject::none().bits(),
+        )
+        .is_err()
+        {
+            dec_ref_bits(_py, code_bits);
+            return MoltObject::none().bits();
+        }
         if !function_set_code_bits(_py, func_ptr, code_bits) {
             dec_ref_bits(_py, code_bits);
             return MoltObject::none().bits();
@@ -1499,6 +1535,104 @@ pub(crate) unsafe fn code_filename_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn code_name_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
+}
+
+/// Allocation defaults come only from the code object. Compiled declaration
+/// publication replaces this unpublished pair once, before code-slot exposure.
+pub(crate) unsafe fn code_qualname_bits(ptr: *mut u8) -> u64 {
+    unsafe {
+        let bits = *ptr.cast::<u64>().add(23);
+        if bits == 0 { code_name_bits(ptr) } else { bits }
+    }
+}
+
+pub(crate) unsafe fn code_doc_bits(ptr: *mut u8) -> u64 {
+    unsafe {
+        let bits = *ptr.cast::<u64>().add(24);
+        if bits == 0 {
+            MoltObject::none().bits()
+        } else {
+            bits
+        }
+    }
+}
+
+/// Zero is unpublished, distinct from a published Python None docstring.
+pub(crate) unsafe fn code_declaration_is_published(ptr: *mut u8) -> bool {
+    unsafe { *ptr.cast::<u64>().add(23) != 0 }
+}
+
+#[must_use]
+struct PreparedCodeDeclaration([u64; 2]);
+
+unsafe fn prepare_code_declaration(
+    py: &PyToken<'_>,
+    code: *mut u8,
+    qualname: u64,
+    doc: u64,
+) -> Result<PreparedCodeDeclaration, ()> {
+    use super::heap_kinds_generated::HeapAcyclicSlot;
+    unsafe {
+        crate::gil_assert();
+        // Storage kind alone also admits mutable native str subclasses. Code
+        // is acyclic: retain only the existing exact immutable str capability.
+        if !super::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeQualname, qualname)
+            || super::ops::exact_string_bytes(py, qualname).is_none()
+        {
+            crate::raise_exception::<()>(py, "TypeError", "code qualname must be exact str");
+            return Err(());
+        }
+        if !super::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeDoc, doc)
+            || (!obj_from_bits(doc).is_none() && super::ops::exact_string_bytes(py, doc).is_none())
+        {
+            crate::raise_exception::<()>(py, "TypeError", "code doc must be exact str or None");
+            return Err(());
+        }
+        let same = |left, right| {
+            left == right
+                || super::ops::exact_string_bytes(py, left)
+                    .zip(super::ops::exact_string_bytes(py, right))
+                    .is_some_and(|(left, right)| left == right)
+        };
+        if code_declaration_is_published(code)
+            && (!same(code_qualname_bits(code), qualname) || !same(code_doc_bits(code), doc))
+        {
+            crate::raise_exception::<()>(
+                py,
+                "TypeError",
+                "code declaration metadata is already published",
+            );
+            return Err(());
+        }
+        Ok(PreparedCodeDeclaration([qualname, doc]))
+    }
+}
+
+impl PreparedCodeDeclaration {
+    unsafe fn publish(self, py: &PyToken<'_>, code: *mut u8) {
+        unsafe {
+            if code_declaration_is_published(code) {
+                return;
+            }
+            for bits in self.0 {
+                inc_ref_bits(py, bits);
+            }
+            *code.cast::<u64>().add(23) = self.0[0];
+            *code.cast::<u64>().add(24) = self.0[1];
+        }
+    }
+}
+
+pub(crate) unsafe fn code_publish_declaration_metadata(
+    py: &PyToken<'_>,
+    code: *mut u8,
+    qualname: u64,
+    doc: u64,
+) -> Result<(), ()> {
+    unsafe {
+        prepare_code_declaration(py, code, qualname, doc)?.publish(py, code);
+        Ok(())
+    }
 }
 
 pub(crate) unsafe fn code_firstlineno(ptr: *mut u8) -> i64 {
@@ -2957,6 +3091,187 @@ mod tests {
     }
 
     struct TrackerReset;
+
+    #[test]
+    fn function_type_code_declaration_publication_is_atomic_and_once_only() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let text = |value: &[u8]| MoltObject::from_ptr(alloc_string(py, value)).bits();
+                let name = text(b"inner");
+                let qualname = text(b"outer.<locals>.inner");
+                let doc = text(b"declaration documentation");
+                let changed = text(b"changed declaration");
+                let code = alloc_test_code(py, name, name, 1);
+                let code_bits = MoltObject::from_ptr(code).bits();
+                let refs = |bits| ref_count(obj_from_bits(bits).as_ptr().unwrap());
+                let before = [refs(qualname), refs(doc)];
+                assert_eq!(super::code_qualname_bits(code), name);
+                assert!(obj_from_bits(super::code_doc_bits(code)).is_none());
+                assert!(!super::code_declaration_is_published(code));
+                for (qualname, doc) in [
+                    (qualname, MoltObject::from_int(7).bits()),
+                    (MoltObject::from_int(7).bits(), doc),
+                ] {
+                    assert!(
+                        super::code_publish_declaration_metadata(py, code, qualname, doc).is_err()
+                    );
+                    assert!(crate::exception_pending(py));
+                    crate::builtins::exceptions::clear_exception(py);
+                    assert_eq!(*code.cast::<u64>().add(23), 0);
+                    assert_eq!(*code.cast::<u64>().add(24), 0);
+                }
+                assert_eq!([refs(qualname), refs(doc)], before);
+                for _ in 0..2 {
+                    assert!(
+                        super::code_publish_declaration_metadata(py, code, qualname, doc).is_ok()
+                    );
+                    assert_eq!(super::code_qualname_bits(code), qualname);
+                    assert_eq!(super::code_doc_bits(code), doc);
+                    assert_eq!([refs(qualname), refs(doc)], before.map(|value| value + 1));
+                }
+                let equal_qualname = text(b"outer.<locals>.inner");
+                let equal_doc = text(b"declaration documentation");
+                assert_ne!(qualname, equal_qualname);
+                assert_ne!(doc, equal_doc);
+                assert!(
+                    super::code_publish_declaration_metadata(py, code, equal_qualname, equal_doc)
+                        .is_ok()
+                );
+                assert_eq!([refs(equal_qualname), refs(equal_doc)], [1, 1]);
+                assert_eq!(
+                    [super::code_qualname_bits(code), super::code_doc_bits(code)],
+                    [qualname, doc],
+                    "equivalent repeated metadata preserves the first code-owned identities"
+                );
+                dec_ref_bits(py, equal_qualname);
+                dec_ref_bits(py, equal_doc);
+                for (proposed_qualname, proposed_doc) in [(changed, doc), (qualname, changed)] {
+                    assert!(
+                        super::code_publish_declaration_metadata(
+                            py,
+                            code,
+                            proposed_qualname,
+                            proposed_doc
+                        )
+                        .is_err()
+                    );
+                    crate::builtins::exceptions::clear_exception(py);
+                    assert_eq!(super::code_qualname_bits(code), qualname);
+                    assert_eq!(super::code_doc_bits(code), doc);
+                    assert_eq!([refs(qualname), refs(doc)], before.map(|value| value + 1));
+                    assert_eq!(refs(changed), 1);
+                }
+                let mut edges = Vec::new();
+                crate::object::heap_lifecycle::visit_owned_values(py, code, &mut |bits| {
+                    edges.push(bits)
+                });
+                assert_eq!(edges.iter().filter(|&&bits| bits == qualname).count(), 1);
+                assert_eq!(edges.iter().filter(|&&bits| bits == doc).count(), 1);
+                dec_ref_bits(py, code_bits);
+                assert_eq!([refs(qualname), refs(doc)], before);
+
+                let no_doc = alloc_test_code(py, name, name, 1);
+                assert!(
+                    super::code_publish_declaration_metadata(
+                        py,
+                        no_doc,
+                        qualname,
+                        MoltObject::none().bits()
+                    )
+                    .is_ok()
+                );
+                assert!(
+                    super::code_declaration_is_published(no_doc),
+                    "a published None docstring is not an unpublished pair"
+                );
+                assert!(
+                    super::code_publish_declaration_metadata(py, no_doc, qualname, doc).is_err()
+                );
+                crate::builtins::exceptions::clear_exception(py);
+                assert!(obj_from_bits(super::code_doc_bits(no_doc)).is_none());
+                dec_ref_bits(py, MoltObject::from_ptr(no_doc).bits());
+                for bits in [name, qualname, doc, changed] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn function_type_code_declaration_final_reprepare_preserves_all_owners_on_conflict() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let text = |value: &[u8]| MoltObject::from_ptr(alloc_string(py, value)).bits();
+                let name = text(b"candidate");
+                let qualname = text(b"outer.<locals>.candidate");
+                let doc = text(b"original declaration");
+                let other_qualname = text(b"other.<locals>.candidate");
+                let other_doc = text(b"reentrant declaration");
+                let function = alloc_function_obj(py, 0xF00D, 0);
+                let original = super::ensure_function_code_bits(py, function);
+                let candidate = alloc_test_code(py, name, name, 1);
+                let candidate_bits = MoltObject::from_ptr(candidate).bits();
+                let snapshot = || std::slice::from_raw_parts(candidate.cast::<u64>(), 25).to_vec();
+                let refs = |bits| ref_count(obj_from_bits(bits).as_ptr().unwrap());
+                let candidate_refs = ref_count(candidate);
+                let original_refs = ref_count(obj_from_bits(original).as_ptr().unwrap());
+                let epoch = super::function_mutation_version(function);
+                let prepare = || {
+                    super::prepare_function_code_bits(py, function, candidate_bits, None, None)
+                        .and_then(|prepared| prepared.with_declaration_metadata(py, qualname, doc))
+                };
+                let before = snapshot();
+                drop(prepare().expect("preflight declaration"));
+                assert_eq!(snapshot(), before, "preflight publishes no facts or owners");
+                assert_eq!([refs(qualname), refs(doc)], [1, 1]);
+                // A callback between preflight and final preparation publishes
+                // a different declaration to this still-unattached code.
+                super::code_publish_declaration_metadata(py, candidate, other_qualname, other_doc)
+                    .unwrap();
+                let reentrant = snapshot();
+                assert!(prepare().is_err());
+                assert!(crate::exception_pending(py));
+                crate::builtins::exceptions::clear_exception(py);
+                assert_eq!(
+                    snapshot(),
+                    reentrant,
+                    "failure must preserve callable, signature, lexical, execution and BOTH declaration words"
+                );
+                assert_eq!(super::code_callable_identity(candidate), None);
+                assert_eq!(super::code_published_execution_kind(candidate), None);
+                assert_eq!(super::function_code_bits(function), original);
+                assert_eq!(super::function_mutation_version(function), epoch);
+                assert_eq!(ref_count(candidate), candidate_refs);
+                assert_eq!(
+                    ref_count(obj_from_bits(original).as_ptr().unwrap()),
+                    original_refs
+                );
+                assert_eq!(
+                    [
+                        refs(qualname),
+                        refs(doc),
+                        refs(other_qualname),
+                        refs(other_doc)
+                    ],
+                    [1, 1, 2, 2]
+                );
+                dec_ref_bits(py, candidate_bits);
+                assert_eq!([refs(other_qualname), refs(other_doc)], [1, 1]);
+                for bits in [
+                    name,
+                    qualname,
+                    doc,
+                    other_qualname,
+                    other_doc,
+                    MoltObject::from_ptr(function).bits(),
+                ] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
 
     impl Drop for TrackerReset {
         fn drop(&mut self) {

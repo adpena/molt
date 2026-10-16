@@ -6,6 +6,11 @@ verify, SIMD/GPU/ABI/backends). Each lane mapped molt's coverage vs world-class 
 Julia/Codon/Mojo/GCC/Polly/V8) and adversarially self-reviewed. This is the dependency-correct
 build program for "Mojo/Julia but better; Codon but more flexible; Nuitka but way faster."
 Builds on [[optimizer_foundation]]; supersedes the narrow generator_fusion framing.
+The original June tier proposals below are a dependency/design inventory, not
+current absence or completion claims. The dated substrate inspection and
+current comparison qualify the live architectural state; the findings ledger
+alone owns open work and release acceptance. Verify the existing owner before
+implementing a proposal.
 
 ## Where molt actually is (don't underestimate it)
 Already present and non-trivial: fixpoint type inference w/ IV-seeding + oscillation detection +
@@ -61,15 +66,18 @@ and precision gaps instead of building parallel substrates.
   Unknown. Python integer exactness does not establish a raw machine carrier;
   inline-window, full-i64, overflow and boxed-BigInt contracts remain explicit.
 
-The current compounding bottleneck is final-fact custody: LLVM consumes owned
-final TIR, while native/WASM discard it and later reconstruct facts from
-rewritten SimpleIR. Native's copy-alias, split-field and direct-raise rewrites
-must join the final typed transformation/projection owner before codegen can
-reuse its representation and ownership facts. Every normal, skip and batch
-consumer must migrate together, then the replaced reconstruction is deleted.
+Final-fact custody remains a convergence obligation. Native now retains
+optimized TIR through final transformations and projects emitted operations
+and representation/lifetime facts together; LLVM consumes owned final TIR
+directly. WASM still reconstructs backend facts from its final SimpleIR. The
+next native migration carries typed control flow, ownership, roots and
+callable/linkage metadata through machine lowering and retires its string/name
+projection. Qualify every normal, skipped-pass and batch consumer separately.
 This extends [Century section 4.4](CENTURY_SYSTEMS_PLAN.md#44-compiler-runtime-abi-and-backends);
 [the IR contract](../spec/areas/compiler/0100_MOLT_IR.md) owns the current transport
 and [the findings ledger](../agent/V1_HANDOFF_FINDINGS.md) owns release status.
+[The current leading-project comparison](foundation/77_architecture_convergence.md#current-comparison)
+distinguishes remaining consumer gaps from mechanisms already implemented.
 
 ---
 
@@ -163,11 +171,13 @@ and [the findings ledger](../agent/V1_HANDOFF_FINDINGS.md) owns release status.
 ---
 
 ## TIER 5 — Whole-program & feedback (biggest real-workload levers)
-- **W1. PGO** — ENTIRE FAMILY MISSING (infra is dead code: PgoProfileIR + llvm pgo.rs exist but
-  pgo_branch_weights is always None at lowering.rs:8751; no instrument/collect/feedback). Typically
-  10–30% on dynamic-dispatch-heavy Python. The single largest missing optimization family. Build:
-  instrumented build → counter collection → profile merge → profile-directed inline/layout/devirt/
-  unroll/vector-width. The hot_functions + apply_profile_order hooks already wait for it.
+- **W1. PGO.** The LLVM instrumentation/profile helpers exist, but production
+  `try_lower_tir_to_llvm` passes no profile; helper tests do not establish a
+  connected instrument/collect/use path. Join the existing producer and
+  lowering consumers before claiming profile-directed optimization. Select
+  workloads and measure gains rather than assigning an expected multiplier.
+  HF-222 separately owns promoted, persistent performance baselines; a gate
+  reporting UNARMED cannot detect a regression.
 - **W2. CHA + speculative devirtualization** — no class-hierarchy analysis; only range/iter syntactic
   devirt. Build a type-hierarchy graph → resolve `x.foo()` to concrete impls → speculative inline.
 - **W3. Dead-field elim / per-attribute DCE** — the real <2MB + startup lever (make_function is an
@@ -180,12 +190,13 @@ and [the findings ledger](../agent/V1_HANDOFF_FINDINGS.md) owns release status.
 ---
 
 ## TIER 6 — Correctness infrastructure (continuous, gates everything)
-- **V1. Translation validation TIR→SimpleIR→native** — the riskiest gap: function_compiler.rs (~36k
-  lines) has NO semantic-equivalence guarantee; every runtime bug to date originated in TIR-vs-codegen
-  drift. Build a structural translation validator for TIR→SimpleIR (extend tools/translation_validator.py
-  beyond pass-to-pass) + Alive2-style SMT equivalence for the LLVM path.
-- **V2. Per-pass verification + e-graph integration** — run verify after each pass (not just post-
-  pipeline) in debug; integrate the egraph_simplify PoC into the pipeline for algebraic saturation.
+- **V1. Translation validation.** The shared pass manager already has translation
+  validation. Qualify backend lowering equivalence separately: pass-level
+  checks do not establish emitted-code semantics. Extend that existing owner
+  with independent counterexamples instead of creating a second validator.
+- **V2. Per-pass verification + e-graph integration.** Reuse the existing pass
+  manager's verification and analysis invalidation. New rewrite integration
+  needs its own legality, semantic and cost evidence.
 - **V3. Lean 4 proof completion** — close the ~73 sorries on the P1 critical path (dceSim, sccpSim,
   fullPipeline); extend to the new Tier-0/2 passes as they land.
 
@@ -244,8 +255,9 @@ not reach codegen intact until backends consume typed IR.
 
 1. **Tier 1 correctness first** (C1 memory-safety is non-negotiable; C2/C3 are hang/wrong-result).
    These are independent of the foundation and several are small.
-2. **Tier 0 substrate**, in order: S3 (effects oracle, small, fixes a hazard) → S1 (analysis manager)
-   → S4 (call graph + module phase) → S5 (alias + MemorySSA) → S6 (SCEV/LVI) → S2 (cost model, woven in).
+2. **Tier 0 consumers**: reuse the implemented S1–S6 owners above and complete
+   their actual precision, preservation and backend-consumer gaps; do not
+   rebuild the substrate from the original absence statements.
 3. **Tier 2 engine**: E3 (IP escape/purity, cheap, unblocks immediately) → E1 (inliner, keystone) →
    E2 (SROA) → E4 (IPSCCP) → E5 (monomorphization) → E6 (MemSSA opts).
 4. **Tier 3 consequences**: D2 (reuse actualization, low-risk win) → D1 (CoroElide+generator fusion →
@@ -256,15 +268,11 @@ not reach codegen intact until backends consume typed IR.
 7. **Tier 6** runs continuously; V1 gates risky lowering work.
 
 ## Discipline (non-negotiable, per CLAUDE.md + user mandate)
-No stopgaps; each phase lands complete or leaves a clean baton. Conservative-correct first cuts that
-EXPAND by measurement; absence of an optimization is a perf bail, NEVER a miscompile. Every phase:
-research → design → implement → iterate → recursive adversarial senior-engineer review → differential-
-test vs CPython on every shape → perf-gate (≥ CPython on every benchmark × target × profile) before
-landing. Build the substrate (Tier 0) before the passes that need it — no per-function workarounds.
-
-## Per-lane detail
-Full gap lists with file:line live in the 7 lane reports (this session's research agents). Key
-single-most-important findings: IPO=no call graph/TIR inliner; Memory=no alias analysis/MemorySSA;
-Type=no monomorphization + deopt unwired; Loops=no SCEV + BCE unsound (C1) + vectorize dead; EH=
-needs_exception_stack trap (C2) + no CoroElide; WPO=PGO is a stub + no cost model + no analysis cache;
-SIMD/GPU=zero SIMD codegen + GPU is CPU sim + uniform boxed ABI.
+No stopgaps; each contract lands with its complete consumer migration.
+Absence of an optimization never licenses a miscompile. Research, reconcile the
+existing owner, implement, review adversarially and prove the changed contract
+with independent CPython/IR/runtime oracles. Measure affected load-bearing
+costs and reuse unchanged evidence. Focused proof precedes broader execution;
+the canonical release matrix still owns full conformance and CPython-floor
+acceptance. A small repair does not require unrelated full-matrix reruns, and
+one passing cell does not qualify the matrix.

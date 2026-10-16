@@ -587,6 +587,24 @@ their direct argument path. Defaults and closure metadata retain the supplied
 objects; invocation reads the admitted dictionary backing of a `kwdefaults`
 subclass without replacing its visible identity. These rules follow
 [CPython's constructor](https://github.com/python/cpython/blob/v3.15.0/Objects/funcobject.c).
+Declaration qualname and docstring belong to the code object. Packed metadata
+fields 1 and 10 publish those existing compiler-produced facts once, before
+the code slot is exposed. Reconstruction reads them directly; a supplied name
+changes only `__name__`. Mutating another function's `__qualname__` or `__doc__`,
+or replacing a function's `__code__`, cannot rewrite the declaration or a
+sibling function's attributes. This follows
+[CPython 3.12](https://github.com/python/cpython/blob/v3.12.0/Objects/funcobject.c)
+and [3.15](https://github.com/python/cpython/blob/v3.15.0/Objects/funcobject.c).
+The code payload owns two additional words (16 bytes; the current allocation
+class grows from 208 to 224 bytes), with no function-payload growth, extra
+allocation or invocation-time lookup. Clone and heap traversal/retirement
+preserve both edges. Only exact immutable strings and a `None` docstring are
+admitted: native string subclasses can own mutable state and cannot enter this
+acyclic code edge. Repeated equal declaration values retain the original code
+owners, including when the producer supplies distinct equal string objects.
+This declaration contract does not implement the missing constant-pool
+producer, `co_consts`, or the versioned `CO_HAS_DOCSTRING` projection; those
+remain explicit HF-235 acceptance obligations.
 The packed function metadata tuple contains fourteen fields; field 11 (zero-based)
 is the typed execution-kind integer (0 through 3 in the order above), and fields
 12 and 13 are ordered free-variable and cell-variable name tuples. Publication
@@ -609,7 +627,8 @@ dispatch consumes its validated scalar ABI; it never scans cells on the hot path
 
 Both metadata transport ABIs decode into one function-metadata initializer.
 Code attachment is a prepare/publish/retire transaction. Preparation validates
-the complete signature, callable identity, lexical metadata and execution kind
+the complete signature, callable identity, lexical metadata, execution kind
+and immutable declaration metadata
 without changing either owner. Publication retains incoming edges and installs
 the coherent code/signature state without callbacks or decrefs. Executable
 scalars, mutation epoch and binder/cache state become coherent before displaced

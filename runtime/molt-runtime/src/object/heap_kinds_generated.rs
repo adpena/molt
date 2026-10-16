@@ -297,6 +297,8 @@ pub(crate) enum HeapAcyclicSlot {
     CodeFreevars,
     CodeCellvars,
     CodeGpuDescriptor,
+    CodeQualname,
+    CodeDoc,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2063,6 +2065,8 @@ pub(crate) const fn heap_acyclic_slot_domain(slot: HeapAcyclicSlot) -> HeapAcycl
         HeapAcyclicSlot::CodeFreevars => HeapAcyclicEdgeDomain::StrTuple,
         HeapAcyclicSlot::CodeCellvars => HeapAcyclicEdgeDomain::StrTuple,
         HeapAcyclicSlot::CodeGpuDescriptor => HeapAcyclicEdgeDomain::StrOrNone,
+        HeapAcyclicSlot::CodeQualname => HeapAcyclicEdgeDomain::Str,
+        HeapAcyclicSlot::CodeDoc => HeapAcyclicEdgeDomain::StrOrNone,
     }
 }
 

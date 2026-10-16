@@ -69,6 +69,8 @@ ACYCLIC_SLOT_SCHEMAS = {
         ("freevars", "str_tuple"),
         ("cellvars", "str_tuple"),
         ("gpu_descriptor", "str_or_none"),
+        ("qualname", "str"),
+        ("doc", "str_or_none"),
     ),
 }
 ALLOWED = {
