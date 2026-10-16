@@ -10,7 +10,7 @@ from molt.memory_guard_paths import (
     memory_guard_state_root,
     pytest_guard_summary_dir,
 )
-from molt.dx import development_artifact_env, project_cargo_target_dir
+from molt.dx import development_artifact_env, project_cargo_target_dir, proof_scratch_root
 from molt.cli.runtime_paths import _build_state_root_cached
 from tools.build_control_path import build_control_output
 from tools.harness_memory_guard import canonical_harness_env
@@ -74,10 +74,35 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
         "profile_log": str(expected_profile),
         "guard_state_root": str(memory_guard_state_root(repo, admitted)),
         "pytest_guard_root": str(pytest_guard_summary_dir(repo, admitted)),
+        "proof_scratch_root": str(tmp_path / "canonical" / "tmp"),
     }
     assert not expected_profile.exists(), "profile projection must not create evidence"
     assert expected.is_relative_to(tmp_path / "canonical")
     assert not expected.exists(), "path projection must not create control directories"
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_ci_evidence_and_tool_outputs_share_the_admitted_proof_scratch_root(
+    tmp_path: Path, queued: bool
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {"MOLT_EXT_ROOT": str(tmp_path / "canonical")}
+    expected = tmp_path / "canonical" / "tmp"
+    if queued:
+        expected = tmp_path / "queue" / "issued-scratch"
+        env["MOLT_PROOF_SCRATCH_ROOT"] = str(expected)
+    admitted = canonical_harness_env(env, repo_root=repo)
+    producer_env = development_artifact_env(repo, admitted, create_dirs=False)
+    outputs = dict(
+        line.split("=", 1)
+        for line in build_control_output(env, repo_root=repo).splitlines()
+    )
+
+    assert outputs["proof_scratch_root"] == str(expected)
+    assert proof_scratch_root(repo, producer_env) == expected
+    assert not expected.is_relative_to(repo)
+    assert not expected.exists(), "path projection must not create evidence roots"
 
 
 def test_same_target_shares_canonical_control_across_receipt_roots(tmp_path: Path):

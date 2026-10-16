@@ -18,6 +18,7 @@ bind_repository_imports(__file__)
 
 from molt.memory_guard_paths import memory_guard_state_root, pytest_guard_summary_dir  # noqa: E402
 from molt.build_state_layout import project_build_state_root  # noqa: E402
+from molt.dx import proof_scratch_root  # noqa: E402
 from tools.harness_memory_guard import canonical_harness_env, command_profile_log_path  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,9 +30,11 @@ def build_control_output(environment: Mapping[str, str], *, repo_root: Path) -> 
     profile_log = command_profile_log_path(admitted, repo_root=repo_root)
     guard_state = memory_guard_state_root(repo_root, admitted)
     pytest_state = pytest_guard_summary_dir(repo_root, admitted)
+    proof_scratch = proof_scratch_root(repo_root, admitted)
     return (
         f"root={root}\nprofile_log={profile_log}\n"
-        f"guard_state_root={guard_state}\npytest_guard_root={pytest_state}"
+        f"guard_state_root={guard_state}\npytest_guard_root={pytest_state}\n"
+        f"proof_scratch_root={proof_scratch}"
     )
 
 

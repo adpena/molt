@@ -49,8 +49,11 @@ from molt.dx import (  # noqa: E402
     artifact_root as canonical_artifact_root,
     cargo_target_dir_for_environment,
     development_artifact_env,
+    proof_scratch_root,
     scratch_root,
 )
+from molt.file_publication import resolve_owned_path  # noqa: E402
+from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt import file_locks  # noqa: E402
 from molt import python_interpreter  # noqa: E402
@@ -260,6 +263,45 @@ def _configure_diff_artifact_environment(
         custody_root=Path(environment["MOLT_DIFF_ROOT"]),
         explicit_outputs=inherited_outputs,
     )
+
+
+def _configure_diff_evidence(
+    args: Any,
+    *,
+    repo_root: Path,
+    environment: MutableMapping[str, str],
+) -> None:
+    """Bind one evidence owner beneath the configured run's scratch root."""
+    if args.evidence_dir is None:
+        return
+    conflicts = [
+        name
+        for name, explicit in (
+            ("--json-output", args.json_output is not None),
+            ("--log-aggregate", args.log_aggregate is not None),
+            ("MOLT_DIFF_SUMMARY", "MOLT_DIFF_SUMMARY" in environment),
+            ("MOLT_DIFF_RESULTS_JSONL", "MOLT_DIFF_RESULTS_JSONL" in environment),
+        )
+        if explicit
+    ]
+    if conflicts:
+        raise ValueError(
+            "--evidence-dir conflicts with explicit artifact paths: "
+            + ", ".join(conflicts)
+        )
+    purpose = portable_relative_path(args.evidence_dir)
+    directory = resolve_owned_path(
+        proof_scratch_root(repo_root, environment).joinpath(
+            "differential", *purpose.parts
+        )
+    )
+    summary = resolve_owned_path(directory / "summary.json")
+    results = resolve_owned_path(directory / "results.jsonl")
+    aggregate = resolve_owned_path(directory / "output.log")
+    directory.mkdir(parents=True, exist_ok=True)
+    environment["MOLT_DIFF_SUMMARY"] = str(summary)
+    environment["MOLT_DIFF_RESULTS_JSONL"] = str(results)
+    args.log_aggregate = str(aggregate)
 
 
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
@@ -5534,6 +5576,10 @@ if __name__ == "__main__":
         help="Write JSON summary to a file.",
     )
     parser.add_argument(
+        "--evidence-dir",
+        help="Write summary, results and aggregate log below run scratch for this relative purpose.",
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=None,
@@ -5601,15 +5647,6 @@ if __name__ == "__main__":
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
-    log_file = Path(args.log_file).expanduser() if args.log_file else None
-    log_aggregate = (
-        Path(args.log_aggregate).expanduser() if args.log_aggregate else None
-    )
-    failures_output = (
-        Path(args.failures_output).expanduser() if args.failures_output else None
-    )
-
     target_paths: list[str] = list(args.file)
     for list_path in args.files_from:
         try:
@@ -5623,6 +5660,20 @@ if __name__ == "__main__":
         repo_root=_repo_root(),
         environment=os.environ,
     )
+    try:
+        _configure_diff_evidence(args, repo_root=_repo_root(), environment=os.environ)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
+    log_file = Path(args.log_file).expanduser() if args.log_file else None
+    log_aggregate = (
+        Path(args.log_aggregate).expanduser() if args.log_aggregate else None
+    )
+    failures_output = (
+        Path(args.failures_output).expanduser() if args.failures_output else None
+    )
+
     if target_paths:
         targets = [Path(path) for path in target_paths]
         retry_oom = _diff_retry_oom_default()

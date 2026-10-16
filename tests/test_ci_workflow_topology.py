@@ -483,6 +483,11 @@ def test_ci_control_evidence_uses_shared_path_command(workflow, job, upload_name
             "${{ steps.build-control.outputs.root }}/runtime_wasm_generations/*.json"
             in paths
         )
+        assert (
+            "${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/differential/runtime-import/', steps.build-control.outputs.proof_scratch_root) || '' }}"
+            in paths
+        )
+        assert "proof-receipts/evidence/import-from-codec/" not in paths
     assert steps.index(resolver) < steps.index(upload)
 
 
@@ -681,6 +686,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     assert outputs["profile_log"] == str(profile)
     assert outputs["guard_state_root"] == str(custody / "tmp" / "memory_guard")
     assert outputs["pytest_guard_root"] == str(pytest_dir)
+    assert outputs["proof_scratch_root"] == str(custody / "tmp")
     values = {
         "matrix.cell": cell,
         "env.CARGO_TARGET_DIR": str(custody / "target")
@@ -711,7 +717,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             f"proof-receipts/{family}.json",
             *(
                 [
-                    "proof-receipts/evidence/import-from-codec/",
+                    "${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/differential/runtime-import/', steps.build-control.outputs.proof_scratch_root) || '' }}",
                     "proof-receipts/evidence/split-runtime/",
                 ]
                 if wasm
@@ -768,7 +774,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         ]
         if wasm:
             retained_files += [
-                workspace / "proof-receipts/evidence/import-from-codec" / name
+                custody / "tmp/differential/runtime-import" / name
                 for name in ("results.jsonl", "summary.json", "output.log")
             ]
             retained_files += [
@@ -839,7 +845,6 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
                 wasm
                 and candidate
                 in {
-                    workspace / "proof-receipts/evidence/import-from-codec",
                     workspace / "proof-receipts/evidence/split-runtime",
                 }
             )

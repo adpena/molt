@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f001446be9822c3b8869bf88d787964f0d86da507d8973643110827242e1064f",
+  "authority_sha256": "08bf3bb16ad06317123432e1a03cb28067ba211ed2cfe08a9f0d8c96edb1f44c",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -451,6 +451,7 @@
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py",
         "tools/compat/**",
+        "tools/build_control_path.py",
         "tools/gen_reconstructed_function_fixtures.py",
         "tests/fixtures/reconstructed_functions/**",
         "tests/reconstructed_function_test_support.py",
@@ -4404,10 +4405,9 @@
         "--no-retry-oom",
         "--files-from",
         "tests/fixtures/reconstructed_functions/TESTS.txt",
-        "--json-output",
-        "proof-receipts/evidence/import-from-codec/summary.json",
-        "--log-aggregate",
-        "proof-receipts/evidence/import-from-codec/output.log",
+        "--evidence-dir",
+        "runtime-import",
+        "--json",
         "tests/differential/stdlib/json_encoder_hooks.py",
         "tests/differential/basic/from_import_missing_name.py",
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
@@ -4426,12 +4426,9 @@
         "MOLT_BACKEND_DAEMON": "0",
         "MOLT_BACKEND_PROFILE": "dev",
         "MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC": "60",
-        "MOLT_DIFF_RESULTS_JSONL": "proof-receipts/evidence/import-from-codec/results.jsonl",
+        "MOLT_DIFF_MEASURE_RSS": "0",
         "MOLT_DIFF_TIMEOUT": "60"
       },
-      "evidence_outputs": [
-        "proof-receipts/evidence/import-from-codec"
-      ],
       "family": "wasm",
       "id": "wasm.test.runtime-import-conformance",
       "resource_class": "compiler-build-resource",
