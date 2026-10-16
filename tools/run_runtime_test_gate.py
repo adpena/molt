@@ -48,6 +48,9 @@ from tools.libtest_results import accounting_problem  # noqa: E402
 COMMANDS = CommandExecutor.for_file(__file__)
 ISOLATED = (
     "async_rt::sockets::state::socket_runtime_state_tests::cold_socket_and_websocket_retirement_never_starts_services",
+    # Runtime restart rebuilds previously exposed static C types. Only a new
+    # process can observe their initial rootless READY state and lazy namespace.
+    "cpython_abi_hooks::buffer_semantics_tests::builtin_buffer_names_share_cold_runtime_lookup_and_native_readiness",
     "cpython_abi_hooks::pending_cleanup_tests::canonical_cache_allocation_failure_reentry_and_ascii_no_retry",
     "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
     "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
@@ -1055,13 +1058,16 @@ def zlib_wasi_artifact(
 
 
 def run_zlib_wasi(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
+    from tools.proof_queue_pkg.execution_custody import node_bootstrap_options
+
     if args.profile != "dev-fast":
         raise RuntimeError("zlib-wasi requires the checked dev-fast profile")
     source = truth.git_source_identity()
     aggregate["source_identity"] = source
     environment = dict(os.environ)
-    if environment.get("NODE_OPTIONS"):
-        raise RuntimeError("zlib-wasi requires explicit Node options")
+    node_options = environment.get("NODE_OPTIONS", "")
+    if node_options and node_options != node_bootstrap_options():
+        raise RuntimeError("zlib-wasi permits only queue-owned Node bootstrap options")
     node = resolve_node_runtime(source_root=ROOT, environment=environment)
     node_identity = truth._file_identity(node.path)
     aggregate["node"] = {
@@ -1101,8 +1107,10 @@ def run_zlib_wasi(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
     ]
     context, environment = zlib_wasi_flags(command, environment)
     aggregate["cargo_flags"] = context
-    if environment.get("NODE_OPTIONS"):
-        raise RuntimeError("zlib-wasi requires explicit Node options")
+    if environment.get("NODE_OPTIONS", "") != node_options:
+        raise RuntimeError(
+            "zlib-wasi Cargo configuration changed Node bootstrap options"
+        )
     aggregate["build_command"] = command
     build = cargo_build(command, run, args.build_timeout_seconds, environment)
     aggregate["build_returncode"] = build.returncode

@@ -4,6 +4,8 @@
 //! borrow a raw `Vec` from an object: immutable tuples use zero-lock scoped or
 //! pinned reads, while mutable lists use the stable backing lock, a pinned
 //! item, or a resource-accounted owned snapshot.
+//! Pins are semantic owners: ordinary retirement leaves the selected error
+//! visible to native deallocators. Explicit cleanup supplies its own boundary.
 
 use crate::object::{HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_HAS_ABI_VIEW};
 use crate::*;
@@ -43,9 +45,7 @@ impl<'a, 'py> PinnedSequenceItem<'a, 'py> {
 
 impl Drop for PinnedSequenceItem<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            dec_ref_bits(self.py, self.bits);
-        });
+        dec_ref_bits(self.py, self.bits);
     }
 }
 
@@ -76,11 +76,9 @@ impl std::ops::Deref for PinnedSequenceSnapshot<'_, '_> {
 
 impl Drop for PinnedSequenceSnapshot<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            for &bits in self.values.iter() {
-                dec_ref_bits(self.py, bits);
-            }
-        });
+        for &bits in self.values.iter() {
+            dec_ref_bits(self.py, bits);
+        }
     }
 }
 
@@ -291,9 +289,7 @@ impl std::ops::Deref for PinnedTuple<'_, '_> {
 
 impl Drop for PinnedTuple<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            dec_ref_bits(self.py, self.bits);
-        });
+        dec_ref_bits(self.py, self.bits);
     }
 }
 

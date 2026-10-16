@@ -97,6 +97,14 @@ class WatchSpec:
 
 CHILD_POLICY_SCHEMA = "molt.proof-child-custody.v1"
 CHILD_CUSTODY_RECEIPT_SCHEMA = "molt.proof-child-custody-receipt.v4"
+
+
+def node_bootstrap_options() -> str:
+    """The queue-owned Node observer options, without caller engine settings."""
+    hook = Path(__file__).with_name("node_child_custody.cjs").resolve(strict=True)
+    return f"--no-global-search-paths --require={hook}"
+
+
 # v3: every apparatus class is validated; selected empty uv-lock closes carry
 # captured Python/uv owner identities. Older permissive receivers cannot admit it.
 LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v3"

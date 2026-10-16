@@ -154,7 +154,10 @@ fn semantic_sequence_and_argument_snapshots_expose_last_native_owner() {
             );
             kind.tp_dealloc = Some(observing_drop);
             assert_eq!(kind.ready(), 0);
-            for mode in 0..4 {
+            // Exercise each physical owner and both new stable-read branches.
+            // The callback must see the same error when its pin becomes last.
+            for mode in 0..7 {
+                OBSERVED.with(|seen| seen.set((0, 0)));
                 let value = native_value(py, &mut kind);
                 let value_bits = value.bits();
                 let tuple = crate::alloc_tuple(
@@ -170,12 +173,32 @@ fn semantic_sequence_and_argument_snapshots_expose_last_native_owner() {
                     py.core_token(),
                     MoltObject::from_ptr(tuple).bits(),
                 );
+                let list = if mode == 4 || mode == 6 {
+                    let list = crate::alloc_list(py, &[value_bits]);
+                    assert!(!list.is_null());
+                    Some(ProtectedRuntimeValue::from_owned_bits(
+                        py.core_token(),
+                        MoltObject::from_ptr(list).bits(),
+                    ))
+                } else {
+                    None
+                };
+                let sequence = (mode == 5 || mode == 6).then(|| {
+                    let source = list
+                        .as_ref()
+                        .map_or(tuple, |owner| obj_from_bits(owner.bits()).as_ptr().unwrap());
+                    crate::object::seq_access::pin_sequence(py, source, "sequence pin test")
+                        .unwrap()
+                });
                 let pin =
                     (mode == 0).then(|| crate::object::seq_access::pin_tuple(py, tuple).unwrap());
                 let item =
                     (mode == 1).then(|| crate::object::seq_access::pin_item(py, tuple, 0).unwrap());
-                let snapshot = (mode == 2).then(|| {
-                    crate::object::seq_access::snapshot(py, tuple, "snapshot test").unwrap()
+                let snapshot = (mode == 2 || mode == 4).then(|| {
+                    let source = list
+                        .as_ref()
+                        .map_or(tuple, |owner| obj_from_bits(owner.bits()).as_ptr().unwrap());
+                    crate::object::seq_access::snapshot(py, source, "snapshot test").unwrap()
                 });
                 let name = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
                 let name = ProtectedRuntimeValue::from_owned_bits(py.core_token(), name);
@@ -197,14 +220,20 @@ fn semantic_sequence_and_argument_snapshots_expose_last_native_owner() {
                 crate::object::ops::dict_clear_in_place(py, dict);
                 drop(dict_owner);
                 drop(tuple_owner);
+                drop(list);
                 drop(value);
-                OBSERVED.with(|seen| seen.set((0, 0)));
+                assert_eq!(
+                    OBSERVED.with(|seen| seen.get()),
+                    (0, 0),
+                    "mode {mode}: the sequence or argument pin must own the last reference"
+                );
                 let error = pending_error(py);
                 crate::record_exception(py, obj_from_bits(error.bits()).as_ptr().unwrap());
                 drop(pin);
                 drop(item);
                 drop(snapshot);
                 drop(args);
+                drop(sequence);
                 assert_completed(py, Some(error.bits()));
             }
         }

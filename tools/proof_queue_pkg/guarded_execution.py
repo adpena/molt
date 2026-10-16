@@ -414,14 +414,7 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         canonical_env = dict(command_identity._CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
-            node_hook = (
-                Path(execution_custody.__file__)
-                .with_name("node_child_custody.cjs")
-                .resolve(strict=True)
-            )
-            canonical_env["NODE_OPTIONS"] = (
-                f"--no-global-search-paths --require={node_hook}"
-            )
+            canonical_env["NODE_OPTIONS"] = execution_custody.node_bootstrap_options()
         inherited_env.update(canonical_env)
         execution_env, environment_contract = (
             environment._deterministic_execution_environment(
