@@ -714,6 +714,27 @@ def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
     assert classes["formal"] is False
 
 
+def test_docs_architecture_local_gate_uses_project_python() -> None:
+    from tools import molt_dev
+
+    gates, matched = molt_dev.GateConfig.load(PLAN.path).select(["docs/spec/STATUS.md"])
+    assert any(rule.name == "docs-architecture" for rule in matched)
+    # The Markdown parser is a project dependency. Integration supplies MOLT_VENV
+    # to the existing wrapper; bare host Python cannot import that dependency.
+    assert [
+        gate.split()
+        for gate in gates
+        if "tools/check_docs_architecture.py" in gate.split()
+    ] == [
+        [
+            "python3",
+            "tools/venv_exec.py",
+            "python",
+            "tools/check_docs_architecture.py",
+        ]
+    ]
+
+
 @pytest.mark.parametrize(
     "path",
     [
