@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "08bf3bb16ad06317123432e1a03cb28067ba211ed2cfe08a9f0d8c96edb1f44c",
+  "authority_sha256": "396b920213f6313a3e9064104d58974bf5b41dc4b55631a5bf2590d3f6967b8f",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -10909,6 +10909,16 @@
     {
       "executable": "uv",
       "name": "uv",
+      "process_image_probes": [
+        [
+          "--offline",
+          "--no-config",
+          "--managed-python",
+          "python",
+          "list",
+          "--only-downloads"
+        ]
+      ],
       "setup_evidence": [
         ".github/actions/setup-project/action.yml::version: \"0.13.1\""
       ],
