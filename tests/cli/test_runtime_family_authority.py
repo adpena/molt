@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tomllib
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +28,7 @@ from molt.cli.runtime_identity_schema import (
 )
 from molt.exact_json import canonical_json_sha256
 from molt import rust_toolchain
+from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from tests.executable_test_support import write_mock_executable
 from tests.rustc_test_support import (
     rustc_target_metadata_output,
@@ -47,6 +49,266 @@ def _reseal(value: dict) -> None:
     value["compile_digest"] = family["compile_digest"]
     value["family_digest"] = canonical_json_sha256(family)
     value["digest"] = canonical_json_sha256(value["payload"])
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_native_dependency_source_default_uses_actual_cargo_config_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, staged: bool
+) -> None:
+    source = Path(__file__).resolve().parents[2]
+    raw = (source / ".cargo/config.toml").read_bytes()
+    assert tomllib.loads(raw.decode("utf-8"))["env"]["AWS_LC_SYS_USE_SYSTEM"] == "0"
+    root = tmp_path / "source"
+    (root / ".cargo").mkdir(parents=True)
+    (root / ".cargo/config.toml").write_bytes(raw)
+    (root / "Cargo.toml").write_text(
+        '[package]\nname="fixture"\nversion="0.1.0"\n', encoding="utf-8"
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work if staged else root)
+    inherited = {"CARGO_HOME": str(tmp_path / "cargo-home")}
+
+    captured = plans.capture_cargo_configuration_inputs(
+        root, env=inherited, cargo_command=["cargo", "build"]
+    )
+
+    assert captured[1]["AWS_LC_SYS_USE_SYSTEM"] == "0"
+    assert inherited == {"CARGO_HOME": str(tmp_path / "cargo-home")}
+    assert any(item.path == root / ".cargo/config.toml" for item in captured[3])
+    assert not (work / ".cargo").exists()
+
+
+@pytest.mark.parametrize(
+    "controls",
+    [
+        {"AWS_LC_SYS_USE_SYSTEM": "1"},
+        {"AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu": "yes"},
+        {"AWS_LC_SYS_SYSTEM_DIR": ""},
+        {"AWS_LC_SYS_SYSTEM_DIR_aarch64_unknown_linux_gnu": "/unowned"},
+        {"AWS_LC_SYS_USE_SYSTEM": " 0 "},
+        {"AWS_LC_SYS_USE_SYSTEM": ""},
+        {"AWS_LC_SYS_INCLUDES": "/unowned"},
+        {"AWS_LC_SYS_CMAKE_BUILDER": "1"},
+        {"AWS_LC_SYS_STATIC": "false"},
+        {"AWS_LC_SYS_NO_ASM": "1"},
+        {"AWS_LC_SYS_NO_PREGENERATED_SRC": "1"},
+        {"AWS_LC_SYS_EXTERNAL_BINDGEN": "1"},
+        {"AWS_LC_SYS_NO_PREFIX": "1"},
+        {"AWS_LC_SYS_PREGENERATING_BINDINGS": "1"},
+        {"AWS_LC_SYS_SANITIZER": ""},
+        {"AWS_LC_SYS_EFFECTIVE_TARGET": "different-unknown-linux-gnu"},
+    ],
+)
+def test_native_dependency_unowned_capabilities_fail_before_tool_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, controls: dict[str, str]
+) -> None:
+    def probe_forbidden(*_args, **_kwargs):
+        pytest.fail("unsupported native dependency selection must precede tool probes")
+
+    monkeypatch.setattr(plans, "_tool_path", probe_forbidden)
+    env = {"CARGO_HOME": str(tmp_path / "cargo-home"), **controls}
+    before = dict(env)
+    with pytest.raises(ValueError, match="AWS-LC") as raised:
+        plans.resolve_runtime_cargo_plan(
+            tmp_path,
+            env=env,
+            cargo_command=["cargo", "build", "--target", "aarch64-unknown-linux-gnu"],
+            requested_target="aarch64-unknown-linux-gnu",
+        )
+    assert all(name in str(raised.value) for name in controls)
+    assert env == before
+    assert not list(tmp_path.iterdir())
+
+
+def test_native_dependency_diagnostics_report_all_provider_and_private_controls() -> (
+    None
+):
+    controls = {
+        "AWS_LC_SYS_USE_SYSTEM": "0",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu": "1",
+        "AWS_LC_SYS_SYSTEM_DIR": "/unowned",
+        "AWS_LC_SYS_INCLUDES": "/headers",
+    }
+    with pytest.raises(ValueError, match="AWS-LC") as raised:
+        validate_cargo_native_dependency_environment(
+            controls,
+            target="aarch64-unknown-linux-gnu",
+            compiler_host="aarch64-unknown-linux-gnu",
+        )
+    assert all(
+        name in str(raised.value)
+        for name in controls
+        if name != "AWS_LC_SYS_USE_SYSTEM"
+    )
+
+
+def test_native_dependency_target_precedence_preserves_shadowed_and_unused_values() -> (
+    None
+):
+    controls = {
+        "AWS_LC_SYS_USE_SYSTEM": "1",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu": "0",
+        "AWS_LC_SYS_NO_ASM": "1",
+        "AWS_LC_SYS_NO_ASM_aarch64_unknown_linux_gnu": "0",
+        "AWS_LC_SYS_SYSTEM_DIR_x86_64_pc_windows_msvc": "/not-selected",
+        "AWS_LC_SYS_INCLUDES_x86_64_unknown_linux_gnu": "/not-selected",
+    }
+    before = dict(controls)
+    validate_cargo_native_dependency_environment(controls)
+    validate_cargo_native_dependency_environment(
+        controls, target="aarch64-unknown-linux-gnu"
+    )
+    assert controls == before
+
+
+def test_native_dependency_target_suffix_matches_upstream_exact_spelling() -> None:
+    controls = {
+        "AWS_LC_SYS_USE_SYSTEM": "0",
+        "AWS_LC_SYS_USE_SYSTEM_AARCH64_UNKNOWN_LINUX_GNU": "1",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64-unknown-linux-gnu": "1",
+    }
+    if os.name == "nt":
+        # Windows folds case before upstream's exact environment lookup.
+        with pytest.raises(ValueError, match="AWS-LC"):
+            validate_cargo_native_dependency_environment(
+                controls, target="aarch64-unknown-linux-gnu"
+            )
+    else:
+        validate_cargo_native_dependency_environment(
+            controls, target="aarch64-unknown-linux-gnu"
+        )
+
+
+@pytest.mark.parametrize("false_value", ["0", "false", "NO", "Off"])
+def test_native_dependency_source_controls_keep_the_cc_assembly_capability(
+    false_value: str,
+) -> None:
+    controls = {
+        "AWS_LC_SYS_USE_SYSTEM": false_value,
+        "AWS_LC_SYS_CMAKE_BUILDER": "0",
+        "AWS_LC_SYS_NO_ASM": "0",
+        "AWS_LC_SYS_STATIC": "true",
+        "AWS_LC_SYS_SMALL": "1",
+        "AWS_LC_SYS_C_STD": "11",
+        "AWS_LC_SYS_NO_JITTER_ENTROPY": "0",
+        "AWS_LC_SYS_PROJECT_NOTE": "data, not an upstream control",
+        "CC_aarch64_unknown_linux_gnu": "/captured/compiler",
+        "CFLAGS": "-O3",
+    }
+    before = dict(controls)
+    validate_cargo_native_dependency_environment(controls)
+    assert controls == before
+
+
+def test_native_dependency_explicit_cc_selection_owns_no_asm_and_sanitizer_precedence():
+    controls = {
+        "AWS_LC_SYS_USE_SYSTEM": "0",
+        "AWS_LC_SYS_NO_ASM": "1",
+        "AWS_LC_SYS_SANITIZER": "address",
+        "AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu": "0",
+    }
+    validate_cargo_native_dependency_environment(controls)
+    validate_cargo_native_dependency_environment(
+        controls, target="x86_64-unknown-linux-gnu"
+    )
+    with pytest.raises(ValueError, match="AWS_LC_SYS_NO_ASM") as raised:
+        validate_cargo_native_dependency_environment(
+            controls, target="aarch64-unknown-linux-gnu"
+        )
+    assert "AWS_LC_SYS_SANITIZER" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "target,host", [(None, None), ("target", None), (None, "host")]
+)
+def test_native_dependency_bound_stage_requires_captured_target_and_host(target, host):
+    with pytest.raises(ValueError, match="requires captured Rust target and host"):
+        validate_cargo_native_dependency_environment(
+            {}, target=target, compiler_host=host, native_bound=True
+        )
+
+
+@pytest.mark.parametrize("cross", [False, True])
+@pytest.mark.parametrize("control", ["CC", "CXX", "CFLAGS"])
+def test_native_dependency_bound_roles_ignore_inactive_controls_and_pinned_drivers(
+    cross, control
+):
+    host = "x86_64-unknown-linux-gnu"
+    target = "aarch64-unknown-linux-gnu" if cross else host
+    active = "TARGET_" if cross else "HOST_"
+    inactive = "HOST_" if cross else "TARGET_"
+    controls = {
+        "AWS_LC_SYS_USE_SYSTEM": "0",
+        "AWS_LC_SYS_" + inactive + control: "/unused",
+        "CC_" + target: "/captured/cc",
+        "CXX_" + target: "/captured/cxx",
+    }
+    validate_cargo_native_dependency_environment(controls, target=target)
+    validate_cargo_native_dependency_environment(
+        controls, target=target, compiler_host=host, native_bound=True
+    )
+    selected = "AWS_LC_SYS_" + active + control
+    controls[selected] = "/private"
+    if control == "CFLAGS":
+        with pytest.raises(ValueError, match=selected):
+            validate_cargo_native_dependency_environment(
+                controls, target=target, compiler_host=host, native_bound=True
+            )
+    else:
+        # AWS writes only the normalized form; cc-rs still selects the pinned
+        # raw-hyphen target driver, so the private value is ineffective.
+        validate_cargo_native_dependency_environment(
+            controls, target=target, compiler_host=host, native_bound=True
+        )
+
+
+@pytest.mark.parametrize("cross", [False, True])
+def test_native_dependency_flag_rewrite_retains_existing_custody_and_refuses_conflicts(
+    cross,
+):
+    host = "x86_64-unknown-linux-gnu"
+    target = "aarch64-unknown-linux-gnu" if cross else host
+    suffix = target.replace("-", "_")
+    role = "TARGET_CFLAGS" if cross else "HOST_CFLAGS"
+    controls = {"AWS_LC_SYS_USE_SYSTEM": "0", role: "-O2"}
+    validate_cargo_native_dependency_environment(
+        controls, target=target, compiler_host=host, native_bound=True
+    )
+    controls["CFLAGS_" + suffix] = "-O2"
+    validate_cargo_native_dependency_environment(
+        controls, target=target, compiler_host=host, native_bound=True
+    )
+    controls[role] = "-include /not-captured.h"
+    with pytest.raises(ValueError, match=role):
+        validate_cargo_native_dependency_environment(
+            controls, target=target, compiler_host=host, native_bound=True
+        )
+    controls[role] = ""
+    with pytest.raises(ValueError, match=role):
+        validate_cargo_native_dependency_environment(
+            controls, target=target, compiler_host=host, native_bound=True
+        )
+    del controls["CFLAGS_" + suffix]
+    controls[role + "_" + suffix] = "-include /not-captured.h"
+    with pytest.raises(ValueError, match=role + "_" + suffix):
+        validate_cargo_native_dependency_environment(
+            controls, target=target, compiler_host=host, native_bound=True
+        )
+
+
+def test_native_dependency_runtime_bound_stage_preserves_pinned_driver_and_rejects_flags(
+    plan_root: Path,
+) -> None:
+    controls = {
+        "AWS_LC_SYS_TARGET_CC": "/unused",
+        "AWS_LC_SYS_CC": "/ineffective-private-cc",
+    }
+    plan = _plan(plan_root, env=controls)
+    assert plan.environment["CC_x86_64-unknown-linux-gnu"] == str(plan.tools["cc"])
+    assert all(plan.environment[name] == value for name, value in controls.items())
+    with pytest.raises(ValueError, match="AWS_LC_SYS_CFLAGS"):
+        _plan(plan_root, env={"AWS_LC_SYS_CFLAGS": "-include /not-captured.h"})
 
 
 @pytest.mark.parametrize("field", ["sources", "toolchain", "common_config"])
@@ -937,6 +1199,150 @@ def test_inherited_profile_overrides_enter_identity_and_policy(plan_root: Path) 
     assert "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL" in after
     assert inherited.preserve_debug_for_profile("release-output")
     assert not baseline.preserve_debug_for_profile("release-output")
+
+
+def test_native_dependency_controls_enter_runtime_identity_including_inactive_values(
+    plan_root: Path,
+) -> None:
+    baseline = _plan(plan_root, env={"AWS_LC_SYS_SMALL": "0"})
+    changed = _plan(plan_root, env={"AWS_LC_SYS_SMALL": "1"})
+    unused = _plan(
+        plan_root,
+        env={
+            "AWS_LC_SYS_SMALL": "0",
+            "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu": "1",
+            "AWS_LC_SYS_PROJECT_NOTE": "",
+            "HOST_CFLAGS_aarch64_unknown_linux_gnu": "-include /inactive.h",
+            "TARGET_CFLAGS_aarch64_unknown_linux_gnu": "",
+        },
+    )
+    before = _runtime_build_environment_identity(baseline, cargo_profile="dev")
+    after = _runtime_build_environment_identity(changed, cargo_profile="dev")
+    other = _runtime_build_environment_identity(unused, cargo_profile="dev")
+
+    assert before != after != other
+    assert before["AWS_LC_SYS_SMALL"] == (
+        "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    )
+    assert after["AWS_LC_SYS_SMALL"] == (
+        "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    )
+    assert "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu" in other
+    assert other["AWS_LC_SYS_PROJECT_NOTE"] == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert "HOST_CFLAGS_aarch64_unknown_linux_gnu" in other
+    assert other["TARGET_CFLAGS_aarch64_unknown_linux_gnu"] == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+
+
+def test_native_dependency_implicit_target_uses_captured_rust_host(
+    plan_root: Path,
+) -> None:
+    controls = {
+        "AWS_LC_SYS_USE_SYSTEM": "1",
+        "AWS_LC_SYS_USE_SYSTEM_x86_64_unknown_linux_gnu": "0",
+    }
+    plan = _plan(plan_root, env=controls)
+    assert plan.target == "x86_64-unknown-linux-gnu"
+    assert all(plan.environment[name] == value for name, value in controls.items())
+    same_target = _plan(
+        plan_root,
+        env={"AWS_LC_SYS_EFFECTIVE_TARGET": "x86_64-unknown-linux-gnu"},
+    )
+    assert same_target.target == "x86_64-unknown-linux-gnu"
+    with pytest.raises(ValueError, match="AWS_LC_SYS_EFFECTIVE_TARGET"):
+        _plan(
+            plan_root,
+            env={"AWS_LC_SYS_EFFECTIVE_TARGET": "aarch64-unknown-linux-gnu"},
+        )
+    with pytest.raises(
+        ValueError, match="AWS_LC_SYS_USE_SYSTEM_x86_64_unknown_linux_gnu"
+    ):
+        _plan(
+            plan_root,
+            env={
+                "AWS_LC_SYS_USE_SYSTEM": "0",
+                "AWS_LC_SYS_USE_SYSTEM_x86_64_unknown_linux_gnu": "1",
+            },
+        )
+
+
+def test_native_dependency_empty_target_control_shadows_generic_and_has_cache_identity(
+    plan_root: Path,
+) -> None:
+    generic = {"AWS_LC_SYS_CMAKE_BUILDER": "1"}
+    controls = {
+        **generic,
+        "AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu": "",
+    }
+    selected = _plan(plan_root, env=controls)
+    identity = _runtime_build_environment_identity(selected, cargo_profile="dev")
+    assert identity["AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu"] == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert identity["AWS_LC_SYS_CMAKE_BUILDER"] == (
+        "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    )
+    with pytest.raises(ValueError, match="AWS_LC_SYS_CMAKE_BUILDER"):
+        _plan(plan_root, env=generic)
+    assert identity != _runtime_build_environment_identity(
+        _plan(plan_root), cargo_profile="dev"
+    )
+
+
+def test_native_dependency_empty_selection_changes_actual_runtime_fingerprint(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import runtime_build_identity as builder
+    from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
+
+    admitted = native_runtime_staticlib_identity()
+    family = admitted.payload["family"]
+    monkeypatch.setattr(builder, "runtime_source_roots", lambda *_args: ())
+    monkeypatch.setattr(
+        builder,
+        "_capture_runtime_build_trees",
+        lambda *_args: (
+            family["compile"]["sources"],
+            family["publication_authority"],
+        ),
+    )
+    monkeypatch.setattr(
+        builder,
+        "provision_native_runtime_toolchain_content_manifest",
+        lambda **_kwargs: admitted.toolchain_manifest,
+    )
+
+    def resolve(controls):
+        plan = _plan(plan_root, env=controls)
+        return builder.resolve_native_runtime_build_identity(
+            plan_root,
+            env=plan.environment,
+            cargo_profile="dev",
+            target_triple=None,
+            runtime_features=("stdlib_net",),
+            cargo_command=plan.command,
+            artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
+            cargo_plan=plan,
+        )
+
+    absent = resolve({})
+    present = resolve({"AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu": ""})
+    inactive_role = resolve(
+        {"HOST_CFLAGS_aarch64_unknown_linux_gnu": "-include /unused.h"}
+    )
+    empty_role = resolve({"TARGET_CFLAGS_aarch64_unknown_linux_gnu": ""})
+    assert absent.compile_digest != present.compile_digest
+    assert absent.family_digest != present.family_digest
+    assert absent.compile_digest != inactive_role.compile_digest
+    assert absent.compile_digest != empty_role.compile_digest
+    for scope in ("compile", "member", "member-output"):
+        assert (
+            runtime_build_fingerprint(absent, scope=scope)["hash"]
+            != (runtime_build_fingerprint(present, scope=scope)["hash"])
+        )
 
 
 def test_profile_cli_inheritance_and_overlapping_prefixes_share_authority(

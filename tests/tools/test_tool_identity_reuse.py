@@ -294,6 +294,8 @@ def test_compile_environment_selection_is_one_authority() -> None:
         "CC_x86_64_unknown_linux_gnu": "clang",
         "PATH": "/usr/bin",
         "MOLT_CUSTOM": "1",
+        "AWS_LC_SYS_SMALL": "0",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu": "0",
     }
     selected = command_identity.compile_environment_selection(
         env, configured_names=["MOLT_CUSTOM"]
@@ -304,6 +306,8 @@ def test_compile_environment_selection_is_one_authority() -> None:
         "CARGO_PROFILE_RELEASE_LTO",
         "CC_x86_64_unknown_linux_gnu",
         "MOLT_CUSTOM",
+        "AWS_LC_SYS_SMALL",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu",
     }
     probe = command_identity._probe_environment_selection(env)
     assert set(probe) == {
@@ -312,6 +316,8 @@ def test_compile_environment_selection_is_one_authority() -> None:
         "CARGO_PROFILE_RELEASE_LTO",
         "CC_x86_64_unknown_linux_gnu",
         "PATH",
+        "AWS_LC_SYS_SMALL",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu",
     }
 
 
@@ -323,6 +329,11 @@ def test_compile_environment_selection_is_one_authority() -> None:
         "RUSTC_BOOTSTRAP",
         "__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS",
         "CARGO_UNSTABLE_PROFILE_RUSTFLAGS",
+        "AWS_LC_SYS_SMALL",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu",
+        "AWS_LC_SYS_PROJECT_NOTE",
+        "HOST_CFLAGS_aarch64_unknown_linux_gnu",
+        "TARGET_CFLAGS_aarch64_unknown_linux_gnu",
     ],
 )
 def test_rust_operation_environment_changes_invalidate_probe_reuse(name):
@@ -330,6 +341,22 @@ def test_rust_operation_environment_changes_invalidate_probe_reuse(name):
         {name: "first"}
     ) != command_identity._probe_environment_selection({name: "second"})
     assert name in command_identity.compile_environment_selection({name: "first"})
+
+
+def test_native_dependency_empty_target_controls_remain_compile_and_probe_inputs():
+    generic = {"AWS_LC_SYS_CMAKE_BUILDER": "1"}
+    control = "AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu"
+    selected = {**generic, control: ""}
+    compile_environment = command_identity.compile_environment_selection(selected)
+    assert compile_environment[control] == (
+        "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+    )
+    assert compile_environment != command_identity.compile_environment_selection(
+        generic
+    )
+    assert command_identity._probe_environment_selection(selected) != (
+        command_identity._probe_environment_selection(generic)
+    )
 
 
 @pytest.mark.parametrize("explicit", [False, True])

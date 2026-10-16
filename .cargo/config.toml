@@ -6,6 +6,11 @@
 # Cargo plans of a --target native build (src/molt/cli/rust_cpu_policy.py).
 # A raw Cargo command takes Cargo's own RUSTFLAGS instead.
 
+[env]
+# The lockfile owns AWS-LC source bytes. Ambient OpenSSL/pkg-config providers
+# are custom raw-Cargo cells, outside Molt's captured source-build contract.
+AWS_LC_SYS_USE_SYSTEM = "0"
+
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = []
 

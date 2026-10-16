@@ -40,11 +40,158 @@ CARGO_WRAPPER_ENV_NAMES = (
     "CARGO_BUILD_RUSTC_WRAPPER",
     "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
 )
+AWS_LC_SYS_ENV_PREFIX = "AWS_LC_SYS_"
+CARGO_NATIVE_DEPENDENCY_ENV_PREFIXES = (
+    AWS_LC_SYS_ENV_PREFIX,
+    "HOST_CC_",
+    "TARGET_CC_",
+    "HOST_CXX_",
+    "TARGET_CXX_",
+    "HOST_CFLAGS_",
+    "TARGET_CFLAGS_",
+)
 PROOF_COMMAND_TIMEOUT_ENV = "MOLT_PROOF_COMMAND_TIMEOUT_SEC"
 NESTED_PROCESS_BUDGET_BY_ROLE = {
     "build": "cold",
     "execution": "warm",
 }
+
+
+def cargo_native_dependency_environment_name(name: str) -> bool:
+    """Output-bearing upstream native dependency controls, including targets."""
+    return name.upper().startswith(CARGO_NATIVE_DEPENDENCY_ENV_PREFIXES)
+
+
+def validate_cargo_native_dependency_environment(
+    environ: Mapping[str, str],
+    *,
+    target: str | None = None,
+    compiler_host: str | None = None,
+    native_bound: bool = False,
+) -> None:
+    """Refuse AWS-LC providers/tools outside the captured source/cc capability.
+
+    The source default belongs only to .cargo/config.toml. Validate effective
+    Cargo [env] values, never install defaults here. Target controls follow
+    aws-lc-sys 0.45's exact lowercase, hyphen-to-underscore suffix. Other target
+    values stay semantic identity inputs but do not select this build's tools.
+    """
+    if native_bound and (not target or not compiler_host):
+        raise ValueError(
+            "bound native dependency validation requires captured Rust target and host"
+        )
+    env = {
+        name.upper() if os.name == "nt" else name: value
+        for name, value in environ.items()
+    }
+    prefix = AWS_LC_SYS_ENV_PREFIX
+    suffix = "_" + target.lower().replace("-", "_") if target else None
+
+    def selected(control: str, *, crate: bool = True) -> tuple[str, str] | None:
+        name = (prefix if crate else "") + control
+        specific = name + suffix if suffix else None
+        if specific is not None:
+            key = specific.upper() if os.name == "nt" else specific
+            if key in env:
+                return key, env[key]
+        elif any(key.startswith(name + "_") for key in env):
+            # An implicit Rust target is not known until captured compiler
+            # metadata arrives. Do not mistake a possibly shadowed generic
+            # value for the selected control; validate again with that target.
+            return None
+        return (name, env[name]) if name in env else None
+
+    def boolean(value: str) -> bool | None:
+        # Upstream parse_to_bool is prefix-based and does not trim whitespace.
+        lowered = value.lower()
+        if lowered.startswith(("0", "n", "off", "f")):
+            return False
+        if lowered.startswith(tuple("123456789")) or lowered.startswith(
+            ("y", "on", "t")
+        ):
+            return True
+        return None
+
+    errors: dict[str, str] = {}
+    provider_names = []
+    for control in ("USE_SYSTEM", "SYSTEM_DIR"):
+        item = selected(control)
+        if item is None:
+            continue
+        name, value = item
+        provider_names.append(name)
+        if control == "SYSTEM_DIR" or boolean(value) is not False:
+            errors[name] = "system/automatic provider has no native input custody"
+    if errors:
+        for name in provider_names:
+            errors.setdefault(name, "part of the conflicting provider selection")
+    if native_bound and compiler_host is not None and target is not None:
+        normalized_target = target.lower().replace("-", "_")
+        for control in ("CC", "CXX", "CFLAGS"):
+            role = ("HOST_" if compiler_host == target else "TARGET_") + control
+            item = (
+                selected(role)
+                or selected(role, crate=False)
+                or selected(control)
+                or selected(control, crate=False)
+            )
+            if item is None:
+                continue
+            raw = f"{control}_{target}"
+            rewritten = f"{control}_{normalized_target}"
+            if os.name == "nt":
+                raw, rewritten = raw.upper(), rewritten.upper()
+            # AWS-LC rewrites only the normalized selector. Published raw-target
+            # CC/CXX remains first in cc-rs, so an ignored private driver is not
+            # an additional capability. Flags accumulate every form, however;
+            # changing that entry invalidates the captured ordered C witness.
+            if control == "CFLAGS":
+                existing = env.get(rewritten, "")
+                modeled_names = {"CFLAGS", role}
+                if item[1] != existing and (existing or item[0] not in modeled_names):
+                    errors[item[0]] = (
+                        "rewrites CFLAGS outside the captured ordered native flag projection"
+                    )
+            elif item[0].startswith(prefix) and (
+                not env.get(raw) or (raw == rewritten and item[1] != env[raw])
+            ):
+                errors[item[0]] = (
+                    "compiler override has no pinned raw-target native driver"
+                )
+    if (item := selected("INCLUDES")) is not None:
+        errors[item[0]] = "private includes bypass captured native header custody"
+    for control in (
+        "CMAKE_BUILDER",
+        "NO_PREGENERATED_SRC",
+        "NO_PREFIX",
+        "EXTERNAL_BINDGEN",
+        "PREGENERATING_BINDINGS",
+    ):
+        if (item := selected(control)) is not None and boolean(item[1]) is True:
+            errors[item[0]] = (
+                "requires an unmodeled CMake/bindgen/source-generation capability"
+            )
+    if (item := selected("STATIC")) is not None and boolean(item[1]) is False:
+        errors[item[0]] = "dynamic AWS-LC requires an unmodeled CMake capability"
+    cmake = selected("CMAKE_BUILDER")
+    if target is not None and (cmake is None or boolean(cmake[1]) is not False):
+        if (item := selected("NO_ASM")) is not None and boolean(item[1]) is True:
+            errors[item[0]] = "requires an unmodeled CMake capability"
+        if (item := selected("SANITIZER")) is not None:
+            errors[item[0]] = "requires an unmodeled CMake/sanitizer capability"
+    if target is not None and (item := selected("EFFECTIVE_TARGET")) is not None:
+        if item[1] and item[1] != target:
+            errors[item[0]] = (
+                "private target selection differs from captured Rust/C target"
+            )
+    if errors:
+        details = "; ".join(f"{name}: {errors[name]}" for name in sorted(errors))
+        raise ValueError(
+            "Molt's captured AWS-LC build requires the pinned source provider and "
+            f"native C tools; unsupported controls: {details}. "
+            "Use captured CC/CXX/CFLAGS for native tool inputs. "
+            "Custom raw Cargo provider cells require separate qualification."
+        )
 
 
 def source_build_disabled_reason(artifact: str) -> str | None:
