@@ -70,10 +70,10 @@ def test_existing_identity_and_member_bits_remain_stable() -> None:
 )
 def test_catalog_rejects_invalid_declarations(tmp_path: Path, change, expected) -> None:
     before, after = change
-    source = gen.SOURCE.read_text()
+    source = gen.SOURCE.read_text(encoding="utf-8")
     assert before in source
     path = tmp_path / "invalid.toml"
-    path.write_text(source.replace(before, after, 1))
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
     with pytest.raises(gen.SchemaError, match=expected):
         gen.load_schema(path)
 
@@ -81,15 +81,19 @@ def test_catalog_rejects_invalid_declarations(tmp_path: Path, change, expected) 
 def test_catalog_rejects_ambiguous_shape_identity_and_orphan_guard(
     tmp_path: Path,
 ) -> None:
-    source = gen.SOURCE.read_text()
+    source = gen.SOURCE.read_text(encoding="utf-8")
     ambiguous = tmp_path / "ambiguous.toml"
     ambiguous.write_text(
-        source.replace('identity = "BUILTIN_INT"', 'identity = "BUILTIN_BOOL"', 1)
+        source.replace('identity = "BUILTIN_INT"', 'identity = "BUILTIN_BOOL"', 1),
+        encoding="utf-8",
     )
     with pytest.raises(gen.SchemaError, match="ambiguous shape identity"):
         gen.load_schema(ambiguous)
     orphan = tmp_path / "orphan.toml"
-    orphan.write_text(source.replace("[member_bits]", "[member_bits]\nORPHAN = 34", 1))
+    orphan.write_text(
+        source.replace("[member_bits]", "[member_bits]\nORPHAN = 34", 1),
+        encoding="utf-8",
+    )
     with pytest.raises(gen.SchemaError, match="orphan member guards"):
         gen.load_schema(orphan)
 
@@ -97,7 +101,7 @@ def test_catalog_rejects_ambiguous_shape_identity_and_orphan_guard(
 def test_catalog_rejects_duplicate_and_contradictory_acquisitions(
     tmp_path: Path,
 ) -> None:
-    source = gen.SOURCE.read_text()
+    source = gen.SOURCE.read_text(encoding="utf-8")
     for guard in ("IMPORTLIB_IMPORT_MODULE", "BUILTINS_IMPORT"):
         path = tmp_path / f"{guard}.toml"
         path.write_text(
@@ -105,7 +109,8 @@ def test_catalog_rejects_duplicate_and_contradictory_acquisitions(
             + (
                 '\n[[acquisition]]\nowner = "IMPORTLIB_MODULE"\nname = "import_module"\n'
                 f'identity = "IMPORTLIB_IMPORT_MODULE"\nguard = "{guard}"\n'
-            )
+            ),
+            encoding="utf-8",
         )
         with pytest.raises(
             gen.SchemaError, match="duplicate or contradictory acquisition"
