@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-import sys
 
 import pytest
 
-from tests.cli.process_guard import run_cli_test_process
 
 from molt.cli.source_extension_compiler_inputs import (
     compiler_sysroot_arg_value,
@@ -37,21 +33,6 @@ def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs():
     captured = {**sdk, **overrides}
     assert source_extension_compiler_environment(captured) == sdk
     assert captured == {**sdk, **overrides}
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS SDK projection")
-def test_compiler_environment_projects_the_selected_macos_sdk_when_none_is_named():
-    # HF-231: a managed LLVM clang has no implicit macOS SDK. The oracle is
-    # xcrun, independent of the product's Darwin selection.
-    expected = run_cli_test_process(
-        ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
-        text=True,
-        timeout=30,
-        check=True,
-    ).stdout.strip()
-    projected = source_extension_compiler_environment({"PATH": os.environ["PATH"]})
-    assert Path(projected["SDKROOT"]).resolve() == Path(expected).resolve()
-    assert Path(projected["DEVELOPER_DIR"]).is_dir()
 
 
 def test_compiler_grammar_admits_matching_target_sysroot_and_codegen_flags() -> None:
@@ -181,7 +162,7 @@ def test_shared_sysroot_parser_preserves_materialization_indices() -> None:
             (4, "/clang:", "/sdk"),
         ),
         (("clang", "-Xclang", "-isysroot", "-Xclang", "/sdk"), (4, "", "/sdk")),
-        (("clang", "-Xclang", "-isysroot=/sdk"), (2, "-isysroot=", "/sdk")),
+        (("clang", "-Xclang", "-isysroot/sdk"), (2, "-isysroot", "/sdk")),
     ],
 )
 def test_sysroot_materialization_respects_forwarded_operand_context(command, expected):
@@ -287,3 +268,179 @@ def test_base_compiler_language_standard_matches_declared_role(command, role):
         validate_source_extension_compiler_command(
             command, role=role, target_triple=target
         )
+
+
+def test_compiler_environment_never_discovers_an_implicit_sdk(monkeypatch):
+    from molt import platform_toolchain
+
+    monkeypatch.setattr(
+        platform_toolchain,
+        "select_darwin_sdk",
+        lambda *_: pytest.fail("environment filtering selected an Apple SDK"),
+    )
+    assert source_extension_compiler_environment({"PATH": "selected"}) == {
+        "PATH": "selected"
+    }
+
+
+@pytest.mark.parametrize(
+    "forwarded",
+    [
+        ("-Wl,-syslibroot,/other",),
+        ("-Wl,--sysroot=/other",),
+        ("-Xlinker", "-syslibroot", "-Xlinker", "/other"),
+        ("-Xlinker", "--sysroot=/other"),
+        ("-Wl,-platform_version,macos,12.0,14.0",),
+    ],
+)
+def test_darwin_compiler_projection_rejects_independent_linker_sdk_selection(forwarded):
+    from molt.cli.source_extension_compiler_inputs import darwin_compiler_commands
+
+    with pytest.raises(ValueError, match="not linker overrides"):
+        darwin_compiler_commands(
+            {"c": ("clang", *forwarded)}, environment={}, arch="arm64"
+        )
+
+
+def test_darwin_compiler_projection_preserves_opaque_backend_arguments(tmp_path):
+    from molt.cli.source_extension_compiler_inputs import darwin_compiler_commands
+
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    command = ("clang", "-mllvm", "-mmacosx-version-min=opaque")
+    result = darwin_compiler_commands(
+        {"c": command}, environment={"SDKROOT": str(sdk)}, arch="arm64"
+    )["c"]
+    assert result[:3] == command
+    assert result[3:] == ("-isysroot", str(sdk), "-mmacosx-version-min=15.4")
+
+
+@pytest.mark.parametrize("transport", ["separate", "joined", "cc1", "cc1_joined"])
+def test_darwin_compiler_projection_canonicalizes_sdk_transport(tmp_path, transport):
+    from molt.cli.source_extension_compiler_inputs import darwin_compiler_commands
+
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    roots = {
+        "separate": ("-isysroot", str(sdk)),
+        "joined": ("-isysroot" + str(sdk),),
+        "cc1": ("-Xclang", "-isysroot", "-Xclang", str(sdk)),
+        "cc1_joined": ("-Xclang", "-isysroot" + str(sdk)),
+    }
+    result = darwin_compiler_commands(
+        {"c": ("clang", *roots[transport])}, environment={}, arch="arm64"
+    )["c"]
+    assert result == ("clang", "-isysroot", str(sdk), "-mmacosx-version-min=15.4")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("clang", "-isysroot/sdk"),
+        ("clang", "-Xclang", "-isysroot/sdk"),
+        ("clang-cl", "/clang:-isysroot/sdk"),
+    ],
+)
+def test_joined_sysroot_matches_clang_operand_grammar(command):
+    assert compiler_sysroot_arg_value(command) == "/sdk"
+
+
+def test_driver_isysroot_equals_is_a_literal_relative_operand():
+    assert compiler_sysroot_arg_value(("clang", "-isysroot=/sdk")) == "=/sdk"
+    with pytest.raises(ValueError, match="absolute"):
+        validate_source_extension_compiler_command(
+            ("clang", "-isysroot=/sdk"),
+            role="c",
+            target_triple="aarch64-apple-darwin",
+            sysroot_policy="optional",
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("clang", "@hidden.rsp"),
+        ("clang", "-Wl,@hidden.rsp"),
+        ("clang", "-Xlinker", "@hidden.rsp"),
+    ],
+)
+def test_darwin_response_arguments_cannot_hide_sdk_selection(command):
+    from molt.cli.source_extension_compiler_inputs import darwin_compiler_commands
+
+    with pytest.raises(ValueError, match="response|linker overrides"):
+        darwin_compiler_commands({"c": command}, environment={}, arch="arm64")
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "missing_sdk",
+        "missing_deployment",
+        "different_sdk",
+        "different_deployment",
+        "noncanonical_version",
+        "hidden_linker_sdk",
+        "frontend_only_sdk",
+    ],
+)
+def test_published_darwin_command_custody_needs_no_producer_filesystem(
+    monkeypatch, defect
+):
+    from molt import platform_toolchain
+    from molt.cli.source_extension_compiler_inputs import (
+        validate_darwin_compiler_commands,
+    )
+
+    monkeypatch.setattr(
+        platform_toolchain,
+        "select_darwin_sdk",
+        lambda *_: pytest.fail("published metadata probed a producer SDK"),
+    )
+    commands = {
+        role: (name, "-isysroot", "@llvm-sdk", "-mmacosx-version-min=15.4")
+        for role, name in (("c", "@llvm-bin/clang"), ("cpp", "@llvm-bin/clang++"))
+    }
+    if defect == "missing_sdk":
+        commands["cpp"] = ("@llvm-bin/clang++", "-mmacosx-version-min=15.4")
+    elif defect == "missing_deployment":
+        commands["cpp"] = ("@llvm-bin/clang++", "-isysroot", "@llvm-sdk")
+    elif defect == "different_sdk":
+        commands["cpp"] = (
+            "@llvm-bin/clang++",
+            "-isysroot",
+            "@other-sdk",
+            "-mmacosx-version-min=15.4",
+        )
+    elif defect == "different_deployment":
+        commands["cpp"] = (
+            "@llvm-bin/clang++",
+            "-isysroot",
+            "@llvm-sdk",
+            "-mmacosx-version-min=14.0",
+        )
+    elif defect == "noncanonical_version":
+        commands["cpp"] = (
+            "@llvm-bin/clang++",
+            "-isysroot",
+            "@llvm-sdk",
+            "-mmacosx-version-min=15.4.0",
+        )
+    elif defect == "hidden_linker_sdk":
+        commands["cpp"] += ("-Wl,-syslibroot,@other-sdk",)
+    elif defect == "frontend_only_sdk":
+        commands["cpp"] = (
+            "@llvm-bin/clang++",
+            "-Xclang",
+            "-isysroot",
+            "-Xclang",
+            "@llvm-sdk",
+            "-mmacosx-version-min=15.4",
+        )
+    if defect is None:
+        validate_darwin_compiler_commands(commands)
+    else:
+        with pytest.raises(ValueError):
+            validate_darwin_compiler_commands(commands)

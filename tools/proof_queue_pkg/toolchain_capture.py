@@ -1543,8 +1543,11 @@ def validate_llvm_sdk_selection(
     if (
         not isinstance(selectors, Mapping)
         or not isinstance(overlay, Mapping)
-        or set(selectors)
-        != ({"xcode-select", "xcrun"} if sys.platform == "darwin" else set())
+        or (
+            set(selectors) not in ({"xcrun"}, {"xcode-select", "xcrun"})
+            if sys.platform == "darwin"
+            else bool(selectors)
+        )
         or set(overlay)
         != (
             {"DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"}

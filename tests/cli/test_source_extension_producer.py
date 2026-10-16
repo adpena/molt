@@ -3980,3 +3980,40 @@ def test_producer_contract_reports_missing_c_api_authority(
             expected_target_python=SimpleNamespace(tag="py312", major=3),
             expected_package_version="1.0",
         )
+
+
+@pytest.mark.parametrize("joined", [False, True])
+def test_native_sdk_locations_are_neutral_for_target_and_generator_commands(
+    tmp_path, joined
+):
+    from molt.cli import source_extension_producer as producer
+    from molt.cli.source_extension_reproducibility import _canonicalize_locations
+
+    source = tmp_path / "source"
+    build = tmp_path / "build"
+    target_sdk = build / "target-sdk"
+    build_sdk = tmp_path / "generator-sdk"
+
+    def commands(sdk):
+        return {
+            "c": [
+                "clang",
+                *([f"-isysroot{sdk}"] if joined else ["-isysroot", str(sdk)]),
+            ]
+        }
+
+    metadata = {
+        "toolchain": {"commands": commands(target_sdk)},
+        "build_toolchain": {"commands": commands(build_sdk)},
+    }
+    roots = producer._producer_location_roots(
+        source_root=source,
+        build_root=build,
+        transaction_root=tmp_path / "transaction",
+        metadata_payload=metadata,
+        config_tools=(),
+    )
+    canonical = _canonicalize_locations(metadata, roots)
+    assert "@llvm-sdk" in str(canonical["toolchain"]["commands"])
+    assert "@build-llvm-sdk" in str(canonical["build_toolchain"]["commands"])
+    assert str(tmp_path) not in str(canonical)

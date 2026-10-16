@@ -96,6 +96,7 @@ COMPILER_OWNED_OPTIONS = COMPILER_TARGET_OPTIONS | {
     "-isysroot",
     "/winsysroot",
     "-arch",
+    "-mmacosx-version-min",
 }
 _COMPILER_VALUE_OPTIONS = (
     frozenset(COMPILER_OUTPUT_OPTIONS)
@@ -235,6 +236,8 @@ def compiler_argument_spans(
                     )
                 width = 4
                 values = (cc1, normalized[index + 3])
+            elif cc1.startswith("-isysroot"):
+                values = ("-isysroot", cc1.removeprefix("-isysroot"))
             else:
                 prefix = next(
                     (
@@ -250,6 +253,10 @@ def compiler_argument_spans(
                     )
                 if not cc1[len(prefix) :]:
                     raise ValueError(f"source-extension cc1 {cc1} has no operand")
+        elif (
+            not positional and option.startswith("-isysroot") and option != "-isysroot"
+        ):
+            values = ("-isysroot", option.removeprefix("-isysroot"))
         elif not positional and option in (
             _COMPILER_VALUE_OPTIONS | _COMPILER_OPAQUE_OPTIONS
         ):

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import functools
 import os
 from pathlib import Path
 import re
-import sys
 from typing import Literal
 
 from molt.cli.compiler_target import (
@@ -18,6 +16,7 @@ from molt.cli.compiler_target import (
     validate_compiler_target,
     compiler_frontend_arguments,
     compiler_argument_spans,
+    CompilerArgumentSpan,
     validate_source_extension_compiler_dialect,
     SourceExtensionCompilerDialect,
 )
@@ -42,50 +41,192 @@ _IMPLICIT_COMPILER_OVERRIDES = frozenset(
 def source_extension_compiler_environment(
     environment: Mapping[str, str],
 ) -> dict[str, str]:
-    """Keep SDK/search inputs, but never let ambient flags replace owned argv.
+    """Keep SDK/search inputs while stripping hidden command overrides.
 
-    Applies to configuration, generators, probes and direct object replay. SDK
-    INCLUDE/LIB inputs remain available; this is not a hermetic SDK declaration.
-    Treat key spelling uniformly so captured Windows environments replay safely.
-
-    On macOS a managed LLVM clang has no implicit SDK: without ``SDKROOT`` it
-    cannot find ``<assert.h>``. When the environment names no SDK, the selected
-    Xcode SDK is projected from the product's own Darwin authority, as the
-    native build does; an explicit ``SDKROOT`` is kept (HF-231).
+    Selected SDK and deployment arguments live in native compiler commands,
+    including captured Meson/native generator commands. Generic subprocesses
+    and non-Darwin targets perform no Apple SDK discovery here.
     """
-    selected = {
+    return {
         key: value
         for key, value in environment.items()
         if key.upper() not in _IMPLICIT_COMPILER_OVERRIDES
     }
-    if sys.platform == "darwin" and not selected.get("SDKROOT"):
-        selected.update(
-            _selected_darwin_sdk(selected.get("DEVELOPER_DIR"), selected.get("PATH"))
+
+
+@dataclass(frozen=True)
+class _DarwinCommandInputs:
+    sdk_root: str | None
+    deployment_target: str | None
+    spans: dict[str, tuple[CompilerArgumentSpan, ...]]
+    sysroots: dict[str, tuple[tuple[int, str, str], ...]]
+
+
+def _darwin_command_inputs(
+    commands: Mapping[str, tuple[str, ...]], *, require_pinned: bool
+) -> _DarwinCommandInputs:
+    from molt.platform_toolchain import normalize_darwin_version
+    from molt.cli.source_extension_link_arguments import linker_argument_tokens
+
+    spans = {
+        role: compiler_argument_spans(command) for role, command in commands.items()
+    }
+    sysroots = {
+        role: compiler_sysroot_arguments(command) for role, command in commands.items()
+    }
+    roots: set[str] = set()
+    versions: set[str] = set()
+    for role, command in commands.items():
+        sdk_operands = {index for index, _prefix, _value in sysroots[role]}
+        if any(
+            value.startswith("@") and not (require_pinned and index in sdk_operands)
+            for index, value in enumerate(command)
+            if index
+        ):
+            raise ValueError(
+                "Darwin compiler response files require owned argument expansion"
+            )
+        if any(
+            span.context == "driver"
+            and span.option.split("=", 1)[0]
+            in {"--config", "--config-system-dir", "--config-user-dir"}
+            for span in spans[role]
+        ):
+            raise ValueError(
+                "Darwin compiler configuration files require owned argument expansion"
+            )
+        roots.update(value for _index, _prefix, value in sysroots[role])
+        forwarded = tuple(
+            value
+            for span in spans[role]
+            if (span.context == "opaque" and span.option == "-Xlinker")
+            or (span.context == "driver" and span.option.startswith("-Wl,"))
+            for value in span.raw
         )
-    return selected
+        if any(
+            token.split("=", 1)[0]
+            in {
+                "-syslibroot",
+                "--sysroot",
+                "-isysroot",
+                "-platform_version",
+                "-macosx_version_min",
+                "-sdk_version",
+            }
+            or token.startswith("@")
+            for token in linker_argument_tokens(forwarded)
+        ):
+            raise ValueError(
+                "Darwin SDK/deployment selection must use compiler driver options, not linker overrides"
+            )
+        versions.update(
+            normalize_darwin_version(
+                span.option.removeprefix("-mmacosx-version-min="),
+                label="Darwin deployment target",
+            )
+            for span in spans[role]
+            if span.context == "driver"
+            and span.option.startswith("-mmacosx-version-min=")
+        )
+        if require_pinned:
+            role_roots = {value for _index, _prefix, value in sysroots[role]}
+            driver_roots = [
+                span
+                for span in spans[role]
+                if span.context == "driver"
+                and span.index + len(span.raw) - 1 in sdk_operands
+            ]
+            role_versions = {
+                span.option.removeprefix("-mmacosx-version-min=")
+                for span in spans[role]
+                if span.context == "driver"
+                and span.option.startswith("-mmacosx-version-min=")
+            }
+            if (
+                len(role_roots) != 1
+                or len(driver_roots) != 1
+                or len(role_versions) != 1
+                or any(
+                    value
+                    != normalize_darwin_version(value, label="Darwin deployment target")
+                    for value in role_versions
+                )
+            ):
+                raise ValueError(
+                    "Darwin compiler commands require a pinned SDK and canonical deployment target for every role"
+                )
+    if len(roots) > 1 or len(versions) > 1:
+        raise ValueError(
+            "Darwin compiler roles have conflicting SDK or deployment selections"
+        )
+    return _DarwinCommandInputs(
+        next(iter(roots), None), next(iter(versions), None), spans, sysroots
+    )
 
 
-@functools.lru_cache(maxsize=8)
-def _selected_darwin_sdk(developer_dir: str | None, path: str | None) -> dict[str, str]:
-    """``DEVELOPER_DIR`` and ``SDKROOT`` of the selected Xcode, or none.
+def validate_darwin_compiler_commands(commands: Mapping[str, tuple[str, ...]]) -> None:
+    """Validate published command facts without probing the producer's SDK."""
+    _darwin_command_inputs(commands, require_pinned=True)
 
-    Selection runs several ``xcrun`` queries, so it is cached per developer
-    directory and PATH. A host with no usable developer directory projects
-    nothing, and the compiler then reports the missing SDK itself.
-    """
-    from molt.platform_toolchain import select_darwin_toolchain
 
-    probe = dict(os.environ)
-    for key, value in (("DEVELOPER_DIR", developer_dir), ("PATH", path)):
-        if value is None:
-            probe.pop(key, None)
-        else:
-            probe[key] = value
-    try:
-        environment = select_darwin_toolchain(probe).environment()
-    except (OSError, ValueError):
-        return {}
-    return {key: environment[key] for key in ("DEVELOPER_DIR", "SDKROOT")}
+def darwin_compiler_commands(
+    commands: Mapping[str, tuple[str, ...]],
+    *,
+    environment: Mapping[str, str],
+    arch: str,
+) -> dict[str, tuple[str, ...]]:
+    """Pin one SDK and deployment policy into every actual compiler command."""
+    from molt.platform_toolchain import (
+        darwin_deployment_target,
+        select_darwin_sdk,
+        normalize_darwin_version,
+    )
+
+    inputs = _darwin_command_inputs(commands, require_pinned=False)
+    selected = dict(environment)
+    if inputs.sdk_root is not None:
+        selected["SDKROOT"] = inputs.sdk_root
+    sdk = select_darwin_sdk(selected)
+    if inputs.deployment_target is not None:
+        explicit = selected.get("MOLT_MACOSX_DEPLOYMENT_TARGET") or selected.get(
+            "MACOSX_DEPLOYMENT_TARGET"
+        )
+        version = inputs.deployment_target
+        if explicit and version != normalize_darwin_version(
+            explicit, label="Darwin deployment target"
+        ):
+            raise ValueError(
+                "Darwin compiler deployment option conflicts with environment"
+            )
+        selected["MACOSX_DEPLOYMENT_TARGET"] = version
+    deployment = darwin_deployment_target(
+        selected, sdk_version=sdk.sdk_version, arch=arch
+    )
+    projected: dict[str, tuple[str, ...]] = {}
+    for role, command in commands.items():
+        sdk_operands = {index for index, _prefix, _raw in inputs.sysroots[role]}
+        replaced_indices = {
+            index
+            for span in inputs.spans[role]
+            if span.index + len(span.raw) - 1 in sdk_operands
+            or (
+                span.context == "driver"
+                and span.option.startswith("-mmacosx-version-min=")
+            )
+            for index in range(span.index, span.index + len(span.raw))
+        }
+        materialized = [
+            value
+            for index, value in enumerate(command)
+            if index not in replaced_indices
+        ]
+        # cc1-only roots govern headers, while the driver selects the linker's
+        # SDK. Collapse every admitted transport to the driver-owned root.
+        materialized.extend(
+            ("-isysroot", str(sdk.sdk_root), f"-mmacosx-version-min={deployment}")
+        )
+        projected[role] = tuple(materialized)
+    return projected
 
 
 _SYSROOT_POLICY = Literal["forbidden", "optional", "required"]
@@ -201,9 +342,13 @@ def compiler_sysroot_arguments(
             if not value or value.startswith("-"):
                 raise ValueError(f"compiler command has {option} missing value")
             prefix = "/clang:" if command[index].startswith("/clang:") else ""
+            if option == "-isysroot" and command[index].removeprefix(
+                "/clang:"
+            ).startswith("-isysroot"):
+                prefix += "-isysroot"
             values.append((index, prefix, value))
             continue
-        for prefix in ("--sysroot=", "-isysroot="):
+        for prefix in ("--sysroot=",):
             if option.startswith(prefix):
                 value = option.removeprefix(prefix)
                 if not value or value.startswith("-"):
@@ -243,6 +388,7 @@ def _safe_codegen_flag(option: str) -> bool:
             r"-ferror-limit=[0-9]+",
             r"-std=(?:c|gnu|iso)(?:89|90|99|11|17|18|23|2x|\+\+98|\+\+03|\+\+11|\+\+14|\+\+17|\+\+20|\+\+23|\+\+2[bc])",
             r"-m(?:abi|arch|cpu|tune)=[A-Za-z0-9_.+-]+",
+            r"-mmacosx-version-min=[0-9]+(?:\.[0-9]+){0,2}",
         )
     )
 
@@ -316,7 +462,7 @@ def validate_source_extension_compiler_command(
             _value, index = _option_value(frontend_argv, index, option, role=role)
             continue
         if option.startswith(
-            ("-target=", "--target=", "-arch=", "--sysroot=", "-isysroot=")
+            ("-target=", "--target=", "-arch=", "--sysroot=", "-isysroot")
         ):
             index += 1
             continue

@@ -204,6 +204,7 @@ def test_native_toolchain_rejects_each_foreign_compiler_target(
 @pytest.mark.parametrize("configured_selector", [False, True])
 def test_native_toolchain_preserves_each_matching_compiler_projection(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     host_platform: str,
     host_arch: str,
     triple: str,
@@ -225,6 +226,14 @@ def test_native_toolchain_preserves_each_matching_compiler_projection(
         host_platform=host_platform,
         host_arch=host_arch,
     )
+    if host_platform == "darwin":
+        sdk = tmp_path / "SDK"
+        sdk.mkdir()
+        (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+        monkeypatch.setenv("SDKROOT", str(sdk))
+        monkeypatch.delenv("DEVELOPER_DIR", raising=False)
+        monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
+        monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
         plan
     )
@@ -232,6 +241,12 @@ def test_native_toolchain_preserves_each_matching_compiler_projection(
         (f"--target={triple}",) if host_platform == "win32" else ("-target", triple)
     )
     expected_args = selector or (injected if explicit_request else ())
+    if host_platform == "darwin":
+        expected_args += (
+            "-isysroot",
+            str(tmp_path / "SDK"),
+            "-mmacosx-version-min=15.4",
+        )
     assert resolved.commands["c"] == (c, *expected_args)
     assert resolved.commands["cpp"] == (cpp, *expected_args)
 
@@ -397,6 +412,10 @@ def test_clang_cl_replay_removes_all_owned_selectors_and_forwards_semantics():
 @pytest.mark.parametrize(
     "selectors",
     [
+        ("-isysrootC:/old",),
+        ("/clang:-isysrootC:/old",),
+        ("-Xclang", "-isysrootC:/old"),
+        ("-mmacosx-version-min=13.3",),
         ("/winsysroot", "C:/old"),
         ("/winsysroot:C:/old",),
         ("/winsysroot=C:/old",),

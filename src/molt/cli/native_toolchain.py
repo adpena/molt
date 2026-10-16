@@ -289,75 +289,17 @@ def _detect_macos_arch(obj_path: Path) -> str | None:
     return archs[0] if archs else None
 
 
-def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
-    env_target = os.environ.get("MOLT_MACOSX_DEPLOYMENT_TARGET")
-    if env_target:
-        return env_target
-    env_target = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
-    if env_target:
-        return env_target
-    # Stable per-arch baselines when no environment override is present.
-    if arch in ("x86_64", "amd64"):
-        return "10.13"
-    # arm64, aarch64, and any unknown arch: use the SDK version reported
-    # by xcrun, which matches what Rust/C dependencies were compiled
-    # against.  Using platform.mac_ver() (OS version) can be lower than
-    # the SDK, causing hundreds of linker version-mismatch warnings.
-    try:
-        result = _run_completed_command(
-            ["xcrun", "--show-sdk-version"],
-            capture_output=True,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=5,
-        )
-        sdk_ver = result.stdout.strip()
-        if sdk_ver:
-            return sdk_ver
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
-    # Fallback to OS version if xcrun unavailable
-    import platform as _platform
-
-    ver = _platform.mac_ver()[0]
-    if ver:
-        parts = ver.split(".")
-        return ".".join(parts[:2]) if len(parts) >= 2 else ver
-    return "11.0"
-
-
 def _append_darwin_runtime_frameworks(
     args: list[str],
     *,
     target: NativeTargetSpec,
 ) -> None:
-    """Append macOS framework flags when targeting Darwin.
+    """Append runtime frameworks to an already selected native link driver.
 
-    For cross-target builds (e.g. building x86_64-apple-darwin from an
-    aarch64 host) the linker is invoked without rustc's host-SDK
-    auto-discovery, so the framework search path is empty and `-framework
-    Security` fails to resolve. Inject `-F <sdk>/System/Library/Frameworks`
-    explicitly for an explicit cross-target selection.
+    The driver owns SDK and cross-target search paths; this projection never
+    selects another SDK beside that choice.
     """
     if target.os == "macos":
-        # Only inject SDK paths when cross-targeting; native builds get
-        # the search paths for free from rustc's default SDK probing.
-        if not target.is_host:
-            sdk_root = _resolve_macos_sdk_root()
-            if sdk_root:
-                # -isysroot points the linker at the cross-target SDK so
-                # libSystem / libobjc / libc++ resolve from the SDK's
-                # usr/lib instead of the host's /usr/lib (which is a
-                # different ABI on a non-host arch).
-                if "-isysroot" not in args:
-                    args.extend(["-isysroot", sdk_root])
-                framework_dir = f"{sdk_root}/System/Library/Frameworks"
-                if framework_dir not in args:
-                    args.extend(["-F", framework_dir])
-                lib_dir = f"{sdk_root}/usr/lib"
-                if lib_dir not in args:
-                    args.extend(["-L", lib_dir])
         args.extend(["-framework", "Security", "-framework", "CoreFoundation"])
         if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_METAL"), False):
             args.extend(["-framework", "Metal", "-lobjc"])
@@ -375,19 +317,3 @@ def _append_darwin_runtime_frameworks(
                     "-lobjc",
                 ]
             )
-
-
-def _resolve_macos_sdk_root() -> str | None:
-    """Return the active macOS SDK root via xcrun, or None if unavailable."""
-    try:
-        result = _run_completed_command(
-            ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
-            capture_output=True,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=5,
-        )
-        return result.stdout.strip() or None
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None

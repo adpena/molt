@@ -3516,7 +3516,7 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
         "implementation": "cpython",
         "version": "3.12",
     }
-    assert payload["data"]["schema_version"] == 5
+    assert payload["data"]["schema_version"] == 6
     assert payload["data"]["build_toolchain"]["commands"] == {
         role: list(command) for role, command in host.commands.items()
     }
@@ -3784,6 +3784,16 @@ def test_source_extension_native_cross_toolchain_preserves_compiler_and_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_plan = _source_extension_target_plan("aarch64-apple-darwin")
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    monkeypatch.setenv("SDKROOT", str(sdk))
+    for name in (
+        "DEVELOPER_DIR",
+        "MOLT_MACOSX_DEPLOYMENT_TARGET",
+        "MACOSX_DEPLOYMENT_TARGET",
+    ):
+        monkeypatch.delenv(name, raising=False)
     compiler = tmp_path / "cross-clang"
     compiler.write_bytes(b"compiler")
     configured_command = (str(compiler), "--driver-mode=gcc")
@@ -3830,11 +3840,13 @@ def test_source_extension_native_cross_toolchain_preserves_compiler_and_target(
     )
     assert seen_explicit == [{"cc": expected_c}]
     assert resolved.compiler_kind == "molt_cross_cc"
-    assert resolved.commands["c"] == expected_c
+    sdk_arguments = ("-isysroot", str(sdk), "-mmacosx-version-min=15.4")
+    assert resolved.commands["c"] == (*expected_c, *sdk_arguments)
     assert resolved.commands["cpp"] == (
         "/tools/clang++",
         "-target",
         "aarch64-apple-darwin",
+        *sdk_arguments,
     )
     assert {"c", "ar", "nm"} <= resolved.commands.keys()
 

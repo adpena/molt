@@ -1828,6 +1828,7 @@ def test_receipt_issuance_detects_installed_byte_mutation(
         (("target",), "wasm", "keys differ from schema"),
         (("target_metadata", "schema_version"), True, "metadata contract differs"),
         (("target_metadata", "schema_version"), 4, "metadata contract differs"),
+        (("target_metadata", "schema_version"), 5, "metadata contract differs"),
         (("target_metadata", "schema_version"), 4.0, "metadata contract differs"),
         (
             ("target_metadata", "build_toolchain", "target_triple"),
@@ -1926,6 +1927,58 @@ def test_structural_receipt_rejects_inexact_schema_and_command_types(
     target_sidecar.write_text(json.dumps(target_metadata), encoding="utf-8")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match=error):
+        _identity_from_root(root)
+
+
+@pytest.mark.parametrize("frontend_only", [False, True])
+def test_structural_receipt_validates_portable_darwin_build_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frontend_only: bool
+) -> None:
+    from molt import platform_toolchain
+    from molt.cli.source_extension_toolchain import _meson_native_text
+
+    root = tmp_path / "darwin-build-machine"
+    _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
+    manifest_path = root / "extension_set_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    metadata = manifest["target_metadata"]
+    build = metadata["build_toolchain"]
+    build["target_triple"] = "aarch64-apple-darwin"
+    sdk = (
+        ["-Xclang", "-isysroot", "-Xclang", "@llvm-sdk"]
+        if frontend_only
+        else ["-isysroot", "@llvm-sdk"]
+    )
+    for role in ("c", "cpp"):
+        build["commands"][role] += [*sdk, "-mmacosx-version-min=15.4"]
+    native = root / "provenance/metadata/target/meson.native"
+    native.write_text(
+        _meson_native_text(
+            commands={role: tuple(argv) for role, argv in build["commands"].items()}
+        ),
+        encoding="utf-8",
+    )
+    metadata["digests"]["meson_native_sha256"] = hashlib.sha256(
+        native.read_bytes()
+    ).hexdigest()
+    identity = dict(metadata)
+    identity.pop("digest")
+    metadata["digest"] = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    (
+        root / "provenance/metadata/target/source-extension-target-metadata.json"
+    ).write_text(json.dumps(metadata), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        platform_toolchain,
+        "select_darwin_sdk",
+        lambda *_: pytest.fail("portable receipt selected a producer SDK"),
+    )
+    if frontend_only:
+        with pytest.raises(ValueError, match="pinned SDK"):
+            _identity_from_root(root)
+    else:
         _identity_from_root(root)
 
 

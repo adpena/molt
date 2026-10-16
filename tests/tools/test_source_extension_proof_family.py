@@ -308,6 +308,13 @@ def test_named_native_intent_reaches_host_compiler_selection(
         "MOLT_CROSS_CXX": str(tmp_path / "must-not-select-cross-cxx"),
         "PATH": "",
     }
+    sdk_arguments = ()
+    if target.native_target is not None and target.native_target.os == "macos":
+        sdk = tmp_path / "SDK"
+        sdk.mkdir()
+        (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+        selected.update(SDKROOT=str(sdk), MACOSX_DEPLOYMENT_TARGET="14.0")
+        sdk_arguments = ("-isysroot", str(sdk), "-mmacosx-version-min=14.0")
     seen = []
 
     def family(*, target_family, explicit_commands, sibling_directories, environment):
@@ -337,9 +344,9 @@ def test_named_native_intent_reaches_host_compiler_selection(
         target, environment=selected
     )
     assert resolved.compiler_kind == ("host-clang-cl" if msvc else "host")
-    assert resolved.commands["c"] == (str(compiler),)
+    assert resolved.commands["c"] == (str(compiler), *sdk_arguments)
     expected_cxx = (str(cxx), cxx_mode)
-    assert resolved.commands["cpp"] == expected_cxx
+    assert resolved.commands["cpp"] == (*expected_cxx, *sdk_arguments)
     assert seen == [{"cc": (str(compiler),), "cxx": expected_cxx}]
 
 

@@ -667,8 +667,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
             stdout = "abc123\n"
         elif executable == "rustc":
             stdout = f"{target_libdir}\n" if "--print" in cmd else "rustc 1.91.0\n"
-        elif executable == "xcrun":
-            stdout = "/Applications/Xcode.app/SDKs/MacOSX.sdk\n"
         else:
             stdout = ""
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
@@ -757,10 +755,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         is False
     )
     assert NATIVE_TOOLCHAIN._detect_macos_arch(obj_path) is None
-    assert (
-        NATIVE_TOOLCHAIN._resolve_macos_sdk_root()
-        == "/Applications/Xcode.app/SDKs/MacOSX.sdk"
-    )
 
     prefixes = [call["memory_guard_prefix"] for call in calls]
     assert prefixes[0] == "MOLT_CLI"

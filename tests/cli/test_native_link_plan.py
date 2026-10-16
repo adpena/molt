@@ -63,6 +63,12 @@ def _plan(
     for path in (output_obj, stub_path, runtime_lib):
         path.write_bytes(b"x")
 
+    if host_platform == "darwin":
+        sdk = tmp_path / "SDK"
+        sdk.mkdir()
+        (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+        monkeypatch.setenv("SDKROOT", str(sdk))
+        monkeypatch.delenv("DEVELOPER_DIR", raising=False)
     fake_driver = tmp_path / "clang.exe"
     fake_driver.write_bytes(b"clang")
     monkeypatch.setenv("CC", cc.replace("clang", str(fake_driver), 1))
@@ -1010,12 +1016,12 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
     monkeypatch.setattr(
         native_link_command, "validate_compiler_target", lambda *a, **k: None
     )
-    monkeypatch.setattr(
-        native_link_command, "_detect_macos_deployment_target", lambda _arch: "11.0"
-    )
-    monkeypatch.setattr(
-        native_link_command, "_resolve_macos_sdk_root", lambda: "/SDK/MacOSX.sdk"
-    )
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    monkeypatch.setenv("SDKROOT", str(sdk))
+    monkeypatch.setenv("MOLT_MACOSX_DEPLOYMENT_TARGET", "11.0")
+    monkeypatch.delenv("DEVELOPER_DIR", raising=False)
     runtime = tmp_path / "dev-fast" / "runtime.a"
     runtime.parent.mkdir()
     write_test_static_archive(runtime)
@@ -1044,7 +1050,7 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
         assert "-mmacosx-version-min=11.0" in command
         # A managed LLVM clang has no implicit macOS SDK; the driver command
         # names the active SDK so <stdio.h> resolves for the main stub.
-        assert command[command.index("-isysroot") + 1] == "/SDK/MacOSX.sdk"
+        assert command[command.index("-isysroot") + 1] == str(sdk)
     else:
         assert "-isysroot" not in command
     inputs = read_native_link_flags(
@@ -1061,22 +1067,6 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
             object_format=target.object_format.value,
             runtime_build_identity=identity,
         )
-
-
-def test_host_darwin_sdk_paths_are_not_injected_from_explicit_identity(monkeypatch):
-    from molt.cli import native_toolchain
-
-    target = resolve_native_target_spec(None, host_platform="darwin", host_arch="arm64")
-
-    def unexpected_sdk_lookup():
-        raise AssertionError("host target must use the native SDK selection")
-
-    monkeypatch.setattr(
-        native_toolchain, "_resolve_macos_sdk_root", unexpected_sdk_lookup
-    )
-    args = ["clang"]
-    native_toolchain._append_darwin_runtime_frameworks(args, target=target)
-    assert args[1:5] == ["-framework", "Security", "-framework", "CoreFoundation"]
 
 
 def test_linux_host_triple_projects_musl_abi(monkeypatch):

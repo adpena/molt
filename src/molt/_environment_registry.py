@@ -4203,8 +4203,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_MACOSX_DEPLOYMENT_TARGET",
-      "owner": "src/molt/cli/native_toolchain.py",
-      "summary": "macOS deployment target version for native links; it takes precedence over MACOSX_DEPLOYMENT_TARGET, and when both are unset x86_64 uses 10.13 and arm64 uses the SDK version that xcrun reports.",
+      "owner": "src/molt/platform_toolchain.py",
+      "summary": "macOS deployment target for native compilation and linking; it takes precedence over MACOSX_DEPLOYMENT_TARGET, and when both are unset x86_64 uses 10.13 and other architectures use the selected SDK version. Release builds select their SDK floor explicitly.",
       "values": []
     },
     {
