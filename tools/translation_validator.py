@@ -122,7 +122,6 @@ _PURE_OPS: frozenset[str] = frozenset(
         "LE",
         "GT",
         "GE",
-        "STRING_EQ",
     }
 )
 

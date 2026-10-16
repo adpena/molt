@@ -313,7 +313,34 @@ def test_frontend_lowering_registration_requires_registered_wire_kind() -> None:
     with pytest.raises(OpKindTableError, match="unregistered wire kind"):
         validate_registration(
             {
-                "frontend_lowering_kind": [{"kind": "TYPO", "wire_kind": "typo"}],
+                "frontend_lowering_kind": [{"kinds": ["TYPO"], "wire_kind": "typo"}],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"kind": "EQ", "wire_kind": "eq"}],
+        [{"kinds": "EQ", "wire_kind": "eq"}],
+        [{"kinds": [None], "wire_kind": "eq"}],
+        [{"kinds": ["EQ", "EQ"], "wire_kind": "eq"}],
+        [
+            {"kinds": [], "wire_kind": "eq"},
+            {"kinds": ["EQ"], "wire_kind": "eq"},
+        ],
+        [
+            {"kinds": ["EQ"], "wire_kind": "eq"},
+            {"kinds": ["EQ"], "wire_kind": "ne"},
+        ],
+    ],
+)
+def test_frontend_lowering_rejects_ambiguous_or_retired_projection(rows) -> None:
+    with pytest.raises(OpKindTableError, match="frontend_lowering_kind"):
+        validate_registration(
+            {
+                "kind": [{"canonical": "eq"}, {"canonical": "ne"}],
+                "frontend_lowering_kind": rows,
             }
         )
 
@@ -381,6 +408,8 @@ def test_frontend_lowering_cannot_claim_backend_private_operation() -> None:
                 "simpleir_backend_private_kinds": [
                     {"backend": "luau", "kinds": ["private"]}
                 ],
-                "frontend_lowering_kind": [{"kind": "PRIVATE", "wire_kind": "private"}],
+                "frontend_lowering_kind": [
+                    {"kinds": ["PRIVATE"], "wire_kind": "private"}
+                ],
             }
         )

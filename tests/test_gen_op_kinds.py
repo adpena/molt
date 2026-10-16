@@ -4981,7 +4981,7 @@ def test_frontend_effect_classes_match_generated_authority() -> None:
         assert py.FRONTEND_ARBITRARY_HEAP_EFFECT[kind] is True
 
 
-@pytest.mark.parametrize("kind", ["STRING_EQ", "CAST_BOOL", "NOT_IN"])
+@pytest.mark.parametrize("kind", ["CAST_BOOL", "NOT_IN"])
 @pytest.mark.parametrize("defect", ["missing_observer", "forbidden_skip"])
 def test_predicate_aliases_require_exception_observers(
     tmp_path: Path, kind: str, defect: str
@@ -7846,6 +7846,13 @@ def test_explicit_frontend_lowerings_replace_manufactured_spellings():
     for kind in ("ret", "ret_void"):
         assert kind in namespace["FRONTEND_EFFECT_CONTROL_KINDS"]
         assert namespace["FRONTEND_ARBITRARY_HEAP_EFFECT"][kind] is False
+    # The isolate dispatcher emits this wire operation directly. Retiring its
+    # frontend startup-check producer must not retire the live wire operation.
+    assert namespace["FRONTEND_LOWERING_KINDS_BY_WIRE"]["string_eq"] == ()
+    namespace["validate_serialized_kind"]("string_eq")
+    with pytest.raises(ValueError, match="unregistered frontend op kind"):
+        namespace["validate_frontend_kind"]("STRING_EQ", "producer")
+    assert "STRING_EQ" not in namespace["FRONTEND_EFFECT_CLASS"]
     for kind in ("RETURN", "RET", "RET_VOID", "ASYNC_BLOCK_ON", "block_on"):
         with pytest.raises(ValueError, match="unregistered frontend op kind"):
             namespace["validate_frontend_kind"](kind, "producer")
@@ -7859,11 +7866,11 @@ def test_frontend_lowering_projection_preserves_declared_alternatives():
     from tools.op_kinds.render_python import _frontend_arbitrary_heap_map
 
     data = {
-        "kind": [{"canonical": "ordinary"}],
+        "kind": [{"canonical": "ordinary"}, {"canonical": "direct_wire"}],
         "simpleir_control_kind": [{"kind": "return_wire", "terminator": True}],
         "frontend_lowering_kind": [
-            {"kind": "return_a", "wire_kind": "return_wire"},
-            {"kind": "RETURN_B", "wire_kind": "return_wire"},
+            {"kinds": ["return_a", "RETURN_B"], "wire_kind": "return_wire"},
+            {"kinds": [], "wire_kind": "direct_wire"},
         ],
     }
     assert registered_frontend_kinds(data) == {"ORDINARY", "return_a", "RETURN_B"}
@@ -7876,9 +7883,11 @@ def test_frontend_lowering_projection_preserves_declared_alternatives():
         "RETURN_B": False,
     }
     full_table = _gen().load_table()
-    full_table["frontend_lowering_kind"].append(
-        {"kind": "ALTERNATIVE_ITER", "wire_kind": "iter"}
-    )
+    next(
+        row
+        for row in full_table["frontend_lowering_kind"]
+        if row["wire_kind"] == "iter"
+    )["kinds"].append("ALTERNATIVE_ITER")
     namespace = {}
     exec(_gen().render_py(full_table), namespace)
     assert namespace["FRONTEND_LOWERING_KINDS_BY_WIRE"]["iter"] == (

@@ -78,7 +78,13 @@ vocabulary. `tools/op_kinds/registration.py` projects existing mapper, control,
 custody, field-role, and runtime-semantic declarations into generated membership tables.
 `simpleir_preserved_kinds` registers wire carriers without granting new effect,
 ownership, or target-support facts. `frontend_lowering_kind` records frontend
-spellings whose serializer uses a different registered wire spelling.
+spellings whose serializer uses a different registered wire spelling. Each row
+owns one `wire_kind` and its ordered `kinds` list. Multiple names preserve
+frontend alternatives; an empty list declares direct wire production without a
+frontend operation. All consumers use this projection for registration, effects,
+exception observation and validation. The CLI's isolate dispatcher still emits
+`string_eq` directly; the retired frontend startup-check operation has no
+remaining serializer or optimizer lane.
 `simpleir_backend_private_kinds` records target-owned operations (including
 Luau exception-capture markers and string operations) that shared SSA must
 re-lift. These registrations grant no effect, ownership or cross-target support
@@ -261,7 +267,7 @@ The structural cause is identical in every case: **N copies of one table, no com
 
 There are two candidate "kind" vocabularies:
 
-- The **`MoltOp.kind`** vocabulary — usually uppercase (`"FLOORDIV"`, `"MATMUL"`, …), with explicit `frontend_lowering_kind` rows owning non-default spellings such as lowercase `ret` and `ret_void`. Registration, effects, and other generated frontend facts share this projection; multiple declared frontend names may lower to the same wire kind.
+- The **`MoltOp.kind`** vocabulary — usually uppercase (`"FLOORDIV"`, `"MATMUL"`, …), with explicit `frontend_lowering_kind` rows owning non-default spellings such as lowercase `ret` and `ret_void`. Registration, effects, and other generated frontend facts share the ordered `kinds` projection; an empty list means there is no frontend identity for that wire operation.
 - The **JSON `"kind"`** vocabulary — lowercase, emitted by `map_ops_to_json` (`serialization.py:396`).
 
 **Decision: the JSON `"kind"` string is the single source of truth for the cross-component contract.** Rationale:

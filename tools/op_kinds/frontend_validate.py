@@ -379,9 +379,10 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     # Both vocabularies have semantic owners. Shared spellings require an
     # explicit identity lowering; an effect token cannot grant wire admission.
     identity_lowerings = {
-        row["kind"]
+        kind
         for row in data.get("frontend_lowering_kind", ())
-        if row["kind"] == row["wire_kind"]
+        for kind in row["kinds"]
+        if kind == row["wire_kind"]
     }
     overlap = (
         _simpleir_registered_runtime_kinds(data).intersection(effect_map)

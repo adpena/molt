@@ -812,22 +812,6 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     return lhs_value >= rhs_value
                 except Exception:
                     return _SCCP_OVERDEFINED
-            if op.kind == "STRING_EQ" and len(op.args) == 2:
-                lhs = op.args[0]
-                rhs = op.args[1]
-                if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
-                    return _SCCP_OVERDEFINED
-                lhs_value = value_lattice(lhs.name, known)
-                rhs_value = value_lattice(rhs.name, known)
-                if lhs_value is _SCCP_UNKNOWN or rhs_value is _SCCP_UNKNOWN:
-                    return _SCCP_UNKNOWN
-                if is_overdefined(lhs_value) or is_overdefined(rhs_value):
-                    return _SCCP_OVERDEFINED
-                if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
-                    return _SCCP_OVERDEFINED
-                if isinstance(lhs_value, str) and isinstance(rhs_value, str):
-                    return lhs_value == rhs_value
-                return _SCCP_OVERDEFINED
             if op.kind == "TYPE_OF" and len(op.args) == 1:
                 arg = op.args[0]
                 if not isinstance(arg, MoltValue):

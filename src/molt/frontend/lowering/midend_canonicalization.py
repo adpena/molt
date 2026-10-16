@@ -996,10 +996,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             if lhs is not None and rhs is not None:
                 return ("BOOL_BINOP", op.kind, lhs, rhs)
 
-        if (
-            op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE", "STRING_EQ"}
-            and len(op.args) == 2
-        ):
+        if op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE"} and len(op.args) == 2:
             lhs_key = self._normalize_operand_key_for_value_numbering(
                 op.args[0], const_int_values
             )
@@ -1008,7 +1005,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             )
             if lhs_key is None or rhs_key is None:
                 return None
-            if op.kind in {"EQ", "NE", "STRING_EQ"} and rhs_key < lhs_key:
+            if op.kind in {"EQ", "NE"} and rhs_key < lhs_key:
                 lhs_key, rhs_key = rhs_key, lhs_key
             return ("CMP_PURE", op.kind, lhs_key, rhs_key)
 
@@ -1483,7 +1480,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     "LE",
                     "GT",
                     "GE",
-                    "STRING_EQ",
                     "ISINSTANCE",
                     "EXCEPTION_MATCH_BUILTIN",
                 }:

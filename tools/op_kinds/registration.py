@@ -28,15 +28,14 @@ def registered_simpleir_kinds(data: dict) -> set[str]:
 def frontend_kinds_for_wire_kind(data: dict, spelling: str) -> tuple[str, ...]:
     """Project one wire spelling through its declared frontend lowering names.
 
-    Explicit lowering rows replace the uppercase default. Several declared
-    frontend operations may lower to the same wire operation; retain them all.
+    Explicit lowering rows replace the uppercase default. Their ordered list
+    preserves alternatives; an empty list identifies direct wire production
+    without manufacturing a frontend operation.
     """
-    declared = tuple(
-        row["kind"]
-        for row in data.get("frontend_lowering_kind", ())
-        if row["wire_kind"] == spelling
-    )
-    return declared or (spelling.upper(),)
+    for row in data.get("frontend_lowering_kind", ()):
+        if row["wire_kind"] == spelling:
+            return tuple(row["kinds"])
+    return (spelling.upper(),)
 
 
 def registered_frontend_kinds(data: dict) -> set[str]:
@@ -49,9 +48,11 @@ def registered_frontend_kinds(data: dict) -> set[str]:
         "frontend_effect_kind",
         "frontend_raising_kind",
         "frontend_check_exception_skip",
-        "frontend_lowering_kind",
     ):
         registered.update(row["kind"] for row in data.get(table, ()))
+    registered.update(
+        kind for row in data.get("frontend_lowering_kind", ()) for kind in row["kinds"]
+    )
     for row in data.get("kind", ()):
         if row.get("group") == "gpu":
             registered.update((row["canonical"], *row.get("aliases", ())))
@@ -104,16 +105,32 @@ def validate_registration(data: dict) -> None:
     # Frontend lowering targets must belong to the shared wire vocabulary.
     wire_kinds = _shared_simpleir_kinds(data)
     seen: set[str] = set()
+    wires: set[str] = set()
     for row in data.get("frontend_lowering_kind", ()):
-        if not isinstance(row, dict) or set(row) != {"kind", "wire_kind"}:
-            raise OpKindTableError("frontend_lowering_kind requires kind and wire_kind")
-        kind = row["kind"]
-        if not isinstance(kind, str) or not kind.isidentifier() or kind in seen:
+        if not isinstance(row, dict) or set(row) != {"kinds", "wire_kind"}:
+            raise OpKindTableError(
+                "frontend_lowering_kind requires kinds and wire_kind"
+            )
+        kinds = row["kinds"]
+        if (
+            not isinstance(kinds, list)
+            or any(
+                not isinstance(kind, str) or not kind.isidentifier() for kind in kinds
+            )
+            or len(set(kinds)) != len(kinds)
+            or seen.intersection(kinds)
+        ):
             raise OpKindTableError(
                 "frontend_lowering_kind requires unique kind identifiers"
             )
-        seen.add(kind)
-        if not isinstance(row["wire_kind"], str) or row["wire_kind"] not in wire_kinds:
+        wire = row["wire_kind"]
+        if not isinstance(wire, str) or wire not in wire_kinds:
             raise OpKindTableError(
-                f"frontend_lowering_kind {kind}: unregistered wire kind {row['wire_kind']!r}"
+                f"frontend_lowering_kind: unregistered wire kind {wire!r}"
             )
+        if wire in wires:
+            raise OpKindTableError(
+                f"frontend_lowering_kind: duplicate wire kind {wire!r}"
+            )
+        seen.update(kinds)
+        wires.add(wire)
