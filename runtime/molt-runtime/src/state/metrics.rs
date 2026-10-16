@@ -1,6 +1,10 @@
-use crate::runtime_flags::{self, RuntimeFlag};
 // On wasm32 we still support logical runtime counters when MOLT_PROFILE=1, but
 // RSS sampling remains unavailable in the host-agnostic wasm runtime.
+
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
+
+use crate::runtime_flags::{self, RuntimeFlag};
+use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT};
 
 /// RC drop-insertion substrate (design 20): true iff `MOLT_ASSERT_NO_LEAK` is
 /// set to a truthy value. When set, the alloc/dealloc profile counters are
@@ -102,188 +106,110 @@ pub(crate) fn leak_exact_tolerance() -> Option<u64> {
 /// grows `live` without bound) fails decisively.
 pub(crate) const EXPECTED_LIVE_OBJECTS: u64 = 200_000;
 
-#[cfg(target_arch = "wasm32")]
-mod wasm_stubs {
-    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
+const PROFILE_UNKNOWN: u8 = 2;
+static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
 
-    use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT};
+pub(crate) fn init_profile_enabled_from_env() {
+    PROFILE_ENABLED.store(u8::from(profile_env_enabled()), AtomicOrdering::Relaxed);
+}
 
-    const PROFILE_UNKNOWN: u8 = 2;
-    static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
+/// Turns the counters on for a test that reads them; the process
+/// environment is read once, so a test cannot enable them through it.
+#[cfg(test)]
+pub(crate) fn enable_profile_for_test() {
+    PROFILE_ENABLED.store(1, AtomicOrdering::Relaxed);
+}
 
-    pub(crate) fn init_profile_enabled_from_env() {
-        PROFILE_ENABLED.store(
-            u8::from(super::profile_env_enabled()),
-            AtomicOrdering::Relaxed,
-        );
-    }
-
-    pub(crate) fn profile_enabled_unchecked() -> bool {
-        match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
-            0 => false,
-            1 => true,
-            _ => {
-                let enabled = u8::from(super::profile_env_enabled());
-                let _ = PROFILE_ENABLED.compare_exchange(
-                    PROFILE_UNKNOWN,
-                    enabled,
-                    AtomicOrdering::Relaxed,
-                    AtomicOrdering::Relaxed,
-                );
-                enabled != 0
-            }
+pub(crate) fn profile_enabled_unchecked() -> bool {
+    match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => {
+            let enabled = u8::from(profile_env_enabled());
+            let _ = PROFILE_ENABLED.compare_exchange(
+                PROFILE_UNKNOWN,
+                enabled,
+                AtomicOrdering::Relaxed,
+                AtomicOrdering::Relaxed,
+            );
+            enabled != 0
         }
     }
+}
 
-    pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
-        profile_enabled_unchecked()
+pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
+    profile_enabled_unchecked()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_enabled() -> u64 {
+    if profile_enabled_unchecked() { 1 } else { 0 }
+}
+
+pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {
+    if profile_enabled(_py) {
+        counter.fetch_add(1, AtomicOrdering::Relaxed);
     }
+}
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_enabled() -> u64 {
-        if profile_enabled_unchecked() { 1 } else { 0 }
+pub(crate) fn profile_hit_unchecked(counter: &AtomicU64) {
+    if profile_enabled_unchecked() {
+        counter.fetch_add(1, AtomicOrdering::Relaxed);
     }
+}
 
-    pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {
-        if profile_enabled(_py) {
-            counter.fetch_add(1, AtomicOrdering::Relaxed);
-        }
+pub(crate) fn profile_hit_bytes_unchecked(counter: &AtomicU64, bytes: u64) {
+    if profile_enabled_unchecked() {
+        counter.fetch_add(bytes, AtomicOrdering::Relaxed);
     }
+}
 
-    pub(crate) fn profile_hit_unchecked(counter: &AtomicU64) {
-        if profile_enabled_unchecked() {
-            counter.fetch_add(1, AtomicOrdering::Relaxed);
-        }
-    }
-
-    pub(crate) fn profile_hit_bytes_unchecked(counter: &AtomicU64, bytes: u64) {
-        if profile_enabled_unchecked() {
-            counter.fetch_add(bytes, AtomicOrdering::Relaxed);
-        }
-    }
-
-    pub(crate) fn profile_hit_bytes(_py: &PyToken<'_>, counter: &AtomicU64, bytes: u64) {
-        if profile_enabled(_py) {
-            counter.fetch_add(bytes, AtomicOrdering::Relaxed);
-        }
-    }
-
-    pub(crate) fn process_memory_snapshot() -> super::ProcessMemorySnapshot {
-        super::ProcessMemorySnapshot::unavailable(
-            crate::runtime_profile_schema_generated::RSS_SOURCE_WASM,
-        )
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_snapshot() {
-        crate::with_gil_entry_nopanic!(_py, {
-            if profile_enabled(_py) {
-                let _ = process_memory_snapshot();
-            }
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_struct_field_store() {
-        crate::with_gil_entry_nopanic!(_py, {
-            profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_handle_resolve() {
-        crate::with_gil_entry_nopanic!(_py, {
-            profile_hit(_py, &HANDLE_RESOLVE_COUNT);
-        })
+pub(crate) fn profile_hit_bytes(_py: &PyToken<'_>, counter: &AtomicU64, bytes: u64) {
+    if profile_enabled(_py) {
+        counter.fetch_add(bytes, AtomicOrdering::Relaxed);
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) use wasm_stubs::{
-    init_profile_enabled_from_env, molt_profile_enabled, molt_profile_handle_resolve,
-    molt_profile_snapshot, molt_profile_struct_field_store, process_memory_snapshot,
-    profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
-    profile_hit_bytes_unchecked, profile_hit_unchecked,
-};
+pub(crate) fn process_memory_snapshot() -> ProcessMemorySnapshot {
+    ProcessMemorySnapshot::unavailable(crate::runtime_profile_schema_generated::RSS_SOURCE_WASM)
+}
 
-// Full profiling implementation for non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
-mod native {
-    use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
+pub(crate) use rss::process_memory_snapshot;
 
-    use crate::{HANDLE_RESOLVE_COUNT, PyToken, STRUCT_FIELD_STORE_COUNT};
+/// Extern entry point: sample RSS and update peak. Can be called from
+/// compiled code or periodically from the runtime.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_snapshot() {
+    crate::with_gil_entry_nopanic!(_py, {
+        if profile_enabled(_py) {
+            let _ = process_memory_snapshot();
+        }
+    })
+}
 
-    const PROFILE_UNKNOWN: u8 = 2;
-    static PROFILE_ENABLED: AtomicU8 = AtomicU8::new(PROFILE_UNKNOWN);
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_struct_field_store() {
+    crate::with_gil_entry_nopanic!(_py, {
+        profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
+    })
+}
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_profile_handle_resolve() {
+    crate::with_gil_entry_nopanic!(_py, {
+        profile_hit(_py, &HANDLE_RESOLVE_COUNT);
+    })
+}
+
+// Process RSS sampling for non-wasm32 targets; the counters above are shared.
+#[cfg(not(target_arch = "wasm32"))]
+mod rss {
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
         #[link_name = "mach_task_self_"]
         static MOLT_MACH_TASK_SELF: libc::mach_port_t;
-    }
-
-    pub(crate) fn init_profile_enabled_from_env() {
-        PROFILE_ENABLED.store(
-            u8::from(super::profile_env_enabled()),
-            AtomicOrdering::Relaxed,
-        );
-    }
-
-    /// Turns the counters on for a test that reads them; the process
-    /// environment is read once, so a test cannot enable them through it.
-    #[cfg(test)]
-    pub(crate) fn enable_profile_for_test() {
-        PROFILE_ENABLED.store(1, AtomicOrdering::Relaxed);
-    }
-
-    pub(crate) fn profile_enabled_unchecked() -> bool {
-        match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
-            0 => false,
-            1 => true,
-            _ => {
-                let enabled = u8::from(super::profile_env_enabled());
-                let _ = PROFILE_ENABLED.compare_exchange(
-                    PROFILE_UNKNOWN,
-                    enabled,
-                    AtomicOrdering::Relaxed,
-                    AtomicOrdering::Relaxed,
-                );
-                enabled != 0
-            }
-        }
-    }
-
-    pub(crate) fn profile_enabled(_py: &PyToken<'_>) -> bool {
-        profile_enabled_unchecked()
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_enabled() -> u64 {
-        if profile_enabled_unchecked() { 1 } else { 0 }
-    }
-
-    pub(crate) fn profile_hit(_py: &PyToken<'_>, counter: &AtomicU64) {
-        if profile_enabled(_py) {
-            counter.fetch_add(1, AtomicOrdering::Relaxed);
-        }
-    }
-
-    pub(crate) fn profile_hit_unchecked(counter: &AtomicU64) {
-        if profile_enabled_unchecked() {
-            counter.fetch_add(1, AtomicOrdering::Relaxed);
-        }
-    }
-
-    pub(crate) fn profile_hit_bytes_unchecked(counter: &AtomicU64, bytes: u64) {
-        if profile_enabled_unchecked() {
-            counter.fetch_add(bytes, AtomicOrdering::Relaxed);
-        }
-    }
-
-    pub(crate) fn profile_hit_bytes(_py: &PyToken<'_>, counter: &AtomicU64, bytes: u64) {
-        if profile_enabled(_py) {
-            counter.fetch_add(bytes, AtomicOrdering::Relaxed);
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -382,31 +308,6 @@ mod native {
             .unwrap_or_else(|| super::ProcessMemorySnapshot::unavailable(source))
     }
 
-    /// Extern entry point: sample RSS and update peak. Can be called from
-    /// compiled code or periodically from the runtime.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_snapshot() {
-        crate::with_gil_entry_nopanic!(_py, {
-            if profile_enabled(_py) {
-                let _ = process_memory_snapshot();
-            }
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_struct_field_store() {
-        crate::with_gil_entry_nopanic!(_py, {
-            profile_hit(_py, &STRUCT_FIELD_STORE_COUNT);
-        })
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn molt_profile_handle_resolve() {
-        crate::with_gil_entry_nopanic!(_py, {
-            profile_hit(_py, &HANDLE_RESOLVE_COUNT);
-        })
-    }
-
     #[cfg(test)]
     mod tests {
         #[cfg(target_os = "linux")]
@@ -430,13 +331,3 @@ mod native {
         }
     }
 }
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) use native::enable_profile_for_test;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native::{
-    init_profile_enabled_from_env, molt_profile_enabled, molt_profile_handle_resolve,
-    molt_profile_snapshot, molt_profile_struct_field_store, process_memory_snapshot,
-    profile_enabled, profile_enabled_unchecked, profile_hit, profile_hit_bytes,
-    profile_hit_bytes_unchecked, profile_hit_unchecked,
-};
