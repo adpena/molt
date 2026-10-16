@@ -1147,6 +1147,7 @@ def test_rust_reuse_binds_archive_claim_to_actual_producer_command(
             "cargo_crate_types": ["staticlib"],
             "manifest_crate_types": None,
             "rustc_crate_types": [],
+            "test_harness": False,
             "link_required": False,
         },
         selected_process_count=0,

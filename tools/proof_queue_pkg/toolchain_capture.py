@@ -59,6 +59,7 @@ from tools.proof_queue_pkg.process_image_capture import (
 
 
 if TYPE_CHECKING:
+    from molt.wasi_sdk_identity import WasiCAbiProjection
     from tools.proof_queue_pkg import command_admission
 
 
@@ -1223,6 +1224,13 @@ def revalidate_rust_selection_sources(
                     raise ValueError("managed WASI SDK changed since Cargo selection")
         return
     for unit in selection["units"]:
+        startup = unit.get("startup")
+        if startup is not None:
+            member = startup["member"]
+            if not unchanged(
+                member["path"], member["sha256"], member["size"], "WASI command CRT"
+            ):
+                raise ValueError("WASI command startup changed since selection")
         flags = unit.get("flag_context")
         contexts = (
             []
@@ -2685,6 +2693,7 @@ def _capture_runtime_gate_rust_operations(
             rustc_version=rustc_version,
             _capture_cache=capture_cache,
             _captured_images=images,
+            wasi_command_abi=None if plan is None else plan.wasi_c_abi,
         )
         images.extend(child_images)
         requirements = declared
@@ -2853,6 +2862,7 @@ def _capture_rust_compilation(
     rustc_version,
     _capture_cache=None,
     _captured_images=(),
+    wasi_command_abi: WasiCAbiProjection | None = None,
 ):
     """One actual Rust/Cargo operation; its caller owns source admission."""
     from tools.proof_queue_pkg import command_admission
@@ -2941,6 +2951,7 @@ def _capture_rust_compilation(
                 captured_images=(*_captured_images, *images),
                 capture_inputs=configuration_cache,
                 probes=probes,
+                wasi_command_abi=wasi_command_abi,
                 compiler_flag_context=(
                     selections[0]["flag_context"]
                     if unit == "target-documenter"
@@ -2984,6 +2995,41 @@ def _capture_rust_compilation(
     }
 
 
+def _rust_probe_startup(
+    abi: WasiCAbiProjection | None,
+    *,
+    unit: str,
+    target: str | None,
+    artifact: Mapping[str, object],
+) -> tuple[str, dict[str, object] | None]:
+    """Project the runtime's admitted test-only CRT, never author an entry point."""
+    if abi is None or unit != "target":
+        return "", None
+    from molt.wasi_sdk_identity import WASI_C_ABI_TARGET
+
+    if (
+        target != WASI_C_ABI_TARGET
+        or not artifact["test_harness"]
+        or not artifact["link_required"]
+    ):
+        raise ValueError("managed WASI command startup requires its target libtest")
+    _role, path, size, digest = next(
+        row for row in abi.files if row[0] == "crt_command"
+    )
+    # Match build.rs's literal declaration consumed only by cfg(test). The
+    # already admitted SDK search paths select this exact object in place.
+    name = json.dumps(":" + path.name, ensure_ascii=False)
+    declaration = (
+        f'#[link(name = {name}, kind = "static", modifiers = "-bundle")]\n'
+        'unsafe extern "C" {}\n'
+    )
+    return declaration, {
+        "kind": "wasi-command",
+        "member": {"path": str(path), "size": size, "sha256": digest},
+        "declaration_sha256": hashlib.sha256(declaration.encode("utf-8")).hexdigest(),
+    }
+
+
 def _capture_rust_link_unit(
     *,
     rustc: Path,
@@ -3001,6 +3047,7 @@ def _capture_rust_link_unit(
     captured_images: Sequence[Mapping[str, object]],
     capture_inputs,
     probes: list[dict[str, object]],
+    wasi_command_abi: WasiCAbiProjection | None = None,
     compiler_flag_context: Mapping[str, object] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Ask the selected Rust toolchain to link a zero-dependency synthetic crate.
@@ -3141,6 +3188,10 @@ def _capture_rust_link_unit(
     explicit_library = bool(cargo_crate_types or base) and "bin" not in (
         cargo_crate_types or base
     )
+    test_harness = artifact_selection["test_harness"]
+    startup_source, startup = _rust_probe_startup(
+        wasi_command_abi, unit=unit, target=target, artifact=artifact_selection
+    )
     with tempfile.TemporaryDirectory(prefix="molt-rust-link-capture-") as raw_root:
         root = Path(raw_root).resolve()
         (root / "output").mkdir()
@@ -3162,7 +3213,7 @@ def _capture_rust_link_unit(
         source.write_text(
             "extern crate proc_macro;\n"
             if unit == "host-proc-macro"
-            else "fn main() {}\n#[test]\nfn proof_link_test() {}\n",
+            else startup_source + "fn main() {}\n#[test]\nfn proof_link_test() {}\n",
             encoding="utf-8",
         )
         output = root / ("probe.exe" if os.name == "nt" else "probe")
@@ -3285,7 +3336,7 @@ def _capture_rust_link_unit(
                 '[lib]\nproc-macro=true\npath="host.rs"\n'
                 if unit == "host-proc-macro"
                 else '[lib]\npath="main.rs"\n'
-                if explicit_library
+                if explicit_library or test_harness
                 else '[[bin]]\nname="molt_link_capture"\npath="main.rs"\n'
             )
             if unit == "target" and base is not None and explicit_library:
@@ -3338,7 +3389,7 @@ def _capture_rust_link_unit(
             )
             command.extend(
                 ("--lib",)
-                if unit == "host-proc-macro" or explicit_library
+                if unit == "host-proc-macro" or explicit_library or test_harness
                 else ("--bin", "molt_link_capture")
             )
             if unit == "target" and cargo_crate_types is not None:
@@ -3347,7 +3398,16 @@ def _capture_rust_link_unit(
                 (
                     "--",
                     *(rustc_link_args if unit != "host-proc-macro" else ()),
-                    *(("--test",) if unit == "target-documenter" else ()),
+                    *(
+                        ("--test",)
+                        if test_harness
+                        and not any(
+                            arguments[span.start] == "--test"
+                            for arguments in (safe_flags, rustc_link_args)
+                            for span in command_admission.rust_flag_spans(arguments)
+                        )
+                        else ()
+                    ),
                 )
             )
         else:
@@ -3446,6 +3506,7 @@ def _capture_rust_link_unit(
                 "schema": "molt.proof-rust-link-unit.v2",
                 "unit": unit,
                 "artifact_selection": artifact_selection,
+                "startup": startup,
                 "artifact_context": artifact_context,
                 "flag_context": flag_context,
                 "process_image_refs": [],
@@ -3585,6 +3646,7 @@ def _capture_rust_link_unit(
             "schema": "molt.proof-rust-link-unit.v2",
             "unit": unit,
             "artifact_selection": artifact_selection,
+            "startup": startup,
             "artifact_context": artifact_context,
             "flag_context": flag_context,
             "process_image_refs": [
@@ -3725,6 +3787,7 @@ def _validate_runtime_gate_rust_selection(
     full_capture,
     command_argv,
 ):
+    from molt.wasi_sdk_identity import WasiCAbiProjection
     from tools.proof_queue_pkg import command_admission
     from tools.runtime_test_gate_plan import cargo_operations
 
@@ -3856,6 +3919,11 @@ def _validate_runtime_gate_rust_selection(
             required_native_units={},
             full_capture=full_capture,
             command_argv=expected_command,
+            wasi_command_abi=(
+                None
+                if row["projection"] is None
+                else WasiCAbiProjection.decode(row["projection"]["c_abi"])
+            ),
         )
         target_context = selection["units"][0]["flag_context"]
         captured_target = []
@@ -3891,7 +3959,6 @@ def _validate_runtime_gate_rust_selection(
         if target in managed:
             projection = managed[target]
             from molt.cli.runtime_cargo_plan import _c_tool_environment_names
-            from molt.wasi_sdk_identity import WasiCAbiProjection
 
             abi = WasiCAbiProjection.decode(projection["c_abi"])
 
@@ -4157,6 +4224,7 @@ def _validate_rust_compilation_selection(
     required_native_units,
     full_capture,
     command_argv,
+    wasi_command_abi: WasiCAbiProjection | None = None,
 ):
     """Validate one compilation using its already admitted operation contract."""
     from tools.proof_queue_pkg import command_admission
@@ -4324,9 +4392,17 @@ def _validate_rust_compilation_selection(
             manifest_crate_types=base,
             configured_flags=configured_flags,
         )
+        _startup_source, startup = _rust_probe_startup(
+            wasi_command_abi,
+            unit=row["unit"],
+            target=telemetry["target"],
+            artifact=artifact,
+        )
         if (
             row.get("schema") != "molt.proof-rust-link-unit.v2"
             or row.get("artifact_selection") != artifact
+            or "startup" not in row
+            or row["startup"] != startup
             or row.get("command_semantics_sha256") != command_digest
         ):
             raise ValueError(

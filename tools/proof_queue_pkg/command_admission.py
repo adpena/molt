@@ -1175,7 +1175,9 @@ def rust_link_artifact_selection(
 ) -> dict[str, object]:
     """Bind explicit output kinds without inventing an executable for libraries.
 
-    Unspecified Cargo outputs retain the existing std capability probe. A
+    Unspecified Cargo outputs retain a conservative standard-library capability
+    probe; test/bench operations select the standard libtest capability. This
+    is not a package target inventory or a claim about harness=false targets. A
     Cargo-level override replaces the manifest base; forwarded rustc crate
     types require the retained selected manifest base and remain additive.
     Direct rustc crate types replace rustc's default bin.
@@ -1196,6 +1198,7 @@ def rust_link_artifact_selection(
             "cargo_crate_types": None,
             "rustc_crate_types": ["proc-macro" if unit == "host-proc-macro" else "bin"],
             "manifest_crate_types": None,
+            "test_harness": unit == "target-documenter" and mode != "query",
             "link_required": mode == "codegen",
         }
     # Admission owns the role before executable binding changes its basename.
@@ -1210,9 +1213,20 @@ def rust_link_artifact_selection(
     )
     compiler_flags = (*configured_flags, *forwarded)
     kinds = rustc_crate_types(compiler_flags)
-    test_harness = any(
-        compiler_flags[span.start] == "--test"
-        for span in rust_flag_spans(compiler_flags)
+    # Cargo test/bench selects a libtest executable even when the library's
+    # ordinary artifact is an rlib. Trailing harness operands are not rustc
+    # options. This is the required capability witness; a package can also
+    # select custom harness=false targets, whose own entry remains its owner.
+    test_harness = mode != "query" and (
+        (
+            invocation is not None
+            and invocation.subcommand in {"test", "bench"}
+            and "--doc" not in invocation.flags
+        )
+        or any(
+            compiler_flags[span.start] == "--test"
+            for span in rust_flag_spans(compiler_flags)
+        )
     )
     requires_manifest = (
         cargo and override is None and bool(rustc_crate_types(forwarded))
@@ -1234,6 +1248,7 @@ def rust_link_artifact_selection(
         "cargo_crate_types": None if override is None else list(override),
         "manifest_crate_types": None if base is None else list(base),
         "rustc_crate_types": list(kinds),
+        "test_harness": test_harness,
         "link_required": (
             mode == "codegen"
             and (
