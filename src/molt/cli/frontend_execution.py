@@ -41,7 +41,7 @@ from molt.cli.models import (
     _SerialFrontendLoweringContext,
     _SerialFrontendLoweringHooks,
 )
-from molt.cli.module_graph import ModuleSyntaxErrorInfo
+from molt.cli.models import ModuleSyntaxErrorInfo
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import (
     _ModuleSourceCatalog,

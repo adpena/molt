@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
     from molt.cli.installed_runtime_contract import InstalledNativeAdmission
-    from molt.cli.module_graph import ModuleSyntaxErrorInfo
+    from molt.cli.build_output_layout import _BuildOutputLayout
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import _ModuleSourceCatalog, PythonSourceSnapshot
     from molt.cli.source_extension_link_requirements import (
@@ -69,6 +69,15 @@ BinaryImageClosureMode = Literal["reachable_only"]
 ModuleExecutionKind = Literal["imported", "module", "script"]
 BuildEntrySelectorOrigin = Literal["cli", "config", "legacy"]
 BuildEntrySelectorTarget = Literal["file", "module"]
+
+
+@dataclass(frozen=True)
+class ModuleSyntaxErrorInfo:
+    message: str
+    filename: str
+    lineno: int | None
+    offset: int | None
+    text: str | None
 
 
 @dataclass(frozen=True)
@@ -976,23 +985,6 @@ class _FrontendTimingRecorderConfig:
     raw: bool
     threshold: float
     json_output: bool
-
-
-@dataclass(frozen=True)
-class _BuildOutputLayout:
-    is_wasm: bool
-    is_wasm_freestanding: bool
-    is_rust_transpile: bool
-    is_luau_transpile: bool
-    is_mlir_emit: bool
-    split_runtime: bool
-    linked: bool
-    target_triple: str | None
-    emit_mode: str
-    output_artifact: Path
-    output_binary: Path | None
-    linked_output_path: Path | None
-    emit_ir_path: Path | None
 
 
 @dataclass(frozen=True)

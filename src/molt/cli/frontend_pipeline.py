@@ -38,12 +38,12 @@ from molt.cli.external_native import (
     _resolve_external_package_native_artifact_plan,
     _resolve_import_admission_policy,
 )
+from molt.cli.models import ModuleSyntaxErrorInfo
 from molt.cli.module_cache import (
     _build_scoped_lowering_inputs,
     _load_module_analysis,
 )
 from molt.cli.module_graph import (
-    ModuleSyntaxErrorInfo,
     _build_module_graph_metadata,
     _materialize_import_plan,
     _prepare_entry_module_graph,
@@ -67,7 +67,6 @@ from molt.cli.models import (
     Target,
     TypeHintPolicy,
     _BuildDiagnosticsContext,
-    _BuildOutputLayout,
     _BinaryImageScope,
     _ExternalPackageNativeArtifactPlan,
     _FrontendIntegrationState,
@@ -85,6 +84,7 @@ from molt.cli.models import (
     _PreparedFrontendRunTicket,
     _ResolvedBuildEntry,
 )
+from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
 from molt.target_python import TargetPythonVersion

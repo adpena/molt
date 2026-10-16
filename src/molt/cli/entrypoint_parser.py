@@ -20,8 +20,16 @@ from molt.cli.dx_cli import add_dx_parser
 from molt.cli.source_extension_invocation import (
     add_source_extension_set_build_arguments,
 )
-from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
 from molt.wasm_optimization import WASM_OPT_LEVELS
+
+_VALIDATE_SUITE_CHOICES = (
+    "full",
+    "smoke",
+    "commands",
+    "conformance",
+    "bench",
+    "custody-proof",
+)
 
 _CODEGEN_BACKEND_CHOICES = (*CODEGEN_BACKENDS, "auto")
 

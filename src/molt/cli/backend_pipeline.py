@@ -31,12 +31,12 @@ from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_EN
 from molt.cli.external_native import _external_native_artifact_output_custody_error
 from molt.cli.models import (
     BuildProfile,
-    _BuildOutputLayout,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
     _PreparedBuildRoots,
     _ResolvedBuildEntry,
 )
+from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import (
     emit_json as _emit_json,
     fail as _fail,
