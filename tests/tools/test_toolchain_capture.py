@@ -4653,6 +4653,8 @@ def test_runtime_gate_rust_operation_receiver_rejects_incomplete_or_mutated_plan
         "managed-as-native",
         "missing-SDK",
         "foreign-compiler",
+        "foreign-cargo",
+        "foreign-rustc",
         "missing-C-ABI",
         "missing-export-table",
         "missing-startup",
@@ -4713,6 +4715,10 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
         raw["operations"][0]["projection"] = None
     elif mutation == "foreign-compiler":
         projection["tools"]["cc"] = str(tmp_path / "foreign-clang")
+    elif mutation in {"foreign-cargo", "foreign-rustc"}:
+        projection["tools"][mutation.removeprefix("foreign-")] = str(
+            tmp_path / mutation
+        )
     elif mutation == "missing-C-ABI":
         projection["c_abi"] = ""
     elif mutation == "missing-export-table":
@@ -4738,6 +4744,46 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
         toolchain_capture.validate_rust_link_selection(
             changed, command_argv=command, full_capture=True
         )
+
+
+def test_runtime_gate_binds_the_same_cargo_component_as_its_managed_plan(
+    tmp_path, monkeypatch
+):
+    capture = toolchain_capture.capture_rust_link_process_images
+    resolve = toolchain_capture.resolve_rustup_proxy
+    selections = []
+
+    def through_proxy(**kwargs):
+        physical = kwargs["cargo"]
+        proxy = tmp_path / "rustup-proxy" / "cargo"
+        proxy.parent.mkdir()
+        proxy.write_bytes(b"independently selected Cargo launcher")
+
+        def component(path, *, role, root, env):
+            if path == proxy:
+                assert role == "cargo" and root == tmp_path
+                selections.append(physical)
+                return physical
+            return resolve(path, role=role, root=root, env=env)
+
+        monkeypatch.setattr(toolchain_capture, "resolve_rustup_proxy", component)
+        return capture(**{**kwargs, "cargo": proxy})
+
+    monkeypatch.setattr(
+        toolchain_capture, "capture_rust_link_process_images", through_proxy
+    )
+    identity, tools, _env, command, _calls = _native_build_capture_fixture(
+        tmp_path,
+        monkeypatch,
+        registered_command=_runtime_gate_registered_command("wasi-lifecycle"),
+    )
+    raw = identity["link_selection"]
+    assert selections == [tools["cargo"]]
+    assert raw["cargo"] == str(tools["cargo"])
+    assert all(row["source_command"][0] == raw["cargo"] for row in raw["operations"])
+    toolchain_capture.validate_rust_link_selection(
+        identity, command_argv=command, full_capture=True
+    )
 
 
 def test_runtime_gate_lifecycle_uses_real_libtest_command_startup(
