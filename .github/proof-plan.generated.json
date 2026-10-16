@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "2331d39aef8cd1c36a236ce297c5492fd33a28a61a683b3d867e06fcc5095415",
+  "authority_sha256": "c19c8c1056e672e27909846ba62e8a1c0a777cec36b1d2a16f55103b98dbcda8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
