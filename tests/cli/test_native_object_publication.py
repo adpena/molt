@@ -23,13 +23,13 @@ from molt.cli.artifact_sync import _artifact_sync_state_path
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.models import (
     _BackendCacheSetup,
-    _BuildOutputLayout,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _PreparedBackendIR,
     _PreparedBackendSetup,
     _PreparedBuildConfig,
     _RuntimeArtifactState,
 )
+from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import fail
 from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.installed_runtime_contract import InstalledNativeAdmission

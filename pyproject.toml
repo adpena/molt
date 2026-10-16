@@ -40,6 +40,7 @@ extend-exclude = [
     "src/molt/_intrinsics.pyi",
     "src/molt/_runtime_feature_gates.py",
     "src/molt/_wasm_abi_generated.py",
+    "src/molt/compiler_analysis/python_identity_catalog_generated.py",
     "src/molt/frontend/_protocol.py",
     "src/molt/frontend/_protocol_attrs.py",
     "src/molt/frontend/lowering/op_kinds_generated.py",

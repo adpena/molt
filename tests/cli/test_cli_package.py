@@ -55,3 +55,36 @@ def test_entrypoint_imports_the_build_pipeline_only_when_a_command_builds() -> N
     loaded = _molt_modules_loaded_by("import molt.cli.entrypoint")
     assert "molt.cli.entrypoint" in loaded
     assert not loaded & {"molt.cli.build_command", "molt.cli.build_pipeline"}
+
+
+def test_parser_imports_no_command_implementation() -> None:
+    # `molt --version`, `--help` and usage errors build only the parser; the
+    # command modules and the CLI record module load when a command runs
+    # (HF-228).
+    loaded = _molt_modules_loaded_by("import molt.cli.entrypoint_parser")
+    assert "molt.cli.entrypoint_parser" in loaded
+    assert not loaded & {
+        "molt.cli.models",
+        "molt.cli.entrypoint_dispatch",
+        "molt.cli.build_inputs",
+        "molt.cli.setup_readiness",
+        "molt.cli.toolchain_validation",
+        "molt.process_guard",
+    }
+
+
+def test_frontend_worker_imports_no_graph_discovery_or_backend() -> None:
+    # A lowering worker needs the frontend and the module caches, not module
+    # graph construction, source extensions or the backend (HF-228).
+    loaded = _molt_modules_loaded_by("import molt.cli.frontend_worker")
+    assert "molt.cli.frontend_worker" in loaded
+    forbidden = {
+        "molt.cli.module_graph",
+        "molt.cli.build_command",
+        "molt.cli.build_pipeline",
+        "molt.cli.backend_execution",
+        "molt.cli.backend_compile",
+        "molt.cli.native_link_plan",
+    }
+    assert not loaded & forbidden
+    assert not {name for name in loaded if name.startswith("molt.cli.source_extension")}

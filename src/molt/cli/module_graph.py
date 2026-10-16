@@ -80,15 +80,6 @@ class _NativeSupportSourceSlice:
         return self.scan.scan.imports
 
 
-@dataclass(frozen=True)
-class ModuleSyntaxErrorInfo:
-    message: str
-    filename: str
-    lineno: int | None
-    offset: int | None
-    text: str | None
-
-
 def _write_generated_module_source(
     module_name: str,
     source: str,

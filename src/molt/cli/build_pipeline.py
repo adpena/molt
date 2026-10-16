@@ -31,12 +31,12 @@ from molt.cli.extension_manifest import (
 )
 from molt.cli.models import (
     BuildProfile,
-    _BuildOutputLayout,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
     _PreparedBuildRoots,
     _ResolvedBuildEntry,
 )
+from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.target_python import (
     _SUPPORTED_TARGET_PYTHON_BY_SHORT as _SUPPORTED_TARGET_PYTHON_BY_SHORT,
     _SUPPORTED_TARGET_PYTHON_VERSIONS as _SUPPORTED_TARGET_PYTHON_VERSIONS,

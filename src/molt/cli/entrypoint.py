@@ -7,21 +7,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
-from molt.cli import build_inputs as _build_inputs
-from molt.cli.config_resolution import (
-    _resolve_build_config,
-    _resolve_capabilities_config,
-    _resolve_command_config,
-)
-from molt.cli.entrypoint_dispatch import _dispatch_entrypoint_command
 from molt.cli.entrypoint_parser import _build_entrypoint_parser
-from molt.cli.project_roots import _find_project_root
 from molt.cli.output import fail
 from molt.environment_registry import (
     EnvironmentRegistryError,
     check_process_environment,
 )
-from molt.process_guard import GuardInfrastructureError, guard_infrastructure_exit_code
 from molt.target_python import require_frontend_python
 
 
@@ -77,13 +68,28 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
         parser.print_help()
         sys.exit(0)
 
+    # A parsed command needs the project configuration and the dispatcher;
+    # `--version`, `--help` and usage errors exit inside parse_args without
+    # importing them (HF-228).
+    from molt.cli import build_inputs, entrypoint_dispatch
+    from molt.cli.config_resolution import (
+        _resolve_build_config,
+        _resolve_capabilities_config,
+        _resolve_command_config,
+    )
+    from molt.cli.project_roots import _find_project_root
+    from molt.process_guard import (
+        GuardInfrastructureError,
+        guard_infrastructure_exit_code,
+    )
+
     config_root = _find_project_root(Path.cwd())
     if getattr(args, "file", None):
         try:
             config_root = _find_project_root(Path(args.file).resolve())
         except OSError:
             config_root = _find_project_root(Path.cwd())
-    config = _build_inputs._load_molt_config(config_root)
+    config = build_inputs._load_molt_config(config_root)
     build_cfg = _resolve_build_config(config)
     run_cfg = _resolve_command_config(config, "run")
     compare_cfg = _resolve_command_config(config, "compare")
@@ -95,7 +101,7 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
 
     try:
         with _cli_profile():
-            return _dispatch_entrypoint_command(
+            return entrypoint_dispatch._dispatch_entrypoint_command(
                 args,
                 parser=parser,
                 build_fn=build_fn,

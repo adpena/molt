@@ -18472,7 +18472,8 @@ def test_terminal_pytest_receipt_retains_its_incident_case(tmp_path):
     summary = tmp_path / "receipt.json"
     current = tmp_path / "later-current.json"
     current.write_text(
-        json.dumps({"schema_version": 1, "nodeid": "later", "phase": "finish"})
+        json.dumps({"schema_version": 1, "nodeid": "later", "phase": "finish"}),
+        encoding="utf-8",
     )
     summary.write_text(
         json.dumps(
@@ -18485,7 +18486,8 @@ def test_terminal_pytest_receipt_retains_its_incident_case(tmp_path):
                     }
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     # Timeout diagnostics consume the terminal incident snapshot even if an
     # incomplete guard summary retained its old running label.
@@ -18507,7 +18509,8 @@ def test_live_pytest_status_without_a_path_never_uses_cached_identity(tmp_path, 
                     },
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     line = diagnostic_evidence._pytest_current_status_line(summary)
     assert "current_test_custody_unavailable" in line
@@ -18547,7 +18550,8 @@ def test_live_queue_status_projects_actual_xdist_workers_not_controller(
                     "current_test_file": {"path": str(current), "missing": True}
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     line = diagnostic_evidence._pytest_current_status_line(summary)
     assert f"pytest_current={Item.nodeid} phase=call worker=gw1" in line

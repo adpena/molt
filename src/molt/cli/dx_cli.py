@@ -6,12 +6,6 @@ import sys
 
 from molt.source_root import compiler_source_root
 from molt.dx import DX_ENV_KEYS, DxProject, dx_env_payload, render_env
-from molt.cli.setup_readiness import (
-    _build_toolchain_report,
-    _toolchain_report_data,
-    _toolchain_report_status,
-)
-from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.output import emit_json as _emit_json
 
 
@@ -39,6 +33,11 @@ def _handle_run(args: argparse.Namespace) -> int:
     if not command:
         print("molt dx run: command required after --", file=sys.stderr)
         return 2
+    from molt.cli.command_runtime import (
+        _CLI_MEMORY_GUARD_PREFIX,
+        _run_completed_command,
+    )
+
     project = _dx_project_from_cwd()
     env = project.dx_env(os.environ, create_dirs=True)
     result = _run_completed_command(
@@ -52,6 +51,14 @@ def _handle_run(args: argparse.Namespace) -> int:
 
 
 def _handle_check(args: argparse.Namespace) -> int:
+    # The toolchain report imports the setup and runtime machinery; the parser
+    # imports this module, so only the check command pays for it.
+    from molt.cli.setup_readiness import (
+        _build_toolchain_report,
+        _toolchain_report_data,
+        _toolchain_report_status,
+    )
+
     project = _dx_project_from_cwd()
     report = _build_toolchain_report(project.root)
     payload = {
