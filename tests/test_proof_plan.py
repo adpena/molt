@@ -2011,6 +2011,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         assert applied == (
             "sccache-disables-incremental",
             "sccache-server-temp-dir",
+            "sccache-server-private-endpoint",
         ), command.id
         assert {environment[name] for name in ("TMPDIR", "TMP", "TEMP")} == {
             server_temp
