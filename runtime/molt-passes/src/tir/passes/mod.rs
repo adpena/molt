@@ -62,6 +62,8 @@ pub struct PassStats {
     /// executable ops. These are pipeline mutations: restoring a pre-pass
     /// snapshot would erase backend authority facts such as `drop_inserted`.
     pub facts_changed: usize,
+    /// Wall time of the pass, set by the pass manager.
+    pub elapsed: std::time::Duration,
 }
 
 impl PassStats {
