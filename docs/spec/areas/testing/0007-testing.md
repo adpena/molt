@@ -28,6 +28,13 @@ exact termination, completion and mode-specific proof marker through
 must fail verification. These controls belong to development test binaries and
 receipt tooling, not emitted programs.
 
+Rust unit-test bodies live in separate files behind `#[cfg(test)] mod tests;`,
+with an explicit `#[path]` where needed. This keeps test-only edits outside the
+production crate's inputs and avoids rebuilding its dependents. Preserve module
+paths so existing proof rosters keep owning the same cases. This follows the
+[rustc test layout](https://rustc-dev-guide.rust-lang.org/tests/intro.html);
+checks and their dependencies remain development-only.
+
 ## Test quality and agent-written tests
 
 This is the shared test-authoring contract for human and agent contributions.
