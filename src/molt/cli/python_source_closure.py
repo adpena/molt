@@ -18,8 +18,12 @@ from typing import Literal, cast
 from molt.cli.atomic_io import _atomic_write_text
 from molt.default_paths import _default_molt_cache
 from molt.cli.module_source import PythonSourceSnapshot
-from molt.compiler_analysis.python_binding_facts import NO_INVALID_MEMBERS, MemberMask
-from molt.compiler_analysis.python_binding_flow import python_canonical_member_writes
+from molt.compiler_analysis.python_namespace_graph import (
+    NO_GRAPH_NAMESPACE_WRITES,
+    PythonGraphNamespaceWrites,
+    PythonNamespacePremise,
+    graph_python_namespace_writes,
+)
 from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceWrite,
     python_namespace_summary,
@@ -31,7 +35,6 @@ from molt.cli.python_import_resolution import (
     LocalPythonImportAnalysis,
     LocalPythonImportDiagnostic,
     LocalPythonImportRequest,
-    LocalPythonNamespacePremise,
     LocalPythonRelativeImportObligation,
     PythonImportPolicy,
     analyze_local_imports,
@@ -216,7 +219,7 @@ def _analysis_policy_digest(
     module: str,
     is_package: bool,
     policy: PythonImportPolicy,
-    premise: LocalPythonNamespacePremise,
+    premise: PythonNamespacePremise,
 ) -> str:
     payload = json.dumps(
         {
@@ -401,68 +404,6 @@ def _package_child_names(init: Path) -> frozenset[str]:
         if name.isidentifier() and name != "__init__":
             names.add(name)
     return frozenset(names)
-
-
-@dataclass(frozen=True, slots=True)
-class _GraphNamespaceWrites:
-    """Named namespace writes found in one walk of a closed graph."""
-
-    # Target source -> names written into it; None when a name is computed.
-    by_source: Mapping[Path, frozenset[str] | None]
-    # Names written into a namespace reached by a computed ``sys.modules`` key.
-    any_module: frozenset[str] | None
-    members: MemberMask
-
-    def premise(
-        self, source: Path, children: frozenset[str]
-    ) -> LocalPythonNamespacePremise:
-        named = self.by_source.get(source, frozenset())
-        if named is None or self.any_module is None:
-            return LocalPythonNamespacePremise(None, self.members)
-        return LocalPythonNamespacePremise(
-            tuple(sorted(children | named | self.any_module)), self.members
-        )
-
-
-_NO_GRAPH_NAMESPACE_WRITES = _GraphNamespaceWrites(
-    MappingProxyType({}), frozenset(), NO_INVALID_MEMBERS
-)
-
-
-def _graph_namespace_writes(
-    writes: Iterable[PythonNamespaceWrite], resolver: LocalPythonModuleResolver
-) -> _GraphNamespaceWrites:
-    by_source: dict[Path, set[str] | None] = {}
-    any_module: set[str] | None = set()
-    members = NO_INVALID_MEMBERS
-    for write in writes:
-        members |= python_canonical_member_writes(write.module, write.name)
-        if write.module is None:
-            if write.name is None or any_module is None:
-                any_module = None
-            else:
-                any_module.add(write.name)
-            continue
-        target = resolver.source_for_module(write.module)
-        if target is None:
-            # Not a local module: an attribute of some object, or a module
-            # outside this graph's sources.
-            continue
-        names = by_source.setdefault(target, set())
-        if write.name is None or names is None:
-            by_source[target] = None
-        else:
-            names.add(write.name)
-    return _GraphNamespaceWrites(
-        MappingProxyType(
-            {
-                source: None if names is None else frozenset(names)
-                for source, names in by_source.items()
-            }
-        ),
-        None if any_module is None else frozenset(any_module),
-        members,
-    )
 
 
 def _read_python_import_manifest(
@@ -662,7 +603,7 @@ def local_python_import_closure(
     ] = {}
 
     def walk(
-        graph_writes: _GraphNamespaceWrites,
+        graph_writes: PythonGraphNamespaceWrites,
     ) -> tuple[set[LocalPythonModuleSource], set[Path], str]:
         """Reach the graph under one namespace premise."""
         covered_sources: set[Path] = set()
@@ -795,10 +736,10 @@ def local_python_import_closure(
     # summaries bound what a callback can rebind. Start from no named write and
     # walk again until the premise the walk assumed is the one it found; writes
     # only add names, so the premise grows monotonically to its fixpoint.
-    graph_writes = _NO_GRAPH_NAMESPACE_WRITES
+    graph_writes = NO_GRAPH_NAMESPACE_WRITES
     while True:
         visited, covered_sources, topology_digest = walk(graph_writes)
-        found = _graph_namespace_writes(
+        found = graph_python_namespace_writes(
             (
                 write
                 for module_source in sorted(
@@ -806,7 +747,7 @@ def local_python_import_closure(
                 )
                 for write in writes_by_source[module_source]
             ),
-            resolver,
+            resolver.source_for_module,
         )
         if found == graph_writes:
             break

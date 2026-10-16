@@ -79,7 +79,10 @@ or mutates an import-hook object (`sys.modules`, `sys.meta_path`, `sys.path_hook
 3. **The import flow asks the binding flow.** `PythonBindingFacts.callbacks_rewrite_metadata` says
    whether any callback can rebind `__name__`, `__package__`, `__spec__` or `__path__`. Without it,
    every callback summary in the import flow leaves the metadata states unchanged.
-4. **The closure computes the premise as a fixpoint.** `local_python_import_closure` walks the graph
+4. **One graph projection.** `compiler_analysis/python_namespace_graph.py` owns
+   `PythonNamespacePremise`, `PythonGraphNamespaceWrites` and `graph_python_namespace_writes`.
+   It aggregates the existing summaries through the caller's module resolver; source capture, package
+   children and graph discovery stay with the caller. `local_python_import_closure` walks the graph
    assuming no named foreign write, summarizes every reached module (cached in its analysis row), and
    walks again until the premise it assumed is the one it found. Writes only add names, so the premise
    grows monotonically. A package's premise always includes its child module names from the
