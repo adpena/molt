@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 from molt.python_private_names import resolve_python_private_names
-import contextlib
 import functools
 import hashlib
 import io
@@ -13,11 +12,15 @@ import tokenize
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TYPE_CHECKING
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.default_paths import _default_molt_cache
 from molt.file_hashing import _sha256_file
+
+
+if TYPE_CHECKING:
+    from molt.cli.python_import_topology import PythonImportTopology
 
 
 class PythonSourceChangedError(ValueError):
@@ -67,103 +70,165 @@ class PythonSourceSnapshot:
 
 @dataclass(frozen=True)
 class _ModuleSourceLease:
+    """Immutable source identity carried from analysis through publication.
+
+    Path leases identify raw bytes. Inline leases identify explicitly supplied
+    text; their distinct kind prevents encoding-cookie bytes aliasing that text.
+    Neither file size nor timestamps can establish this input generation.
+    """
+
     path: Path
+    source_sha256: str
+    source_size: int
     inline_source: str | None = None
-    source_size: int | None = None
-    mtime_ns: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", self.path.resolve())
+        if (
+            type(self.source_sha256) is not str
+            or len(self.source_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in self.source_sha256)
+            or type(self.source_size) is not int
+            or self.source_size < 0
+        ):
+            raise ValueError("invalid source lease generation")
+        if self.inline_source is not None:
+            content = self.inline_source.encode("utf-8", errors="surrogatepass")
+            if (
+                len(content) != self.source_size
+                or hashlib.sha256(content).hexdigest() != self.source_sha256
+            ):
+                raise ValueError("inline source lease lost text generation")
 
     @classmethod
     def path_backed(
-        cls, path: Path, path_stat: os.stat_result | None = None
+        cls,
+        path: Path,
+        *,
+        snapshot: PythonSourceSnapshot | None = None,
     ) -> "_ModuleSourceLease":
-        if path_stat is None:
-            with contextlib.suppress(OSError):
-                path_stat = path.stat()
-        return cls(
-            path=path,
-            inline_source=None,
-            source_size=path_stat.st_size if path_stat is not None else None,
-            mtime_ns=path_stat.st_mtime_ns if path_stat is not None else None,
-        )
+        snapshot = snapshot or PythonSourceSnapshot.capture(path)
+        if snapshot.path.resolve() != path.resolve():
+            raise ValueError("source lease snapshot lost path custody")
+        return cls(path, snapshot.sha256, len(snapshot.content))
 
     @classmethod
     def inline(
         cls,
         path: Path,
         source: str,
-        path_stat: os.stat_result | None = None,
     ) -> "_ModuleSourceLease":
-        return cls(
-            path=path,
-            inline_source=source,
-            source_size=len(source),
-            mtime_ns=path_stat.st_mtime_ns if path_stat is not None else None,
-        )
+        content = source.encode("utf-8", errors="surrogatepass")
+        return cls(path, hashlib.sha256(content).hexdigest(), len(content), source)
+
+    @property
+    def source_kind(self) -> Literal["path", "inline"]:
+        return "path" if self.inline_source is None else "inline"
 
     @property
     def path_backed_source(self) -> bool:
         return self.inline_source is None
 
-    def read(self, resolution_cache: Any | None = None) -> str:
+    def validate_path(self, path: Path) -> None:
+        if path != self.path and path.resolve() != self.path:
+            raise ValueError(f"source lease lost path custody: {path}")
+
+    def validate(self) -> None:
+        if self.inline_source is not None:
+            return
+        try:
+            current = _sha256_file(self.path)
+        except OSError as exc:
+            raise PythonSourceChangedError(
+                f"source became unavailable during compile: {self.path}"
+            ) from exc
+        if current != self.source_sha256:
+            raise PythonSourceChangedError(
+                f"source generation changed during compile: {self.path}"
+            )
+
+    def read(self) -> str:
         if self.inline_source is not None:
             return self.inline_source
-        if self.source_size is not None or self.mtime_ns is not None:
-            stat = self.path.stat()
-            if self.source_size is not None and stat.st_size != self.source_size:
-                raise OSError(
-                    f"Source lease for {self.path} changed size during compile"
-                )
-            if self.mtime_ns is not None and stat.st_mtime_ns != self.mtime_ns:
-                raise OSError(
-                    f"Source lease for {self.path} changed mtime during compile"
-                )
-        if resolution_cache is not None:
-            return resolution_cache.read_module_source(self.path, retain=False)
-        return _read_module_source(self.path)
+        try:
+            snapshot = PythonSourceSnapshot.capture(self.path)
+        except OSError as exc:
+            raise PythonSourceChangedError(
+                f"source became unavailable during compile: {self.path}"
+            ) from exc
+        if snapshot.sha256 != self.source_sha256:
+            raise PythonSourceChangedError(
+                f"source generation changed during compile: {self.path}"
+            )
+        return snapshot.text
 
     def worker_payload(self) -> dict[str, Any]:
-        if self.inline_source is not None:
-            return {
-                "kind": "inline",
-                "path": str(self.path),
-                "source": self.inline_source,
-                "source_size": self.source_size,
-                "mtime_ns": self.mtime_ns,
-            }
-        return {
-            "kind": "path",
+        payload = {
+            "kind": self.source_kind,
             "path": str(self.path),
+            "source_sha256": self.source_sha256,
             "source_size": self.source_size,
-            "mtime_ns": self.mtime_ns,
         }
+        if self.inline_source is not None:
+            payload["source"] = self.inline_source
+        return payload
+
+    @classmethod
+    def from_worker_payload(cls, payload: object) -> "_ModuleSourceLease":
+        if not isinstance(payload, Mapping):
+            raise ValueError("missing source lease")
+        kind = payload.get("kind")
+        expected = {"kind", "path", "source_sha256", "source_size"}
+        if kind == "inline":
+            expected.add("source")
+        elif kind != "path":
+            raise ValueError(f"unsupported source lease kind: {kind!r}")
+        if set(payload) != expected:
+            raise ValueError("source lease payload lost generation custody")
+        path, sha256, size = (
+            payload["path"],
+            payload["source_sha256"],
+            payload["source_size"],
+        )
+        source = payload.get("source")
+        if (
+            type(path) is not str
+            or not path
+            or type(sha256) is not str
+            or type(size) is not int
+        ):
+            raise ValueError("invalid source lease generation")
+        if kind == "inline" and type(source) is not str:
+            raise ValueError("inline source lease is missing source text")
+        return cls(Path(path), sha256, size, source)
 
 
 @dataclass(frozen=True)
 class _ModuleSourceCatalog:
     leases: Mapping[str, _ModuleSourceLease]
+    import_topology: "PythonImportTopology | None" = None
 
     def lease_for(self, module_name: str, module_path: Path) -> _ModuleSourceLease:
         lease = self.leases.get(module_name)
-        if lease is not None:
-            return lease
-        return _ModuleSourceLease.path_backed(module_path)
+        if lease is None:
+            raise ValueError(f"module lacks captured source lease: {module_name!r}")
+        lease.validate_path(module_path)
+        return lease
 
     def source_size(self, module_name: str, module_path: Path | None = None) -> int:
-        lease = self.leases.get(module_name)
-        if lease is not None and lease.source_size is not None:
-            return lease.source_size
+        lease = self.leases[module_name]
         if module_path is not None:
-            with contextlib.suppress(OSError):
-                return module_path.stat().st_size
-        return 0
+            lease.validate_path(module_path)
+        return lease.source_size
 
-    def read_source(
-        self,
-        module_name: str,
-        module_path: Path,
-        resolution_cache: Any | None = None,
-    ) -> str:
-        return self.lease_for(module_name, module_path).read(resolution_cache)
+    def read_source(self, module_name: str, module_path: Path) -> str:
+        return self.lease_for(module_name, module_path).read()
+
+    def validate(self) -> None:
+        if self.import_topology is not None:
+            self.import_topology.validate()
+        for lease in self.leases.values():
+            lease.validate()
 
     def worker_source_lease_payload(
         self, module_name: str, module_path: Path
@@ -432,17 +497,13 @@ def _build_module_source_catalog(
     module_graph: Mapping[str, Path],
     *,
     module_sources: Mapping[str, str] | None = None,
-    path_stats: Mapping[str, os.stat_result | None] | None = None,
 ) -> _ModuleSourceCatalog:
     leases: dict[str, _ModuleSourceLease] = {}
     module_sources = module_sources or {}
     for module_name, module_path in module_graph.items():
-        path_stat = path_stats.get(module_name) if path_stats is not None else None
         inline_source = module_sources.get(module_name)
         if inline_source is not None:
-            leases[module_name] = _ModuleSourceLease.inline(
-                module_path, inline_source, path_stat
-            )
+            leases[module_name] = _ModuleSourceLease.inline(module_path, inline_source)
         else:
-            leases[module_name] = _ModuleSourceLease.path_backed(module_path, path_stat)
+            leases[module_name] = _ModuleSourceLease.path_backed(module_path)
     return _ModuleSourceCatalog(leases=leases)

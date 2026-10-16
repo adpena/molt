@@ -9,6 +9,8 @@ from typing import Any, Iterator, Sequence
 
 _SOURCE_FINGERPRINT_IGNORED_DIRS = frozenset({"__pycache__"})
 _SOURCE_FINGERPRINT_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
+# A timestamp near a tick can miss another same-tick write (the racy-git rule).
+DIGEST_RACY_WINDOW_NS = 2_000_000_000
 
 
 def _sha256_bytes(data: bytes) -> str:

@@ -10,6 +10,7 @@ from molt.cli.config_resolution import (
 )
 from molt.cli import module_resolution as _module_resolution
 from molt.source_root import compiler_source_root
+from molt.cli.python_import_topology import PythonImportTopology
 
 
 @functools.lru_cache(maxsize=8)
@@ -85,6 +86,8 @@ def _ensure_core_stdlib_modules(
     module_graph: dict[str, Path],
     stdlib_root: Path,
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
+    *,
+    import_topology: PythonImportTopology,
 ) -> None:
     """Add the profile's unconditional core stdlib modules to the graph.
 
@@ -95,7 +98,9 @@ def _ensure_core_stdlib_modules(
     """
     core_modules = _core_stdlib_module_names_for_profile(stdlib_profile)
     for name in core_modules:
-        path = _module_resolution._resolve_module_path(name, [stdlib_root])
+        path = _module_resolution._resolve_module_path(
+            name, [stdlib_root], import_topology=import_topology
+        )
         if path is not None:
             module_graph.setdefault(name, path)
 

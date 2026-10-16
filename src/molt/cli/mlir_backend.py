@@ -8,6 +8,10 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+from collections.abc import Callable
+
+from molt import file_publication
+from molt.artifact_publication import discard_staged_output
 
 from molt.cli.cache_keys import _json_ir_default
 from molt.cli.cargo_execution import _cargo_build_env
@@ -108,6 +112,7 @@ def _run_mlir_backend_pipeline(
     project_root: Path,
     json_output: bool,
     verbose: bool,
+    validate_inputs: Callable[[], None],
     emit_llvm: bool = False,
 ) -> int:
     """Run the standalone MLIR backend binary and write the emitted artifact."""
@@ -138,54 +143,75 @@ def _run_mlir_backend_pipeline(
     except LlvmToolchainConfigError as exc:
         return _fail(str(exc), json_output, command="build")
 
-    cmd: list[str] = [str(mlir_bin), "--output", str(output_artifact)]
-    if emit_llvm:
-        cmd.append("--emit-llvm")
-
-    ir_bytes = json.dumps(ir, separators=(",", ":"), default=_json_ir_default).encode(
-        "utf-8"
-    )
-
-    if verbose and not json_output:
-        print(f"MLIR backend: {shlex.join(cmd)}", file=sys.stderr)
-        print(
-            f"  IR size: {len(ir_bytes)} bytes, "
-            f"functions: {len(ir.get('functions', []))}",
-            file=sys.stderr,
-        )
-
     try:
-        result = _run_subprocess_captured_to_tempfiles(
-            cmd,
-            input=ir_bytes,
-            cwd=project_root,
-            env=mlir_env,
-            timeout=120,
-            progress_label="MLIR backend",
+        output_artifact = file_publication.canonical_file_leaf(
+            output_artifact, create_parent=True, role="MLIR output"
         )
-    except FileNotFoundError:
-        return _fail(
-            f"MLIR backend binary not executable: {mlir_bin}",
-            json_output,
-            command="build",
+        candidate = file_publication.staged_file_path(
+            output_artifact, purpose="mlir", suffix=output_artifact.suffix
         )
-    except subprocess.TimeoutExpired:
-        return _fail(
-            "MLIR backend timed out after 120 seconds",
-            json_output,
-            command="build",
-        )
+    except (OSError, ValueError) as exc:
+        return _fail(f"Cannot stage MLIR output: {exc}", json_output, command="build")
+    try:
+        cmd: list[str] = [str(mlir_bin), "--output", str(candidate)]
+        if emit_llvm:
+            cmd.append("--emit-llvm")
 
-    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
-    if stderr_text and (verbose or result.returncode != 0):
-        print(stderr_text, file=sys.stderr)
+        ir_bytes = json.dumps(
+            ir, separators=(",", ":"), default=_json_ir_default
+        ).encode("utf-8")
 
-    if result.returncode != 0:
-        return _fail(
-            f"MLIR backend failed (exit {result.returncode})",
-            json_output,
-            command="build",
-        )
+        if verbose and not json_output:
+            print(f"MLIR backend: {shlex.join(cmd)}", file=sys.stderr)
+            print(
+                f"  IR size: {len(ir_bytes)} bytes, "
+                f"functions: {len(ir.get('functions', []))}",
+                file=sys.stderr,
+            )
+
+        try:
+            result = _run_subprocess_captured_to_tempfiles(
+                cmd,
+                input=ir_bytes,
+                cwd=project_root,
+                env=mlir_env,
+                timeout=120,
+                progress_label="MLIR backend",
+            )
+        except FileNotFoundError:
+            return _fail(
+                f"MLIR backend binary not executable: {mlir_bin}",
+                json_output,
+                command="build",
+            )
+        except subprocess.TimeoutExpired:
+            return _fail(
+                "MLIR backend timed out after 120 seconds",
+                json_output,
+                command="build",
+            )
+
+        stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+        if stderr_text and (verbose or result.returncode != 0):
+            print(stderr_text, file=sys.stderr)
+
+        if result.returncode != 0:
+            return _fail(
+                f"MLIR backend failed (exit {result.returncode})",
+                json_output,
+                command="build",
+            )
+
+        try:
+            validate_inputs()
+            file_publication.durable_replace(candidate, output_artifact)
+        except (OSError, ValueError) as exc:
+            return _fail(
+                f"Cannot publish MLIR output: {exc}", json_output, command="build"
+            )
+
+    finally:
+        discard_staged_output(candidate)
 
     if json_output:
         data: dict[str, Any] = {

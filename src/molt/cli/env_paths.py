@@ -5,31 +5,49 @@ import os
 from pathlib import Path
 
 from molt.cli.deps import _molt_venv_path
+from molt.cli.python_import_topology import PythonImportTopology
 from molt.source_root import MOLT_SOURCE_ROOT_ENV
 
 
-def _vendor_roots(project_root: Path) -> list[Path]:
+def _vendor_roots(
+    project_root: Path, *, import_topology: PythonImportTopology | None = None
+) -> list[Path]:
+    topology = import_topology or PythonImportTopology()
     vendor_root = project_root / "vendor"
     roots: list[Path] = []
     for name in ("packages", "local"):
         candidate = vendor_root / name
-        if candidate.exists():
+        if topology.probe(candidate) is not None:
             roots.append(candidate)
     return roots
 
 
-def _molt_venv_site_packages(project_root: Path) -> list[Path]:
-    venv = _molt_venv_path(project_root)
-    if not venv.exists():
+def _venv_site_packages(
+    venv: Path, *, import_topology: PythonImportTopology | None = None
+) -> list[Path]:
+    topology = import_topology or PythonImportTopology()
+    if not topology.is_dir(venv):
         return []
     results: list[Path] = []
-    for sp in sorted(venv.glob("lib/python*/site-packages")):
-        if sp.is_dir():
-            results.append(sp)
+    library = venv / "lib"
+    if topology.is_dir(library):
+        for name in sorted(topology.directory_names(library)):
+            if Path(name).match("python*"):
+                sp = library / name / "site-packages"
+                if topology.is_dir(sp):
+                    results.append(sp)
     win_sp = venv / "Lib" / "site-packages"
-    if win_sp.is_dir() and win_sp not in results:
+    if topology.is_dir(win_sp) and win_sp not in results:
         results.append(win_sp)
     return results
+
+
+def _molt_venv_site_packages(
+    project_root: Path, *, import_topology: PythonImportTopology | None = None
+) -> list[Path]:
+    return _venv_site_packages(
+        _molt_venv_path(project_root), import_topology=import_topology
+    )
 
 
 def _base_env(

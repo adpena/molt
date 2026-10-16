@@ -403,6 +403,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         known_classes={},
     )
     prepared, error = cli_backend_ir._prepare_backend_ir(
+        validate_inputs=lambda: None,
         entry_module="__main__",
         module_graph={"__main__": source_path},
         known_modules={"__main__"},

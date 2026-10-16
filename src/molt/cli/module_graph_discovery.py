@@ -612,7 +612,7 @@ def _discover_module_graph_from_paths(
         if package_paths not in package_children:
             try:
                 package_children[package_paths] = python_package_child_names(
-                    package_paths
+                    package_paths, import_topology=resolution_cache.import_topology
                 )
             except (OSError, ValueError):
                 merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)

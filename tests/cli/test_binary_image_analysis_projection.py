@@ -12,7 +12,11 @@ import pytest
 
 from molt.cli import binary_image_analysis as diagnostics
 from molt.cli.module_resolution import _ModuleResolutionCache
-from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+from molt.cli.module_source import (
+    PythonSourceChangedError,
+    _ModuleSourceCatalog,
+    _ModuleSourceLease,
+)
 
 
 class _NativePlan:
@@ -99,17 +103,20 @@ def _count_capture(
     read = _ModuleSourceLease.read
     parse = ast.parse
 
-    def read_lease(self: _ModuleSourceLease, resolution_cache: Any = None) -> str:
+    def read_lease(self: _ModuleSourceLease) -> str:
         if require_release:
             assert all(tree() is None for tree in trees)
         counts["reads"] += 1
-        return read(self, resolution_cache)
+        return read(self)
 
     def parse_source(
-        source: str, filename: str = "<unknown>", **kwargs: Any
+        source: str,
+        filename: str = "<unknown>",
+        mode: str = "exec",
+        **kwargs: Any,
     ) -> ast.AST:
         counts["parses"] += 1
-        tree = parse(source, filename=filename, **kwargs)
+        tree = parse(source, filename, mode, **kwargs)
         trees.append(weakref.ref(tree))
         return tree
 
@@ -182,12 +189,9 @@ def test_projection_keeps_lease_validation_and_recaptures_new_lease(
     changed = "longer_name = 2\n"
     path.write_text(changed, encoding="utf-8")
     counts = _count_capture(monkeypatch)
-    rejected = _payload(plan, analysis)
+    with pytest.raises(PythonSourceChangedError, match="source generation changed"):
+        _payload(plan, analysis)
     assert counts == {"reads": 1, "parses": 0}
-    assert rejected["source_identity"]["modules"][0]["source_sha256"] == (
-        hashlib.sha256(b"").hexdigest()
-    )
-    assert rejected["source_ast"]["known"]["ast_nodes"] == 0
     analysis.module_source_catalog = _ModuleSourceCatalog(
         {"app": _ModuleSourceLease.path_backed(path)}
     )

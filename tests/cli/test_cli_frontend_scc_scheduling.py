@@ -330,14 +330,19 @@ def _make_execution_context(
     scc_serial_modules: frozenset[str] = frozenset(),
 ):
     from molt.cli.models import _FrontendLayerExecutionContext
+    from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 
     names = list(module_graph)
     return _FrontendLayerExecutionContext(
         syntax_error_modules={},
         module_graph=module_graph,
-        module_source_catalog=None,
+        module_source_catalog=_ModuleSourceCatalog(
+            {
+                name: _ModuleSourceLease.inline(path, "VALUE = 1\n")
+                for name, path in module_graph.items()
+            }
+        ),
         project_root=None,
-        module_resolution_cache=None,
         parse_codec=None,
         type_hint_policy=None,
         fallback_policy=None,
@@ -360,7 +365,6 @@ def _make_execution_context(
         pgo_hot_function_names_sorted=(),
         module_dep_closures={name: frozenset({name}) for name in names},
         module_graph_metadata=None,
-        path_stat_by_module=None,
         module_chunking=False,
         scoped_lowering_inputs=None,
         frontend_module_costs={name: 1.0 for name in names},
@@ -402,13 +406,27 @@ def test_a3_run_frontend_layer_isolates_failed_module_and_keeps_parallel(
         # (pool still healthy -> pool_broken False). b is absent from results.
         state = _FrontendParallelLayerState()
         for name in ("a", "c"):
-            state.results[name] = {"ok": True, "functions": {}, "timings": {}}
+            state.results[name] = {
+                "ok": True,
+                "functions": [],
+                "timings": {},
+                "source_sha256": execution_context.module_source_catalog.leases[
+                    name
+                ].source_sha256,
+            }
         return state, None, "/tmp/b.py: boom", False
 
     def _fake_serial_layer_modules(module_names, *, layer_state, **kwargs):
         for name in module_names:
             lowered_serially.append(name)
-            layer_state.results[name] = {"ok": True, "functions": {}, "timings": {}}
+            layer_state.results[name] = {
+                "ok": True,
+                "functions": [],
+                "timings": {},
+                "source_sha256": execution_context.module_source_catalog.leases[
+                    name
+                ].source_sha256,
+            }
         return None
 
     def _fake_consume(*, module_name, **kwargs):
@@ -483,13 +501,27 @@ def test_a4_run_frontend_layer_surrenders_pool_only_when_broken(
 
     def _fake_batches(candidates, **kwargs):
         state = _FrontendParallelLayerState()
-        state.results["a"] = {"ok": True, "functions": {}, "timings": {}}
+        state.results["a"] = {
+            "ok": True,
+            "functions": [],
+            "timings": {},
+            "source_sha256": execution_context.module_source_catalog.leases[
+                "a"
+            ].source_sha256,
+        }
         return state, None, "/tmp/b.py: BrokenProcessPool", True
 
     def _fake_serial_layer_modules(module_names, *, layer_state, **kwargs):
         for name in module_names:
             lowered_serially.append(name)
-            layer_state.results[name] = {"ok": True, "functions": {}, "timings": {}}
+            layer_state.results[name] = {
+                "ok": True,
+                "functions": [],
+                "timings": {},
+                "source_sha256": execution_context.module_source_catalog.leases[
+                    name
+                ].source_sha256,
+            }
         return None
 
     def _fake_consume(*, module_name, **kwargs):

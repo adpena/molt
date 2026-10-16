@@ -22,6 +22,55 @@ from molt.frontend import SimpleTIRGenerator
 from molt.target_python import _SUPPORTED_TARGET_PYTHON_BY_SHORT
 
 
+@pytest.mark.parametrize("mutation", [None, "rewrite", "delete", "topology"])
+def test_emitted_ir_fences_source_after_bytes_are_staged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str | None
+) -> None:
+    from molt.cli import backend_ir
+    from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+    from molt.cli.python_import_topology import PythonImportTopology
+
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    optional = tmp_path / "optional.py"
+    topology = PythonImportTopology()
+    assert topology.probe(optional) is None
+    catalog = _ModuleSourceCatalog(
+        {"app": _ModuleSourceLease.path_backed(source)}, import_topology=topology
+    )
+    output = tmp_path / "ir.json"
+    output.write_bytes(b"previous IR")
+    write_bytes = backend_ir.file_publication.atomic_write_bytes
+    staged: list[Path] = []
+
+    def stage_bytes(path, payload, *, replace):
+        def before_commit(candidate, destination):
+            assert candidate.read_bytes() == payload
+            assert destination.read_bytes() == b"previous IR"
+            staged.append(candidate)
+            if mutation == "rewrite":
+                source.write_text("value = 2\n", encoding="utf-8")
+            elif mutation == "delete":
+                source.unlink()
+            elif mutation == "topology":
+                optional.write_text("value = 3\n", encoding="utf-8")
+            replace(candidate, destination)
+
+        write_bytes(path, payload, replace=before_commit)
+
+    monkeypatch.setattr(backend_ir.file_publication, "atomic_write_bytes", stage_bytes)
+    error = backend_ir._write_emitted_ir(
+        output, {"functions": []}, validate_inputs=catalog.validate
+    )
+    assert len(staged) == 1 and not staged[0].exists()
+    if mutation is None:
+        assert error is None
+        assert output.read_text(encoding="utf-8") == '{\n  "functions": []\n}\n'
+    else:
+        assert error is not None
+        assert output.read_bytes() == b"previous IR"
+
+
 def test_bootstrap_guards_setup_before_later_work_without_clearing() -> None:
     ops = _build_isolate_bootstrap_ops(
         code_slot_count=17,
@@ -201,6 +250,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         expected_slots[init] = deepcopy(slots[0])
 
     prepared, error = _prepare_backend_ir(
+        validate_inputs=lambda: None,
         entry_module=entry_module,
         module_graph=module_graph,
         known_modules=set(modules),

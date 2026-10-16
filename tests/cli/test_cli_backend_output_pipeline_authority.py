@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 import json
 import subprocess
 import time
@@ -19,6 +20,8 @@ from molt.cli import (
     output,
 )
 from molt.cli.models import _BackendCacheSetup, _BuildDiagnosticsContext
+from molt.cli.build_output_layout import _BuildOutputLayout
+from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.python_runtime_admission import BuildPythonAdmission
 
@@ -193,13 +196,19 @@ def terminal_build(
         warnings=[],
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    layout = SimpleNamespace(
+    destination = tmp_path / "backend-output.lib"
+    candidate_output = cli_backend_output_pipeline.file_publication.staged_file_path(
+        destination, purpose="backend-output", suffix=".lib"
+    )
+    candidate_output.write_bytes(b"backend output")
+    layout = _BuildOutputLayout(
+        is_mlir_emit=False,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=False,
         is_wasm_freestanding=False,
         emit_mode="bin",
-        output_artifact=tmp_path / "app.lib",
+        output_artifact=candidate_output,
         output_binary=binary,
         target_triple=None,
         linked=True,
@@ -225,7 +234,8 @@ def terminal_build(
         prepared_build_config=config,
         resolved_build_entry=SimpleNamespace(source_path=tmp_path / "app.py"),
         output_layout=layout,
-        native_object_destination=None,
+        backend_output_destination=destination,
+        validate_inputs=_ModuleSourceCatalog({}).validate,
         prepared_backend_setup=SimpleNamespace(
             backend="native",
             cache_setup=cache_setup,
@@ -383,15 +393,50 @@ def test_compiler_identity_enrichment_is_outside_terminal_work_cutoff(
     assert case.clock.now == 34.0
 
 
+@pytest.mark.parametrize("kind", ["rust", "luau", "wasm"])
+@pytest.mark.parametrize("mutation", ["rewrite", "delete"])
+def test_raw_backend_publication_requires_current_source_generation(
+    terminal_build, tmp_path, monkeypatch, kind, mutation
+):
+    case = terminal_build
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    catalog = _ModuleSourceCatalog({"app": _ModuleSourceLease.path_backed(source)})
+    case.args["validate_inputs"] = catalog.validate
+    case.args["output_layout"] = replace(
+        case.args["output_layout"],
+        is_rust_transpile=kind == "rust",
+        is_luau_transpile=kind == "luau",
+        is_wasm=kind == "wasm",
+    )
+    destination = case.args["backend_output_destination"]
+    destination.write_bytes(b"previous output")
+    if mutation == "rewrite":
+        source.write_text("value = 2\n", encoding="utf-8")
+    else:
+        source.unlink()
+
+    def unexpected(**_):
+        pytest.fail("stale backend output must not reach packaging")
+
+    monkeypatch.setattr(
+        cli_backend_output_pipeline._non_native_output,
+        "_prepare_non_native_build_result",
+        unexpected,
+    )
+    assert cli_backend_output_pipeline._emit_backend_pipeline_outputs(**case.args) == 2
+    assert destination.read_bytes() == b"previous output"
+
+
 def test_native_object_snapshot_follows_binding_and_durable_publication(
     terminal_build, tmp_path, monkeypatch, capsys
 ):
     case = terminal_build
-    case.args["output_layout"].emit_mode = "obj"
+    case.args["output_layout"] = replace(case.args["output_layout"], emit_mode="obj")
     destination = tmp_path / "published.lib"
     source = case.args["output_layout"].output_artifact
     source.write_bytes(b"object")
-    case.args["native_object_destination"] = destination
+    case.args["backend_output_destination"] = destination
     publication = cli_backend_output_pipeline.file_publication
     real_replace = publication.durable_replace
 
@@ -444,7 +489,7 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
     case.args["target"] = "wasm"
     case.args["prepared_backend_setup"].backend = "wasm"
     case.args["snapshot"] = header
-    case.args["output_layout"].is_wasm = True
+    case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
 
     def prepare(**_):
         case.events.append("wasm_publish")
@@ -517,14 +562,14 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
     if target == "wasm":
         case.args["target"] = "wasm"
         case.args["prepared_backend_setup"].backend = "wasm"
-        case.args["output_layout"].is_wasm = True
+        case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
         monkeypatch.setattr(
             cli_backend_output_pipeline._non_native_output,
             "_prepare_non_native_build_result",
-            lambda **_: (
+            lambda **kwargs: (
                 SimpleNamespace(
-                    primary_output=case.args["output_layout"].output_artifact,
-                    consumer_output=case.args["output_layout"].output_artifact,
+                    primary_output=kwargs["output_artifact"],
+                    consumer_output=kwargs["output_artifact"],
                     bundle_root=None,
                     extra_fields={},
                     artifacts={},
@@ -611,6 +656,7 @@ def test_earlier_pipeline_failure_flushes_without_repeating_error_json(
         ),
         build_diagnostics_payload=case.snapshot,
         module_graph={},
+        module_source_catalog=_ModuleSourceCatalog({}),
         runtime_import_dispatch_roots=set(),
         stdlib_allowlist=set(),
         spawn_enabled=False,
@@ -918,8 +964,10 @@ def test_reporting_failure_prevents_success_and_retains_published_artifact(
         source = case.args["output_layout"].output_artifact
         source.write_bytes(published_bytes)
         artifact = tmp_path / "published.lib"
-        case.args["native_object_destination"] = artifact
-        case.args["output_layout"].emit_mode = "obj"
+        case.args["backend_output_destination"] = artifact
+        case.args["output_layout"] = replace(
+            case.args["output_layout"], emit_mode="obj"
+        )
         monkeypatch.setattr(
             cli_backend_output_pipeline.file_publication,
             "is_owned_staged_file_path",
@@ -934,7 +982,7 @@ def test_reporting_failure_prevents_success_and_retains_published_artifact(
         artifact = tmp_path / "app.wasm"
         case.args["target"] = "wasm"
         case.args["prepared_backend_setup"].backend = "wasm"
-        case.args["output_layout"].is_wasm = True
+        case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
 
         def publish_wasm(**_):
             artifact.write_bytes(published_bytes)
@@ -1032,7 +1080,7 @@ def test_wasm_terminal_diagnostics_report_resolved_runtime_profile(
     case.args["target"] = "wasm"
     case.args["prepared_backend_setup"].backend = "wasm"
     case.args["profile"] = "release"
-    case.args["output_layout"].is_wasm = True
+    case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
     case.args["prepared_build_config"].runtime_cargo_profile = requested
     monkeypatch.setattr(
         cli_backend_output_pipeline._non_native_output,

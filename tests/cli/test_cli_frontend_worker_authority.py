@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import importlib
 import ast
+import hashlib
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +14,8 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import frontend_execution
+from molt.cli import frontend_pipeline
+from molt.cli import module_cache
 from molt.cli.models import _SerialFrontendLoweringContext
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
@@ -28,7 +32,6 @@ _FRONTEND_WORKER_NAMES = (
     "_module_frontend_payload",
     "_phase_timeout",
     "_prepare_frontend_parallel_batch",
-    "_read_worker_source_lease",
     "_resolve_tree_for_serial_frontend_module",
     "_run_serial_frontend_lower_with_context",
     "_syntax_error_stub_ast",
@@ -68,11 +71,9 @@ def test_serial_lowering_mutation_does_not_change_discovery_tree(
         _SerialFrontendLoweringContext,
         SimpleNamespace(
             syntax_error_modules={},
-            module_trees={},
             module_source_catalog=_ModuleSourceCatalog(
                 {"app": _ModuleSourceLease.path_backed(path)}
             ),
-            module_resolution_cache=cache,
             generated_module_source_paths={},
             target_python=TargetPythonVersion(3, 12, 0),
         ),
@@ -105,7 +106,7 @@ def test_serial_lowering_keeps_source_lease_and_target_refusal(
     target = TargetPythonVersion(3, 12, 0)
     if changed == "source":
         path.write_text("VALUE = 100\n", encoding="utf-8")
-        message = "Source lease .* changed size"
+        message = "changed"
     else:
         target = TargetPythonVersion(3, sys.version_info.minor + 1, 0)
         message = "requires a Python"
@@ -113,9 +114,7 @@ def test_serial_lowering_keeps_source_lease_and_target_refusal(
         _SerialFrontendLoweringContext,
         SimpleNamespace(
             syntax_error_modules={},
-            module_trees={},
             module_source_catalog=_ModuleSourceCatalog({"app": lease}),
-            module_resolution_cache=cache,
             generated_module_source_paths={},
             target_python=target,
         ),
@@ -124,6 +123,109 @@ def test_serial_lowering_keeps_source_lease_and_target_refusal(
         frontend_worker._resolve_tree_for_serial_frontend_module(
             "app", path, lowering_context=context
         )
+
+
+def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
+    return module_cache._module_worker_payload(
+        "app",
+        module_path=path,
+        logical_source_path=str(path),
+        source_lease=lease,
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        module_is_namespace=False,
+        module_execution_kind="imported",
+        entry_module=None,
+        type_facts=None,
+        enable_phi=True,
+        known_modules={"app"},
+        known_classes_snapshot={},
+        stdlib_allowlist_sorted=(),
+        known_func_defaults={},
+        known_func_kinds={},
+        module_deps={"app": set()},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=(),
+        module_dep_closures={"app": frozenset({"app"})},
+    )
+
+
+@pytest.mark.parametrize("reader", ["serial", "worker", "syntax_stub"])
+def test_lowering_rejects_same_size_restored_mtime_generation(
+    tmp_path: Path, reader: str
+) -> None:
+    path = tmp_path / "app.py"
+    source = "def broken(:\n" if reader == "syntax_stub" else "VALUE = 1\n"
+    path.write_text(source, encoding="utf-8")
+    lease = _ModuleSourceLease.path_backed(path)
+    original_stat = path.stat()
+    syntax_errors = {}
+    if reader == "syntax_stub":
+        with pytest.raises(SyntaxError) as caught:
+            compile(source, str(path), "exec")
+        syntax_errors["app"] = frontend_pipeline._syntax_error_info_from_exception(
+            caught.value, path=path
+        )
+    replacement = "def breaks(:\n" if reader == "syntax_stub" else "VALUE = 2\n"
+    path.write_text(replacement, encoding="utf-8")
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert path.stat().st_size == original_stat.st_size
+    assert path.stat().st_mtime_ns == original_stat.st_mtime_ns
+    if reader == "worker":
+        result = frontend_worker._frontend_lower_module_worker(
+            _worker_payload(path, lease)
+        )
+        assert result["ok"] is False
+        assert "changed" in result["error"]
+        assert "functions" not in result
+    else:
+        context = cast(
+            _SerialFrontendLoweringContext,
+            SimpleNamespace(
+                syntax_error_modules=syntax_errors,
+                module_source_catalog=_ModuleSourceCatalog({"app": lease}),
+                generated_module_source_paths={},
+                target_python=TargetPythonVersion(3, 12, 0),
+            ),
+        )
+        with pytest.raises(frontend_worker._ModuleLowerError, match="changed"):
+            frontend_worker._resolve_tree_for_serial_frontend_module(
+                "app", path, lowering_context=context
+            )
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_worker_success_carries_the_consumed_source_generation(
+    tmp_path: Path, inline: bool
+) -> None:
+    path = tmp_path / "app.py"
+    raw = b"# coding: latin-1\r\nVALUE = 'caf\xe9'\r\n"
+    path.write_bytes(raw)
+    source = "VALUE = 'different'\n"
+    lease = (
+        _ModuleSourceLease.inline(path, source)
+        if inline
+        else _ModuleSourceLease.path_backed(path)
+    )
+    result = frontend_worker._frontend_lower_module_worker(_worker_payload(path, lease))
+    assert result["ok"] is True
+    assert result["functions"]
+    consumed_bytes = source.encode("utf-8") if inline else raw
+    assert result["source_sha256"] == hashlib.sha256(consumed_bytes).hexdigest()
+
+
+def test_worker_refuses_a_missing_source_lease_without_throwing(tmp_path: Path) -> None:
+    path = tmp_path / "app.py"
+    path.write_text("VALUE = 1\n", encoding="utf-8")
+    payload = _worker_payload(path, _ModuleSourceLease.path_backed(path))
+    del payload["source_lease"]
+    result = frontend_worker._frontend_lower_module_worker(payload)
+    assert result["ok"] is False
+    assert "missing source lease" in result["error"]
+    assert "functions" not in result
 
 
 def test_phase_timeout_enforced_off_main_thread() -> None:

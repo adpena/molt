@@ -936,3 +936,149 @@ def test_gpu_reference_capture_is_lazy_and_generation_bound(
         with pytest.raises(ValueError, match="changed after semantic generation"):
             changed_before_capture.reference_source("gpu/__init__.py")
         assert changed_before_capture.reference_sources == {}
+
+
+@pytest.mark.parametrize("syntax_stub", [False, True])
+def test_frontend_analysis_keeps_the_snapshot_that_supplied_its_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    compiler_sources: Path,
+    syntax_stub: bool,
+) -> None:
+    from molt.cli import frontend_pipeline
+
+    source = tmp_path / "dependency.py"
+    content = b"VALUE = 1\n"
+    source.write_bytes(content)
+    snapshot = PythonSourceSnapshot.capture(source)
+    graph = {"dependency": source}
+    authority = _ModuleGraphScanAuthority(
+        (
+            _ModuleSourceScanAuthority(
+                "dependency", source, "full", source_sha256=snapshot.sha256
+            ),
+        )
+    )
+    metadata = module_graph._build_module_graph_metadata(
+        graph,
+        generated_module_source_paths={},
+        entry_module="entry",
+        entry_execution_kind="script",
+        namespace_module_names=set(),
+    )
+    seen: list[PythonSourceSnapshot] = []
+
+    def analyze(path: Path, **kwargs: Any) -> tuple[Any, ...]:
+        captured = kwargs["source_snapshot"]
+        assert captured.content == content
+        seen.append(captured)
+        before = path.stat()
+        path.write_bytes(b"VALUE = 2\n")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        if syntax_stub:
+            raise SyntaxError("invalid captured source")
+        return None, (), {}, {}, None, False, before
+
+    monkeypatch.setattr(frontend_pipeline, "_load_module_analysis", analyze)
+    resolver = module_resolution._ModuleResolutionCache()
+    analysis, error = frontend_pipeline._prepare_frontend_analysis(
+        module_graph=graph,
+        scan_authority=authority,
+        module_graph_metadata=metadata,
+        module_resolution_cache=resolver,
+        roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        stdlib_allowlist=set(),
+        project_root=tmp_path,
+        entry_module="entry",
+        json_output=False,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert error is None and analysis is not None
+    assert len(seen) == 1
+    lease = analysis.module_source_catalog.lease_for("dependency", source)
+    assert lease.source_sha256 == snapshot.sha256
+    assert analysis.module_source_catalog.import_topology is resolver.import_topology
+    assert bool(analysis.syntax_error_modules) is syntax_stub
+    with pytest.raises(module_source.PythonSourceChangedError):
+        analysis.module_source_catalog.validate()
+
+
+@pytest.mark.parametrize("change", ["same-stat", "remove"])
+def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    compiler_sources: Path,
+    change: str,
+) -> None:
+    import contextlib
+    import json
+
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    path = tmp_path / "owner.py"
+    content = b"VALUE = 1\n"
+    path.write_bytes(content)
+    metadata = path.stat()
+    lease = module_source._ModuleSourceLease.path_backed(path)
+    options = dict(
+        source_lease=lease,
+        module_name="owner",
+        is_package=False,
+        context_digest="a" * 64,
+    )
+    module_cache._write_persisted_module_lowering(
+        tmp_path, path, result={"functions": []}, **options
+    )
+    local = module_cache._module_lowering_cache_path(
+        tmp_path, path, module_name="owner", is_package=False
+    )
+    before = local.read_bytes()
+    assert json.loads(before)["source_sha256"] == lease.source_sha256
+    if change == "same-stat":
+        path.write_bytes(b"VALUE = 2\n")
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    else:
+        path.unlink()
+    # Cache writes are optional IO. Losing the admitted input is not optional:
+    # the ordinary producer's OSError suppression must not hide that failure.
+    with pytest.raises(module_source.PythonSourceChangedError):
+        with contextlib.suppress(OSError):
+            module_cache._write_persisted_module_lowering(
+                tmp_path, path, result={"functions": [{"name": "stale"}]}, **options
+            )
+    assert local.read_bytes() == before
+    with pytest.raises(module_source.PythonSourceChangedError):
+        module_cache._read_persisted_module_lowering(tmp_path, path, **options)
+    assert local.read_bytes() == before
+
+
+def test_lowering_slot_lookup_never_opens_the_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unowned_read(*args: Any, **kwargs: Any) -> NoReturn:
+        raise AssertionError("locating a cache slot reopened an admitted source")
+
+    original_stat = Path.stat
+
+    def guarded_stat(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path.name == "owner.py":
+            unowned_read()
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+    for path in (
+        tmp_path / "generation-a" / "owner.py",
+        tmp_path / "generation-b" / "owner.py",
+    ):
+        key = module_cache._module_lowering_cache_key(
+            module_name="owner",
+            is_package=False,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
+        assert key
+        assert (
+            module_cache._shared_module_lowering_cache_path_for(
+                path, module_name="owner", is_package=False, context_digest="a" * 64
+            )
+            is not None
+        )

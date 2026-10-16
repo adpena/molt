@@ -56,7 +56,12 @@ from molt.cli.module_dependencies import (
     _module_dependencies_from_imports,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
-from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+from molt.cli.module_source import (
+    PythonSourceChangedError,
+    PythonSourceSnapshot,
+    _ModuleSourceCatalog,
+    _ModuleSourceLease,
+)
 from molt.compiler_analysis.python_imports import ModuleExecutionKind
 from molt.cli.models import (
     _RuntimeImportScanCustody,
@@ -98,6 +103,7 @@ if TYPE_CHECKING:
 class _PreparedFrontendPipelineBundle:
     prepared_frontend_run_ticket: _PreparedFrontendRunTicket
     module_graph: Mapping[str, Path]
+    module_source_catalog: _ModuleSourceCatalog
     runtime_import_dispatch_roots: Collection[str]
     stdlib_allowlist: Collection[str]
     spawn_enabled: bool
@@ -243,6 +249,11 @@ def _prepare_frontend_analysis(
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
     for module_name, module_path in module_graph.items():
         try:
+            snapshot = PythonSourceSnapshot.capture(module_path)
+            source_authorities[module_name].validate_generation(snapshot.sha256)
+            module_source_leases[module_name] = _ModuleSourceLease.path_backed(
+                module_path, snapshot=snapshot
+            )
             (
                 tree,
                 module_imports,
@@ -263,6 +274,7 @@ def _prepare_frontend_analysis(
                     module_name
                 ].native_support_function_roots,
                 source=None,
+                source_snapshot=snapshot,
                 logical_source_path=module_graph_metadata.logical_source_path_by_module[
                     module_name
                 ],
@@ -276,9 +288,6 @@ def _prepare_frontend_analysis(
                 target_python=target_python,
             )
             module_path_stats[module_name] = path_stat
-            module_source_leases[module_name] = _ModuleSourceLease.path_backed(
-                module_path, path_stat
-            )
         except SyntaxError as exc:
             if module_name == entry_module:
                 return None, _fail(
@@ -293,11 +302,8 @@ def _prepare_frontend_analysis(
             known_func_defaults[module_name] = {}
             known_func_kinds[module_name] = {}
             module_path_stats[module_name] = None
-            module_source_leases[module_name] = _ModuleSourceLease.path_backed(
-                module_path
-            )
             continue
-        except OSError as exc:
+        except (OSError, PythonSourceChangedError) as exc:
             return None, _fail(
                 f"Failed to read module {module_path}: {exc}",
                 json_output,
@@ -321,7 +327,10 @@ def _prepare_frontend_analysis(
         module_dep_closures,
         scc_serial_modules,
     ) = _analyze_module_schedule(module_graph, module_deps)
-    module_source_catalog = _ModuleSourceCatalog(leases=module_source_leases)
+    module_source_catalog = _ModuleSourceCatalog(
+        leases=module_source_leases,
+        import_topology=module_resolution_cache.import_topology,
+    )
     return _PreparedFrontendAnalysis(
         module_graph_metadata=module_graph_metadata,
         module_deps=module_deps,
@@ -751,6 +760,8 @@ def _prepare_frontend_stage_state(
         project_root=project_root,
         entry_tree=entry_tree,
         entry_snapshot=resolved_build_entry.entry_snapshot,
+        import_topology=resolved_build_entry.import_topology,
+        module_root_aliases=resolved_build_entry.module_root_aliases,
         module_reasons=module_reasons,
         diagnostics_enabled=diagnostics_enabled,
         json_output=json_output,
@@ -1200,7 +1211,6 @@ def _prepare_frontend_pipeline(
         module_graph=compile_module_graph,
         module_source_catalog=prepared_frontend_analysis.module_source_catalog,
         project_root=prepared_build_roots.project_root,
-        module_resolution_cache=import_plan.module_resolution_cache,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
@@ -1228,13 +1238,11 @@ def _prepare_frontend_pipeline(
         ),
         module_dep_closures=prepared_frontend_analysis.module_dep_closures,
         module_graph_metadata=prepared_frontend_lowering_config.module_graph_metadata,
-        module_path_stats=prepared_frontend_analysis.module_path_stats,
         module_chunking=prepared_frontend_lowering_config.module_chunking,
         scoped_lowering_inputs=prepared_frontend_lowering_config.scoped_lowering_inputs,
         frontend_module_costs=prepared_frontend_lowering_config.frontend_module_costs,
         stdlib_like_by_module=prepared_frontend_lowering_config.stdlib_like_by_module,
         known_classes=prepared_frontend_lowering_config.known_classes,
-        module_trees=prepared_frontend_analysis.module_trees,
         generated_module_source_paths=compile_generated_module_source_paths,
         frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
         record_frontend_timing=record_frontend_timing,
@@ -1276,6 +1284,7 @@ def _prepare_frontend_pipeline(
         _PreparedFrontendPipelineBundle(
             prepared_frontend_run_ticket=prepared_frontend_run_ticket,
             module_graph=dict(compile_module_graph),
+            module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             runtime_import_dispatch_roots=set(
                 import_plan.runtime_import_dispatch_roots
             ),

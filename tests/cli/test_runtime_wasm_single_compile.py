@@ -1506,6 +1506,7 @@ def _run_app_ensure_routing(
 
     log: list[str] = []
     _result, err = nno._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         resolved_capability_policy=CapabilityManifest().resolve(),
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -1591,6 +1592,7 @@ def test_unlinked_app_path_builds_atomic_runtime_pair_before_staging(
         return False
 
     _result, err = nno._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         resolved_capability_policy=CapabilityManifest().resolve(),
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -1618,6 +1620,7 @@ def _prepare_host_precompile_routing(
     fixture_root: RuntimeFixtureRoot,
     outcome: str,
     verify_reuse: bool = False,
+    source_mutation: str | None = None,
     precompile: bool = True,
     freestanding: bool = False,
     runtime_profile: str = "release",
@@ -1653,6 +1656,13 @@ def _prepare_host_precompile_routing(
         runtime_reloc_wasm_selected=reloc,
         runtime_wasm_generation=generation,
         runtime_wasm_expected_identity=expected_identity,
+    )
+    from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    source_catalog = _ModuleSourceCatalog(
+        {"app": _ModuleSourceLease.path_backed(source)}
     )
     events: list[str] = []
     host_binary = tmp_path / "molt-wasm-host"
@@ -1802,6 +1812,7 @@ def _prepare_host_precompile_routing(
         ),
     )
     build_kwargs = dict(
+        validate_inputs=source_catalog.validate,
         resolved_capability_policy=CapabilityManifest().resolve(),
         is_rust_transpile=False,
         is_luau_transpile=False,
@@ -1820,6 +1831,19 @@ def _prepare_host_precompile_routing(
         wasm_facts_scanner=scanner,
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
+    if source_mutation is not None:
+        original_run_child = run_child
+
+        def mutate_after_child(command, **kwargs):
+            result = original_run_child(command, **kwargs)
+            if "--output" in command and result.returncode == 0:
+                if source_mutation == "rewrite":
+                    source.write_text("value = 2\n", encoding="utf-8")
+                else:
+                    source.unlink()
+            return result
+
+        monkeypatch.setattr(nno, "_run_completed_command", mutate_after_child)
     prepared, error = nno._prepare_non_native_build_result(**build_kwargs)
     if verify_reuse:
         assert error is None and prepared is not None
@@ -1862,6 +1886,26 @@ def _prepare_host_precompile_routing(
         )
         assert native_path.read_bytes() == b"previous native generation"
     return prepared, error, events, native_path
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "delete"])
+def test_wasm_deployment_fences_source_after_private_link(
+    isolated_molt_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    mutation: str,
+) -> None:
+    prepared, error, events, _ = _prepare_host_precompile_routing(
+        monkeypatch,
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        outcome="success",
+        precompile=False,
+        source_mutation=mutation,
+    )
+    assert prepared is None and error == 2
+    assert "link" in events
 
 
 @pytest.mark.parametrize("freestanding", [False, True])

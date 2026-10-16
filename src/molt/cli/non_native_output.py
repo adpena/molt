@@ -777,6 +777,7 @@ def _prepare_non_native_build_result(
     phase_starts: dict[str, float] | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
+    validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     with contextlib.ExitStack() as generation_custody:
         return _prepare_non_native_build_result_in_generation(
@@ -809,6 +810,7 @@ def _prepare_non_native_build_result(
             phase_starts=phase_starts,
             wasm_facts_scanner=wasm_facts_scanner,
             app_export_contract_path=app_export_contract_path,
+            validate_inputs=validate_inputs,
         )
 
 
@@ -845,6 +847,7 @@ def _prepare_non_native_build_result_in_generation(
     phase_starts: dict[str, float] | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
+    validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -2064,6 +2067,7 @@ def _prepare_non_native_build_result_in_generation(
                     verify_stable_regular_file_identity(
                         identity, label="WASM link input"
                     )
+                validate_inputs()
                 deployment.publish(
                     link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
                         link_fingerprint_path, link_fingerprint

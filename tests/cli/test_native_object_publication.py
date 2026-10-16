@@ -31,6 +31,7 @@ from molt.cli.models import (
 )
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import fail
+from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.installed_runtime_contract import InstalledNativeAdmission
 from molt.cli.native_link_manifest import (
@@ -62,6 +63,8 @@ from tests.native_artifact_fixtures import native_relocatable_object
         "object_format",
         "shared_stdlib",
         "publication",
+        "source_rewrite",
+        "source_delete",
     ],
 )
 def test_native_object_publication_is_one_admitted_transaction(
@@ -75,6 +78,11 @@ def test_native_object_publication_is_one_admitted_transaction(
     # Stub source lowering/toolchain execution, not the transaction under test:
     # real cache copies, final runtime admission, object validation, publication,
     # JSON output, and cleanup all remain on the production path.
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    source_catalog = _ModuleSourceCatalog(
+        {"app": _ModuleSourceLease.path_backed(source)}
+    )
     destination = tmp_path / "user.o"
     previous = b"previous user object"
     destination.write_bytes(previous)
@@ -257,7 +265,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         stages.append(candidate)
         assert candidate != destination
         assert file_publication.is_owned_staged_file_path(
-            candidate, destination, purpose="native-object", suffix=".o"
+            candidate, destination, purpose="backend-output", suffix=".o"
         )
         if failure == "setup":
             candidate.write_bytes(b"partial setup output")
@@ -277,6 +285,12 @@ def test_native_object_publication_is_one_admitted_transaction(
             return None, fail("injected compile failure", True, command="build")
         if failure == "object_format":
             candidate.write_bytes(b"malformed backend object")
+        if failure == "source_rewrite":
+            before = source.stat()
+            source.write_text("value = 2\n", encoding="utf-8")
+            os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        elif failure == "source_delete":
+            source.unlink()
         return compile_result, None
 
     monkeypatch.setattr(backend_compile, "_prepare_backend_setup", prepare_setup)
@@ -340,6 +354,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         codegen=CodegenSelection(),
     )
     bundle = NS(
+        module_source_catalog=source_catalog,
         prepared_frontend_run_ticket=NS(
             frontend_layer_execution_context=NS(module_graph_metadata=None)
         ),
@@ -384,7 +399,7 @@ def test_native_object_publication_is_one_admitted_transaction(
     assert len(stages) == 1
     assert not stages[0].exists()
     assert not _artifact_sync_state_path(tmp_path, stages[0]).exists()
-    assert not list(tmp_path.glob(".molt-native-object-*"))
+    assert not list(tmp_path.glob(".molt-backend-output-*"))
     if failure != "setup":
         assert cache_path.read_bytes() == object_bytes
     if failure == "none":
@@ -403,6 +418,8 @@ def test_native_object_publication_is_one_admitted_transaction(
             "object_format": "is not a relocatable",
             "shared_stdlib": "cannot include a separately compiled stdlib",
             "publication": "Cannot publish native object output",
+            "source_rewrite": "source generation changed during compile",
+            "source_delete": "source became unavailable during compile",
         }[failure]
         assert expected_error in payload["errors"][0]
         if failure in {"final_capture", "projection"}:

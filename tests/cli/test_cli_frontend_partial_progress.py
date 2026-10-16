@@ -17,14 +17,15 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+import os
 
 import pytest
 
 from molt.cli import frontend_execution as FE
+from molt.cli import frontend_worker as FW
 from molt.cli import module_cache as MC
 from molt.cli.models import _ModuleGraphMetadata
-from molt.cli.module_resolution import _ModuleResolutionCache
-from molt.cli.module_source import _build_module_source_catalog
+from molt.cli.module_source import _ModuleSourceLease, _build_module_source_catalog
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 
@@ -87,7 +88,6 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
         module_graph=module_graph,
         module_source_catalog=_build_module_source_catalog(module_graph),
         project_root=project_root,
-        module_resolution_cache=_ModuleResolutionCache(),
         parse_codec="msgpack",
         type_hint_policy="ignore",
         fallback_policy="error",
@@ -109,7 +109,6 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
         pgo_hot_function_names_sorted=(),
         module_dep_closures={n: frozenset({n}) for n in names},
         module_graph_metadata=metadata,
-        path_stat_by_module=None,
         module_chunking=False,
         scoped_lowering_inputs=None,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
@@ -201,6 +200,7 @@ def _context_digest(project_root: Path, path: Path, name: str) -> str:
     digest = MC._module_lowering_context_digest_for_module(
         name,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         logical_source_path=str(path),
         entry_override=None,
         module_execution_kind="imported",
@@ -225,3 +225,33 @@ def _context_digest(project_root: Path, path: Path, name: str) -> str:
     )
     assert digest is not None
     return digest
+
+
+@pytest.mark.parametrize("defect", ["source", "stamp"])
+def test_changed_worker_generation_is_terminal_and_never_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
+) -> None:
+    path = tmp_path / "good.py"
+    path.write_text("VALUE = 1\n", encoding="utf-8")
+    original_stat = path.stat()
+    slot = _lowering_slot(tmp_path, path, "good")
+    lower = FW._frontend_lower_module_worker
+
+    def changed_worker(payload: dict[str, Any]) -> dict[str, Any]:
+        result = lower(payload)
+        assert result["ok"] is True
+        if defect == "source":
+            path.write_text("VALUE = 2\n", encoding="utf-8")
+            os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        else:
+            result["source_sha256"] = "0" * 64
+        return result
+
+    monkeypatch.setattr(FW, "_frontend_lower_module_worker", changed_worker)
+    state, error, detail, broken = _run_batch(tmp_path, {"good": path})
+    assert error is not None
+    assert "source" in error.lower()
+    assert detail is None
+    assert broken is False
+    assert "good" not in state.results
+    assert not slot.exists()

@@ -749,7 +749,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
     binding = state.native_runtime_codegen_binding
     calls = []
     staged_object = file_publication.staged_file_path(
-        tmp_path / "output.o", purpose="native-object", suffix=".o"
+        tmp_path / "output.o", purpose="backend-output", suffix=".o"
     )
 
     def mutate():
@@ -835,7 +835,8 @@ def test_native_object_output_rejects_runtime_generation_drift(
         codegen=CodegenSelection(),
     )
     result = backend_output_pipeline._emit_backend_pipeline_outputs(
-        native_object_destination=tmp_path / "output.o",
+        backend_output_destination=tmp_path / "output.o",
+        validate_inputs=lambda: None,
         prepared_build_preamble=NS(
             diagnostics_enabled=False,
             phase_starts={},

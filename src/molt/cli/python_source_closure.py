@@ -600,7 +600,7 @@ def local_python_import_closure(
                 )
                 if is_package and source not in package_children:
                     package_children[source] = python_package_child_names(
-                        (source.parent,)
+                        (source.parent,), import_topology=resolver.import_topology
                     )
                 premise = graph_writes.premise(
                     source, package_children.get(source, frozenset())
@@ -729,6 +729,7 @@ def local_python_import_closure(
         if found == graph_writes:
             break
         graph_writes = found
+    resolver.import_topology.validate()
     reached = {module_source.path for module_source in visited}
     if cache_pruned or next_entries != persisted_entries:
         _write_graph_cache(root, next_entries)

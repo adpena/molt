@@ -191,6 +191,49 @@ operation-local rather than reading or publishing strict disk records. Function
 analysis caches retain defaults and kinds only; every consumer admits imports
 through the same source-request loader.
 
+The frontend carries that generation in its existing source catalog. A path
+lease stores the captured raw-byte SHA and extent; an inline lease stores the
+explicit text's UTF-8 SHA and extent, with a distinct source kind. Analysis gives
+the import loader the same captured snapshot and checks the graph's SHA before
+publishing its lease. Serial lowering parses lease text into its own mutable
+AST; retained diagnostic trees never bypass this read. Worker envelopes decode
+one closed lease shape and return the consumed SHA. Integration and persistence
+check that receipt against the submitted lease before accepting IR.
+
+Lowering context v4 includes the captured SHA, extent and source kind. Local
+cache slots identify module/package/target; shared slots additionally identify
+the whole context. Locating either slot performs no source read or stat. Schema
+6 retires older lowering records whose publication could hash a later file than
+the lowered source. A qualified hit checks live bytes against the lease; a miss
+does not hash just to choose a slot. Writers stamp only the original lease and
+reject changed or missing inputs before publication. Optional cache IO cannot
+suppress a lost source generation.
+
+One operation-local import topology starts at entry/root selection and remains
+with the graph resolver and frontend catalog. Positive and negative lookups,
+exact-case names, selected namespace portions and package-child inventories
+retain their original observations. CLI and tooling share the segmented resolver:
+a regular parent package or module shadows later namespace portions, following
+[CPython's PathFinder](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap_external.py).
+Relative selectors are anchored without collapsing `..` before symlink traversal.
+Directory tokens avoid unnecessary repeated enumeration; changed, racy and
+Windows tokens recheck the observed semantic queries. Unrelated output names do
+not invalidate a single-name lookup. A failed generation cannot be refreshed in
+place; it requires a new operation.
+
+The full catalog fences source and topology after frontend work and at the
+existing publication boundaries for emitted IR, native objects/links, WASM,
+transpiled output, MLIR and factgraphs. Requested artifacts remain candidates
+until that artifact's admission; a refusal preserves the pending artifact's
+prior output and emits no success. Earlier separately admitted outputs can
+remain published. Diagnostic metadata sidecars retain their independent contract;
+this is not a transaction or rollback across every output of a build.
+These are observed-input fences, not proof of an unobserved change-and-restore.
+The content/input distinction follows [LLVM content addressing](https://llvm.org/docs/ContentAddressableStorage.html)
+and [rustc incremental queries](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html).
+All of this work belongs to the compiler and development tools. Emitted guest
+binaries contain no lease, topology scan or publication validation.
+
 Wrapper run/deploy commands resolve a fresh entry snapshot and target parse for
 each operation. A resolved entry is not a process-lifetime source cache: changing
 the file does not refresh its retained AST, and reusing that admission after

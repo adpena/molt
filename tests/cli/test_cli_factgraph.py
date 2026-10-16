@@ -18,6 +18,59 @@ from molt.cli import output as cli_output
 from molt.cli import build_command as cli_build_command
 
 
+@pytest.mark.parametrize("mutation", [None, "rewrite", "delete"])
+def test_factgraph_source_fence_preserves_previous_publication(
+    tmp_path: Path, mutation: str | None
+) -> None:
+    from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    catalog = _ModuleSourceCatalog({"app": _ModuleSourceLease.path_backed(source)})
+    output = tmp_path / "graph.json"
+    output.write_bytes(b"previous graph")
+    ir_file = tmp_path / "input.json"
+    ir_file.write_bytes(b"{}")
+    stages: list[Path] = []
+
+    def backend(command, **kwargs):
+        candidate = Path(command[command.index("--fact-graph-output") + 1])
+        assert candidate != output
+        assert output.read_bytes() == b"previous graph"
+        candidate.write_bytes(b'{"kind":"molt_tir_fact_graph"}')
+        stages.append(candidate)
+        if mutation == "rewrite":
+            source.write_text("value = 2\n", encoding="utf-8")
+        elif mutation == "delete":
+            source.unlink()
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    result = factgraph_module.execute_backend_fact_graph(
+        request=factgraph_module.FactGraphRequest(output, "main", "native"),
+        is_luau_transpile=False,
+        is_rust_transpile=False,
+        is_wasm=False,
+        target_triple=None,
+        json_output=True,
+        verbose=False,
+        backend_bin=tmp_path / "backend",
+        backend_env={},
+        backend_timeout=1.0,
+        entry_module="app",
+        ensure_backend_ir_file_path=lambda: ir_file,
+        run_subprocess_captured_to_tempfiles=backend,
+        subprocess_output_text=cli_output.subprocess_output_text,
+        fail=cli_output.fail,
+        entry_override_env=cli_config_resolution.ENTRY_OVERRIDE_ENV,
+        finalize_inputs=catalog.validate,
+    )
+    assert result is None if mutation is None else result == 2
+    assert output.read_bytes() == (
+        b'{"kind":"molt_tir_fact_graph"}' if mutation is None else b"previous graph"
+    )
+    assert len(stages) == 1 and not stages[0].exists()
+
+
 def test_factgraph_cli_dispatches_typed_backend_request(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -131,6 +184,7 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         seen["env"] = dict(cast(dict[str, str], kwargs["env"]))
         seen["timeout"] = kwargs["timeout"]
         graph_output = Path(cmd[cmd.index("--fact-graph-output") + 1])
+        seen["candidate"] = graph_output
         graph_output.parent.mkdir(parents=True, exist_ok=True)
         graph_output.write_text(
             '{"schema_version":3,"kind":"molt_tir_fact_graph"}\n',
@@ -169,7 +223,7 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         "--ir-file",
         str(ir_file),
         "--fact-graph-output",
-        str(output),
+        str(seen["candidate"]),
         "--fact-graph-function",
         "molt_main",
     ]
@@ -178,6 +232,9 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
     assert env[cli_config_resolution.ENTRY_OVERRIDE_ENV] == "pkg.app"
     assert seen["timeout"] == 7.0
     assert output.is_file()
+    candidate = seen["candidate"]
+    assert isinstance(candidate, Path)
+    assert not candidate.exists()
 
 
 def test_backend_command_prefix_uses_canonical_split_table_boundary(
@@ -228,6 +285,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     ir_file.write_text('{"functions":[]}\n', encoding="utf-8")
     emitted: list[dict[str, Any]] = []
     cleaned: list[bool] = []
+    produced: list[Path] = []
 
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_bytes(b"admitted compiler fixture")
@@ -255,6 +313,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             == binding.callable_symbols.sha256
         )
         graph_output = Path(cmd[cmd.index("--fact-graph-output") + 1])
+        produced.append(graph_output)
         graph_output.parent.mkdir(parents=True, exist_ok=True)
         graph_output.write_text(
             '{"schema_version":3,"kind":"molt_tir_fact_graph"}\n',
@@ -269,7 +328,8 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     closed: list[bool] = []
 
     def finalize_inputs() -> None:
-        assert output.is_file(), "backend must finish before input custody closes"
+        assert produced[0].is_file(), "backend must finish before input custody closes"
+        assert not output.exists(), "input custody must close before publication"
         closed.append(True)
         if custody_failure:
             raise ValueError("owned producer did not exit")

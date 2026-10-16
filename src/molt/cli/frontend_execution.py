@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import ast
 import contextlib
 import functools
-import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
-from molt.compat import CompatibilityError
-from molt.frontend import SimpleTIRGenerator
 from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
@@ -24,7 +20,6 @@ from molt.cli.models import (
     FallbackPolicy,
     ParseCodec,
     TypeHintPolicy,
-    _EntryFrontendLoweringContext,
     _FrontendIntegrationState,
     _FrontendLayerExecutionContext,
     _FrontendLayerPlan,
@@ -42,10 +37,10 @@ from molt.cli.models import (
     _SerialFrontendLoweringHooks,
 )
 from molt.cli.models import ModuleSyntaxErrorInfo
-from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import (
+    PythonSourceChangedError,
     _ModuleSourceCatalog,
-    _read_module_source,
+    _ModuleSourceLease,
 )
 from molt.cli.module_cache import (
     _known_classes_from_payload,
@@ -55,136 +50,7 @@ from molt.cli.module_cache import (
 from molt.cli.output import CliFailure as _CliFailure
 from molt.target_python import (
     TargetPythonVersion,
-    _parse_source_for_target,
 )
-
-
-def _lower_entry_module_as_main(
-    *,
-    lowering_context: _EntryFrontendLoweringContext,
-    integration_state: _FrontendIntegrationState,
-    diagnostics_state: _MidendDiagnosticsState,
-    record_frontend_timing: Callable[..., None],
-    fail: Callable[..., _CliFailure],
-    json_output: bool,
-) -> _CliFailure | None:
-    try:
-        source = _read_module_source(lowering_context.entry_path)
-    except (SyntaxError, UnicodeDecodeError) as exc:
-        return fail(
-            f"Syntax error in {lowering_context.entry_path}: {exc}",
-            json_output,
-            command="build",
-        )
-    except OSError as exc:
-        return fail(
-            f"Failed to read module {lowering_context.entry_path}: {exc}",
-            json_output,
-            command="build",
-        )
-    try:
-        tree = _parse_source_for_target(
-            source,
-            filename=str(lowering_context.entry_path),
-            target_python=lowering_context.target_python,
-        )
-    except SyntaxError as exc:
-        return fail(
-            f"Syntax error in {lowering_context.entry_path}: {exc}",
-            json_output,
-            command="build",
-        )
-
-    main_gen = SimpleTIRGenerator(
-        parse_codec=lowering_context.parse_codec,
-        type_hint_policy=lowering_context.type_hint_policy,
-        fallback_policy=lowering_context.fallback_policy,
-        source_path=str(lowering_context.entry_path),
-        type_facts=lowering_context.type_facts,
-        type_facts_module=lowering_context.entry_module,
-        module_name="__main__",
-        module_spec_name=lowering_context.entry_module,
-        module_execution_kind="module",
-        entry_module=None,
-        enable_phi=lowering_context.enable_phi,
-        known_modules=set(lowering_context.known_modules),
-        direct_call_modules=set(lowering_context.direct_call_modules),
-        known_classes=cast(Any, lowering_context.known_classes),
-        stdlib_allowlist=set(lowering_context.stdlib_allowlist),
-        known_func_defaults=lowering_context.known_func_defaults,
-        known_func_kinds=lowering_context.known_func_kinds,
-        native_callable_exports={
-            name: dict(export)
-            for name, export in lowering_context.native_callable_exports.items()
-        },
-        native_python_exports=set(lowering_context.native_python_exports),
-        target_python=lowering_context.target_python.feature_version,
-        target_sys_platform=lowering_context.target_sys_platform,
-        module_chunking=lowering_context.module_chunking,
-        module_chunk_max_ops=lowering_context.module_chunk_max_ops,
-        optimization_profile=cast(BuildProfile, lowering_context.optimization_profile),
-        pgo_hot_functions=set(lowering_context.pgo_hot_function_names),
-    )
-    main_frontend_start = time.perf_counter()
-    main_visit_s = 0.0
-    main_lower_s = 0.0
-    try:
-        main_visit_start = time.perf_counter()
-        with _frontend_worker._phase_timeout(
-            lowering_context.frontend_phase_timeout,
-            phase_name="frontend visit (__main__)",
-        ):
-            main_gen.visit(tree)
-        main_visit_s = time.perf_counter() - main_visit_start
-        main_lower_start = time.perf_counter()
-        with _frontend_worker._phase_timeout(
-            lowering_context.frontend_phase_timeout,
-            phase_name="frontend IR lowering (__main__)",
-        ):
-            main_ir = main_gen.to_json()
-        main_lower_s = time.perf_counter() - main_lower_start
-    except TimeoutError as exc:
-        record_frontend_timing(
-            module_name="__main__",
-            module_path=lowering_context.entry_path,
-            visit_s=main_visit_s,
-            lower_s=main_lower_s,
-            total_s=time.perf_counter() - main_frontend_start,
-            timed_out=True,
-            detail=str(exc),
-        )
-        return fail(str(exc), json_output, command="build")
-    except CompatibilityError as exc:
-        return fail(str(exc), json_output, command="build")
-
-    record_frontend_timing(
-        module_name="__main__",
-        module_path=lowering_context.entry_path,
-        visit_s=main_visit_s,
-        lower_s=main_lower_s,
-        total_s=time.perf_counter() - main_frontend_start,
-    )
-    integration_error = (
-        _frontend_integration._integrate_module_frontend_result_with_state(
-            integration_state,
-            "__main__",
-            ir_functions=main_ir["functions"],
-            func_code_ids=main_gen.func_code_ids,
-            local_classes={
-                class_id: main_gen.classes[class_id]
-                for class_id in main_gen.local_class_ids
-            },
-        )
-    )
-    if integration_error is not None:
-        return fail(integration_error, json_output, command="build")
-    _frontend_integration._accumulate_midend_diagnostics_with_state(
-        diagnostics_state,
-        "__main__",
-        policy_outcomes_by_func=dict(main_gen.midend_policy_outcomes_by_function),
-        pass_stats_by_func=dict(main_gen.midend_pass_stats_by_function),
-    )
-    return None
 
 
 @_source_tree_fingerprint_transaction()
@@ -194,7 +60,6 @@ def _prepare_frontend_execution(
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path,
-    module_resolution_cache: "_ModuleResolutionCache",
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -216,13 +81,11 @@ def _prepare_frontend_execution(
     pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
     module_graph_metadata: _ModuleGraphMetadata,
-    module_path_stats: dict[str, os.stat_result | None],
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs,
     frontend_module_costs: Mapping[str, float],
     stdlib_like_by_module: Mapping[str, bool],
     known_classes: dict[ClassId, ClassInfo],
-    module_trees: dict[str, ast.AST],
     generated_module_source_paths: Mapping[str, str],
     frontend_phase_timeout: float | None,
     record_frontend_timing: Callable[..., None],
@@ -247,7 +110,6 @@ def _prepare_frontend_execution(
         module_graph=module_graph,
         module_source_catalog=module_source_catalog,
         project_root=project_root,
-        module_resolution_cache=module_resolution_cache,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
@@ -270,7 +132,6 @@ def _prepare_frontend_execution(
         pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
         module_dep_closures=module_dep_closures,
         module_graph_metadata=module_graph_metadata,
-        path_stat_by_module=module_path_stats,
         module_chunking=module_chunking,
         scoped_lowering_inputs=scoped_lowering_inputs,
         frontend_module_costs=frontend_module_costs,
@@ -283,10 +144,8 @@ def _prepare_frontend_execution(
     )
     serial_frontend_lowering_context = _SerialFrontendLoweringContext(
         syntax_error_modules=syntax_error_modules,
-        module_trees=module_trees,
         module_source_catalog=module_source_catalog,
         generated_module_source_paths=generated_module_source_paths,
-        module_resolution_cache=module_resolution_cache,
         project_root=project_root,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
@@ -312,7 +171,6 @@ def _prepare_frontend_execution(
         module_dep_closures=module_dep_closures,
         scoped_lowering_inputs=scoped_lowering_inputs,
         module_graph_metadata=module_graph_metadata,
-        module_path_stats=module_path_stats,
         known_classes=known_classes,
         frontend_phase_timeout=frontend_phase_timeout,
         target_python=target_python,
@@ -482,6 +340,7 @@ def _run_frontend_serial_disabled_layers(
     serial_error = _run_frontend_serial_layer_modules(
         module_order,
         module_graph=execution_context.module_graph,
+        module_source_catalog=execution_context.module_source_catalog,
         run_serial_frontend_lower=runtime_hooks.run_serial_frontend_lower,
         record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
         integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,
@@ -515,7 +374,6 @@ def _run_frontend_parallel_layer_batches(
     module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
-    module_resolution_cache: _ModuleResolutionCache,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -537,7 +395,6 @@ def _run_frontend_parallel_layer_batches(
     pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
     module_graph_metadata: _ModuleGraphMetadata,
-    path_stat_by_module: Mapping[str, os.stat_result | None] | None,
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs | None,
     target_python: TargetPythonVersion,
@@ -557,47 +414,48 @@ def _run_frontend_parallel_layer_batches(
     for batch_start in range(0, len(candidates), layer_workers):
         batch = list(candidates[batch_start : batch_start + layer_workers])
         worker_submissions: list[_ParallelWorkerSubmission] = []
-        (
-            cached_results,
-            worker_payloads,
-            context_digest_by_module,
-            batch_error,
-        ) = _frontend_worker._prepare_frontend_parallel_batch(
-            batch,
-            module_graph=module_graph,
-            module_source_catalog=module_source_catalog,
-            project_root=project_root,
-            known_classes_snapshot=known_classes_snapshot,
-            module_resolution_cache=module_resolution_cache,
-            parse_codec=parse_codec,
-            type_hint_policy=type_hint_policy,
-            fallback_policy=fallback_policy,
-            type_facts=type_facts,
-            enable_phi=enable_phi,
-            known_modules=known_modules,
-            direct_call_modules=direct_call_modules,
-            stdlib_allowlist=stdlib_allowlist,
-            known_func_defaults=known_func_defaults,
-            known_func_kinds=known_func_kinds,
-            native_callable_exports=native_callable_exports,
-            native_python_exports=native_python_exports,
-            module_deps=module_deps,
-            module_chunk_max_ops=module_chunk_max_ops,
-            optimization_profile=optimization_profile,
-            pgo_hot_function_names=pgo_hot_function_names,
-            known_modules_sorted=known_modules_sorted,
-            stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-            pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
-            module_dep_closures=module_dep_closures,
-            module_graph_metadata=module_graph_metadata,
-            path_stat_by_module=path_stat_by_module,
-            module_chunking=module_chunking,
-            scoped_lowering_inputs=scoped_lowering_inputs,
-            scoped_known_classes_by_module=scoped_known_classes_by_module,
-            target_python=target_python,
-            target_sys_platform=target_sys_platform,
-            frontend_phase_timeout=frontend_phase_timeout,
-        )
+        try:
+            (
+                cached_results,
+                worker_payloads,
+                context_digest_by_module,
+                batch_error,
+            ) = _frontend_worker._prepare_frontend_parallel_batch(
+                batch,
+                module_graph=module_graph,
+                module_source_catalog=module_source_catalog,
+                project_root=project_root,
+                known_classes_snapshot=known_classes_snapshot,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                type_facts=type_facts,
+                enable_phi=enable_phi,
+                known_modules=known_modules,
+                direct_call_modules=direct_call_modules,
+                stdlib_allowlist=stdlib_allowlist,
+                known_func_defaults=known_func_defaults,
+                known_func_kinds=known_func_kinds,
+                native_callable_exports=native_callable_exports,
+                native_python_exports=native_python_exports,
+                module_deps=module_deps,
+                module_chunk_max_ops=module_chunk_max_ops,
+                optimization_profile=optimization_profile,
+                pgo_hot_function_names=pgo_hot_function_names,
+                known_modules_sorted=known_modules_sorted,
+                stdlib_allowlist_sorted=stdlib_allowlist_sorted,
+                pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
+                module_dep_closures=module_dep_closures,
+                module_graph_metadata=module_graph_metadata,
+                module_chunking=module_chunking,
+                scoped_lowering_inputs=scoped_lowering_inputs,
+                scoped_known_classes_by_module=scoped_known_classes_by_module,
+                target_python=target_python,
+                target_sys_platform=target_sys_platform,
+                frontend_phase_timeout=frontend_phase_timeout,
+            )
+        except PythonSourceChangedError as exc:
+            return layer_state, str(exc), None, False
         if batch_error is not None:
             return layer_state, batch_error, None, False
         layer_state.context_digests.update(context_digest_by_module)
@@ -623,13 +481,6 @@ def _run_frontend_parallel_layer_batches(
             try:
                 result = future.result()
                 received_ns = time.time_ns()
-                _frontend_parallel._record_parallel_worker_result(
-                    layer_state,
-                    module_name=module_name,
-                    result=result,
-                    submitted_ns=submission.submitted_ns,
-                    received_ns=received_ns,
-                )
                 # Persist THE MOMENT this module's lowering succeeds, not at the
                 # end of the layer (build-dedup doctrine 74 law 2: a killed /
                 # failed build must not forfeit completed steps). The parent used
@@ -645,11 +496,23 @@ def _run_frontend_parallel_layer_batches(
                         project_root=project_root,
                         module_path=module_graph[module_name],
                         module_name=module_name,
+                        source_lease=module_source_catalog.lease_for(
+                            module_name, module_graph[module_name]
+                        ),
                         worker_mode="parallel",
                         context_digest=context_digest_by_module.get(module_name),
                         result=result,
                         target_python=target_python,
                     )
+                _frontend_parallel._record_parallel_worker_result(
+                    layer_state,
+                    module_name=module_name,
+                    result=result,
+                    submitted_ns=submission.submitted_ns,
+                    received_ns=received_ns,
+                )
+            except PythonSourceChangedError as exc:
+                return layer_state, str(exc), None, False
             except BrokenProcessPool as exc:
                 # The pool itself died (a worker process crashed): no future in
                 # or after this batch can complete. Report it as pool-broken so
@@ -676,16 +539,31 @@ def _run_frontend_parallel_layer_batches(
     return layer_state, None, None, False
 
 
+def _validate_frontend_module_source(
+    source_lease: _ModuleSourceLease, module_path: Path, result: Mapping[str, Any]
+) -> None:
+    try:
+        source_lease.validate_path(module_path)
+    except ValueError as exc:
+        raise PythonSourceChangedError(str(exc)) from exc
+    if result.get("source_sha256") != source_lease.source_sha256:
+        raise PythonSourceChangedError(
+            f"Frontend result source generation does not match its lease: {source_lease.path}"
+        )
+
+
 def _write_parallel_persisted_module_lowering(
     *,
     project_root: Path | None,
     module_path: Path,
     module_name: str,
+    source_lease: _ModuleSourceLease,
     worker_mode: str,
     context_digest: str | None,
     result: Mapping[str, Any],
     target_python: TargetPythonVersion,
 ) -> None:
+    _validate_frontend_module_source(source_lease, module_path, result)
     if (
         project_root is None
         or worker_mode == "parallel_cache_hit"
@@ -696,6 +574,7 @@ def _write_parallel_persisted_module_lowering(
         _write_persisted_module_lowering(
             project_root,
             module_path,
+            source_lease=source_lease,
             module_name=module_name,
             is_package=module_path.name == "__init__.py",
             context_digest=context_digest,
@@ -709,6 +588,7 @@ def _consume_frontend_module_result(
     module_path: Path,
     result: Mapping[str, Any],
     *,
+    source_lease: _ModuleSourceLease,
     result_timings: _FrontendModuleResultTimings | None = None,
     record_frontend_timing: Callable[..., None] | None,
     integrate_module_frontend_result: Callable[..., str | None],
@@ -716,6 +596,10 @@ def _consume_frontend_module_result(
     fail: Callable[..., _CliFailure],
     json_output: bool,
 ) -> _CliFailure | None:
+    try:
+        _validate_frontend_module_source(source_lease, module_path, result)
+    except PythonSourceChangedError as exc:
+        return fail(str(exc), json_output, command="build")
     timings = result_timings or _frontend_parallel._frontend_result_timings(result)
     if record_frontend_timing is not None:
         record_frontend_timing(
@@ -760,6 +644,7 @@ def _consume_frontend_parallel_layer_result(
     layer_index: int,
     module_name: str,
     module_path: Path,
+    source_lease: _ModuleSourceLease,
     result: Mapping[str, Any],
     target_python: TargetPythonVersion,
 ) -> _CliFailure | None:
@@ -788,6 +673,7 @@ def _consume_frontend_parallel_layer_result(
         module_name=module_name,
         module_path=module_path,
         result=result,
+        source_lease=source_lease,
         result_timings=result_timings,
         record_frontend_timing=record_frontend_timing,
         integrate_module_frontend_result=integrate_module_frontend_result,
@@ -808,6 +694,7 @@ def _consume_frontend_serial_layer_result(
     layer_index: int,
     module_name: str,
     module_path: Path,
+    source_lease: _ModuleSourceLease,
     result: Mapping[str, Any],
     result_timings: _FrontendModuleResultTimings,
     serial_mode: str,
@@ -827,6 +714,7 @@ def _consume_frontend_serial_layer_result(
         module_name=module_name,
         module_path=module_path,
         result=result,
+        source_lease=source_lease,
         result_timings=result_timings,
         record_frontend_timing=None,
         integrate_module_frontend_result=integrate_module_frontend_result,
@@ -840,6 +728,7 @@ def _run_frontend_serial_layer_modules(
     module_names: Sequence[str],
     *,
     module_graph: Mapping[str, Path],
+    module_source_catalog: _ModuleSourceCatalog,
     run_serial_frontend_lower: Callable[
         [str, Path],
         tuple[
@@ -877,6 +766,7 @@ def _run_frontend_serial_layer_modules(
             layer_index=layer_index,
             module_name=module_name,
             module_path=module_path,
+            source_lease=module_source_catalog.lease_for(module_name, module_path),
             result=result,
             result_timings=result_timings,
             serial_mode=serial_mode,
@@ -921,7 +811,6 @@ def _run_frontend_layer(
                 module_graph=execution_context.module_graph,
                 module_source_catalog=execution_context.module_source_catalog,
                 project_root=execution_context.project_root,
-                module_resolution_cache=execution_context.module_resolution_cache,
                 parse_codec=execution_context.parse_codec,
                 type_hint_policy=execution_context.type_hint_policy,
                 fallback_policy=execution_context.fallback_policy,
@@ -943,7 +832,6 @@ def _run_frontend_layer(
                 pgo_hot_function_names_sorted=execution_context.pgo_hot_function_names_sorted,
                 module_dep_closures=execution_context.module_dep_closures,
                 module_graph_metadata=execution_context.module_graph_metadata,
-                path_stat_by_module=execution_context.path_stat_by_module,
                 module_chunking=execution_context.module_chunking,
                 scoped_lowering_inputs=execution_context.scoped_lowering_inputs,
                 target_python=execution_context.target_python,
@@ -1003,6 +891,9 @@ def _run_frontend_layer(
                 layer_index=layer_index,
                 module_name=module_name,
                 module_path=module_path,
+                source_lease=execution_context.module_source_catalog.lease_for(
+                    module_name, module_path
+                ),
                 result=result,
                 target_python=execution_context.target_python,
             )
@@ -1012,6 +903,7 @@ def _run_frontend_layer(
         serial_error = _run_frontend_serial_layer_modules(
             [module_name],
             module_graph=execution_context.module_graph,
+            module_source_catalog=execution_context.module_source_catalog,
             run_serial_frontend_lower=runtime_hooks.run_serial_frontend_lower,
             record_frontend_parallel_worker_timing=runtime_hooks.record_frontend_parallel_worker_timing,
             integrate_module_frontend_result=runtime_hooks.integrate_module_frontend_result,

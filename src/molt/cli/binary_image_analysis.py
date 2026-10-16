@@ -65,7 +65,6 @@ def _source_text_for_module(
         source = frontend_analysis.module_source_catalog.read_source(
             module_name,
             module_path,
-            import_plan.module_resolution_cache,
         )
     except (OSError, UnicodeDecodeError):
         source = None

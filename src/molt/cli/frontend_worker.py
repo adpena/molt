@@ -31,11 +31,10 @@ from molt.cli.models import (
     _SerialFrontendLoweringHooks,
 )
 from molt.cli.models import ModuleSyntaxErrorInfo
-from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import (
+    PythonSourceChangedError,
     _ModuleSourceCatalog,
-    _build_module_source_catalog,
-    _read_module_source,
+    _ModuleSourceLease,
 )
 from molt.cli.module_cache import (
     _known_classes_from_payload,
@@ -103,33 +102,6 @@ def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:
     return ast.fix_missing_locations(module)
 
 
-def _read_worker_source_lease(raw_lease: object) -> str:
-    if not isinstance(raw_lease, Mapping):
-        raise ValueError("missing source lease")
-    lease = cast(Mapping[str, object], raw_lease)
-    kind = lease.get("kind")
-    if kind == "inline":
-        source = lease.get("source")
-        if not isinstance(source, str):
-            raise ValueError("inline source lease is missing source text")
-        return source
-    if kind != "path":
-        raise ValueError(f"unsupported source lease kind: {kind!r}")
-    raw_path = lease.get("path")
-    if not isinstance(raw_path, str) or not raw_path:
-        raise ValueError("path source lease is missing path")
-    path = Path(raw_path)
-    expected_size = lease.get("source_size")
-    expected_mtime_ns = lease.get("mtime_ns")
-    if expected_size is not None or expected_mtime_ns is not None:
-        stat = path.stat()
-        if isinstance(expected_size, int) and stat.st_size != expected_size:
-            raise OSError(f"Source lease for {path} changed size during compile")
-        if isinstance(expected_mtime_ns, int) and stat.st_mtime_ns != expected_mtime_ns:
-            raise OSError(f"Source lease for {path} changed mtime during compile")
-    return _read_module_source(path)
-
-
 def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     worker_started_ns = time.time_ns()
     worker_pid = os.getpid()
@@ -137,7 +109,11 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     module_path = str(payload["module_path"])
     logical_source_path = str(payload.get("logical_source_path") or module_path)
     try:
-        source = _read_worker_source_lease(payload["source_lease"])
+        source_lease = _ModuleSourceLease.from_worker_payload(
+            payload.get("source_lease")
+        )
+        source_lease.validate_path(Path(module_path))
+        source = source_lease.read()
     except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
         worker_finished_ns = time.time_ns()
         return {
@@ -301,6 +277,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     worker_finished_ns = time.time_ns()
     return {
         "ok": True,
+        "source_sha256": source_lease.source_sha256,
         "functions": ir["functions"],
         "func_code_ids": dict(gen.func_code_ids),
         "local_classes": {
@@ -327,11 +304,13 @@ def _module_frontend_payload(
     gen: SimpleTIRGenerator,
     ir: dict[str, Any],
     *,
+    source_sha256: str,
     visit_s: float,
     lower_s: float,
     total_s: float,
 ) -> dict[str, Any]:
     return {
+        "source_sha256": source_sha256,
         "functions": ir["functions"],
         "func_code_ids": dict(gen.func_code_ids),
         "local_classes": {
@@ -406,23 +385,28 @@ def _resolve_tree_for_serial_frontend_module(
     *,
     lowering_context: _SerialFrontendLoweringContext,
 ) -> ast.AST:
+    source_lease = lowering_context.module_source_catalog.lease_for(
+        module_name, module_path
+    )
     if module_name in lowering_context.syntax_error_modules:
+        try:
+            source_lease.validate()
+        except PythonSourceChangedError as exc:
+            raise _ModuleLowerError(str(exc)) from exc
         return _syntax_error_stub_ast(
             lowering_context.syntax_error_modules[module_name]
         )
-    tree = lowering_context.module_trees.get(module_name)
-    if tree is not None:
-        return tree
     try:
         source = lowering_context.module_source_catalog.read_source(
             module_name,
             module_path,
-            lowering_context.module_resolution_cache,
         )
     except (SyntaxError, UnicodeDecodeError) as exc:
         raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
     except OSError as exc:
         raise _ModuleLowerError(f"Failed to read module {module_path}: {exc}") from exc
+    except PythonSourceChangedError as exc:
+        raise _ModuleLowerError(str(exc)) from exc
     logical_source_path = lowering_context.generated_module_source_paths.get(
         module_name, str(module_path)
     )
@@ -444,9 +428,11 @@ def _lower_module_serial_with_context(
     *,
     lowering_context: _SerialFrontendLoweringContext,
 ) -> tuple[dict[str, Any], float, float, float, bool, float]:
+    source_lease = lowering_context.module_source_catalog.lease_for(
+        module_name, module_path
+    )
     execution_view = _module_lowering_execution_view(
         module_name,
-        module_path=module_path,
         module_graph_metadata=lowering_context.module_graph_metadata,
         module_deps=lowering_context.module_deps,
         known_modules=lowering_context.known_modules,
@@ -459,7 +445,6 @@ def _lower_module_serial_with_context(
         type_facts=lowering_context.type_facts,
         known_classes_snapshot=lowering_context.known_classes,
         module_dep_closures=lowering_context.module_dep_closures,
-        path_stat_by_module=lowering_context.module_path_stats,
         scoped_lowering_inputs=lowering_context.scoped_lowering_inputs,
         known_modules_sorted=lowering_context.known_modules_sorted,
         pgo_hot_function_names_sorted=lowering_context.pgo_hot_function_names_sorted,
@@ -472,16 +457,13 @@ def _lower_module_serial_with_context(
     is_package = metadata_view.is_package
     module_is_namespace = metadata_view.module_is_namespace
     module_execution_kind = metadata_view.module_execution_kind
-    path_stat = metadata_view.path_stat
-    if path_stat is None:
-        with contextlib.suppress(OSError):
-            path_stat = lowering_context.module_resolution_cache.path_stat(module_path)
     scoped_known_classes = execution_view.scoped_known_classes
     context_digest: str | None = None
     if lowering_context.project_root is not None:
         context_digest = _module_lowering_context_digest_for_module(
             module_name,
             module_path,
+            source_lease=source_lease,
             logical_source_path=logical_source_path,
             entry_override=entry_override,
             module_execution_kind=module_execution_kind,
@@ -513,7 +495,6 @@ def _lower_module_serial_with_context(
             source_modules=lowering_context.source_modules,
             scoped_known_classes=scoped_known_classes,
             is_package=is_package,
-            path_stat=path_stat,
             target_python=lowering_context.target_python,
             target_sys_platform=lowering_context.target_sys_platform,
         )
@@ -521,14 +502,15 @@ def _lower_module_serial_with_context(
             cached_payload = _read_persisted_module_lowering(
                 lowering_context.project_root,
                 module_path,
+                source_lease=source_lease,
                 module_name=module_name,
                 is_package=is_package,
                 context_digest=context_digest,
-                path_stat=path_stat,
                 target_python=lowering_context.target_python,
                 known_modules=lowering_context.known_modules,
             )
             if cached_payload is not None:
+                cached_payload["source_sha256"] = source_lease.source_sha256
                 cached_timings = cast(
                     Mapping[str, Any], cached_payload.get("timings", {})
                 )
@@ -612,6 +594,7 @@ def _lower_module_serial_with_context(
     payload = _module_frontend_payload(
         gen,
         ir,
+        source_sha256=source_lease.source_sha256,
         visit_s=visit_s,
         lower_s=lower_s,
         total_s=total_s,
@@ -628,6 +611,7 @@ def _lower_module_serial_with_context(
             _write_persisted_module_lowering(
                 lowering_context.project_root,
                 module_path,
+                source_lease=source_lease,
                 module_name=module_name,
                 is_package=is_package,
                 context_digest=context_digest,
@@ -654,14 +638,14 @@ def _run_serial_frontend_lower_with_context(
                 lowering_context=lowering_context,
             )
         )
-    except _ModuleLowerError as exc:
+    except (_ModuleLowerError, PythonSourceChangedError) as exc:
         lowering_hooks.record_frontend_timing(
             module_name=module_name,
             module_path=module_path,
             visit_s=0.0,
             lower_s=0.0,
             total_s=0.0,
-            timed_out=exc.timed_out,
+            timed_out=isinstance(exc, _ModuleLowerError) and exc.timed_out,
             detail=str(exc),
         )
         return (
@@ -690,11 +674,9 @@ def _prepare_frontend_parallel_batch(
     batch: list[str],
     *,
     module_graph: Mapping[str, Path],
-    module_sources: dict[str, str] | None = None,
-    module_source_catalog: _ModuleSourceCatalog | None = None,
+    module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
     known_classes_snapshot: dict[ClassId, ClassInfo],
-    module_resolution_cache: _ModuleResolutionCache,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -716,7 +698,6 @@ def _prepare_frontend_parallel_batch(
     pgo_hot_function_names_sorted: tuple[str, ...],
     module_dep_closures: dict[str, frozenset[str]],
     module_graph_metadata: _ModuleGraphMetadata,
-    path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     scoped_known_classes_by_module: Mapping[str, dict[ClassId, ClassInfo]]
@@ -734,12 +715,6 @@ def _prepare_frontend_parallel_batch(
     worker_payloads: list[tuple[str, dict[str, Any]]] = []
     context_digest_by_module: dict[str, str] = {}
     stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
-    if module_source_catalog is None:
-        module_source_catalog = _build_module_source_catalog(
-            module_graph,
-            module_sources=module_sources,
-            path_stats=path_stat_by_module,
-        )
     if scoped_known_classes_by_module is None:
         scoped_known_classes_by_module = _build_scoped_known_classes_snapshot(
             batch,
@@ -749,9 +724,9 @@ def _prepare_frontend_parallel_batch(
         )
     for module_name in batch:
         module_path = module_graph[module_name]
+        source_lease = module_source_catalog.lease_for(module_name, module_path)
         execution_view = _module_lowering_execution_view(
             module_name,
-            module_path=module_path,
             module_graph_metadata=module_graph_metadata,
             module_deps=module_deps,
             known_modules=known_modules,
@@ -764,7 +739,6 @@ def _prepare_frontend_parallel_batch(
             type_facts=type_facts,
             known_classes_snapshot=known_classes_snapshot,
             module_dep_closures=module_dep_closures,
-            path_stat_by_module=path_stat_by_module,
             scoped_lowering_inputs=scoped_lowering_inputs,
             known_modules_sorted=known_modules_sorted,
             pgo_hot_function_names_sorted=pgo_hot_function_names_sorted,
@@ -778,12 +752,12 @@ def _prepare_frontend_parallel_batch(
         module_is_namespace = metadata_view.module_is_namespace
         module_execution_kind = metadata_view.module_execution_kind
         is_package = metadata_view.is_package
-        path_stat = metadata_view.path_stat
         scoped_known_classes = execution_view.scoped_known_classes
         if project_root is not None:
             context_digest = _module_lowering_context_digest_for_module(
                 module_name,
                 module_path,
+                source_lease=source_lease,
                 logical_source_path=logical_source_path,
                 entry_override=entry_override,
                 module_execution_kind=module_execution_kind,
@@ -816,7 +790,6 @@ def _prepare_frontend_parallel_batch(
                 scoped_known_classes_by_module=scoped_known_classes_by_module,
                 scoped_known_classes=scoped_known_classes,
                 is_package=is_package,
-                path_stat=path_stat,
                 target_python=target_python,
                 target_sys_platform=target_sys_platform,
             )
@@ -826,6 +799,7 @@ def _prepare_frontend_parallel_batch(
             project_root,
             module_name,
             module_path,
+            source_lease=source_lease,
             logical_source_path=logical_source_path,
             entry_override=entry_override,
             module_execution_kind=module_execution_kind,
@@ -859,15 +833,13 @@ def _prepare_frontend_parallel_batch(
             scoped_known_classes_by_module=scoped_known_classes_by_module,
             scoped_known_classes=scoped_known_classes,
             context_digest=context_digest_by_module.get(module_name),
-            resolution_cache=module_resolution_cache,
-            path_stat=path_stat,
             target_python=target_python,
             target_sys_platform=target_sys_platform,
         )
         if cached_result is not None:
+            cached_result["source_sha256"] = source_lease.source_sha256
             cached_results[module_name] = cached_result
             continue
-        source_lease = module_source_catalog.lease_for(module_name, module_path)
         worker_payloads.append(
             (
                 module_name,

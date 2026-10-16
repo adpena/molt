@@ -6,8 +6,13 @@ import functools
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from molt.cli.python_import_resolution import LocalPythonModuleResolver
 
 from molt.cli import module_source as _module_source
+from molt.cli.python_import_topology import PythonImportTopology
 from molt.source_root import compiler_source_root
 from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
 from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
@@ -55,7 +60,12 @@ def _is_dotted_module_root_alias(prefix: str) -> bool:
     return all(_is_ascii_identifier_part(part) for part in prefix.split("."))
 
 
-def _parse_module_root_alias_entry(entry: str) -> tuple[str, Path] | None:
+def _parse_module_root_alias_entry(
+    entry: str,
+    *,
+    import_topology: PythonImportTopology | None = None,
+    source_cwd: Path | None = None,
+) -> tuple[str, Path] | None:
     prefix, sep, raw_path = entry.partition("=")
     if not sep:
         return None
@@ -64,12 +74,19 @@ def _parse_module_root_alias_entry(entry: str) -> tuple[str, Path] | None:
     if not raw_path or not _is_dotted_module_root_alias(prefix):
         return None
     path = Path(raw_path).expanduser()
+    if source_cwd is not None:
+        path = source_cwd / path
+    if import_topology is not None:
+        selected = import_topology.probe(path)
+        return None if selected is None else (prefix, selected.path)
     if not path.exists():
         return None
     return prefix, path.resolve()
 
 
-def _module_root_aliases_from_env() -> _ModuleRootAliases:
+def _module_root_aliases_from_env(
+    *, import_topology: PythonImportTopology | None = None
+) -> _ModuleRootAliases:
     raw_roots = os.environ.get("MOLT_MODULE_ROOTS", "")
     if not raw_roots:
         return ()
@@ -77,7 +94,7 @@ def _module_root_aliases_from_env() -> _ModuleRootAliases:
     for entry in raw_roots.split(os.pathsep):
         if not entry:
             continue
-        parsed = _parse_module_root_alias_entry(entry)
+        parsed = _parse_module_root_alias_entry(entry, import_topology=import_topology)
         if parsed is not None:
             aliases.append(parsed)
     return tuple(dict.fromkeys(aliases))
@@ -106,21 +123,29 @@ def _module_root_alias_match(
 def _resolve_module_alias_path(
     module_name: str,
     aliases: _ModuleRootAliases | None = None,
+    *,
+    import_topology: PythonImportTopology | None = None,
 ) -> Path | None:
-    match = _module_root_alias_match(module_name, aliases)
+    topology = import_topology or PythonImportTopology()
+    match = _module_root_alias_match(
+        module_name,
+        aliases
+        if aliases is not None
+        else _module_root_aliases_from_env(import_topology=topology),
+    )
     if match is None:
         return None
     _prefix, root, suffix = match
     if not suffix:
         package_init = root / "__init__.py"
-        if package_init.is_file():
+        if topology.is_file(package_init):
             return package_init
         module_file = root.with_suffix(".py")
-        if module_file.is_file():
+        if topology.is_file(module_file):
             return module_file
         return None
     parts = tuple(part for part in suffix.split(".") if part)
-    return _resolve_module_path_parts(parts, [root])
+    return _resolve_module_path_parts(parts, [root], import_topology=topology)
 
 
 def _module_name_from_alias_path(
@@ -148,7 +173,13 @@ def _module_name_from_alias_path(
     return best_name
 
 
-def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> str:
+def _module_name_from_path(
+    path: Path,
+    roots: list[Path],
+    stdlib_root: Path,
+    *,
+    module_root_aliases: _ModuleRootAliases | None = None,
+) -> str:
     resolved = path.resolve()
     resolved_roots = tuple(root.resolve() for root in roots)
     resolved_stdlib_root = stdlib_root.resolve()
@@ -161,15 +192,23 @@ def _module_name_from_path(path: Path, roots: list[Path], stdlib_root: Path) -> 
         resolved_roots=resolved_roots,
         resolved_stdlib_root=resolved_stdlib_root,
         cpython_test_root=cpython_test_root,
-        module_root_aliases=_module_root_aliases_from_env(),
+        module_root_aliases=(
+            _module_root_aliases_from_env()
+            if module_root_aliases is None
+            else module_root_aliases
+        ),
     )
 
 
-def _entry_module_root_for_path(path: Path) -> Path:
-    resolved = path.resolve()
+def _entry_module_root_for_path(
+    path: Path, *, import_topology: PythonImportTopology | None = None
+) -> Path:
+    topology = import_topology or PythonImportTopology()
+    selected = topology.probe(path)
+    resolved = selected.path if selected is not None else path.resolve()
     package_dir = resolved.parent
     topmost_package_parent = package_dir
-    while (package_dir / "__init__.py").exists():
+    while topology.is_file(package_dir / "__init__.py"):
         topmost_package_parent = package_dir.parent
         if topmost_package_parent == package_dir:
             break
@@ -229,85 +268,77 @@ def _stdlib_root_path() -> Path:
     return (compiler_source_root() / "src/molt/stdlib").resolve(strict=False)
 
 
-def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
-    alias_path = _resolve_module_alias_path(module_name)
+def _resolve_module_path(
+    module_name: str,
+    roots: list[Path],
+    *,
+    import_topology: PythonImportTopology | None = None,
+    module_root_aliases: _ModuleRootAliases | None = None,
+) -> Path | None:
+    topology = import_topology or PythonImportTopology()
+    alias_path = _resolve_module_alias_path(
+        module_name, module_root_aliases, import_topology=topology
+    )
     if alias_path is not None:
         return alias_path
-    return _resolve_module_path_parts(tuple(module_name.split(".")), roots)
+    return _resolve_module_path_parts(
+        tuple(module_name.split(".")), roots, import_topology=topology
+    )
 
 
-def _case_exact_dir_entries_fresh(dir_text: str) -> frozenset[str]:
-    try:
-        return frozenset(entry.name for entry in os.scandir(dir_text))
-    except OSError:
-        return frozenset()
-
-
-@functools.lru_cache(maxsize=65536)
-def _case_exact_dir_entries_cached(
-    dir_text: str, mtime_ns: int, size: int
-) -> frozenset[str]:
-    del mtime_ns, size
-    return _case_exact_dir_entries_fresh(dir_text)
-
-
-def _case_exact_dir_entries(dir_text: str) -> frozenset[str]:
-    try:
-        stat = os.stat(dir_text)
-    except OSError:
-        return frozenset()
-    return _case_exact_dir_entries_cached(dir_text, stat.st_mtime_ns, stat.st_size)
-
-
-def _case_exact_dir_contains(dir_text: str, part: str) -> bool:
-    entries = _case_exact_dir_entries(dir_text)
-    if part in entries:
-        return True
-    if part not in _case_exact_dir_entries_fresh(dir_text):
-        return False
-    _case_exact_dir_entries_cached.cache_clear()
-    return True
-
-
-def _case_exact_file_under(root_text: str, rel_parts: tuple[str, ...]) -> bool:
+def _case_exact_file_under(
+    root_text: str, rel_parts: tuple[str, ...], *, import_topology: PythonImportTopology
+) -> bool:
     if not rel_parts:
         return False
-    current = root_text
+    current = Path(root_text)
     for part in rel_parts:
-        if not _case_exact_dir_contains(current, part):
+        if not import_topology.contains_exact(current, part):
             return False
-        current = os.path.join(current, part)
-    return os.path.isfile(current)
+        current /= part
+    return import_topology.is_file(current)
 
 
-def _case_exact_file(path: Path) -> bool:
+def _case_exact_file(
+    path: Path, *, import_topology: PythonImportTopology | None = None
+) -> bool:
+    topology = import_topology or PythonImportTopology()
     if path.is_absolute():
-        anchor = path.anchor
-        rel_parts = tuple(part for part in path.parts[1:] if part)
-        return _case_exact_file_under(anchor, rel_parts)
-    return _case_exact_file_under(os.curdir, tuple(path.parts))
+        return _case_exact_file_under(
+            path.anchor, tuple(path.parts[1:]), import_topology=topology
+        )
+    return _case_exact_file_under(
+        os.curdir, tuple(path.parts), import_topology=topology
+    )
+
+
+def _python_module_resolver(
+    roots: tuple[Path, ...], import_topology: PythonImportTopology
+) -> "LocalPythonModuleResolver":
+    from molt.cli.python_import_resolution import LocalPythonModuleResolver
+
+    # Import admission owns external source permission; this resolver selects
+    # candidates. Tooling keeps its stricter source-root containment by default.
+    return LocalPythonModuleResolver(
+        roots,
+        import_topology=import_topology,
+        case_exact=True,
+        restrict_sources=False,
+    )
 
 
 def _resolve_module_path_parts(
-    parts: tuple[str, ...], roots: list[Path]
+    parts: tuple[str, ...],
+    roots: list[Path],
+    *,
+    import_topology: PythonImportTopology | None = None,
 ) -> Path | None:
-    if not parts:
+    if not parts or not roots:
         return None
-    module_filename = f"{parts[-1]}.py"
-    for root in roots:
-        root_text = os.fspath(root)
-        pkg_text = os.path.join(root_text, *parts, "__init__.py")
-        if _case_exact_file_under(root_text, (*parts, "__init__.py")):
-            return Path(pkg_text)
-        if len(parts) == 1:
-            mod_text = os.path.join(root_text, module_filename)
-            mod_parts = (module_filename,)
-        else:
-            mod_text = os.path.join(root_text, *parts[:-1], module_filename)
-            mod_parts = (*parts[:-1], module_filename)
-        if _case_exact_file_under(root_text, mod_parts):
-            return Path(mod_text)
-    return None
+    topology = import_topology or PythonImportTopology()
+    return _python_module_resolver(tuple(roots), topology).source_for_module(
+        ".".join(parts)
+    )
 
 
 @dataclass(frozen=True)
@@ -338,15 +369,35 @@ class _ParsedModuleAst:
 
 @dataclass
 class _ModuleResolutionCache:
+    import_topology: PythonImportTopology = field(default_factory=PythonImportTopology)
+    module_root_aliases: _ModuleRootAliases | None = None
+    python_resolvers: dict[tuple[Path, ...], "LocalPythonModuleResolver"] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        if self.module_root_aliases is None:
+            self.module_root_aliases = _module_root_aliases_from_env(
+                import_topology=self.import_topology
+            )
+        else:
+            for _prefix, path in self.module_root_aliases:
+                self.import_topology.probe(path)
+
+    def _python_resolver(self, roots: list[Path]) -> "LocalPythonModuleResolver":
+        key = tuple(roots)
+        if key not in self.python_resolvers:
+            self.python_resolvers[key] = _python_module_resolver(
+                key, self.import_topology
+            )
+        return self.python_resolvers[key]
+
     roots_cache: dict[tuple[str, _ResolutionContext], list[Path]] = field(
         default_factory=dict
     )
     resolve_cache: dict[
         tuple[str, _ModuleRootAliases, _ResolutionContext], Path | None
     ] = field(default_factory=dict)
-    namespace_dir_cache: dict[tuple[str, _ResolutionContext], bool] = field(
-        default_factory=dict
-    )
     resolved_path_cache: dict[Path, Path] = field(default_factory=dict)
     resolved_roots_cache: dict[tuple[Path, ...], tuple[Path, ...]] = field(
         default_factory=dict
@@ -387,7 +438,6 @@ class _ModuleResolutionCache:
     )
     path_stat_cache: dict[Path, os.stat_result] = field(default_factory=dict)
     path_stat_error_cache: dict[Path, OSError] = field(default_factory=dict)
-    module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
     cpython_test_root_cache: Path | None = None
     cpython_test_root_cache_populated: bool = False
     source_parse_count: int = 0
@@ -412,13 +462,6 @@ class _ModuleResolutionCache:
             self.roots_cache[key] = candidate_roots
         return candidate_roots
 
-    def module_parts(self, module_name: str) -> tuple[str, ...]:
-        cached = self.module_parts_cache.get(module_name)
-        if cached is None:
-            cached = tuple(module_name.split("."))
-            self.module_parts_cache[module_name] = cached
-        return cached
-
     def resolve_module(
         self,
         module_name: str,
@@ -429,29 +472,89 @@ class _ModuleResolutionCache:
         cache_name = module_name
         if module_name.startswith("molt.stdlib."):
             cache_name = f"stdlib:{module_name}"
-        module_root_aliases = _module_root_aliases_from_env()
+        module_root_aliases = self.module_root_aliases
+        assert module_root_aliases is not None
         cache_key = (
             cache_name,
             module_root_aliases,
             (tuple(roots), stdlib_root, frozenset(stdlib_allowlist)),
         )
         if cache_key not in self.resolve_cache:
-            alias_path = _resolve_module_alias_path(module_name, module_root_aliases)
+            match = _module_root_alias_match(module_name, module_root_aliases)
+            if match is not None and match[2]:
+                alias_path = self._python_resolver([match[1]]).source_for_module(
+                    match[2]
+                )
+            else:
+                alias_path = _resolve_module_alias_path(
+                    module_name,
+                    module_root_aliases,
+                    import_topology=self.import_topology,
+                )
             if alias_path is not None:
                 self.resolve_cache[cache_key] = alias_path
             elif cache_name.startswith("stdlib:"):
                 stdlib_candidate = module_name[len("molt.stdlib.") :]
-                self.resolve_cache[cache_key] = _resolve_module_path_parts(
-                    self.module_parts(stdlib_candidate), [stdlib_root]
-                )
+                self.resolve_cache[cache_key] = self._python_resolver(
+                    [stdlib_root]
+                ).source_for_module(stdlib_candidate)
             else:
                 candidate_roots = self.roots_for_module(
                     module_name, roots, stdlib_root, stdlib_allowlist
                 )
-                self.resolve_cache[cache_key] = _resolve_module_path_parts(
-                    self.module_parts(module_name), candidate_roots
+                self.resolve_cache[cache_key] = (
+                    self._python_resolver(candidate_roots).source_for_module(
+                        module_name
+                    )
+                    if candidate_roots
+                    else None
                 )
         return self.resolve_cache[cache_key]
+
+    def package_locations(
+        self,
+        module_name: str,
+        roots: list[Path],
+        stdlib_root: Path,
+        stdlib_allowlist: set[str],
+    ) -> tuple[Path, ...]:
+        aliases = self.module_root_aliases
+        assert aliases is not None
+        match = _module_root_alias_match(module_name, aliases)
+        if match is not None:
+            _prefix, root, suffix = match
+            if not suffix:
+                if self.import_topology.is_file(root / "__init__.py"):
+                    return (root,)
+                if self.import_topology.is_file(root.with_suffix(".py")):
+                    return ()
+                alias_locations = (root,) if self.import_topology.is_dir(root) else ()
+            else:
+                resolver = self._python_resolver([root])
+                alias_locations = resolver.package_locations(suffix)
+                if resolver.source_for_module(suffix) is not None:
+                    return alias_locations
+            # A source-less alias may fall through to an ordinary source, as
+            # source lookup does. Retain namespace portions only if no source
+            # won the normal lookup below.
+            if (
+                self.resolve_module(module_name, roots, stdlib_root, stdlib_allowlist)
+                is None
+            ):
+                if alias_locations:
+                    return alias_locations
+        if module_name.startswith("molt.stdlib."):
+            return self._python_resolver([stdlib_root]).package_locations(
+                module_name[len("molt.stdlib.") :]
+            )
+        candidates = self.roots_for_module(
+            module_name, roots, stdlib_root, stdlib_allowlist
+        )
+        return (
+            self._python_resolver(candidates).package_locations(module_name)
+            if candidates
+            else ()
+        )
 
     def has_namespace_dir(
         self,
@@ -460,20 +563,21 @@ class _ModuleResolutionCache:
         stdlib_root: Path,
         stdlib_allowlist: set[str],
     ) -> bool:
-        key = (module_name, (tuple(roots), stdlib_root, frozenset(stdlib_allowlist)))
-        has_namespace_dir = self.namespace_dir_cache.get(key)
-        if has_namespace_dir is None:
-            candidate_roots = self.roots_for_module(
-                module_name, roots, stdlib_root, stdlib_allowlist
-            )
-            has_namespace_dir = _has_namespace_dir(module_name, candidate_roots)
-            self.namespace_dir_cache[key] = has_namespace_dir
-        return has_namespace_dir
+        return self.resolve_module(
+            module_name, roots, stdlib_root, stdlib_allowlist
+        ) is None and bool(
+            self.package_locations(module_name, roots, stdlib_root, stdlib_allowlist)
+        )
 
     def resolved_path(self, path: Path) -> Path:
         resolved = self.resolved_path_cache.get(path)
         if resolved is None:
-            if path.is_absolute() and "." not in path.parts and ".." not in path.parts:
+            selected = self.import_topology.probe(path)
+            if selected is not None:
+                resolved = selected.path
+            elif (
+                path.is_absolute() and "." not in path.parts and ".." not in path.parts
+            ):
                 resolved = path
             else:
                 resolved = path.resolve()
@@ -495,7 +599,8 @@ class _ModuleResolutionCache:
         resolved_roots = self.resolved_roots(roots)
         resolved_stdlib_root = self.resolved_path(stdlib_root)
         cpython_test_root = self.cpython_test_root()
-        module_root_aliases = _module_root_aliases_from_env()
+        module_root_aliases = self.module_root_aliases
+        assert module_root_aliases is not None
         context_key = (
             resolved_roots,
             resolved_stdlib_root,
@@ -772,13 +877,20 @@ class _ModuleResolutionCache:
         return result
 
 
-def _has_namespace_dir(module_name: str, roots: list[Path]) -> bool:
-    rel = Path(*module_name.split("."))
-    for root in roots:
-        candidate = root / rel
-        if candidate.exists() and candidate.is_dir():
-            return True
-    return False
+def _has_namespace_dir(
+    module_name: str,
+    roots: list[Path],
+    *,
+    import_topology: PythonImportTopology | None = None,
+) -> bool:
+    if not roots:
+        return False
+    resolver = _python_module_resolver(
+        tuple(roots), import_topology or PythonImportTopology()
+    )
+    return resolver.source_for_module(module_name) is None and bool(
+        resolver.package_locations(module_name)
+    )
 
 
 def _is_stdlib_resolved_path(resolved: Path, resolved_stdlib_root: Path) -> bool:

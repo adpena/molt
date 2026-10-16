@@ -31,7 +31,7 @@ import pytest
 
 from molt.cli import module_cache as MC
 from molt.cli import module_frontend_cache as MFC
-from molt.cli.module_source import PythonSourceSnapshot
+from molt.cli.module_source import PythonSourceSnapshot, _ModuleSourceLease
 from tests.process_guard_common import current_thread_only
 
 
@@ -215,6 +215,7 @@ def test_lowering_reuse_across_sessions_no_relower(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -250,6 +251,7 @@ def test_lowering_reuse_across_sessions_no_relower(
     reused = MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -292,6 +294,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -301,6 +304,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     first = MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -313,6 +317,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     second = MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -338,9 +343,9 @@ _LOWERING_CTX = dict(
     entry_override=None,
     module_execution_kind="imported",
     known_classes_snapshot={},
-    parse_codec="utf-8",
+    parse_codec="json",
     type_hint_policy="trust",
-    fallback_policy="python",
+    fallback_policy="error",
     type_facts=None,
     enable_phi=True,
     known_modules=("m",),
@@ -351,7 +356,7 @@ _LOWERING_CTX = dict(
     module_is_namespace=False,
     module_chunking=False,
     module_chunk_max_ops=0,
-    optimization_profile="default",
+    optimization_profile="dev",
     pgo_hot_function_names=(),
     module_dep_closures={"m": frozenset({"m"})},
 )
@@ -372,11 +377,21 @@ def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None
     """
     path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
     digest_before = MC._module_lowering_context_digest_for_module(
-        "m", path, logical_source_path=str(path), is_package=False, **_LOWERING_CTX
+        "m",
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        logical_source_path=str(path),
+        is_package=False,
+        **_LOWERING_CTX,
     )
     _bump_mtime(path)
     digest_after = MC._module_lowering_context_digest_for_module(
-        "m", path, logical_source_path=str(path), is_package=False, **_LOWERING_CTX
+        "m",
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        logical_source_path=str(path),
+        is_package=False,
+        **_LOWERING_CTX,
     )
     assert digest_before is not None and digest_before == digest_after
 
@@ -403,6 +418,7 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -425,6 +441,7 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
     reused = MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -497,6 +514,7 @@ def test_same_size_different_content_is_not_reused(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -517,6 +535,7 @@ def test_same_size_different_content_is_not_reused(
     reused = MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -541,6 +560,7 @@ def test_changed_source_content_is_not_reused_from_shared(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -561,6 +581,7 @@ def test_changed_source_content_is_not_reused_from_shared(
     reused = MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -638,6 +659,7 @@ def test_changed_target_python_is_not_reused_from_shared(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -659,6 +681,7 @@ def test_changed_target_python_is_not_reused_from_shared(
     reused = MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -695,6 +718,7 @@ def test_publish_and_hydrate_never_use_os_link(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -704,6 +728,7 @@ def test_publish_and_hydrate_never_use_os_link(
     MC._read_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -737,6 +762,7 @@ def test_env_optout_forces_cold_lowering_miss(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -757,6 +783,7 @@ def test_env_optout_forces_cold_lowering_miss(
         MC._read_persisted_module_lowering(
             project_root,
             path,
+            source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             is_package=False,
             context_digest=context_digest,
@@ -770,6 +797,7 @@ def test_env_optout_forces_cold_lowering_miss(
         MC._read_persisted_module_lowering(
             project_root,
             path,
+            source_lease=_ModuleSourceLease.path_backed(path),
             module_name="m",
             is_package=False,
             context_digest=context_digest,
@@ -792,6 +820,7 @@ def test_env_optout_skips_shared_publish(
     MC._write_persisted_module_lowering(
         project_root,
         path,
+        source_lease=_ModuleSourceLease.path_backed(path),
         module_name="m",
         is_package=False,
         context_digest=context_digest,
@@ -871,6 +900,7 @@ def test_refused_shared_lowering_does_not_refresh_recency(
     MC._write_persisted_module_lowering(
         project,
         source,
+        source_lease=_ModuleSourceLease.path_backed(source),
         module_name="m",
         is_package=False,
         context_digest=digest,
@@ -889,7 +919,12 @@ def test_refused_shared_lowering_does_not_refresh_recency(
     _use_session(monkeypatch, "reader")
     assert (
         MC._read_persisted_module_lowering(
-            project, source, module_name="m", is_package=False, context_digest=digest
+            project,
+            source,
+            source_lease=_ModuleSourceLease.path_backed(source),
+            module_name="m",
+            is_package=False,
+            context_digest=digest,
         )
         is None
     )
