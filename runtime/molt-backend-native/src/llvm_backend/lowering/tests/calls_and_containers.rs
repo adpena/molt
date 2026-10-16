@@ -834,46 +834,20 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
 
 #[test]
 fn handwritten_container_owned_results_release_when_discarded() {
-    for (opcode, preserved, operand_count, result_name, runtime_symbol) in [
-        (OpCode::BuildList, None, 1, "sequence_result", None),
-        (OpCode::BuildTuple, None, 1, "sequence_result", None),
-        (OpCode::BuildSet, None, 1, "aggregate_result", None),
-        (OpCode::BuildDict, None, 2, "aggregate_result", None),
-        (
-            OpCode::Copy,
-            Some("frozenset_new"),
-            1,
-            "aggregate_result",
-            None,
-        ),
-        (OpCode::BuildSlice, None, 3, "slice_result", None),
-        (
-            OpCode::GetIter,
-            None,
-            1,
-            "molt_iter_checked",
-            Some("molt_iter_checked"),
-        ),
-        (
-            OpCode::IterNext,
-            None,
-            1,
-            "molt_iter_next",
-            Some("molt_iter_next"),
-        ),
-        (
-            OpCode::ForIter,
-            None,
-            1,
-            "molt_iter_next",
-            Some("molt_iter_next"),
-        ),
+    for (opcode, preserved, operand_count, producer) in [
+        (OpCode::BuildList, None, 1, "molt_list_from_values"),
+        (OpCode::BuildTuple, None, 1, "molt_tuple_from_values"),
+        (OpCode::BuildSet, None, 1, "molt_set_new"),
+        (OpCode::BuildDict, None, 2, "molt_dict_from_pairs"),
+        (OpCode::Copy, Some("frozenset_new"), 1, "molt_frozenset_new"),
+        (OpCode::BuildSlice, None, 3, "molt_slice_new"),
+        (OpCode::GetIter, None, 1, "molt_iter_checked"),
+        (OpCode::IterNext, None, 1, "molt_iter_next"),
+        (OpCode::ForIter, None, 1, "molt_iter_next"),
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        if let Some(symbol) = runtime_symbol {
-            backend.runtime_callable_symbols.insert(symbol.into());
-        }
+        backend.runtime_callable_symbols.insert(producer.into());
         let mut func = TirFunction::new(
             "discard_container_result".into(),
             vec![],
@@ -909,10 +883,78 @@ fn handwritten_container_owned_results_release_when_discarded() {
             .verify()
             .unwrap_or_else(|error| panic!("{opcode:?} {preserved:?}: {error}"));
         let ir = llvm_fn.print_to_string().to_string();
-        assert!(
-            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{result_name}")),
-            "{opcode:?} {preserved:?} must retire its discarded owner: {ir}"
+        let mut produced = Vec::new();
+        let mut releases = Vec::new();
+        for block in llvm_fn.get_basic_blocks() {
+            let mut current = block.get_first_instruction();
+            while let Some(instruction) = current {
+                current = instruction.get_next_instruction();
+                let Ok(call) = inkwell::values::CallSiteValue::try_from(instruction) else {
+                    continue;
+                };
+                let Some(callee) = call.get_called_fn_value() else {
+                    continue;
+                };
+                if callee.get_name().to_bytes() == producer.as_bytes() {
+                    produced.push(call.try_as_basic_value().unwrap_basic().into_int_value());
+                } else if callee.get_name().to_bytes() == b"molt_dec_ref_obj" {
+                    let owner = instruction
+                        .get_operand(0)
+                        .unwrap()
+                        .value()
+                        .unwrap()
+                        .into_int_value();
+                    releases.push((block, owner));
+                }
+            }
+        }
+        assert_eq!(produced.len(), 1, "{opcode:?} {preserved:?}: {ir}");
+        // The completion block retires the committed owner. A set's earlier
+        // abort edge separately retires its partial aggregate and each mutator
+        // retires its own result; none may substitute for completion cleanup.
+        let completion_releases: Vec<_> = releases
+            .iter()
+            .filter(|(block, _)| {
+                block.get_terminator().is_some_and(|terminator| {
+                    terminator.get_opcode() == inkwell::values::InstructionOpcode::Return
+                })
+            })
+            .map(|(_, owner)| *owner)
+            .collect();
+        assert_eq!(
+            completion_releases.len(),
+            1,
+            "{opcode:?} {preserved:?}: {ir}"
         );
+        let retired = completion_releases[0];
+        assert_eq!(
+            releases
+                .iter()
+                .filter(|(_, owner)| *owner == retired)
+                .count(),
+            1,
+            "the completion owner is retired exactly once: {opcode:?} {preserved:?}: {ir}"
+        );
+        if retired != produced[0] {
+            let phi = PhiValue::try_from(retired.as_instruction().unwrap())
+                .expect("the retired owner must be the producer or its success/None join");
+            let incoming: Vec<_> = phi
+                .get_incomings()
+                .map(|(value, _)| value.into_int_value())
+                .collect();
+            let none = ctx
+                .i64_type()
+                .const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+            assert_eq!(incoming.len(), 2, "{opcode:?} {preserved:?}: {ir}");
+            assert!(
+                incoming.contains(&produced[0]),
+                "the actual producer owns the successful result: {ir}"
+            );
+            assert!(
+                incoming.contains(&none),
+                "failure retires only immortal None: {ir}"
+            );
+        }
     }
 
     let ctx = Context::create();

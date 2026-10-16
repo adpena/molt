@@ -3485,7 +3485,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "llvm-cargo"
 dependencies = []
-argv = ["cargo", "build", "--locked", "-p", "molt-backend", "--features", "native-backend llvm"]
+argv = ["cargo", "build", "--locked", "--profile", "release-fast", "-p", "molt-backend", "--features", "native-backend llvm"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
@@ -3500,7 +3500,9 @@ cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
 # Libtests belong to the implementation crate. The driver's contract target
 # additionally proves the public checked SimpleIR-to-LLVM admission boundary.
-argv = ["cargo", "test", "--locked", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast", "--", "llvm_backend::lowering", "llvm_backend::runtime_imports", "direct_checked_backends_share_generated_shape_rejection", "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries", "program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values"]
+# Run the complete unit image: filtered local and CI variants hid ownership
+# oracles and compiled separate profiles. All LLVM consumers share this profile.
+argv = ["cargo", "test", "--locked", "--profile", "release-fast", "-p", "molt-backend-native", "-p", "molt-backend", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--test", "ir_contract_validation", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
@@ -3513,7 +3515,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
-argv = ["cargo", "test", "--locked", "-p", "molt-backend", "--features", "native-backend llvm", "--test", "llvm_generated_object_linkage", "--no-fail-fast"]
+argv = ["cargo", "test", "--locked", "--profile", "release-fast", "-p", "molt-backend", "--features", "native-backend llvm", "--test", "llvm_generated_object_linkage", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
@@ -3526,7 +3528,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 cache_domain = "llvm-cargo"
 dependencies = ["llvm.build.backend"]
-argv = ["cargo", "clippy", "--locked", "-p", "molt-backend", "-p", "molt-backend-native", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--", "-D", "warnings"]
+argv = ["cargo", "clippy", "--locked", "--profile", "release-fast", "-p", "molt-backend", "-p", "molt-backend-native", "--features", "molt-backend/native-backend,molt-backend/llvm", "--lib", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
@@ -4527,7 +4529,7 @@ globs = [
   "runtime/molt-backend-native/src/llvm_backend/**/*.rs",
 ]
 gates = [
-  "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
+  "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
 ]
 
 # --- TIR midend Rust ------------------------------------------------------

@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1524e928b323d9ec5fa3f086313b84b18998526481c679e6dcd420a0303917f8",
+  "authority_sha256": "3fa77776cd0270b17ad1b9fa47d61716790dd89a4205b2c774e4ea6d6b3e3945",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -7265,6 +7265,8 @@
         "cargo",
         "build",
         "--locked",
+        "--profile",
+        "release-fast",
         "-p",
         "molt-backend",
         "--features",
@@ -7301,6 +7303,8 @@
         "cargo",
         "test",
         "--locked",
+        "--profile",
+        "release-fast",
         "-p",
         "molt-backend-native",
         "-p",
@@ -7310,13 +7314,7 @@
         "--lib",
         "--test",
         "ir_contract_validation",
-        "--no-fail-fast",
-        "--",
-        "llvm_backend::lowering",
-        "llvm_backend::runtime_imports",
-        "direct_checked_backends_share_generated_shape_rejection",
-        "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries",
-        "program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_values"
+        "--no-fail-fast"
       ],
       "cache_domain": "llvm-cargo",
       "cargo_native_units": {
@@ -7351,6 +7349,8 @@
         "cargo",
         "test",
         "--locked",
+        "--profile",
+        "release-fast",
         "-p",
         "molt-backend",
         "--features",
@@ -7393,6 +7393,8 @@
         "cargo",
         "clippy",
         "--locked",
+        "--profile",
+        "release-fast",
         "-p",
         "molt-backend",
         "-p",
@@ -8387,7 +8389,7 @@
       "local.apparatus-learning-protection.0": "python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.apparatus-learning-protection.1": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python tools/anti_recurrence_gate.py --check",
-      "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
+      "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
       "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
@@ -9494,7 +9496,7 @@
         ],
         "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
         "gates": [
-          "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
+          "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast"
         ],
         "globs": [
           "runtime/molt-backend-native/Cargo.toml",

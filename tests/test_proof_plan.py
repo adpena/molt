@@ -669,15 +669,15 @@ def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -
         assert packages == expected_packages, command_id
     lowering = commands["llvm.test.lowering"].argv
     assert "--lib" in lowering
-    assert "llvm_backend::lowering" in lowering
-    assert "llvm_backend::runtime_imports" in lowering
+    assert "--" not in lowering  # Every implementation libtest is exercised.
+    assert lowering[lowering.index("--profile") + 1] == "release-fast"
     assert lowering[lowering.index("--test") + 1] == "ir_contract_validation"
-    assert "direct_checked_backends_share_generated_shape_rejection" in lowering
-    assert (
-        "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries"
-        in lowering
-    )
     assert "molt-backend/llvm" in lowering[lowering.index("--features") + 1].split(",")
+    for command_id in (*owners, "llvm.build.backend"):
+        argv = commands[command_id].argv
+        assert argv[argv.index("--profile") + 1] == "release-fast", command_id
+    local = next(rule for rule in PLAN.local_rules if rule["name"] == "backend-llvm")
+    assert tuple(shlex.split(local["gates"][0])) == lowering
     linkage = commands["linker.test.generated-object-admission"].argv
     assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"
 
