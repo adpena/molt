@@ -8,6 +8,7 @@ __molt_neutral_authority__ = True
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -19,7 +20,6 @@ from .disk_capacity import (
     FreeSpaceMeasurement,
     require_build_capacity,
 )
-from .dx import sccache_server_endpoint
 from .source_root import compiler_source_root
 
 
@@ -27,6 +27,11 @@ CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
 SCCACHE_INCREMENTAL_POLICY = "sccache-disables-incremental"
 SCCACHE_SERVER_TEMP_POLICY = "sccache-server-temp-dir"
 SCCACHE_SERVER_ENDPOINT_POLICY = "sccache-server-private-endpoint"
+SCCACHE_SERVER_ENDPOINT_ENV_NAMES = ("SCCACHE_SERVER_UDS", "SCCACHE_SERVER_PORT")
+# sun_path holds 104 bytes on macOS and 108 on Linux, terminator included.
+_UNIX_SOCKET_PATH_LIMIT = 103
+# The pinned sccache serves Unix sockets on POSIX hosts only.
+_SCCACHE_SERVER_SOCKETS = os.name != "nt"
 TEMPORARY_DIRECTORY_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
 DIRECT_RUSTC_INCREMENTAL_POLICY = "direct-rustc-enables-incremental"
 CARGO_WRAPPER_ENV_NAMES = (
@@ -107,6 +112,37 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
     if not cache.name:
         raise ValueError(f"SCCACHE_DIR must name a directory below a root: {raw!r}")
     return cache.with_name(f"{cache.name}-tmp")
+
+
+def sccache_server_endpoint(environ: Mapping[str, str]) -> tuple[str, str] | None:
+    """Return the private server endpoint of ``SCCACHE_DIR``'s clients.
+
+    sccache's default endpoint, TCP 127.0.0.1:4226, is shared by every sccache
+    on the host. Any server listening there answers Molt's clients and runs
+    their compiles in its own environment: on 2026-10-16 a Lima Linux guest
+    forwarded its port 4226 to the macOS host, and every macOS rustc probe
+    through sccache failed with "Compiler not supported". Each cache therefore
+    gets its own Unix socket beside it, or, where a socket cannot hold the path
+    or the platform has none, a port derived from the cache path. An endpoint
+    the caller already chose is kept; without ``SCCACHE_DIR`` the server is not
+    Molt's to configure.
+    """
+
+    if any(environ.get(name) for name in SCCACHE_SERVER_ENDPOINT_ENV_NAMES):
+        return None
+    raw = environ.get("SCCACHE_DIR", "").strip()
+    if not raw:
+        return None
+    cache = Path(os.path.abspath(Path(raw).expanduser()))
+    if not cache.name:
+        return None
+    if _SCCACHE_SERVER_SOCKETS:
+        socket = cache.with_name(f"{cache.name}-server.sock")
+        if len(os.fsencode(socket)) <= _UNIX_SOCKET_PATH_LIMIT:
+            return "SCCACHE_SERVER_UDS", str(socket)
+    digest = hashlib.sha256(os.fsencode(cache)).digest()
+    # The IANA dynamic range, away from sccache's default.
+    return "SCCACHE_SERVER_PORT", str(49152 + int.from_bytes(digest[:2]) % 16383)
 
 
 def sccache_client_environment(
