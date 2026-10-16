@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import native_support_slice
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
@@ -73,8 +74,10 @@ from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.models import (
+    ImportScanMode,
+    _ModuleGraphScanAuthority,
+    _ModuleSourceScanAuthority,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    _CompleteImportScan,
     _ExternalNativeAbiSymbol,
     _ExternalNativeCallableExport,
     _ExternalNativeCapiSymbol,
@@ -1866,7 +1869,7 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
 
 
 @_source_tree_fingerprint_transaction()
-def test_materialize_import_plan_compiles_pruned_native_support_source(
+def test_materialize_import_plan_preserves_source_and_lowers_selected_native_support(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1955,16 +1958,46 @@ def test_materialize_import_plan_compiles_pruned_native_support_source(
         diagnostics_enabled=False,
     )
 
-    compiled_path = import_plan.module_graph["nativepkg.ndimage._filters"]
-    compiled_source = compiled_path.read_text(encoding="utf-8")
-    assert compiled_path != support_path.resolve()
-    assert compiled_path.name.startswith("_molt_generated_nativepkg_ndimage__filters.")
-    assert len(compiled_path.stem.rsplit(".", 1)[-1]) == 64
-    assert "def gaussian_filter" in compiled_source
-    assert "import math" in compiled_source
-    assert "import re" not in compiled_source
-    assert "unused_regex_helper" not in compiled_source
-    assert "native_support_source" in module_reasons["nativepkg.ndimage._filters"]
+    module = "nativepkg.ndimage._filters"
+    compiled_path = import_plan.module_graph[module]
+    authority = import_plan.scan_authority.by_module[module]
+    assert compiled_path == support_path.resolve() == authority.source_path
+    assert authority.source_sha256 == support_sha
+    assert hashlib.sha256(compiled_path.read_bytes()).hexdigest() == support_sha
+    assert authority.native_support_function_roots == ("gaussian_filter",)
+    assert import_plan.native_support_function_roots_by_module[module] == (
+        "gaussian_filter",
+    )
+    generator = SimpleTIRGenerator(
+        module_name=module,
+        source_path=str(compiled_path),
+        known_modules=set(import_plan.known_modules),
+        direct_call_modules=set(import_plan.direct_call_modules),
+        stdlib_allowlist=set(import_plan.stdlib_allowlist),
+        native_callable_exports=(
+            import_plan.native_artifact_plan.native_callable_exports_by_qualified_name()
+        ),
+        native_support_function_roots=set(authority.native_support_function_roots),
+        target_python=prepared.target_python.feature_version,
+    )
+    generator.visit(
+        ast.parse(
+            compiled_path.read_text(encoding="utf-8"), filename=str(compiled_path)
+        )
+    )
+    functions = generator.to_json()["functions"]
+    names = {function["name"] for function in functions}
+    strings = {
+        op.get("s_value")
+        for function in functions
+        for op in function["ops"]
+        if op.get("kind") == "const_str"
+    }
+    assert "nativepkg_ndimage__filters__gaussian_filter" in names
+    assert "nativepkg_ndimage__filters__unused_regex_helper" not in names
+    assert "math" in strings
+    assert "re" not in strings
+    assert "native_support_source" in module_reasons[module]
 
 
 def test_source_extension_runtime_python_import_scan_filters_import_callees() -> None:
@@ -3119,6 +3152,7 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
     frontend_analysis, frontend_error = (
         cli_frontend_pipeline._prepare_frontend_analysis(
             module_graph=import_plan.module_graph,
+            scan_authority=import_plan.scan_authority,
             module_graph_metadata=import_plan.module_graph_metadata,
             module_resolution_cache=import_plan.module_resolution_cache,
             roots=import_plan.roots,
@@ -6401,6 +6435,7 @@ def test_native_support_function_roots_cross_imported_helpers(
     roots = cli_module_graph._native_support_function_roots_by_module(
         plan,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
     )
 
     assert roots == {
@@ -9889,6 +9924,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
     )
     analysis, analysis_error = cli_frontend_pipeline._prepare_frontend_analysis(
         module_graph=dict(import_plan.module_graph),
+        scan_authority=import_plan.scan_authority,
         module_graph_metadata=import_plan.module_graph_metadata,
         module_resolution_cache=import_plan.module_resolution_cache,
         roots=import_plan.roots,
@@ -13562,21 +13598,19 @@ def test_shared_module_resolution_cache_reuses_graph_import_scans(
     first_collect_calls = collect_calls
 
     for module_name, module_path in graph.items():
+        record = discovery_result.scan_authority.by_module[module_name]
         source = cache.read_module_source(module_path)
         tree = cache.parse_module_ast(
             module_path, source, filename=str(module_path)
         ).tree
-        import_scan_mode = _source_import_scan._module_import_scan_mode(
-            module_name=module_name,
-            full_scan=cache.resolved_path(module_path) == cache.resolved_path(entry),
-        )
         cache.collect_graph_imports(
             module_path,
             tree,
             collector=_source_import_scan._collect_imports_for_graph,
             module_name=module_name,
-            is_package=module_path.name == "__init__.py",
-            import_scan_mode=import_scan_mode,
+            is_package=bool(record.is_package),
+            import_scan_mode=record.mode,
+            namespace_premise=record.namespace_premise,
         )
 
     assert collect_calls == first_collect_calls
@@ -13966,6 +14000,33 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     roots = module_roots + [stdlib_root]
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
     cache = cli_module_resolution._ModuleResolutionCache()
+    operation = cli_module_graph_discovery._ModuleGraphDiscovery(
+        cache, _DEFAULT_TARGET_PYTHON_VERSION
+    )
+    premise = operation.namespace_index.premise(entry.resolve(), frozenset())
+    snapshot = cli_module_source.PythonSourceSnapshot.capture(entry)
+    loaded = cli_module_graph_discovery._load_module_import_scan(
+        entry,
+        module_name="main",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        source_snapshot=snapshot,
+        roots=roots,
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+        namespace_premise=premise,
+    )
+    precomputed = cli_module_graph_discovery._bind_precomputed_module_import_scan(
+        entry,
+        module_name="main",
+        import_scan_mode="full",
+        scan=loaded.scan,
+        snapshot=snapshot,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        namespace_premise=premise,
+    )
     reads: list[Path] = []
     original_read = cache.parse_module_ast
 
@@ -13983,16 +14044,8 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
         tmp_path,
         stdlib_allowlist,
         resolver_cache=cache,
-        precomputed_scan=cli_module_graph_discovery._bind_precomputed_module_import_scan(
-            entry,
-            module_name="main",
-            import_scan_mode="full",
-            scan=_CompleteImportScan(
-                _ImportScanRequests(("pkg.helper",), ()), ("pkg.helper",), ()
-            ),
-            snapshot=cli_module_source.PythonSourceSnapshot.capture(entry),
-            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
-        ),
+        discovery=operation,
+        precomputed_scan=precomputed,
     )
     graph = discovery_result.graph
     explicit_imports = discovery_result.explicit_imports
@@ -15636,6 +15689,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
             "module_name": "pkg",
             "is_package": False,
             "import_scan_mode": "full",
+            "native_support_function_roots": [],
             "target_python": TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION.tag,
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
@@ -16841,6 +16895,12 @@ def test_frontend_analysis_resolves_known_native_artifact_dependencies(
 
     analysis, failure = cli_frontend_pipeline._prepare_frontend_analysis(
         module_graph=module_graph,
+        scan_authority=_ModuleGraphScanAuthority(
+            tuple(
+                _ModuleSourceScanAuthority(name, path, "full")
+                for name, path in module_graph.items()
+            )
+        ),
         module_graph_metadata=metadata,
         module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
         roots=[tmp_path],
@@ -19009,6 +19069,12 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
 
     analysis, failure = cli_frontend_pipeline._prepare_frontend_analysis(
         module_graph=module_graph,
+        scan_authority=_ModuleGraphScanAuthority(
+            tuple(
+                _ModuleSourceScanAuthority(name, path, "full")
+                for name, path in module_graph.items()
+            )
+        ),
         module_graph_metadata=metadata,
         module_resolution_cache=resolution_cache,
         roots=[tmp_path],
@@ -19794,9 +19860,25 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
     source_path = examples_dir / "hello.py"
     source_path.write_text("print('hello')\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
-    module_graph = {"hello": source_path}
+    resolution_cache = cli_module_resolution._ModuleResolutionCache()
+    discovery = cli_module_graph_discovery._ModuleGraphDiscovery(
+        resolution_cache, TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION
+    )
+    initial = cli_module_graph_discovery._discover_module_graph_from_paths(
+        (source_path,),
+        [project_root, examples_dir, stdlib_root],
+        [project_root, examples_dir],
+        stdlib_root,
+        project_root,
+        cli_module_stdlib_policy._stdlib_allowlist(),
+        resolver_cache=resolution_cache,
+        discovery=discovery,
+        full_scan_roots=False,
+    )
+    module_graph = initial.graph
 
     augmentation, error = cli_module_graph._augment_module_graph_for_entry_and_runtime(
+        discovery=discovery,
         source_path=source_path,
         entry_module="hello",
         module_roots=[project_root, examples_dir],
@@ -19804,9 +19886,9 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
         roots=[project_root, examples_dir, stdlib_root],
         project_root=project_root,
         stdlib_allowlist=cli_module_stdlib_policy._stdlib_allowlist(),
-        entry_imports=(),
-        module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
-        scan_authorities={},
+        entry_imports=initial.explicit_imports,
+        module_resolution_cache=resolution_cache,
+        scan_authorities=dict(initial.scan_authority.by_module),
         module_graph=module_graph,
         module_reasons={},
         diagnostics_enabled=False,
@@ -19855,8 +19937,24 @@ def test_augmentation_preserves_initializer_closure_without_eager_import_seeds(
     seeds = {"demo", "builtins", "sys", "_io", "unrelated"}
     if with_spawn:
         seeds.add("multiprocessing")
-    graph = {name: paths[name] for name in seeds}
+    resolution_cache = cli_module_resolution._ModuleResolutionCache()
+    discovery = cli_module_graph_discovery._ModuleGraphDiscovery(
+        resolution_cache, TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION
+    )
+    initial = cli_module_graph_discovery._discover_module_graph_from_paths(
+        tuple(paths[name] for name in sorted(seeds)),
+        [tmp_path],
+        [tmp_path],
+        tmp_path,
+        tmp_path,
+        set(sources),
+        resolver_cache=resolution_cache,
+        discovery=discovery,
+        full_scan_roots=False,
+    )
+    graph = initial.graph
     augmentation, error = cli_module_graph._augment_module_graph_for_entry_and_runtime(
+        discovery=discovery,
         source_path=paths["demo"],
         entry_module="demo",
         module_roots=[tmp_path],
@@ -19864,9 +19962,10 @@ def test_augmentation_preserves_initializer_closure_without_eager_import_seeds(
         roots=[tmp_path],
         project_root=tmp_path,
         stdlib_allowlist=set(sources),
-        entry_imports={"multiprocessing"} if with_spawn else (),
-        module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
-        scan_authorities={},
+        entry_imports=initial.explicit_imports
+        | ({"multiprocessing"} if with_spawn else set()),
+        module_resolution_cache=resolution_cache,
+        scan_authorities=dict(initial.scan_authority.by_module),
         module_graph=graph,
         module_reasons={},
         diagnostics_enabled=False,
@@ -19925,7 +20024,7 @@ def test_static_import_seed_preserves_transitive_and_deferred_dependencies(
     assert set(graph) == imports
 
 
-def test_native_support_source_slices_capture_original_and_emitted_source_once(
+def test_native_support_source_slices_reuse_original_source_and_selected_view(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -19940,7 +20039,7 @@ def test_native_support_source_slices_capture_original_and_emitted_source_once(
             return {"nativepkg.support": source_path}
 
     prune_calls = 0
-    original_prune = cli_module_graph._native_support_slice.prune_native_support_module
+    original_prune = native_support_slice.prune_native_support_module
 
     def counted_prune(tree: ast.AST, roots: frozenset[str]):
         nonlocal prune_calls
@@ -19948,7 +20047,7 @@ def test_native_support_source_slices_capture_original_and_emitted_source_once(
         return original_prune(tree, roots)
 
     monkeypatch.setattr(
-        cli_module_graph._native_support_slice,
+        native_support_slice,
         "prune_native_support_module",
         counted_prune,
     )
@@ -19956,18 +20055,22 @@ def test_native_support_source_slices_capture_original_and_emitted_source_once(
         "native_support_slice_requests": 0,
         "native_support_slice_cache_hits": 0,
         "native_support_slice_cache_misses": 0,
+        "native_support_persisted_import_scan_hits": 0,
+        "native_support_persisted_import_scan_misses": 0,
         "native_support_source_parses": 0,
         "native_support_source_prunes": 0,
         "native_support_legacy_equivalent_source_parses": 0,
     }
     slice_cache: dict[
-        tuple[Path, tuple[str, ...]],
+        tuple[Path, tuple[str, ...], ImportScanMode],
         cli_module_graph._NativeSupportSourceSlice | None,
     ] = {}
 
+    resolution_cache = cli_module_resolution._ModuleResolutionCache()
     first = cli_module_graph._native_support_source_slices(
         native_artifact_plan=_Plan(),
         roots_by_module={"nativepkg.support": ("kept",)},
+        resolution_cache=resolution_cache,
         artifacts_root=tmp_path / "generated",
         slice_cache=slice_cache,
         operation_counts=operation_counts,
@@ -19975,6 +20078,7 @@ def test_native_support_source_slices_capture_original_and_emitted_source_once(
     second = cli_module_graph._native_support_source_slices(
         native_artifact_plan=_Plan(),
         roots_by_module={"nativepkg.support": ("kept",)},
+        resolution_cache=resolution_cache,
         artifacts_root=tmp_path / "generated",
         slice_cache=slice_cache,
         operation_counts=operation_counts,
@@ -19986,15 +20090,20 @@ def test_native_support_source_slices_capture_original_and_emitted_source_once(
         "native_support_slice_requests": 2,
         "native_support_slice_cache_hits": 1,
         "native_support_slice_cache_misses": 1,
-        "native_support_source_parses": 2,
+        "native_support_persisted_import_scan_hits": 0,
+        "native_support_persisted_import_scan_misses": 1,
+        "native_support_source_parses": 1,
         "native_support_source_prunes": 1,
         "native_support_legacy_equivalent_source_parses": 4,
     }
     support_slice = first[source_path]
-    assert support_slice.generated_path is not None
-    assert support_slice.generated_path.read_text(encoding="utf-8") == (
-        "def kept():\n    import beta\n    return 1\n"
+    assert support_slice.scan.authority.source_path == source_path.resolve()
+    assert (
+        support_slice.scan.authority.source_sha256
+        == hashlib.sha256(source_path.read_bytes()).hexdigest()
     )
+    assert support_slice.scan.authority.native_support_function_roots == ("kept",)
+    assert support_slice.imports == ("beta",)
 
 
 def test_native_support_source_slices_reuse_persisted_import_scan(
@@ -20022,7 +20131,8 @@ def test_native_support_source_slices_reuse_persisted_import_scan(
     first_counts = operation_counts()
     first = cli_module_graph._native_support_source_slices(
         native_artifact_plan=_Plan(),
-        roots_by_module={},
+        roots_by_module={"nativepkg.support": ()},
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
         artifacts_root=tmp_path,
         slice_cache={},
         operation_counts=first_counts,
@@ -20030,7 +20140,8 @@ def test_native_support_source_slices_reuse_persisted_import_scan(
     second_counts = operation_counts()
     second = cli_module_graph._native_support_source_slices(
         native_artifact_plan=_Plan(),
-        roots_by_module={},
+        roots_by_module={"nativepkg.support": ()},
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
         artifacts_root=tmp_path,
         slice_cache={},
         operation_counts=second_counts,

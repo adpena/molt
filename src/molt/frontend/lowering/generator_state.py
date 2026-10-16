@@ -467,11 +467,15 @@ class GeneratorStateMixin(GeneratorMixinBase):
             for qualified_name in (native_python_exports or set())
             if isinstance(qualified_name, str) and qualified_name
         }
-        self.native_support_function_roots: set[str] = {
-            name
-            for name in (native_support_function_roots or set())
-            if isinstance(name, str) and name
-        }
+        self.native_support_function_roots: set[str] | None = (
+            None
+            if native_support_function_roots is None
+            else {
+                name
+                for name in native_support_function_roots
+                if isinstance(name, str) and name
+            }
+        )
         self.module_func_defaults: dict[str, dict[str, Any]] = {}
         self.module_annotations: MoltValue | None = None
         self.module_annotation_items: list[tuple[str, ast.expr, int]] = []

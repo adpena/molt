@@ -11,7 +11,6 @@ from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.models import (
     ImportScanMode,
     _ModuleGraphScanAuthority,
-    _ModuleSourceScanAuthority,
     _RuntimeImportScanCustody,
 )
 from molt.cli.module_import_scanner import _complete_import_scan
@@ -444,7 +443,8 @@ def test_graph_scan_cache_is_ast_digest_keyed_without_certifying_strict_imports(
 def test_custody_seed_preserves_alias_names_for_one_shared_source(
     tmp_path: Path,
 ) -> None:
-    from molt.cli.module_graph_discovery import _discover_module_graph_from_paths
+    from molt.cli import module_graph_discovery as discovery
+    from molt.cli.module_source import PythonSourceSnapshot
 
     owner = (tmp_path / "shared.py").resolve()
     owner.write_text(
@@ -468,14 +468,41 @@ def test_custody_seed_preserves_alias_names_for_one_shared_source(
             ("second.owner", python_ast_digest(tree)),
         ),
     )
-    authority = _ModuleGraphScanAuthority(
-        tuple(
-            _ModuleSourceScanAuthority(name, path, "full", False)
-            for name, path in custody.catalog
+    cache = _ModuleResolutionCache()
+    operation = discovery._ModuleGraphDiscovery(cache, _DEFAULT_TARGET_PYTHON_VERSION)
+    for name, path in (("first.child", first_child), ("second.child", second_child)):
+        snapshot = PythonSourceSnapshot.capture(path)
+        loaded = discovery._load_module_import_scan(
+            path,
+            module_name=name,
+            is_package=False,
+            import_scan_mode="full",
+            resolution_cache=cache,
+            project_root=None,
+            source_snapshot=snapshot,
         )
-    )
+        bound = discovery._bind_precomputed_module_import_scan(
+            path,
+            module_name=name,
+            import_scan_mode="full",
+            scan=loaded.scan,
+            snapshot=snapshot,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        )
+        discovery._discover_module_graph_from_paths(
+            (path,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path,
+            None,
+            set(),
+            resolver_cache=cache,
+            discovery=operation,
+            precomputed_scans_by_path={path: bound},
+            full_scan_roots=True,
+        )
 
-    result = _discover_module_graph_from_paths(
+    result = discovery._discover_module_graph_from_paths(
         (owner, owner),
         [tmp_path],
         [tmp_path],
@@ -484,7 +511,8 @@ def test_custody_seed_preserves_alias_names_for_one_shared_source(
         set(),
         full_scan_roots=True,
         runtime_import_custody=custody,
-        enclosing_scan_authority=authority,
+        resolver_cache=cache,
+        discovery=operation,
     )
 
     assert result.graph["first.owner"] == owner
@@ -495,11 +523,11 @@ def test_custody_seed_preserves_alias_names_for_one_shared_source(
     "scope,message",
     [
         ("partial", "full-depth owner scans"),
-        ("missing", "requires enclosing source scan authority"),
-        ("empty", "lacks enclosing source scan authority"),
+        ("missing", "lacks live source discovery"),
+        ("empty", "lacks live source discovery"),
     ],
 )
-def test_runtime_owners_require_full_depth_and_enclosing_authority(
+def test_runtime_owners_require_full_depth_and_live_discovery(
     tmp_path: Path, scope: str, message: str
 ) -> None:
     from molt.cli.module_graph_discovery import _discover_module_graph_from_paths
@@ -786,6 +814,7 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
         assert set(custody.modules).issubset(plan.runtime_import_dispatch_roots)
     analysis, error = _prepare_frontend_analysis(
         module_graph=plan.module_graph,
+        scan_authority=plan.scan_authority,
         module_graph_metadata=plan.module_graph_metadata,
         module_resolution_cache=plan.module_resolution_cache,
         roots=plan.roots,

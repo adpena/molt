@@ -1941,3 +1941,308 @@ def test_starred_class_base_keeps_actual_subclass_hook_source(tmp_path, monkeypa
         )
         assert "subclass_leaf" in result.graph
         assert "unrelated_leaf" not in result.graph
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
+    tmp_path, monkeypatch, warm
+):
+    import json
+    import sys
+    from molt.cli import module_resolution
+
+    package = tmp_path / "hf226_pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "sub.py").write_text("def handler(): return 'old'\n", encoding="utf-8")
+    (tmp_path / "untouched.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "entry.py").write_text(
+        "import hf226_pkg.sub\nimport untouched\nhf226_pkg.sub.handler()\n",
+        encoding="utf-8",
+    )
+    support = tmp_path / "support.py"
+    support.write_text(
+        "import hf226_pkg\ndef replacement(): return 'new'\n"
+        "hf226_pkg.sub.handler = replacement\n",
+        encoding="utf-8",
+    )
+    actual = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\n"
+            "import entry,hf226_pkg.sub\nbefore=hf226_pkg.sub.handler()\n"
+            "import support\nprint(json.dumps([before,hf226_pkg.sub.handler()]))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(actual.stdout) == ["old", "new"]
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "late-closure-writer",
+    )
+    load = module_graph_discovery._load_module_import_scan
+    loads = []
+
+    def observe(path, **kwargs):
+        loads.append((kwargs["module_name"], kwargs.get("source_owner")))
+        return load(path, **kwargs)
+
+    monkeypatch.setattr(module_graph_discovery, "_load_module_import_scan", observe)
+    for run in range(2 if warm else 1):
+        cache = module_resolution._ModuleResolutionCache()
+        state = module_graph_discovery._ModuleGraphDiscovery(
+            cache, module_graph_discovery._DEFAULT_TARGET_PYTHON_VERSION
+        )
+        initial = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            resolver_cache=cache,
+            full_scan_roots=True,
+            discovery=state,
+        )
+        prior = initial.scan_authority.by_module["hf226_pkg.sub"]
+        assert prior.namespace_premise.foreign_writes == ()
+        graph = dict(initial.graph)
+        sources = dict(initial.scan_authority.by_module)
+        loads.clear()
+        parse_before = cache.source_parse_count
+        later = module_graph_discovery._extend_module_graph_with_closure(
+            graph,
+            scan_authorities=sources,
+            entry_paths=(support,),
+            full_scan_roots=False,
+            roots=[tmp_path],
+            module_roots=[tmp_path],
+            stdlib_root=tmp_path / "stdlib",
+            project_root=tmp_path,
+            stdlib_allowlist=set(),
+            resolver_cache=cache,
+            diagnostics_enabled=False,
+            module_reasons={},
+            reason="native_support_source",
+            discovery=state,
+        )
+        assert later.discovery is state
+        assert sources["hf226_pkg.sub"].namespace_premise.foreign_writes == ("handler",)
+        assert prior.namespace_premise.foreign_writes == ()
+        assert "hf226_pkg.sub" not in later.graph
+        assert any(name == "hf226_pkg.sub" for name, _ in loads)
+        assert not any(name in {"entry", "untouched"} for name, _ in loads)
+        # Prior captures are reused, even when their namespace projection widens.
+        assert cache.source_parse_count - parse_before <= 1
+        solver = state.demands
+        loads.clear()
+        module_graph_discovery._extend_module_graph_with_closure(
+            graph,
+            scan_authorities=sources,
+            entry_paths=(support,),
+            full_scan_roots=False,
+            roots=[tmp_path],
+            module_roots=[tmp_path],
+            stdlib_root=tmp_path / "stdlib",
+            project_root=tmp_path,
+            stdlib_allowlist=set(),
+            resolver_cache=cache,
+            diagnostics_enabled=False,
+            module_reasons={},
+            reason="native_support_source",
+            discovery=state,
+        )
+        assert state.demands is solver
+        assert not loads
+        state.validate_sources()
+
+
+def test_later_source_admission_resolves_earlier_writer_target(tmp_path, monkeypatch):
+    from molt.cli import module_resolution
+
+    writers = tmp_path / "writers"
+    readers = tmp_path / "readers"
+    writers.mkdir()
+    readers.mkdir()
+    writer = writers / "writer.py"
+    writer.write_text(
+        "import late\ndef replacement(): return 2\nlate.handler = replacement\n",
+        encoding="utf-8",
+    )
+    late = readers / "late.py"
+    late.write_text("def handler(): return 1\n", encoding="utf-8")
+    cache = module_resolution._ModuleResolutionCache()
+    state = module_graph_discovery._ModuleGraphDiscovery(
+        cache, module_graph_discovery._DEFAULT_TARGET_PYTHON_VERSION
+    )
+    initial = module_graph_discovery._discover_module_graph_from_paths(
+        (writer,),
+        [writers],
+        [writers],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        resolver_cache=cache,
+        full_scan_roots=False,
+        discovery=state,
+    )
+    assert initial.graph == {"writer": writer}
+    assert "late" in state.writer_targets
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (late,),
+        [readers],
+        [readers],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        resolver_cache=cache,
+        full_scan_roots=False,
+        discovery=state,
+    )
+    assert result.scan_authority.by_module["late"].namespace_premise.foreign_writes == (
+        "handler",
+    )
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_closure_publication_visits_only_its_changed_authority_rows(tmp_path, verified):
+    from dataclasses import replace
+    from molt.cli.models import _ModuleGraphScanAuthority, _ModuleSourceScanAuthority
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    class DeltaOnlyMap(dict):
+        def __iter__(self):
+            raise AssertionError("publication scanned unrelated module keys")
+
+        def items(self):
+            raise AssertionError("publication scanned unrelated module rows")
+
+        def values(self):
+            raise AssertionError("publication scanned unrelated source rows")
+
+    prior = _ModuleSourceScanAuthority(
+        "prior",
+        tmp_path / "prior.py",
+        "module_init",
+        namespace_premise=PythonNamespacePremise((), 0) if verified else None,
+    )
+    added = _ModuleSourceScanAuthority("added", tmp_path / "added.py", "module_init")
+    revised = replace(prior, namespace_premise=PythonNamespacePremise(("handler",), 0))
+    graph = DeltaOnlyMap({"prior": prior.source_path})
+    sources = DeltaOnlyMap({"prior": prior})
+    module_graph_discovery._merge_discovered_module_graph(
+        graph,
+        sources,
+        _DiscoveredModuleGraph(
+            {"added": added.source_path},
+            set(),
+            _ModuleGraphScanAuthority((added,)),
+            revised_sources=(revised,),
+        ),
+    )
+    assert graph["added"] == added.source_path
+    assert sources["prior"].namespace_premise == (
+        revised.namespace_premise if verified else None
+    )
+    assert sources["added"] == added
+
+
+def test_unchanged_request_still_checks_live_source_generation(tmp_path):
+    from molt.cli.module_source import PythonSourceChangedError
+
+    entry = tmp_path / "entry.py"
+    entry.write_text("VALUE = 1\n", encoding="utf-8")
+    first = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=False,
+    )
+    entry.write_text("VALUE = 2\n", encoding="utf-8")
+    with pytest.raises(PythonSourceChangedError, match="source changed"):
+        module_graph_discovery._discover_module_graph_from_paths(
+            (entry,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            None,
+            set(),
+            full_scan_roots=False,
+            discovery=first.discovery,
+        )
+
+
+def test_full_runtime_owner_promotion_retires_prior_partial_body_jobs(
+    tmp_path, monkeypatch
+):
+    from molt.cli.models import _RuntimeImportScanCustody
+    from molt.compiler_analysis.python_source_keys import python_ast_digest
+
+    entry = tmp_path / "entry.py"
+    entry.write_text("import owner\nowner.run()\n", encoding="utf-8")
+    owner = tmp_path / "owner.py"
+    owner.write_text("def run():\n    import leaf\n", encoding="utf-8")
+    (tmp_path / "leaf.py").write_text("pass\n", encoding="utf-8")
+    writer = tmp_path / "writer.py"
+    writer.write_text(
+        "import sys\nsys.modules[choose_module()].__dict__[choose_name()] = 1\n",
+        encoding="utf-8",
+    )
+    initial = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    state = initial.discovery
+    assert state.scanned_bodies["owner"]
+    custody = _RuntimeImportScanCustody(
+        (("owner", owner),),
+        tuple(sorted(initial.graph.items())),
+        (("owner", python_ast_digest(ast.parse(owner.read_text(encoding="utf-8")))),),
+    )
+    module_graph_discovery._discover_module_graph_from_paths(
+        (owner,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=True,
+        runtime_import_custody=custody,
+        discovery=state,
+    )
+    load = module_graph_discovery._load_module_import_scan
+    owner_jobs = []
+
+    def observe(path, **kwargs):
+        if kwargs["module_name"] == "owner":
+            owner_jobs.append((kwargs["import_scan_mode"], kwargs.get("source_owner")))
+        return load(path, **kwargs)
+
+    monkeypatch.setattr(module_graph_discovery, "_load_module_import_scan", observe)
+    module_graph_discovery._discover_module_graph_from_paths(
+        (writer,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=False,
+        discovery=state,
+    )
+    assert owner_jobs == [("full", None)]
+    assert state.scan_sources["owner"].namespace_premise.foreign_writes is None

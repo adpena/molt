@@ -191,6 +191,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
                 "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
                 "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
                 "import_scan_mode": "module_init",
+                "native_support_function_roots": [],
                 "func_kinds": {"f": "sync"},
                 "func_defaults": {
                     "f": {
@@ -278,6 +279,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
             "version": MC._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
             "compiler_fingerprint": MC._frontend_semantic_tooling_fingerprint(),
             "import_scan_mode": "module_init",
+            "native_support_function_roots": [],
             "func_defaults": defaults,
             "func_kinds": kinds,
         }

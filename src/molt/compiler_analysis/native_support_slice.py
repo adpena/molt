@@ -11,6 +11,12 @@ if hasattr(ast, "TypeAlias"):
     SupportBinding = SupportBinding | ast.TypeAlias  # type: ignore[attr-defined]
 
 
+def canonical_native_support_roots(roots: Collection[str]) -> tuple[str, ...]:
+    if any(not isinstance(name, str) or not name.isidentifier() for name in roots):
+        raise ValueError("invalid native support source binding roots")
+    return tuple(sorted(set(roots)))
+
+
 def top_level_support_defs(tree: ast.Module) -> dict[str, SupportDef]:
     return {
         stmt.name: stmt

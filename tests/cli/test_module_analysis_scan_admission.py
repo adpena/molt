@@ -8,11 +8,14 @@ from typing import Any
 import pytest
 
 from molt.cli import (
+    frontend_pipeline,
     module_cache,
+    module_graph,
     module_graph_cache,
     module_graph_discovery,
     module_resolution,
 )
+from molt.cli.models import _ModuleGraphScanAuthority, _ModuleSourceScanAuthority
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.target_python import TargetPythonVersion
@@ -44,6 +47,166 @@ def _analyze(path: Path, **overrides: Any) -> tuple[Any, ...]:
     }
     options.update(overrides)
     return module_cache._load_module_analysis(path, **options)
+
+
+@pytest.fixture
+def native_support_source(tmp_path: Path) -> Path:
+    path = tmp_path / "app.py"
+    path.write_text(
+        "import excluded\n"
+        "def first(value=11):\n    import alpha\n    return value\n"
+        "@ignored_decorator\n"
+        "async def later(value=29):\n    import beta\n    return value\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_native_selection_keeps_imports_and_function_facts_in_one_cache_scope(
+    native_support_source: Path,
+) -> None:
+    path = native_support_source
+    original = path.read_bytes()
+    cases = (
+        (("later",), ("beta",), {"later": "async"}),
+        (("first",), ("alpha",), {"first": "sync"}),
+        ((), ("alpha", "beta", "excluded"), {"first": "sync", "later": "async"}),
+    )
+    for index, (roots, imports, kinds) in enumerate((*cases, *cases)):
+        result = _analyze(path, native_support_function_roots=roots)
+        assert set(result[1]) == set(imports)
+        assert result[3] == kinds
+        assert set(result[2]) == set(kinds)
+        if "later" in kinds:
+            assert result[2]["later"]["defaults"] == [{"const": True, "value": 29}]
+            assert result[2]["later"]["has_decorators"] is (not roots)
+        assert result[4] == original.decode()
+        assert path.read_bytes() == original
+        assert result[5] is (index >= len(cases))
+
+
+def test_native_selection_reuses_cached_scan_for_missing_syntax_facts(
+    native_support_source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = native_support_source
+    cache = _ModuleResolutionCache()
+    _analyze(
+        path,
+        resolution_cache=cache,
+        native_support_function_roots=("later",),
+        retain_tree=False,
+    )
+    original_trees = {
+        key: ast.dump(record.tree, include_attributes=True)
+        for key, record in cache.ast_cache.items()
+    }
+    admissions = []
+    load_scan = module_cache._load_module_import_scan
+
+    def record(path: Path, **kwargs: Any) -> Any:
+        loaded = load_scan(path, **kwargs)
+        admissions.append((loaded.cache_hit, loaded.tree))
+        return loaded
+
+    monkeypatch.setattr(module_cache, "_load_module_import_scan", record)
+    monkeypatch.setattr(
+        module_cache, "_read_persisted_module_analysis", lambda *a, **k: None
+    )
+    result = _analyze(
+        path,
+        resolution_cache=cache,
+        native_support_function_roots=("later",),
+    )
+    assert admissions == [(True, None)]
+    assert result[1] == ("beta",)
+    assert result[3] == {"later": "async"}
+    assert isinstance(result[0], ast.Module)
+    assert [
+        node.name for node in result[0].body if isinstance(node, ast.AsyncFunctionDef)
+    ] == ["later"]
+    assert original_trees == {
+        key: ast.dump(record.tree, include_attributes=True)
+        for key, record in cache.ast_cache.items()
+    }
+
+
+@pytest.mark.parametrize("other_roots", [(), ("first",)])
+def test_native_selection_payload_rejects_other_root_scope(
+    native_support_source: Path, other_roots: tuple[str, ...]
+) -> None:
+    path = native_support_source
+    _analyze(path, native_support_function_roots=("later",))
+    payload = module_cache._read_artifact_sync_state(
+        module_cache._module_analysis_cache_path(
+            path.parent,
+            path,
+            module_name="app",
+            is_package=False,
+            import_scan_mode="full",
+            native_support_function_roots=("later",),
+        )
+    )
+    assert payload is not None
+    snapshot = PythonSourceSnapshot.capture(path)
+    assert (
+        module_cache._validate_persisted_module_analysis_payload(
+            payload,
+            path,
+            import_scan_mode="full",
+            path_stat=None,
+            snapshot=snapshot,
+            native_support_function_roots=("later",),
+        )
+        is not None
+    )
+    assert (
+        module_cache._validate_persisted_module_analysis_payload(
+            payload,
+            path,
+            import_scan_mode="full",
+            path_stat=None,
+            snapshot=snapshot,
+            native_support_function_roots=other_roots,
+        )
+        is None
+    )
+
+
+def test_frontend_analysis_uses_admitted_native_selection(
+    native_support_source: Path,
+) -> None:
+    path = native_support_source
+    graph = {"app": path}
+    authority = _ModuleGraphScanAuthority(
+        (
+            _ModuleSourceScanAuthority(
+                "app", path, "full", native_support_function_roots=("later",)
+            ),
+        )
+    )
+    analysis, error = frontend_pipeline._prepare_frontend_analysis(
+        module_graph=graph,
+        scan_authority=authority,
+        module_graph_metadata=module_graph._build_module_graph_metadata(
+            graph,
+            generated_module_source_paths={},
+            entry_module="app",
+            entry_execution_kind="script",
+            namespace_module_names=set(),
+        ),
+        module_resolution_cache=_ModuleResolutionCache(),
+        roots=[path.parent],
+        stdlib_root=path.parent / "stdlib",
+        stdlib_allowlist=set(),
+        project_root=path.parent,
+        entry_module="app",
+        json_output=False,
+        target_python=TargetPythonVersion(3, 12, 0),
+    )
+    assert error is None and analysis is not None
+    assert analysis.known_func_kinds == {"app": {"later": "async"}}
+    assert set(analysis.known_func_defaults["app"]) == {"later"}
 
 
 def test_discovery_tree_is_reused_readonly_by_unretained_analysis(
@@ -330,6 +493,7 @@ def test_function_metadata_payload_requires_current_schema_without_imports(
         - (0 if current_schema else 1),
         "compiler_fingerprint": "scan-admission",
         "import_scan_mode": "full",
+        "native_support_function_roots": [],
         "func_defaults": {},
         "func_kinds": {},
         "size": len(snapshot.content),

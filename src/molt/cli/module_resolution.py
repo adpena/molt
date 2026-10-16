@@ -370,6 +370,7 @@ class _ModuleResolutionCache:
             str,
             str,
             PythonNamespacePremise | None,
+            tuple[str, ...],
         ],
         bool,
     ] = field(default_factory=dict)
@@ -389,6 +390,11 @@ class _ModuleResolutionCache:
     module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
     cpython_test_root_cache: Path | None = None
     cpython_test_root_cache_populated: bool = False
+    source_parse_count: int = 0
+    source_prune_count: int = 0
+    native_support_view_cache: dict[
+        tuple[Path, str], tuple[str, tuple[str, ...], _ParsedModuleAst]
+    ] = field(default_factory=dict)
 
     def roots_for_module(
         self,
@@ -596,6 +602,7 @@ class _ModuleResolutionCache:
         # newly parsed miss. Content, diagnostic filename and target still bind
         # every reuse; mutating lowering owns its separate parsed tree.
         if not retain:
+            self.source_parse_count += 1
             return _ParsedModuleAst(
                 _parse_source_for_target(
                     source,
@@ -607,6 +614,7 @@ class _ModuleResolutionCache:
         if cached_error is not None:
             raise cached_error
         try:
+            self.source_parse_count += 1
             tree = _ParsedModuleAst(
                 _parse_source_for_target(
                     source,
@@ -619,6 +627,35 @@ class _ModuleResolutionCache:
             raise
         self.ast_cache[cache_key] = tree
         return tree
+
+    def native_support_view(
+        self,
+        path: Path,
+        tree: ast.Module,
+        roots: tuple[str, ...],
+        *,
+        ast_digest_admission: _PythonAstDigestAdmission,
+        target_python: TargetPythonVersion,
+    ) -> tuple[_ParsedModuleAst, bool]:
+        from molt.compiler_analysis.native_support_slice import (
+            prune_native_support_module,
+        )
+
+        admission = _PythonAstDigestAdmission.for_tree(tree, ast_digest_admission)
+        key = (self.resolved_path(path), target_python.tag)
+        cached = self.native_support_view_cache.get(key)
+        if cached is not None and cached[:2] == (admission.digest, roots):
+            return cached[2], False
+        self.source_prune_count += 1
+        tree, _reachable, missing = prune_native_support_module(tree, roots)
+        if missing:
+            raise ValueError(
+                f"native support roots lack source custody in {path}: {list(missing)}"
+            )
+        selected = _ParsedModuleAst(tree)
+        # One current view per source/target, never a retained AST per root prefix.
+        self.native_support_view_cache[key] = (admission.digest, roots, selected)
+        return selected, True
 
     def collect_graph_imports(
         self,
@@ -705,6 +742,7 @@ class _ModuleResolutionCache:
         source_arguments: tuple[str, ...] = (),
         target_python_tag: str,
         namespace_premise: PythonNamespacePremise | None = None,
+        native_support_function_roots: tuple[str, ...] = (),
     ) -> bool:
         # Cache the complete protocol decision, not just its call-expression
         # projection. Keys bind generated-source replacement and scan promotion.
@@ -724,6 +762,7 @@ class _ModuleResolutionCache:
             target_python_tag,
             digest,
             namespace_premise,
+            native_support_function_roots,
         )
         cached = self.runtime_import_protocol_cache.get(key)
         if cached is not None:

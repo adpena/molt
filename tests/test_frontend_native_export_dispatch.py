@@ -11,6 +11,39 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 OPS_ERROR = ClassId("nativepkg.ops", "OpsError")
 
 
+@pytest.mark.parametrize(
+    "roots,expected",
+    [(None, {"run"}), (set(), {"run", "helper"}), ({"helper"}, {"helper"})],
+    ids=["standalone-inferred", "explicit-raw", "explicit-selected"],
+)
+def test_explicit_native_source_selection_controls_emitted_functions(
+    roots: set[str] | None, expected: set[str]
+) -> None:
+    generator = SimpleTIRGenerator(
+        module_name="nativepkg.support",
+        native_support_function_roots=roots,
+        native_callable_exports={
+            "nativepkg.ops.run": {
+                "module": "nativepkg.ops",
+                "name": "run",
+                "provider_module": "nativepkg.support",
+                "binding": "module_attr",
+                "abi": "molt.object_callargs_v1",
+            }
+        },
+    )
+    generator.visit(
+        ast.parse("def run():\n    return 1\ndef helper():\n    return 2\n")
+    )
+    functions = generator.to_json()["functions"]
+    emitted = {
+        name
+        for name in ("run", "helper")
+        if any(function["name"].endswith(f"__{name}") for function in functions)
+    }
+    assert emitted == expected
+
+
 IMPORTS = [
     ("from nativepkg.ops import {name} as operation", "operation"),
     ("from nativepkg import ops", "ops.{name}"),
