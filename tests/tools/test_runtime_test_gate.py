@@ -728,6 +728,7 @@ def test_child_failure_summary_bounds_long_failure_lists():
 
 FRESH_OWNERS = (
     "async_rt::sockets::state::socket_runtime_state_tests::cold_socket_and_websocket_retirement_never_starts_services",
+    "cpython_abi_hooks::buffer_semantics_tests::builtin_buffer_names_share_cold_runtime_lookup_and_native_readiness",
     "cpython_abi_hooks::pending_cleanup_tests::canonical_cache_allocation_failure_reentry_and_ascii_no_retry",
     "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
     "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
@@ -1144,6 +1145,11 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     from types import SimpleNamespace
     from molt.cli import runtime_cargo_plan
 
+    # This policy executes the native production host, not Node. Preserve an
+    # unrelated Node setting rather than imposing the counter policy on it.
+    inherited_node_options = "--require=/unused-by-native-host.cjs"
+    monkeypatch.setenv("NODE_OPTIONS", inherited_node_options)
+
     wasm = tmp_path / "molt_runtime.wasm"
     wasm.write_bytes(b"\x00asm\x01\x00\x00\x00fixture")
     native = support.make_image(tmp_path / "host")
@@ -1240,6 +1246,7 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
     def plan(
         root, *, env, cargo_command, requested_target, host_target, rustflags_transform
     ):
+        assert env["NODE_OPTIONS"] == inherited_node_options
         # Exercise the real planner's executable-selection boundary, while its
         # SDK/configuration/compiler work remains outside this host unit test.
         selected = runtime_cargo_plan._tool_path(
@@ -1280,6 +1287,9 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
 
     class Commands:
         def run(self, argv, **kwargs):
+            assert (
+                kwargs.get("env", os.environ)["NODE_OPTIONS"] == inherited_node_options
+            )
             result = SimpleNamespace(stdout="", stderr="", returncode=0)
             if argv[:2] == [selected_cargo, "metadata"]:
                 result.stdout = json.dumps(metadata)
@@ -1417,10 +1427,27 @@ ZLIB_WASI_WITNESSES = {
 }
 
 
+def test_queue_node_bootstrap_options_match_the_existing_wire_contract():
+    from tools.proof_queue_pkg import execution_custody
+
+    hook = gate.ROOT / "tools/proof_queue_pkg/node_child_custody.cjs"
+    assert execution_custody.node_bootstrap_options() == (
+        f"--no-global-search-paths --require={hook}"
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
         None,
+        "custody_options",
+        "empty_node_options",
+        "node_engine_options",
+        "node_foreign_preload",
+        "node_extra_preload",
+        "configured_node_engine_options",
+        "configured_node_options_removed",
+        "configured_node_options_added",
         "registry",
         "version",
         "source_path",
@@ -1450,6 +1477,22 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
 ):
     import json
     from types import SimpleNamespace
+
+    # Independent wire observation of the existing Node custody producer. Do
+    # not derive expected options by calling the authority under test.
+    hook = gate.ROOT / "tools/proof_queue_pkg/node_child_custody.cjs"
+    custody_options = f"--no-global-search-paths --require={hook}"
+    inherited_options = {
+        "custody_options": custody_options,
+        "empty_node_options": "",
+        "node_engine_options": "--jitless",
+        "node_foreign_preload": "--require=/outside-observer.cjs",
+        "node_extra_preload": custody_options + " --require=/outside-observer.cjs",
+        "configured_node_options_removed": custody_options,
+    }.get(mutation)
+    monkeypatch.delenv("NODE_OPTIONS", raising=False)
+    if inherited_options is not None:
+        monkeypatch.setenv("NODE_OPTIONS", inherited_options)
 
     node = support.make_image(tmp_path / "node")
     wasm = tmp_path / "target/wasm32-wasip1/debug/deps/zlib_rs.wasm"
@@ -1528,20 +1571,31 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
         )
 
     monkeypatch.setattr(gate.truth, "git_source_identity", source)
-    monkeypatch.setattr(
-        gate,
-        "resolve_node_runtime",
-        lambda **kw: SimpleNamespace(path=node, version="26.11.1"),
-    )
-    monkeypatch.setattr(
-        gate,
-        "zlib_wasi_flags",
-        lambda command, env: ({"inputs": {"sources": []}, "probes": []}, env),
-    )
-    monkeypatch.delenv("NODE_OPTIONS", raising=False)
+    resolutions, configurations = [], []
+
+    def resolve(**kwargs):
+        assert kwargs["environment"].get("NODE_OPTIONS") == inherited_options
+        resolutions.append(kwargs)
+        return SimpleNamespace(path=node, version="26.11.1")
+
+    def configure(command, env):
+        assert env.get("NODE_OPTIONS") == inherited_options
+        configurations.append(command)
+        configured = dict(env)
+        if mutation == "configured_node_engine_options":
+            configured["NODE_OPTIONS"] = "--jitless"
+        elif mutation == "configured_node_options_removed":
+            configured.pop("NODE_OPTIONS")
+        elif mutation == "configured_node_options_added":
+            configured["NODE_OPTIONS"] = custody_options
+        return {"inputs": {"sources": []}, "probes": []}, configured
+
+    monkeypatch.setattr(gate, "resolve_node_runtime", resolve)
+    monkeypatch.setattr(gate, "zlib_wasi_flags", configure)
     discovered = []
 
     def discover(binary, inherited_args, **kwargs):
+        assert os.environ.get("NODE_OPTIONS") == inherited_options
         assert binary == str(node)
         assert inherited_args[-3:] == ["--", "counter_wrap", "--test-threads=1"]
         assert str(wasm) in inherited_args[1] and "node:wasi" in inherited_args[1]
@@ -1555,6 +1609,7 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
 
     class Commands:
         def run(self, argv, **kwargs):
+            assert kwargs["env"].get("NODE_OPTIONS") == inherited_options
             result = SimpleNamespace(returncode=0, stdout="", stderr="")
             if argv[:2] == [selected_cargo, "metadata"]:
                 result.stdout = json.dumps(metadata)
@@ -1608,6 +1663,25 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
     aggregate = json.loads(
         next(root.glob("*/aggregate.json")).read_text(encoding="utf-8")
     )
+    if mutation in {
+        "node_engine_options",
+        "node_foreign_preload",
+        "node_extra_preload",
+        "configured_node_engine_options",
+        "configured_node_options_removed",
+        "configured_node_options_added",
+    }:
+        assert code == 1 and aggregate["images"] == {}
+        assert not builds and not discovered and not children
+        configured = mutation.startswith("configured_")
+        assert len(resolutions) == len(configurations) == int(configured)
+        expected = (
+            "Cargo configuration changed Node bootstrap options"
+            if configured
+            else "permits only queue-owned Node bootstrap options"
+        )
+        assert expected in aggregate["error"]
+        return
     assert len(builds) == 1
     argv = builds[0]
     assert argv[argv.index("-p") + 1] == "zlib-rs@0.6.8"
@@ -1615,7 +1689,7 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
     assert argv[argv.index("--features") + 1] == "rust-allocator"
     assert "--lib" in argv and "--no-default-features" in argv and "--no-run" in argv
     assert "--test" not in argv
-    if mutation is None:
+    if mutation in {None, "custody_options", "empty_node_options"}:
         assert code == 0 and aggregate["passed_test_count"] == 4
         assert len(children) == 1
         assert (

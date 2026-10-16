@@ -1933,7 +1933,11 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
 }
 
 #[test]
+#[ignore = "requires initial process-static builtin readiness; run in the isolated runtime gate"]
 fn builtin_buffer_names_share_cold_runtime_lookup_and_native_readiness() {
+    // A runtime restart cannot restore the process's first rootless READY
+    // shells. After C exposure and retirement, bootstrap must rebuild those
+    // shells and publishes their namespaces before a test body can enter.
     crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
         crate::concurrency::gil::with_gil(|py| unsafe {
             use molt_cpython_abi::bridge::GLOBAL_BRIDGE;

@@ -139,7 +139,27 @@ pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{dict_len, set_len};
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::{dict_len, dict_storage, dict_table, set_len};
+
+    struct DenyAllocations;
+
+    impl DenyAllocations {
+        fn enter() -> Self {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                max_allocations: Some(0),
+                ..Default::default()
+            })));
+            Self
+        }
+    }
+
+    impl Drop for DenyAllocations {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
 
     #[test]
     fn hash_aggregate_constructors_accept_raw_capacity_counts() {
@@ -172,18 +192,105 @@ mod tests {
     }
 
     #[test]
-    fn hash_aggregate_capacity_overflow_fails_closed_as_memory_error() {
+    fn dictionary_constructor_bounds_raw_presize_hints() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_gil_entry_nopanic!(py, {
+            // CPython 3.12–3.15 dict_new_presized deliberately caps hints at
+            // 2^17 slots; an empty dict need not admit every hinted row before
+            // resizing. These are literal table/usable boundaries, independent
+            // of the implementation's capacity calculator.
+            for (hint, table_slots, usable) in [
+                (0, 0, 0),
+                (5, 0, 0),
+                (6, 16, 10),
+                (10, 16, 10),
+                (11, 32, 21),
+                (87_381, 131_072, 87_381),
+                (87_382, 131_072, 87_381),
+                (usize::MAX, 131_072, 87_381),
+            ] {
+                let bits = molt_dict_new(hint as u64);
+                let ptr = obj_from_bits(bits)
+                    .as_ptr()
+                    .expect("representable dictionary hints are bounded, not rejected");
+                assert!(!exception_pending(py), "hint={hint}");
+                unsafe {
+                    assert_eq!(object_type_id(ptr), TYPE_ID_DICT);
+                    assert_eq!(dict_len(ptr), 0, "a capacity hint creates no rows");
+                    assert_eq!(dict_table(ptr).len(), table_slots, "hint={hint}");
+                    assert_eq!(dict_storage(ptr).usable, usable, "hint={hint}");
+                }
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn set_aggregate_capacity_overflow_fails_closed_as_memory_error() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (name, constructor) in [
+                ("set", molt_set_new as extern "C" fn(u64) -> u64),
+                ("frozenset", molt_frozenset_new),
+            ] {
+                for capacity in [usize::MAX, usize::MAX / 2] {
+                    let bits = constructor(capacity as u64);
+                    assert!(obj_from_bits(bits).is_none(), "{name}: capacity={capacity}");
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn hash_aggregate_allocation_denial_selects_memory_error_at_exported_boundary() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (name, constructor, capacity) in [
+                (
+                    "dict",
+                    molt_dict_new as extern "C" fn(u64) -> u64,
+                    usize::MAX as u64,
+                ),
+                ("set", molt_set_new, 6),
+                ("frozenset", molt_frozenset_new, 6),
+            ] {
+                // All hints fit the target. Dict's largest hint is bounded;
+                // its actual allocation remains subject to the same budget.
+                for prior_error in [false, true] {
+                    if prior_error {
+                        raise_exception::<()>(py, "ValueError", "prior constructor error");
+                    }
+                    let budget = DenyAllocations::enter();
+                    let bits = constructor(capacity);
+                    assert!(
+                        obj_from_bits(bits).is_none(),
+                        "{name}: prior_error={prior_error}"
+                    );
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
+                    drop(budget);
+                }
+            }
+        });
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn hash_aggregate_raw_capacity_rejects_values_outside_target_usize() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
             for constructor in [
                 molt_dict_new as extern "C" fn(u64) -> u64,
                 molt_set_new,
                 molt_frozenset_new,
             ] {
-                let bits = constructor(u64::MAX);
-                assert!(obj_from_bits(bits).is_none());
-                assert!(exception_pending(_py));
-                let _ = crate::molt_exception_clear();
+                // This is an unrepresentable raw extent, unlike usize::MAX's
+                // representable dictionary hint on either 32- or 64-bit hosts.
+                for capacity in [u64::from(u32::MAX) + 1, u64::MAX] {
+                    let bits = constructor(capacity);
+                    assert!(obj_from_bits(bits).is_none());
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
+                }
             }
         });
     }
