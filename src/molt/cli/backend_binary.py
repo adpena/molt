@@ -173,6 +173,13 @@ def _record_backend_binary_stage_ms(
     )
 
 
+# A probe that timed out or could not publish its receipt says nothing about
+# the compiler's capability: hydrating or rebuilding cannot repair it, and a
+# rebuilt backend is a new executable whose first run is slow again (HF-233).
+_PROBE_TIMEOUT_PHASE = "backend_feature_probe_timeout"
+_PROBE_TERMINAL_PHASES = frozenset({"backend_probe_publication", _PROBE_TIMEOUT_PHASE})
+
+
 def _backend_ensure_failure(
     phase: str,
     detail: str,
@@ -776,29 +783,43 @@ def _ensure_backend_binary(
                         backend_features=backend_features,
                         fingerprint=fingerprint,
                     )
+                    # The probe is the first run of a newly built backend, and a
+                    # first run can wait on the operating system's check of a new
+                    # executable: 11.4 s for a never-seen backend on macOS at
+                    # load 7, 0.2 s warm (HF-233). It shares the budget of the
+                    # step that built the binary instead of a fixed limit.
                     probe = _run_subprocess_captured_to_tempfiles(
                         probe_cmd,
                         input=probe_ir,
                         cwd=project_root,
-                        timeout=10,
+                        timeout=cargo_timeout,
                         memory_guard_prefix="MOLT_BUILD",
                     )
-            except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+            except subprocess.TimeoutExpired as exc:
                 _record_backend_binary_stage_ms(
                     stage_timings_ms,
                     "backend_binary_probe",
                     stage_start,
                 )
-                detail = str(exc)
-                if isinstance(exc, subprocess.TimeoutExpired):
-                    for label, output in (
-                        ("stderr", exc.stderr),
-                        ("stdout", exc.stdout),
-                    ):
-                        if tail := _process_text_tail(output):
-                            detail += f"\nProbe {label}:\n{tail}"
+                detail = (
+                    f"Backend feature probe did not finish within {exc.timeout:.1f}s "
+                    "(MOLT_CARGO_TIMEOUT); the first run of a newly built backend "
+                    "can wait on the operating system's check of a new executable."
+                )
+                for label, output in (("stderr", exc.stderr), ("stdout", exc.stdout)):
+                    if tail := _process_text_tail(output):
+                        detail += f"\nProbe {label}:\n{tail}"
                 return _backend_ensure_failure(
-                    "backend_feature_probe", detail, command=probe_cmd
+                    _PROBE_TIMEOUT_PHASE, detail, command=probe_cmd
+                )
+            except (OSError, ValueError) as exc:
+                _record_backend_binary_stage_ms(
+                    stage_timings_ms,
+                    "backend_binary_probe",
+                    stage_start,
+                )
+                return _backend_ensure_failure(
+                    "backend_feature_probe", str(exc), command=probe_cmd
                 )
             finally:
                 try:
@@ -1008,7 +1029,7 @@ def _ensure_backend_binary(
                 return _backend_ensure_success(
                     binary_path=backend_bin, fingerprint=fingerprint
                 )
-            if _probe_result.phase == "backend_probe_publication":
+            if _probe_result.phase in _PROBE_TERMINAL_PHASES:
                 return _probe_result
             probe_failure = _probe_result
         else:
@@ -1047,7 +1068,7 @@ def _ensure_backend_binary(
                 return _backend_ensure_success(
                     binary_path=backend_bin, fingerprint=fingerprint
                 )
-            if _probe_result.phase == "backend_probe_publication":
+            if _probe_result.phase in _PROBE_TERMINAL_PHASES:
                 return _probe_result
             probe_failure = _probe_result
         else:
@@ -1167,7 +1188,7 @@ def _ensure_backend_binary(
         # input and cannot establish why that compiler was unusable.
         _probe_target = _backend_probe_target(backend_features)
         _probe_result = _probe_backend_binary_support(_probe_target)
-        if _probe_result.phase == "backend_probe_publication" and not _probe_result:
+        if _probe_result.phase in _PROBE_TERMINAL_PHASES and not _probe_result:
             return _probe_result
         if not _probe_result:
             detail = "Built backend failed its feature probe."

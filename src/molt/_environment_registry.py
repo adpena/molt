@@ -1499,7 +1499,7 @@ _REGISTRY_JSON = r"""{
       "kind": "float",
       "name": "MOLT_CARGO_TIMEOUT",
       "owner": "src/molt/cli/backend_build.py",
-      "summary": "Wall-clock limit in seconds for the cargo build that `molt build` and backend prewarm run; it must parse as a float greater than zero or the command fails before building, and unset means no limit unless --cargo-timeout is given.",
+      "summary": "Wall-clock limit in seconds for the cargo build that `molt build` and backend prewarm run, and for the feature probe that is a newly built backend's first run; it must parse as a float greater than zero or the command fails before building, and unset means no limit unless --cargo-timeout is given.",
       "values": []
     },
     {
