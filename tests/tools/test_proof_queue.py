@@ -17839,6 +17839,7 @@ def test_cargo_artifact_kind_projection_preserves_cargo_boundary(
         "cargo_crate_types": kinds.split(","),
         "rustc_crate_types": [],
         "manifest_crate_types": None,
+        "test_harness": False,
         "link_required": link_required,
     }
     assert command_admission.rust_link_artifact_selection(
@@ -17850,8 +17851,42 @@ def test_cargo_artifact_kind_projection_preserves_cargo_boundary(
         "cargo_crate_types": None,
         "rustc_crate_types": ["proc-macro"],
         "manifest_crate_types": None,
+        "test_harness": False,
         "link_required": True,
     }
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["cargo", "test", "--lib", "--no-run"], True),
+        (["cargo", "t", "--test", "integration", "--no-run"], True),
+        (["cargo", "bench", "--lib", "--no-run"], True),
+        (["cargo", "test", "--doc"], False),
+        (["cargo", "test", "--help"], False),
+        (["cargo", "build", "--package", "test"], False),
+        (["cargo", "build", "--", "--test"], False),
+        (["cargo", "test", "--", "--doc"], True),
+        (["cargo", "rustc", "--lib", "--", "--test"], True),
+        (["cargo", "rustc", "--lib", "--", "--cfg", "--test"], False),
+        (["rustc", "--test", "source.rs"], True),
+        (["rustc", "--cfg", "--test", "source.rs"], False),
+    ],
+)
+def test_rust_artifact_projection_selects_explicit_test_capability(argv, expected):
+    from tools.proof_queue_pkg import command_admission
+
+    cargo = argv[0] == "cargo"
+    invocation = command_admission.parse_cargo_invocation(argv) if cargo else None
+    selection = command_admission.rust_link_artifact_selection(
+        argv, cargo=cargo, cargo_invocation=invocation, unit="target"
+    )
+    assert selection["test_harness"] is expected
+    if cargo:
+        host = command_admission.rust_link_artifact_selection(
+            argv, cargo=True, cargo_invocation=invocation, unit="host-proc-macro"
+        )
+        assert host["test_harness"] is False
 
 
 @pytest.mark.parametrize(

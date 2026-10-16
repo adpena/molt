@@ -30,6 +30,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 // The real runtime overrides this in production via
 // `molt_cpython_abi_register_hooks`.
 
+static FAKE_BUFFER_ACQUIRES: AtomicU64 = AtomicU64::new(0);
 static FAKE_BUFFER_RELEASES: AtomicU64 = AtomicU64::new(0);
 static MODULE_EXEC_CALLED: AtomicU64 = AtomicU64::new(0);
 static MODULE_EXEC_STATE_BYTE: AtomicU64 = AtomicU64::new(0);
@@ -50,7 +51,8 @@ static MODULE_CREATE_CALLED: AtomicU64 = AtomicU64::new(0);
 /// gates (which only serialized their own tests, leaving the shared-bridge race
 /// open) and is acquired poison-tolerantly so one test's failure never cascades.
 static TEST_LOCK: Mutex<()> = Mutex::new(());
-static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
+// The exported storage is writable and every user holds TEST_LOCK.
+static mut FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 static FAKE_MODULE_STATE: LazyLock<Mutex<FakeModuleState>> =
     LazyLock::new(|| Mutex::new(FakeModuleState::default()));
 static FAKE_CLASS_OVERRIDES: LazyLock<Mutex<HashMap<u64, u64>>> =
@@ -228,10 +230,13 @@ unsafe extern "C" fn fake_buffer_acquire(
     if bits == 0 || out_view.is_null() {
         return -1;
     }
+    FAKE_BUFFER_ACQUIRES.fetch_add(1, Ordering::Relaxed);
     unsafe {
+        support::fake_runtime::inc_ref(bits);
         *out_view = MoltBufferView::default();
-        (*out_view).data = FAKE_BUFFER.as_ptr() as *mut u8;
-        (*out_view).len = FAKE_BUFFER.len() as u64;
+        (*out_view).data = (&raw mut FAKE_BUFFER).cast();
+        (*out_view).len = 4;
+        (*out_view).backing_capacity = 4;
         (*out_view).readonly = 0;
         (*out_view).ndim = 2;
         (*out_view).itemsize = 1;
@@ -250,7 +255,11 @@ unsafe extern "C" fn fake_buffer_release(view: *mut MoltBufferView) -> std::os::
     FAKE_BUFFER_RELEASES.fetch_add(1, Ordering::Relaxed);
     if !view.is_null() {
         unsafe {
-            *view = MoltBufferView::default();
+            let descriptor = std::ptr::replace(view, MoltBufferView::default());
+            support::fake_runtime::dec_ref(descriptor.owner);
+            if descriptor.base != 0 && descriptor.base != descriptor.owner {
+                support::fake_runtime::dec_ref(descriptor.base);
+            }
         }
     }
     0
@@ -879,6 +888,14 @@ impl Drop for InstanceClassOverride {
     }
 }
 
+// A failed assertion must still retire the public export before its exporter.
+struct OwnedBufferView(Py_buffer);
+impl Drop for OwnedBufferView {
+    fn drop(&mut self) {
+        unsafe { molt_cpython_abi::api::buffer::PyBuffer_Release(&mut self.0) };
+    }
+}
+
 #[test]
 fn generic_managed_instance_reports_runtime_class_without_layout_stamping() {
     let _guard = init();
@@ -1185,14 +1202,53 @@ fn dict_set_item_gives_foreign_custody_to_key() {
 #[test]
 fn test_getbuffer_uses_runtime_typed_descriptor() {
     let _guard = init();
-    let obj = unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .owned_handle_to_pyobj(support::fake_runtime::fresh_handle())
+    FAKE_BUFFER_ACQUIRES.store(0, Ordering::Relaxed);
+    FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
+    // The runtime descriptor belongs to an actual semantic exporter. Merely
+    // having managed storage must not bypass Python's buffer-slot lookup.
+    let mut procs = PyBufferProcs {
+        bf_getbuffer: molt_cpython_abi::api::buffer::managed_storage_getbuffer as *mut c_void,
+        bf_releasebuffer: molt_cpython_abi::api::buffer::managed_storage_releasebuffer
+            as *mut c_void,
     };
-    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+    let mut class: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    class.ob_base.ob_base.ob_refcnt = 1;
+    class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+    class.tp_name = c"fixture.BufferExporter".as_ptr();
+    class.tp_base = &raw mut PyBaseObject_Type;
+    class.tp_as_buffer = (&raw mut procs).cast();
+    let binding = unsafe { BoundType::new(&mut *class) };
+    let bits = support::fake_runtime::fresh_handle();
+    FAKE_CLASS_OVERRIDES
+        .lock()
+        .unwrap()
+        .insert(bits, binding.bits);
+    let _class_override = InstanceClassOverride(bits);
+    let obj_owner = unsafe {
+        molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits),
+        )
+    };
+    let obj = obj_owner.as_ptr();
+    assert!(!obj.is_null());
+    assert_eq!(unsafe { (*obj).ob_type }, &raw mut MoltManaged_Type);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::buffer::PyObject_CheckBuffer(obj) },
+        1
+    );
+    assert_eq!(FAKE_BUFFER_ACQUIRES.load(Ordering::Relaxed), 0);
+    let baseline_refs = unsafe { support::fake_runtime::ref_count(bits) };
+    let mut export = OwnedBufferView(unsafe { std::mem::zeroed() });
+    let view = &mut export.0;
     let flags = PyBUF_FORMAT | PyBUF_STRIDES;
-    let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(obj, &mut view, flags) };
+    let rc = unsafe { molt_cpython_abi::api::buffer::PyObject_GetBuffer(obj, view, flags) };
     assert_eq!(rc, 0);
+    assert_eq!(FAKE_BUFFER_ACQUIRES.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        unsafe { support::fake_runtime::ref_count(bits) },
+        baseline_refs + 1,
+        "the acquired runtime lease owns one exporter reference"
+    );
     assert_eq!(view.len, 4);
     assert_eq!(view.itemsize, 1);
     assert_eq!(view.readonly, 0);
@@ -1208,14 +1264,96 @@ fn test_getbuffer_uses_runtime_typed_descriptor() {
         assert_eq!(*view.strides.add(0), 2);
         assert_eq!(*view.strides.add(1), 1);
         assert_eq!(
-            molt_cpython_abi::api::buffer::PyBuffer_IsContiguous(&view, b'C' as _),
+            molt_cpython_abi::api::buffer::PyBuffer_IsContiguous(view, b'C' as _),
             1
         );
-        molt_cpython_abi::api::buffer::PyBuffer_Release(&mut view);
+        molt_cpython_abi::api::buffer::PyBuffer_Release(view);
         assert!(view.buf.is_null());
         assert!(view.internal.is_null());
-        molt_cpython_abi::api::refcount::Py_DECREF(obj);
     }
+    drop(export);
+    assert_eq!(FAKE_BUFFER_RELEASES.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        unsafe { support::fake_runtime::ref_count(bits) },
+        baseline_refs
+    );
+    // Rejection after acquisition must retire the same lease without
+    // publishing a C view. This 2x2 layout is C-, not Fortran-contiguous.
+    let mut rejected = OwnedBufferView(unsafe { std::mem::zeroed() });
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::buffer::PyObject_GetBuffer(
+                obj,
+                &mut rejected.0,
+                PyBUF_FORMAT | PyBUF_F_CONTIGUOUS,
+            )
+        },
+        -1
+    );
+    assert_ne!(
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                (&raw mut PyExc_BufferError).cast(),
+            )
+        },
+        0
+    );
+    assert!(rejected.0.obj.is_null());
+    assert!(rejected.0.internal.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    drop(rejected);
+    assert_eq!(FAKE_BUFFER_ACQUIRES.load(Ordering::Relaxed), 2);
+    assert_eq!(FAKE_BUFFER_RELEASES.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        unsafe { support::fake_runtime::ref_count(bits) },
+        baseline_refs
+    );
+    drop(obj_owner);
+    assert!(!support::fake_runtime::contains(bits));
+}
+
+#[test]
+fn test_getbuffer_rejects_opaque_managed_object_without_provider_calls() {
+    let _guard = init();
+    FAKE_BUFFER_ACQUIRES.store(0, Ordering::Relaxed);
+    FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
+    let obj_owner = unsafe {
+        molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .owned_handle_to_pyobj(support::fake_runtime::fresh_handle()),
+        )
+    };
+    let obj = obj_owner.as_ptr();
+    assert!(!obj.is_null());
+    assert_eq!(unsafe { (*obj).ob_type }, &raw mut MoltManaged_Type);
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::buffer::PyObject_CheckBuffer(obj) },
+        0
+    );
+    let mut export = OwnedBufferView(unsafe { std::mem::zeroed() });
+    assert_eq!(
+        unsafe {
+            molt_cpython_abi::api::buffer::PyObject_GetBuffer(
+                obj,
+                &mut export.0,
+                PyBUF_FORMAT | PyBUF_STRIDES,
+            )
+        },
+        -1
+    );
+    assert_ne!(
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast())
+        },
+        0
+    );
+    assert!(export.0.obj.is_null());
+    assert!(export.0.buf.is_null());
+    assert!(export.0.internal.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    drop(export);
+    assert_eq!(FAKE_BUFFER_ACQUIRES.load(Ordering::Relaxed), 0);
+    assert_eq!(FAKE_BUFFER_RELEASES.load(Ordering::Relaxed), 0);
 }
 
 #[test]

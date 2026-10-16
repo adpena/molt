@@ -423,8 +423,10 @@ def test_compact_process_inventories_are_bounded_and_full_capture_is_preserved(
                     "cargo_crate_types": None,
                     "manifest_crate_types": None,
                     "rustc_crate_types": [],
+                    "test_harness": False,
                     "link_required": True,
                 },
+                "startup": None,
             }
         ],
         "admitted_command": ["rustc"],
@@ -2284,6 +2286,31 @@ def _native_build_capture_fixture(
             and "--target" in command
             and command[command.index("--target") + 1] == "wasm32-wasip1"
         ):
+            manifest = Path(command[command.index("--manifest-path") + 1])
+            source = (manifest.parent / "main.rs").read_text(encoding="utf-8")
+            if registered_command is not None:
+                # These actual child operations are Cargo test images. A
+                # transcript must not report success for the old BIN probe.
+                assert "--lib" in command and "--bin" not in command
+                assert "--test" in command[command.index("--") + 1 :]
+            if (
+                registered_command is not None
+                and "wasi-lifecycle" in registered_command
+            ):
+                expected = (
+                    '#[link(name = ":crt1-command.o", kind = "static", modifiers = "-bundle")]\n'
+                    'unsafe extern "C" {}\n'
+                    "fn main() {}\n#[test]\nfn proof_link_test() {}\n"
+                )
+                if source != expected:
+                    return subprocess.CompletedProcess(
+                        command,
+                        1,
+                        "",
+                        "fixture: WASI command CRT declaration missing or wrong",
+                    )
+            else:
+                assert "#[link(" not in source, "pure Rust zlib owns its bundled CRT"
             selected = kwargs["env"].get(
                 "CARGO_TARGET_WASM32_WASIP1_LINKER", "rust-lld"
             )
@@ -3136,12 +3163,14 @@ def test_cargo_capture_preserves_explicit_library_artifacts_and_host(
         "cargo_crate_types": crate_types.split(","),
         "rustc_crate_types": [],
         "manifest_crate_types": None,
+        "test_harness": False,
         "link_required": links,
     }
     assert host_unit["artifact_selection"] == {
         "cargo_crate_types": None,
         "rustc_crate_types": ["proc-macro"],
         "manifest_crate_types": None,
+        "test_harness": False,
         "link_required": True,
     }
     assert target_unit["selected_process_count"] == int(links)
@@ -3256,6 +3285,7 @@ def test_rust_artifact_capture_retains_admitted_cargo_role_after_custom_binding(
         "cargo_crate_types": ["staticlib"] if owner != "rustc" else None,
         "rustc_crate_types": [] if owner != "rustc" else ["staticlib"],
         "manifest_crate_types": None,
+        "test_harness": False,
         "link_required": False,
     }
     assert selection["units"][0]["selected_process_count"] == 0
@@ -4605,6 +4635,12 @@ def test_runtime_gate_rust_operation_receiver_rejects_incomplete_or_mutated_plan
         "foreign-compiler",
         "missing-C-ABI",
         "missing-export-table",
+        "missing-startup",
+        "reactor-startup",
+        "startup-source",
+        "host-startup",
+        "test-harness",
+        "startup-target",
     ],
 )
 def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
@@ -4646,6 +4682,7 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
     changed = deepcopy(identity)
     raw = changed["link_selection"]
     projection = raw["operations"][0]["projection"]
+    target_unit = raw["operations"][0]["selection"]["units"][0]
     if mutation == "missing-C":
         raw["native_build"].pop()
     elif mutation == "host-as-proc-macro":
@@ -4661,10 +4698,118 @@ def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
     elif mutation == "missing-export-table":
         i = projection["rustflags"].index("link-arg=--export-table")
         del projection["rustflags"][i - 1 : i + 1]
+    elif mutation == "missing-startup":
+        del target_unit["startup"]
+    elif mutation == "reactor-startup":
+        target_unit["startup"]["member"]["path"] = str(
+            Path(target_unit["startup"]["member"]["path"]).with_name("crt1-reactor.o")
+        )
+    elif mutation == "startup-source":
+        target_unit["startup"]["declaration_sha256"] = "0" * 64
+    elif mutation == "host-startup":
+        raw["operations"][1]["selection"]["units"][0]["startup"] = target_unit[
+            "startup"
+        ]
+    elif mutation == "test-harness":
+        target_unit["artifact_selection"]["test_harness"] = False
+    elif mutation == "startup-target":
+        raw["operations"][0]["selection"]["target"] = "x86_64-unknown-linux-gnu"
     with pytest.raises(ValueError):
         toolchain_capture.validate_rust_link_selection(
             changed, command_argv=command, full_capture=True
         )
+
+
+def test_runtime_gate_lifecycle_uses_real_libtest_command_startup(
+    tmp_path, monkeypatch
+):
+    import tomllib
+
+    from molt.wasi_sdk_identity import WasiCAbiProjection
+
+    root = Path(__file__).resolve().parents[2]
+    runtime_manifest = tomllib.loads(
+        (root / "runtime/molt-runtime/Cargo.toml").read_text(encoding="utf-8")
+    )
+    assert runtime_manifest["lib"]["crate-type"] == ["rlib"]
+    assert runtime_manifest["lib"].get("harness", True) is True
+    runtime_source = (root / "runtime/molt-runtime/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
+    assert "#[cfg(test)]\nmod test_support;" in runtime_source
+    support = (root / "runtime/molt-runtime/src/test_support.rs").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        '#[cfg(target_os = "wasi")]\ninclude!(concat!(env!("OUT_DIR"), "/molt_wasi_test_startup.rs"));'
+        in support
+    )
+    build = (root / "runtime/molt-runtime/build.rs").read_text(encoding="utf-8")
+    assert 'member("crt_command")' in build
+    assert 'let name = format!(":{filename}");' in build
+
+    identity, _tools, _env, _command, calls = _native_build_capture_fixture(
+        tmp_path,
+        monkeypatch,
+        registered_command=_runtime_gate_registered_command("wasi-lifecycle"),
+    )
+    runtime, host = identity["link_selection"]["operations"]
+    abi = WasiCAbiProjection.decode(runtime["projection"]["c_abi"])
+    target, proc_macro = runtime["selection"]["units"]
+    declaration = (
+        '#[link(name = ":crt1-command.o", kind = "static", modifiers = "-bundle")]\n'
+        'unsafe extern "C" {}\n'
+    )
+    crt = abi.path("crt_command")
+    assert target["startup"] == {
+        "kind": "wasi-command",
+        "member": {
+            "path": str(crt),
+            "size": crt.stat().st_size,
+            "sha256": hashlib.sha256(crt.read_bytes()).hexdigest(),
+        },
+        "declaration_sha256": hashlib.sha256(declaration.encode("utf-8")).hexdigest(),
+    }
+    assert target["artifact_selection"]["test_harness"] is True
+    assert proc_macro["startup"] is None
+    assert proc_macro["artifact_selection"]["test_harness"] is False
+    assert all(unit["startup"] is None for unit in host["selection"]["units"])
+    assert len([argv for argv in calls if "link-args" in argv]) == 4
+    before = len(calls)
+    crt.write_bytes(crt.read_bytes() + b"changed startup")
+    with pytest.raises(ValueError, match="WASI command startup changed"):
+        toolchain_capture.revalidate_rust_selection_sources(identity["link_selection"])
+    assert len(calls) == before
+
+
+@pytest.mark.parametrize("defect", ["missing", "reactor"])
+def test_runtime_gate_startup_probe_failure_is_terminal(tmp_path, monkeypatch, defect):
+    original = toolchain_capture._rust_probe_startup
+
+    def faulty_startup(*args, **kwargs):
+        source, record = original(*args, **kwargs)
+        if record is not None:
+            source = (
+                ""
+                if defect == "missing"
+                else source.replace("crt1-command", "crt1-reactor")
+            )
+        return source, record
+
+    monkeypatch.setattr(toolchain_capture, "_rust_probe_startup", faulty_startup)
+    with pytest.raises(
+        toolchain_capture.RustLinkCaptureError,
+        match="synthetic Rust linker selection command failed",
+    ) as error:
+        _native_build_capture_fixture(
+            tmp_path,
+            monkeypatch,
+            registered_command=_runtime_gate_registered_command("wasi-lifecycle"),
+        )
+    probes = error.value.diagnostic["probes"]
+    assert len([row for row in probes if row["phase"] == "link-selection"]) == 1
+    assert probes[-1]["returncode"] == 1
+    assert "CRT declaration missing or wrong" in probes[-1]["stderr"]
 
 
 def test_runtime_gate_native_operation_uses_Cargo_environment_target_and_reuses_exact_inputs(

@@ -690,22 +690,28 @@ def test_llvm_proofs_select_implementation_libtests_and_driver_link_consumer() -
     assert linkage[linkage.index("--test") + 1] == "llvm_generated_object_linkage"
 
 
-def test_cpython_abi_owner_has_an_independent_unfiltered_link_consumer() -> None:
+def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane() -> (
+    None
+):
     command = next(
-        row for row in PLAN.commands if row.id == "rust.test.cpython-abi-authorities"
+        row for row in PLAN.commands if row.id == "rust.test.compiler-authorities"
     )
     argv = command.argv
-    assert argv[:2] == ("cargo", "test")
-    assert argv[argv.index("--manifest-path") + 1] == (
-        "runtime/molt-cpython-abi/Cargo.toml"
-    )
+    packages = {argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-p"}
+    assert "molt-lang-cpython-abi" in packages
+    assert "molt-runtime" not in packages  # Keep the standalone feature image.
     assert "--lib" in argv
-    assert argv[argv.index("--") + 1 :] == ("--test-threads=1",)
     assert proof_plan.cargo_native_units(command.data) == {"target": ["c"]}
+    assert all(row.id != "rust.test.cpython-abi-authorities" for row in PLAN.commands)
     local = next(
         rule for rule in PLAN.local_rules if rule["name"] == "cpython-abi-authorities"
     )
-    assert tuple(shlex.split(local["gates"][0])) == argv
+    lane = next(
+        row for row in PLAN.named_lanes if row.id == "runtime.abi-fixture-authorities"
+    )
+    assert tuple(shlex.split(local["gates"][0])) == lane.argv
+    assert "--tests" in lane.argv  # Includes the standalone library unit image.
+    assert proof_plan.cargo_native_units(lane.data) == {"target": ["c"]}
     assert {
         "runtime/molt-cpython-abi/**",
         "runtime/molt-cpython-abi-test-support/**",
@@ -5814,7 +5820,6 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
             "llvm.clippy.backend",
             "llvm.test.lowering",
             "rust.test.compiler-authorities",
-            "rust.test.cpython-abi-authorities",
             "rust.test.ir-wasm-runtime-authorities",
             "rust.test.wasi-runtime-lifecycle",
             "wasm.build.host",

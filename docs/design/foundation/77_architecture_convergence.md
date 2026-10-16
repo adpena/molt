@@ -43,11 +43,13 @@ actual AsObj policy, not infer a new fast path from a mistaken type branch.
 
 The exploratory runtime-entry/TLS percentages, indirect-call observations and
 builtin timings in HF-198/HF-205 are leads from their recorded source/workloads.
-They do not establish current-image attribution or universal multipliers. Select
-one exact-image workload for the changed boundary and retain source, image,
-feature/profile, samples and independent output before choosing or claiming its
-optimization. The source-proven serial RuntimeVtable is the first complete
-admitted-service aperture; other bridges and public C RuntimeHooks have distinct
+They do not establish current-image attribution or universal multipliers. These
+profiles and source findings can select an experiment. Before landing a
+load-bearing performance change, compare its affected workload before and after,
+retaining source, image, feature/profile, samples and independent output. Public
+performance acceptance remains the qualified V1-07 matrix; it need not precede
+every development experiment. The source-proven serial RuntimeVtable is the
+first complete admitted-service aperture; other bridges and public C RuntimeHooks have distinct
 feature, attachment and ABI obligations.
 
 **Identity by spelling.** Op kinds, exception classes, class layouts and
@@ -108,6 +110,8 @@ parallel roadmap or release gate.
 | [MLIR analysis management](https://mlir.llvm.org/docs/PassManagement/) and [rustc queries](https://rustc-dev-guide.rust-lang.org/query.html) cache demanded facts and track invalidation or dependencies. | The shared analysis owner exists. Native retains final TIR, but still projects names for codegen; WASM reconstructs facts after projection. Complete the existing HF-201 migration rather than add another optimizer. HF-250 owns unchanged-input frontend work. |
 | [Cranelift](https://cranelift.dev/) explicitly avoids pathological compiler complexity and uses fuzzing, custom oracles and validation. [MLIR filetests](https://mlir.llvm.org/getting_started/TestingGuide/) exercise individual transformations without full application builds. | Reuse existing fuzz/shrink and pass-test authorities. Qualify affected semantic and compiler-resource properties, and retain minimized failures; an inventory or test count does not prove their execution. HF-212 owns coverage, while V1-07 owns resource/performance acceptance. |
 | [Wasmtime minimal builds](https://docs.wasmtime.dev/examples-minimal.html) select runtime features separately from compilation. | Molt's feature/reachability owners must close actual linked binary size and startup costs, including remaining stubs, under HF-189/HF-195. Development custody and verification belong outside emitted programs. |
+| [Wasmtime's VMContext](https://docs.wasmtime.dev/contributing-architecture.html) gives compiled code access to runtime state through an explicit context. | Preserve Molt's existing attachment and object-lifetime owners while carrying context through actual callers under HF-198/HF-205. A core GIL token alone does not prove either lifetime. |
+| [CPython's tar extraction policy](https://peps.python.org/pep-0706/) belongs to its public, versioned library semantics. | Compile pinned CPython semantics over shared guarded I/O and bounded codec primitives. Retire the duplicate tar parser and host-tar path with every consumer under V1-19/V1-30/HF-122/V1-35/HF-208; a copied module cannot qualify missing path, stream or version primitives. |
 | [V8](https://v8.dev/blog/wasm-speculative-optimizations) uses feedback, guarded specialization and deoptimization. | Molt needs proven/guarded compiled paths and connected profiling, preserving standalone execution. An interpreter-dependent recovery design does not satisfy that contract. HF-198/HF-205/HF-206 own repeated runtime boundary work; W1/HF-222 own connected feedback and regression history. |
 | [TypeScript 7](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) parallelizes independent stages while documenting duplicated worker work, ordering and memory tradeoffs. | Recent TIR cache and batch changes already address serialization. Qualify deterministic output and total time/memory through those owners; more workers or a language rewrite alone does not establish a gain. |
 
@@ -182,6 +186,16 @@ Exceptions are raised by generated class handles (HF-207). Native object state
 lives in typed layouts with drop and traverse, not global handle maps (HF-208).
 The C-API keeps one error slot and O(1) object views (HF-209).
 
+Public Python library semantics belong to the pinned CPython source for the
+selected target version. Native primitives own necessary I/O, codecs, memory and
+ABI operations. Filename entry points share the existing capability and VFS
+owner before host access; module or intrinsic availability is not authorization.
+Source reuse must migrate its prerequisite primitives, imports and generated
+intrinsic consumers together. Archive filters, callback dispatch and format
+selection must not acquire a second implementation in Rust or an ambient host
+program. Requested output bounds and owner-backed streaming state bound retained
+memory and avoid repeated whole-input decoding or copying (V1-19/V1-30).
+
 ### D. Typed identity everywhere
 
 Class facts are keyed by binding-flow definition identity, and decorators are
@@ -207,12 +221,28 @@ typed IR selects linked code without stubs (HF-195); proof receipts are keyed by
 input digest (HF-190, HF-211).
 
 Installed compilation must also separate product execution from development
-apparatus (V1-01/V1-12). `process_guard.py` currently imports the repository's
-`tools/harness_memory_guard.py` and requires a source-tree layout. Preserve
-necessary product deadlines, resource enforcement and failure atomicity under
-their existing owner while removing the development-tree dependency through
-every installed caller. Development receipts, source audits and release
+apparatus (V1-01/V1-12). The current process, daemon, suite and developer-path
+consumers import `tools` implementations. Compiler platform wheels bundle those
+tools, which masks rather than removes the dependency. Migrate necessary kernel
+queries, launch, resource enforcement, deadlines, registry writes and closure
+under the existing product owners; move every installed caller together.
+Process birth facts retain their clock domain and precision: an epoch lower
+bound is not an exact boot-relative creation tick. Qualify complete installed
+success and failure paths outside the checkout with forbidden development
+imports observed even when caught. Explicit development commands can continue
+to load their apparatus lazily. Development receipts, source audits and release
 qualification do not belong in emitted programs.
+
+Build qualification uses the same artifact, target, feature, profile and ABI
+plans as execution. A library test harness and its target CRT are not an
+ordinary executable with a synthesized entry point. Capability probes preserve
+that distinction, including separate native host/build dependencies, and bind
+their finite startup inputs to the selected toolchain. Reuse and invalidation
+follow actual dependencies, as in
+[rustc's incremental query graph](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html).
+Group compatible owning checks into an existing build graph, retain their
+input-bound evidence and rerun only invalidated claims. Additional layers,
+parallel builds or duplicate receipts do not establish better qualification.
 
 ## What each goal gains
 

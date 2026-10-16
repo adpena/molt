@@ -366,7 +366,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f430a7d26b46b09f99f571fa1c86994cbce8d3ae574de52f000b70b2aa110d65",
+  "authority_sha256": "0d93cb62cf30d7eb4ceed9ffbb2020da7b19274775f6bcb123ffa1082c5a7b7e",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -661,7 +661,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 328,
+      "timeout_minutes": 318,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -6660,6 +6660,8 @@
         "-p",
         "molt-lang-obj-model",
         "-p",
+        "molt-lang-cpython-abi",
+        "-p",
         "molt-ir",
         "-p",
         "molt-tir",
@@ -6797,43 +6799,6 @@
         "cargo",
         "node",
         "wasm-ld"
-      ]
-    },
-    {
-      "argv": [
-        "cargo",
-        "test",
-        "--locked",
-        "--profile",
-        "dev-fast",
-        "--manifest-path",
-        "runtime/molt-cpython-abi/Cargo.toml",
-        "--lib",
-        "--no-fail-fast",
-        "--",
-        "--test-threads=1"
-      ],
-      "cache_domain": "cargo-workspace",
-      "cargo_native_units": {
-        "target": [
-          "c"
-        ]
-      },
-      "cell": "linux-x86_64-rust-native-dev",
-      "dependencies": [],
-      "family": "rust",
-      "id": "rust.test.cpython-abi-authorities",
-      "resource_class": "compiler-build-resource",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_budget": "integration",
-      "timeout_seconds": 600,
-      "toolchains": [
-        "rustc",
-        "cargo"
       ]
     },
     {
@@ -8079,14 +8044,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 19680,
+        "budget_seconds": 19080,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 19440,
-        "required_job_seconds": 19680,
+        "projected_makespan_seconds": 18840,
+        "required_job_seconds": 19080,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 19440
+          "compiler-build-resource": 18840
         }
       },
       "rust_security": {
@@ -8445,7 +8410,7 @@
       "local.ci-wiring.1": "python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.0": "python tools/gen_codecs.py --check",
       "local.codec-tables.1": "python -m pytest -q tests/test_gen_codecs.py",
-      "local.cpython-abi-authorities.0": "cargo test --locked --profile dev-fast --manifest-path runtime/molt-cpython-abi/Cargo.toml --lib --no-fail-fast -- --test-threads=1",
+      "local.cpython-abi-authorities.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4",
       "local.dev-tooling.0": "python -m pytest -q tests/tools/test_setup_project_inputs.py",
       "local.dev-tooling.1": "python -m pytest -q tests/test_molt_dev.py",
       "local.dev-tooling.2": "python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
@@ -9856,7 +9821,7 @@
         ],
         "description": "C-API crate standalone link and unit contracts.",
         "gates": [
-          "cargo test --locked --profile dev-fast --manifest-path runtime/molt-cpython-abi/Cargo.toml --lib --no-fail-fast -- --test-threads=1"
+          "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4"
         ],
         "globs": [
           "runtime/molt-cpython-abi/**",
