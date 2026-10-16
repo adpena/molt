@@ -12,7 +12,6 @@ _MOLT_BZ2_DECOMPRESS = _require_intrinsic("molt_bz2_decompress")
 _MOLT_BZ2_COMPRESSOR_NEW = _require_intrinsic("molt_bz2_compressor_new")
 _MOLT_BZ2_COMPRESSOR_COMPRESS = _require_intrinsic("molt_bz2_compressor_compress")
 _MOLT_BZ2_COMPRESSOR_FLUSH = _require_intrinsic("molt_bz2_compressor_flush")
-_MOLT_BZ2_COMPRESSOR_DROP = _require_intrinsic("molt_bz2_compressor_drop")
 
 # --- Incremental decompressor ---
 _MOLT_BZ2_DECOMPRESSOR_NEW = _require_intrinsic("molt_bz2_decompressor_new")
@@ -26,14 +25,12 @@ _MOLT_BZ2_DECOMPRESSOR_NEEDS_INPUT = _require_intrinsic(
 _MOLT_BZ2_DECOMPRESSOR_UNUSED_DATA = _require_intrinsic(
     "molt_bz2_decompressor_unused_data"
 )
-_MOLT_BZ2_DECOMPRESSOR_DROP = _require_intrinsic("molt_bz2_decompressor_drop")
 
 # --- File handle intrinsics ---
 _MOLT_BZ2_FILE_OPEN = _require_intrinsic("molt_bz2_file_open")
 _MOLT_BZ2_FILE_READ = _require_intrinsic("molt_bz2_file_read")
 _MOLT_BZ2_FILE_WRITE = _require_intrinsic("molt_bz2_file_write")
 _MOLT_BZ2_FILE_CLOSE = _require_intrinsic("molt_bz2_file_close")
-_MOLT_BZ2_FILE_DROP = _require_intrinsic("molt_bz2_file_drop")
 
 
 class BZ2Compressor:
@@ -56,15 +53,6 @@ class BZ2Compressor:
         self._flushed = True
         return bytes(_MOLT_BZ2_COMPRESSOR_FLUSH(self._handle))
 
-    def __del__(self, _drop=_MOLT_BZ2_COMPRESSOR_DROP) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
-        object.__setattr__(self, "_handle", None)
-        try:
-            _drop(handle)
-        except Exception:
-            pass
 
 
 class BZ2Decompressor:
@@ -90,15 +78,6 @@ class BZ2Decompressor:
     def unused_data(self) -> bytes:
         return bytes(_MOLT_BZ2_DECOMPRESSOR_UNUSED_DATA(self._handle))
 
-    def __del__(self, _drop=_MOLT_BZ2_DECOMPRESSOR_DROP) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
-        object.__setattr__(self, "_handle", None)
-        try:
-            _drop(handle)
-        except Exception:
-            pass
 
 
 class BZ2File:
@@ -124,6 +103,8 @@ class BZ2File:
             raise ValueError("I/O operation on closed file.")
         if not self._writing:
             raise OSError("File not open for writing")
+        if not isinstance(data, (bytes, bytearray)):
+            data = memoryview(data)
         return int(_MOLT_BZ2_FILE_WRITE(self._handle, data))
 
     def read(self, size: int = -1) -> bytes:
@@ -142,16 +123,13 @@ class BZ2File:
     def seekable(self) -> bool:
         return False
 
-    def _release_handle(self, _close=_MOLT_BZ2_FILE_CLOSE, _drop=_MOLT_BZ2_FILE_DROP) -> None:
+    def _release_handle(self, _close=_MOLT_BZ2_FILE_CLOSE) -> None:
         handle = getattr(self, "_handle", None)
         if handle is None:
             return
         object.__setattr__(self, "_handle", None)
         object.__setattr__(self, "_closed", True)
-        try:
-            _close(handle)
-        finally:
-            _drop(handle)
+        _close(handle)
 
     def close(self) -> None:
         self._release_handle()
@@ -175,18 +153,12 @@ class BZ2File:
 
 def compress(data: bytes, compresslevel: int = 9) -> bytes:
     """Compress *data* in one shot, returning the compressed bytes."""
-    try:
-        return bytes(_MOLT_BZ2_COMPRESS(data, compresslevel))
-    except Exception as exc:
-        raise ValueError(str(exc)) from exc
+    return bytes(_MOLT_BZ2_COMPRESS(data, compresslevel))
 
 
 def decompress(data: bytes) -> bytes:
     """Decompress *data* in one shot, returning the decompressed bytes."""
-    try:
-        return bytes(_MOLT_BZ2_DECOMPRESS(data))
-    except Exception as exc:
-        raise ValueError(str(exc)) from exc
+    return bytes(_MOLT_BZ2_DECOMPRESS(data))
 
 
 def open(

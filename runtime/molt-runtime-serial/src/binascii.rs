@@ -1,29 +1,8 @@
 use crate::bridge::*;
+use molt_runtime_core::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn bytes_like_arg(_py: &PyToken, bits: u64, func: &str) -> Result<Vec<u8>, u64> {
-    let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        let msg = format!("{func}() argument 1 must be bytes-like, not None");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
-    };
-    let Some(raw) = (unsafe { bytes_like_slice(ptr) }) else {
-        let type_name = type_name(_py, obj);
-        let msg = format!("a bytes-like object is required, not '{type_name}'");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
-    };
-    Ok(raw.to_vec())
-}
-
-fn ascii_or_bytes_arg(_py: &PyToken, bits: u64, _func: &str) -> Result<Vec<u8>, u64> {
-    let obj = obj_from_bits(bits);
-    if let Some(text) = string_obj_to_owned(obj) {
-        return Ok(text.into_bytes());
-    }
-    bytes_like_arg(_py, bits, "a2b")
-}
 
 fn alloc_bytes_or_oom(_py: &PyToken, data: &[u8], context: &str) -> u64 {
     let ptr = alloc_bytes(_py, data);
@@ -887,10 +866,19 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_base64") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let text = string_obj_to_owned(obj_from_bits(data_bits));
+        let input_export = if text.is_some() {
+            None
+        } else {
+            match unsafe { ByteInput::acquire(_py, data_bits) } {
+                Ok(export) => Some(export),
+                Err(_) => return MoltObject::none().bits(),
+            }
         };
+        let raw = text.as_ref().map_or_else(
+            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
+            |text| text.as_bytes(),
+        );
         let decoded = match base64_decode(&raw) {
             Ok(v) => v,
             Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
@@ -902,11 +890,11 @@ pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b2a_base64") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
-        let encoded = base64_encode(&raw);
+        let encoded = base64_encode(&(unsafe { input_export.bytes(_py) }));
         alloc_bytes_or_oom(_py, &encoded, "b2a_base64")
     })
 }
@@ -914,10 +902,19 @@ pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_hex") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let text = string_obj_to_owned(obj_from_bits(data_bits));
+        let input_export = if text.is_some() {
+            None
+        } else {
+            match unsafe { ByteInput::acquire(_py, data_bits) } {
+                Ok(export) => Some(export),
+                Err(_) => return MoltObject::none().bits(),
+            }
         };
+        let raw = text.as_ref().map_or_else(
+            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
+            |text| text.as_bytes(),
+        );
         if !raw.len().is_multiple_of(2) {
             return raise_exception::<_>(_py, "ValueError", "Odd-length string");
         }
@@ -935,12 +932,12 @@ pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b2a_hex") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
         // Use SIMD-accelerated hex encode (NEON/SSE2)
-        let out = simd_hex_encode(&raw);
+        let out = simd_hex_encode(&(unsafe { input_export.bytes(_py) }));
         alloc_bytes_or_oom(_py, &out, "b2a_hex")
     })
 }
@@ -948,10 +945,19 @@ pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_qp") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let text = string_obj_to_owned(obj_from_bits(data_bits));
+        let input_export = if text.is_some() {
+            None
+        } else {
+            match unsafe { ByteInput::acquire(_py, data_bits) } {
+                Ok(export) => Some(export),
+                Err(_) => return MoltObject::none().bits(),
+            }
         };
+        let raw = text.as_ref().map_or_else(
+            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
+            |text| text.as_bytes(),
+        );
         let out = qp_decode(&raw);
         alloc_bytes_or_oom(_py, &out, "a2b_qp")
     })
@@ -960,11 +966,11 @@ pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b2a_qp") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
-        let out = qp_encode(&raw);
+        let out = qp_encode(&(unsafe { input_export.bytes(_py) }));
         alloc_bytes_or_oom(_py, &out, "b2a_qp")
     })
 }
@@ -972,10 +978,19 @@ pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match ascii_or_bytes_arg(_py, data_bits, "a2b_uu") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let text = string_obj_to_owned(obj_from_bits(data_bits));
+        let input_export = if text.is_some() {
+            None
+        } else {
+            match unsafe { ByteInput::acquire(_py, data_bits) } {
+                Ok(export) => Some(export),
+                Err(_) => return MoltObject::none().bits(),
+            }
         };
+        let raw = text.as_ref().map_or_else(
+            || unsafe { input_export.as_ref().unwrap().bytes(_py) },
+            |text| text.as_bytes(),
+        );
         let out = match uu_decode(&raw) {
             Ok(v) => v,
             Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
@@ -987,11 +1002,11 @@ pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "b2a_uu") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
-        let out = match uu_encode(&raw) {
+        let out = match uu_encode(&(unsafe { input_export.bytes(_py) })) {
             Ok(v) => v,
             Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
         };
@@ -1002,9 +1017,9 @@ pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_crc32(data_bits: u64, value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "crc32") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
         let msg = format!(
             "'{}' object cannot be interpreted as an integer",
@@ -1015,7 +1030,8 @@ pub extern "C" fn molt_binascii_crc32(data_bits: u64, value_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         // CPython takes the running value bitwise as an unsigned 32-bit int.
-        let crc = molt_runtime_core::crc32::crc32(&raw, value as u32);
+        let crc =
+            molt_runtime_core::crc32::crc32(&(unsafe { input_export.bytes(_py) }), value as u32);
         MoltObject::from_int(i64::from(crc)).bits()
     })
 }
@@ -1023,16 +1039,16 @@ pub extern "C" fn molt_binascii_crc32(data_bits: u64, value_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "crc_hqx") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
         let value = index_i64_from_obj(_py, value_bits, "crc_hqx() arg 2 must be int");
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
         let mut crc = (value as u32) & 0xFFFF;
-        for byte in raw {
+        for &byte in (unsafe { input_export.bytes(_py) }) {
             crc ^= (u32::from(byte)) << 8;
             for _ in 0..8 {
                 if (crc & 0x8000) != 0 {
@@ -1055,9 +1071,9 @@ pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "uu_codec_encode") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
         let filename = match string_obj_to_owned(obj_from_bits(filename_bits)) {
             Some(s) => s.replace('\n', "\\n").replace('\r', "\\r"),
@@ -1065,16 +1081,16 @@ pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_
         };
         let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0o666) & 0o777;
 
-        let mut out = Vec::with_capacity(raw.len() * 2 + 64);
+        let mut out = Vec::with_capacity((unsafe { input_export.bytes(_py) }).len() * 2 + 64);
         // begin header
         let header = format!("begin {mode:o} {filename}\n");
         out.extend_from_slice(header.as_bytes());
 
         // Encode in 45-byte chunks
         let mut offset = 0usize;
-        while offset < raw.len() {
-            let end = std::cmp::min(offset + 45, raw.len());
-            let chunk = &raw[offset..end];
+        while offset < (unsafe { input_export.bytes(_py) }).len() {
+            let end = std::cmp::min(offset + 45, (unsafe { input_export.bytes(_py) }).len());
+            let chunk = &(unsafe { input_export.bytes(_py) })[offset..end];
             match uu_encode(chunk) {
                 Ok(encoded) => out.extend_from_slice(&encoded),
                 Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
@@ -1094,25 +1110,25 @@ pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let raw = match bytes_like_arg(_py, data_bits, "uu_codec_decode") {
-            Ok(v) => v,
-            Err(bits) => return bits,
+        let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
 
         // Find start of encoded data — scan for line starting with "begin"
         let mut pos = 0usize;
         let mut found_begin = false;
         loop {
-            if pos >= raw.len() {
+            if pos >= (unsafe { input_export.bytes(_py) }).len() {
                 break;
             }
             // Find end of current line
-            let line_end = raw[pos..]
+            let line_end = (unsafe { input_export.bytes(_py) })[pos..]
                 .iter()
                 .position(|&b| b == b'\n')
                 .map(|i| pos + i + 1)
-                .unwrap_or(raw.len());
-            let line = &raw[pos..line_end];
+                .unwrap_or((unsafe { input_export.bytes(_py) }).len());
+            let line = &(unsafe { input_export.bytes(_py) })[pos..line_end];
             if line.len() >= 5 && &line[..5] == b"begin" {
                 pos = line_end;
                 found_begin = true;
@@ -1126,18 +1142,18 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
         }
 
         // Decode lines until "end" or EOF
-        let mut out = Vec::with_capacity(raw.len());
+        let mut out = Vec::with_capacity((unsafe { input_export.bytes(_py) }).len());
         let mut found_end = false;
         loop {
-            if pos >= raw.len() {
+            if pos >= (unsafe { input_export.bytes(_py) }).len() {
                 break;
             }
-            let line_end = raw[pos..]
+            let line_end = (unsafe { input_export.bytes(_py) })[pos..]
                 .iter()
                 .position(|&b| b == b'\n')
                 .map(|i| pos + i + 1)
-                .unwrap_or(raw.len());
-            let line = &raw[pos..line_end];
+                .unwrap_or((unsafe { input_export.bytes(_py) }).len());
+            let line = &(unsafe { input_export.bytes(_py) })[pos..line_end];
             pos = line_end;
 
             if line == b"end\n" || line == b"end" {

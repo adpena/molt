@@ -29,7 +29,7 @@ from molt.cli.backend_cache import (
     _module_symbol_name,
 )
 from molt.cli.cache_keys import _json_ir_default
-from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.frontend_integration import (
     _register_global_code_id_with_state,
     _validate_class_definition_references_with_state,
@@ -228,14 +228,6 @@ def _replace_entry_call_with_spawn_override(
 ) -> int:
     spawn_init = SimpleTIRGenerator.module_init_symbol(ENTRY_OVERRIDE_SPAWN)
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
-    env_key_var = f"v{next_var}"
-    next_var += 1
-    env_default_var = f"v{next_var}"
-    next_var += 1
-    env_value_var = f"v{next_var}"
-    next_var += 1
-    spawn_name_var = f"v{next_var}"
-    next_var += 1
     spawn_eq_var = f"v{next_var}"
     next_var += 1
     spawn_out_var = f"v{next_var}"
@@ -243,22 +235,12 @@ def _replace_entry_call_with_spawn_override(
     entry_out_var = f"v{next_var}"
     next_var += 1
     entry_ops[entry_call_idx : entry_call_idx + 1] = [
-        {"kind": "const_str", "s_value": ENTRY_OVERRIDE_ENV, "out": env_key_var},
-        {"kind": "const_str", "s_value": "", "out": env_default_var},
         {
-            "kind": "env_get",
-            "args": [env_key_var, env_default_var],
-            "out": env_value_var,
-        },
-        {
-            "kind": "const_str",
-            "s_value": ENTRY_OVERRIDE_SPAWN,
-            "out": spawn_name_var,
-        },
-        {
-            "kind": "string_eq",
-            "args": [env_value_var, spawn_name_var],
+            "kind": "call",
+            "s_value": "molt_startup_entry_is_spawn",
+            "args": [],
             "out": spawn_eq_var,
+            "type_hint": "bool",
         },
         {"kind": "if", "args": [spawn_eq_var]},
         {

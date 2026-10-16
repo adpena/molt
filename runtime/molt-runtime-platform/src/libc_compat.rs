@@ -150,3 +150,21 @@ pub static _CLOCK_THREAD_CPUTIME_ID: u32 = 3;
 pub unsafe fn _exit(_code: c_int) -> ! {
     core::arch::wasm32::unreachable()
 }
+
+// wasi-libc locale and environment ABI, supplied by the selected SDK libc.a.
+pub const LC_CTYPE: c_int = 0;
+pub const LC_NUMERIC: c_int = 1;
+pub const LC_TIME: c_int = 2;
+pub const LC_COLLATE: c_int = 3;
+pub const LC_MONETARY: c_int = 4;
+pub const LC_MESSAGES: c_int = 5;
+pub const LC_ALL: c_int = 6;
+pub const CODESET: c_int = 14;
+unsafe extern "C" {
+    pub fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
+    pub fn nl_langinfo(item: c_int) -> *mut c_char;
+    pub fn getenv(name: *const c_char) -> *mut c_char;
+    pub fn __wasilibc_get_environ() -> *mut *mut c_char;
+    pub fn setenv(name: *const c_char, value: *const c_char, overwrite: c_int) -> c_int;
+    pub fn unsetenv(name: *const c_char) -> c_int;
+}

@@ -525,14 +525,6 @@ pub extern "C" fn __molt_http_molt_set_attr_name(obj_bits: u64, name_bits: u64, 
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_buffer_export(
-    buffer_bits: u64,
-    export: *mut crate::MoltBufferView,
-) -> i32 {
-    unsafe { crate::molt_buffer_export(buffer_bits, export) }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_bytes_like_slice(
     bits: u64,
     out_ptr: *mut *const u8,
@@ -559,13 +551,30 @@ pub extern "C" fn __molt_http_bytes_like_slice(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_require_operation(name_ptr: *const u8, name_len: usize) -> i32 {
+pub extern "C" fn __molt_http_require_operation(
+    name_ptr: *const u8,
+    name_len: usize,
+    environment: i32,
+) -> i32 {
     crate::with_gil_entry_nopanic!(py, {
         // The extracted caller passes the generated OperationId's static name.
         let name = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
-        i32::from(crate::require_named_operation::<u64>(py, name, AuditArgs::None).is_ok())
+        let Some(operation) = crate::OperationId::from_name(name) else {
+            crate::raise_exception::<u64>(py, "ValueError", "unknown HTTP host operation");
+            return 0;
+        };
+        let extra: &[&'static str] = if environment != 0 { &["env.read"] } else { &[] };
+        i32::from(
+            crate::require_operation_with_capabilities::<u64>(
+                py,
+                operation,
+                AuditArgs::None,
+                extra,
+            )
+            .is_ok(),
+        )
     })
 }
 
@@ -594,24 +603,6 @@ pub extern "C" fn __molt_http_has_capability(name_ptr: *const u8, name_len: usiz
         }
         if allowed { 1 } else { 0 }
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_env_state_get(
-    key_ptr: *const u8,
-    key_len: usize,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    let key =
-        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) };
-    match crate::builtins::platform::env_state_get(key) {
-        Some(s) => {
-            let bytes = s.into_bytes().into_boxed_slice();
-            unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-        }
-        None => 0,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -885,36 +876,58 @@ mod request_serialization_tests {
         );
     }
 
-    fn disable_proxy_environment(py: &PyToken<'_>, opener: u64) {
-        let name = ExceptionValue::adopt(
-            py,
-            MoltObject::from_ptr(alloc_string(py, b"http_no_proxy_handler")).bits(),
-        );
-        let handler = ExceptionValue::adopt(py, molt_module_new(name.bits()));
-        let key = ExceptionValue::adopt(
-            py,
-            MoltObject::from_ptr(alloc_string(py, b"proxies")).bits(),
-        );
-        let proxies = ExceptionValue::adopt(
-            py,
-            MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits(),
-        );
-        let dict = unsafe {
-            crate::object::layout::module_dict_bits(obj_from_bits(handler.bits()).as_ptr().unwrap())
-        };
-        assert!(unsafe {
-            dict_set_in_place(
-                py,
-                obj_from_bits(dict).as_ptr().unwrap(),
-                key.bits(),
-                proxies.bits(),
-            )
-        });
-        molt_urllib_request_add_handler(opener, handler.bits());
-        assert!(!exception_pending(py));
+    static LOCAL_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static METHOD_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    extern "C" fn request_get_method(self_bits: u64) -> u64 {
+        METHOD_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            let name_ptr = alloc_string(py, b"method");
+            if name_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            let name = ExceptionValue::adopt(py, MoltObject::from_ptr(name_ptr).bits());
+            // These Requests select an explicit method. Read the initialized
+            // receiver through a real bound method, as a Request override does.
+            molt_getattr_builtin(self_bits, name.bits(), missing_bits(py))
+        })
     }
 
-    static LOCAL_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn request_fixture<'a, 'py>(py: &'a PyToken<'py>, name_bits: u64) -> ExceptionValue<'a, 'py> {
+        let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "http_request_fixture_get_method",
+                request_get_method as *const (),
+            ),
+            1,
+        );
+        assert!(!function_ptr.is_null());
+        let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function_ptr).bits());
+        let key_ptr = alloc_string(py, b"get_method");
+        assert!(!key_ptr.is_null());
+        let key = ExceptionValue::adopt(py, MoltObject::from_ptr(key_ptr).bits());
+        let namespace_ptr = alloc_dict_with_pairs(py, &[key.bits(), function.bits()]);
+        assert!(!namespace_ptr.is_null());
+        let namespace = ExceptionValue::adopt(py, MoltObject::from_ptr(namespace_ptr).bits());
+        let bases_ptr = alloc_tuple(py, &[]);
+        assert!(!bases_ptr.is_null());
+        let bases = ExceptionValue::adopt(py, MoltObject::from_ptr(bases_ptr).bits());
+        let class = ExceptionValue::adopt(
+            py,
+            crate::builtins::types::molt_type_new(
+                builtin_classes(py).type_obj,
+                name_bits,
+                bases.bits(),
+                namespace.bits(),
+                MoltObject::none().bits(),
+            ),
+        );
+        assert!(!exception_pending(py));
+        let request = ExceptionValue::adopt(py, unsafe { call_callable0(py, class.bits()) });
+        assert!(!exception_pending(py));
+        request
+    }
 
     extern "C" fn forbidden_local_lookup(_host: u64, _port: u64) -> u64 {
         LOCAL_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1004,6 +1017,7 @@ mod request_serialization_tests {
                         molt_module_cache_set(module_name.bits(), module.bits());
                         assert!(!exception_pending(py));
                         LOCAL_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
+                        METHOD_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
                         let host = string("127.0.0.1");
                         let method = string("GET");
                         let path = string("/");
@@ -1073,8 +1087,7 @@ mod request_serialization_tests {
                         // The real urllib intrinsic consumes the same shared boundary.
                         let request_name = string("http_admission_request");
                         let opener_name = string("http_admission_opener");
-                        let request =
-                            ExceptionValue::adopt(py, molt_module_new(request_name.bits()));
+                        let request = request_fixture(py, request_name.bits());
                         let opener = ExceptionValue::adopt(py, molt_module_new(opener_name.bits()));
                         let url = string(&format!(
                             "{}://127.0.0.1:{port}/",
@@ -1092,10 +1105,20 @@ mod request_serialization_tests {
                             method.bits(),
                         );
                         molt_urllib_request_opener_init(opener.bits());
-                        disable_proxy_environment(py, opener.bits());
                         assert!(!exception_pending(py));
-                        molt_urllib_request_open(opener.bits(), request.bits());
+                        let scheme = string(if tls { "https" } else { "http" });
+                        molt_urllib_request_open(
+                            opener.bits(),
+                            request.bits(),
+                            scheme.bits(),
+                            MoltObject::none().bits(),
+                        );
                         check_error();
+                        assert_eq!(
+                            METHOD_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst),
+                            usize::from(missing.is_empty()),
+                            "admission precedes Request.get_method"
+                        );
                         assert_eq!(
                             LOCAL_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst),
                             if missing.is_empty() { 2 } else { 0 }
@@ -1180,9 +1203,10 @@ mod request_serialization_tests {
                     assert!(!exception_pending(py));
                 }
                 LOCAL_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
+                METHOD_LOOKUPS.store(0, std::sync::atomic::Ordering::SeqCst);
                 let request_name = string("http_redirect_request");
                 let opener_name = string("http_redirect_opener");
-                let request = ExceptionValue::adopt(py, molt_module_new(request_name.bits()));
+                let request = request_fixture(py, request_name.bits());
                 let opener = ExceptionValue::adopt(py, molt_module_new(opener_name.bits()));
                 let url = string("http://127.0.0.1:1/start");
                 let method = string("GET");
@@ -1198,9 +1222,14 @@ mod request_serialization_tests {
                     method.bits(),
                 );
                 molt_urllib_request_opener_init(opener.bits());
-                disable_proxy_environment(py, opener.bits());
                 assert!(!exception_pending(py));
-                molt_urllib_request_open(opener.bits(), request.bits());
+                let scheme = string("http");
+                molt_urllib_request_open(
+                    opener.bits(),
+                    request.bits(),
+                    scheme.bits(),
+                    MoltObject::none().bits(),
+                );
                 assert!(exception_pending(py));
                 let error = ExceptionValue::adopt(py, molt_exception_last_pending());
                 // Rendering is an ordinary Python operation; retain the error before
@@ -1223,6 +1252,7 @@ mod request_serialization_tests {
                     "missing [ssl.connect, ssl.read, ssl.write] capabilities for 'https.request'"
                 );
                 assert_eq!(LOCAL_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst), 1);
+                assert_eq!(METHOD_LOOKUPS.load(std::sync::atomic::Ordering::SeqCst), 1);
             },
         );
     }

@@ -783,7 +783,7 @@ fn test_compile_checked_lowers_object_set_class_metatable() {
 }
 
 #[test]
-fn test_compile_checked_lowers_class_layout_metadata() {
+fn test_compile_checked_reads_constructor_layout_version() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -803,57 +803,7 @@ fn test_compile_checked_lowers_class_layout_metadata() {
                 },
                 OpIR {
                     kind: "class_layout_version".to_string(),
-                    out: Some("version_before".to_string()),
-                    args: Some(vec!["cls".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const_str".to_string(),
-                    out: Some("field_name".to_string()),
-                    s_value: Some("field".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("field_offset".to_string()),
-                    value: Some(0),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "dict_new".to_string(),
-                    out: Some("offsets".to_string()),
-                    args: Some(vec!["field_name".to_string(), "field_offset".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("layout_size".to_string()),
-                    value: Some(24),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "class_merge_layout".to_string(),
-                    args: Some(vec![
-                        "cls".to_string(),
-                        "offsets".to_string(),
-                        "layout_size".to_string(),
-                    ]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("layout_version".to_string()),
-                    value: Some(7),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "class_set_layout_version".to_string(),
-                    args: Some(vec!["cls".to_string(), "layout_version".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "class_layout_version".to_string(),
-                    out: Some("version_after".to_string()),
+                    out: Some("version".to_string()),
                     args: Some(vec!["cls".to_string()]),
                     ..OpIR::default()
                 },
@@ -862,26 +812,11 @@ fn test_compile_checked_lowers_class_layout_metadata() {
         profile: None,
     };
     let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-    assert!(
-        source.contains("local version_before = if type(cls) == \"table\""),
-        "class_layout_version should read class-table layout metadata, got:\n{source}"
-    );
-    assert!(
-        source.contains("__cls.__molt_field_offsets__ = __merged")
-            && source.contains("__cls.__molt_layout_size__ = __layout_size"),
-        "class_merge_layout should maintain field offsets and layout size, got:\n{source}"
-    );
-    assert!(
-        source.contains("__cls.__molt_layout_version = __version"),
-        "class_set_layout_version should write layout version metadata, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[class op: class_layout_version]")
-            && !source.contains("[class op: class_set_layout_version]")
-            && !source.contains("[class op: class_merge_layout]"),
-        "layout metadata ops must not leave class-op markers, got:\n{source}"
-    );
+    let source = backend
+        .compile_checked(&ir)
+        .expect("constructor and layout read are admitted");
+    assert!(source.contains("local version = if type(cls) == \"table\""));
+    assert!(!source.contains("[class op: class_layout_version]"));
 }
 
 /// HF-220: Luau tables hold attributes by name, so guarded field ops read and

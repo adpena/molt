@@ -41,7 +41,6 @@ PRESET_EXTREME: int = int(_MOLT_LZMA_PRESET_EXTREME())
 _MOLT_LZMA_COMPRESSOR_NEW = _require_intrinsic("molt_lzma_compressor_new")
 _MOLT_LZMA_COMPRESSOR_COMPRESS = _require_intrinsic("molt_lzma_compressor_compress")
 _MOLT_LZMA_COMPRESSOR_FLUSH = _require_intrinsic("molt_lzma_compressor_flush")
-_MOLT_LZMA_COMPRESSOR_DROP = _require_intrinsic("molt_lzma_compressor_drop")
 
 # --- Incremental decompressor ---
 _MOLT_LZMA_DECOMPRESSOR_NEW = _require_intrinsic("molt_lzma_decompressor_new")
@@ -55,20 +54,21 @@ _MOLT_LZMA_DECOMPRESSOR_NEEDS_INPUT = _require_intrinsic(
 _MOLT_LZMA_DECOMPRESSOR_UNUSED_DATA = _require_intrinsic(
     "molt_lzma_decompressor_unused_data"
 )
-_MOLT_LZMA_DECOMPRESSOR_DROP = _require_intrinsic("molt_lzma_decompressor_drop")
 
 # --- File handle intrinsics ---
 _MOLT_LZMA_FILE_OPEN = _require_intrinsic("molt_lzma_file_open")
 _MOLT_LZMA_FILE_READ = _require_intrinsic("molt_lzma_file_read")
 _MOLT_LZMA_FILE_WRITE = _require_intrinsic("molt_lzma_file_write")
 _MOLT_LZMA_FILE_CLOSE = _require_intrinsic("molt_lzma_file_close")
-_MOLT_LZMA_FILE_DROP = _require_intrinsic("molt_lzma_file_drop")
 
 
 class LZMAError(Exception):
     """Exception raised for LZMA-related errors."""
 
     pass
+
+
+_LZMA_ERROR = LZMAError
 
 
 class LZMACompressor:
@@ -91,23 +91,14 @@ class LZMACompressor:
     def compress(self, data: bytes) -> bytes:
         if self._flushed:
             raise ValueError("Compressor has been flushed")
-        return bytes(_MOLT_LZMA_COMPRESSOR_COMPRESS(self._handle, data))
+        return bytes(_MOLT_LZMA_COMPRESSOR_COMPRESS(_LZMA_ERROR, self._handle, data))
 
     def flush(self) -> bytes:
         if self._flushed:
             raise ValueError("Repeated call to flush()")
         self._flushed = True
-        return bytes(_MOLT_LZMA_COMPRESSOR_FLUSH(self._handle))
+        return bytes(_MOLT_LZMA_COMPRESSOR_FLUSH(_LZMA_ERROR, self._handle))
 
-    def __del__(self, _drop=_MOLT_LZMA_COMPRESSOR_DROP) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
-        object.__setattr__(self, "_handle", None)
-        try:
-            _drop(handle)
-        except Exception:
-            pass
 
 
 class LZMADecompressor:
@@ -125,29 +116,20 @@ class LZMADecompressor:
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
         if self.eof:
             raise EOFError("Already at end of stream")
-        return bytes(_MOLT_LZMA_DECOMPRESSOR_DECOMPRESS(self._handle, data, max_length))
+        return bytes(_MOLT_LZMA_DECOMPRESSOR_DECOMPRESS(_LZMA_ERROR, self._handle, data, max_length))
 
     @property
     def eof(self) -> bool:
-        return bool(_MOLT_LZMA_DECOMPRESSOR_EOF(self._handle))
+        return bool(_MOLT_LZMA_DECOMPRESSOR_EOF(_LZMA_ERROR, self._handle))
 
     @property
     def needs_input(self) -> bool:
-        return bool(_MOLT_LZMA_DECOMPRESSOR_NEEDS_INPUT(self._handle))
+        return bool(_MOLT_LZMA_DECOMPRESSOR_NEEDS_INPUT(_LZMA_ERROR, self._handle))
 
     @property
     def unused_data(self) -> bytes:
-        return bytes(_MOLT_LZMA_DECOMPRESSOR_UNUSED_DATA(self._handle))
+        return bytes(_MOLT_LZMA_DECOMPRESSOR_UNUSED_DATA(_LZMA_ERROR, self._handle))
 
-    def __del__(self, _drop=_MOLT_LZMA_DECOMPRESSOR_DROP) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
-        object.__setattr__(self, "_handle", None)
-        try:
-            _drop(handle)
-        except Exception:
-            pass
 
 
 class LZMAFile:
@@ -168,7 +150,7 @@ class LZMAFile:
             check = CHECK_CRC64 if format == FORMAT_XZ else CHECK_NONE
         if preset is None:
             preset = PRESET_DEFAULT
-        self._handle = _MOLT_LZMA_FILE_OPEN(filename, mode, format, check, preset)
+        self._handle = _MOLT_LZMA_FILE_OPEN(_LZMA_ERROR, filename, mode, format, check, preset)
         self._mode = mode
         self._closed = False
         self._writing = "w" in mode or "a" in mode
@@ -179,14 +161,16 @@ class LZMAFile:
             raise ValueError("I/O operation on closed file.")
         if not self._writing:
             raise OSError("File not open for writing")
-        return int(_MOLT_LZMA_FILE_WRITE(self._handle, data))
+        if not isinstance(data, (bytes, bytearray)):
+            data = memoryview(data)
+        return int(_MOLT_LZMA_FILE_WRITE(_LZMA_ERROR, self._handle, data))
 
     def read(self, size: int = -1) -> bytes:
         if self._closed:
             raise ValueError("I/O operation on closed file.")
         if not self._reading:
             raise OSError("File not open for reading")
-        return bytes(_MOLT_LZMA_FILE_READ(self._handle, size))
+        return bytes(_MOLT_LZMA_FILE_READ(_LZMA_ERROR, self._handle, size))
 
     def readable(self) -> bool:
         return self._reading
@@ -197,16 +181,13 @@ class LZMAFile:
     def seekable(self) -> bool:
         return False
 
-    def _release_handle(self, _close=_MOLT_LZMA_FILE_CLOSE, _drop=_MOLT_LZMA_FILE_DROP) -> None:
+    def _release_handle(self, _close=_MOLT_LZMA_FILE_CLOSE, _error=_LZMA_ERROR) -> None:
         handle = getattr(self, "_handle", None)
         if handle is None:
             return
         object.__setattr__(self, "_handle", None)
         object.__setattr__(self, "_closed", True)
-        try:
-            _close(handle)
-        finally:
-            _drop(handle)
+        _close(_error, handle)
 
     def close(self) -> None:
         self._release_handle()
@@ -240,10 +221,7 @@ def compress(
         check = CHECK_CRC64 if format == FORMAT_XZ else CHECK_NONE
     if preset is None:
         preset = PRESET_DEFAULT
-    try:
-        return bytes(_MOLT_LZMA_COMPRESS(data, format, check, preset))
-    except Exception as exc:
-        raise LZMAError(str(exc)) from exc
+    return bytes(_MOLT_LZMA_COMPRESS(_LZMA_ERROR, data, format, check, preset))
 
 
 def decompress(
@@ -254,10 +232,7 @@ def decompress(
 ) -> bytes:
     """Decompress *data* in one shot, returning the decompressed bytes."""
     effective_memlimit = memlimit if memlimit is not None else 0
-    try:
-        return bytes(_MOLT_LZMA_DECOMPRESS(data, format, effective_memlimit))
-    except Exception as exc:
-        raise LZMAError(str(exc)) from exc
+    return bytes(_MOLT_LZMA_DECOMPRESS(_LZMA_ERROR, data, format, effective_memlimit))
 
 
 def open(

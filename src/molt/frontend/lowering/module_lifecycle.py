@@ -117,27 +117,11 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
                 )
             )
             if entry_spawn_override_enabled:
-                spawn_key = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=["MOLT_MP_SPAWN"], result=spawn_key)
-                )
-                spawn_default = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[""], result=spawn_default))
-                spawn_value = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(
-                        kind="ENV_GET",
-                        args=[spawn_key, spawn_default],
-                        result=spawn_value,
-                    )
-                )
-                spawn_expected = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=["1"], result=spawn_expected))
                 spawn_eq = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(
                     MoltOp(
-                        kind="STRING_EQ",
-                        args=[spawn_value, spawn_expected],
+                        kind="CALL",
+                        args=["molt_startup_mp_spawn_enabled"],
                         result=spawn_eq,
                     )
                 )

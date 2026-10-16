@@ -2,25 +2,6 @@
 
 use super::*;
 
-pub(crate) fn pickle_input_to_bytes(
-    _py: &crate::PyToken<'_>,
-    data_bits: u64,
-) -> Result<Vec<u8>, u64> {
-    if let Some(ptr) = obj_from_bits(data_bits).as_ptr()
-        && let Some(raw) = unsafe { bytes_like_slice(ptr) }
-    {
-        return Ok(raw.to_vec());
-    }
-    if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
-        return Ok(text.into_bytes());
-    }
-    Err(raise_exception::<u64>(
-        _py,
-        "TypeError",
-        "pickle data must be bytes, bytearray, or str",
-    ))
-}
-
 pub(crate) fn pickle_read_u8(
     data: &[u8],
     idx: &mut usize,

@@ -101,7 +101,8 @@ pub extern "C" fn molt_importlib_resources_package_info(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let payload = importlib_resources_package_payload(&package, &search_paths, module_file);
+        let payload =
+            importlib_resources_package_payload(_py, &package, &search_paths, module_file);
         let roots_bits = match alloc_string_list_bits(_py, &payload.roots) {
             Some(bits) => bits,
             None => return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),

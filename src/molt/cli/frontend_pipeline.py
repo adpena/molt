@@ -96,6 +96,7 @@ from molt.cli.output import fail as _fail
 from molt.target_python import TargetPythonVersion
 
 if TYPE_CHECKING:
+    from molt.frontend.lowering.exception_lowering import SyntaxErrorName
     from molt.frontend import ClassId, ClassInfo
 
 
@@ -124,35 +125,20 @@ def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
     return base
 
 
-def _syntax_error_info_from_exception(
-    exc: Exception, *, path: Path
-) -> ModuleSyntaxErrorInfo:
-    if isinstance(exc, SyntaxError):
-        message = exc.msg or str(exc)
-        lineno = exc.lineno
-        offset = exc.offset
-        text = exc.text
-        filename = exc.filename or str(path)
-    elif isinstance(exc, UnicodeDecodeError):
-        message = str(exc)
-        lineno = 1
-        offset = exc.start + 1 if exc.start is not None else None
-        text = None
-        filename = str(path)
+def _syntax_error_info_from_exception(exc: SyntaxError) -> ModuleSyntaxErrorInfo:
+    name: SyntaxErrorName
+    if type(exc) is TabError:
+        name = "TabError"
+    elif type(exc) is IndentationError:
+        name = "IndentationError"
+    elif type(exc) is SyntaxError:
+        name = "SyntaxError"
     else:
-        message = str(exc)
-        lineno = None
-        offset = None
-        text = None
-        filename = str(path)
-    if isinstance(text, str):
-        text = text.rstrip("\n")
+        raise TypeError("module parser returned a non-builtin SyntaxError subclass")
     return ModuleSyntaxErrorInfo(
-        message=message,
-        filename=filename,
-        lineno=lineno,
-        offset=offset,
-        text=text,
+        exception_name=name,
+        args=exc.args,
+        print_file_and_line=exc.print_file_and_line,
     )
 
 
@@ -295,9 +281,7 @@ def _prepare_frontend_analysis(
                     json_output,
                     command="build",
                 )
-            syntax_error_modules[module_name] = _syntax_error_info_from_exception(
-                exc, path=module_path
-            )
+            syntax_error_modules[module_name] = _syntax_error_info_from_exception(exc)
             module_deps[module_name] = set()
             known_func_defaults[module_name] = {}
             known_func_kinds[module_name] = {}

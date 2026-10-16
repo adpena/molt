@@ -15,6 +15,21 @@ TRACE_OWNERS = [support.TRACE_CALLARGS, support.TRACE_BIND_IC, support.TRACE_BIN
 
 
 def lib_receipt(tmp_path: Path, owners=LIB_OWNERS, **options):
+    if any(owner in support.RESOURCE_OWNERS for owner in owners):
+        image = support.make_image(
+            tmp_path, "resource_enforcement-0123456789abcdef.exe"
+        )
+        records = support.family_records(image, owners)
+        children = [f"{owner}_child" for owner in owners]
+        receipt = support.resource_receipt(
+            tmp_path / "receipts",
+            image,
+            [*owners, *children],
+            records,
+            statuses={child: "ignored" for child in children},
+            **options,
+        )
+        return receipt, records
     image = support.make_image(tmp_path)
     tests = ["ordinary::parallel_case", support.TRAP_CHILD, *owners]
     records = support.family_records(image, owners)
@@ -56,6 +71,7 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         (LIB_OWNERS, 2),
         ([support.EXIT], 2),
         (TRACE_OWNERS, 3),
+        (support.RESOURCE_OWNERS, 4),
         ([support.TRANSACTION], 9),
         ([support.LIFECYCLE], 5),
         ([support.DISCOVERY], 1),
@@ -68,6 +84,7 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         "parallel-trap-cold",
         "isolated-exit-both-leases",
         "trace-image",
+        "resource-startup",
         "terminal-transaction",
         "lifecycle-ffi",
         "discovery-diagnostic",
@@ -102,11 +119,16 @@ def test_every_mandatory_child_is_derived_from_completed_owner_rows(
     tmp_path, owner, mode
 ):
     owners = [owner]
-    image = support.make_image(tmp_path)
+    resource = owner in support.RESOURCE_OWNERS
+    image = (
+        support.make_image(tmp_path, "resource_enforcement-0123456789abcdef.exe")
+        if resource
+        else support.make_image(tmp_path)
+    )
     records = support.family_records(image, owners)
     removed = next(row for row in records if row["mode"] == mode)
     records.remove(removed)
-    receipt = support.binary_receipt(
+    receipt = (support.resource_receipt if resource else support.binary_receipt)(
         tmp_path / "receipts", image, ["ordinary", *owners], records
     )
     with pytest.raises(descendants.DescendantEvidenceError, match="missing mandatory"):
@@ -719,6 +741,9 @@ def test_mode_specific_proof_matches_each_literal_child_contract():
             (support.TRACE_BIND_META, "trace_function_bind_meta_child"): ((), ()),
         }
     )
+    expected.update(
+        {(owner, f"{owner}_child"): ((), ()) for owner in support.RESOURCE_OWNERS}
+    )
     assert set(expected) == set(support.CONTRACT)
     assert set(expected) == {
         (owner, mode)
@@ -952,3 +977,138 @@ def test_retention_refuses_changed_execution_inputs(tmp_path, changed):
     path.write_bytes(b"changed after execution admission")
     with pytest.raises(descendants.DescendantEvidenceError, match="changed"):
         descendants.retain_receipt_files(receipt, root=tmp_path / "receipts")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing-later-child", "missing mandatory"),
+        ("swap-parent-records", "without a completed owner"),
+        ("discovery-record", "discovery is not"),
+        ("omit-execution-and-row", "omitted discovered"),
+        ("duplicate-execution", "share a capture"),
+        ("forged-row", "disagree"),
+        ("wrong-exact-test", "exact discovered"),
+        ("later-capture-change", "capture changed"),
+        ("late-source-drift", "source identity differs"),
+        ("late-image-drift", "foreign image"),
+        ("discovery-only", "omitted discovered"),
+        ("discovery-timeout", "discovery did not complete"),
+    ],
+)
+def test_isolated_resource_evidence_is_bound_to_each_actual_parent(
+    tmp_path, mutation, message
+):
+    receipt, records = lib_receipt(tmp_path, support.RESOURCE_OWNERS)
+    last = len(support.RESOURCE_OWNERS)
+    if mutation == "missing-later-child":
+        support.republish(receipt, "stderr", "", execution_index=last)
+    elif mutation == "swap-parent-records":
+        support.republish(
+            receipt, "stderr", support.records_text([records[-1]]), execution_index=1
+        )
+        support.republish(
+            receipt, "stderr", support.records_text([records[0]]), execution_index=last
+        )
+    elif mutation == "discovery-record":
+        support.republish(receipt, "stderr", support.records_text([records[-1]]))
+    elif mutation == "omit-execution-and-row":
+        receipt["executions"].pop()
+        receipt["test_results"].pop()
+    elif mutation == "duplicate-execution":
+        receipt["executions"].append(deepcopy(receipt["executions"][-1]))
+    elif mutation == "forged-row":
+        receipt["test_results"][last - 1]["status"] = "ignored"
+    elif mutation == "wrong-exact-test":
+        receipt["executions"][last]["argv"][2] = support.RESOURCE_OWNERS[0]
+    elif mutation == "later-capture-change":
+        Path(receipt["executions"][last]["stderr_evidence"]).write_bytes(b"changed")
+    elif mutation in {"late-source-drift", "late-image-drift"}:
+        record = deepcopy(records[-1])
+        if mutation == "late-source-drift":
+            record["source_identity"] = {**support.SOURCE, "head": "other"}
+        else:
+            record["executable_sha256"] = "0" * 64
+        support.republish(
+            receipt, "stderr", support.records_text([record]), execution_index=last
+        )
+    elif mutation == "discovery-only":
+        receipt["executions"] = receipt["executions"][:1]
+        receipt["test_results"] = []
+    else:
+        receipt["executions"][0]["timed_out"] = True
+    with pytest.raises(descendants.DescendantEvidenceError, match=message):
+        verify(receipt)
+
+
+def test_isolated_resource_retention_covers_later_children_after_original_cleanup(
+    tmp_path,
+):
+    receipt, records = lib_receipt(tmp_path, support.RESOURCE_OWNERS)
+    descendants.retain_receipt_files(receipt, root=tmp_path / "receipts")
+    expected = {receipt["executable_resolved"]}
+    for record in records:
+        for stream in ("stdout", "stderr"):
+            path = Path(record[stream]["path"])
+            expected.update((str(path), str(path.parent / "artifact-label.txt")))
+    assert set(receipt["retained_files"]) == expected
+    for source in expected:
+        Path(source).unlink()
+    assert verify(receipt)["children"] == 4
+    support.corrupt_retained_file(receipt, Path(records[-1]["stdout"]["path"]))
+    with pytest.raises(descendants.DescendantEvidenceError, match="custody file"):
+        verify(receipt)
+
+
+def test_isolated_resource_retention_rejects_mutated_later_parent_capture(tmp_path):
+    receipt, _ = lib_receipt(tmp_path, support.RESOURCE_OWNERS)
+    Path(receipt["executions"][4]["stderr_evidence"]).write_bytes(b"unbound")
+    before = deepcopy(receipt["retained_files"])
+    with pytest.raises(descendants.DescendantEvidenceError, match="capture changed"):
+        descendants.retain_receipt_files(receipt, root=tmp_path / "receipts")
+    assert receipt["retained_files"] == before
+
+
+def test_failed_resource_owner_does_not_require_a_child_or_hide_passed_siblings(
+    tmp_path,
+):
+    image = support.make_image(tmp_path, "resource_enforcement-0123456789abcdef.exe")
+    first, second = support.RESOURCE_OWNERS[:2]
+    records = support.family_records(image, [second])
+    receipt = support.resource_receipt(
+        tmp_path / "receipts",
+        image,
+        [first, second],
+        records,
+        statuses={first: "fail"},
+    )
+    assert verify(receipt)["children"] == 1
+    support.republish(receipt, "stderr", "", execution_index=2)
+    with pytest.raises(descendants.DescendantEvidenceError, match="missing mandatory"):
+        verify(receipt)
+
+
+def test_budget_exhaustion_preserves_completed_resource_descendants_without_proving_unrun_tests(
+    tmp_path,
+):
+    image = support.make_image(tmp_path, "resource_enforcement-0123456789abcdef.exe")
+    first, second = support.RESOURCE_OWNERS[:2]
+    records = support.family_records(image, [first])
+    receipt = support.resource_receipt(
+        tmp_path / "receipts", image, [first, second], records
+    )
+    receipt["executions"] = receipt["executions"][:2]
+    receipt["test_results"] = [{"identity": first, "status": "pass"}]
+    receipt["status"] = "failed"
+    receipt["returncode"] = 1
+    receipt["result_accounting"]["complete"] = False
+    receipt["diagnosis"] = {
+        "kind": "resource-isolation-timeout",
+        "failed_tests": [],
+        "unexecuted_tests": [second],
+    }
+    assert verify(receipt)["children"] == 1
+    # The same partial evidence must never become a successful full cohort.
+    receipt["status"] = "success"
+    with pytest.raises(descendants.DescendantEvidenceError, match="omitted discovered"):
+        verify(receipt)

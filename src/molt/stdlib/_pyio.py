@@ -21,14 +21,18 @@ else:
 
 import io
 from io import __all__, SEEK_SET, SEEK_CUR, SEEK_END
+from _io import _default_text_encoding
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+# Derive the target default from the runtime, independently of mutable module
+# attributes. CPython's pure implementation likewise owns its original default.
+DEFAULT_BUFFER_SIZE = _require_intrinsic("molt_io_default_buffer_size")()
+del _require_intrinsic
 
 valid_seek_flags = {0, 1, 2}  # Hardwired values
 if hasattr(os, "SEEK_HOLE"):
     valid_seek_flags.add(os.SEEK_HOLE)
     valid_seek_flags.add(os.SEEK_DATA)
-
-# open() uses st_blksize whenever we can
-DEFAULT_BUFFER_SIZE = 8 * 1024  # bytes
 
 # NOTE: Base classes defined here are registered with the "official" ABCs
 # defined in io.py. We don't use real inheritance though, because we don't want
@@ -60,10 +64,7 @@ def text_encoding(encoding, stacklevel=2):
     However, please consider using encoding="utf-8" for new APIs.
     """
     if encoding is None:
-        if sys.flags.utf8_mode:
-            encoding = "utf-8"
-        else:
-            encoding = "locale"
+        encoding = _default_text_encoding()
         if sys.flags.warn_default_encoding:
             import warnings
 

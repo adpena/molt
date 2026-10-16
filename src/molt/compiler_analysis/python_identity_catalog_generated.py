@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from enum import IntFlag
+from enum import Enum, IntFlag
 from types import MappingProxyType
 from typing import Final, Mapping, TypeAlias
 
@@ -59,6 +59,8 @@ class PythonIdentity(IntFlag):
     BUILTIN_RANGE = 1 << 46
     BUILTIN_LEN = 1 << 47
     BUILTIN_OPEN = 1 << 48
+    INTRINSIC_SYS_PLATFORM = 1 << 49
+    INTRINSIC_OS_NAME = 1 << 50
 
 
 class PythonMember(IntFlag):
@@ -98,6 +100,11 @@ class PythonMember(IntFlag):
     BUILTINS_EXEC = 1 << 33
 
 
+class PythonTargetProperty(Enum):
+    SYS_PLATFORM = 'sys_platform'
+    OS_NAME = 'os_name'
+
+
 IdentityMask: TypeAlias = int
 MemberMask: TypeAlias = int
 NO_IDENTITIES: Final[IdentityMask] = 0
@@ -107,6 +114,20 @@ UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
 ALL_INVALID_MEMBERS: Final[MemberMask] = 17179869183
+
+INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
+    {
+        'molt_sys_platform': PythonIdentity.INTRINSIC_SYS_PLATFORM,
+        'molt_os_name': PythonIdentity.INTRINSIC_OS_NAME,
+    }
+)
+
+INTRINSIC_TARGET_PROPERTIES: Final[Mapping[IdentityMask, PythonTargetProperty]] = MappingProxyType(
+    {
+        int(PythonIdentity.INTRINSIC_SYS_PLATFORM): PythonTargetProperty.SYS_PLATFORM,
+        int(PythonIdentity.INTRINSIC_OS_NAME): PythonTargetProperty.OS_NAME,
+    }
+)
 
 BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = MappingProxyType(
     {

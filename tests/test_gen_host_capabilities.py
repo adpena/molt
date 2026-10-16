@@ -171,24 +171,20 @@ def test_native_capability_platform_names_remain_manifest_coordinates(platform):
 def test_cpython_fallback_and_generated_tiers_resolve_identically(monkeypatch) -> None:
     from molt import capabilities as runtime_capabilities
 
-    env = {
-        "MOLT_CAPABILITY_TIER": "none",
-        "MOLT_CAPABILITIES": "fs.read,future.transport.quic",
-    }
     monkeypatch.setattr(
-        runtime_capabilities,
-        "_env_get",
-        lambda key, default="": env.get(key, default),
+        runtime_capabilities._intrinsics, "runtime_active", lambda: False
     )
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "none")
+    monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read,future.transport.quic")
     assert runtime_capabilities.capabilities() == {
         "fs.read",
         "future.transport.quic",
     }
-    env["MOLT_CAPABILITY_TIER"] = "not-a-tier"
-    assert runtime_capabilities.capabilities() == {
-        "fs.read",
-        "future.transport.quic",
-    }
+    monkeypatch.setenv("MOLT_CAPABILITY_TIER", "not-a-tier")
+    from molt.capability_manifest import ManifestError
+
+    with pytest.raises(ManifestError, match="unknown capability tier"):
+        runtime_capabilities.capabilities()
 
 
 def test_profile_and_runtime_consumers_have_no_handwritten_grant_tables() -> None:

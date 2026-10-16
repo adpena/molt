@@ -189,14 +189,6 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "value": self._serialization_control_value(op),
                 }
             )
-        elif op.kind == "ENV_GET":
-            ctx.json_ops.append(
-                {
-                    "kind": "env_get",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "WARN_STDERR":
             if os.environ.get("MOLT_DEBUG_WARN"):
                 import sys as _sys

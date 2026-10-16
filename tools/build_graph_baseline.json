@@ -35,7 +35,7 @@
     "molt-runtime-math": 2,
     "molt-runtime-net": 2,
     "molt-runtime-path": 2,
-    "molt-runtime-platform": 4,
+    "molt-runtime-platform": 6,
     "molt-runtime-protobuf": 0,
     "molt-runtime-regex": 2,
     "molt-runtime-resource": 3,

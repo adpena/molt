@@ -26,11 +26,11 @@ use crate::bridge::{
 use molt_runtime_core::prelude::PyToken;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use molt_runtime_core::prelude::{
-    GilReleaseGuard, MoltObject, obj_from_bits, rt_bytes_as_slice, rt_bytes_from, rt_int, rt_none,
-    rt_str, rt_string_from, rt_string_from_bytes, rt_tuple,
+    GilReleaseGuard, MoltObject, OwnedRuntimeValue, obj_from_bits, rt_bytes_as_slice,
+    rt_bytes_from, rt_int, rt_none, rt_str, rt_string_from, rt_string_from_bytes, rt_tuple,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-use molt_runtime_core::type_ids::{TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_STRING};
+use molt_runtime_core::type_ids::{TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_STRING};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use std::ffi::{CString, c_int, c_void};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
@@ -52,7 +52,7 @@ pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> Option<bool> {
         if pair.len() != 2 {
             continue;
         }
-        let Some(key) = string_obj_to_owned(obj_from_bits(pair[0])) else {
+        let Some(key) = (unsafe { string_obj_to_owned(obj_from_bits(pair[0])) }) else {
             continue;
         };
         if key == "useTk" {
@@ -75,7 +75,7 @@ pub(super) fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
     if let Some(f) = to_f64(obj) {
         return TclObj::from(f);
     }
-    if let Some(s) = string_obj_to_owned(obj) {
+    if let Some(s) = unsafe { string_obj_to_owned(obj) } {
         return TclObj::from(s);
     }
     // Handle tuples/lists as Tcl lists (e.g., font tuples like ("SF Pro Display", 18, "bold"))
@@ -93,14 +93,14 @@ pub(super) fn tcl_obj_from_bits(py: &PyToken, bits: u64) -> TclObj {
     if exception_pending(py) {
         clear_exception(py);
     }
-    let str_bits = rt_str(bits);
-    if !obj_from_bits(str_bits).is_none()
-        && let Some(s) = string_obj_to_owned(obj_from_bits(str_bits))
+    // SAFETY: adopt the str() result rather than borrowing an untracked handle.
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_str(bits)) };
+    if !obj_from_bits(text.bits()).is_none()
+        && let Some(bytes) = text.string_bytes(py)
     {
-        dec_ref_bits(py, str_bits);
-        return TclObj::from(s);
+        return TclObj::from(String::from_utf8_lossy(bytes).into_owned());
     }
-    dec_ref_bits(py, str_bits);
+    drop(text);
     TclObj::from(format_obj_str(py, obj))
 }
 
@@ -136,12 +136,14 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
     if obj.is_none() {
         return alloc_string_obj(api, "");
     }
-    // bool BEFORE int: bool is an int subclass, and CPython's AsObj checks it
-    // first so True/False become boolean objects, not 1/0 ints.
+    // bool BEFORE int: CPython's AsObj normalizes bool to 0/1 through Tcl's
+    // boolean constructor macro, whose canonical representation is integer.
     if obj.is_bool() {
         let b = obj.as_bool().unwrap_or(false);
-        let o = unsafe { (api.new_boolean_obj)(b as c_int) };
-        return non_null_obj(o, "Tcl_NewBooleanObj returned null");
+        // Tcl 8 constructs long 0/1; its wide constructor selects that same
+        // representation. Tcl 8.7/9 construct canonical wide integers directly.
+        let o = unsafe { (api.new_wide_int_obj)(i64::from(b)) };
+        return non_null_obj(o, "Tcl_NewWideIntObj returned null");
     }
     if let Some(i) = obj.as_int() {
         let o = unsafe { (api.new_wide_int_obj)(i) };
@@ -159,27 +161,34 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
         let type_id = object_type_id(ptr);
         // str -> Tcl string object.
         if type_id == TYPE_ID_STRING {
-            if let Some(s) = string_obj_to_owned(obj) {
+            if let Some(s) = unsafe { string_obj_to_owned(obj) } {
                 return alloc_string_obj(api, &s);
             }
             return alloc_string_obj(api, "");
         }
-        // bytes / bytearray -> Tcl byte array object.
-        if (type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY)
-            && let Some(slice) = rt_bytes_as_slice(bits)
-        {
-            let len = slice.len() as c_int;
-            let o = unsafe { (api.new_byte_array_obj)(slice.as_ptr(), len) };
+        // CPython AsObj specializes only bytes. Bytearray follows str() below.
+        if type_id == TYPE_ID_BYTES {
+            // SAFETY: the call's argument owns this immutable bytes object.
+            // Tcl_NewByteArrayObj copies it synchronously without Python reentry.
+            let Some(slice) = (unsafe { rt_bytes_as_slice(bits) }) else {
+                return Err("failed to read bytes argument".to_string());
+            };
+            let o = unsafe { api.new_byte_array_obj(slice.as_ptr(), slice.len()) }.map_err(
+                |error| {
+                    let _ = raise_exception_u64(py, "OverflowError", &error);
+                    error
+                },
+            )?;
             return non_null_obj(o, "Tcl_NewByteArrayObj returned null");
         }
     }
     // tuple / list -> Tcl list of typed elements (font tuples, coordinate lists).
     if let Some(elements) = decode_value_list(obj) {
-        let list_obj = unsafe { (api.new_list_obj)(0, ptr::null()) };
+        let list_obj = unsafe { api.new_list_obj(0, ptr::null()) }?;
         if list_obj.is_null() {
             return Err("Tcl_NewListObj returned null".to_string());
         }
-        for &elem_bits in &elements {
+        for &elem_bits in elements.iter() {
             let elem = match tcl_obj_alloc_typed_from_bits(py, api, interp, elem_bits) {
                 Ok(e) => e,
                 Err(err) => {
@@ -209,29 +218,27 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
         }
         return Ok(list_obj);
     }
-    // Fallback: str() of the object (widget paths, custom __str__). Clear any
-    // pending exception first so rt_str does not bail.
+    // Fallback: str() of the object (widget paths, custom __str__). A pending
+    // Python error ends argument conversion before another callback can run.
     if exception_pending(py) {
-        clear_exception(py);
+        return Err("argument conversion has a pending Python error".to_string());
     }
-    let str_bits = rt_str(bits);
-    let text = if !obj_from_bits(str_bits).is_none() {
-        string_obj_to_owned(obj_from_bits(str_bits))
-    } else {
-        None
+    // SAFETY: rt_str transfers its one result reference to this existing owner.
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_str(bits)) };
+    if exception_pending(py) {
+        return Err("failed to convert argument to str".to_string());
+    }
+    let Some(bytes) = text.string_bytes(py) else {
+        return Err("failed to read argument str".to_string());
     };
-    dec_ref_bits(py, str_bits);
-    match text {
-        Some(s) => alloc_string_obj(api, &s),
-        None => alloc_string_obj(api, &format_obj_str(py, obj)),
-    }
+    alloc_string_obj(api, &String::from_utf8_lossy(bytes))
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn alloc_string_obj(api: &'static TclApi, text: &str) -> Result<*mut c_void, String> {
     let bytes = CString::new(text.as_bytes())
         .map_err(|_| "Tcl string contained interior NUL byte".to_string())?;
-    let o = unsafe { (api.new_string_obj)(bytes.as_ptr(), text.len() as c_int) };
+    let o = unsafe { api.new_string_obj(bytes.as_ptr(), text.len()) }?;
     non_null_obj(o, "Tcl_NewStringObj returned null")
 }
 
@@ -275,8 +282,8 @@ pub(super) fn tcl_obj_result_to_bits(
     }
     // bytearray -> bytes.
     if tp == types.bytearray_t && !types.bytearray_t.is_null() {
-        let mut len: c_int = 0;
-        let data = unsafe { (api.get_byte_array_from_obj)(obj, &mut len) };
+        let mut len: isize = 0;
+        let data = unsafe { api.get_byte_array_from_obj(obj, &mut len) };
         if !data.is_null() && len >= 0 {
             let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
             return rt_bytes_from(slice);
@@ -310,9 +317,9 @@ pub(super) fn tcl_obj_result_to_bits(
     }
     // list -> tuple (recurse on each element).
     if tp == types.list_t && !types.list_t.is_null() {
-        let mut count: c_int = 0;
+        let mut count: isize = 0;
         let mut elems: *mut *mut c_void = ptr::null_mut();
-        if unsafe { (api.list_obj_get_elements)(interp, obj, &mut count, &mut elems) } == TCL_OK
+        if unsafe { api.list_obj_get_elements(interp, obj, &mut count, &mut elems) } == TCL_OK
             && (count == 0 || !elems.is_null())
         {
             let n = count.max(0) as usize;
@@ -353,8 +360,8 @@ pub(super) fn tcl_obj_result_to_bits(
 /// Read a `Tcl_Obj`'s UTF-8 string rep into a molt `str`.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 pub(super) fn tcl_obj_string_to_bits(api: &'static TclApi, obj: *mut c_void) -> u64 {
-    let mut len: c_int = 0;
-    let ptr = unsafe { (api.get_string_from_obj)(obj, &mut len) };
+    let mut len: isize = 0;
+    let ptr = unsafe { api.get_string_from_obj(obj, &mut len) };
     if ptr.is_null() || len < 0 {
         return rt_string_from("");
     }
@@ -374,8 +381,8 @@ pub(super) fn tcl_obj_int_string_to_bits(
     api: &'static TclApi,
     obj: *mut c_void,
 ) -> u64 {
-    let mut len: c_int = 0;
-    let ptr = unsafe { (api.get_string_from_obj)(obj, &mut len) };
+    let mut len: isize = 0;
+    let ptr = unsafe { api.get_string_from_obj(obj, &mut len) };
     if ptr.is_null() || len < 0 {
         return rt_int(0);
     }
@@ -500,20 +507,29 @@ pub(super) fn alloc_tcl_obj_from_part(
         TclObjKind::Scalar(text) => {
             let bytes = CString::new(text.as_bytes())
                 .map_err(|_| "Tcl string contained interior NUL byte".to_string())?;
-            let obj = unsafe { (api.new_string_obj)(bytes.as_ptr(), text.len() as c_int) };
+            let obj = unsafe { api.new_string_obj(bytes.as_ptr(), text.len()) }?;
             if obj.is_null() {
                 return Err("Tcl_NewStringObj returned null".to_string());
             }
             Ok(obj)
         }
         TclObjKind::List(list) => {
-            let list_obj = unsafe { (api.new_list_obj)(0, ptr::null()) };
+            let list_obj = unsafe { api.new_list_obj(0, ptr::null()) }?;
             if list_obj.is_null() {
                 return Err("Tcl_NewListObj returned null".to_string());
             }
             let interp = interp_addr as *mut c_void;
             for nested in list {
-                let nested_obj = alloc_tcl_obj_from_part(api, interp_addr, nested)?;
+                let nested_obj = match alloc_tcl_obj_from_part(api, interp_addr, nested) {
+                    Ok(obj) => obj,
+                    Err(error) => {
+                        unsafe {
+                            api.incr_ref_count_obj(list_obj);
+                            api.decr_ref_count_obj(list_obj);
+                        }
+                        return Err(error);
+                    }
+                };
                 let rc = unsafe { (api.list_obj_append_element)(interp, list_obj, nested_obj) };
                 if rc != TCL_OK {
                     // Safely free refcount-0 objects: incr then decr
@@ -551,7 +567,15 @@ pub(super) fn eval_tcl_without_gil(
     let interp = interp_addr as *mut c_void;
     let mut objv = Vec::with_capacity(parts.len());
     for part in parts {
-        let obj = alloc_tcl_obj_from_part(api, interp_addr, part)?;
+        let obj = match alloc_tcl_obj_from_part(api, interp_addr, part) {
+            Ok(obj) => obj,
+            Err(error) => {
+                for &allocated in &objv {
+                    unsafe { api.decr_ref_count_obj(allocated) };
+                }
+                return Err(error);
+            }
+        };
         // Immediately incr so the object is owned (refcount 1).
         unsafe { api.incr_ref_count_obj(obj) };
         objv.push(obj);
@@ -559,13 +583,14 @@ pub(super) fn eval_tcl_without_gil(
 
     let rc = {
         let _gil_release = GilReleaseGuard::suspend();
-        unsafe { (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0) }
+        unsafe { api.eval_objv(interp, objv.len(), objv.as_ptr(), 0) }
     };
 
     for &obj in &objv {
         unsafe { api.decr_ref_count_obj(obj) };
     }
 
+    let rc = rc?;
     let result = tcl_result_string(api, interp);
     if rc != TCL_OK {
         return Err(if result.is_empty() {
@@ -643,7 +668,13 @@ pub(super) fn run_tcl_command_with_ctx(
                 }
                 let message = format!("tk command failed: {err}");
                 set_last_error(handle, message.clone());
-                return Err(raise_tcl_error(py, &message));
+                // AsObj failures retain their Python error rather than being
+                // replaced with a TclError from the unevaluated command.
+                return Err(if exception_pending(py) {
+                    MoltObject::none().bits()
+                } else {
+                    raise_tcl_error(py, &message)
+                });
             }
         }
     }
@@ -651,10 +682,19 @@ pub(super) fn run_tcl_command_with_ctx(
     // Phase 3 (GIL released): evaluate. No molt runtime calls in this window.
     let rc = {
         let _gil_release = GilReleaseGuard::suspend();
-        unsafe { (api.eval_objv)(interp, objv.len() as c_int, objv.as_ptr(), 0) }
+        unsafe { api.eval_objv(interp, objv.len(), objv.as_ptr(), 0) }
     };
 
-    // Phase 4 (GIL held): convert the typed result, or raise the error string.
+    // Phase 4 (GIL held): retire argv even if count admission failed.
+    let rc = match rc {
+        Ok(rc) => rc,
+        Err(error) => {
+            for &obj in &objv {
+                unsafe { api.decr_ref_count_obj(obj) };
+            }
+            return Err(raise_tcl_error(py, &error));
+        }
+    };
     if rc != TCL_OK {
         let err = tcl_result_string(api, interp);
         for &obj in &objv {
@@ -730,16 +770,21 @@ pub(super) fn take_pending_tcl_callbacks(
         for part in &get_parts {
             let obj = match alloc_tcl_obj_from_part(api, interp_addr, part) {
                 Ok(obj) => obj,
-                Err(_) => return Ok(Vec::new()),
+                Err(_) => {
+                    for &allocated in &get_objv {
+                        unsafe { api.decr_ref_count_obj(allocated) };
+                    }
+                    return Ok(Vec::new());
+                }
             };
             unsafe { api.incr_ref_count_obj(obj) };
             get_objv.push(obj);
         }
-        let rc = unsafe { (api.eval_objv)(interp, get_objv.len() as c_int, get_objv.as_ptr(), 0) };
+        let rc = unsafe { api.eval_objv(interp, get_objv.len(), get_objv.as_ptr(), 0) };
         for &obj in &get_objv {
             unsafe { api.decr_ref_count_obj(obj) };
         }
-        if rc != TCL_OK {
+        if rc != Ok(TCL_OK) {
             return Ok(Vec::new());
         }
         let pending_text = tcl_result_string(api, interp);
@@ -755,9 +800,7 @@ pub(super) fn take_pending_tcl_callbacks(
             reset_objv.push(obj);
         }
         if reset_objv.len() == reset_parts.len() {
-            let _ = unsafe {
-                (api.eval_objv)(interp, reset_objv.len() as c_int, reset_objv.as_ptr(), 0)
-            };
+            let _ = unsafe { api.eval_objv(interp, reset_objv.len(), reset_objv.as_ptr(), 0) };
         }
         for &obj in &reset_objv {
             unsafe { api.decr_ref_count_obj(obj) };

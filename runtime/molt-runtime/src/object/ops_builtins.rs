@@ -1734,9 +1734,18 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
                 )
                 .expect("nonzero i64 operands fit i128 division");
             let q_bits = int_bits_from_i128(_py, quot);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let r_bits = int_bits_from_i128(_py, rem);
-            let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, q_bits);
+                return MoltObject::none().bits();
+            }
+            let tuple_ptr = crate::object::builders::alloc_tuple_owned(_py, &[q_bits, r_bits]);
             if tuple_ptr.is_null() {
+                dec_ref_bits(_py, r_bits);
+                dec_ref_bits(_py, q_bits);
                 return MoltObject::none().bits();
             }
             return MoltObject::from_ptr(tuple_ptr).bits();
@@ -1755,13 +1764,22 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
             } else {
                 bigint_bits(_py, quot)
             };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let r_bits = if let Some(i) = bigint_to_inline(&rem) {
                 MoltObject::from_int(i).bits()
             } else {
                 bigint_bits(_py, rem)
             };
-            let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, q_bits);
+                return MoltObject::none().bits();
+            }
+            let tuple_ptr = crate::object::builders::alloc_tuple_owned(_py, &[q_bits, r_bits]);
             if tuple_ptr.is_null() {
+                dec_ref_bits(_py, r_bits);
+                dec_ref_bits(_py, q_bits);
                 return MoltObject::none().bits();
             }
             return MoltObject::from_ptr(tuple_ptr).bits();
@@ -1778,9 +1796,18 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
                     molt_runtime_core::numeric_error_policy_generated::python_float_divmod(lf, rf)
                         .expect("nonzero divisor checked");
                 let q_bits = float_result_bits(_py, quot);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 let r_bits = float_result_bits(_py, rem);
-                let tuple_ptr = alloc_tuple(_py, &[q_bits, r_bits]);
+                if exception_pending(_py) {
+                    dec_ref_bits(_py, q_bits);
+                    return MoltObject::none().bits();
+                }
+                let tuple_ptr = crate::object::builders::alloc_tuple_owned(_py, &[q_bits, r_bits]);
                 if tuple_ptr.is_null() {
+                    dec_ref_bits(_py, r_bits);
+                    dec_ref_bits(_py, q_bits);
                     return MoltObject::none().bits();
                 }
                 return MoltObject::from_ptr(tuple_ptr).bits();

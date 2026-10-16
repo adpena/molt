@@ -75,7 +75,7 @@ pub extern "C" fn molt_tk_dialog_show(
             return raise_tcl_for_handle(_py, handle, "dialog button strings must be a list/tuple");
         };
         let mut button_labels = Vec::with_capacity(raw_strings.len());
-        for item_bits in raw_strings {
+        for &item_bits in raw_strings.iter() {
             let label = match get_string_arg(_py, handle, item_bits, "dialog button label") {
                 Ok(value) => value,
                 Err(bits) => return bits,

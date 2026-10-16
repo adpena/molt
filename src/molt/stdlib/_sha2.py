@@ -15,9 +15,7 @@ class sha224(_hashlib._Hash):
         super().__init__(
             "sha224",
             data,
-            _hashlib._validate_options(
-                "sha224", {"usedforsecurity": usedforsecurity}, "sha224"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -26,9 +24,7 @@ class sha256(_hashlib._Hash):
         super().__init__(
             "sha256",
             data,
-            _hashlib._validate_options(
-                "sha256", {"usedforsecurity": usedforsecurity}, "sha256"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -37,9 +33,7 @@ class sha384(_hashlib._Hash):
         super().__init__(
             "sha384",
             data,
-            _hashlib._validate_options(
-                "sha384", {"usedforsecurity": usedforsecurity}, "sha384"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -48,9 +42,7 @@ class sha512(_hashlib._Hash):
         super().__init__(
             "sha512",
             data,
-            _hashlib._validate_options(
-                "sha512", {"usedforsecurity": usedforsecurity}, "sha512"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 

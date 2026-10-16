@@ -880,3 +880,303 @@ fn slot_state_uses_sequential_attribute_protocol_and_propagates_errors() {
         assert!(!exception_pending(py));
     });
 }
+
+#[test]
+fn dataclass_and_identity_dict_preserve_allocation_failure_and_input_ownership() {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        let name = attr_name_bits_from_bytes(py, b"DeniedSnapshotRecord").unwrap();
+        let field = attr_name_bits_from_bytes(py, b"value").unwrap();
+        let fields = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
+        let value = MoltObject::from_ptr(alloc_string(py, b"snapshot owned value")).bits();
+        for tuple in [false, true] {
+            let source = if tuple {
+                alloc_tuple(py, &[value])
+            } else {
+                alloc_list(py, &[value])
+            };
+            let source = MoltObject::from_ptr(source).bits();
+            let refs = heap_refcount(value);
+            for codec in [false, true] {
+                struct Reset;
+                impl Drop for Reset {
+                    fn drop(&mut self) {
+                        set_tracker(Box::new(UnlimitedTracker));
+                    }
+                }
+                let reset = Reset;
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_allocations: Some(0),
+                    ..ResourceLimits::default()
+                })));
+                // Lists fail at snapshot capture; immutable tuple pins succeed,
+                // then destination construction encounters the exhausted budget.
+                let out = if codec {
+                    crate::molt_codecs_make_identity_dict(source)
+                } else {
+                    molt_dataclass_new(name, fields, source, MoltObject::from_int(0).bits())
+                };
+                assert!(obj_from_bits(out).is_none());
+                assert_eq!(heap_refcount(value), refs);
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                drop(reset);
+            }
+            dec_ref_bits(py, source);
+        }
+        for bits in [value, fields, field, name] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+    });
+}
+
+// Exercise actual producers under the normal resource authority. The independent
+// capacity probe after each denial detects retained partial results without
+// reading freed objects or adding an allocator-specific failure hook.
+fn assert_owned_tuple_parts(
+    py: &PyToken<'_>,
+    label: &str,
+    allocations: usize,
+    owned_slots: &[usize],
+    operation: impl Fn() -> u64,
+    inspect: impl Fn(&[u64]),
+) {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
+
+    let result = operation();
+    assert!(!exception_pending(py), "{label}: successful preparation");
+    let ptr = obj_from_bits(result).as_ptr().expect("tuple result");
+    unsafe {
+        seq_access::with_immutable_tuple_slice(ptr, |items| {
+            inspect(items);
+            for &index in owned_slots {
+                assert_eq!(heap_refcount(items[index]), 1, "{label}: slot {index}");
+            }
+        })
+        .expect("exact tuple");
+    }
+    dec_ref_bits(py, result);
+
+    for budget in 0..allocations {
+        let reset = Reset;
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_allocations: Some(budget),
+            ..ResourceLimits::default()
+        })));
+        let result = operation();
+        assert!(obj_from_bits(result).is_none(), "{label}: budget {budget}");
+        crate::test_support::assert_and_clear_emergency_memory_error(py);
+
+        let mut probes = Vec::new();
+        for index in 0..budget {
+            let bits = int_bits_from_bigint(py, (BigInt::from(1u8) << 100) + index);
+            assert!(
+                !exception_pending(py),
+                "{label}: leaked capacity at {budget}/{index}"
+            );
+            assert!(obj_from_bits(bits).as_ptr().is_some());
+            probes.push(bits);
+        }
+        let refused = int_bits_from_bigint(py, BigInt::from(1u8) << 100);
+        assert!(obj_from_bits(refused).is_none());
+        crate::test_support::assert_and_clear_emergency_memory_error(py);
+        for bits in probes.into_iter().rev() {
+            dec_ref_bits(py, bits);
+        }
+        drop(reset);
+    }
+}
+
+#[test]
+fn owned_tuple_parts_slice_reduction_and_indices_transfer_and_retire() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let start = int_bits_from_bigint(py, (BigInt::from(1u8) << 80) + 1);
+        let stop = int_bits_from_bigint(py, (BigInt::from(1u8) << 81) + 3);
+        let step = int_bits_from_bigint(py, (BigInt::from(1u8) << 70) + 5);
+        let length = int_bits_from_bigint(py, BigInt::from(1u8) << 90);
+        let slice = molt_slice_new(start, stop, step);
+        assert!(!exception_pending(py));
+        let counts = [
+            heap_refcount(start),
+            heap_refcount(stop),
+            heap_refcount(step),
+        ];
+        for extended in [false, true] {
+            assert_owned_tuple_parts(
+                py,
+                "slice reduction",
+                2,
+                &[1],
+                || {
+                    if extended {
+                        molt_slice_reduce_ex(slice, MoltObject::from_int(4).bits())
+                    } else {
+                        molt_slice_reduce(slice)
+                    }
+                },
+                |items| {
+                    assert_eq!(items.len(), 2);
+                    assert_eq!(items[0], builtin_classes(py).slice);
+                    unsafe {
+                        seq_access::with_immutable_tuple_slice(
+                            obj_from_bits(items[1]).as_ptr().unwrap(),
+                            |args| assert_eq!(args, &[start, stop, step]),
+                        )
+                        .unwrap();
+                    }
+                },
+            );
+            assert_eq!(
+                [
+                    heap_refcount(start),
+                    heap_refcount(stop),
+                    heap_refcount(step)
+                ],
+                counts
+            );
+        }
+        assert_owned_tuple_parts(
+            py,
+            "slice indices",
+            4,
+            &[0, 1, 2],
+            || molt_slice_indices(slice, length),
+            |items| {
+                assert_eq!(items.len(), 3);
+                let expected = [
+                    (BigInt::from(1u8) << 80) + 1,
+                    (BigInt::from(1u8) << 81) + 3,
+                    (BigInt::from(1u8) << 70) + 5,
+                ];
+                for (&actual, expected) in items.iter().zip(expected) {
+                    assert_eq!(
+                        crate::builtins::numbers::index_bigint_integral_bits(actual),
+                        Some(expected)
+                    );
+                }
+            },
+        );
+        assert_eq!(
+            [
+                heap_refcount(start),
+                heap_refcount(stop),
+                heap_refcount(step)
+            ],
+            counts
+        );
+        for bits in [slice, length, step, stop, start] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn owned_tuple_parts_ratios_and_divmod_transfer_and_retire() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        assert_owned_tuple_parts(
+            py,
+            "float ratio",
+            3,
+            &[0, 1],
+            || {
+                crate::molt_float_as_integer_ratio(
+                    MoltObject::from_float(0.5000000000000001).bits(),
+                )
+            },
+            |items| {
+                assert_eq!(items.len(), 2);
+                for (&actual, expected) in
+                    items.iter().zip([4503599627370497_i64, 9007199254740992])
+                {
+                    assert_eq!(
+                        crate::builtins::numbers::index_bigint_integral_bits(actual),
+                        Some(BigInt::from(expected))
+                    );
+                }
+            },
+        );
+        let i64_input = int_bits_from_i128(py, (1i128 << 62) + 1);
+        assert_owned_tuple_parts(
+            py,
+            "i64 divmod",
+            2,
+            &[0],
+            || ops_builtins::molt_divmod_builtin(i64_input, MoltObject::from_int(3).bits()),
+            |items| {
+                assert_eq!(items.len(), 2);
+                assert_eq!(
+                    crate::builtins::numbers::index_bigint_integral_bits(items[0]),
+                    Some(BigInt::from(1537228672809129301_i64))
+                );
+                assert_eq!(obj_from_bits(items[1]).as_int(), Some(2));
+            },
+        );
+        let left = int_bits_from_bigint(py, (BigInt::from(1u8) << 160) + (BigInt::from(1u8) << 79));
+        let right = int_bits_from_bigint(py, (BigInt::from(1u8) << 80) + 3);
+        assert_owned_tuple_parts(
+            py,
+            "bigint divmod",
+            3,
+            &[0, 1],
+            || ops_builtins::molt_divmod_builtin(left, right),
+            |items| {
+                assert_eq!(items.len(), 2);
+                let expected = [(BigInt::from(1u8) << 80) - 3, (BigInt::from(1u8) << 79) + 9];
+                for (&actual, expected) in items.iter().zip(expected) {
+                    assert_eq!(
+                        crate::builtins::numbers::index_bigint_integral_bits(actual),
+                        Some(expected)
+                    );
+                }
+            },
+        );
+        let nan = crate::object::ops::float_result_bits(py, f64::NAN);
+        assert_owned_tuple_parts(
+            py,
+            "NaN divmod",
+            3,
+            &[0, 1],
+            || ops_builtins::molt_divmod_builtin(nan, MoltObject::from_float(3.0).bits()),
+            |items| {
+                assert_eq!(items.len(), 2);
+                for &bits in items {
+                    assert!(
+                        crate::object::ops::as_float_extended(obj_from_bits(bits))
+                            .unwrap()
+                            .is_nan()
+                    );
+                }
+            },
+        );
+        // int.as_integer_ratio intentionally borrows its existing integer.
+        let before = heap_refcount(left);
+        let ratio = crate::molt_int_as_integer_ratio(left);
+        assert!(!exception_pending(py));
+        unsafe {
+            seq_access::with_immutable_tuple_slice(
+                obj_from_bits(ratio).as_ptr().unwrap(),
+                |items| {
+                    assert_eq!(items, &[left, MoltObject::from_int(1).bits()]);
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(heap_refcount(left), before + 1);
+        dec_ref_bits(py, ratio);
+        assert_eq!(heap_refcount(left), before);
+        for bits in [nan, right, left, i64_input] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+    });
+}

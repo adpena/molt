@@ -177,9 +177,11 @@ fn attr_i64_default(
 }
 
 fn dec_owned_bits(_py: &crate::PyToken<'_>, owned: &[u64]) {
-    for bits in owned {
-        dec_ref_bits(_py, *bits);
-    }
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
+        for bits in owned {
+            dec_ref_bits(_py, *bits);
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -349,9 +351,13 @@ fn signature_payload_from_code(
     }
     owned.push(varnames_bits);
 
-    let Some(varnames) = decode_value_list(obj_from_bits(varnames_bits)) else {
+    let Some(varnames) = decode_value_list(_py, obj_from_bits(varnames_bits)) else {
         dec_owned_bits(_py, &owned);
-        return Ok(None);
+        return if exception_pending(_py) {
+            Err(MoltObject::none().bits())
+        } else {
+            Ok(None)
+        };
     };
 
     let total_pos = argcount.max(0) as usize;
@@ -1140,17 +1146,19 @@ pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) ->
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let Some(names) = decode_value_list(obj_from_bits(names_bits)) else {
+        let Some(names) = decode_value_list(_py, obj_from_bits(names_bits)) else {
             if !obj_from_bits(names_bits).is_none() {
                 dec_ref_bits(_py, names_bits);
             }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             return raise_exception(_py, "TypeError", "dir() did not return a sequence");
         };
-        let names = names.to_vec();
         let missing = missing_bits(_py);
         let mut pairs: Vec<u64> = Vec::new();
         let mut owned_pairs: Vec<u64> = Vec::new();
-        for name_bits in names {
+        for &name_bits in names.iter() {
             let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
             if exception_pending(_py) {
                 if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
@@ -1525,6 +1533,164 @@ mod coroutine_identity_tests {
             );
             assert!(!exception_pending(_py));
             dec_ref_bits(_py, bits);
+        });
+    }
+}
+
+#[cfg(test)]
+mod signature_snapshot_tests {
+    use super::*;
+    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static VARNAMES: AtomicU64 = AtomicU64::new(0);
+    static VARARG: AtomicU64 = AtomicU64::new(0);
+    static VARKW: AtomicU64 = AtomicU64::new(0);
+    static DEFAULTS: AtomicU64 = AtomicU64::new(0);
+    static KWDEFAULTS: AtomicU64 = AtomicU64::new(0);
+    static FAIL: AtomicU64 = AtomicU64::new(0);
+    static ERROR: AtomicU64 = AtomicU64::new(0);
+
+    fn owners(bits: u64) -> u32 {
+        unsafe {
+            (*crate::object::header_from_obj_ptr(obj_from_bits(bits).as_ptr().unwrap()))
+                .ref_count_snapshot()
+        }
+    }
+
+    extern "C" fn signature_getattribute(_object: u64, name: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let name = string_obj_to_owned(obj_from_bits(name)).unwrap();
+            let bits = match name.as_str() {
+                "co_flags" => return MoltObject::from_int(0x0c).bits(),
+                "co_argcount" | "co_posonlyargcount" | "co_kwonlyargcount" => {
+                    return MoltObject::from_int(0).bits();
+                }
+                "co_varnames" => VARNAMES.load(Ordering::SeqCst),
+                "__defaults__" => {
+                    crate::molt_list_clear(VARNAMES.load(Ordering::SeqCst));
+                    // Observer references keep a broken implementation safe to
+                    // reject here, before it dereferences the remaining names.
+                    assert_eq!(owners(VARARG.load(Ordering::SeqCst)), 2);
+                    assert_eq!(owners(VARKW.load(Ordering::SeqCst)), 2);
+                    if FAIL.load(Ordering::SeqCst) != 0 {
+                        let out =
+                            raise_exception::<u64>(py, "ValueError", "signature defaults failed");
+                        ERROR.store(
+                            crate::exception_last_bits_noinc(py).unwrap(),
+                            Ordering::SeqCst,
+                        );
+                        return out;
+                    }
+                    DEFAULTS.load(Ordering::SeqCst)
+                }
+                "__kwdefaults__" => KWDEFAULTS.load(Ordering::SeqCst),
+                _ => {
+                    return raise_exception::<u64>(py, "AttributeError", "missing signature field");
+                }
+            };
+            crate::inc_ref_bits(py, bits);
+            bits
+        })
+    }
+
+    #[test]
+    fn code_signature_retains_variadic_names_through_defaults_callbacks() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = attr_name_bits_from_bytes(py, b"SignatureSnapshot").unwrap();
+            let class = crate::molt_class_new(name);
+            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let getter_name = attr_name_bits_from_bytes(py, b"__getattribute__").unwrap();
+            let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr(
+                    "signature_getattribute",
+                    signature_getattribute as *const (),
+                ),
+                2,
+            ))
+            .bits();
+            crate::molt_set_attr_name(class, getter_name, getter);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            unsafe {
+                crate::object::class_finish_definition(py, class_ptr).unwrap();
+            }
+            let object = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+            let vararg = MoltObject::from_ptr(alloc_string(py, b"vararg snapshot name")).bits();
+            let varkw = MoltObject::from_ptr(alloc_string(py, b"varkw snapshot name")).bits();
+            VARARG.store(vararg, Ordering::SeqCst);
+            VARKW.store(varkw, Ordering::SeqCst);
+            let defaults = alloc_empty_tuple_bits(py);
+            let kwdefaults = alloc_empty_dict_bits(py);
+            DEFAULTS.store(defaults, Ordering::SeqCst);
+            KWDEFAULTS.store(kwdefaults, Ordering::SeqCst);
+            for fail in [0, 1] {
+                let names = MoltObject::from_ptr(alloc_list(py, &[vararg, varkw])).bits();
+                VARNAMES.store(names, Ordering::SeqCst);
+                FAIL.store(fail, Ordering::SeqCst);
+                let out = signature_payload_from_code(py, object, object);
+                if fail == 0 {
+                    let payload = out.unwrap().unwrap();
+                    assert!(!exception_pending(py));
+                    let actual = unsafe {
+                        crate::object::seq_access::with_immutable_tuple_slice(
+                            obj_from_bits(payload).as_ptr().unwrap(),
+                            |values| [values[3], values[4]],
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(actual, [vararg, varkw]);
+                    assert_eq!(owners(vararg), 2, "observer plus signature payload");
+                    dec_ref_bits(py, payload);
+                } else {
+                    assert!(out.is_err());
+                    assert_eq!(
+                        crate::exception_last_bits_noinc(py),
+                        Some(ERROR.load(Ordering::SeqCst))
+                    );
+                    crate::molt_exception_clear();
+                }
+                assert_eq!(owners(vararg), 1);
+                assert_eq!(owners(varkw), 1);
+                assert_eq!(owners(names), 1);
+                dec_ref_bits(py, names);
+            }
+            // The attribute keys have already been observed above. Deny the
+            // resource-accounted snapshot before any defaults callback runs.
+            {
+                use crate::resource::{
+                    LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker,
+                };
+                assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+                let names = MoltObject::from_ptr(alloc_list(py, &[vararg, varkw])).bits();
+                VARNAMES.store(names, Ordering::SeqCst);
+                struct Reset;
+                impl Drop for Reset {
+                    fn drop(&mut self) {
+                        set_tracker(Box::new(UnlimitedTracker));
+                    }
+                }
+                let reset = Reset;
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_allocations: Some(0),
+                    ..ResourceLimits::default()
+                })));
+                assert!(signature_payload_from_code(py, object, object).is_err());
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                drop(reset);
+                dec_ref_bits(py, names);
+            }
+            for bits in [vararg, varkw, defaults, kwdefaults, object] {
+                dec_ref_bits(py, bits);
+            }
+            unsafe {
+                crate::object::heap_lifecycle::clear_cycle_edges(py, class_ptr);
+            }
+            for bits in [class, name, getter_name, getter] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
         });
     }
 }

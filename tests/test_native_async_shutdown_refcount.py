@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,22 +19,15 @@ _HANDLE_FINALIZERS = [
     ("ssl.py", "SSLSocket", "_handle", "_MOLT_SSL_SOCKET_DROP"),
     ("queue.py", "Queue", "_handle", "_MOLT_QUEUE_DROP"),
     ("_queue.py", "SimpleQueue", "_handle", "_MOLT_QUEUE_DROP"),
-    ("lzma.py", "LZMACompressor", "_handle", "_MOLT_LZMA_COMPRESSOR_DROP"),
-    ("lzma.py", "LZMADecompressor", "_handle", "_MOLT_LZMA_DECOMPRESSOR_DROP"),
     ("ipaddress.py", "IPv4Address", "_handle", "_molt_ipaddress_drop"),
     ("ipaddress.py", "IPv6Address", "_handle", "_molt_ipaddress_v6_drop"),
     ("ipaddress.py", "IPv4Network", "_handle", "_molt_ipaddress_v4_network_drop"),
-    ("bz2.py", "BZ2Compressor", "_handle", "_MOLT_BZ2_COMPRESSOR_DROP"),
-    ("bz2.py", "BZ2Decompressor", "_handle", "_MOLT_BZ2_DECOMPRESSOR_DROP"),
     ("functools.py", "singledispatch", "_handle", "_MOLT_SD_DROP"),
-    ("hashlib.py", "_Hash", "_handle", "_molt_hash_drop"),
     ("codecs.py", "IncrementalEncoder", "_handle", "_molt_inc_enc_drop"),
     ("codecs.py", "IncrementalDecoder", "_handle", "_molt_inc_dec_drop"),
     ("codecs.py", "StreamReader", "_sr_handle", "_molt_stream_reader_drop"),
     ("decimal.py", "Context", "_handle", "_MOLT_DECIMAL_CONTEXT_DROP"),
     ("decimal.py", "Decimal", "_handle", "_MOLT_DECIMAL_DROP"),
-    ("zlib.py", "Compress", "_handle", "_MOLT_ZLIB_COMPRESSOBJ_DROP"),
-    ("zlib.py", "Decompress", "_handle", "_MOLT_ZLIB_DECOMPRESSOBJ_DROP"),
     ("_collections.py", "OrderedDict", "_handle", "_MOLT_ORDEREDDICT_DROP"),
     ("configparser.py", "RawConfigParser", "_handle", "_molt_configparser_drop"),
     ("csv.py", "_Reader", "_handle", "_MOLT_CSV_READER_DROP"),
@@ -47,7 +41,6 @@ _HANDLE_FINALIZERS = [
     ),
     ("contextlib.py", "ExitStack", "_molt_state", "_MOLT_CONTEXTLIB_EXITSTACK_DROP"),
     ("graphlib.py", "TopologicalSorter", "_handle", "_MOLT_GRAPHLIB_DROP"),
-    ("hmac.py", "HMAC", "_handle", "_molt_hmac_drop"),
     ("ssl.py", "SSLContext", "_handle", "_MOLT_SSL_CONTEXT_DROP"),
     ("_multiprocessing.py", "SemLock", "_handle", "_molt_semlock_drop"),
     ("zoneinfo/__init__.py", "ZoneInfo", "_handle", "_molt_zoneinfo_drop"),
@@ -109,6 +102,168 @@ _HANDLE_FINALIZERS = [
 ]
 
 
+# These native payloads are managed fields. A Python finalizer no longer owns
+# their storage; file facades retain their separate finish/close protocol.
+_MANAGED_NATIVE_OWNERS = (
+    ("hashlib.py", "_Hash"),
+    ("hmac.py", "HMAC"),
+    ("zlib.py", "Compress"),
+    ("zlib.py", "Decompress"),
+    ("bz2.py", "BZ2Compressor"),
+    ("bz2.py", "BZ2Decompressor"),
+    ("lzma.py", "LZMACompressor"),
+    ("lzma.py", "LZMADecompressor"),
+)
+_NATIVE_FIELD_CLOSE_OWNERS = (
+    ("gzip.py", "GzipFile", "_MOLT_GZIP_CLOSE"),
+    ("bz2.py", "BZ2File", "_MOLT_BZ2_FILE_CLOSE"),
+    ("lzma.py", "LZMAFile", "_MOLT_LZMA_FILE_CLOSE"),
+)
+
+
+@pytest.mark.parametrize("relative_path,class_name", _MANAGED_NATIVE_OWNERS)
+def test_native_payload_field_owns_lifetime_after_module_retirement(
+    relative_path, class_name
+):
+    import gc
+    import weakref
+
+    path = Path(__file__).resolve().parents[1] / "src/molt/stdlib" / relative_path
+    source = next(
+        n
+        for n in ast.parse(path.read_text(encoding="utf-8")).body
+        if isinstance(n, ast.ClassDef) and n.name == class_name
+    )
+    calls = []
+
+    def forbidden_drop(*args, **kwargs):
+        calls.append("raw-drop")
+        raise AssertionError("managed native storage must retire through its field")
+
+    namespace = {
+        n.id: forbidden_drop
+        for n in ast.walk(source)
+        if isinstance(n, ast.Name) and n.id.startswith(("_MOLT_", "_molt_"))
+    }
+    # These public constants are evaluated by the actual class defaults;
+    # no constructor/native operation is executed in this field-lifetime test.
+    namespace.update(
+        {
+            "_ZLIB_ERROR": ValueError,
+            "_ZDICT_OMITTED": object(),
+            "_LZMA_ERROR": OSError,
+            "Z_FINISH": 4,
+            "DEF_BUF_SIZE": 16384,
+            "FORMAT_XZ": 1,
+            "FORMAT_AUTO": 0,
+        }
+    )
+    unit = ast.parse("from __future__ import annotations\n")
+    unit.body.append(source)
+    exec(compile(ast.fix_missing_locations(unit), str(path), "exec"), namespace)
+    owner = namespace[class_name]
+    assert "__del__" not in owner.__dict__, "the field owns native storage retirement"
+    instance = object.__new__(owner)
+
+    class Payload:
+        def __del__(self):
+            calls.append("payload")
+
+    payload = Payload()
+    reference = weakref.ref(payload)
+    object.__setattr__(instance, "_handle", payload)
+    del payload
+    borrowed = instance._handle
+    namespace.clear()
+    del instance
+    gc.collect()
+    assert reference() is borrowed and calls == []
+    del borrowed
+    gc.collect()
+    assert reference() is None and calls == ["payload"]
+
+
+@pytest.mark.parametrize(
+    "relative_path,class_name,close_name", _NATIVE_FIELD_CLOSE_OWNERS
+)
+@pytest.mark.parametrize("fail_close", [False, True])
+def test_native_file_finishes_once_and_retires_its_managed_field(
+    relative_path, class_name, close_name, fail_close
+):
+    import gc
+    import weakref
+
+    import io
+    import struct
+    import sys
+    import time
+    import zlib
+
+    calls = []
+    instance = None
+    error = OSError("finish witness")
+
+    class CodecError(Exception):
+        pass
+
+    def close(handle):
+        assert instance._handle is None
+        assert instance.closed if class_name == "GzipFile" else instance._closed
+        assert handle is reference()
+        calls.append("close")
+        instance.__del__()
+        if fail_close:
+            raise error
+
+    def lzma_close(error_type, handle):
+        assert error_type is CodecError
+        close(handle)
+
+    owner, namespace = _cleanup_owner(
+        relative_path,
+        class_name,
+        {
+            close_name: lzma_close if class_name == "LZMAFile" else close,
+            "_LZMA_ERROR": CodecError,
+            "io": io,
+            "struct": struct,
+            "time": time,
+            "zlib": zlib,
+            "_TARGET_313": sys.version_info[:2] >= (3, 13),
+        },
+        additional_methods=("closed",) if class_name == "GzipFile" else (),
+    )
+    instance = owner()
+    if class_name == "GzipFile":
+        instance.fileobj = None
+    else:
+        instance._fileobj = None
+
+    class Payload:
+        def __del__(self):
+            calls.append("payload")
+
+    payload = Payload()
+    reference = weakref.ref(payload)
+    instance._handle = payload
+    del payload
+    namespace.clear()
+    if fail_close:
+        with pytest.raises(OSError, match="finish witness") as raised:
+            instance.close()
+        assert raised.value is error
+        raised.value.__traceback__ = None
+        del raised
+    else:
+        instance.close()
+    instance.__del__()
+    instance.__del__()
+    gc.collect()
+    assert reference() is None and calls == ["close", "payload"]
+    owner().__del__()  # construction failed before publishing a native field
+    assert calls == ["close", "payload"]
+
+
 # Preserve the existing __del__ error policy while making retirement exact-once.
 _SUPPRESSED_FINALIZERS = {
     ("_sqlite3.py", "Cursor"),
@@ -116,22 +271,15 @@ _SUPPRESSED_FINALIZERS = {
     ("ssl.py", "SSLSocket"),
     ("queue.py", "Queue"),
     ("_queue.py", "SimpleQueue"),
-    ("lzma.py", "LZMACompressor"),
-    ("lzma.py", "LZMADecompressor"),
     ("ipaddress.py", "IPv4Address"),
     ("ipaddress.py", "IPv6Address"),
     ("ipaddress.py", "IPv4Network"),
-    ("bz2.py", "BZ2Compressor"),
-    ("bz2.py", "BZ2Decompressor"),
     ("functools.py", "singledispatch"),
-    ("hashlib.py", "_Hash"),
     ("codecs.py", "IncrementalEncoder"),
     ("codecs.py", "IncrementalDecoder"),
     ("codecs.py", "StreamReader"),
     ("decimal.py", "Context"),
     ("decimal.py", "Decimal"),
-    ("zlib.py", "Compress"),
-    ("zlib.py", "Decompress"),
     ("_collections.py", "OrderedDict"),
     ("configparser.py", "RawConfigParser"),
     ("csv.py", "_Reader"),
@@ -140,7 +288,6 @@ _SUPPRESSED_FINALIZERS = {
     ("contextlib.py", "AsyncExitStack"),
     ("contextlib.py", "ExitStack"),
     ("graphlib.py", "TopologicalSorter"),
-    ("hmac.py", "HMAC"),
     ("ssl.py", "SSLContext"),
     ("_multiprocessing.py", "SemLock"),
     ("zoneinfo/__init__.py", "ZoneInfo"),
@@ -164,22 +311,15 @@ _MIGRATED_FINALIZERS = {
     ("ssl.py", "SSLSocket"),
     ("queue.py", "Queue"),
     ("_queue.py", "SimpleQueue"),
-    ("lzma.py", "LZMACompressor"),
-    ("lzma.py", "LZMADecompressor"),
     ("ipaddress.py", "IPv4Address"),
     ("ipaddress.py", "IPv6Address"),
     ("ipaddress.py", "IPv4Network"),
-    ("bz2.py", "BZ2Compressor"),
-    ("bz2.py", "BZ2Decompressor"),
     ("functools.py", "singledispatch"),
-    ("hashlib.py", "_Hash"),
     ("codecs.py", "IncrementalEncoder"),
     ("codecs.py", "IncrementalDecoder"),
     ("codecs.py", "StreamReader"),
     ("decimal.py", "Context"),
     ("decimal.py", "Decimal"),
-    ("zlib.py", "Compress"),
-    ("zlib.py", "Decompress"),
     ("_collections.py", "OrderedDict"),
     ("configparser.py", "RawConfigParser"),
     ("csv.py", "_Reader"),
@@ -188,7 +328,6 @@ _MIGRATED_FINALIZERS = {
     ("contextlib.py", "AsyncExitStack"),
     ("contextlib.py", "ExitStack"),
     ("graphlib.py", "TopologicalSorter"),
-    ("hmac.py", "HMAC"),
     ("ssl.py", "SSLContext"),
     ("_multiprocessing.py", "SemLock"),
     ("zoneinfo/__init__.py", "ZoneInfo"),
@@ -510,11 +649,28 @@ def _cleanup_owner(
         ]
         unit.body.insert(1, base)
         owner.bases = [ast.Name(id="Base", ctx=ast.Load())]
-    for name in ("_require_socket_intrinsic", "_compress_payload"):
-        unit.body[1:1] = [
-            n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name
-        ]
+    # Keep helper definition order: captured defaults may name an earlier
+    # helper (gzip's header constructor), just as in the real module.
+    helper_names = {
+        "_require_socket_intrinsic",
+        "_write32u",
+    }
+    unit.body[1:1] = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name in helper_names
+    ]
+    if class_name == "GzipFile" and "__init__" in additional_methods:
+        # The real weak raw adapter participates in this lifetime proof.
+        raw = next(
+            n
+            for n in tree.body
+            if isinstance(n, ast.ClassDef) and n.name == "_WriteBufferStream"
+        )
+        unit.body.insert(1, raw)
     namespace = dict(bindings)
+    if class_name == "GzipFile":
+        namespace["_TARGET_VERSION"] = sys.version_info[:2]
     exec(compile(ast.fix_missing_locations(unit), str(path), "exec"), namespace)
     return namespace["Owner"], namespace
 
@@ -542,9 +698,6 @@ _CLOSE_DROP_OWNERS = [
         "_MOLT_SELECTOR_DROP",
     ),
     ("socket.py", "socket", "_handle", "_molt_socket_close", "_molt_socket_drop"),
-    ("gzip.py", "GzipFile", "_handle", "_MOLT_GZIP_CLOSE", "_MOLT_GZIP_DROP"),
-    ("bz2.py", "BZ2File", "_handle", "_MOLT_BZ2_FILE_CLOSE", "_MOLT_BZ2_FILE_DROP"),
-    ("lzma.py", "LZMAFile", "_handle", "_MOLT_LZMA_FILE_CLOSE", "_MOLT_LZMA_FILE_DROP"),
     ("tarfile.py", "TarFile", "_handle", "_molt_tarfile_close", "_molt_tarfile_drop"),
 ]
 
@@ -573,7 +726,6 @@ def test_compound_cleanup_retires_owner_before_callbacks_and_preserves_errors(
         {
             close_name: lambda h: callback("close", h),
             drop_name: lambda h: callback("drop", h),
-            "_MOLT_GZIP_COMPRESS": lambda *args: b"",
             "BadGzipFile": OSError,
         },
     )
@@ -616,7 +768,6 @@ def test_compound_finalizer_preserves_suppression_after_namespace_retirement(
         {
             close_name: fail,
             drop_name: lambda h: calls.append(("drop", h)),
-            "_MOLT_GZIP_COMPRESS": lambda *args: b"",
             "BadGzipFile": OSError,
         },
     )
@@ -755,62 +906,130 @@ def test_dbm_close_retires_owner_once_and_preserves_unsuppressed_error(failure):
 def test_gzip_borrowed_file_close_finishes_once_without_closing_borrowed_file(
     failure_stage,
 ):
-    calls = []
+    import builtins
+    import io
+    import os
+    import struct
+    import time
+    import types
+    import warnings
+    import weakref
+    import zlib
+
     error = OSError("finish witness")
+    calls = []
     instance = None
+    # Independent fixed stored-deflate member, not output manufactured by a mock.
+    encoded = (
+        b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff"
+        b"\x01\x07\x00\xf8\xffpayload\x15\x6a\x2c\x42\x07\x00\x00\x00"
+    )
 
-    class BadGzipFile(OSError):
-        pass
+    class Compressor:
+        def __init__(self, *args):
+            self.state = zlib.compressobj(*args)
 
-    def compress(data, level, mtime):
-        assert instance._closed
-        calls.append(("compress", data, level, mtime))
-        instance.__del__()
-        if failure_stage == "compress":
-            raise error
-        return b"compressed"
+        def compress(self, data):
+            assert not instance.closed and not instance._buffer.closed
+            calls.append(("compress", bytes(data)))
+            # CP close reentry during the locked raw callback is suppressed by
+            # __del__, while its finally path clears the gzip file owner.
+            instance.__del__()
+            if failure_stage == "compress":
+                raise error
+            return self.state.compress(data)
+
+        def flush(self, *args):
+            calls.append(("finish", args))
+            return self.state.flush(*args)
 
     class BorrowedFile:
+        def __init__(self):
+            self.contents = io.BytesIO()
+
         def write(self, data):
-            assert instance._closed
-            calls.append(("write", data))
-            instance.__del__()
-            if failure_stage == "write":
-                raise error
+            if instance is not None:
+                calls.append(("write", bytes(data)))
+                if failure_stage == "write":
+                    raise error
+            return self.contents.write(data)
 
         def close(self):
             pytest.fail("GzipFile must not close a borrowed file")
 
+    def unexpected_native(*args):
+        pytest.fail(
+            "streaming fileobj write must not construct a native gzip file owner"
+        )
+
+    namespace_zlib = types.SimpleNamespace(
+        **{
+            name: getattr(zlib, name)
+            for name in (
+                "compress",
+                "crc32",
+                "Z_SYNC_FLUSH",
+                "DEFLATED",
+                "MAX_WBITS",
+                "DEF_MEM_LEVEL",
+                "Z_DEFAULT_STRATEGY",
+            )
+        }
+    )
+    namespace_zlib.compressobj = Compressor
     owner, namespace = _cleanup_owner(
         "gzip.py",
         "GzipFile",
         {
-            "_MOLT_GZIP_CLOSE": lambda h: pytest.fail("no native file owner"),
-            "_MOLT_GZIP_DROP": lambda h: pytest.fail("no native file owner"),
-            "_MOLT_GZIP_COMPRESS": compress,
-            "BadGzipFile": BadGzipFile,
+            "_MOLT_GZIP_OPEN": unexpected_native,
+            "_MOLT_GZIP_CLOSE": unexpected_native,
+            "builtins": builtins,
+            "io": io,
+            "os": os,
+            "struct": struct,
+            "time": time,
+            "warnings": warnings,
+            "weakref": weakref,
+            "zlib": namespace_zlib,
         },
+        additional_methods=(
+            "__init__",
+            "write",
+            "writable",
+            "closed",
+            "_check_not_closed",
+            "_write_raw",
+            "_write_gzip_header",
+            "_close",
+        ),
     )
-    instance = owner()
-    instance._handle = None
-    instance._fileobj = BorrowedFile()
-    instance._write_buf = bytearray(b"payload")
-    instance._compresslevel = 7
-    instance._mtime = None
+    borrowed = BorrowedFile()
+    instance = owner(fileobj=borrowed, mode="wb", compresslevel=0, mtime=0)
+    assert isinstance(instance._buffer, io.BufferedWriter)
+    assert borrowed.contents.getvalue() == encoded[:10]
+    assert instance.write(b"payload") == 7
+    assert calls == []  # bounded pending buffer has not called the compressor
     namespace.clear()
     if failure_stage:
         with pytest.raises(OSError) as raised:
             instance.close()
-        if failure_stage == "compress":
-            assert isinstance(raised.value, BadGzipFile)
-            assert raised.value.__cause__ is error
-        else:
-            assert raised.value is error
+        assert raised.value is error
+        raised.value.__traceback__ = None
+        del raised
     else:
         instance.close()
     instance.__del__()
-    assert calls == [("compress", b"payload", 7, 0)] + (
-        [] if failure_stage == "compress" else [("write", b"compressed")]
+    instance.__del__()
+    assert instance.closed and not instance._buffer.closed
+    assert not borrowed.contents.closed
+    assert borrowed.contents.getvalue() == (
+        encoded if failure_stage is None else encoded[:10]
+    )
+    assert [call for call in calls if call[0] == "compress"] == [
+        ("compress", b"payload")
+    ]
+    assert [call for call in calls if call[0] == "finish"] == (
+        [] if failure_stage else [("finish", ())]
     )
 
 
@@ -894,13 +1113,11 @@ def test_ssl_unwrap_transfers_live_transport_only_after_success(fail_shutdown):
 # Prior source placed these attribute reads inside its suppression boundary.
 _SUPPRESSED_ATTRIBUTE_READS = {
     ("decimal.py", "Context"),
-    ("hashlib.py", "_Hash"),
     ("queue.py", "Queue"),
     ("ssl.py", "SSLSocket"),
     ("logging/__init__.py", "LogRecord"),
     ("ssl.py", "SSLContext"),
     ("ipaddress.py", "IPv6Address"),
-    ("hmac.py", "HMAC"),
     ("logging/__init__.py", "Formatter"),
     ("ipaddress.py", "IPv4Network"),
     ("_queue.py", "SimpleQueue"),
@@ -1043,7 +1260,11 @@ def test_native_cleanup_family_has_behavioral_coverage_and_no_live_global_intrin
     exceptions = {("tkinter/font.py", "Font")}
     behavioral_owners = {row[:2] for row in _HANDLE_FINALIZERS}
     behavioral_owners.update(row[:2] for row in _CLOSE_DROP_OWNERS)
+    behavioral_owners.update(row[:2] for row in _NATIVE_FIELD_CLOSE_OWNERS)
     behavioral_owners.update({("subprocess.py", "Popen"), ("dbm/dumb.py", "_Database")})
+    managed_owners = set(_MANAGED_NATIVE_OWNERS)
+    assert managed_owners.isdisjoint(behavioral_owners)
+    assert managed_owners.isdisjoint(rows)
     assert set(rows) - exceptions == behavioral_owners
     assert not [row for row in violations if row[:2] not in exceptions]
 

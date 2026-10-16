@@ -1,5 +1,5 @@
 use super::*;
-use molt_stdlib_text::codec_registry::{TextEncodingClass, normalize_encoding};
+use molt_stdlib_text::codec_registry::{EncodingKind, TextEncodingClass, normalize_encoding};
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::builtins::io) enum TextEncodingKind {
@@ -8,6 +8,33 @@ pub(in crate::builtins::io) enum TextEncodingKind {
     Latin1,
     Utf16,
     Utf32,
+}
+
+pub(in crate::builtins::io) fn warn_default_text_encoding(
+    py: &PyToken<'_>,
+    encoding: Option<&str>,
+) -> bool {
+    encoding.is_some()
+        || !crate::builtins::platform::startup_encoding(py).warn_default_encoding
+        || crate::builtins::warnings_ext::emit_runtime_warning(
+            py,
+            "'encoding' argument not specified",
+            "EncodingWarning",
+        )
+}
+
+pub(in crate::builtins::io) fn selected_text_encoding(
+    py: &PyToken<'_>,
+    encoding: Option<&str>,
+) -> Result<(String, String), String> {
+    let label = match encoding {
+        Some("locale") => crate::builtins::platform::locale_encoding()?,
+        Some(label) => label.to_owned(),
+        None if crate::builtins::platform::startup_encoding(py).utf8_mode => "utf-8".to_owned(),
+        None => crate::builtins::platform::locale_encoding()?,
+    };
+    let (canonical, _kind) = normalize_text_encoding(&label)?;
+    Ok((canonical, label))
 }
 
 pub(in crate::builtins::io) fn normalize_text_encoding(
@@ -89,6 +116,21 @@ pub(in crate::builtins::io) fn split_text_pending_bytes(
     }
 }
 
+pub(in crate::builtins::io) fn reset_text_decoder(handle: &mut MoltFileHandle) {
+    handle.pending_byte = None;
+    handle.text_pending_bytes.clear();
+    handle.text_pending_text.clear();
+    handle.text_bom_seen = false;
+    if let Some(kind @ (EncodingKind::Utf16 | EncodingKind::Utf32)) = handle
+        .encoding_original
+        .as_deref()
+        .and_then(normalize_encoding)
+        && handle.encoding.as_deref() != Some(kind.name())
+    {
+        handle.encoding = Some(kind.name().to_owned());
+    }
+}
+
 pub(in crate::builtins::io) fn decode_text_bytes(
     _py: &PyToken<'_>,
     encoding_label: &str,
@@ -135,6 +177,19 @@ pub(in crate::builtins::io) fn decode_multibyte_text(
         *encoding_label = label.clone();
         handle.encoding = Some(label.clone());
         *encoding_kind = text_encoding_kind(encoding_label.as_str());
+    }
+    if !bytes.is_empty()
+        && matches!(
+            handle
+                .encoding_original
+                .as_deref()
+                .and_then(normalize_encoding),
+            Some(EncodingKind::Utf16 | EncodingKind::Utf32)
+        )
+    {
+        // The active byte order is now decoder state that tell must retain.
+        // Encoder BOM emission has its independent text_bom_written flag.
+        handle.text_bom_seen = true;
     }
     let newline_is_none = handle.newline.is_none();
     let combine_crlf = matches!(handle.newline.as_deref(), None | Some(""));

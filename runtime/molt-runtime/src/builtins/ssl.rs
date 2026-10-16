@@ -260,10 +260,18 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
                 None
             } else if let Some(s) = string_obj_to_owned(obj) {
                 Some(s.into_bytes())
-            } else if let Some(ptr) = obj.as_ptr() {
-                unsafe { bytes_like_slice(ptr).map(|slice| slice.to_vec()) }
             } else {
-                None
+                let input =
+                    match crate::object::buffer_exports::ScopedBuffer::simple(_py, cadata_bits) {
+                        Ok(input) => input,
+                        Err(error) => {
+                            return error.raise(
+                                _py,
+                                "cadata should be an ASCII string or a bytes-like object",
+                            );
+                        }
+                    };
+                Some(input.as_slice().to_vec())
             }
         };
         let found = {
@@ -986,24 +994,12 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
                 return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
             }
         };
-        let data: Vec<u8> = {
-            let obj = obj_from_bits(data_bits);
-            let Some(ptr) = obj.as_ptr() else {
-                return raise_exception::<u64>(_py, "TypeError", "ssl write expects bytes");
-            };
-            unsafe {
-                match bytes_like_slice(ptr) {
-                    Some(s) => s.to_vec(),
-                    None => {
-                        return raise_exception::<u64>(
-                            _py,
-                            "TypeError",
-                            "ssl write expects bytes-like object",
-                        );
-                    }
-                }
-            }
+        let data_export = match crate::object::buffer_exports::ScopedBuffer::simple(_py, data_bits)
+        {
+            Ok(input) => input,
+            Err(error) => return error.raise(_py, "ssl write expects bytes-like object"),
         };
+        let data = data_export.as_slice();
         let result = (|| -> Result<usize, String> {
             let mut map = SOCK_REGISTRY.lock().unwrap();
             let Some(state) = map.get_mut(&id) else {

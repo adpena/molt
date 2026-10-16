@@ -10,11 +10,9 @@ const CHILD_RESOURCE_ENV_KEYS: &[&str] = &[
     "MOLT_RESOURCE_MAX_DURATION_MS",
     "MOLT_RESOURCE_MAX_ALLOCATIONS",
     "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
-    // Per-operation result caps are raw-byte integers like the keys above, so a
-    // spawned child inherits the tighter of (parent, child-requested) for each.
-    // `MOLT_RESOURCE_MAX_MEMORY` may carry a human-readable size; a child
-    // resolves it into `max_memory` at its own init, and the numeric min-merge
-    // here only handles raw integers.
+    // Child inheritance serializes the typed parent policy. Memory requests
+    // use the startup human-size grammar; effective per-operation fallbacks
+    // are inherited even when the parent's optional fields were unset.
     "MOLT_RESOURCE_MAX_OPERATION_RESULT",
     "MOLT_RESOURCE_MAX_POW_RESULT",
     "MOLT_RESOURCE_MAX_REPEAT_RESULT",
@@ -22,17 +20,55 @@ const CHILD_RESOURCE_ENV_KEYS: &[&str] = &[
     "MOLT_RESOURCE_MAX_STRING_RESULT",
 ];
 
-fn parse_resource_limit(raw: &str) -> Option<u128> {
-    raw.trim().parse::<u128>().ok()
+fn parent_resource_limit(limits: &crate::resource::ResourceLimits, key: &str) -> Option<u128> {
+    let operation = limits.operation_result_limits();
+    match key {
+        "MOLT_RESOURCE_MAX_MEMORY" => limits.max_memory.map(|v| v as u128),
+        "MOLT_RESOURCE_MAX_DURATION_MS" => limits.max_duration.map(|v| v.as_millis()),
+        "MOLT_RESOURCE_MAX_ALLOCATIONS" => limits.max_allocations.map(|v| v as u128),
+        "MOLT_RESOURCE_MAX_RECURSION_DEPTH" => limits.max_recursion_depth.map(|v| v as u128),
+        // The four resolved fields below carry the effective fallback. Do not
+        // introduce a separate combined default here.
+        "MOLT_RESOURCE_MAX_OPERATION_RESULT" => {
+            limits.max_operation_result_bytes.map(|v| v as u128)
+        }
+        "MOLT_RESOURCE_MAX_POW_RESULT" => Some(operation[0] as u128),
+        "MOLT_RESOURCE_MAX_REPEAT_RESULT" => Some(operation[1] as u128),
+        "MOLT_RESOURCE_MAX_SHIFT_RESULT" => Some(operation[2] as u128),
+        "MOLT_RESOURCE_MAX_STRING_RESULT" => Some(operation[3] as u128),
+        _ => unreachable!("unknown child resource field"),
+    }
 }
 
-fn active_parent_resource_limit(key: &str) -> Option<u128> {
-    std::env::var(key)
-        .ok()
-        .and_then(|raw| parse_resource_limit(&raw))
+fn requested_resource_limit(key: &str, raw: &str) -> Option<u128> {
+    if key == "MOLT_RESOURCE_MAX_MEMORY" {
+        crate::resource::parse_human_size(raw)
+            .ok()
+            .map(|value| value as u128)
+    } else if key == "MOLT_RESOURCE_MAX_DURATION_MS" {
+        crate::resource::parse_positive_integer::<u64>(raw)
+            .ok()
+            .map(|value| value as u128)
+    } else {
+        crate::resource::parse_positive_integer::<usize>(raw)
+            .ok()
+            .map(|value| value as u128)
+    }
 }
 
-#[cfg(target_arch = "wasm32")]
+// A requested combined cap supplies a missing per-operation request, exactly
+// as it does at child startup. An explicit per-operation field wins.
+fn combined_request_key(key: &str) -> Option<&'static str> {
+    match key {
+        "MOLT_RESOURCE_MAX_POW_RESULT"
+        | "MOLT_RESOURCE_MAX_REPEAT_RESULT"
+        | "MOLT_RESOURCE_MAX_SHIFT_RESULT"
+        | "MOLT_RESOURCE_MAX_STRING_RESULT" => Some("MOLT_RESOURCE_MAX_OPERATION_RESULT"),
+        _ => None,
+    }
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
 fn env_entry_value<'a>(entries: Option<&'a [(String, String)]>, key: &str) -> Option<&'a str> {
     entries?
         .iter()
@@ -49,13 +85,28 @@ fn env_entry_os_value<'a>(
     entries?
         .iter()
         .rev()
-        .find(|(entry_key, _)| entry_key == key)
+        .find(|(entry_key, _)| {
+            #[cfg(windows)]
+            {
+                entry_key
+                    .to_str()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(key))
+            }
+            #[cfg(not(windows))]
+            {
+                entry_key == key
+            }
+        })
         .map(|(_, value)| value.as_os_str())
 }
 
-fn enforced_child_resource_env_value(key: &str, requested: Option<&str>) -> Option<String> {
-    let parent_limit = active_parent_resource_limit(key)?;
-    let selected = match requested.and_then(parse_resource_limit) {
+fn enforced_child_resource_env_value(
+    limits: Option<&crate::resource::ResourceLimits>,
+    key: &str,
+    requested: Option<&str>,
+) -> Option<String> {
+    let parent_limit = parent_resource_limit(limits?, key)?;
+    let selected = match requested.and_then(|raw| requested_resource_limit(key, raw)) {
         Some(child_limit) if child_limit < parent_limit => child_limit,
         _ => parent_limit,
     };
@@ -63,34 +114,50 @@ fn enforced_child_resource_env_value(key: &str, requested: Option<&str>) -> Opti
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn enforced_child_resource_env_os_value(key: &str, requested: Option<&OsStr>) -> Option<String> {
-    enforced_child_resource_env_value(key, requested.and_then(OsStr::to_str))
+fn enforced_child_resource_env_os_value(
+    limits: Option<&crate::resource::ResourceLimits>,
+    key: &str,
+    requested: Option<&OsStr>,
+) -> Option<String> {
+    enforced_child_resource_env_value(limits, key, requested.and_then(OsStr::to_str))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn apply_child_resource_env(
     cmd: &mut Command,
     env_entries: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+    limits: Option<&crate::resource::ResourceLimits>,
 ) {
     for key in CHILD_RESOURCE_ENV_KEYS {
-        if let Some(value) =
-            enforced_child_resource_env_os_value(key, env_entry_os_value(env_entries, key))
-        {
+        if let Some(value) = enforced_child_resource_env_os_value(
+            limits,
+            key,
+            env_entry_os_value(env_entries, key).or_else(|| {
+                combined_request_key(key)
+                    .and_then(|fallback| env_entry_os_value(env_entries, fallback))
+            }),
+        ) {
             cmd.env(key, value);
         }
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(super) fn enforce_child_resource_env_entries(
     entries: &mut Option<Vec<(String, String)>>,
     overlay: &mut bool,
+    limits: Option<&crate::resource::ResourceLimits>,
 ) {
     let mut enforced = Vec::new();
     for key in CHILD_RESOURCE_ENV_KEYS {
-        if let Some(value) =
-            enforced_child_resource_env_value(key, env_entry_value(entries.as_deref(), key))
-        {
+        if let Some(value) = enforced_child_resource_env_value(
+            limits,
+            key,
+            env_entry_value(entries.as_deref(), key).or_else(|| {
+                combined_request_key(key)
+                    .and_then(|fallback| env_entry_value(entries.as_deref(), fallback))
+            }),
+        ) {
             enforced.push(((*key).to_string(), value));
         }
     }
@@ -108,8 +175,7 @@ pub(super) fn enforce_child_resource_env_entries(
 }
 
 #[cfg(unix)]
-fn parse_child_rlimit_gb_env(name: &str) -> Option<Option<u64>> {
-    let raw = std::env::var(name).ok()?;
+fn parse_child_rlimit_gb(raw: &str) -> Option<Option<u64>> {
     let value = raw.trim().parse::<f64>().ok()?;
     if value == 0.0 {
         return Some(None);
@@ -129,24 +195,27 @@ fn parse_child_rlimit_gb_env(name: &str) -> Option<Option<u64>> {
 /// Molt child's own tracker fires first); an explicit `MOLT_CHILD_RLIMIT_GB`
 /// operator cap applies exactly and may only tighten it.
 #[cfg(unix)]
-fn child_memory_rlimit_bytes() -> Option<u64> {
-    if let Some(None) = parse_child_rlimit_gb_env("MOLT_CHILD_RLIMIT_GB") {
+pub(crate) fn child_memory_rlimit_bytes(
+    limits: Option<&crate::resource::ResourceLimits>,
+    raw: Option<&str>,
+) -> Option<u64> {
+    if let Some(None) = raw.and_then(parse_child_rlimit_gb) {
         return None;
     }
 
-    let mut limit = active_parent_resource_limit("MOLT_RESOURCE_MAX_MEMORY")
-        .and_then(|value| usize::try_from(value).ok())
+    let mut limit = limits
+        .and_then(|limits| limits.max_memory)
         .filter(|value| *value > 0)
         .and_then(|value| u64::try_from(crate::resource::memory_backstop_budget(value)).ok());
-    if let Some(Some(value)) = parse_child_rlimit_gb_env("MOLT_CHILD_RLIMIT_GB") {
+    if let Some(Some(value)) = raw.and_then(parse_child_rlimit_gb) {
         limit = Some(limit.map_or(value, |current| current.min(value)));
     }
     limit.filter(|value| *value > 0)
 }
 
 #[cfg(unix)]
-pub(super) fn apply_child_memory_rlimit(cmd: &mut Command) {
-    let Some(limit_bytes) = child_memory_rlimit_bytes() else {
+pub(super) fn apply_child_memory_rlimit(cmd: &mut Command, limit: Option<u64>) {
+    let Some(limit_bytes) = limit else {
         return;
     };
     apply_child_committed_memory_rlimit(cmd, limit_bytes);
@@ -217,110 +286,180 @@ pub(super) fn configure_unix_owned_process_group(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::resource::ResourceLimits;
 
-    fn with_env<R>(updates: &[(&str, Option<&str>)], f: impl FnOnce() -> R) -> R {
-        // Use the single process-wide test mutex shared with the resource-env
-        // tests (resource.rs, ops_sys.rs). These suites mutate the SAME
-        // MOLT_RESOURCE_MAX_* env vars; a private mutex here would let them race
-        // and clobber each other's env across module boundaries.
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let saved = updates
-            .iter()
-            .map(|(key, _)| (*key, std::env::var(key).ok()))
-            .collect::<Vec<_>>();
-        for (key, value) in updates {
-            match value {
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                None => unsafe { std::env::remove_var(key) },
-            }
+    fn memory(raw: &str) -> ResourceLimits {
+        ResourceLimits {
+            max_memory: Some(crate::resource::parse_human_size(raw).unwrap()),
+            ..Default::default()
         }
-        let result = f();
-        for (key, value) in saved {
-            match value {
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
-        result
     }
 
     #[test]
     fn child_resource_env_inherits_parent_when_child_omits_limit() {
-        with_env(
-            &[
-                ("MOLT_RESOURCE_MAX_MEMORY", Some("4096")),
-                ("MOLT_CHILD_RLIMIT_GB", None),
-            ],
-            || {
-                assert_eq!(
-                    enforced_child_resource_env_value("MOLT_RESOURCE_MAX_MEMORY", None),
-                    Some("4096".to_string())
-                );
-            },
+        let limits = memory("4096");
+        assert_eq!(
+            enforced_child_resource_env_value(Some(&limits), "MOLT_RESOURCE_MAX_MEMORY", None),
+            Some("4096".into())
+        );
+        assert_eq!(
+            enforced_child_resource_env_value(None, "MOLT_RESOURCE_MAX_MEMORY", Some("4096")),
+            None
         );
     }
 
     #[test]
     fn child_resource_env_can_tighten_but_not_widen_parent_limit() {
-        with_env(&[("MOLT_RESOURCE_MAX_MEMORY", Some("4096"))], || {
+        let limits = memory("64M");
+        for (request, expected) in [
+            ("128M", 64 * 1024 * 1024),
+            ("32M", 32 * 1024 * 1024),
+            ("0", 64 * 1024 * 1024),
+            ("invalid", 64 * 1024 * 1024),
+        ] {
             assert_eq!(
-                enforced_child_resource_env_value("MOLT_RESOURCE_MAX_MEMORY", Some("8192")),
-                Some("4096".to_string())
+                enforced_child_resource_env_value(
+                    Some(&limits),
+                    "MOLT_RESOURCE_MAX_MEMORY",
+                    Some(request)
+                ),
+                Some(expected.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn child_inherits_effective_operation_default_and_tighter_combined_request() {
+        let limits = memory("64M");
+        let mut command = Command::new("unused-policy-plan");
+        let entries = vec![("MOLT_RESOURCE_MAX_OPERATION_RESULT".into(), "1024".into())];
+        apply_child_resource_env(&mut command, Some(&entries), Some(&limits));
+        let actual: std::collections::HashMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
+            .collect();
+        for key in [
+            "MOLT_RESOURCE_MAX_POW_RESULT",
+            "MOLT_RESOURCE_MAX_REPEAT_RESULT",
+            "MOLT_RESOURCE_MAX_SHIFT_RESULT",
+            "MOLT_RESOURCE_MAX_STRING_RESULT",
+        ] {
+            assert_eq!(
+                actual.get(OsStr::new(key)),
+                Some(&std::ffi::OsString::from("1024"))
             );
             assert_eq!(
-                enforced_child_resource_env_value("MOLT_RESOURCE_MAX_MEMORY", Some("1024")),
-                Some("1024".to_string())
+                enforced_child_resource_env_value(Some(&limits), key, Some("999999999")),
+                Some((10 * 1024 * 1024).to_string())
             );
-            assert_eq!(
-                enforced_child_resource_env_value("MOLT_RESOURCE_MAX_MEMORY", Some("invalid")),
-                Some("4096".to_string())
-            );
-        });
+        }
+    }
+
+    #[test]
+    fn child_policy_does_not_reread_mutated_process_environment() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let key = "MOLT_RESOURCE_MAX_MEMORY";
+        let saved = std::env::var_os(key);
+        let limits = memory("64M");
+        unsafe {
+            std::env::set_var(key, "0");
+        }
+        let selected = enforced_child_resource_env_value(Some(&limits), key, None);
+        match saved {
+            Some(value) => unsafe {
+                std::env::set_var(key, value);
+            },
+            None => unsafe {
+                std::env::remove_var(key);
+            },
+        }
+        assert_eq!(selected, Some((64 * 1024 * 1024).to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_child_policy_recognizes_ascii_case_variant_requests() {
+        let limits = memory("64M");
+        let mut command = Command::new("unused-policy-plan");
+        let entries = vec![("molt_resource_max_memory".into(), "32M".into())];
+        apply_child_resource_env(&mut command, Some(&entries), Some(&limits));
+        let selected = command
+            .get_envs()
+            .find(|(key, _)| {
+                key.to_str()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("MOLT_RESOURCE_MAX_MEMORY"))
+            })
+            .unwrap()
+            .1;
+        assert_eq!(selected, Some(OsStr::new("33554432")));
+    }
+
+    #[test]
+    fn wasm_child_plan_preserves_tighter_requests_and_effective_defaults() {
+        let limits = memory("64M");
+        let mut entries = Some(vec![
+            ("MOLT_RESOURCE_MAX_MEMORY".into(), "32M".into()),
+            ("MOLT_RESOURCE_MAX_POW_RESULT".into(), "999999999".into()),
+            ("APPLICATION_VALUE".into(), "visible".into()),
+        ]);
+        let mut overlay = false;
+        enforce_child_resource_env_entries(&mut entries, &mut overlay, Some(&limits));
+        assert!(
+            !overlay,
+            "replacement semantics must survive policy enforcement"
+        );
+        let actual: std::collections::HashMap<_, _> = entries.unwrap().into_iter().collect();
+        assert_eq!(actual["MOLT_RESOURCE_MAX_MEMORY"], "33554432");
+        assert_eq!(actual["APPLICATION_VALUE"], "visible");
+        for key in [
+            "MOLT_RESOURCE_MAX_POW_RESULT",
+            "MOLT_RESOURCE_MAX_REPEAT_RESULT",
+            "MOLT_RESOURCE_MAX_SHIFT_RESULT",
+            "MOLT_RESOURCE_MAX_STRING_RESULT",
+        ] {
+            assert_eq!(actual[key], "10485760");
+        }
+        let mut inherited = None;
+        enforce_child_resource_env_entries(&mut inherited, &mut overlay, Some(&limits));
+        assert!(
+            overlay,
+            "implicit environment keeps application inheritance"
+        );
+        assert_eq!(
+            env_entry_value(inherited.as_deref(), "MOLT_RESOURCE_MAX_MEMORY"),
+            Some("67108864")
+        );
+        let mut unlimited = None;
+        let mut unlimited_overlay = false;
+        enforce_child_resource_env_entries(&mut unlimited, &mut unlimited_overlay, None);
+        assert!(unlimited.is_none());
+        assert!(!unlimited_overlay);
     }
 
     #[cfg(unix)]
     #[test]
     fn child_memory_rlimit_uses_tightest_runtime_and_shared_limit() {
-        with_env(
-            &[
-                ("MOLT_RESOURCE_MAX_MEMORY", Some("8192")),
-                // 4096 bytes written in GB: 2^12 / 2^30 is exact in f64.
-                ("MOLT_CHILD_RLIMIT_GB", Some("0.000003814697265625")),
-            ],
-            || {
-                assert_eq!(child_memory_rlimit_bytes(), Some(4096));
-            },
+        assert_eq!(
+            child_memory_rlimit_bytes(Some(&memory("8192")), Some("0.000003814697265625")),
+            Some(4096)
         );
     }
 
     #[cfg(unix)]
     #[test]
     fn child_memory_rlimit_keeps_backstop_headroom_over_runtime_limit() {
-        with_env(
-            &[
-                ("MOLT_RESOURCE_MAX_MEMORY", Some("8192")),
-                ("MOLT_CHILD_RLIMIT_GB", None),
-            ],
-            || {
-                assert_eq!(
-                    child_memory_rlimit_bytes(),
-                    Some(crate::resource::memory_backstop_budget(8192) as u64)
-                );
-            },
+        assert_eq!(
+            child_memory_rlimit_bytes(Some(&memory("64M")), None),
+            Some(crate::resource::memory_backstop_budget(64 * 1024 * 1024) as u64)
         );
     }
 
     #[cfg(unix)]
     #[test]
     fn child_memory_rlimit_zero_shared_limit_disables_os_limit() {
-        with_env(
-            &[
-                ("MOLT_RESOURCE_MAX_MEMORY", Some("4096")),
-                ("MOLT_CHILD_RLIMIT_GB", Some("0")),
-            ],
-            || {
-                assert_eq!(child_memory_rlimit_bytes(), None);
-            },
+        assert_eq!(
+            child_memory_rlimit_bytes(Some(&memory("4096")), Some("0")),
+            None
         );
     }
 }

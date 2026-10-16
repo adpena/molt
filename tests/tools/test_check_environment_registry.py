@@ -542,3 +542,259 @@ def test_rust_lexer_skips_comments_strings_and_lifetimes() -> None:
     assert strings == ["MOLT_STR"]
     assert [c[1] for c in comments] == ['/* "MOLT_IN_BLOCK" */', "// MOLT_LINE"]
     assert any(t.kind == "lifetime" and t.text == "'a" for t in tokens)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'fn change() { unsafe { std::env::set_var("OTHER", "value"); } }',
+        "fn change(key: &str) { unsafe { std::env::remove_var(key); } }",
+        'use std::env as process; fn change(k: &str) { unsafe { process::set_var(k, "v"); } }',
+        'use std::env::{set_var as change}; fn f(k: &str) { unsafe { change(k, "v"); } }',
+        "use std as rust; use rust::{env as process}; fn f() { unsafe { process::remove_var(key); } }",
+        "fn f() { let change = std::env::set_var; let again = change; unsafe { again(key, value); } }",
+        'fn f() { println!("use", unsafe { std::env::set_var(key, value) }); }',
+        'fn f() { println!("fn", unsafe { std::env::remove_var(key) }); }',
+        "use std::env::*; fn f() { unsafe { set_var(key, value); } }",
+        "fn f() { unsafe { std::env::r#set_var(key, value); } }",
+        "fn f() { unsafe { libc::setenv(key, value, 1); } }",
+        "use libc::unsetenv as erase; fn f() { unsafe { erase(key); } }",
+        "fn f() { unsafe { crate::windows_abi::_wputenv(value); } }",
+        '#[cfg(any(test, feature = "shipping"))] fn f() { unsafe { std::env::set_var(key, value); } }',
+        '#[cfg_attr(feature = "x", cfg(test))] fn f() { unsafe { std::env::set_var(key, value); } }',
+        "#[cfg(unknown)] fn f() { unsafe { std::env::set_var(key, value); } }",
+        "#[cfg(test)] mod tests { fn f() {} } fn live() { unsafe { std::env::set_var(key, value); } }",
+    ],
+)
+def test_process_writer_rejects_production_routes_without_name_prefilter(
+    tmp_path: Path, source: str
+) -> None:
+    _write(tmp_path, "runtime/molt-runtime/src/lib.rs", source)
+    violations = C.check_process_environment_writers(tmp_path)
+    assert violations and {row.rule for row in violations} == {"process-writer-owner"}
+    assert all(row.path == "runtime/molt-runtime/src/lib.rs" for row in violations)
+
+
+@pytest.mark.parametrize("writer", sorted(C._RAW_PROCESS_WRITERS))
+def test_process_writer_rejects_each_libc_crt_primitive(
+    tmp_path: Path, writer: str
+) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime-core/src/lib.rs",
+        f"fn f() {{ unsafe {{ libc::{writer}(key); }} }}",
+    )
+    assert {row.name for row in C.check_process_environment_writers(tmp_path)} == {
+        writer
+    }
+
+
+def test_process_writer_owner_is_one_function_not_one_file(tmp_path: Path) -> None:
+    owner = "runtime/molt-runtime-platform/src/env_support.rs"
+    _write(
+        tmp_path,
+        owner,
+        """
+fn process_env_set_unlocked() {
+    unsafe { std::env::set_var(key, value); libc::unsetenv(key); }
+    fn nested() { unsafe { std::env::remove_var(key); } }
+}
+fn bypass() { unsafe { std::env::set_var(key, value); } }
+mod bypass { fn process_env_set_unlocked() { unsafe { std::env::set_var(key, value); } } }
+impl Unrelated { fn process_env_set_unlocked() { unsafe { std::env::set_var(key, value); } } }
+""",
+    )
+    violations = C.check_process_environment_writers(tmp_path)
+    assert {row.line for row in violations} == {4, 6, 7, 8}
+    assert all(row.path == owner for row in violations)
+
+
+def test_process_writer_accepts_canonical_primitive_and_child_configuration(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime-platform/src/env_support.rs",
+        """
+fn process_env_set_unlocked() { unsafe {
+    std::env::set_var(key, value);
+    std::env::remove_var(key);
+    libc::setenv(key, value, 1);
+    crate::windows_abi::_wputenv(assignment);
+} }
+""",
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/lib.rs",
+        r"""
+fn child() { command.env(key, value).env_remove(key).env_clear(); }
+unsafe extern "C" { fn setenv(key: *const u8, value: *const u8, overwrite: i32) -> i32; }
+// std::env::set_var("OTHER", "v") is documentation.
+fn text<'a>(s: &'a str) { let a = "libc::setenv(key)"; let b = r#"std::env::remove_var(key)"#; let c = '\u{1F600}'; }
+fn escaped() { let quote = '\''; let slash = '\\'; let bytes = [b'\'', b'\\']; }
+""",
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-backend/src/daemon.rs",
+        "fn f() { unsafe { std::env::set_var(key, value); } }",
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/build.rs",
+        "fn main() { unsafe { std::env::set_var(key, value); } }",
+    )
+    assert C.check_process_environment_writers(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "condition", ["test", 'all(test, feature = "x")', "not(not(test))"]
+)
+def test_process_writer_inherits_proved_test_condition(
+    tmp_path: Path, condition: str
+) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/lib.rs",
+        f"""
+#[cfg({condition})]
+mod support {{ mod nested {{ fn change() {{ unsafe {{ std::env::set_var(key, value); }} }} }} }}
+""",
+    )
+    assert C.check_process_environment_writers(tmp_path) == []
+
+
+def test_process_writer_follows_external_test_module_and_path_attribute(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/lib.rs",
+        '#[cfg(test)]\n#[path = "support.rs"]\nmod fixtures;',
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/support.rs",
+        "mod child; fn change() { unsafe { std::env::set_var(key, value); } }",
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/support/child.rs",
+        "fn f() { unsafe { std::env::remove_var(key); } }",
+    )
+    assert C.check_process_environment_writers(tmp_path) == []
+
+
+def test_process_writer_resolves_nonroot_and_inline_module_paths(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "runtime/molt-runtime/src/lib.rs", "mod ordinary;")
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/ordinary.rs",
+        """
+#[cfg(test)] #[path = "sibling.rs"] mod fixtures;
+#[cfg(test)] mod inline { #[path = "nested.rs"] mod fixtures; }
+#[cfg(test)] #[path = "custom"] mod renamed { #[path = "other.rs"] mod fixtures; }
+""",
+    )
+    for path in ["sibling.rs", "ordinary/inline/nested.rs", "custom/other.rs"]:
+        _write(
+            tmp_path,
+            "runtime/molt-runtime/src/" + path,
+            "fn f() { unsafe { std::env::set_var(key, value); } }",
+        )
+    assert C.check_process_environment_writers(tmp_path) == []
+
+
+def test_process_writer_production_inclusion_wins_over_test_inclusion(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/lib.rs",
+        '#[cfg(test)] #[path = "shared.rs"] mod fixtures; #[path = "shared.rs"] mod live;',
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/shared.rs",
+        "fn f() { unsafe { std::env::set_var(key, value); } }",
+    )
+    violations = C.check_process_environment_writers(tmp_path)
+    assert [(row.path, row.name) for row in violations] == [
+        ("runtime/molt-runtime/src/shared.rs", "set_var")
+    ]
+
+
+@pytest.mark.parametrize("test_only", [True, False])
+def test_process_writer_follows_explicit_modules_outside_src(
+    tmp_path: Path, test_only: bool
+) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/lib.rs",
+        ("#[cfg(test)] " if test_only else "")
+        + '#[path = "../../shared.rs"] mod shared;',
+    )
+    _write(
+        tmp_path,
+        "runtime/shared.rs",
+        "fn f() { unsafe { std::env::set_var(key, value); } }",
+    )
+    violations = C.check_process_environment_writers(tmp_path)
+    assert [(row.path, row.name) for row in violations] == (
+        [] if test_only else [("runtime/shared.rs", "set_var")]
+    )
+
+
+def test_process_writer_never_exempts_test_filename_or_native_tcl_feature(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/test_support.rs",
+        "fn f() { unsafe { std::env::set_var(key, value); } }",
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-runtime-tk/src/tk/tcl.rs",
+        '#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))] fn f() { unsafe { std::env::set_var(key, value); } }',
+    )
+    assert {row.path for row in C.check_process_environment_writers(tmp_path)} == {
+        "runtime/molt-runtime/src/test_support.rs",
+        "runtime/molt-runtime-tk/src/tk/tcl.rs",
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "fn f() {",
+        'fn f() { let s = "unfinished; }',
+        "/* unfinished",
+        'fn f() { let s = r#"unfinished; }',
+        "fn f() { let c = '\\\\unfinished; }",
+        "#[cfg(test] fn f() {}",
+        "fn f { }",
+        "mod f(key);",
+    ],
+)
+def test_process_writer_fails_closed_on_malformed_source(
+    tmp_path: Path, source: str
+) -> None:
+    _write(tmp_path, "runtime/molt-runtime/src/lib.rs", source)
+    assert {row.rule for row in C.check_process_environment_writers(tmp_path)} == {
+        "process-writer-source"
+    }
+
+
+def test_process_writer_is_part_of_existing_registry_check(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "runtime/molt-runtime/src/lib.rs",
+        'fn f() { unsafe { std::env::set_var("OTHER", "v"); } }',
+    )
+    scan = _scan(tmp_path)
+    violations = C.check(registry_from_payload(_payload()), scan, root=tmp_path)
+    assert {row.rule for row in violations} == {"process-writer-owner"}

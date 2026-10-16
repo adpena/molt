@@ -262,6 +262,119 @@ def test_wasm_micro_excludes_crypto_so_reached_hashlib_refuses() -> None:
     assert "molt_hash_new" in message
 
 
+@pytest.mark.parametrize(
+    "target_triple,available",
+    [
+        ("x86_64-pc-windows-msvc", True),
+        ("x86_64-pc-windows-gnu", True),
+        ("aarch64-pc-windows-msvc", True),
+        ("x86_64-unknown-linux-gnu", False),
+        ("aarch64-apple-darwin", False),
+        ("wasm32-wasip1", False),
+        ("wasm32-unknown-unknown", False),
+    ],
+)
+def test_reached_windows_locale_provider_uses_explicit_target(
+    target_triple: str, available: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import native_link_plan
+
+    # A Windows host must not grant its API to a cross-target, and a Linux
+    # host must not hide the API for a real Windows cross-target.
+    monkeypatch.setattr(
+        native_link_plan,
+        "_host_target_triple",
+        lambda **_kwargs: (
+            "x86_64-unknown-linux-gnu" if available else "x86_64-pc-windows-msvc"
+        ),
+    )
+    message = _refusal_for_reached_symbols(
+        "molt_locale_getdefaultlocale", profile="full", target_triple=target_triple
+    )
+    if available:
+        assert message is None
+    else:
+        assert message is not None
+        assert "molt_locale_getdefaultlocale" in message
+        assert "requires target OS windows" in message
+
+
+@pytest.mark.parametrize(
+    "host_triple,available",
+    [
+        ("x86_64-pc-windows-msvc", True),
+        ("aarch64-apple-darwin", False),
+        ("aarch64-unknown-linux-gnu", False),
+    ],
+)
+def test_reached_windows_locale_provider_resolves_implicit_native_host(
+    host_triple: str, available: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import native_link_plan
+
+    calls = []
+
+    def host_target(**_kwargs):
+        calls.append(host_triple)
+        return host_triple
+
+    monkeypatch.setattr(native_link_plan, "_host_target_triple", host_target)
+    message = _refusal_for_reached_symbols(
+        "molt_locale_getdefaultlocale", profile="full", target_triple=None
+    )
+    assert (message is None) is available
+    assert calls == [host_triple]
+
+
+def test_unreached_windows_locale_provider_needs_no_target_os_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import native_link_plan
+
+    def unexpected_resolution(*_args, **_kwargs):
+        pytest.fail(
+            "unrestricted/rejected dead functions must not resolve a host target"
+        )
+
+    monkeypatch.setattr(
+        native_link_plan, "resolve_native_target_spec", unexpected_resolution
+    )
+    functions = _functions_reaching("molt_locale_getencoding")
+    functions.append(
+        {
+            "name": "unused_windows_api",
+            "params": [],
+            "ops": [_builtin_func("windows_only", "molt_locale_getdefaultlocale")],
+        }
+    )
+    assert (
+        RF.reachability_profile_feature_refusal(
+            functions, profile_name="full", profile_features=_full_features()
+        )
+        is None
+    )
+
+
+def test_all_target_and_feature_requirements_include_windows_locale() -> None:
+    message = _refusal_for_reached_symbols(
+        "molt_locale_getdefaultlocale",
+        "molt_sqlite3_connect",
+        "molt_hash_new",
+        profile="micro",
+        target_triple="wasm32-wasip1",
+    )
+    assert message is not None
+    for required in (
+        "molt_locale_getdefaultlocale",
+        "molt_sqlite3_connect",
+        "molt_hash_new",
+    ):
+        assert required in message
+    assert "requires target OS windows" in message
+    assert "unsupported on wasm32" in message
+    assert "stdlib_crypto: reached intrinsic molt_hash_new" in message
+
+
 @pytest.mark.parametrize("target", ["wasm", "wasm-freestanding", "wasm32-wasip1"])
 def test_backend_refusal_combines_missing_target_and_profile_requirements(
     target: str,

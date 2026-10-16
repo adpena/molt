@@ -7,7 +7,6 @@ use crate::const_data_cache::{
 use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::ops::{as_float_extended, float_result_bits};
 use crate::object::ops_format::{format_bytes, format_string_repr_bytes};
-use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_obj_model::float_literal::{format_hex_float, parse_hex_float};
@@ -702,9 +701,18 @@ pub extern "C" fn molt_float_as_integer_ratio(self_bits: u64) -> u64 {
             denominator /= &gcd;
         }
         let num_bits = int_bits_from_bigint(_py, numerator);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         let den_bits = int_bits_from_bigint(_py, denominator);
-        let tuple_ptr = alloc_tuple(_py, &[num_bits, den_bits]);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, num_bits);
+            return MoltObject::none().bits();
+        }
+        let tuple_ptr = crate::object::builders::alloc_tuple_owned(_py, &[num_bits, den_bits]);
         if tuple_ptr.is_null() {
+            dec_ref_bits(_py, den_bits);
+            dec_ref_bits(_py, num_bits);
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(tuple_ptr).bits()
@@ -1636,15 +1644,10 @@ pub extern "C" fn molt_not(val: u64) -> u64 {
     })
 }
 
-pub(crate) fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
-    if !runtime_flags::enabled(RuntimeFlag::MOLT_RUNTIME_FEEDBACK) {
+pub(crate) fn maybe_emit_runtime_feedback_file(py: &PyToken<'_>, payload: &serde_json::Value) {
+    let Some(path) = crate::runtime_state(py).policy().feedback_path.as_ref() else {
         return;
-    }
-    let out_path = std::env::var("MOLT_RUNTIME_FEEDBACK_FILE")
-        .ok()
-        .filter(|val| !val.is_empty())
-        .unwrap_or_else(|| "molt_runtime_feedback.json".to_string());
-    let path = std::path::Path::new(&out_path);
+    };
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
         && let Err(err) = std::fs::create_dir_all(parent)

@@ -4,6 +4,9 @@ use crate::{
 };
 
 pub(crate) enum CompatibilityError<'a> {
+    PathGlobNonRelative {
+        non_relative: bool,
+    },
     CounterFromkeys,
     WindowsSignalHandler,
     AbstractSignalHandler,
@@ -37,6 +40,9 @@ impl CompatibilityError<'_> {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
+            Self::PathGlobNonRelative { non_relative } if non_relative => {
+                "Non-relative patterns are unsupported".to_owned()
+            }
             Self::CounterFromkeys => {
                 "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.".to_owned()
             }
@@ -123,4 +129,38 @@ pub extern "C" fn molt_compatibility_error(outcome_bits: u64) -> u64 {
         };
         outcome.exception(py)
     })
+}
+#[cfg(test)]
+mod tests {
+    use super::CompatibilityError;
+
+    #[test]
+    fn glob_outcome_rejects_relative_facts_and_unsupported_targets() {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for minor in 12..=14 {
+                transaction.with_target_python_minor(py, minor, || {
+                    assert_eq!(
+                        CompatibilityError::PathGlobNonRelative { non_relative: true }
+                            .message(py)
+                            .as_deref(),
+                        Ok("Non-relative patterns are unsupported"),
+                    );
+                    assert_eq!(
+                        CompatibilityError::PathGlobNonRelative {
+                            non_relative: false
+                        }
+                        .message(py),
+                        Err("inapplicable compatibility-error outcome"),
+                    );
+                });
+            }
+            transaction.with_target_python_minor(py, 15, || {
+                assert_eq!(
+                    CompatibilityError::PathGlobNonRelative { non_relative: true }.message(py),
+                    Err("unsupported compatibility-error target"),
+                );
+            });
+        });
+    }
 }

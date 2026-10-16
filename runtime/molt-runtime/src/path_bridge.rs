@@ -5,7 +5,7 @@
 //! `extern "C"` imports and they are resolved at link time.
 
 use crate::audit::AuditArgs;
-use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
+use crate::object::ops_format::string_obj_bytes as _string_obj_bytes;
 use crate::*;
 
 // ---------------------------------------------------------------------------
@@ -151,9 +151,9 @@ pub extern "C" fn __molt_path_string_obj_to_owned(
     out_len: *mut usize,
 ) -> i32 {
     let obj = obj_from_bits(bits);
-    match _string_obj_to_owned(obj) {
+    match _string_obj_bytes(obj) {
         Some(s) => {
-            let bytes = s.into_bytes().into_boxed_slice();
+            let bytes = s.into_boxed_slice();
             unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
         }
         None => 0,
@@ -349,10 +349,12 @@ pub extern "C" fn __molt_path_path_from_bits(
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
+    out_bytes: *mut bool,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        match path_from_bits(_py, bits) {
-            Ok(path) => {
+        match crate::builtins::io::path_from_bits_with_flavor(_py, bits) {
+            Ok((path, flavor)) => {
+                unsafe { *out_bytes = flavor == crate::builtins::io::PathFlavor::Bytes };
                 // Same-build, in-process transport preserves the OS representation.
                 // These bytes are never an external serialization format.
                 let bytes = path
@@ -363,6 +365,24 @@ pub extern "C" fn __molt_path_path_from_bits(
             }
             Err(_) => 0,
         }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_path_result(data: *const u8, len: usize, bytes: bool) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        // Same-process, same-target OsStr bytes from the extracted path crate.
+        let raw = unsafe { std::slice::from_raw_parts(data, len) };
+        let path = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(raw) };
+        crate::builtins::io::path_result_bits(
+            _py,
+            std::path::Path::new(path),
+            if bytes {
+                crate::builtins::io::PathFlavor::Bytes
+            } else {
+                crate::builtins::io::PathFlavor::Str
+            },
+        )
     })
 }
 
@@ -737,7 +757,12 @@ mod path_transport_tests {
             let mut out = marker.as_ptr();
             let mut length = marker.len();
             assert_eq!(
-                __molt_path_path_from_bits(MoltObject::from_int(42).bits(), &mut out, &mut length),
+                __molt_path_path_from_bits(
+                    MoltObject::from_int(42).bits(),
+                    &mut out,
+                    &mut length,
+                    &mut false
+                ),
                 0
             );
             assert_eq!(out, marker.as_ptr());
@@ -774,4 +799,32 @@ mod path_transport_tests {
             assert!(!exception_pending(py));
         });
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(value) = crate::builtins::numbers::index_c_int_from_obj(py, bits) else {
+            return 0;
+        };
+        unsafe {
+            *out = value;
+        }
+        1
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        let value =
+            crate::builtins::numbers::index_i64_from_obj(py, bits, "an integer is required");
+        if crate::exception_pending(py) {
+            return 0;
+        }
+        unsafe {
+            *out = value;
+        }
+        1
+    })
 }

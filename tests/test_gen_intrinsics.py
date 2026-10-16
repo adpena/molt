@@ -207,12 +207,32 @@ def test_intrinsic_target_availability_is_toml_owned() -> None:
         'all(feature = "sqlite", not(target_arch = "wasm32"))'
     )
     assert module._FEATURE_TARGET_ARCH_EXCLUSIONS == [("sqlite", ("wasm32",))]
+    assert module._RUNTIME_AVAILABILITY.supported_target_oses_for_symbol(
+        "molt_locale_getdefaultlocale"
+    ) == ("windows",)
+    assert module._cfg_gate_for_symbol("molt_locale_getdefaultlocale") == (
+        'target_os = "windows"'
+    )
+    for symbol in (
+        "molt_locale_setlocale",
+        "molt_locale_getencoding",
+        "molt_locale_constants",
+    ):
+        assert module._cfg_gate_for_symbol(symbol) is None
 
     generated = (
         ROOT
         / "runtime/molt-runtime/src/intrinsics/generated_resolvers/sqlite_resolver.rs"
     ).read_text(encoding="utf-8")
     assert '#[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]' in generated
+    locale_resolver = (
+        ROOT
+        / "runtime/molt-runtime/src/intrinsics/generated_resolvers/locale_resolver.rs"
+    ).read_text(encoding="utf-8")
+    assert (
+        '#[cfg(target_os = "windows")]\n        "molt_locale_getdefaultlocale" =>'
+        in locale_resolver
+    )
 
 
 def test_exact_builtin_category_precedes_feature_and_target_prefixes(
@@ -230,6 +250,7 @@ type_constructors = ["molt_hash_builtin"]
 prefixes = ["hash_"]
 feature = "stdlib_crypto"
 unsupported_target_arches = ["wasm32"]
+supported_target_oses = ["windows"]
 """.strip(),
         encoding="utf-8",
     )
@@ -243,11 +264,83 @@ unsupported_target_arches = ["wasm32"]
     for symbol in availability.builtin_symbols:
         assert availability.feature_gate_for_symbol(symbol) is None
         assert availability.target_arch_exclusions_for_symbol(symbol) == ()
-        assert availability.symbol_available_on_target_arch(symbol, "wasm32")
+        assert availability.supported_target_oses_for_symbol(symbol) == ()
+        assert availability.symbol_available_on_target(
+            symbol, target_arch="wasm32", target_os=None
+        )
     assert availability.feature_gate_for_symbol("molt_hash_new") == "stdlib_crypto"
     assert availability.target_arch_exclusions_for_symbol("molt_hash_new") == (
         "wasm32",
     )
+    assert not availability.symbol_available_on_target(
+        "molt_hash_new", target_arch="x86_64", target_os=None
+    )
+    assert not availability.symbol_available_on_target(
+        "molt_hash_new", target_arch="wasm32", target_os="windows"
+    )
+    assert availability.symbol_available_on_target(
+        "molt_hash_new", target_arch="x86_64", target_os="windows"
+    )
+
+
+@pytest.mark.parametrize(
+    "oses",
+    [
+        "[]",
+        '["windwos"]',
+        '["win32"]',
+        '["WINDOWS"]',
+        '["windows", "win32"]',
+        '"windows"',
+        "[false]",
+    ],
+)
+def test_target_os_schema_rejects_empty_unknown_or_untyped_requirements(
+    tmp_path: Path, oses: str
+) -> None:
+    categories = tmp_path / "categories.toml"
+    categories.write_text(
+        f'[stdlib.locale]\nprefixes = ["locale_"]\nsupported_target_oses = {oses}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match="supported_target_oses"):
+        gen_intrinsics.load_intrinsic_availability(categories)
+
+
+def test_target_os_schema_rejects_conflicting_prefix_owners(tmp_path: Path) -> None:
+    categories = tmp_path / "categories.toml"
+    categories.write_text(
+        '[stdlib.first]\nprefixes = ["locale_"]\nsupported_target_oses = ["windows"]\n'
+        '[stdlib.second]\nprefixes = ["locale_"]\nsupported_target_oses = ["linux"]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match="conflicts.*molt_locale_"):
+        gen_intrinsics.load_intrinsic_availability(categories)
+
+
+def test_target_os_requirements_use_longest_prefix_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    categories = tmp_path / "categories.toml"
+    categories.write_text(
+        '[stdlib.first]\nprefixes = ["locale_"]\nsupported_target_oses = ["linux"]\n'
+        '[stdlib.second]\nprefixes = ["locale_getdefaultlocale"]\nsupported_target_oses = ["windows"]\n',
+        encoding="utf-8",
+    )
+    availability = gen_intrinsics.load_intrinsic_availability(categories)
+    for symbol, target_os, expected in (
+        ("molt_locale_getdefaultlocale", "windows", True),
+        ("molt_locale_getdefaultlocale", "linux", False),
+        ("molt_locale_getencoding", "linux", True),
+        ("molt_locale_getencoding", "windows", False),
+        ("molt_locale_getdefaultlocale", None, False),
+    ):
+        assert (
+            availability.symbol_available_on_target(
+                symbol, target_arch="x86_64", target_os=target_os
+            )
+            is expected
+        )
 
 
 def test_all_canonical_builtin_symbols_are_ungated() -> None:
@@ -266,7 +359,6 @@ def test_all_canonical_builtin_symbols_are_ungated() -> None:
         "molt_hash_update",
         "molt_hash_copy",
         "molt_hash_digest",
-        "molt_hash_drop",
     ):
         assert module._feature_gate_for_symbol(symbol) == "stdlib_crypto"
 
@@ -281,6 +373,9 @@ def test_runtime_feature_gates_are_generated_from_categories() -> None:
         module._RUNTIME_AVAILABILITY.builtin_symbols
     )
     assert list(gates_module.RUNTIME_FEATURE_GATES) == expected_gates
+    assert gates_module.RUNTIME_TARGET_OS_REQUIREMENTS == (
+        module._RUNTIME_AVAILABILITY.target_os_requirements
+    )
     assert tuple(sorted(gates_module.LINK_AFFECTING_FEATURES)) == (
         module._mechanically_derived_link_affecting_features(expected_gates)
     )

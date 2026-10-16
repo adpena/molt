@@ -117,9 +117,9 @@ pub extern "C" fn molt_pickle_loads_core(
             Ok(bits) => bits,
             Err(err_bits) => return err_bits,
         };
-        let data = match pickle_input_to_bytes(_py, data_bits) {
-            Ok(bytes) => bytes,
-            Err(err_bits) => return err_bits,
+        let data = match crate::object::buffer_exports::ScopedBuffer::simple(_py, data_bits) {
+            Ok(input) => input,
+            Err(error) => return error.raise(_py, "a bytes-like object is required"),
         };
         let buffers_iter = if obj_from_bits(buffers_bits).is_none() {
             None
@@ -130,8 +130,12 @@ pub extern "C" fn molt_pickle_loads_core(
             }
             Some(iter_bits)
         };
-        if data.first().is_none_or(|op| *op != PICKLE_OP_PROTO) {
-            let text = match String::from_utf8(data) {
+        if data
+            .as_slice()
+            .first()
+            .is_none_or(|op| *op != PICKLE_OP_PROTO)
+        {
+            let text = match String::from_utf8(data.as_slice().to_vec()) {
                 Ok(value) => value,
                 Err(_) => {
                     return raise_exception::<_>(
@@ -154,7 +158,7 @@ pub extern "C" fn molt_pickle_loads_core(
         let mut idx: usize = 0;
         let mut stack: Vec<PickleVmItem> = Vec::new();
         let mut memo: Vec<Option<PickleVmItem>> = Vec::new();
-        while idx < data.len() {
+        while idx < data.as_slice().len() {
             let op = match pickle_read_u8(data.as_slice(), &mut idx, _py) {
                 Ok(value) => value,
                 Err(err_bits) => return err_bits,

@@ -44,24 +44,31 @@ impl BufferExports {
     }
 }
 
-/// Side-effect-free buffer admission, shared by internal comparisons and C
-/// PyObject_CheckBuffer. A released memoryview still owns the protocol; only
-/// acquisition may reject its current state.
-pub(crate) fn supports_buffer(py: &PyToken<'_>, source: u64) -> bool {
-    let Some(ptr) = crate::obj_from_bits(source).as_ptr() else {
+/// Storage shortcuts are exact-class facts. A subclass may replace its buffer
+/// slot and must enter the public protocol even when its layout is byte storage.
+pub(crate) fn is_exact_builtin_storage(py: &PyToken<'_>, source: u64) -> bool {
+    let class = crate::type_of_bits(py, source);
+    let builtins = crate::builtin_classes(py);
+    class == builtins.bytes || class == builtins.bytearray || class == builtins.memoryview
+}
+
+/// Callback-free eligibility follows the same semantic slots as acquisition.
+/// Exact builtin storage has an immutable protocol and needs no C projection.
+pub(crate) fn supports_buffer(_py: &PyToken<'_>, source: u64) -> bool {
+    if crate::obj_from_bits(source).as_ptr().is_none() {
         return false;
-    };
-    match unsafe { crate::object_type_id(ptr) } {
-        crate::TYPE_ID_BYTES | crate::TYPE_ID_BYTEARRAY | crate::TYPE_ID_MEMORYVIEW => true,
-        crate::TYPE_ID_FOREIGN => unsafe {
-            molt_cpython_abi::api::buffer::PyObject_CheckBuffer(
-                std::ptr::with_exposed_provenance_mut(super::foreign::foreign_ptr_from_obj(ptr)),
-            ) != 0
-        },
-        crate::TYPE_ID_OBJECT | crate::TYPE_ID_NATIVE_HANDLE => {
-            crate::builtins::array_mod::array_supports_buffer(py, source)
+    }
+    unsafe {
+        if is_exact_builtin_storage(_py, source) {
+            return true;
         }
-        _ => false,
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            let object = super::foreign::NativeObjectOwner::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(source),
+            );
+            !object.as_ptr().is_null()
+                && molt_cpython_abi::api::buffer::PyObject_CheckBuffer(object.as_ptr()) != 0
+        })
     }
 }
 
@@ -157,10 +164,91 @@ impl Drop for ScopedBufferExport<'_, '_> {
     }
 }
 
+/// RawIOBase.write permits the caller to release or mutate its input on return.
+/// This guard expires every Python descendant before the caller's export drops.
+/// A native Py_buffer issued during the callback is likewise a scoped borrow:
+/// later release is safe, but dereferencing it after return violates that API.
+pub(crate) struct CallbackMemoryView<'scope> {
+    root: molt_runtime_core::OwnedRuntimeValue<'scope>,
+}
+
+impl<'scope> CallbackMemoryView<'scope> {
+    /// Borrow an admitted span through its actual operation owner. The owner
+    /// and token lifetimes bound the scope guard; no storage is retained by views.
+    ///
+    /// # Safety
+    /// `data..data+len` must remain live until this guard drops. Callbacks may
+    /// mutate admitted source bytes but cannot relocate them. For internal IO
+    /// buffers the caller owns the moved Vec and serializes writer operations.
+    pub(crate) unsafe fn borrow<T: ?Sized>(
+        py: &'scope PyToken<'_>,
+        _owner: &'scope T,
+        data: *mut u8,
+        len: usize,
+    ) -> Result<Self, u64> {
+        let format = crate::alloc_string(py, b"B");
+        if format.is_null() {
+            return Err(crate::MoltObject::none().bits());
+        }
+        let format_bits = crate::MoltObject::from_ptr(format).bits();
+        let _format = crate::PtrDropGuard::new(format);
+        let Some(mut storage) = super::memoryview::TypedStridedStorage::one_dim(
+            data,
+            true,
+            len,
+            1,
+            1,
+            0,
+            0,
+            format_bits,
+        ) else {
+            return Err(crate::raise_exception(
+                py,
+                "BufferError",
+                "invalid IO buffer geometry",
+            ));
+        };
+        storage.kind = super::MemoryViewKind::CallbackRoot;
+        let pointer = crate::alloc_memoryview_from_storage(py, storage);
+        if pointer.is_null() {
+            return Err(crate::MoltObject::none().bits());
+        }
+        Ok(Self {
+            root: unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::MoltObject::from_ptr(pointer).bits(),
+                )
+            },
+        })
+    }
+
+    pub(crate) fn bits(&self) -> u64 {
+        self.root.bits()
+    }
+}
+
+impl Drop for CallbackMemoryView<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            let pointer = crate::obj_from_bits(self.root.bits())
+                .as_ptr()
+                .expect("callback view");
+            // Explicit release is independent: children remain usable until
+            // this scope ends even when the root itself was released earlier.
+            let view = &mut *super::memoryview_ptr(pointer);
+            view.kind = view.kind.expire();
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.invalidate_memoryview_view(self.root.bits());
+        }
+    }
+}
+
 /// Consumer admission is separate from error wording: a pending acquisition
 /// exception (including a released view) must never become a generic TypeError.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BufferAccessError {
+    /// Object projection or lease preparation failed before exporter dispatch.
+    Preparation,
     Pending,
     Invalid,
 }
@@ -168,7 +256,7 @@ pub(crate) enum BufferAccessError {
 impl BufferAccessError {
     pub(crate) fn raise(self, py: &PyToken<'_>, invalid_message: &str) -> u64 {
         match self {
-            Self::Pending => crate::MoltObject::none().bits(),
+            Self::Preparation | Self::Pending => crate::MoltObject::none().bits(),
             Self::Invalid => crate::raise_exception(py, "TypeError", invalid_message),
         }
     }
@@ -180,10 +268,53 @@ impl BufferAccessError {
 pub(crate) struct ScopedBuffer<'a, 'py> {
     py: &'a PyToken<'py>,
     export: super::memoryview::MoltBufferView,
+    lease: Option<super::foreign::RuntimeBufferLease>,
 }
 
 impl<'a, 'py> ScopedBuffer<'a, 'py> {
     pub(crate) fn new(py: &'a PyToken<'py>, source: u64) -> Result<Self, BufferAccessError> {
+        Self::with_flags(py, source, molt_cpython_abi::abi_types::PyBUF_FULL_RO)
+    }
+
+    pub(crate) fn with_flags(
+        py: &'a PyToken<'py>,
+        source: u64,
+        flags: i32,
+    ) -> Result<Self, BufferAccessError> {
+        use molt_cpython_abi::api::buffer;
+        let physical = is_exact_builtin_storage(py, source);
+        if !physical {
+            unsafe {
+                let lease = match molt_runtime_core::native_custody::acquire_buffer(source, flags) {
+                    Ok(lease) => lease,
+                    Err(molt_cpython_abi::api::memory::BufferAcquireError::Preparation) => {
+                        return Err(BufferAccessError::Preparation);
+                    }
+                    Err(molt_cpython_abi::api::memory::BufferAcquireError::Exporter) => {
+                        return Err(BufferAccessError::Pending);
+                    }
+                };
+                let descriptor = buffer::descriptor_from_pybuffer(lease.descriptor())
+                    .map_err(|_| BufferAccessError::Invalid)?;
+                let mut export = crate::cpython_abi_hooks::runtime_buffer_view_from_abi(descriptor);
+                let rank = export.ndim as usize;
+                // Py_buffer.len is logical nbytes, not the addressed span of
+                // a strided export. The native lease guarantees that declared
+                // storage; reuse memoryview's checked bounds for this projection.
+                let span = super::memoryview::memoryview_strided_bounds(
+                    &export.shape[..rank],
+                    &export.strides[..rank],
+                    export.itemsize as usize,
+                )
+                .ok_or(BufferAccessError::Invalid)?;
+                export.backing_capacity = span.span_len as u64;
+                return Ok(Self {
+                    py,
+                    export,
+                    lease: Some(lease),
+                });
+            }
+        }
         let mut export = super::memoryview::MoltBufferView::default();
         if unsafe { crate::c_api::molt_buffer_acquire(source, &mut export) } != 0 {
             return Err(if crate::exception_pending(py) {
@@ -192,11 +323,165 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
                 BufferAccessError::Invalid
             });
         }
-        Ok(Self { py, export })
+        let result = Self {
+            py,
+            export,
+            lease: None,
+        };
+        if flags & molt_cpython_abi::abi_types::PyBUF_WRITABLE != 0 && result.export.readonly != 0 {
+            return Err(BufferAccessError::Invalid);
+        }
+        let abi = crate::cpython_abi_hooks::abi_buffer_view_from_runtime(result.export);
+        if let Some(message) = buffer::descriptor_request_error(&abi, flags) {
+            let message = std::str::from_utf8(&message[..message.len() - 1]).unwrap();
+            crate::raise_exception::<()>(py, "BufferError", message);
+            return Err(BufferAccessError::Pending);
+        }
+        Ok(result)
+    }
+
+    /// Contiguous byte arguments retain only the storage they need. Ordinary
+    /// bytes avoid ABI projection, allocation and an extra immutable-owner pin.
+    /// Bytearray arguments retain a counted pin across subsequent callbacks.
+    pub(crate) fn simple(py: &'a PyToken<'py>, source: u64) -> Result<Self, BufferAccessError> {
+        if is_exact_builtin_storage(py, source)
+            && let Some(pointer) = crate::obj_from_bits(source).as_ptr()
+        {
+            unsafe {
+                let kind = crate::object_type_id(pointer);
+                if kind == crate::TYPE_ID_BYTES || kind == crate::TYPE_ID_BYTEARRAY {
+                    let owner = if kind == crate::TYPE_ID_BYTEARRAY {
+                        acquire_owner(py, source).map_err(|_| BufferAccessError::Pending)?
+                    } else {
+                        0
+                    };
+                    let len = crate::bytes_len(pointer);
+                    let mut export = super::memoryview::MoltBufferView {
+                        data: crate::bytes_data(pointer).cast_mut(),
+                        len: len as u64,
+                        backing_capacity: len as u64,
+                        readonly: u32::from(kind == crate::TYPE_ID_BYTES),
+                        owner,
+                        ..Default::default()
+                    };
+                    export.shape[0] = len as isize;
+                    export.strides[0] = 1;
+                    return Ok(Self {
+                        py,
+                        export,
+                        lease: None,
+                    });
+                }
+            }
+        }
+        let buffer = Self::with_flags(py, source, molt_cpython_abi::abi_types::PyBUF_SIMPLE)?;
+        buffer.contiguous_len()?;
+        Ok(buffer)
+    }
+
+    /// CPython's PyBytes_Check shortcuts deliberately read subclass storage
+    /// without dispatching __buffer__ (tailmatch and bytes.translate).
+    pub(crate) unsafe fn physical_bytes(py: &'a PyToken<'py>, pointer: *mut u8) -> Self {
+        debug_assert_eq!(
+            unsafe { crate::object_type_id(pointer) },
+            crate::TYPE_ID_BYTES
+        );
+        let len = unsafe { crate::bytes_len(pointer) };
+        let mut export = super::memoryview::MoltBufferView {
+            data: unsafe { crate::bytes_data(pointer).cast_mut() },
+            len: len as u64,
+            backing_capacity: len as u64,
+            readonly: 1,
+            ..Default::default()
+        };
+        export.shape[0] = len as isize;
+        export.strides[0] = 1;
+        Self {
+            py,
+            export,
+            lease: None,
+        }
+    }
+
+    /// Callers of simple have already established a contiguous byte span.
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        if self.export.len == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(self.export.data, self.export.len as usize) }
     }
 
     pub(crate) fn view(&self) -> &super::memoryview::MoltBufferView {
         &self.export
+    }
+
+    /// Preserve the actual Py_buffer.obj identity used by immutable partition.
+    /// Exact physical routes borrow the original source; native leases may own
+    /// a different exporter (notably the Python __buffer__ wrapper).
+    pub(crate) fn owned_exporter(&self, source: u64) -> Option<u64> {
+        if let Some(lease) = &self.lease {
+            let owner = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(lease.owner())
+            };
+            if owner.is_none() {
+                crate::cpython_abi_hooks::propagate_native_failure(self.py, "buffer owner");
+            }
+            owner
+        } else {
+            crate::inc_ref_bits(self.py, source);
+            Some(source)
+        }
+    }
+
+    /// The caller owns the admitted export throughout the raw callback. The
+    /// readonly descriptor and its descendants borrow only that scope, so none
+    /// can delay the original export's release after write returns.
+    pub(crate) fn readonly_subview<'scope>(
+        &'scope self,
+        start: usize,
+        len: usize,
+    ) -> Result<CallbackMemoryView<'scope>, u64> {
+        let total = self
+            .contiguous_len()
+            .map_err(|error| error.raise(self.py, "a contiguous buffer is required"))?;
+        if start > total || len > total - start {
+            return Err(crate::raise_exception(
+                self.py,
+                "SystemError",
+                "invalid IO buffer subspan",
+            ));
+        }
+        unsafe {
+            CallbackMemoryView::borrow(self.py, self, self.export.data.wrapping_add(start), len)
+        }
+    }
+
+    /// Semantic format belongs to the retained export, not the fixed-size
+    /// geometry transport. This borrow cannot outlive its lease or physical pin.
+    pub(crate) fn format(&self) -> &[u8] {
+        unsafe {
+            if let Some(lease) = &self.lease {
+                let format = (*lease.descriptor()).format;
+                return if format.is_null() {
+                    b"B"
+                } else {
+                    std::ffi::CStr::from_ptr(format).to_bytes()
+                };
+            }
+            if let Some(owner) = crate::obj_from_bits(self.export.owner).as_ptr()
+                && crate::object_type_id(owner) == crate::TYPE_ID_MEMORYVIEW
+            {
+                let format = crate::obj_from_bits(crate::memoryview_format_bits(owner))
+                    .as_ptr()
+                    .expect("pinned memoryview owns its format");
+                return std::slice::from_raw_parts(
+                    crate::string_bytes(format),
+                    crate::string_len(format),
+                );
+            }
+        }
+        // The other physical routes are exact bytes and bytearray storage.
+        b"B"
     }
 
     pub(crate) fn contiguous_len(&self) -> Result<usize, BufferAccessError> {
@@ -237,7 +522,9 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
 
 impl Drop for ScopedBuffer<'_, '_> {
     fn drop(&mut self) {
-        unsafe { crate::c_api::molt_buffer_release(&mut self.export) };
+        if self.lease.is_none() {
+            unsafe { crate::c_api::molt_buffer_release(&mut self.export) };
+        }
     }
 }
 
@@ -250,7 +537,8 @@ pub(crate) struct ScopedWritableBuffer<'a, 'py> {
 
 impl<'a, 'py> ScopedWritableBuffer<'a, 'py> {
     pub(crate) fn new(py: &'a PyToken<'py>, source: u64) -> Result<Self, BufferAccessError> {
-        let buffer = ScopedBuffer::new(py, source)?;
+        let buffer =
+            ScopedBuffer::with_flags(py, source, molt_cpython_abi::abi_types::PyBUF_WRITABLE)?;
         if buffer.view().readonly != 0 {
             return Err(BufferAccessError::Invalid);
         }
@@ -312,7 +600,7 @@ pub(crate) unsafe fn detach_memoryview_owner(
         let native = view.native_lease.take();
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .invalidate_memoryview_view(crate::MoltObject::from_ptr(ptr).bits());
-        if owner != 0 {
+        if owner != 0 && view.kind.scope() != super::MemoryViewScope::Derived {
             detach_owner(owner);
         }
         (owner, if base != owner { base } else { 0 }, native)

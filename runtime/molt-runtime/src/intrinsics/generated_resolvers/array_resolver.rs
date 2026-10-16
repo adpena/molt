@@ -15,6 +15,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_array_count",
             crate::molt_array_count as *const (),
         )),
+        "molt_array_declare_buffer" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_array_declare_buffer",
+            crate::molt_array_declare_buffer as *const (),
+        )),
         "molt_array_delitem" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_array_delitem",
             crate::molt_array_delitem as *const (),

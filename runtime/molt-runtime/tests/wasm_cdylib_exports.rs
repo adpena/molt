@@ -125,7 +125,6 @@ fn expected_compression_exports(enabled: bool) -> BTreeSet<String> {
                 .map(str::to_owned),
         );
         assert!(names.contains("molt_lzma_compress"));
-        assert!(names.contains("molt_lzma_file_drop"));
     }
     names
 }

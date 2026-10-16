@@ -184,6 +184,14 @@ The runtime splits along feature boundaries (HF-189) so that reachability on the
 typed IR selects linked code without stubs (HF-195); proof receipts are keyed by
 input digest (HF-190, HF-211).
 
+Installed compilation must also separate product execution from development
+apparatus (V1-01/V1-12). `process_guard.py` currently imports the repository's
+`tools/harness_memory_guard.py` and requires a source-tree layout. Preserve
+necessary product deadlines, resource enforcement and failure atomicity under
+their existing owner while removing the development-tree dependency through
+every installed caller. Development receipts, source audits and release
+qualification do not belong in emitted programs.
+
 ## What each goal gains
 
 | Goal | Mechanisms |
@@ -207,9 +215,26 @@ Each step is a complete migration of one contract, measured before and after.
    reconstruction. Qualify this bounded deletion cut, then stop extending its
    source bridge. The next native cut carries typed CFG, ownership, module
    roots, callable metadata and partition ABI into actual codegen and deletes
-   source projection and name-based plans together. Move the post-cache physical
-   splitter under that typed owner before terminal ownership: preserve its
-   growth bound, continuation/frame transport, error and finalizer protocol.
+   source projection and name-based plans together. First consolidate the 24
+   native text-predicate call handlers through the existing ABI manifest and
+   generator, consuming the same explicit op-to-call mapping in native, LLVM
+   and WASM. Preserve generated argument, machine ABI and result ownership
+   checks and the canonical discarded-result sink; delete the replaced native
+   dispatch family. The larger op-loop table contains heterogeneous guards,
+   immediates, poll results and error protocols and requires separate complete
+   classifications. This precursor does not introduce another call registry.
+
+   Measure the post-cache physical splitter on large bodies and post-module
+   growth after source/name analyses retire. Retained batch timings without
+   splits cannot prove it unnecessary. Delete it only when measured Cranelift
+   costs and the existing aggregate growth policy qualify that retirement;
+   otherwise move it under the typed owner after the last growth-producing
+   module transform and before terminal ownership. Preserve its growth bound,
+   continuation/frame transport, error and finalizer protocol until either
+   outcome is qualified. Reuse the existing liveness solver
+   with full SSA identity and raw values for chunk transport; ownership-root
+   liveness is a different domain. Migrate the emitter's guard facts, reference
+   roots and intra-operation finalizer invalidation with its typed inputs.
    Reusing optimized source and re-lifting its chunks would leave the same
    boundary in place. Reuse LLVM's direct typed
    custody and the existing analysis owners. WASM's operation-reachability
@@ -218,10 +243,19 @@ Each step is a complete migration of one contract, measured before and after.
    preserved registered operations retain their generated effects and identity
    until the complete schema migration retires their spelling.
 3. **Measured runtime entry (C).** Profile one actual current-image consumer.
+   Establish native TLS address-resolution costs before extending serial
+   context transport. Co-locating destructor-free primitive fields under the
+   existing execution owner is a candidate only if the actual heap-reference
+   path benefits; scalar refcounts bypass entry, and lease/drain checks
+   short-circuit. Preserve distinct GIL, attachment, isolate, shutdown-worker
+   and TLS-destruction lifetimes through every accessor and callback.
    Migrate its complete admitted-service/context family while preserving
    callbacks, isolate changes, shutdown, error and ownership contracts. Choose
    direct calls and inline fast paths from typed link/capability/lifetime facts;
    do not assume a blanket boundary replacement removes every measured cost.
+   Typed machine CFG enables inline lowering; refcount storage layout,
+   overflow, terminal death and concurrency protocols remain necessary
+   prerequisites for a correct inline fast path.
 4. **Generated closed vocabulary and typed identity (A/D).** Continue op-kind
    census, operand/property/type generation and binding identities through all
    actual consumers, deleting each replaced spelling-based authority together.

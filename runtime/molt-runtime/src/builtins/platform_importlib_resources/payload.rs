@@ -188,11 +188,12 @@ pub(super) fn importlib_resources_path_payload(path: &str) -> ImportlibResources
     }
 }
 pub(super) fn importlib_resources_package_payload(
+    _py: &PyToken<'_>,
     package: &str,
     search_paths: &[String],
     module_file: Option<String>,
 ) -> ImportlibResourcesPackagePayload {
-    let resolved = importlib_search_paths(search_paths, module_file.clone());
+    let resolved = importlib_search_paths(_py, search_paths, module_file.clone());
     let resolution = importlib_find_in_path(package, &resolved, false);
     let mut roots: Vec<String> = Vec::new();
     let mut has_regular_package = false;
@@ -228,7 +229,7 @@ pub(super) fn importlib_resources_package_payload(
             }
         }
     }
-    let namespace_roots = importlib_namespace_paths(package, search_paths, module_file);
+    let namespace_roots = importlib_namespace_paths(_py, package, search_paths, module_file);
     for root in &namespace_roots {
         append_unique_path(&mut roots, root);
     }
@@ -380,7 +381,7 @@ pub(super) fn importlib_resources_required_package_payload(
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Result<ImportlibResourcesPackagePayload, u64> {
-    let payload = importlib_resources_package_payload(package, search_paths, module_file);
+    let payload = importlib_resources_package_payload(_py, package, search_paths, module_file);
     if payload.roots.is_empty() {
         return Err(raise_exception::<_>(_py, "ModuleNotFoundError", package));
     }
@@ -409,7 +410,7 @@ pub(super) fn importlib_resources_files_payload(
 ) -> Result<ImportlibResourcesFilesPayload, u64> {
     let package_name = importlib_resources_module_name_from_bits(_py, module_bits, fallback_bits)?;
     let package_payload =
-        importlib_resources_package_payload(&package_name, search_paths, module_file);
+        importlib_resources_package_payload(_py, &package_name, search_paths, module_file);
     let reader_bits = importlib_resources_loader_reader_from_bits(_py, module_bits, &package_name)?;
     let mut roots = package_payload.roots;
     let mut is_namespace = package_payload.is_namespace;
@@ -574,11 +575,15 @@ mod tests {
         assert!(!file_payload.has_init_py);
         assert!(file_payload.is_archive_member);
 
-        let package_meta = importlib_resources_package_payload(
-            "pkg",
-            std::slice::from_ref(&archive_text),
-            Some(bootstrap_module_file()),
-        );
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let package_meta = crate::with_gil_entry_nopanic!(_py, {
+            importlib_resources_package_payload(
+                _py,
+                "pkg",
+                std::slice::from_ref(&archive_text),
+                Some(bootstrap_module_file()),
+            )
+        });
         assert!(package_meta.has_regular_package);
         assert!(
             package_meta

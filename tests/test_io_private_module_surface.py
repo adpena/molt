@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.surface_process_guard import run_surface_test_process
 
 
@@ -19,6 +21,7 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 _published_open = _host_native_io.open
 _intrinsic_requests = []
+_promotions = []
 
 # Capture code before replacing the host loader's _io namespace. The unseeded
 # provider intentionally has no open; importing our fixture must not require
@@ -40,7 +43,9 @@ def _builtin_class_lookup(name):
 
 
 _resolver = install_registry({{
+    "molt_function_set_builtin": lambda function: _promotions.append((function.__name__, function.__text_signature__)),
     "molt_io_class": _io_class,
+    "molt_io_default_buffer_size": lambda: _host_native_io.DEFAULT_BUFFER_SIZE,
     "molt_builtin_class_lookup": _builtin_class_lookup,
 }})
 _resolve = _resolver.require_intrinsic
@@ -98,7 +103,7 @@ checks = {{
         _private.SEEK_SET == 0
         and _private.SEEK_CUR == 1
         and _private.SEEK_END == 2
-        and _private.DEFAULT_BUFFER_SIZE == 8192
+        and _private.DEFAULT_BUFFER_SIZE == _host_native_io.DEFAULT_BUFFER_SIZE
     ),
     "classes": (
         _private._IOBase is _host_native_io._IOBase
@@ -137,7 +142,8 @@ checks = {{
         and _without_open_public.StringIO("memory").read() == "memory"
     ),
     "intrinsics": _intrinsic_requests
-    == ["molt_io_class", "molt_builtin_class_lookup"] * 2,
+    == ["molt_io_class", "molt_builtin_class_lookup", "molt_io_default_buffer_size", "molt_function_set_builtin"] * 2,
+    "promotion": _promotions == [("text_encoding", "($module, encoding, stacklevel=2, /)")] * 2,
     "unsupported_operation": (
         _private.UnsupportedOperation.__module__ == "io"
         and issubclass(_private.UnsupportedOperation, OSError)
@@ -151,7 +157,7 @@ for key in sorted(checks):
 
 def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
     proc = run_surface_test_process(
-        [sys.executable, "-c", _PROBE],
+        [sys.executable, "-B", "-c", _PROBE],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -185,6 +191,9 @@ def test__io_public_surface_matches_expected_shape() -> None:
         ("TextIOWrapper", "type", "True"),
         ("UnsupportedOperation", "type", "True"),
         ("open", "builtin_function_or_method", "True"),
+        # The host double records promotion; actual builtin kind is qualified
+        # by the compiled logging_handlers_rotation differential fixture.
+        ("text_encoding", "function", "True"),
     ]
     assert checks == {
         "aliases": "True",
@@ -196,5 +205,95 @@ def test__io_public_surface_matches_expected_shape() -> None:
         "native_mode_error": "True",
         "open": "True",
         "public_abcs": "True",
+        "promotion": "True",
         "unsupported_operation": "True",
     }
+
+
+@pytest.mark.parametrize("buffer_size", [8192, 131072])
+def test_text_encoding_public_contract_and_warning_frames(monkeypatch, buffer_size):
+    import _io as native_io
+    import importlib.util
+    import warnings
+    from types import SimpleNamespace
+
+    from tests.stdlib_intrinsic_registry import intrinsic_registry
+
+    promotions = []
+    hooks = {
+        "molt_io_class": lambda name: getattr(native_io, name),
+        "molt_io_default_buffer_size": lambda: buffer_size,
+        "molt_builtin_class_lookup": lambda name: getattr(native_io, name),
+        "molt_function_set_builtin": lambda function: promotions.append(function),
+    }
+    with intrinsic_registry(hooks):
+        spec = importlib.util.spec_from_file_location(
+            "_molt_io_text", STDLIB_ROOT / "_io.py"
+        )
+        private = importlib.util.module_from_spec(spec)
+        private.open = native_io.open  # Existing native publication boundary.
+        spec.loader.exec_module(private)
+    assert promotions == [private.text_encoding]
+    assert private.DEFAULT_BUFFER_SIZE == buffer_size
+    assert (
+        private.text_encoding.__text_signature__
+        == "($module, encoding, stacklevel=2, /)"
+    )
+
+    with monkeypatch.context() as patch, intrinsic_registry(hooks):
+        patch.setitem(sys.modules, "_io", private)
+        patch.setattr(private, "DEFAULT_BUFFER_SIZE", -123)
+        for name in ("_pyio_text", "_pyio_text_context"):
+            patch.delitem(sys.modules, name, raising=False)
+        spec = importlib.util.spec_from_file_location(
+            "_molt_pyio_text", STDLIB_ROOT / "_pyio.py"
+        )
+        pure = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pure)
+        assert pure.DEFAULT_BUFFER_SIZE == buffer_size
+        assert private.DEFAULT_BUFFER_SIZE == -123
+
+    assert pure.DEFAULT_BUFFER_SIZE == buffer_size
+
+    sentinel = object()
+    for utf8_mode, expected in ((0, "locale"), (1, "utf-8")):
+        flags = SimpleNamespace(utf8_mode=utf8_mode, warn_default_encoding=0)
+        monkeypatch.setattr(private, "_sys", SimpleNamespace(flags=flags))
+        monkeypatch.setattr(pure, "sys", SimpleNamespace(flags=flags))
+        assert private.text_encoding(None) == pure.text_encoding(None) == expected
+        assert private.text_encoding(sentinel) is sentinel
+        assert pure.text_encoding(encoding=sentinel, stacklevel=object()) is sentinel
+    with pytest.raises(TypeError):
+        private.text_encoding(encoding=None)
+    for value, error in (
+        (1.0, TypeError),
+        (2**31, OverflowError),
+        (-(2**31) - 1, OverflowError),
+    ):
+        with pytest.raises(error):
+            private.text_encoding("explicit", value)
+
+    class StackLevel:
+        def __index__(self):
+            return 1
+
+    assert private.text_encoding("explicit", StackLevel()) == "explicit"
+
+    flags = SimpleNamespace(utf8_mode=0, warn_default_encoding=1)
+    monkeypatch.setattr(private, "_sys", SimpleNamespace(flags=flags))
+    monkeypatch.setattr(pure, "sys", SimpleNamespace(flags=flags))
+    for function in (private.text_encoding, pure.text_encoding):
+        for level in (-1, 0, 1):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                function(None, level)
+            assert len(caught) == 1
+            warning = caught[0]
+            assert warning.category is EncodingWarning
+            assert str(warning.message) == "'encoding' argument not specified."
+            expected_path = (
+                STDLIB_ROOT / "_pyio.py"
+                if function is pure.text_encoding and level <= 0
+                else Path(__file__)
+            )
+            assert Path(warning.filename) == expected_path

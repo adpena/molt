@@ -76,7 +76,11 @@ def test_native_bootstrap_target_dir_defaults_to_artifact_root_target() -> None:
 
 
 def _build_and_run(
-    tmp_path: Path, source: str, name: str
+    tmp_path: Path,
+    source: str,
+    name: str,
+    *,
+    capabilities: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     return _build_and_run_with_env(
         tmp_path,
@@ -85,6 +89,16 @@ def _build_and_run(
         session_id=NATIVE_BOOTSTRAP_SESSION_ID,
         cache_dir=ARTIFACT_ROOT / ".molt_cache",
         backend="cranelift",
+        extra_env=(
+            {"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""}
+            if capabilities
+            else None
+        ),
+        extra_build_args=(
+            ["--no-trusted", "--capabilities", ",".join(capabilities)]
+            if capabilities
+            else None
+        ),
     )
 
 
@@ -2365,13 +2379,48 @@ def test_native_array_repeat_semantics_executes(tmp_path: Path) -> None:
 
 
 def test_native_os_env_snapshot_executes(tmp_path: Path) -> None:
-    run = _build_and_run(
-        tmp_path,
-        "import os\nprint(type(os._molt_env_snapshot()).__name__)\n",
-        "os_env_snapshot_executes",
-    )
-    assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip() == "dict"
+    # Native main installs the resolved build policy before runtime startup.
+    # Opposite ambient policies must not replace either emitted policy.
+    for allowed in (False, True):
+        build_args = ["--no-trusted"]
+        if allowed:
+            build_args.extend(["--capabilities", "env.read"])
+        out_path, build_env = _build_native_binary_with_env(
+            tmp_path,
+            "import os\nprint(type(os.environ.copy()).__name__)\n",
+            "os_env_snapshot_allowed" if allowed else "os_env_snapshot_denied",
+            source_relpath="os_env_snapshot.py",
+            session_id=NATIVE_BOOTSTRAP_SESSION_ID,
+            cache_dir=ARTIFACT_ROOT / ".molt_cache",
+            backend="cranelift",
+            extra_env={"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""},
+            extra_build_args=build_args,
+        )
+        run_env = build_env.copy()
+        run_env.update(
+            {
+                "MOLT_CAPABILITY_TIER": "none" if allowed else "full",
+                "MOLT_CAPABILITIES": "" if allowed else "env.read",
+            }
+        )
+        run = run_native_test_process(
+            [str(out_path)],
+            cwd=ROOT,
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if allowed:
+            assert run.returncode == 0, run.stdout + run.stderr
+            assert run.stdout.strip() == "dict"
+        else:
+            assert run.returncode != 0, run.stdout + run.stderr
+            assert run.stdout == ""
+            assert (
+                "PermissionError: missing [env.read] capabilities for 'env.snapshot'"
+                in run.stderr
+            )
 
 
 def test_native_os_listdir_executes(tmp_path: Path) -> None:
@@ -2408,6 +2457,7 @@ def test_native_tensor_linear_f32_contiguous_fast_path(tmp_path: Path) -> None:
             "print(out.to_list())\n"
         ),
         "tensor_linear_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2430,6 +2480,7 @@ def test_native_tensor_broadcast_f32_contiguous_fast_path(tmp_path: Path) -> Non
             "print(out.to_list())\n"
         ),
         "tensor_broadcast_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2451,6 +2502,7 @@ def test_native_tensor_permute_f32_contiguous_fast_path(tmp_path: Path) -> None:
             "print(out.to_list())\n"
         ),
         "tensor_permute_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2473,6 +2525,7 @@ def test_native_tensor_matmul_f32_contiguous_fast_path(tmp_path: Path) -> None:
             "print(out.to_list())\n"
         ),
         "tensor_matmul_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2499,6 +2552,7 @@ def test_native_tensor_linear_split_last_dim_f32_contiguous_fast_path(
             "print(right.to_list())\n"
         ),
         "tensor_linear_split_last_dim_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2525,6 +2579,7 @@ def test_native_tensor_linear_squared_relu_gate_interleaved_f32_contiguous_fast_
             "print(out.to_list())\n"
         ),
         "tensor_linear_squared_relu_gate_interleaved_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2557,6 +2612,7 @@ def test_native_tensor_functional_linear_family_fast_path(
             "print(gated.to_list())\n"
         ),
         "tensor_functional_linear_family_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2588,6 +2644,7 @@ def test_native_tensor_functional_permute_and_softmax_last_axis_fast_path(
             "print(softmaxed.shape)\n"
         ),
         "tensor_functional_permute_softmax_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2614,6 +2671,7 @@ def test_native_tensor_functional_reshape_and_data_list_fast_path(
             "print(tensor_data_list(reshaped))\n"
         ),
         "tensor_functional_reshape_data_list_f32",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2641,6 +2699,7 @@ def test_native_tensor_scaled_dot_product_attention_fast_path(
             "print(out.to_list())\n"
         ),
         "tensor_scaled_dot_product_attention",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2664,6 +2723,7 @@ def test_native_tensor_functional_take_rows_fast_path(
             "print(out.to_list())\n"
         ),
         "tensor_functional_take_rows_f32",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2686,6 +2746,7 @@ def test_native_tensor_softmax_f32_contiguous_fast_path(tmp_path: Path) -> None:
             "print(out.to_list())\n"
         ),
         "tensor_softmax_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     lines = run.stdout.strip().splitlines()
@@ -2705,6 +2766,7 @@ def test_native_tensor_ndim_property_fast_path(tmp_path: Path) -> None:
             "print(t.ndim)\n"
         ),
         "tensor_ndim_property",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2755,6 +2817,7 @@ def test_native_tensor_rms_norm_f32_contiguous_fast_path(tmp_path: Path) -> None
             "print([[round(v, 6) for v in row] for row in out.to_list()])\n"
         ),
         "tensor_rms_norm_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -2778,6 +2841,7 @@ def test_native_tensor_squared_relu_gate_interleaved_f32_contiguous_fast_path(
             "print(out.to_list())\n"
         ),
         "tensor_squared_relu_gate_interleaved_f32_contiguous",
+        capabilities=("env.read",),
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == [
@@ -3130,6 +3194,8 @@ def test_native_repo_package_imports_include_molt_parent_package(
         session_id="pytest-native-bootstrap-package-import",
         cache_dir=ARTIFACT_ROOT / ".molt_cache-package-import",
         backend="cranelift",
+        extra_env={"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""},
+        extra_build_args=["--no-trusted", "--capabilities", "env.read"],
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
@@ -3168,6 +3234,8 @@ def test_native_load_safetensors_multi_entry_is_clean(tmp_path: Path) -> None:
         session_id="pytest-native-bootstrap-safetensors",
         cache_dir=ARTIFACT_ROOT / ".molt_cache-safetensors",
         backend="cranelift",
+        extra_env={"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""},
+        extra_build_args=["--no-trusted", "--capabilities", "env.read,fs.read"],
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["160", "Tensor"]
@@ -3190,6 +3258,8 @@ def test_native_load_safetensors_mapping_get_returns_tensor_and_default(
         session_id="pytest-native-bootstrap-safetensors-get",
         cache_dir=ARTIFACT_ROOT / ".molt_cache-safetensors-get",
         backend="cranelift",
+        extra_env={"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""},
+        extra_build_args=["--no-trusted", "--capabilities", "env.read,fs.read"],
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["Tensor", "fallback"]

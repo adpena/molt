@@ -1343,40 +1343,31 @@ pub extern "C" fn molt_call_bind_ic_owned(_site: u64, callable: u64, builder: u6
     owned_result()
 }
 #[no_mangle]
-pub extern "C" fn molt_dict_new(capacity: u64) -> u64 {
-    assert_eq!(capacity, 2);
-    if pending() {
-        return NONE;
-    }
-    if DICT_FAIL.load(SeqCst) != 0 {
-        return raise();
-    }
+pub unsafe extern "C" fn molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64) -> u64 {
+    assert_eq!(len, 2);
+    assert!(!pending(), "the constructor is skipped after a boxing failure");
+    assert_eq!(ATTEMPTS.load(SeqCst), 2, "full pairs are materialized before construction");
+    if DICT_FAIL.load(SeqCst) != 0 { return raise(); }
     assert_eq!(DICT_REFS.swap(1, SeqCst), 0);
     ENTRIES_LEN.store(0, SeqCst);
+    for index in 0..len as usize {
+        let (key, value) = (*keys.add(index), *values.add(index));
+        assert_eq!((key, value), [(0x101, 0x101), (0x102, 0x101)][index],
+            "the two borrowed ranges preserve repeated value identity");
+        INSERTS.fetch_add(1, SeqCst);
+        if INSERT_FAIL.load(SeqCst) == index as u64 + 1 {
+            let result = raise();
+            molt_dec_ref_obj(DICT);
+            return result;
+        }
+        let len = ENTRIES_LEN.load(SeqCst) as usize;
+        for (offset, word) in [key, value].into_iter().enumerate() {
+            molt_inc_ref_obj(word);
+            ENTRIES[len + offset].store(word, SeqCst);
+        }
+        ENTRIES_LEN.store(len as u64 + 2, SeqCst);
+    }
     DICT
-}
-#[no_mangle]
-pub extern "C" fn molt_dict_set(dict: u64, key: u64, value: u64) -> u64 {
-    assert_eq!(dict, DICT);
-    assert!(!pending(), "no insertion runs after a failure");
-    let index = INSERTS.fetch_add(1, SeqCst);
-    assert_eq!(
-        ATTEMPTS.load(SeqCst),
-        index + 1,
-        "an entry is boxed only after the previous insertion"
-    );
-    let expected = [(0x101, 0x101), (0x102, 0x101)][index as usize];
-    assert_eq!((key, value), expected, "a repeated value keeps one identity");
-    if INSERT_FAIL.load(SeqCst) == index + 1 {
-        return raise();
-    }
-    let len = ENTRIES_LEN.load(SeqCst) as usize;
-    for (offset, word) in [key, value].into_iter().enumerate() {
-        molt_inc_ref_obj(word);
-        ENTRIES[len + offset].store(word, SeqCst);
-    }
-    ENTRIES_LEN.store(len as u64 + 2, SeqCst);
-    dict
 }
 #[no_mangle]
 pub extern "C" fn molt_task_new(_poll: u64, size: u64, kind: u64) -> u64 {
@@ -1632,24 +1623,11 @@ fn main() {
             fam_inject(0, dict_failure, insert_failure);
             let result = fam_dict();
             assert_eq!(result, if success { 0x400 } else { NONE }, "{case}");
-            let attempts = if dict_failure != 0 {
+            let attempts = if failure != 0 { failure } else { 2 };
+            assert_eq!(fam_attempts(), attempts,
+                "{case}: all distinct operands precede the full-pairs constructor");
+            let inserts = if dict_failure != 0 || failure != 0 {
                 0
-            } else if failure != 0 {
-                failure
-            } else if insert_failure == 1 {
-                1
-            } else {
-                2
-            };
-            assert_eq!(
-                fam_attempts(),
-                attempts,
-                "{case}: entries are boxed lazily and stop at the first failure"
-            );
-            let inserts = if dict_failure != 0 || failure == 1 {
-                0
-            } else if failure == 2 {
-                1
             } else if insert_failure != 0 {
                 insert_failure
             } else {

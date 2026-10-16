@@ -157,21 +157,21 @@ fn lir_import_result_contracts_execute_owned_borrowed_raw_and_void_paths() {
         ),
         (
             "borrowed_bound",
-            LirRuntimeCall::DictSet,
+            LirRuntimeCall::DictSetitem,
             vec![LirRepr::DynBox; 3],
             Some(LirRepr::DynBox),
             false,
         ),
         (
             "borrowed_discard",
-            LirRuntimeCall::DictSet,
+            LirRuntimeCall::DictSetitem,
             vec![LirRepr::DynBox; 3],
             None,
             false,
         ),
         (
             "borrowed_temporary",
-            LirRuntimeCall::DictSet,
+            LirRuntimeCall::DictSetitem,
             vec![LirRepr::I64, LirRepr::DynBox, LirRepr::DynBox],
             Some(LirRepr::DynBox),
             true,
@@ -264,7 +264,7 @@ function reset() {
   assert.equal([...owners.values()].reduce((a,b)=>a+b,0), 0, 'leaked owner');
   owners = new Map(); allocated = retained = released = 0;
 }
-const host = {module_new:fresh, dict_set:(value)=>value, int_from_i64:fresh,
+const host = {module_new:fresh, dict_setitem:(value)=>value, int_from_i64:fresh,
   int_as_i64:()=>72n, handle_resolve:()=>1, inc_ref_obj:retain, dec_ref_obj:release, eq:()=>yes};
 function run(name, ...args) {
   const module = new WebAssembly.Module(fs.readFileSync(config.modules[name]));

@@ -36,6 +36,19 @@ with tarfile.open(tar_path, "r") as tf:
     print("getnames_len", len(names) == 1)
     print("getnames_value", names[0] == "hello.txt")
 
+# Gzip archives retain their own header policy while sharing the fallible
+# compression engine with the public zlib stream.
+gzip_path = os.path.join(tmpdir, "test.tar.gz")
+with tarfile.open(gzip_path, "w:gz") as tf:
+    tf.add(src_path, arcname="hello.txt")
+with open(gzip_path, "rb") as stream:
+    header = stream.read(10)
+print("gzip_header", header[:3] == b"\x1f\x8b\x08", header[9] == 255)
+print("gzip_is_tarfile", tarfile.is_tarfile(gzip_path))
+with tarfile.open(gzip_path, "r:gz") as tf:
+    print("gzip_names", tf.getnames() == ["hello.txt"])
+os.unlink(gzip_path)
+
 # Clean up
 os.unlink(src_path)
 os.unlink(tar_path)

@@ -233,7 +233,8 @@ pub extern "C" fn molt_tk_destroy_widget(app_bits: u64, widget_path_bits: u64) -
         let Ok(handle) = parse_app_handle(_py, app_bits) else {
             return raise_invalid_handle_error(_py);
         };
-        let Some(widget_path) = string_obj_to_owned(obj_from_bits(widget_path_bits)) else {
+        let Some(widget_path) = (unsafe { string_obj_to_owned(obj_from_bits(widget_path_bits)) })
+        else {
             return raise_tcl_for_handle(_py, handle, "widget path must be str");
         };
         let mut registry = tk_registry().lock().unwrap();
@@ -328,7 +329,7 @@ pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
         if let Some(value) = to_f64(obj) {
             return MoltObject::from_bool(value != 0.0).bits();
         }
-        if let Some(text) = string_obj_to_owned(obj) {
+        if let Some(text) = unsafe { string_obj_to_owned(obj) } {
             if let Some(parsed) = parse_bool_text(&text) {
                 return MoltObject::from_bool(parsed).bits();
             }
@@ -348,7 +349,7 @@ pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
         if let Some(value) = to_f64(obj) {
             return MoltObject::from_float(value).bits();
         }
-        if let Some(text) = string_obj_to_owned(obj)
+        if let Some(text) = unsafe { string_obj_to_owned(obj) }
             && let Ok(value) = text.trim().parse::<f64>()
         {
             return MoltObject::from_float(value).bits();
@@ -358,7 +359,7 @@ pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
             "ValueError",
             &format!(
                 "invalid floating-point value \"{}\"",
-                string_obj_to_owned(obj).unwrap_or_else(|| "?".to_string())
+                unsafe { string_obj_to_owned(obj) }.unwrap_or_else(|| "?".to_string())
             ),
         )
     })
@@ -368,16 +369,13 @@ pub extern "C" fn molt_tk_splitlist(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(value_bits);
         if let Some(items) = decode_value_list(obj) {
-            return match alloc_tuple_bits(
-                _py,
-                items.as_slice(),
-                "failed to allocate splitlist tuple",
-            ) {
+            return match alloc_tuple_bits(_py, items.as_ref(), "failed to allocate splitlist tuple")
+            {
                 Ok(bits) => bits,
                 Err(bits) => bits,
             };
         }
-        if let Some(text) = string_obj_to_owned(obj) {
+        if let Some(text) = unsafe { string_obj_to_owned(obj) } {
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 return match alloc_tuple_from_strings(
@@ -429,7 +427,7 @@ pub extern "C" fn molt_tk_errorinfo_append(app_bits: u64, message_bits: u64) -> 
             .variables
             .get("errorInfo")
             .copied()
-            .and_then(|bits| string_obj_to_owned(obj_from_bits(bits)))
+            .and_then(|bits| unsafe { string_obj_to_owned(obj_from_bits(bits)) })
             .unwrap_or_default();
         let merged = if current.is_empty() {
             message

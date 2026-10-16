@@ -584,7 +584,7 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let payload = importlib_bootstrap_payload(&search_paths, module_file);
+        let payload = importlib_bootstrap_payload(_py, &search_paths, module_file);
         let resolved_paths_bits = match alloc_string_list_bits(_py, &payload.resolved_search_paths)
         {
             Some(bits) => bits,
@@ -1088,7 +1088,7 @@ pub extern "C" fn molt_importlib_search_paths(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let resolved = importlib_search_paths(&search_paths, module_file);
+        let resolved = importlib_search_paths(_py, &search_paths, module_file);
         match alloc_string_list_bits(_py, &resolved) {
             Some(bits) => bits,
             None => crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),
@@ -1126,7 +1126,7 @@ pub extern "C" fn molt_importlib_namespace_paths(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let resolved = importlib_namespace_paths(&package, &search_paths, module_file);
+        let resolved = importlib_namespace_paths(_py, &package, &search_paths, module_file);
         match alloc_string_list_bits(_py, &resolved) {
             Some(bits) => bits,
             None => crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),

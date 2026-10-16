@@ -10,107 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import hmac as _host_hmac
-import hashlib as _host_hashlib
 import importlib.util
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
+from tests.crypto_intrinsic_registry import crypto_intrinsics
 
-_hash_handles = {{}}
-_hash_next_handle = [0]
-_hmac_handles = {{}}
-_hmac_next_handle = [0]
-
-
-def _new_hash_handle(state):
-    _hash_next_handle[0] += 1
-    handle = _hash_next_handle[0]
-    _hash_handles[handle] = state
-    return handle
-
-
-def _new_hmac_handle(state):
-    _hmac_next_handle[0] += 1
-    handle = _hmac_next_handle[0]
-    _hmac_handles[handle] = state
-    return handle
-
-
-def _molt_hash_new(name, data=b"", options=None):
-    options = dict(options or {{}})
-    state = getattr(_host_hashlib, name)(data, **options)
-    return _new_hash_handle(state)
-
-
-def _molt_hash_update(handle, data):
-    _hash_handles[handle].update(data)
-
-
-def _molt_hash_copy(handle):
-    return _new_hash_handle(_hash_handles[handle].copy())
-
-
-def _molt_hash_digest(handle, length=None):
-    state = _hash_handles[handle]
-    if length is None:
-        return state.digest()
-    return state.digest(length)
-
-
-def _molt_hash_drop(handle):
-    _hash_handles.pop(handle, None)
-
-
-def _molt_hmac_new(key, msg, digest_name, options):
-    digest_name = str(digest_name)
-    options = dict(options or {{}})
-    digestmod = lambda data=b"": getattr(_host_hashlib, digest_name)(data, **options)
-    return _new_hmac_handle(_host_hmac.new(key, msg, digestmod))
-
-
-def _molt_hmac_update(handle, msg):
-    _hmac_handles[handle].update(msg)
-
-
-def _molt_hmac_copy(handle):
-    return _new_hmac_handle(_hmac_handles[handle].copy())
-
-
-def _molt_hmac_digest(handle):
-    return _hmac_handles[handle].digest()
-
-
-def _molt_hmac_drop(handle):
-    _hmac_handles.pop(handle, None)
-
-
-def _molt_scrypt(password, salt, n, r, p, maxmem=0, dklen=64):
-    return _host_hashlib.scrypt(
-        password,
-        salt=salt,
-        n=n,
-        r=r,
-        p=p,
-        maxmem=maxmem,
-        dklen=dklen,
-    )
-
-
-install_registry({{
-    "molt_hash_new": _molt_hash_new,
-    "molt_hash_update": _molt_hash_update,
-    "molt_hash_copy": _molt_hash_copy,
-    "molt_hash_digest": _molt_hash_digest,
-    "molt_hash_drop": _molt_hash_drop,
-    "molt_compare_digest": _host_hmac.compare_digest,
-    "molt_pbkdf2_hmac": _host_hashlib.pbkdf2_hmac,
-    "molt_scrypt": _molt_scrypt,
-    "molt_hmac_new": _molt_hmac_new,
-    "molt_hmac_update": _molt_hmac_update,
-    "molt_hmac_copy": _molt_hmac_copy,
-    "molt_hmac_digest": _molt_hmac_digest,
-    "molt_hmac_drop": _molt_hmac_drop,
-}})
+install_registry(crypto_intrinsics())
 
 
 def _load_module(name, path_text):
@@ -124,9 +29,10 @@ def _load_module(name, path_text):
 
 _hashlib = _load_module("hashlib", {str(STDLIB_ROOT / "hashlib.py")!r})
 _hmac = _load_module("hmac", {str(STDLIB_ROOT / "hmac.py")!r})
-_hmac_private = _load_module("molt_test__hmac", {str(STDLIB_ROOT / "_hmac.py")!r})
+_load_module("_hashlib", {str(STDLIB_ROOT / "_hashlib.py")!r})
+_hmac_private = _load_module("_hmac", {str(STDLIB_ROOT / "_hmac.py")!r})
 
-h = _hmac_private.new("sha256", b"key", b"msg")
+h = _hmac_private.new(b"key", b"msg", "sha256")
 
 checks = {{
     "types": (
@@ -148,16 +54,51 @@ checks = {{
         and isinstance(_hmac_private.compute_sha3_256(b"key", b"msg"), bytes)
         and isinstance(_hmac_private.compute_sha3_384(b"key", b"msg"), bytes)
         and isinstance(_hmac_private.compute_sha3_512(b"key", b"msg"), bytes)
-        and isinstance(_hmac_private.compute_blake2b_32(b"key", b"msg"), bytes)
+        and len(_hmac_private.compute_blake2b_32(b"key", b"msg")) == 64
+        and _hmac_private.compute_blake2b_32(b"key", b"msg")
+        == _hmac_private.compute_digest(b"key", b"msg", "blake2b")
         and isinstance(_hmac_private.compute_blake2s_32(b"key", b"msg"), bytes)
     ),
     "errors": False,
 }}
 
 try:
-    _hmac_private.new(b"bad", b"key", b"msg")
-except _hmac_private.UnknownHashError:
-    checks["errors"] = True
+    _hmac_private.new(b"key", b"msg", b"bad")
+except _hmac_private.UnknownHashError as error:
+    checks["errors"] = str(error) == "unsupported hash type: b'bad'"
+
+class LowerWitness(str):
+    def lower(self):
+        raise marker
+
+marker = RuntimeError("builtin name callback")
+try:
+    _hmac_private.new(object(), object(), LowerWitness("SHA3_256"))
+except RuntimeError as error:
+    checks["lower_before_buffers"] = error is marker
+else:
+    checks["lower_before_buffers"] = False
+checks["builtin_metadata"] = (
+    _hmac_private.new(b"key", digestmod="SHA3_256").name == "hmac-sha3_256"
+    and _hmac_private.new(b"key", digestmod="BLAKE2B").digest_size == 64
+)
+
+original_unknown = _hmac_private.UnknownHashError
+class ReplacementError(ValueError):
+    pass
+_hmac_private.UnknownHashError = ReplacementError
+checks["captured_builtin_declaration"] = True
+for operation in (
+    lambda: _hmac_private.new(b"key", digestmod="unsupported"),
+    lambda: _hmac_private.compute_digest(b"key", b"msg", "unsupported"),
+):
+    try:
+        operation()
+    except original_unknown as error:
+        checks["captured_builtin_declaration"] &= str(error) == "unsupported hash type: 'unsupported'"
+    else:
+        checks["captured_builtin_declaration"] = False
+_hmac_private.UnknownHashError = original_unknown
 
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -184,6 +125,9 @@ def test_hmac_private_module_surface() -> None:
     checks = _run_probe()
     assert checks == {
         "errors": "True",
+        "lower_before_buffers": "True",
+        "builtin_metadata": "True",
         "functions": "True",
         "types": "True",
+        "captured_builtin_declaration": "True",
     }

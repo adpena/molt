@@ -7,13 +7,18 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_locale_setlocale",
             crate::molt_locale_setlocale as *const (),
         )),
-        "molt_locale_getpreferredencoding" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_locale_getpreferredencoding",
-            crate::molt_locale_getpreferredencoding as *const (),
+        "molt_locale_getencoding" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_locale_getencoding",
+            crate::molt_locale_getencoding as *const (),
         )),
-        "molt_locale_getlocale" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_locale_getlocale",
-            crate::molt_locale_getlocale as *const (),
+        "molt_locale_constants" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_locale_constants",
+            crate::molt_locale_constants as *const (),
+        )),
+        #[cfg(target_os = "windows")]
+        "molt_locale_getdefaultlocale" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_locale_getdefaultlocale",
+            crate::molt_locale_getdefaultlocale as *const (),
         )),
         _ => None,
     }

@@ -99,6 +99,7 @@ pub(crate) fn output_as_list(
 pub(crate) unsafe fn apply(
     py: &PyToken<'_>,
     source: u64,
+    direct_target: Option<*mut u8>,
     mut accept_key: impl FnMut(u64, Option<u64>) -> bool,
     mut insert: impl FnMut(u64, u64, Option<u64>) -> bool,
 ) -> MergeOutcome {
@@ -111,7 +112,37 @@ pub(crate) unsafe fn apply(
             Err(()) => return MergeOutcome::Error,
         } {
             let ptr = obj_from_bits(backing).as_ptr().unwrap();
-            let length = dict_len(ptr);
+            if let Some(target) = direct_target {
+                if target == ptr || dict_len(ptr) == 0 {
+                    return MergeOutcome::Complete;
+                }
+                let table_size = dict_table(ptr).len();
+                if dict_len(target) == 0
+                    && dict_len(ptr) == dict_entries(ptr).len()
+                    && (table_size == 8
+                        || super::ops::dict_usable_capacity(table_size / 2) < dict_len(ptr))
+                {
+                    return if super::ops::dict_clone_into_empty(py, ptr, target) {
+                        MergeOutcome::Complete
+                    } else {
+                        MergeOutcome::Error
+                    };
+                }
+                if !super::ops::dict_reserve_merge(py, target, ptr) {
+                    return MergeOutcome::Error;
+                }
+            }
+            // CPython 3.12 observes physical key-table extent; 3.13+ observes
+            // live cardinality. Select once from the frozen runtime target.
+            let live_size = crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
+            let source_size = || {
+                if live_size {
+                    dict_len(ptr)
+                } else {
+                    dict_entries(ptr).len()
+                }
+            };
+            let original_size = source_size();
             let mut cursor = 0;
             while let Some(row) = dict_next_entry(ptr, &mut cursor) {
                 // No source backing borrow survives Python hash/equality or a
@@ -124,12 +155,14 @@ pub(crate) unsafe fn apply(
                 inc_ref_bits(py, key);
                 inc_ref_bits(py, value);
                 let ok = accept_key(key, Some(hash)) && insert(key, value, Some(hash));
-                dec_ref_bits(py, key);
+                // Direct dictionary merge retires value before key. Their
+                // finalizers may mutate the source before its selected size check.
                 dec_ref_bits(py, value);
+                dec_ref_bits(py, key);
                 if !ok {
                     return MergeOutcome::Error;
                 }
-                if dict_len(ptr) != length {
+                if source_size() != original_size {
                     raise_exception::<()>(py, "RuntimeError", "dict mutated during update");
                     return MergeOutcome::Error;
                 }
@@ -235,6 +268,7 @@ pub(crate) unsafe fn merge_keywords(py: &PyToken<'_>, target: *mut u8, mapping: 
         apply(
             py,
             mapping,
+            Some(target),
             |key, hash| keyword_available(py, target, key, hash),
             |key, value, hash| insert_dict(py, target, key, value, hash),
         )

@@ -514,7 +514,93 @@ impl SpecialCache {
     }
 }
 
+/// Fixed operator policy captured before Ready. These typed values are
+/// unrelated to the Python environment mapping and cannot be changed by it.
+#[derive(Clone)]
+pub(crate) struct RuntimePolicy {
+    pub(crate) resources: Option<crate::resource::ResourceLimits>,
+    pub(crate) stream_max_queued_bytes: usize,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) process_pipe_max_queued_bytes: usize,
+    #[cfg(unix)]
+    pub(crate) child_memory_rlimit_bytes: Option<u64>,
+    pub(crate) thread_isolated: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async_workers: usize,
+    pub(crate) exception_log_path: Option<std::path::PathBuf>,
+    pub(crate) feedback_path: Option<std::path::PathBuf>,
+}
+
+impl RuntimePolicy {
+    /// Freeze the startup CWD basis without resolving symlinks or opening output.
+    fn capture_output_path(setting: &str, path: std::path::PathBuf) -> Option<std::path::PathBuf> {
+        if path.is_absolute() {
+            return Some(path);
+        }
+        match std::path::absolute(&path) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                eprintln!(
+                    "molt runtime: disabling {setting}: cannot capture startup output path: {error}"
+                );
+                None
+            }
+        }
+    }
+
+    fn capture(resources: Option<crate::resource::ResourceLimits>) -> Self {
+        let stream_max_queued_bytes = crate::async_rt::channels::capture_stream_max_queued_bytes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let process_pipe_max_queued_bytes = std::env::var("MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(stream_max_queued_bytes);
+        #[cfg(unix)]
+        let child_memory_rlimit_bytes = crate::async_rt::process::child_memory_rlimit_bytes(
+            resources.as_ref(),
+            std::env::var("MOLT_CHILD_RLIMIT_GB").ok().as_deref(),
+        );
+        let thread_isolated = runtime_flags::enabled(RuntimeFlag::MOLT_THREAD_ISOLATED);
+        #[cfg(not(target_arch = "wasm32"))]
+        let async_workers = std::env::var("MOLT_ASYNC_THREADS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(num_cpus::get().max(1));
+        let exception_log_path = std::env::var("MOLT_EXCEPTION_LOG_PATH")
+            .ok()
+            .and_then(|path| Self::capture_output_path("MOLT_EXCEPTION_LOG_PATH", path.into()));
+        let feedback_path = runtime_flags::enabled(RuntimeFlag::MOLT_RUNTIME_FEEDBACK)
+            .then(|| {
+                Self::capture_output_path(
+                    "MOLT_RUNTIME_FEEDBACK_FILE",
+                    std::env::var("MOLT_RUNTIME_FEEDBACK_FILE")
+                        .ok()
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| "molt_runtime_feedback.json".to_owned())
+                        .into(),
+                )
+            })
+            .flatten();
+        Self {
+            resources,
+            stream_max_queued_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            process_pipe_max_queued_bytes,
+            #[cfg(unix)]
+            child_memory_rlimit_bytes,
+            thread_isolated,
+            #[cfg(not(target_arch = "wasm32"))]
+            async_workers,
+            exception_log_path,
+            feedback_path,
+        }
+    }
+}
+
 pub(crate) struct RuntimeState {
+    policy: OnceLock<RuntimePolicy>,
     /// External native threads borrowing this exact heap, plus its closed bit.
     #[cfg(not(target_arch = "wasm32"))]
     thread_borrow_admission: AtomicUsize,
@@ -607,13 +693,18 @@ pub(crate) struct RuntimeState {
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<crate::builtins::frames::CompiledCodeSlot>>,
     pub(crate) start_time: OnceLock<Instant>,
-    /// VFS state lazily initialized from environment variables on first access.
-    pub(crate) vfs_state: OnceLock<Option<crate::vfs::VfsState>>,
+    /// Routing is frozen at startup; bundle payload loading remains lazy.
+    pub(crate) vfs_state: OnceLock<Option<Arc<crate::vfs::VfsState>>>,
     /// Typed state owned by extracted runtime crates and scoped to this runtime.
     pub(crate) extension_states: Mutex<HashMap<Vec<u8>, RuntimeExtensionStateSlot>>,
 }
 
 impl RuntimeState {
+    pub(crate) fn policy(&self) -> &RuntimePolicy {
+        self.policy
+            .get()
+            .expect("runtime policy must be frozen before use")
+    }
     /// Stable while this runtime owns heap/C state. Failed teardown retains the
     /// allocation, so a live owner identity cannot be reused by another isolate.
     #[inline]
@@ -622,7 +713,57 @@ impl RuntimeState {
     }
 
     pub(crate) fn new() -> Self {
+        Self::with_process_registry(ProcessRegistry::new())
+    }
+
+    /// A lease pins the primary allocation through isolate teardown. Inherit
+    /// operator policy before attaching the fresh heap or running bootstrap;
+    /// spawning after a guest environment mutation cannot grant new authority.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn new_isolate(lifetime: &RuntimeLifetimeLease) -> Self {
+        let primary: &RuntimeState =
+            unsafe { &*std::ptr::with_exposed_provenance::<RuntimeState>(lifetime.runtime_owner) };
+        let state = Self::with_process_registry(primary.process_registry.new_isolate());
+        assert!(state.policy.set(primary.policy().clone()).is_ok());
+        assert!(
+            state
+                .capabilities
+                .set(primary.capabilities.get().expect("startup grants").clone())
+                .is_ok()
+        );
+        assert!(
+            state
+                .trusted
+                .set(*primary.trusted.get().expect("startup trust"))
+                .is_ok()
+        );
+        assert!(
+            state
+                .execution_target
+                .set(
+                    primary
+                        .execution_target
+                        .get()
+                        .expect("startup target")
+                        .clone()
+                )
+                .is_ok()
+        );
+        // Share the same mount and backend authority, including its lazy load
+        // state and quotas. A fresh heap is not a fresh host filesystem grant.
+        assert!(
+            state
+                .vfs_state
+                .set(primary.vfs_state.get().expect("startup VFS").clone())
+                .is_ok()
+        );
+        crate::builtins::platform::inherit_startup_state(&state, primary);
+        state
+    }
+
+    fn with_process_registry(process_registry: ProcessRegistry) -> Self {
         Self {
+            policy: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             thread_borrow_admission: AtomicUsize::new(0),
             recursion_limit: AtomicUsize::new(super::recursion::DEFAULT_RECURSION_LIMIT),
@@ -717,7 +858,7 @@ impl RuntimeState {
             thread_registry: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             thread_tasks: Mutex::new(HashMap::new()),
-            process_registry: ProcessRegistry::new(),
+            process_registry,
             #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
             socket_state: SocketRuntimeState::new(),
             signal: SignalRuntimeState::new(),
@@ -732,7 +873,9 @@ impl RuntimeState {
     pub(crate) fn scheduler(&self) -> &MoltScheduler {
         let scheduler = self.scheduler.get_or_init(MoltScheduler::new);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Err(error) = scheduler.start_workers(RuntimeWorkerOrigin::new(self)) {
+        if let Err(error) =
+            scheduler.start_workers(RuntimeWorkerOrigin::new(self), self.policy().async_workers)
+        {
             scheduler.stop();
             panic!("runtime scheduler startup failed: {error}");
         }
@@ -769,11 +912,13 @@ impl RuntimeState {
         pool
     }
 
-    /// Returns a reference to the VFS state, lazily initialized from
-    /// environment variables on first access.  Returns `None` when
-    /// `MOLT_VFS_BUNDLE` is not set in the environment.
+    /// Return startup routing. An absent mount remains absent even if the
+    /// application later changes the process environment.
     pub(crate) fn get_vfs(&self) -> Option<&crate::vfs::VfsState> {
-        self.vfs_state.get_or_init(crate::vfs::load_vfs).as_ref()
+        self.vfs_state
+            .get()
+            .expect("VFS routing must be frozen before use")
+            .as_deref()
     }
 }
 
@@ -1729,8 +1874,20 @@ fn runtime_exit(code_bits: u64) -> u64 {
     unsafe { libc::_exit(code) }
 }
 
-fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
+fn initialize_runtime_state(
+    gil: &GilGuard,
+    state: &RuntimeState,
+    #[cfg(test)] fixture_vfs: Option<Option<Arc<crate::vfs::VfsState>>>,
+) {
     trace_runtime_init("state_allocated");
+    crate::builtins::platform::initialize_startup_encoding(state);
+    crate::builtins::platform::initialize_startup_environment(state);
+    trace_runtime_init("startup_encoding");
+    // Bootstrap constructs builtin classes and hashes their dictionary keys.
+    // Hash-secret selection admits RandomEntropy, so the target and grants must
+    // already be frozen before bootstrap enters any Python object operation.
+    crate::async_rt::channels::freeze_capabilities(&gil.token());
+    trace_runtime_init("capabilities");
     runtime_reset_for_init(&gil.token(), state);
     trace_runtime_init("runtime_reset_for_init");
 
@@ -1749,21 +1906,29 @@ fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
     molt_runtime_itertools::bridge::init_vtable();
     trace_runtime_init("itertools_vtable");
 
-    crate::object::ops_sys::molt_runtime_init_resources();
+    let resources = crate::object::ops_sys::initialize_runtime_resources();
+    assert!(
+        state.policy.set(RuntimePolicy::capture(resources)).is_ok(),
+        "runtime policy initialized twice"
+    );
+    // I/O fixtures supply real backend owners at this same pre-Ready boundary.
+    // Production always captures routes/quotas; payload I/O remains lazy.
+    #[cfg(test)]
+    let vfs = fixture_vfs.unwrap_or_else(|| crate::vfs::load_vfs().map(Arc::new));
+    #[cfg(not(test))]
+    let vfs = crate::vfs::load_vfs().map(Arc::new);
+    assert!(
+        state.vfs_state.set(vfs).is_ok(),
+        "VFS routing initialized twice"
+    );
+    crate::diagnostics::initialize();
+    #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
+    molt_runtime_tk::initialize_library_policy();
     trace_runtime_init("resources");
     crate::object::ops_sys::molt_runtime_init_audit();
     trace_runtime_init("audit");
     crate::object::ops_sys::molt_runtime_init_io_mode();
     trace_runtime_init("io_mode");
-
-    // Freeze security-sensitive environment state before user code can run.
-    {
-        let nested = GilGuard::new();
-        let py = nested.token();
-        let _ = crate::is_trusted(&py);
-        let _ = crate::has_capability(&py, "_init");
-    }
-    trace_runtime_init("capabilities");
 
     crate::builtins::exceptions::memory_error::initialize(&gil.token());
 
@@ -1796,6 +1961,20 @@ pub extern "C" fn molt_runtime_init() -> u64 {
 }
 
 fn runtime_init() -> u64 {
+    runtime_init_impl(
+        #[cfg(test)]
+        None,
+    )
+}
+
+/// Real lifecycle initialization with a pre-Ready VFS fixture. Kept out of all
+/// shipped images; fixtures cannot mutate the routing slot after publication.
+#[cfg(test)]
+pub(crate) fn runtime_init_with_vfs_for_testing(vfs: Option<crate::vfs::VfsState>) -> u64 {
+    runtime_lifecycle_entry!(runtime_init_impl(Some(vfs.map(Arc::new))))
+}
+
+fn runtime_init_impl(#[cfg(test)] fixture_vfs: Option<Option<Arc<crate::vfs::VfsState>>>) -> u64 {
     #[cfg(target_arch = "wasm32")]
     ensure_wasm_ctors();
     // The GIL authority is process-lifetime state and must precede every
@@ -1899,7 +2078,12 @@ fn runtime_init() -> u64 {
                 std::panic::resume_unwind(Box::new("injected unpublished runtime init panic"));
             }
         });
-        initialize_runtime_state(&gil, state);
+        initialize_runtime_state(
+            &gil,
+            state,
+            #[cfg(test)]
+            fixture_vfs,
+        );
 
         #[cfg(test)]
         if let Some((entered, release)) = RUNTIME_INIT_TEST_GATE.lock().unwrap().clone() {
@@ -2148,6 +2332,337 @@ pub(crate) fn molt_runtime_reset_for_testing() {
 
 #[cfg(test)]
 mod tests {
+
+    struct PolicyEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl PolicyEnvironment {
+        fn replace(entries: &[(&'static str, Option<&str>)]) -> Self {
+            let saved = entries
+                .iter()
+                .map(|(key, _)| (*key, std::env::var_os(key)))
+                .collect();
+            for (key, value) in entries {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+            Self(saved)
+        }
+    }
+    impl Drop for PolicyEnvironment {
+        fn drop(&mut self) {
+            for (key, value) in &self.0 {
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
+    fn runtime_policy_freezes_before_first_consumers_and_keeps_absent_vfs_absent() {
+        use super::*;
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            let _environment = PolicyEnvironment::replace(&[
+                ("MOLT_STREAM_MAX_QUEUED_BYTES", Some("65536")),
+                ("MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES", Some("131072")),
+                (RuntimeFlag::MOLT_THREAD_ISOLATED.name(), Some("1")),
+                ("MOLT_ASYNC_THREADS", Some("0")),
+                ("MOLT_CHILD_RLIMIT_GB", Some("0.5")),
+                ("MOLT_EXCEPTION_LOG_PATH", None),
+                (RuntimeFlag::MOLT_RUNTIME_FEEDBACK.name(), Some("0")),
+                ("MOLT_RUNTIME_FEEDBACK_FILE", None),
+                ("MOLT_VFS_BUNDLE", None),
+                // An explicit numeric seed bypasses bootstrap's operation
+                // admission. Leave it absent to exercise the real first use.
+                ("PYTHONHASHSEED", None),
+                ("MOLT_CAPABILITY_TIER", Some("none")),
+                ("MOLT_CAPABILITIES", Some("fs.read")),
+                ("MOLT_EXECUTION_TARGET", Some("wasi")),
+            ]);
+            assert_eq!(molt_runtime_init(), 1);
+            unsafe {
+                std::env::set_var("MOLT_STREAM_MAX_QUEUED_BYTES", "1073741824");
+                std::env::set_var("MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES", "1073741824");
+                std::env::set_var(RuntimeFlag::MOLT_THREAD_ISOLATED.name(), "false");
+                std::env::set_var("MOLT_ASYNC_THREADS", "999");
+                std::env::set_var("MOLT_CHILD_RLIMIT_GB", "0");
+                std::env::set_var("MOLT_EXCEPTION_LOG_PATH", "unauthorized-exception-output");
+                std::env::set_var(RuntimeFlag::MOLT_RUNTIME_FEEDBACK.name(), "1");
+                std::env::set_var("MOLT_RUNTIME_FEEDBACK_FILE", "unauthorized-feedback-output");
+                std::env::set_var("MOLT_VFS_BUNDLE", "late-untrusted-bundle");
+                std::env::set_var("MOLT_CAPABILITY_TIER", "full");
+                std::env::set_var("MOLT_CAPABILITIES", "random");
+                std::env::set_var("MOLT_EXECUTION_TARGET", "invalid-late-target");
+            }
+            assert_eq!(
+                molt_runtime_init(),
+                1,
+                "Ready initialization keeps its policy"
+            );
+            let gil = GilGuard::new();
+            let py = gil.token();
+            let state = runtime_state(&py);
+            assert!(!crate::is_trusted(&py));
+            assert!(crate::operation_allowed(
+                &py,
+                crate::OperationId::IoOpenRead,
+                crate::audit::AuditArgs::None,
+            ));
+            assert!(!crate::operation_allowed(
+                &py,
+                crate::OperationId::RandomEntropy,
+                crate::audit::AuditArgs::None,
+            ));
+            // The no-random startup grant selects the zero secret. Reuse the
+            // independent CPython siphash13 seed=0 'abc' vector through the
+            // runtime consumer, after late environment changes could reseed it.
+            assert_eq!(
+                crate::object::ops_hash::hash_string_bytes(&py, b"abc"),
+                if molt_cpython_abi::abi_types::Py_hash_t::BITS == 64 {
+                    -4594863902769663758
+                } else {
+                    69611762
+                },
+            );
+            assert_eq!(state.policy().stream_max_queued_bytes, 65536);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                assert_eq!(state.policy().process_pipe_max_queued_bytes, 131072);
+                assert_eq!(state.policy().async_workers, 0);
+            }
+            assert!(state.policy().thread_isolated);
+            assert!(state.policy().exception_log_path.is_none());
+            assert!(state.policy().feedback_path.is_none());
+            assert!(
+                state.get_vfs().is_none(),
+                "first VFS access must not read the mutated environment"
+            );
+            #[cfg(unix)]
+            assert_ne!(state.policy().child_memory_rlimit_bytes, None);
+            drop(gil);
+            assert_eq!(molt_runtime_shutdown(), 1);
+        });
+    }
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
+    fn runtime_vfs_freezes_route_and_quota_without_loading_payload() {
+        use super::*;
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            let root = std::env::temp_dir().join(format!(
+                "molt-policy-vfs-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let original = root.join("original");
+            let replacement = root.join("replacement");
+            let original_text = original.to_str().unwrap();
+            let _environment = PolicyEnvironment::replace(&[
+                ("MOLT_VFS_BUNDLE", Some(original_text)),
+                ("MOLT_VFS_BUNDLE_MAX_BYTES", Some("4")),
+                ("MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES", Some("4")),
+                ("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", Some("0")),
+            ]);
+            // Neither source exists yet. Startup may capture routes, not load it.
+            assert_eq!(molt_runtime_init(), 1);
+            std::fs::create_dir_all(&original).unwrap();
+            std::fs::create_dir_all(&replacement).unwrap();
+            std::fs::write(original.join("data"), b"oversize").unwrap();
+            std::fs::write(replacement.join("data"), b"safe").unwrap();
+            unsafe {
+                std::env::set_var("MOLT_VFS_BUNDLE", &replacement);
+                std::env::set_var("MOLT_VFS_BUNDLE_MAX_BYTES", "9999999");
+                std::env::set_var("MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES", "9999999");
+                std::env::set_var("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", "1");
+            }
+            let gil = GilGuard::new();
+            let state = runtime_state(&gil.token());
+            let vfs = state.get_vfs().expect("startup bundle owns its route");
+            let (_, backend, relative) = vfs.resolve("/bundle/data").expect("bundle route");
+            assert!(matches!(
+                backend.open_read(&relative),
+                Err(crate::vfs::VfsError::QuotaExceeded)
+            ));
+            drop(gil);
+            assert_eq!(molt_runtime_shutdown(), 1);
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle and CWD; run in isolation"]
+    fn runtime_relative_vfs_route_keeps_startup_cwd_until_first_use() {
+        use super::*;
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            struct RestoreCwd(std::path::PathBuf);
+            impl Drop for RestoreCwd {
+                fn drop(&mut self) {
+                    std::env::set_current_dir(&self.0).unwrap();
+                }
+            }
+            let cwd = RestoreCwd(std::env::current_dir().unwrap());
+            let root = std::env::temp_dir().join(format!(
+                "molt-relative-vfs-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let original = root.join("original");
+            let replacement = root.join("replacement");
+            std::fs::create_dir_all(original.join("bundle")).unwrap();
+            std::fs::create_dir_all(replacement.join("bundle")).unwrap();
+            std::fs::write(original.join("bundle/data"), b"operator-source").unwrap();
+            std::fs::write(replacement.join("bundle/data"), b"redirected-source").unwrap();
+            let _environment = PolicyEnvironment::replace(&[
+                ("MOLT_VFS_BUNDLE", Some("bundle")),
+                ("MOLT_VFS_BUNDLE_MAX_BYTES", Some("1024")),
+                ("MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES", Some("1024")),
+                ("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", Some("0")),
+            ]);
+            std::env::set_current_dir(&original).unwrap();
+            assert_eq!(molt_runtime_init(), 1);
+            std::env::set_current_dir(&replacement).unwrap();
+            let gil = GilGuard::new();
+            let vfs = runtime_state(&gil.token()).get_vfs().unwrap();
+            let (_, backend, relative) = vfs.resolve("/bundle/data").unwrap();
+            assert_eq!(backend.open_read(&relative).unwrap(), b"operator-source");
+            drop(gil);
+            assert_eq!(molt_runtime_shutdown(), 1);
+            drop(cwd);
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[ignore = "mutates the process-global runtime lifecycle and CWD; run in isolation"]
+    fn runtime_output_sinks_keep_startup_cwd_until_first_write() {
+        use super::*;
+        unsafe extern "C" {
+            fn molt_exception_report_uncaught(exc_bits: u64) -> u64;
+        }
+        // Cover the default feedback filename as well as an explicit relative
+        // destination whose parent must remain lazy until the first emission.
+        for feedback in [None, Some("feedback/data.json")] {
+            crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+                struct RestoreCwd(std::path::PathBuf);
+                impl Drop for RestoreCwd {
+                    fn drop(&mut self) {
+                        std::env::set_current_dir(&self.0).unwrap();
+                    }
+                }
+                let cwd = RestoreCwd(std::env::current_dir().unwrap());
+                let root = std::env::temp_dir().join(format!(
+                    "molt-output-policy-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+                let original = root.join("original");
+                let replacement = root.join("replacement");
+                std::fs::create_dir_all(&original).unwrap();
+                std::fs::create_dir_all(&replacement).unwrap();
+                std::env::set_current_dir(&original).unwrap();
+                let _environment = PolicyEnvironment::replace(&[
+                    ("MOLT_EXCEPTION_LOG_PATH", Some("exception.log")),
+                    (RuntimeFlag::MOLT_RUNTIME_FEEDBACK.name(), Some("1")),
+                    ("MOLT_RUNTIME_FEEDBACK_FILE", feedback),
+                ]);
+                assert_eq!(molt_runtime_init(), 1);
+                assert_eq!(
+                    std::fs::read_dir(&original).unwrap().count(),
+                    0,
+                    "capturing output policy must not create files or directories"
+                );
+                std::env::set_current_dir(&replacement).unwrap();
+                let gil = GilGuard::new();
+                let py = gil.token();
+                crate::object::ops_convert::maybe_emit_runtime_feedback_file(
+                    &py,
+                    &serde_json::json!({"startup_sink_canary": 73}),
+                );
+                let exception = crate::alloc_exception(&py, "RuntimeError", "startup sink canary");
+                assert!(!exception.is_null());
+                let bits = MoltObject::from_ptr(exception).bits();
+                assert_eq!(unsafe { molt_exception_report_uncaught(bits) }, 1);
+                crate::dec_ref_bits(&py, bits);
+                let feedback_path = original.join(feedback.unwrap_or("molt_runtime_feedback.json"));
+                let payload: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(feedback_path).unwrap()).unwrap();
+                assert_eq!(payload["startup_sink_canary"], 73);
+                assert!(
+                    std::fs::read_to_string(original.join("exception.log"))
+                        .unwrap()
+                        .contains("startup sink canary")
+                );
+                assert_eq!(
+                    std::fs::read_dir(&replacement).unwrap().count(),
+                    0,
+                    "later chdir must not retarget either output sink"
+                );
+                drop(gil);
+                assert_eq!(molt_runtime_shutdown(), 1);
+                drop(cwd);
+                std::fs::remove_dir_all(root).unwrap();
+            });
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "mutates process-global CWD; run in isolation"]
+    fn relative_output_sink_capture_failure_disables_without_fallback() {
+        use super::RuntimePolicy;
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            struct RestoreCwd(std::path::PathBuf);
+            impl Drop for RestoreCwd {
+                fn drop(&mut self) {
+                    std::env::set_current_dir(&self.0).unwrap();
+                }
+            }
+            let _cwd = RestoreCwd(std::env::current_dir().unwrap());
+            let root = std::env::temp_dir().join(format!(
+                "molt-unlinked-output-cwd-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            std::env::set_current_dir(&root).unwrap();
+            std::fs::remove_dir(&root).unwrap();
+            assert!(
+                std::env::current_dir().is_err(),
+                "oracle requires a lost CWD basis"
+            );
+            assert!(
+                RuntimePolicy::capture_output_path("test optional sink", "relative.json".into())
+                    .is_none()
+            );
+            let absolute = root.join("absolute.json");
+            assert_eq!(
+                RuntimePolicy::capture_output_path("test absolute sink", absolute.clone()),
+                Some(absolute)
+            );
+            assert!(!root.exists(), "capture must not create output directories");
+        });
+    }
+
     #[test]
     fn admission_roles_do_not_carry_borrow_or_reopen_each_other() {
         use super::*;

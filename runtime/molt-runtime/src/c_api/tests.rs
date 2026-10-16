@@ -467,7 +467,7 @@ extern "C" fn c_api_test_gc_clear_observes_published_empty(_self_bits: u64) -> u
                     (*crate::builtins::containers::dict_entries_ptr(ptr)).is_empty()
                         && (*crate::builtins::containers::dict_table_ptr(ptr)).is_empty()
                         && crate::builtins::containers::dict_storage(ptr).live == 0
-                        && crate::builtins::containers::dict_storage(ptr).fill == 0
+                        && crate::builtins::containers::dict_storage(ptr).usable == 0
                 }
                 crate::TYPE_ID_SET | crate::TYPE_ID_FROZENSET => {
                     (*crate::builtins::containers::set_entries_ptr(ptr)).is_empty()

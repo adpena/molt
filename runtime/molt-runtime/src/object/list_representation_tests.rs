@@ -164,3 +164,70 @@ fn exact_list_class_edge_does_not_admit_instance_state_or_reassignment() {
         assert!(!crate::exception_pending(py));
     });
 }
+
+#[test]
+fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
+    use crate::object::foreign::NativeObjectOwner;
+    use molt_cpython_abi::abi_types::{PyList_Type, PyTuple_Type};
+    use molt_cpython_abi::api::{numbers, sequences, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let one = MoltObject::from_int(1).bits();
+        let mut shapes = vec![
+            MoltObject::from_ptr(crate::alloc_list(&py, &[one])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(&py, &[one])).bits(),
+            MoltObject::from_ptr(builders::alloc_list_int_from_raw_slice(&py, &[1]).unwrap())
+                .bits(),
+            MoltObject::from_ptr(builders::alloc_list_bool_from_raw_slice(&py, &[1]).unwrap())
+                .bits(),
+        ];
+        let native_list =
+            NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyList_Type, 0));
+        let native_tuple =
+            NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyTuple_Type, 1));
+        let native_one = NativeObjectOwner::from_owned(numbers::PyLong_FromLong(1));
+        assert_eq!(
+            sequences::PyList_Append(native_list.as_ptr(), native_one.as_ptr()),
+            0
+        );
+        assert_eq!(
+            sequences::PyTuple_SetItem(native_tuple.as_ptr(), 0, numbers::PyLong_FromLong(1)),
+            0
+        );
+        for native in [native_list.as_ptr(), native_tuple.as_ptr()] {
+            assert!(GLOBAL_BRIDGE.molt_handle_for_pyobj(native).is_none());
+            shapes.push(GLOBAL_BRIDGE.molt_value_for_pyobj(native).unwrap());
+        }
+        let owner = MoltObject::from_ptr(crate::alloc_bytearray(&py, b"a")).bits();
+        let view = crate::molt_memoryview_new(owner);
+        let format = MoltObject::from_ptr(crate::alloc_string(&py, b"B")).bits();
+        for shape in shapes {
+            let original_type = object_type_id(obj_from_bits(shape).as_ptr().unwrap());
+            let cast = crate::object::ops_memoryview::molt_memoryview_cast(
+                view,
+                format,
+                shape,
+                MoltObject::from_bool(true).bits(),
+            );
+            assert!(
+                !crate::exception_pending(&py),
+                "shape storage {original_type}"
+            );
+            let cast_ptr = obj_from_bits(cast).as_ptr().unwrap();
+            assert_eq!(crate::memoryview_shape(cast_ptr).unwrap(), &[1]);
+            assert_eq!(
+                object_type_id(obj_from_bits(shape).as_ptr().unwrap()),
+                original_type
+            );
+            crate::molt_memoryview_release(cast);
+            dec_ref_bits(&py, cast);
+            dec_ref_bits(&py, shape);
+        }
+        crate::molt_memoryview_release(view);
+        dec_ref_bits(&py, format);
+        dec_ref_bits(&py, view);
+        dec_ref_bits(&py, owner);
+    });
+}

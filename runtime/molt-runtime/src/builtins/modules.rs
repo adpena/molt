@@ -307,10 +307,7 @@ unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> R
         let exec_key_bits = MoltObject::from_ptr(exec_key_ptr).bits();
 
         let projection = crate::object::ops_sys::with_process_argv(_py, |args| {
-            let exec_val = std::env::var("MOLT_SYS_EXECUTABLE")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(String::into_bytes)
+            let exec_val = crate::builtins::platform::startup_executable(_py)
                 .unwrap_or_else(|| args.first().cloned().unwrap_or_default());
             let mut elems = Vec::with_capacity(args.len());
             for arg in args {

@@ -43,7 +43,9 @@ impl<'a, 'py> PinnedSequenceItem<'a, 'py> {
 
 impl Drop for PinnedSequenceItem<'_, '_> {
     fn drop(&mut self) {
-        dec_ref_bits(self.py, self.bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            dec_ref_bits(self.py, self.bits);
+        });
     }
 }
 
@@ -74,9 +76,11 @@ impl std::ops::Deref for PinnedSequenceSnapshot<'_, '_> {
 
 impl Drop for PinnedSequenceSnapshot<'_, '_> {
     fn drop(&mut self) {
-        for &bits in self.values.iter() {
-            dec_ref_bits(self.py, bits);
-        }
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            for &bits in self.values.iter() {
+                dec_ref_bits(self.py, bits);
+            }
+        });
     }
 }
 
@@ -287,7 +291,9 @@ impl std::ops::Deref for PinnedTuple<'_, '_> {
 
 impl Drop for PinnedTuple<'_, '_> {
     fn drop(&mut self) {
-        dec_ref_bits(self.py, self.bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            dec_ref_bits(self.py, self.bits);
+        });
     }
 }
 
@@ -301,6 +307,44 @@ pub(crate) unsafe fn pin_tuple<'a, 'py>(
     let bits = MoltObject::from_ptr(ptr).bits();
     inc_ref_bits(py, bits);
     Some(PinnedTuple { py, bits, ptr })
+}
+
+/// A stable sequence read using the existing owner for its storage kind.
+/// Tuples retain their immutable inline storage in O(1); lists retain a
+/// resource-accounted snapshot captured under the backing lock.
+pub(crate) enum PinnedSequence<'a, 'py> {
+    Tuple(PinnedTuple<'a, 'py>),
+    Snapshot(PinnedSequenceSnapshot<'a, 'py>),
+}
+
+impl std::ops::Deref for PinnedSequence<'_, '_> {
+    type Target = [u64];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Tuple(tuple) => tuple,
+            Self::Snapshot(snapshot) => snapshot,
+        }
+    }
+}
+
+/// Select stable read custody without copying an immutable tuple. Unsupported
+/// storage returns None; denied list snapshot allocation leaves MemoryError.
+/// The tuple pin also prevents checked C-ABI and runtime unique-slot mutation.
+/// Unchecked PyTuple_SET_ITEM retains its caller's new-tuple-only obligation.
+pub(crate) unsafe fn pin_sequence<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    failure_message: &str,
+) -> Option<PinnedSequence<'a, 'py>> {
+    if ptr.is_null() {
+        return None;
+    }
+    match unsafe { object_type_id(ptr) } {
+        TYPE_ID_TUPLE => unsafe { pin_tuple(py, ptr) }.map(PinnedSequence::Tuple),
+        TYPE_ID_LIST => unsafe { snapshot(py, ptr, failure_message) }.map(PinnedSequence::Snapshot),
+        _ => None,
+    }
 }
 
 #[inline]

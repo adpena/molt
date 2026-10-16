@@ -668,7 +668,6 @@ All use the standard `args` + `out` pattern.
 | `class_set_base`          | `args`, `out`                  | Set class base                 |
 | `class_apply_set_name`    | `args`, `out`                  | Apply `__set_name__`           |
 | `class_layout_version`    | `args`, `out`                  | Get class layout version       |
-| `class_set_layout_version`| `args`, `out`                  | Set class layout version       |
 | `class_set_definition`    | `args` [class], `class_definition`, `out` | Stamp a fresh class with its class statement identity |
 | `guard_layout`            | `args` [obj, ver], `class_definition`, `out` | Guard on class statement and layout version |
 | `object_new`              | `out`                          | Create bare object             |

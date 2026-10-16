@@ -207,6 +207,56 @@ mod tests {
     }
 
     #[test]
+    fn sequence_snapshot_keeps_string_alive_after_source_list_clear() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            let payload = b"snapshot-owned dynamic string\0\xed\xa0\x80";
+            let value_ptr = alloc_string(py, payload);
+            assert!(!value_ptr.is_null());
+            let value = MoltObject::from_ptr(value_ptr).bits();
+            let list_ptr = alloc_list(py, &[value]);
+            assert!(!list_ptr.is_null());
+            let list = MoltObject::from_ptr(list_ptr).bits();
+            dec_ref_bits(py, value);
+            assert_eq!(owners(value), 1, "only the source list owns the string");
+
+            let mut ptr = std::ptr::null();
+            let mut len = 0;
+            assert_eq!(molt_seq_snapshot(list_ptr, &mut ptr, &mut len), 1);
+            let snapshot = unsafe { molt_runtime_core::bridge_owned_handle_snapshot(ptr, len) };
+            assert_eq!(&*snapshot, &[value]);
+            assert_eq!(owners(value), 2, "snapshot must retain before any callback");
+            crate::molt_list_clear(list);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                owners(value),
+                1,
+                "snapshot survives destructive source mutation"
+            );
+            // SAFETY: the existing snapshot is the sole live string owner and
+            // this immediate read remains under current-thread runtime custody.
+            assert_eq!(
+                unsafe { molt_runtime_core::rt_string_as_bytes(snapshot[0]) },
+                Some(payload.as_slice())
+            );
+
+            let output_ptr = alloc_tuple(py, &snapshot);
+            assert!(!output_ptr.is_null());
+            assert_eq!(
+                owners(value),
+                2,
+                "output container adopts before pins retire"
+            );
+            drop(snapshot);
+            assert_eq!(owners(value), 1, "the output owns exactly one reference");
+            dec_ref_bits(py, MoltObject::from_ptr(output_ptr).bits());
+            dec_ref_bits(py, list);
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
     fn dictionary_bridge_snapshot_pins_sparse_order_until_consumer_release() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {

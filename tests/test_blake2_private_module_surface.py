@@ -10,59 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import hmac as _host_hmac
-import hashlib as _host_hashlib
 import importlib.util
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
+from tests.crypto_intrinsic_registry import crypto_intrinsics
 
-_handles = {{}}
-_next_handle = [0]
-
-
-def _new_handle(state):
-    _next_handle[0] += 1
-    handle = _next_handle[0]
-    _handles[handle] = state
-    return handle
-
-
-def _molt_hash_new(name, data=b"", options=None):
-    options = dict(options or {{}})
-    ctor = getattr(_host_hashlib, name)
-    state = ctor(data, **options)
-    return _new_handle(state)
-
-
-def _molt_hash_update(handle, data):
-    _handles[handle].update(data)
-
-
-def _molt_hash_copy(handle):
-    return _new_handle(_handles[handle].copy())
-
-
-def _molt_hash_digest(handle, length=None):
-    state = _handles[handle]
-    if length is None:
-        return state.digest()
-    return state.digest(length)
-
-
-def _molt_hash_drop(handle):
-    _handles.pop(handle, None)
-
-
-install_registry({{
-    "molt_hash_new": _molt_hash_new,
-    "molt_hash_update": _molt_hash_update,
-    "molt_hash_copy": _molt_hash_copy,
-    "molt_hash_digest": _molt_hash_digest,
-    "molt_hash_drop": _molt_hash_drop,
-    "molt_compare_digest": _host_hmac.compare_digest,
-    "molt_pbkdf2_hmac": _host_hashlib.pbkdf2_hmac,
-    "molt_scrypt": _host_hashlib.scrypt,
-}})
+install_registry(crypto_intrinsics())
 
 _hashlib_spec = importlib.util.spec_from_file_location(
     "hashlib", {str(STDLIB_ROOT / "hashlib.py")!r}

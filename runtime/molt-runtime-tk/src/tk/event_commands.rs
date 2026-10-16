@@ -9,7 +9,7 @@ use super::state::{
     tk_registry,
 };
 use crate::bridge::{dec_ref_bits, decode_value_list, string_obj_to_owned, to_f64, to_i64};
-use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
+use molt_runtime_core::prelude::{MoltObject, OwnedBridgeHandleSnapshot, PyToken, obj_from_bits};
 use std::collections::HashMap;
 
 pub(super) fn default_bindtags_for_target(app: &TkAppState, target_name: &str) -> Vec<String> {
@@ -110,7 +110,7 @@ pub(super) fn handle_bindtags_command(py: &PyToken, handle: i64, args: &[u64]) -
 
     let tag_values = if let Some(raw) = decode_value_list(obj_from_bits(args[2])) {
         let mut tags = Vec::with_capacity(raw.len());
-        for tag_bits in raw {
+        for &tag_bits in raw.iter() {
             tags.push(get_string_arg(py, handle, tag_bits, "bindtags tag")?);
         }
         tags
@@ -282,7 +282,10 @@ pub(super) fn parse_bind_script_commands(script: &str) -> Vec<Vec<String>> {
 
 pub(super) const TK_EVENT_SUBST_FIELD_COUNT: usize = 19;
 
-pub(super) fn flatten_event_subst_arg(mut value_bits: u64) -> u64 {
+pub(super) fn flatten_event_subst_arg(
+    mut value_bits: u64,
+    snapshots: &mut Vec<OwnedBridgeHandleSnapshot>,
+) -> u64 {
     for _ in 0..8 {
         let Some(values) = decode_value_list(obj_from_bits(value_bits)) else {
             break;
@@ -291,6 +294,8 @@ pub(super) fn flatten_event_subst_arg(mut value_bits: u64) -> u64 {
             break;
         }
         value_bits = values[0];
+        // The flattened handle remains borrowed until the final tuple owns it.
+        snapshots.push(values);
     }
     value_bits
 }
@@ -300,7 +305,7 @@ pub(super) fn parse_event_subst_i64(value_bits: u64) -> Option<i64> {
     if let Some(value) = to_i64(obj) {
         return Some(value);
     }
-    if let Some(text) = string_obj_to_owned(obj) {
+    if let Some(text) = unsafe { string_obj_to_owned(obj) } {
         return text.trim().parse::<i64>().ok();
     }
     if let Some(value) = to_f64(obj)
@@ -327,7 +332,7 @@ pub(super) fn normalize_event_subst_bool_field(value_bits: u64) -> u64 {
         obj.as_bool()
     } else if let Some(value) = to_i64(obj) {
         Some(value != 0)
-    } else if let Some(text) = string_obj_to_owned(obj) {
+    } else if let Some(text) = unsafe { string_obj_to_owned(obj) } {
         parse_bool_text(&text)
     } else {
         to_f64(obj).map(|value| value != 0.0)
@@ -343,7 +348,7 @@ pub(super) fn event_subst_value_is_empty(value_bits: u64) -> bool {
     if obj.is_none() {
         return true;
     }
-    string_obj_to_owned(obj).is_some_and(|value| value.is_empty())
+    unsafe { string_obj_to_owned(obj) }.is_some_and(|value| value.is_empty())
 }
 
 pub(super) fn normalize_event_subst_delta_field(value_bits: u64) -> u64 {
@@ -654,7 +659,7 @@ pub(super) fn handle_event_command(py: &PyToken, handle: i64, args: &[u64]) -> R
                     dec_ref_bits(py, owned);
                 }
                 let out_bits = dispatch_out?;
-                let should_break = string_obj_to_owned(obj_from_bits(out_bits))
+                let should_break = unsafe { string_obj_to_owned(obj_from_bits(out_bits)) }
                     .is_some_and(|value| value == "break");
                 if !obj_from_bits(out_bits).is_none() {
                     dec_ref_bits(py, out_bits);

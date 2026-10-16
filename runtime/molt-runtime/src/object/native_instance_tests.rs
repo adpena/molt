@@ -308,7 +308,7 @@ fn native_io_subtype_slots_preserve_payload_dictionary_and_cycle_retirement() {
             let ptr = obj_from_bits(object).as_ptr().unwrap();
             let native = unsafe { file_handle_ptr(ptr) };
             assert!(!native.is_null());
-            let state = unsafe { std::sync::Arc::downgrade(&(*native).state) };
+            let state = unsafe { std::sync::Arc::downgrade((*native).state.as_ref().unwrap()) };
             let field = attr_name_bits_from_bytes(py, b"field").unwrap();
             let extra = attr_name_bits_from_bytes(py, b"extra").unwrap();
             let marker = MoltObject::from_ptr(alloc_list(py, &[])).bits();

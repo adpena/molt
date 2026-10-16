@@ -624,6 +624,139 @@ def _live_smoke_script(expected_platform: str) -> str:
     )
 
 
+def test_tcl_headless_value_conversion_matches_cpython() -> None:
+    if not _live_smoke_enabled():
+        pytest.skip("set MOLT_TK_LIVE_SMOKE=1 to run native Tcl conformance")
+
+    from tests.process_guard_common import guarded_temporary_directory
+    from molt.python_interpreter import resolve_target_python_command
+    from molt.target_python import TargetPythonVersion
+
+    script = textwrap.dedent(
+        r"""
+        import tkinter
+
+        class TextValue:
+            def __str__(self):
+                return "custom text"
+
+        class BrokenText:
+            def __str__(self):
+                raise ValueError("conversion failed")
+
+        class MutatingText:
+            def __init__(self, source, calls, fail=False):
+                self.source = source
+                self.calls = calls
+                self.fail = fail
+
+            def __str__(self):
+                self.calls[0] += 1
+                self.source.clear()
+                if self.fail:
+                    raise ValueError("mutating conversion failed")
+                return "first"
+
+        app = tkinter.Tcl()
+        for value in (b"", b"\x00\x80\xff", bytearray(),
+                      bytearray(b"\x00\x80\xff"), TextValue()):
+            result = app.call("set", "value", value)
+            print(type(result).__name__, repr(result))
+        try:
+            app.call("set", "value", BrokenText())
+        except Exception as error:
+            print(type(error).__name__, str(error))
+        else:
+            print("missing conversion error")
+        print(app.call("set", "value"))
+        for nested in (False, True):
+            calls = [0]
+            values = []
+            values.append(MutatingText(values, calls))
+            # Only the source list owns this dynamic tail before conversion.
+            values.append("tail-" + str(app.call("expr", "271828")))
+            if nested:
+                values[1] = [values[1]]
+            result = app.call("set", "mutation", values)
+            print(type(result).__name__, repr(result), len(values), calls[0])
+        calls = [0]
+        values = [None, "tail-" + str(app.call("expr", "314159"))]
+        values[0] = MutatingText(values, calls, True)
+        try:
+            app.call("set", "mutation", values)
+        except Exception as error:
+            print(type(error).__name__, str(error), len(values), calls[0])
+        else:
+            print("missing mutating conversion error")
+        print(app.call("set", "mutation"))
+        """
+    )
+    env = _build_env()
+    env.update({"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""})
+    # CPython 3.15 AsObj snapshots mutable lists with PyList_AsTuple. Earlier
+    # minors traverse the mutable list directly; destructive reentry is not a
+    # safe oracle there. Reuse the existing exact interpreter custody owner.
+    reference_python = resolve_target_python_command(
+        TargetPythonVersion(3, 15, 0),
+        override=os.environ.get("MOLT_DIFF_PYTHON"),
+        env=env,
+        cwd=ROOT,
+        prefer_current=True,
+    )
+    reference = run_native_test_process(
+        [*reference_python, "-c", script],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert reference.returncode == 0, reference.stderr
+
+    with guarded_temporary_directory(prefix="tcl-value-conversion-") as workdir:
+        source = workdir / "tcl_value_conversion.py"
+        output = workdir / "tcl_value_conversion_molt"
+        source.write_text(script, encoding="utf-8")
+        build = run_native_test_process(
+            [
+                _python_executable(),
+                "-m",
+                "molt.cli",
+                "build",
+                "--profile",
+                "dev",
+                "--fallback",
+                "error",
+                "--no-trusted",
+                "--capabilities",
+                "gui.window",
+                "--output",
+                str(output),
+                str(source),
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        assert build.returncode == 0, (
+            f"native Tcl conformance build failed\n{build.stdout}\n{build.stderr}"
+        )
+        binary = output if output.is_file() else output.with_suffix(".exe")
+        assert binary.is_file(), "native Tcl conformance build produced no executable"
+        actual = run_native_test_process(
+            [str(binary)],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert actual.returncode == 0, actual.stderr
+        assert actual.stdout == reference.stdout
+
+
 def _run_live_smoke(expected_platform: str) -> None:
     _require_live_smoke_prereqs(expected_platform)
     base_tmp = scratch_root(ROOT)

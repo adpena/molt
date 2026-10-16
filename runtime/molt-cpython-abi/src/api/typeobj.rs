@@ -21,6 +21,12 @@ mod inheritance;
 mod method_descriptors;
 mod native_lifecycle;
 mod native_slot_dispatch;
+/// Return the memoryview retained by the canonical Python buffer wrapper, or
+/// the original object for other owners. The caller retains the export lease.
+pub unsafe fn buffer_export_memoryview(object: *mut PyObject) -> *mut PyObject {
+    unsafe { native_slot_dispatch::python_buffer_export_memoryview(object) }
+}
+
 mod object_construction;
 mod protocol_storage;
 pub(crate) use object_construction::{
@@ -99,6 +105,74 @@ pub unsafe fn attribute_slot_wrapper_for_test<const DELETE: bool>(
             owner,
             (&raw const definition.base).cast_mut(),
             setter as *const () as *mut c_void,
+        )
+    }
+}
+
+/// Declare the physical buffer slots of a runtime-owned class through the
+/// existing wrapper descriptors and namespace mutation authority. Inherited
+/// wrappers retain this exact declaring type; Python overrides keep ordinary
+/// slot resolution and the mandatory native-base release protocol.
+pub unsafe fn declare_managed_buffer_type(tp: *mut PyTypeObject) -> c_int {
+    use crate::api::refcount::OwnedPyObject;
+    unsafe {
+        if tp.is_null() || PyType_Check(tp.cast()) == 0 {
+            crate::api::errors::PyErr_BadInternalCall();
+            return -1;
+        }
+        let mut declarations = Vec::with_capacity(2);
+        for (slot, function) in [
+            (
+                BufferSlot::Get,
+                crate::api::buffer::managed_storage_getbuffer as *const () as *mut c_void,
+            ),
+            (
+                BufferSlot::Release,
+                crate::api::buffer::managed_storage_releasebuffer as *const () as *mut c_void,
+            ),
+        ] {
+            let definition = SLOT_WRAPPER_DEFS
+                .iter()
+                .find(|row| row.slot == SlotWrapper::Buffer(slot))
+                .expect("buffer slots have canonical wrapper declarations");
+            let descriptor = OwnedPyObject::from_owned(PyDescr_NewWrapper(
+                tp,
+                (&raw const definition.base).cast_mut(),
+                function,
+            ));
+            if descriptor.as_ptr().is_null() {
+                return -1;
+            }
+            declarations.push((definition.base.name, descriptor));
+        }
+        for (name, descriptor) in declarations {
+            if crate::api::object::PyObject_SetAttrString(tp.cast(), name, descriptor.as_ptr()) < 0
+            {
+                return -1;
+            }
+        }
+        0
+    }
+}
+
+/// Return the existing physical buffer declaration as its ordinary wrapper.
+/// Lazy runtime publication and native readiness share SLOT_WRAPPER_DEFS and
+/// the exact declaring slot; neither creates another buffer implementation.
+pub unsafe fn buffer_slot_wrapper(tp: *mut PyTypeObject, release: bool) -> *mut PyObject {
+    let slot = SlotWrapper::Buffer(if release {
+        BufferSlot::Release
+    } else {
+        BufferSlot::Get
+    });
+    let definition = SLOT_WRAPPER_DEFS
+        .iter()
+        .find(|row| row.slot == slot)
+        .expect("buffer slots have canonical wrapper declarations");
+    unsafe {
+        PyDescr_NewWrapper(
+            tp,
+            (&raw const definition.base).cast_mut(),
+            slot_wrapper_ptr(tp, slot),
         )
     }
 }
@@ -4369,6 +4443,12 @@ pub unsafe fn object_type_name_with_precision(op: *mut PyObject, precision: usiz
         return "object".to_string();
     }
     let tp = unsafe { crate::bridge::semantic_type(op) };
+    unsafe { type_name_with_precision(tp, precision) }
+}
+
+/// Format a resolved semantic type with the same byte precision as object diagnostics.
+/// The caller keeps the type alive; no identity lookup or Python callback is needed.
+pub unsafe fn type_name_with_precision(tp: *mut PyTypeObject, precision: usize) -> String {
     if tp.is_null() {
         return "object".to_string();
     }

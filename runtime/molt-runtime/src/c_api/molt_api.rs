@@ -1945,12 +1945,14 @@ pub unsafe extern "C" fn molt_dict_from_pairs(
                 "dict value pointer cannot be null when len > 0",
             );
         };
-        let mut pairs = Vec::with_capacity(key_slice.len().saturating_mul(2));
-        for (&key, &value) in key_slice.iter().zip(value_slice.iter()) {
-            pairs.push(key);
-            pairs.push(value);
-        }
-        let ptr = alloc_dict_with_pairs(_py, pairs.as_slice());
+        let ptr = crate::object::builders::alloc_dict_from_items(
+            _py,
+            key_slice.len(),
+            crate::object::builders::DictItems::Split {
+                keys: key_slice,
+                values: value_slice,
+            },
+        );
         if ptr.is_null() {
             return none_bits();
         }
@@ -1960,6 +1962,35 @@ pub unsafe extern "C" fn molt_dict_from_pairs(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_buffer_acquire(
+    obj_bits: MoltHandle,
+    out_view: *mut MoltBufferView,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        if crate::object::buffer_exports::is_exact_builtin_storage(py, obj_bits)
+            || crate::obj_from_bits(obj_bits)
+                .as_ptr()
+                .is_some_and(|pointer| unsafe {
+                    crate::object_type_id(pointer) == crate::TYPE_ID_NATIVE_HANDLE
+                        && crate::builtins::array_mod::array_supports_buffer(py, obj_bits)
+                })
+        {
+            return unsafe { acquire_physical_buffer(obj_bits, out_view) };
+        }
+        // The transport API requests a complete readonly descriptor. Its
+        // memoryview retains the one public-protocol lease; the physical leaf
+        // below only pins that already acquired storage.
+        let view = crate::object::ops_memoryview::molt_memoryview_new(obj_bits);
+        if crate::exception_pending(py) {
+            crate::dec_ref_bits(py, view);
+            return -1;
+        }
+        let status = unsafe { acquire_physical_buffer(view, out_view) };
+        crate::dec_ref_bits(py, view);
+        status
+    })
+}
+
+pub(crate) unsafe fn acquire_physical_buffer(
     obj_bits: MoltHandle,
     out_view: *mut MoltBufferView,
 ) -> i32 {
@@ -2085,6 +2116,9 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         };
 
         let mut native_lease = None;
+        let mut source_pin = None;
+        let mut source_kind = crate::object::MemoryViewKind::Ordinary;
+        let mut derived_owner = None;
         let mut source_span = None;
         let mut source_format = None;
         // Every managed exporter supplies the same geometry and permission
@@ -2099,6 +2133,16 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             let source_is_memoryview = obj_from_bits(source_owner)
                 .as_ptr()
                 .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_MEMORYVIEW });
+            if source_is_memoryview
+                && !unsafe {
+                    crate::object::memoryview::require_exportable(
+                        _py,
+                        obj_from_bits(source_owner).as_ptr().unwrap(),
+                    )
+                }
+            {
+                return none_bits();
+            }
             let source_storage = match unsafe {
                 crate::object::memoryview::TypedStridedStorage::from_object_bits(source_owner)
             } {
@@ -2147,8 +2191,17 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                     }
                     .to_vec(),
                 );
-                native_lease = source_storage.native_lease;
+                native_lease = source_storage.native_lease.clone();
                 view.base = source_storage.base_bits;
+                source_kind = source_storage.kind;
+                derived_owner = Some(source_storage.owner_bits);
+                source_pin = match crate::object::builders::PinnedMemoryViewStorage::new(
+                    _py,
+                    source_storage,
+                ) {
+                    Ok(pinned) => Some(pinned),
+                    Err(()) => return none_bits(),
+                };
             }
         }
         inc_ref_bits(_py, view.base);
@@ -2164,21 +2217,19 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         } else {
             view.owner
         };
-        let owner = unsafe {
-            match obj_from_bits(owner).as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_MEMORYVIEW => {
-                    if !crate::object::memoryview::require_exportable(_py, ptr) {
-                        return none_bits();
-                    }
-                    memoryview_owner_bits(ptr)
-                }
-                _ => owner,
+        // A managed source descriptor already supplied the canonical typed
+        // owner, including callback scope and any real native alias lease.
+        // Keep that pin across format allocation without re-admitting a source
+        // that can be explicitly released by an allocation callback.
+        let pinned = if source_pin.is_none() {
+            match crate::object::buffer_exports::ScopedBufferExport::new(_py, owner) {
+                Ok(pinned) => Some(pinned),
+                Err(()) => return none_bits(),
             }
+        } else {
+            None
         };
-        let pinned = match crate::object::buffer_exports::ScopedBufferExport::new(_py, owner) {
-            Ok(pinned) => pinned,
-            Err(()) => return none_bits(),
-        };
+        let owner = derived_owner.unwrap_or_else(|| pinned.as_ref().unwrap().owner_bits());
         let ndim = view.ndim as usize;
         let shape = view.shape[..ndim].to_vec();
         let strides = view.strides[..ndim].to_vec();
@@ -2209,9 +2260,9 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             strides,
         )
         .map(|storage| {
+            let mut storage = storage.with_owner(owner).with_native_lease(native_lease);
+            storage.kind = source_kind;
             storage
-                .with_owner(pinned.owner_bits())
-                .with_native_lease(native_lease)
         });
         let out_ptr = match storage {
             Some(storage) => {

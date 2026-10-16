@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io as _io
 import os as _os
 import time as _time
 from typing import Any, cast
@@ -13,6 +14,7 @@ import logging as _logging
 
 __all__ = [
     "BaseRotatingHandler",
+    "RotatingFileHandler",
     "TimedRotatingFileHandler",
     "QueueHandler",
     "QueueListener",
@@ -20,22 +22,21 @@ __all__ = [
 
 
 class BaseRotatingHandler(_logging.FileHandler):
+    namer: Any = None
+    rotator: Any = None
+
     def __init__(
         self,
-        filename: str,
-        mode: str = "a",
+        filename: Any,
+        mode: str,
         encoding: str | None = None,
         delay: bool = False,
+        errors: str | None = None,
     ) -> None:
-        super().__init__(filename, mode, encoding, delay)
-        self.namer: Any = None
-        self.rotator: Any = None
-
-    def shouldRollover(self, record: _logging.LogRecord) -> bool:
-        return False
-
-    def doRollover(self) -> None:
-        pass
+        super().__init__(filename, mode, encoding, delay, errors)
+        self.mode = mode
+        self.encoding = encoding
+        self.errors = errors
 
     def emit(self, record: _logging.LogRecord) -> None:
         try:
@@ -46,16 +47,71 @@ class BaseRotatingHandler(_logging.FileHandler):
             self.handleError(record)
 
     def rotation_filename(self, default_name: str) -> str:
-        if self.namer is None:
+        if not callable(self.namer):
             return default_name
         return self.namer(default_name)
 
     def rotate(self, source: str, dest: str) -> None:
-        if self.rotator is None:
+        if not callable(self.rotator):
             if _os.path.exists(source):
                 _os.rename(source, dest)
         else:
             self.rotator(source, dest)
+
+
+class RotatingFileHandler(BaseRotatingHandler):
+    def __init__(
+        self,
+        filename: Any,
+        mode: str = "a",
+        maxBytes: int = 0,
+        backupCount: int = 0,
+        encoding: str | None = None,
+        delay: bool = False,
+        errors: str | None = None,
+    ) -> None:
+        if maxBytes > 0:
+            mode = "a"
+        if "b" not in mode:
+            encoding = _io.text_encoding(encoding)
+        super().__init__(filename, mode, encoding, delay, errors)
+        self.maxBytes = maxBytes
+        self.backupCount = backupCount
+
+    def shouldRollover(self, record: _logging.LogRecord) -> bool:
+        if self.stream is None:
+            self.stream = self._open()
+        if self.maxBytes > 0:
+            pos = self.stream.tell()
+            if not pos:
+                return False
+            message = "%s\n" % self.format(record)
+            if pos + len(message) >= self.maxBytes:
+                if _os.path.exists(self.baseFilename) and not _os.path.isfile(
+                    self.baseFilename
+                ):
+                    return False
+                return True
+        return False
+
+    def doRollover(self) -> None:
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        if self.backupCount > 0:
+            for index in range(self.backupCount - 1, 0, -1):
+                source = self.rotation_filename("%s.%d" % (self.baseFilename, index))
+                dest = self.rotation_filename("%s.%d" % (self.baseFilename, index + 1))
+                if _os.path.exists(source):
+                    if _os.path.exists(dest):
+                        _os.remove(dest)
+                    _os.rename(source, dest)
+            dest = self.rotation_filename(self.baseFilename + ".1")
+            if _os.path.exists(dest):
+                _os.remove(dest)
+            self.rotate(self.baseFilename, dest)
+        if not self.delay:
+            self.stream = self._open()
 
 
 class TimedRotatingFileHandler(BaseRotatingHandler):
@@ -77,8 +133,10 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         delay: bool = False,
         utc: bool = False,
         atTime: Any = None,
+        errors: str | None = None,
     ) -> None:
-        super().__init__(str(filename), "a", encoding, delay)
+        encoding = _io.text_encoding(encoding)
+        super().__init__(filename, "a", encoding, delay, errors)
         self.when = when.upper()
         entry = self._WHEN_MAP.get(self.when)
         if entry is None:
@@ -132,7 +190,8 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
         self.rotate(self.baseFilename, dfn)
         for s in self.getFilesToDelete():
             _os.remove(s)
-        self.stream = self._open()
+        if not self.delay:
+            self.stream = self._open()
         self.rolloverAt = self._computeRollover(currentTime)
 
 

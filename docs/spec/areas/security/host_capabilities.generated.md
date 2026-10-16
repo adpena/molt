@@ -189,13 +189,16 @@ This is the generated human projection of the canonical built-in host permission
 | `contextlib.chdir_exit` | `fs.read`, `fs.write` | all | all | all | all |
 | `db.exec` | `db.write` | all | all | all | all |
 | `db.query` | `db.read` | all | all | all | all |
-| `env.clear` | `env.write` | all | all | all | all |
+| `env.clear` | `env.read`, `env.write` | all | all | all | all |
 | `env.contains` | `env.read` | all | all | all | all |
 | `env.expanduser` | `env.read` | all | all | all | all |
 | `env.expandvars` | `env.read` | all | all | all | all |
 | `env.get` | `env.read` | all | all | all | all |
+| `env.keys` | `env.read` | all | all | all | all |
+| `env.pop` | `env.read`, `env.write` | all | all | all | all |
+| `env.setdefault` | `env.read`, `env.write` | all | all | all | all |
 | `env.len` | `env.read` | all | all | all | all |
-| `env.popitem` | `env.write` | all | all | all | all |
+| `env.popitem` | `env.read`, `env.write` | all | all | all | all |
 | `env.putenv` | `env.write` | all | all | all | all |
 | `env.set` | `env.write` | all | all | all | all |
 | `env.snapshot` | `env.read` | all | all | all | all |
@@ -270,6 +273,7 @@ This is the generated human projection of the canonical built-in host permission
 | `os.mkdir` | `fs.write` | all | all | all | all |
 | `os.rmdir` | `fs.write` | all | all | all | all |
 | `os.removedirs` | `fs.write` | all | all | all | all |
+| `os.need_current_directory_for_exe_path` | `env.read` | `native` | `windows` | all | all |
 | `os.access` | `fs.read` | all | all | all | all |
 | `os.chmod` | `fs.write` | all | all | all | all |
 | `os.link` | `fs.write` | `native` | all | all | all |
@@ -306,17 +310,13 @@ This is the generated human projection of the canonical built-in host permission
 | `os.symlink_at` | `fs.write` | `native` | `linux`, `macos` | all | all |
 | `os.utime_at` | `fs.write` | `native` | all | all | all |
 | `os.sendfile` | `fs.read` | `native` | `linux`, `macos` | all | all |
-| `os.environ` | `env.read` | all | all | all | all |
 | `os.makedirs` | `fs.write` | all | all | all | all |
 | `pathlib.resolve` | `fs.read` | all | all | all | all |
 | `pathlib.is_mount` | `fs.read` | all | all | all | all |
 | `pathlib.iterdir` | `fs.read` | all | all | all | all |
-| `pathlib.rglob` | `fs.read` | all | all | all | all |
 | `pathlib.touch` | `fs.write` | all | all | all | all |
 | `pathlib.hardlink_to` | `fs.write` | `native` | all | all | all |
-| `pathlib.read_text` | `fs.read` | all | all | all | all |
 | `pathlib.read_bytes` | `fs.read` | all | all | all | all |
-| `pathlib.write_text` | `fs.write` | all | all | all | all |
 | `pathlib.write_bytes` | `fs.write` | all | all | all | all |
 | `pathlib.owner` | `fs.read` | `native` | `linux`, `macos` | all | all |
 | `pathlib.group` | `fs.read` | `native` | `linux`, `macos` | all | all |

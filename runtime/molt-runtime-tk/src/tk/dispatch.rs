@@ -171,13 +171,13 @@ pub(super) fn run_tcl_after_and_sync_callbacks(
     if args.len() != 3 {
         return Ok(out);
     }
-    let Some(subcommand) = string_obj_to_owned(obj_from_bits(args[1])) else {
+    let Some(subcommand) = (unsafe { string_obj_to_owned(obj_from_bits(args[1])) }) else {
         return Ok(out);
     };
     if subcommand != "cancel" {
         return Ok(out);
     }
-    let Some(key) = string_obj_to_owned(obj_from_bits(args[2])) else {
+    let Some(key) = (unsafe { string_obj_to_owned(obj_from_bits(args[2])) }) else {
         return Ok(out);
     };
 
@@ -465,7 +465,7 @@ pub(super) fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Resul
                 }
                 if args.len() >= 2
                     && is_widget_constructor_command(command.as_str())
-                    && let Some(path) = string_obj_to_owned(obj_from_bits(args[1]))
+                    && let Some(path) = unsafe { string_obj_to_owned(obj_from_bits(args[1])) }
                     && path.starts_with('.')
                 {
                     return handle_widget_create_command(py, handle, &command, args);

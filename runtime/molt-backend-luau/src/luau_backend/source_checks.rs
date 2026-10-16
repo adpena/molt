@@ -633,7 +633,7 @@ end
             "local v0 = nil -- [context: context_enter]",
             "local v0 = nil -- [internal: function_closure_bits]",
             "local v0 = true -- [stub: isinstance]",
-            "-- [class op: class_merge_layout]",
+            "-- [class op: class_new]",
             "local v0 = nil -- [bridge_unavailable]",
         ];
         for marker in markers {

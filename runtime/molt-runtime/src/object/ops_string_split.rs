@@ -6,122 +6,56 @@ use molt_obj_model::MoltObject;
 
 use super::ops_string_utf8::{utf8_codepoint_count_cached, wtf8_codepoint_at};
 use super::validate_string_receiver;
-fn partition_string_bytes(
-    _py: &PyToken<'_>,
-    hay_bytes: &[u8],
-    sep_bytes: &[u8],
-    from_right: bool,
-) -> Option<u64> {
-    let idx = if from_right {
-        bytes_rfind_impl(hay_bytes, sep_bytes)
-    } else {
-        bytes_find_impl(hay_bytes, sep_bytes)
+fn partition_string(py: &PyToken<'_>, hay_bits: u64, sep_bits: u64, right: bool) -> u64 {
+    let Some(hay_ptr) = obj_from_bits(hay_bits).as_ptr() else {
+        return MoltObject::none().bits();
     };
-    let (head_bytes, sep_bytes, tail_bytes) = if idx < 0 {
-        if from_right {
-            (&[][..], &[][..], hay_bytes)
-        } else {
-            (hay_bytes, &[][..], &[][..])
+    if unsafe { object_type_id(hay_ptr) } != TYPE_ID_STRING {
+        return MoltObject::none().bits();
+    }
+    let sep = obj_from_bits(sep_bits);
+    let Some(sep_ptr) = sep
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_STRING)
+    else {
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!("must be str, not {}", type_name(py, sep)),
+        );
+    };
+    let hay = unsafe { std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr)) };
+    let sep = unsafe { std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr)) };
+    if sep.is_empty() {
+        return raise_exception(py, "ValueError", "empty separator");
+    }
+    use crate::object::ops_bytes::{PartitionPart, partition_to_tuple};
+    partition_to_tuple(py, hay, sep, right, |kind, bytes| match kind {
+        PartitionPart::Separator | PartitionPart::Unchanged => {
+            let bits = if matches!(kind, PartitionPart::Separator) {
+                sep_bits
+            } else {
+                hay_bits
+            };
+            inc_ref_bits(py, bits);
+            Some(bits)
         }
-    } else {
-        let idx = idx as usize;
-        let end = idx + sep_bytes.len();
-        (&hay_bytes[..idx], sep_bytes, &hay_bytes[end..])
-    };
-    let head_ptr = alloc_string(_py, head_bytes);
-    if head_ptr.is_null() {
-        return None;
-    }
-    let head_bits = MoltObject::from_ptr(head_ptr).bits();
-    let sep_ptr = alloc_string(_py, sep_bytes);
-    if sep_ptr.is_null() {
-        dec_ref_bits(_py, head_bits);
-        return None;
-    }
-    let sep_bits = MoltObject::from_ptr(sep_ptr).bits();
-    let tail_ptr = alloc_string(_py, tail_bytes);
-    if tail_ptr.is_null() {
-        dec_ref_bits(_py, head_bits);
-        dec_ref_bits(_py, sep_bits);
-        return None;
-    }
-    let tail_bits = MoltObject::from_ptr(tail_ptr).bits();
-    let tuple_ptr = alloc_tuple(_py, &[head_bits, sep_bits, tail_bits]);
-    if tuple_ptr.is_null() {
-        dec_ref_bits(_py, head_bits);
-        dec_ref_bits(_py, sep_bits);
-        dec_ref_bits(_py, tail_bits);
-        return None;
-    }
-    Some(MoltObject::from_ptr(tuple_ptr).bits())
+        PartitionPart::Slice => {
+            let ptr = alloc_string(py, bytes);
+            (!ptr.is_null()).then(|| MoltObject::from_ptr(ptr).bits())
+        }
+    })
+    .unwrap_or_else(|| MoltObject::none().bits())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_partition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let sep = obj_from_bits(sep_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let sep_ptr = match sep.as_ptr() {
-                Some(ptr) => ptr,
-                None => {
-                    let msg = format!("must be str, not {}", type_name(_py, sep));
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            };
-            if object_type_id(sep_ptr) != TYPE_ID_STRING {
-                let msg = format!("must be str, not {}", type_name(_py, sep));
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
-            if sep_bytes.is_empty() {
-                return raise_exception::<_>(_py, "ValueError", "empty separator");
-            }
-            let tuple_bits = partition_string_bytes(_py, hay_bytes, sep_bytes, false);
-            tuple_bits.unwrap_or_else(|| MoltObject::none().bits())
-        }
-    })
+    crate::with_gil_entry_nopanic!(py, { partition_string(py, hay_bits, sep_bits, false) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let sep = obj_from_bits(sep_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_STRING {
-                return MoltObject::none().bits();
-            }
-            let sep_ptr = match sep.as_ptr() {
-                Some(ptr) => ptr,
-                None => {
-                    let msg = format!("must be str, not {}", type_name(_py, sep));
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            };
-            if object_type_id(sep_ptr) != TYPE_ID_STRING {
-                let msg = format!("must be str, not {}", type_name(_py, sep));
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
-            if sep_bytes.is_empty() {
-                return raise_exception::<_>(_py, "ValueError", "empty separator");
-            }
-            let tuple_bits = partition_string_bytes(_py, hay_bytes, sep_bytes, true);
-            tuple_bits.unwrap_or_else(|| MoltObject::none().bits())
-        }
-    })
+    crate::with_gil_entry_nopanic!(py, { partition_string(py, hay_bits, sep_bits, true) })
 }
 
 #[unsafe(no_mangle)]
@@ -749,6 +683,367 @@ mod split_contract_tests {
             }
         }
         dec_ref_bits(py, result);
+    }
+
+    static JOIN_EXPORTS: AtomicU64 = AtomicU64::new(0);
+    static JOIN_RELEASES: AtomicU64 = AtomicU64::new(0);
+    static JOIN_WRONG_FLAGS: AtomicU64 = AtomicU64::new(0);
+
+    unsafe extern "C" fn join_export(
+        receiver: *mut molt_cpython_abi::abi_types::PyObject,
+        view: *mut molt_cpython_abi::abi_types::Py_buffer,
+        flags: i32,
+    ) -> i32 {
+        if flags != molt_cpython_abi::abi_types::PyBUF_SIMPLE {
+            JOIN_WRONG_FLAGS.fetch_add(1, Ordering::SeqCst);
+        }
+        let index = JOIN_EXPORTS.fetch_add(1, Ordering::SeqCst);
+        let bytes: &[u8] = if index % 2 == 0 { b"a" } else { b"bc" };
+        unsafe {
+            molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+                view,
+                receiver,
+                bytes.as_ptr().cast_mut().cast(),
+                bytes.len() as isize,
+                1,
+                flags,
+            )
+        }
+    }
+
+    unsafe extern "C" fn join_release(
+        _: *mut molt_cpython_abi::abi_types::PyObject,
+        _: *mut molt_cpython_abi::abi_types::Py_buffer,
+    ) {
+        JOIN_RELEASES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    thread_local! {
+        static JOIN_CUSTODY: std::cell::Cell<(u64, u64, u64, bool)> = const {
+            std::cell::Cell::new((0, 0, 0, false))
+        };
+        static JOIN_EVENTS: std::cell::RefCell<Vec<u64>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
+    }
+
+    #[repr(C)]
+    struct JoinCustodyProbe {
+        object: molt_cpython_abi::abi_types::PyObject,
+        id: u64,
+        byte: u8,
+    }
+
+    fn join_custody_replace(index: usize, bits: u64) {
+        crate::with_gil_entry_nopanic!(py, {
+            let list = JOIN_CUSTODY.with(|state| state.get().0);
+            let old = unsafe {
+                crate::object::list_mutation::replace_one_transferring_displaced(
+                    py,
+                    obj_from_bits(list).as_ptr().unwrap(),
+                    index,
+                    bits,
+                )
+                .unwrap()
+            };
+            dec_ref_bits(py, old);
+        });
+    }
+
+    unsafe extern "C" fn join_custody_drop(object: *mut molt_cpython_abi::abi_types::PyObject) {
+        let probe = unsafe { Box::from_raw(object.cast::<JoinCustodyProbe>()) };
+        JOIN_EVENTS.with(|events| events.borrow_mut().push(30 + probe.id));
+        let (_, _, final_value, remove_previous) = JOIN_CUSTODY.with(std::cell::Cell::get);
+        if probe.id == 2 && !remove_previous {
+            join_custody_replace(2, final_value);
+        }
+    }
+
+    unsafe extern "C" fn join_custody_get(
+        object: *mut molt_cpython_abi::abi_types::PyObject,
+        view: *mut molt_cpython_abi::abi_types::Py_buffer,
+        flags: i32,
+    ) -> i32 {
+        let id = unsafe { (*object.cast::<JoinCustodyProbe>()).id };
+        JOIN_EVENTS.with(|events| events.borrow_mut().push(10 + id));
+        let (_, replacement, _, remove_previous) = JOIN_CUSTODY.with(std::cell::Cell::get);
+        if (id == 1 && !remove_previous) || (id == 2 && remove_previous) {
+            join_custody_replace(if remove_previous { 0 } else { 1 }, replacement);
+            JOIN_EVENTS.with(|events| events.borrow_mut().push(40));
+        }
+        unsafe {
+            molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+                view,
+                object,
+                (&raw mut (*object.cast::<JoinCustodyProbe>()).byte).cast(),
+                1,
+                1,
+                flags,
+            )
+        }
+    }
+
+    unsafe extern "C" fn join_custody_release(
+        object: *mut molt_cpython_abi::abi_types::PyObject,
+        _: *mut molt_cpython_abi::abi_types::Py_buffer,
+    ) {
+        let id = unsafe { (*object.cast::<JoinCustodyProbe>()).id };
+        JOIN_EVENTS.with(|events| events.borrow_mut().push(20 + id));
+    }
+
+    #[test]
+    fn join_contract_live_list_finalizers_and_ordered_release() {
+        use crate::cpython_abi_hooks::native_test_fixture::NativeType;
+        use molt_cpython_abi::{abi_types::*, api::refcount, bridge::GLOBAL_BRIDGE};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let mut kind = NativeType::subtype(&raw mut PyBaseObject_Type, c"JoinCustodyProbe");
+            kind.tp_dealloc = Some(join_custody_drop);
+            let mut slots = PyBufferProcs {
+                bf_getbuffer: join_custody_get as *const () as *mut _,
+                bf_releasebuffer: join_custody_release as *const () as *mut _,
+            };
+            kind.tp_as_buffer = (&raw mut slots).cast();
+            assert_eq!(unsafe { kind.ready() }, 0);
+            for (kind_id, join) in [
+                (
+                    TYPE_ID_BYTES,
+                    molt_bytes_join as extern "C" fn(u64, u64) -> u64,
+                ),
+                (TYPE_ID_BYTEARRAY, molt_bytearray_join),
+            ] {
+                for remove_previous in [false, true] {
+                    let separator = value(py, kind_id, b"/");
+                    let replacement = value(py, TYPE_ID_BYTES, b"b");
+                    let final_value = value(py, TYPE_ID_BYTES, b"z");
+                    let initial = value(py, TYPE_ID_BYTES, b"x");
+                    let mut objects = Vec::new();
+                    for (id, byte) in [(1, b'a'), (2, b'c')] {
+                        let object = Box::into_raw(Box::new(JoinCustodyProbe {
+                            object: PyObject {
+                                ob_refcnt: 1,
+                                ob_type: &raw mut *kind,
+                            },
+                            id,
+                            byte,
+                        }))
+                        .cast::<PyObject>();
+                        let bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(object) }.unwrap();
+                        unsafe { refcount::Py_DECREF(object) };
+                        objects.push(bits);
+                    }
+                    let list =
+                        MoltObject::from_ptr(alloc_list(py, &[objects[0], objects[1], initial]))
+                            .bits();
+                    // The list is the only fixture owner of each native item.
+                    for bits in objects {
+                        dec_ref_bits(py, bits);
+                    }
+                    JOIN_CUSTODY
+                        .with(|state| state.set((list, replacement, final_value, remove_previous)));
+                    JOIN_EVENTS.with(|events| events.borrow_mut().clear());
+                    let result = join(separator, list);
+                    assert!(!exception_pending(py));
+                    unsafe {
+                        assert_eq!(
+                            bytes_like_slice(obj_from_bits(result).as_ptr().unwrap()).unwrap(),
+                            if remove_previous {
+                                &b"a/c/x"[..]
+                            } else {
+                                &b"a/b/z"[..]
+                            },
+                        );
+                    }
+                    let expected: &[u64] = if remove_previous {
+                        // The first exported item dies between the two releases.
+                        &[11, 12, 40, 21, 31, 22]
+                    } else {
+                        // Future-item finalization occurs inside the first get.
+                        &[11, 32, 40, 21]
+                    };
+                    JOIN_EVENTS.with(|events| assert_eq!(events.borrow().as_slice(), expected));
+                    // Suppress the fixture's replacement side effect during teardown.
+                    JOIN_CUSTODY.with(|state| state.set((list, replacement, final_value, true)));
+                    for bits in [result, list, initial, final_value, replacement, separator] {
+                        dec_ref_bits(py, bits);
+                    }
+                    JOIN_CUSTODY.with(|state| state.set((0, 0, 0, true)));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn join_contract_native_export_flags_distinct_spans_and_release() {
+        use molt_cpython_abi::{
+            abi_types::*,
+            api::{object, refcount::OwnedPyObject, typeobj},
+            type_slots,
+        };
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let mut slots = [
+                    PyType_Slot {
+                        slot: type_slots::Py_tp_new,
+                        pfunc: typeobj::PyType_GenericNew as *const () as *mut std::ffi::c_void,
+                    },
+                    PyType_Slot {
+                        slot: type_slots::Py_bf_getbuffer,
+                        pfunc: join_export as *const () as *mut std::ffi::c_void,
+                    },
+                    PyType_Slot {
+                        slot: type_slots::Py_bf_releasebuffer,
+                        pfunc: join_release as *const () as *mut std::ffi::c_void,
+                    },
+                    PyType_Slot {
+                        slot: 0,
+                        pfunc: std::ptr::null_mut(),
+                    },
+                ];
+                let mut spec = PyType_Spec {
+                    name: c"join.Export".as_ptr(),
+                    basicsize: std::mem::size_of::<PyObject>() as i32,
+                    itemsize: 0,
+                    flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT),
+                    slots: slots.as_mut_ptr(),
+                };
+                let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));
+                assert!(!class.as_ptr().is_null());
+                let instance =
+                    OwnedPyObject::from_owned(object::PyObject_CallNoArgs(class.as_ptr()));
+                assert!(!instance.as_ptr().is_null());
+                let item = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .molt_value_for_pyobj(instance.as_ptr())
+                    .unwrap();
+                for (kind, join) in [
+                    (
+                        TYPE_ID_BYTES,
+                        molt_bytes_join as extern "C" fn(u64, u64) -> u64,
+                    ),
+                    (TYPE_ID_BYTEARRAY, molt_bytearray_join),
+                ] {
+                    let separator = value(py, kind, b"/");
+                    for invalid in [false, true] {
+                        JOIN_EXPORTS.store(0, Ordering::SeqCst);
+                        JOIN_RELEASES.store(0, Ordering::SeqCst);
+                        JOIN_WRONG_FLAGS.store(0, Ordering::SeqCst);
+                        let tail = if invalid {
+                            MoltObject::from_int(7).bits()
+                        } else {
+                            item
+                        };
+                        let list = MoltObject::from_ptr(alloc_list(py, &[item, tail])).bits();
+                        let result = join(separator, list);
+                        if invalid {
+                            assert_error(py, result, "TypeError");
+                        } else {
+                            assert!(!exception_pending(py));
+                            assert_eq!(
+                                bytes_like_slice(obj_from_bits(result).as_ptr().unwrap()).unwrap(),
+                                b"a/bc"
+                            );
+                            dec_ref_bits(py, result);
+                        }
+                        let count = if invalid { 1 } else { 2 };
+                        assert_eq!(JOIN_EXPORTS.load(Ordering::SeqCst), count);
+                        assert_eq!(JOIN_RELEASES.load(Ordering::SeqCst), count);
+                        assert_eq!(JOIN_WRONG_FLAGS.load(Ordering::SeqCst), 0);
+                        dec_ref_bits(py, list);
+                    }
+                    dec_ref_bits(py, separator);
+                }
+                dec_ref_bits(py, item);
+            }
+        });
+    }
+
+    #[test]
+    fn join_contract_result_identity_materialization_and_export_retirement() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for (kind, join) in [
+                (
+                    TYPE_ID_BYTES,
+                    molt_bytes_join as extern "C" fn(u64, u64) -> u64,
+                ),
+                (TYPE_ID_BYTEARRAY, molt_bytearray_join),
+                (TYPE_ID_STRING, molt_string_join),
+            ] {
+                let item_kind = if kind == TYPE_ID_STRING {
+                    TYPE_ID_STRING
+                } else {
+                    TYPE_ID_BYTES
+                };
+                let separator = value(py, kind, b"/");
+                let item = value(py, item_kind, b"one");
+                let list = MoltObject::from_ptr(alloc_list(py, &[item])).bits();
+                let iterator = molt_iter(list);
+                for source in [list, iterator] {
+                    let result = join(separator, source);
+                    assert!(!exception_pending(py));
+                    assert_eq!(
+                        type_of_bits(py, result),
+                        if kind == TYPE_ID_STRING {
+                            builtin_classes(py).str
+                        } else if kind == TYPE_ID_BYTES {
+                            builtin_classes(py).bytes
+                        } else {
+                            builtin_classes(py).bytearray
+                        }
+                    );
+                    if kind != TYPE_ID_BYTEARRAY {
+                        assert_eq!(result, item);
+                    } else {
+                        assert_ne!(result, item);
+                    }
+                    dec_ref_bits(py, result);
+                }
+                for bits in [iterator, list, item, separator] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+            // Both successful and failed byte-family joins must release every
+            // counted item/separator export, leaving ordinary resize legal.
+            let item = value(py, TYPE_ID_BYTEARRAY, b"a");
+            let separator = value(py, TYPE_ID_BYTEARRAY, b"/");
+            for invalid in [false, true] {
+                let tail = if invalid {
+                    MoltObject::from_int(9).bits()
+                } else {
+                    item
+                };
+                let list = MoltObject::from_ptr(alloc_list(py, &[item, tail])).bits();
+                let result = molt_bytearray_join(separator, list);
+                if invalid {
+                    assert_error(py, result, "TypeError");
+                } else {
+                    assert!(!exception_pending(py));
+                    unsafe {
+                        assert_eq!(
+                            bytes_like_slice(obj_from_bits(result).as_ptr().unwrap()).unwrap(),
+                            b"a/a"
+                        );
+                    }
+                    dec_ref_bits(py, result);
+                }
+                unsafe {
+                    assert!(!crate::object::buffer_exports::bytearray_is_exported(
+                        obj_from_bits(item).as_ptr().unwrap()
+                    ));
+                    assert!(!crate::object::buffer_exports::bytearray_is_exported(
+                        obj_from_bits(separator).as_ptr().unwrap()
+                    ));
+                }
+                dec_ref_bits(py, list);
+            }
+            molt_bytearray_append(item, MoltObject::from_int(33).bits());
+            molt_bytearray_append(separator, MoltObject::from_int(33).bits());
+            assert!(!exception_pending(py));
+            for bits in [item, separator] {
+                dec_ref_bits(py, bits);
+            }
+        });
     }
 
     #[test]

@@ -9,7 +9,7 @@ pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let state = sys_bootstrap_state_from_module_file(module_file);
+        let state = sys_bootstrap_state_from_module_file(_py, module_file);
         alloc_string_list_bits(_py, &state.path).unwrap_or_else(|| MoltObject::none().bits())
     })
 }
@@ -21,7 +21,7 @@ pub extern "C" fn molt_sys_bootstrap_pythonpath(module_file_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let state = sys_bootstrap_state_from_module_file(module_file);
+        let state = sys_bootstrap_state_from_module_file(_py, module_file);
         alloc_string_list_bits(_py, &state.pythonpath_entries)
             .unwrap_or_else(|| MoltObject::none().bits())
     })
@@ -34,7 +34,7 @@ pub extern "C" fn molt_sys_bootstrap_module_roots(module_file_bits: u64) -> u64 
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let state = sys_bootstrap_state_from_module_file(module_file);
+        let state = sys_bootstrap_state_from_module_file(_py, module_file);
         alloc_string_list_bits(_py, &state.module_roots_entries)
             .unwrap_or_else(|| MoltObject::none().bits())
     })
@@ -47,7 +47,7 @@ pub extern "C" fn molt_sys_bootstrap_pwd(module_file_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let state = sys_bootstrap_state_from_module_file(module_file);
+        let state = sys_bootstrap_state_from_module_file(_py, module_file);
         match alloc_str_bits(_py, &state.pwd) {
             Ok(bits) => bits,
             Err(err) => err,
@@ -62,7 +62,7 @@ pub extern "C" fn molt_sys_bootstrap_include_cwd(module_file_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let state = sys_bootstrap_state_from_module_file(module_file);
+        let state = sys_bootstrap_state_from_module_file(_py, module_file);
         MoltObject::from_bool(state.include_cwd).bits()
     })
 }
@@ -74,7 +74,7 @@ pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let state = sys_bootstrap_state_from_module_file(module_file);
+        let state = sys_bootstrap_state_from_module_file(_py, module_file);
         match state.stdlib_root {
             Some(root) => match alloc_str_bits(_py, &root) {
                 Ok(bits) => bits,

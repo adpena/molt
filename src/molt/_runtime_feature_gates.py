@@ -209,6 +209,10 @@ RUNTIME_TARGET_ARCH_EXCLUSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("molt_sqlite3_", ("wasm32",)),
 )
 
+RUNTIME_TARGET_OS_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ('molt_locale_getdefaultlocale', ('windows',)),
+)
+
 RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS: dict[str, frozenset[str]] = {
     "sqlite": frozenset({"wasm32"}),
 }
@@ -277,12 +281,29 @@ def unsupported_target_arches_for_symbol(symbol: str) -> tuple[str, ...]:
     return best[1] if best is not None else ()
 
 
+def supported_target_oses_for_symbol(symbol: str) -> tuple[str, ...]:
+    """Return required OSes, or () for no OS restriction."""
+    if symbol in RUNTIME_BUILTIN_SYMBOLS:
+        return ()
+    best: tuple[int, tuple[str, ...]] | None = None
+    for prefix, oses in RUNTIME_TARGET_OS_REQUIREMENTS:
+        if symbol.startswith(prefix):
+            prefix_len = len(prefix)
+            if best is None or prefix_len > best[0]:
+                best = (prefix_len, oses)
+    return best[1] if best is not None else ()
+
+
 def runtime_symbol_available_on_target(
-    symbol: str, *, target_triple: str | None
+    symbol: str, *, target_triple: str | None, target_os: str | None
 ) -> bool:
     """Whether *symbol* has a provider for *target_triple*."""
     arch = target_arch_from_triple(target_triple)
-    return arch is None or arch not in unsupported_target_arches_for_symbol(symbol)
+    supported_oses = supported_target_oses_for_symbol(symbol)
+    return (
+        arch not in unsupported_target_arches_for_symbol(symbol)
+        and (not supported_oses or target_os in supported_oses)
+    )
 
 
 def link_affecting_features_unsupported_on_target(

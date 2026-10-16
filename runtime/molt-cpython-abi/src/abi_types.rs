@@ -2069,7 +2069,7 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         PyMemoryView_Type.tp_flags |= Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_SEQUENCE;
         PyMemoryView_Type.tp_traverse = Some(crate::api::memory::molt_managed_gc_traverse);
         PyMemoryView_Type.tp_as_buffer = Box::into_raw(Box::new(PyBufferProcs {
-            bf_getbuffer: crate::api::buffer::PyObject_GetBuffer as *mut c_void,
+            bf_getbuffer: crate::api::buffer::managed_storage_getbuffer as *mut c_void,
             bf_releasebuffer: crate::api::memory::memoryview_releasebuffer as *mut c_void,
         }))
         .cast();
@@ -2086,7 +2086,7 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         sequence.sq_ass_item = crate::api::memory::memoryview_ass_item as *mut c_void;
         PyMemoryView_Type.tp_as_sequence = Box::into_raw(Box::new(sequence)).cast();
         PyMemoryView_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
-        PyMemoryView_Type.tp_richcompare = Some(crate::api::typeobj::PyObject_RichCompare);
+        PyMemoryView_Type.tp_richcompare = Some(crate::api::memory::memoryview_richcompare);
         PyMemoryView_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
 
         PyDateTime_DateType.tp_basicsize = std::mem::size_of::<PyDateTime_Date>() as Py_ssize_t;

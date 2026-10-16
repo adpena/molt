@@ -4,7 +4,7 @@
 use super::functions::*;
 use crate::*;
 use molt_obj_model::MoltObject;
-use molt_stdlib_text::fnmatch::{
+use molt_runtime_platform::fnmatch::{
     fnmatch_match_bytes_impl, fnmatch_match_impl, fnmatch_normcase_bytes, fnmatch_normcase_text,
     fnmatch_translate_impl,
 };

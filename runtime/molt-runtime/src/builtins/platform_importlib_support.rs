@@ -703,11 +703,12 @@ pub(super) fn importlib_find_in_path(
 }
 
 pub(super) fn importlib_search_paths(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<String> {
     let sep = bootstrap_path_sep();
-    let state = sys_bootstrap_state_from_module_file(module_file);
+    let state = sys_bootstrap_state_from_module_file(_py, module_file);
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for entry in search_paths {
@@ -729,6 +730,7 @@ pub(super) fn importlib_search_paths(
 }
 
 pub(super) fn importlib_module_root_package_context_paths(
+    _py: &PyToken<'_>,
     fullname: &str,
     module_file: Option<String>,
 ) -> Vec<String> {
@@ -737,7 +739,7 @@ pub(super) fn importlib_module_root_package_context_paths(
         return Vec::new();
     }
     let sep = bootstrap_path_sep();
-    let state = sys_bootstrap_state_from_module_file(module_file);
+    let state = sys_bootstrap_state_from_module_file(_py, module_file);
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for root in state.module_roots_entries {
@@ -748,6 +750,7 @@ pub(super) fn importlib_module_root_package_context_paths(
 }
 
 pub(super) fn importlib_find_spec_search_paths(
+    _py: &PyToken<'_>,
     fullname: &str,
     search_paths: &[String],
     module_file: Option<String>,
@@ -756,22 +759,24 @@ pub(super) fn importlib_find_spec_search_paths(
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     if package_context {
-        for entry in importlib_module_root_package_context_paths(fullname, module_file.clone()) {
+        for entry in importlib_module_root_package_context_paths(_py, fullname, module_file.clone())
+        {
             append_unique_path_hashed(&mut out, &mut seen, &entry);
         }
     }
-    for entry in importlib_search_paths(search_paths, module_file) {
+    for entry in importlib_search_paths(_py, search_paths, module_file) {
         append_unique_path_hashed(&mut out, &mut seen, &entry);
     }
     out
 }
 
 pub(super) fn importlib_bootstrap_payload(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
 ) -> ImportlibBootstrapPayload {
-    let state = sys_bootstrap_state_from_module_file(module_file.clone());
-    let resolved_search_paths = importlib_search_paths(search_paths, module_file);
+    let state = sys_bootstrap_state_from_module_file(_py, module_file.clone());
+    let resolved_search_paths = importlib_search_paths(_py, search_paths, module_file);
     ImportlibBootstrapPayload {
         resolved_search_paths,
         pythonpath_entries: state.pythonpath_entries,
@@ -784,6 +789,7 @@ pub(super) fn importlib_bootstrap_payload(
 }
 
 pub(super) fn importlib_namespace_paths(
+    _py: &PyToken<'_>,
     package: &str,
     search_paths: &[String],
     module_file: Option<String>,
@@ -792,12 +798,12 @@ pub(super) fn importlib_namespace_paths(
         return Vec::new();
     }
     let sep = bootstrap_path_sep();
-    let mut resolved = importlib_search_paths(search_paths, module_file.clone());
+    let mut resolved = importlib_search_paths(_py, search_paths, module_file.clone());
     if !resolved.iter().any(|entry| entry.is_empty()) {
         resolved.push(String::new());
     }
     let mut resolved_seen: HashSet<String> = resolved.iter().cloned().collect();
-    let state = sys_bootstrap_state_from_module_file(module_file);
+    let state = sys_bootstrap_state_from_module_file(_py, module_file);
     if !state.pwd.is_empty() {
         append_unique_path_hashed(&mut resolved, &mut resolved_seen, &state.pwd);
     }
@@ -842,10 +848,11 @@ pub(super) fn importlib_namespace_paths(
 }
 
 pub(super) fn importlib_metadata_dist_paths(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<String> {
-    let resolved = importlib_search_paths(search_paths, module_file);
+    let resolved = importlib_search_paths(_py, search_paths, module_file);
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for base in resolved {
@@ -878,17 +885,19 @@ pub(super) fn importlib_metadata_dist_paths(
 }
 
 pub(super) fn importlib_metadata_entry_points_payload(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<(String, String, String)> {
-    importlib_metadata_entry_points_select_payload(search_paths, module_file, None, None)
+    importlib_metadata_entry_points_select_payload(_py, search_paths, module_file, None, None)
 }
 
 pub(super) fn importlib_metadata_distributions_payload(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<ImportlibMetadataPayload> {
-    let dist_paths = importlib_metadata_dist_paths(search_paths, module_file);
+    let dist_paths = importlib_metadata_dist_paths(_py, search_paths, module_file);
     let mut out: Vec<ImportlibMetadataPayload> = Vec::with_capacity(dist_paths.len());
     for path in dist_paths {
         out.push(importlib_metadata_payload(&path));
@@ -897,13 +906,14 @@ pub(super) fn importlib_metadata_distributions_payload(
 }
 
 pub(super) fn importlib_metadata_entry_points_select_payload(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
     group: Option<&str>,
     name: Option<&str>,
 ) -> Vec<(String, String, String)> {
     let mut out: Vec<(String, String, String)> = Vec::new();
-    let dist_paths = importlib_metadata_dist_paths(search_paths, module_file);
+    let dist_paths = importlib_metadata_dist_paths(_py, search_paths, module_file);
     for path in dist_paths {
         let payload = importlib_metadata_payload(&path);
         for (entry_name, entry_value, entry_group) in payload.entry_points {
@@ -924,6 +934,7 @@ pub(super) fn importlib_metadata_entry_points_select_payload(
 }
 
 pub(super) fn importlib_metadata_entry_points_filter_payload(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
     group: Option<&str>,
@@ -931,7 +942,7 @@ pub(super) fn importlib_metadata_entry_points_filter_payload(
     value: Option<&str>,
 ) -> Vec<(String, String, String)> {
     let mut out: Vec<(String, String, String)> = Vec::new();
-    let dist_paths = importlib_metadata_dist_paths(search_paths, module_file);
+    let dist_paths = importlib_metadata_dist_paths(_py, search_paths, module_file);
     for path in dist_paths {
         let payload = importlib_metadata_payload(&path);
         for (entry_name, entry_value, entry_group) in payload.entry_points {
@@ -995,7 +1006,7 @@ pub(super) fn importlib_find_spec_payload(
     package_context: bool,
 ) -> Result<Option<ImportlibFindSpecPayload>, u64> {
     let resolved =
-        importlib_find_spec_search_paths(fullname, search_paths, module_file, package_context);
+        importlib_find_spec_search_paths(_py, fullname, search_paths, module_file, package_context);
     let Some(resolution) = importlib_find_in_path(fullname, &resolved, package_context) else {
         return Ok(None);
     };
@@ -1054,12 +1065,13 @@ pub(super) fn importlib_metadata_record_payload(path: &str) -> Vec<ImportlibMeta
 }
 
 pub(super) fn importlib_metadata_packages_distributions_payload(
+    _py: &PyToken<'_>,
     search_paths: &[String],
     module_file: Option<String>,
 ) -> Vec<(String, Vec<String>)> {
     let mut mapping: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let sep = bootstrap_path_sep();
-    let dist_paths = importlib_metadata_dist_paths(search_paths, module_file);
+    let dist_paths = importlib_metadata_dist_paths(_py, search_paths, module_file);
     for path in dist_paths {
         let payload = importlib_metadata_payload(&path);
         let dist_name = payload.name.trim().to_string();

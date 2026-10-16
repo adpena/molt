@@ -5,12 +5,13 @@ use std::collections::HashSet;
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zipfile_crc32(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
+        let input = match unsafe {
+            molt_runtime_core::native_custody::ByteInput::acquire(_py, data_bits)
+        } {
+            Ok(input) => input,
+            Err(_) => return MoltObject::none().bits(),
         };
-        let Some(bytes) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
-        };
+        let bytes = unsafe { input.bytes(_py) };
 
         let crc = molt_runtime_core::crc32::crc32(bytes, 0);
         MoltObject::from_int(i64::from(crc)).bits()

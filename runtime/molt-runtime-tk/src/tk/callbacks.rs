@@ -167,7 +167,7 @@ pub(super) fn normalize_bind_add_prefix(py: &PyToken, add_bits: u64) -> Result<S
             )),
         };
     }
-    if let Some(value) = string_obj_to_owned(add_obj) {
+    if let Some(value) = unsafe { string_obj_to_owned(add_obj) } {
         return match value.as_str() {
             "" => Ok(String::new()),
             "+" => Ok("+".to_string()),

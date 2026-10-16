@@ -15,7 +15,54 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             0,
             "dict literal needs complete pairs"
         );
-        self.emit_owned_hash_aggregate(op, "molt_dict_new", "molt_dict_set", 2);
+        let result =
+            self.with_borrowed_boxed_operands(&op.operands, "dictionary", |this, words, name| {
+                let (keys, count) =
+                    this.store_borrowed_word_range(words.iter().step_by(2).copied(), "dict_keys");
+                let (values, _) = this.store_borrowed_word_range(
+                    words.iter().skip(1).step_by(2).copied(),
+                    "dict_values",
+                );
+                let ptr_ty = this
+                    .backend
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default());
+                let keys = this
+                    .backend
+                    .builder
+                    .build_int_to_ptr(keys, ptr_ty, "dict_keys_ptr")
+                    .unwrap();
+                let values = this
+                    .backend
+                    .builder
+                    .build_int_to_ptr(values, ptr_ty, "dict_values_ptr")
+                    .unwrap();
+                let constructor = this.ensure_runtime_decl(
+                    "molt_dict_from_pairs",
+                    this.backend.context.i64_type().fn_type(
+                        &[
+                            ptr_ty.into(),
+                            ptr_ty.into(),
+                            this.backend.context.i64_type().into(),
+                        ],
+                        false,
+                    ),
+                    3,
+                    RuntimeReturnAbi::I64,
+                );
+                this.backend
+                    .builder
+                    .build_call(
+                        constructor,
+                        &[keys.into(), values.into(), count.into()],
+                        name,
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value()
+            });
+        self.bind_owned_runtime_result(op, result);
     }
 
     /// Fixed-arity lists and tuples: one constructor transaction over one
@@ -24,7 +71,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn emit_fixed_sequence(&mut self, op: &TirOp, constructor_symbol: &str) {
         let result =
             self.with_borrowed_boxed_operands(&op.operands, "sequence", |this, words, name| {
-                let (address, count) = this.store_borrowed_word_range(words, "sequence_values");
+                let (address, count) =
+                    this.store_borrowed_word_range(words.iter().copied(), "sequence_values");
                 let constructor = this.ensure_runtime_i64_fn(constructor_symbol, 2);
                 this.build_constructor_call(constructor, &[address, count], name)
             });
@@ -41,7 +89,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result =
             self.with_borrowed_boxed_operands(&op.operands, "dataclass", |this, words, name| {
                 let (address, count) =
-                    this.store_borrowed_word_range(&words[3..], "dataclass_values");
+                    this.store_borrowed_word_range(words[3..].iter().copied(), "dataclass_values");
                 let constructor = this.ensure_runtime_i64_fn("molt_dataclass_new_from_values", 5);
                 this.build_constructor_call(
                     constructor,
@@ -82,10 +130,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let i64_ty = self.backend.context.i64_type();
         let result =
             self.with_borrowed_boxed_operands(&op.operands, "class", |this, words, name| {
-                let (bases, base_count) =
-                    this.store_borrowed_word_range(&words[1..1 + nbases], "class_bases");
-                let (attrs, _) =
-                    this.store_borrowed_word_range(&words[1 + nbases..], "class_attrs");
+                let (bases, base_count) = this
+                    .store_borrowed_word_range(words[1..1 + nbases].iter().copied(), "class_bases");
+                let (attrs, _) = this
+                    .store_borrowed_word_range(words[1 + nbases..].iter().copied(), "class_attrs");
                 let constructor = this.ensure_runtime_i64_fn("molt_guarded_class_def", 8);
                 this.build_constructor_call(
                     constructor,
@@ -111,7 +159,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// transports a null address.
     fn store_borrowed_word_range(
         &self,
-        words: &[inkwell::values::IntValue<'ctx>],
+        words: impl ExactSizeIterator<Item = inkwell::values::IntValue<'ctx>>,
         name: &str,
     ) -> (
         inkwell::values::IntValue<'ctx>,
@@ -119,11 +167,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) {
         let i64_ty = self.backend.context.i64_type();
         let count = i64_ty.const_int(words.len() as u64, false);
-        if words.is_empty() {
+        if words.len() == 0 {
             return (i64_ty.const_zero(), count);
         }
         let range = self.build_entry_i64_array_alloca(words.len() as u64, name);
-        for (index, &word) in words.iter().enumerate() {
+        for (index, word) in words.enumerate() {
             let slot = unsafe {
                 self.backend
                     .builder
@@ -163,14 +211,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_build_set(&mut self, op: &TirOp) {
-        self.emit_owned_hash_aggregate(op, "molt_set_new", "molt_set_add", 1);
+        self.emit_owned_set_aggregate(op, "molt_set_new", "molt_set_add");
     }
 
     pub(super) fn emit_build_frozenset(&mut self, op: &TirOp) {
-        self.emit_owned_hash_aggregate(op, "molt_frozenset_new", "molt_frozenset_add", 1);
+        self.emit_owned_set_aggregate(op, "molt_frozenset_new", "molt_frozenset_add");
     }
 
-    /// Direct construction owns the actual dict/set/frozenset from allocation to
+    /// Incremental construction owns the actual set/frozenset from allocation to
     /// commit. Mutators borrow every operand. All entries share one
     /// borrowed-operand custody whose operands are requested lazily, per entry,
     /// only after the previous insertion succeeded: a later entry is never boxed
@@ -179,17 +227,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// insertion releases the partial aggregate and every minted box while the
     /// first exception stays pending. No scratch heap kind, borrowed-edge builder
     /// or finish lane exists.
-    fn emit_owned_hash_aggregate(
-        &mut self,
-        op: &TirOp,
-        new_symbol: &str,
-        mutate_symbol: &str,
-        width: usize,
-    ) {
+    fn emit_owned_set_aggregate(&mut self, op: &TirOp, new_symbol: &str, mutate_symbol: &str) {
         let i64_ty = self.backend.context.i64_type();
         let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
         let mut custody = self.begin_borrowed_operands(&op.operands, "aggregate");
-        let capacity = (op.operands.len() / width) as u64;
+        let capacity = op.operands.len() as u64;
         // Hash-aggregate constructors share one raw usize-capacity ABI.
         let new_fn = self.ensure_runtime_i64_fn(new_symbol, 1);
         let aggregate = self
@@ -215,20 +257,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             )
             .unwrap();
         self.borrowed_operands_continue_if(&mut custody, created, "ready");
-        let mutate = self.ensure_runtime_i64_fn(mutate_symbol, width + 1);
-        let mutation_return = runtime_boxed_abi(mutate_symbol, width + 1)
+        let mutate = self.ensure_runtime_i64_fn(mutate_symbol, 2);
+        let mutation_return = runtime_boxed_abi(mutate_symbol, 2)
             .unwrap_or_else(|| panic!("hash aggregate mutator {mutate_symbol} has no boxed ABI"))
             .result;
         let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-        for entry in op.operands.chunks(width) {
-            let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-                vec![aggregate.into()];
-            for &operand in entry {
-                args.push(self.borrowed_operand(&mut custody, operand).into());
-            }
-            // Keep the original aggregate owner. Generated boxed-return facts
-            // retire owned set/frozenset mutator results; dict_set's borrowed
-            // aggregate alias acquires no owner and is simply ignored.
+        for &operand in &op.operands {
+            let word = self.borrowed_operand(&mut custody, operand);
+            let args = [aggregate.into(), word.into()];
+            // Keep the original aggregate owner and retire the mutator's
+            // generated owned-result contract independently.
             let mutation_result = self
                 .backend
                 .builder

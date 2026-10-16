@@ -75,21 +75,21 @@ pub(crate) use ascii_bytes::{
 };
 pub(crate) use dict_set_tables::{
     DICT_STRING_BINDING_LIMIT, DetachedDictReferences, ExactStringLookup,
-    checked_dict_table_capacity, dict_bind_string_entries, dict_clear_deferred,
-    dict_clear_in_place, dict_clear_in_place_shutdown, dict_clear_method, dict_commit_reset,
+    checked_set_table_capacity, dict_bind_string_entries, dict_clear_deferred, dict_clear_in_place,
+    dict_clear_in_place_shutdown, dict_clear_method, dict_clone_into_empty, dict_commit_reset,
     dict_copy_method, dict_del_deferred, dict_del_in_place, dict_del_with_hash_deferred,
     dict_exact_string_lookup, dict_find_entry, dict_find_entry_kv_with_hash,
     dict_find_entry_with_hash, dict_fromkeys_method, dict_get_in_place, dict_get_method,
     dict_get_str_bytes_borrowed, dict_get_with_hash_in_place, dict_increment_exact_statement,
-    dict_items_method, dict_key_hash, dict_keys_method, dict_popitem_method, dict_publish_staged,
-    dict_remove_identity_with_hash_deferred, dict_remove_last, dict_require_writable,
-    dict_set_deferred, dict_set_in_place, dict_set_inline_int_in_place,
-    dict_set_with_hash_in_place, dict_setdefault_in_place, dict_setdefault_method,
-    dict_setdefault_with_hash_in_place, dict_update_method, dict_update_set_via_store,
-    dict_values_method, exact_string_bytes, set_add_in_place, set_add_with_hash_in_place,
-    set_clear_in_place, set_copy_into_empty, set_del_in_place, set_del_with_hash_in_place,
-    set_find_entry, set_find_entry_in_place_with_hash, set_pin_next, set_pop_owned,
-    set_publish_staged,
+    dict_items_method, dict_key_hash, dict_keys_method, dict_popitem_method, dict_presize_capacity,
+    dict_publish_staged, dict_remove_identity_with_hash_deferred, dict_remove_last,
+    dict_require_writable, dict_reserve_merge, dict_set_deferred, dict_set_in_place,
+    dict_set_inline_int_in_place, dict_set_with_hash_in_place, dict_setdefault_in_place,
+    dict_setdefault_method, dict_setdefault_with_hash_in_place, dict_update_method,
+    dict_update_set_via_store, dict_usable_capacity, dict_values_method, exact_string_bytes,
+    set_add_in_place, set_add_with_hash_in_place, set_clear_in_place, set_copy_into_empty,
+    set_del_in_place, set_del_with_hash_in_place, set_find_entry,
+    set_find_entry_in_place_with_hash, set_pin_next, set_pop_owned, set_publish_staged,
 };
 pub(super) use dict_set_tables::{concat_bytes_like, fill_repeated_bytes, simd_bytes_eq};
 pub use dict_set_tables::{molt_string_split_sep_dict_inc, molt_string_split_ws_dict_inc};
@@ -819,7 +819,7 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     }
     let payload = runtime_profile_payload(_py, true);
     crate::diagnostics::emit_line(&format!("molt_profile_json {}", payload));
-    maybe_emit_runtime_feedback_file(&payload);
+    maybe_emit_runtime_feedback_file(_py, &payload);
 }
 
 #[unsafe(no_mangle)]
@@ -2189,8 +2189,8 @@ pub(crate) fn type_name(_py: &PyToken<'_>, obj: MoltObject) -> Cow<'static, str>
 
 /// Outlined class definition helper.  Replaces the multi-op inline sequence
 /// (`class_new` + `class_set_base` + N x `set_attr_generic_obj` +
-/// `class_apply_set_name` + `__init_subclass__` dispatch +
-/// `class_set_layout_version`) with a single runtime call.
+/// `class_apply_set_name` + `__init_subclass__` dispatch) with one
+/// constructor that also owns its initial layout version.
 ///
 /// # Safety
 ///
@@ -2246,10 +2246,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     layout_version: i64,
     flags: u64,
 ) -> u64 {
-    use crate::builtins::types::{
-        molt_class_apply_set_name, molt_class_new, molt_class_set_base,
-        molt_class_set_layout_version,
-    };
+    use crate::builtins::types::{molt_class_apply_set_name, molt_class_new, molt_class_set_base};
     use molt_obj_model::MoltObject;
 
     let none = MoltObject::none().bits();
@@ -2340,11 +2337,10 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     if class_bits == none {
         return class_bits;
     }
-    let mut class_owner = crate::PtrDropGuard::new(
-        obj_from_bits(class_bits)
-            .as_ptr()
-            .expect("class allocator returns a class"),
-    );
+    let class_ptr = obj_from_bits(class_bits)
+        .as_ptr()
+        .expect("class allocator returns a class");
+    let mut class_owner = crate::PtrDropGuard::new(class_ptr);
     if (flags & 1) != 0 && nb > 0 {
         if nb == 1 {
             molt_class_set_base(class_bits, bases_vec[0]);
@@ -2425,13 +2421,17 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         }
     }
 
-    let version_obj = MoltObject::from_int(layout_version).bits();
-    molt_class_set_layout_version(class_bits, version_obj);
-    crate::with_gil_entry_nopanic!(_py, {
-        crate::dec_ref_bits(_py, version_obj);
+    let version_initialized = crate::with_gil_entry_nopanic!(_py, {
+        if layout_version < 0 {
+            let _ = raise_exception::<u64>(_py, "TypeError", "layout version must be int");
+            false
+        } else {
+            unsafe { crate::class_set_layout_version_bits(class_ptr, layout_version as u64) };
+            crate::bump_type_version();
+            !exception_pending(_py)
+        }
     });
-
-    if crate::with_gil_entry_nopanic!(_py, { exception_pending(_py) }) {
+    if !version_initialized {
         return none;
     }
     class_owner.release();

@@ -21,6 +21,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from molt._runtime_feature_gates import (
     LINK_AFFECTING_FEATURES,
     RUNTIME_BUILTIN_SYMBOLS,
@@ -118,24 +120,61 @@ def test_exact_builtin_authority_precedes_stdlib_prefix_gates() -> None:
         "molt_hash_update",
         "molt_hash_copy",
         "molt_hash_digest",
-        "molt_hash_drop",
     ):
         assert feature_gate_for_symbol(symbol) == "stdlib_crypto"
 
 
 def test_sqlite_target_availability_is_generated_for_profiles_and_admission() -> None:
     assert runtime_symbol_available_on_target(
-        "molt_sqlite3_connect", target_triple="x86_64-unknown-linux-gnu"
+        "molt_sqlite3_connect",
+        target_triple="x86_64-unknown-linux-gnu",
+        target_os="linux",
     )
     assert not runtime_symbol_available_on_target(
-        "molt_sqlite3_connect", target_triple="wasm32-wasip1"
+        "molt_sqlite3_connect", target_triple="wasm32-wasip1", target_os="wasi"
     )
     assert not runtime_symbol_available_on_target(
-        "molt_sqlite3_connect", target_triple="wasm32-unknown-unknown"
+        "molt_sqlite3_connect", target_triple="wasm32-unknown-unknown", target_os="none"
     )
     assert link_affecting_features_unsupported_on_target("wasm32-wasip1") == frozenset(
         {"sqlite"}
     )
+
+
+@pytest.mark.parametrize(
+    "triple,target_os,expected",
+    [
+        ("x86_64-pc-windows-msvc", "windows", True),
+        ("x86_64-pc-windows-gnu", "windows", True),
+        ("aarch64-pc-windows-msvc", "windows", True),
+        ("x86_64-unknown-linux-gnu", "linux", False),
+        ("aarch64-unknown-linux-musl", "linux", False),
+        ("aarch64-apple-darwin", "macos", False),
+        ("wasm32-wasip1", "wasi", False),
+        ("wasm32-unknown-unknown", "none", False),
+        (None, "windows", True),
+        (None, "linux", False),
+        (None, None, False),
+        ("x86_64-pc-windows-msvc", None, False),
+    ],
+)
+def test_windows_locale_provider_requires_actual_target_os(
+    triple: str | None, target_os: str | None, expected: bool
+) -> None:
+    assert (
+        runtime_symbol_available_on_target(
+            "molt_locale_getdefaultlocale", target_triple=triple, target_os=target_os
+        )
+        is expected
+    )
+    for symbol in (
+        "molt_locale_getencoding",
+        "molt_locale_setlocale",
+        "molt_locale_constants",
+    ):
+        assert runtime_symbol_available_on_target(
+            symbol, target_triple=triple, target_os=target_os
+        )
 
 
 def test_ast_feature_is_link_affecting() -> None:

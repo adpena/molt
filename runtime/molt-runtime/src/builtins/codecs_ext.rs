@@ -132,7 +132,15 @@ mod error_handler_tests {
                 charmap_decode_tuple(py, payload, payload.len()),
                 charmap_encode_tuple(py, payload, payload.len()),
             ] {
-                let values = decode_value_list(obj_from_bits(tuple)).unwrap();
+                // This oracle measures tuple ownership, so inspect its immutable
+                // storage without creating another element owner.
+                let values = unsafe {
+                    crate::object::seq_access::with_immutable_tuple_slice(
+                        obj_from_bits(tuple).as_ptr().unwrap(),
+                        |values| [values[0], values[1]],
+                    )
+                }
+                .unwrap();
                 assert_eq!(values.len(), 2);
                 assert_eq!(to_i64(obj_from_bits(values[1])), Some(payload.len() as i64));
                 let child = values[0];
@@ -441,9 +449,12 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
         let Some(ptr) = input_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "input must be bytes");
         };
-        let Some(input_bytes) = (unsafe { bytes_like_slice(ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "input must be bytes");
-        };
+        let input_export =
+            match crate::object::buffer_exports::ScopedBuffer::simple(_py, input_bits) {
+                Ok(input) => input,
+                Err(error) => return error.raise(_py, "input must be bytes"),
+            };
+        let input_bytes = input_export.as_slice();
         // Match BufferedIncrementalDecoder: combine the owned prefix and input
         // before final.__bool__ can mutate the input or reenter this decoder.
         // No borrowed Python buffer or registry borrow crosses that callback.
@@ -459,6 +470,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
         let Some((encoding, errors, decode_input)) = captured else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid decoder handle");
         };
+        drop(input_export);
         let is_final = is_truthy(_py, obj_from_bits(final_bits));
         if exception_pending(_py) {
             return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
@@ -672,9 +684,12 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
             }
             return MoltObject::from_ptr(ptr).bits();
         };
-        let Some(raw_bytes) = (unsafe { bytes_like_slice(raw_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "stream read() must return bytes");
+        let input_export = match crate::object::buffer_exports::ScopedBuffer::simple(_py, raw_bits)
+        {
+            Ok(input) => input,
+            Err(error) => return error.raise(_py, "stream read() must return bytes"),
         };
+        let raw_bytes = input_export.as_slice();
         let raw_vec = raw_bytes.to_vec();
 
         // Prepend any buffered bytes.
@@ -744,9 +759,12 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
             }
             return MoltObject::from_ptr(ptr).bits();
         };
-        let Some(raw_bytes) = (unsafe { bytes_like_slice(raw_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "stream readline() must return bytes");
+        let input_export = match crate::object::buffer_exports::ScopedBuffer::simple(_py, raw_bits)
+        {
+            Ok(input) => input,
+            Err(error) => return error.raise(_py, "stream readline() must return bytes"),
         };
+        let raw_bytes = input_export.as_slice();
         let raw_vec = raw_bytes.to_vec();
 
         let result = decode_bytes_text(&encoding, &errors, &raw_vec);
@@ -880,17 +898,12 @@ fn charmap_decode_tuple(_py: &PyToken<'_>, decoded: &[u8], consumed: usize) -> u
     if str_ptr.is_null() {
         return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
-    let text = crate::builtins::exceptions::ExceptionValue::adopt(
+    super::codecs::codec_result(
         _py,
         MoltObject::from_ptr(str_ptr).bits(),
-    );
-    let len_bits = MoltObject::from_int(consumed as i64).bits();
-    let elems = [text.bits(), len_bits];
-    let tuple_ptr = crate::alloc_tuple(_py, &elems);
-    if tuple_ptr.is_null() {
-        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-    }
-    MoltObject::from_ptr(tuple_ptr).bits()
+        consumed as i64,
+        true,
+    )
 }
 
 fn charmap_decode_undefined(
@@ -955,9 +968,12 @@ pub extern "C" fn molt_codecs_charmap_decode(
         let Some(input_ptr) = input_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "input must be bytes");
         };
-        let Some(input_bytes) = (unsafe { bytes_like_slice(input_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "input must be bytes");
-        };
+        let input_export =
+            match crate::object::buffer_exports::ScopedBuffer::simple(_py, input_bits) {
+                Ok(input) => input,
+                Err(error) => return error.raise(_py, "input must be bytes"),
+            };
+        let input_bytes = input_export.as_slice();
         let input_vec = input_bytes.to_vec();
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
@@ -1129,17 +1145,12 @@ fn charmap_encode_tuple(_py: &PyToken<'_>, encoded: &[u8], consumed: usize) -> u
     if bytes_ptr.is_null() {
         return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
-    let bytes = crate::builtins::exceptions::ExceptionValue::adopt(
+    super::codecs::codec_result(
         _py,
         MoltObject::from_ptr(bytes_ptr).bits(),
-    );
-    let len_bits = MoltObject::from_int(consumed as i64).bits();
-    let elems = [bytes.bits(), len_bits];
-    let tuple_ptr = crate::alloc_tuple(_py, &elems);
-    if tuple_ptr.is_null() {
-        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-    }
-    MoltObject::from_ptr(tuple_ptr).bits()
+        consumed as i64,
+        true,
+    )
 }
 
 fn charmap_append_encode_value(
@@ -1354,12 +1365,15 @@ pub extern "C" fn molt_codecs_charmap_encode(
 pub extern "C" fn molt_codecs_make_identity_dict(range_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let range_obj = obj_from_bits(range_bits);
-        let Some(items) = crate::decode_value_list(range_obj) else {
+        let Some(items) = crate::decode_value_list(_py, range_obj) else {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             return raise_exception::<_>(_py, "TypeError", "argument must be iterable of ints");
         };
         // flat pairs: [key, val, key, val, ...]
         let mut flat_pairs: Vec<u64> = Vec::with_capacity(items.len() * 2);
-        for item_bits in &items {
+        for item_bits in items.iter() {
             flat_pairs.push(*item_bits);
             flat_pairs.push(*item_bits);
         }
@@ -1397,4 +1411,89 @@ pub extern "C" fn molt_codecs_normalize_encoding(name_bits: u64) -> u64 {
         }
         MoltObject::from_ptr(ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod identity_snapshot_tests {
+    use super::*;
+    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SOURCE: AtomicU64 = AtomicU64::new(0);
+    static FIRST: AtomicU64 = AtomicU64::new(0);
+    static LATER: AtomicU64 = AtomicU64::new(0);
+    static HASH_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn owners(bits: u64) -> u32 {
+        unsafe {
+            (*crate::object::header_from_obj_ptr(obj_from_bits(bits).as_ptr().unwrap()))
+                .ref_count_snapshot()
+        }
+    }
+
+    extern "C" fn identity_key_hash(object: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(_py, {
+            HASH_CALLS.fetch_add(1, Ordering::SeqCst);
+            if object == FIRST.load(Ordering::SeqCst) {
+                crate::molt_list_clear(SOURCE.load(Ordering::SeqCst));
+                assert_eq!(
+                    owners(LATER.load(Ordering::SeqCst)),
+                    2,
+                    "observer plus snapshot, before any later dictionary entry exists"
+                );
+                MoltObject::from_int(17).bits()
+            } else {
+                MoltObject::from_int(23).bits()
+            }
+        })
+    }
+
+    #[test]
+    fn identity_dict_hash_callback_cannot_retire_later_input_handles() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = attr_name_bits_from_bytes(py, b"IdentitySnapshotKey").unwrap();
+            let class = crate::molt_class_new(name);
+            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let hash_name = attr_name_bits_from_bytes(py, b"__hash__").unwrap();
+            let hash = MoltObject::from_ptr(alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr("identity_key_hash", identity_key_hash as *const ()),
+                1,
+            ))
+            .bits();
+            crate::molt_set_attr_name(class, hash_name, hash);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            unsafe {
+                crate::object::class_finish_definition(py, class_ptr).unwrap();
+            }
+            let first = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+            let later = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+            let source = MoltObject::from_ptr(crate::alloc_list(py, &[first, later])).bits();
+            SOURCE.store(source, Ordering::SeqCst);
+            FIRST.store(first, Ordering::SeqCst);
+            LATER.store(later, Ordering::SeqCst);
+            HASH_CALLS.store(0, Ordering::SeqCst);
+            let result = molt_codecs_make_identity_dict(source);
+            assert!(!exception_pending(py));
+            assert_eq!(HASH_CALLS.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                unsafe { crate::dict_len(obj_from_bits(result).as_ptr().unwrap()) },
+                2
+            );
+            assert_eq!(owners(later), 3, "observer plus dictionary key and value");
+            dec_ref_bits(py, result);
+            assert_eq!(owners(later), 1);
+            for bits in [source, first, later] {
+                dec_ref_bits(py, bits);
+            }
+            unsafe {
+                crate::object::heap_lifecycle::clear_cycle_edges(py, class_ptr);
+            }
+            for bits in [class, name, hash_name, hash] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        });
+    }
 }

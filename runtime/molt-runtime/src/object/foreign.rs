@@ -83,40 +83,6 @@ pub(crate) fn foreign_release(c_ptr: usize) {
     });
 }
 
-/// Complete native retirement before returning to a runtime operation. Foreign
-/// wrapper release, owned C temporaries, and operations that return a scalar
-/// after retiring their native temporaries share this completion boundary.
-#[inline]
-pub(crate) fn retire_native_reference<T>(release: impl FnOnce() -> T) -> T {
-    let result = release();
-    // A valid native deallocator may move the active raised exception between
-    // channels through PyErr_GetRaisedException/PyErr_SetRaisedException.
-    // Complete that native reentry before returning to a runtime consumer.
-    crate::cpython_abi_hooks::transfer_pending_cpython_exception();
-    result
-}
-
-/// Ordinary C-reference retirement returning to a runtime consumer. Native
-/// deallocators see the current error, then the existing completion authority
-/// imports any legal C-channel restoration before runtime error checks resume.
-pub(crate) enum NativeReferenceRetirement {}
-
-unsafe impl molt_cpython_abi::api::refcount::ReferenceRetirement for NativeReferenceRetirement {
-    #[inline]
-    fn retire(release: impl FnOnce()) {
-        retire_native_reference(release);
-    }
-}
-
-pub(crate) type NativeObjectOwner =
-    molt_cpython_abi::api::refcount::PyObjectOwner<NativeReferenceRetirement>;
-
-pub(crate) type RuntimeBufferLease =
-    molt_cpython_abi::api::memory::BufferLease<NativeReferenceRetirement>;
-
-const _: () = {
-    assert!(std::mem::size_of::<RuntimeBufferLease>() == std::mem::size_of::<usize>());
-    assert!(std::mem::align_of::<RuntimeBufferLease>() == std::mem::align_of::<usize>());
-    assert!(std::mem::size_of::<NativeObjectOwner>() == std::mem::size_of::<usize>());
-    assert!(std::mem::align_of::<NativeObjectOwner>() == std::mem::align_of::<usize>());
+pub(crate) use molt_runtime_core::native_custody::{
+    NativeObjectOwner, NativeReferenceRetirement, RuntimeBufferLease, retire_native_reference,
 };

@@ -152,7 +152,8 @@ pub(super) fn handle_ttk_style_command(
                     let mut option_names = Vec::new();
                     let mut idx = 5;
                     while idx < args.len() {
-                        let Some(name) = string_obj_to_owned(obj_from_bits(args[idx])) else {
+                        let Some(name) = (unsafe { string_obj_to_owned(obj_from_bits(args[idx])) })
+                        else {
                             idx += 1;
                             continue;
                         };
@@ -842,7 +843,7 @@ pub(super) fn handle_ttk_widget_path_command(
                 let selected_child = widget
                     .ttk_values
                     .get("-selected")
-                    .and_then(|bits| string_obj_to_owned(obj_from_bits(*bits)));
+                    .and_then(|bits| unsafe { string_obj_to_owned(obj_from_bits(*bits)) });
                 if selected_child.as_deref() == Some(child.as_str()) {
                     if let Some(next_selected) = widget.ttk_items.first()
                         && let Ok(bits) = alloc_string_bits(py, next_selected)

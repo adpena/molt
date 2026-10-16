@@ -19,8 +19,14 @@ unsafe extern "C" {
     fn molt_seq_snapshot(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize) -> i32;
 }
 
-pub(crate) fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
-    rt_string_as_bytes(obj.bits()).map(|b| String::from_utf8_lossy(b).into_owned())
+/// Copy a borrowed string before the runtime can reenter or release custody.
+///
+/// # Safety
+/// The caller must keep `obj` live under current-thread execution/GIL custody
+/// for this complete copy. No borrowed storage escapes this function.
+pub(crate) unsafe fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
+    // SAFETY: the caller owns this borrowed argument through the immediate copy.
+    unsafe { rt_string_as_bytes(obj.bits()) }.map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
 pub(crate) fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -83,16 +89,18 @@ pub(crate) fn int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) ->
     unsafe { molt_int_from_obj(val_bits, base_bits, has_base_bits) }
 }
 
-pub(crate) fn decode_value_list(obj: MoltObject) -> Option<Vec<u64>> {
+/// Pin every element until the consumer finishes, including Python callbacks
+/// that mutate or clear the source container during recursive Tcl conversion.
+pub(crate) fn decode_value_list(obj: MoltObject) -> Option<OwnedBridgeHandleSnapshot> {
     let ptr = obj.as_ptr()?;
     let type_id = object_type_id(ptr);
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return None;
     }
-    Some(unsafe { seq_snapshot(ptr) }?.iter().copied().collect())
+    unsafe { seq_snapshot(ptr) }
 }
 
-pub(crate) fn decode_value_list_bits(bits: u64) -> Option<Vec<u64>> {
+pub(crate) fn decode_value_list_bits(bits: u64) -> Option<OwnedBridgeHandleSnapshot> {
     decode_value_list(obj_from_bits(bits))
 }
 
@@ -119,12 +127,11 @@ pub(crate) fn dict_snapshot(ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
 }
 
 pub(crate) fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
-    let str_bits = rt_str(obj.bits());
-    let result = rt_string_as_bytes(str_bits)
-        .map(|b| String::from_utf8_lossy(b).into_owned())
-        .unwrap_or_default();
-    rt_dec_ref(str_bits);
-    result
+    // SAFETY: rt_str returns the one reference adopted by this existing owner.
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(_py, rt_str(obj.bits())) };
+    text.string_bytes(_py)
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_default()
 }
 
 pub(crate) fn alloc_string_result(value: &str, error_msg: &str) -> Result<u64, u64> {

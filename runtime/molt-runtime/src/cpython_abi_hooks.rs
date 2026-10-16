@@ -71,7 +71,7 @@ use molt_cpython_abi::api::object::{PY_GIL_STATE_LOCKED, PY_GIL_STATE_UNLOCKED};
 
 // ─── Hook implementations ─────────────────────────────────────────────────
 
-fn abi_buffer_view_from_runtime(view: crate::MoltBufferView) -> AbiMoltBufferView {
+pub(crate) fn abi_buffer_view_from_runtime(view: crate::MoltBufferView) -> AbiMoltBufferView {
     unsafe { std::mem::transmute::<crate::MoltBufferView, AbiMoltBufferView>(view) }
 }
 
@@ -333,7 +333,7 @@ unsafe extern "C" fn hook_pending_call_error(reason: u32) {
     });
 }
 
-fn runtime_buffer_view_from_abi(view: AbiMoltBufferView) -> crate::MoltBufferView {
+pub(crate) fn runtime_buffer_view_from_abi(view: AbiMoltBufferView) -> crate::MoltBufferView {
     unsafe { std::mem::transmute::<AbiMoltBufferView, crate::MoltBufferView>(view) }
 }
 
@@ -1239,18 +1239,12 @@ unsafe extern "C" fn hook_bytearray_resize(bits: u64, len: usize) -> i32 {
     })
 }
 
-unsafe extern "C" fn hook_buffer_supports(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
-        i32::from(crate::object::buffer_exports::supports_buffer(py, bits))
-    })
-}
-
 unsafe extern "C" fn hook_buffer_acquire(bits: u64, out_view: *mut AbiMoltBufferView) -> i32 {
     if out_view.is_null() {
         return -1;
     }
     let mut view = crate::MoltBufferView::default();
-    let rc = unsafe { crate::c_api::molt_buffer_acquire(bits, &mut view as *mut _) };
+    let rc = unsafe { crate::c_api::acquire_physical_buffer(bits, &mut view as *mut _) };
     if rc != 0 {
         return rc;
     }
@@ -3095,11 +3089,13 @@ unsafe extern "C" fn hook_memoryview_from_buffer(
                     }),
             )
         };
-        if !crate::exception_pending(&py)
+        if restricted
+            && !crate::exception_pending(&py)
             && let Some(pointer) = MoltObject::from_bits(result).as_ptr()
         {
             unsafe {
-                (*crate::memoryview_ptr(pointer)).restricted = restricted as u8;
+                let view = &mut *crate::memoryview_ptr(pointer);
+                view.kind = view.kind.restrict();
             }
         }
         owned_result_from_pending(result)
@@ -3939,6 +3935,11 @@ pub(crate) fn propagate_native_failure(py: &crate::PyToken<'_>, operation: &str)
             &format!("{operation} failed without an exception"),
         );
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_native_reference_complete() {
+    transfer_pending_cpython_exception();
 }
 
 pub(crate) fn transfer_pending_cpython_exception() -> bool {
@@ -5314,7 +5315,6 @@ pub fn register_cpython_hooks() -> bool {
                 bytes_data: hook_bytes_data,
                 bytearray_data: hook_bytearray_data,
                 bytearray_resize: hook_bytearray_resize,
-                buffer_supports: hook_buffer_supports,
                 buffer_acquire: hook_buffer_acquire,
                 buffer_release: hook_buffer_release,
                 object_get_attr: hook_object_get_attr,

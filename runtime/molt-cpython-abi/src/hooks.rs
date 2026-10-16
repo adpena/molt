@@ -838,9 +838,6 @@ pub struct RuntimeHooks {
     pub bytearray_data: unsafe extern "C" fn(bits: u64, out_len: *mut usize) -> *mut u8,
     /// Resize canonical bytearray storage, rejecting length changes while exported.
     pub bytearray_resize: unsafe extern "C" fn(bits: u64, len: usize) -> std::os::raw::c_int,
-    /// Callback-free buffer-slot eligibility. Returns 1 or 0 without acquiring
-    /// an export or changing the pending exception.
-    pub buffer_supports: unsafe extern "C" fn(bits: u64) -> std::os::raw::c_int,
     /// Acquire a typed strided buffer export owned by the runtime.
     pub buffer_acquire:
         unsafe extern "C" fn(bits: u64, out_view: *mut MoltBufferView) -> std::os::raw::c_int,
@@ -1470,7 +1467,8 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 61 adds the sole Context owner and cold static-shell admission.
 // Version 62 moves Unicode percent formatting to the sole runtime engine.
 // Version 65 exposes sealed managed scalar fields as borrowed payloads.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 66;
+// Version 67 removes physical buffer eligibility; semantic slots own the protocol.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 67;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2141,9 +2139,6 @@ unsafe extern "C" fn stub_bytearray_data(_bits: u64, out_len: *mut usize) -> *mu
 unsafe extern "C" fn stub_bytearray_resize(_bits: u64, _len: usize) -> std::os::raw::c_int {
     -1
 }
-unsafe extern "C" fn stub_buffer_supports(_bits: u64) -> std::os::raw::c_int {
-    0
-}
 unsafe extern "C" fn stub_descriptor_protocol(_bits: u64) -> DescriptorProtocol {
     DescriptorProtocol::Error
 }
@@ -2785,7 +2780,6 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     bytes_data: stub_bytes_data,
     bytearray_data: stub_bytearray_data,
     bytearray_resize: stub_bytearray_resize,
-    buffer_supports: stub_buffer_supports,
     buffer_acquire: stub_buffer_acquire,
     buffer_release: stub_buffer_release,
     object_get_attr: stub_object_get_attr,

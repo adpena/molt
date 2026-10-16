@@ -31,11 +31,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_bz2_compressor_compress as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_compressor_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_bz2_compressor_drop",
-            crate::molt_bz2_compressor_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_compressor_flush" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_bz2_compressor_flush",
             crate::molt_bz2_compressor_flush as *const (),
@@ -54,11 +49,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_bz2_decompressor_decompress" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_bz2_decompressor_decompress",
             crate::molt_bz2_decompressor_decompress as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_decompressor_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_bz2_decompressor_drop",
-            crate::molt_bz2_decompressor_drop as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
         "molt_bz2_decompressor_eof" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -86,11 +76,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_bz2_file_close as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
-        "molt_bz2_file_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_bz2_file_drop",
-            crate::molt_bz2_file_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_file_open" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_bz2_file_open",
             crate::molt_bz2_file_open as *const (),
@@ -111,21 +96,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_gzip_close as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_compress" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_gzip_compress",
-            crate::molt_gzip_compress as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_decompress" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_gzip_decompress",
-            crate::molt_gzip_decompress as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_gzip_drop",
-            crate::molt_gzip_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
         "molt_gzip_open" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gzip_open",
             crate::molt_gzip_open as *const (),
@@ -134,11 +104,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_gzip_read" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gzip_read",
             crate::molt_gzip_read as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_write" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_gzip_write",
-            crate::molt_gzip_write as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
         "molt_lzma_check_crc32" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -171,11 +136,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_lzma_compressor_compress as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_compressor_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_lzma_compressor_drop",
-            crate::molt_lzma_compressor_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_compressor_flush" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_lzma_compressor_flush",
             crate::molt_lzma_compressor_flush as *const (),
@@ -194,11 +154,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_lzma_decompressor_decompress" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_lzma_decompressor_decompress",
             crate::molt_lzma_decompressor_decompress as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_decompressor_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_lzma_decompressor_drop",
-            crate::molt_lzma_decompressor_drop as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
         "molt_lzma_decompressor_eof" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -316,11 +271,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_zlib_compressobj_compress as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_compressobj_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zlib_compressobj_drop",
-            crate::molt_zlib_compressobj_drop as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
         "molt_zlib_compressobj_flush" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_zlib_compressobj_flush",
             crate::molt_zlib_compressobj_flush as *const (),
@@ -344,11 +294,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_zlib_decompressobj_decompress" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_zlib_decompressobj_decompress",
             crate::molt_zlib_decompressobj_decompress as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_decompressobj_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zlib_decompressobj_drop",
-            crate::molt_zlib_decompressobj_drop as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
         "molt_zlib_decompressobj_eof" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -448,19 +393,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_zlib_z_sync_flush as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
-        "molt_gzip_flush" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_gzip_flush",
-            crate::molt_gzip_flush as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
         "molt_lzma_file_close" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_lzma_file_close",
             crate::molt_lzma_file_close as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
-        "molt_lzma_file_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_lzma_file_drop",
-            crate::molt_lzma_file_drop as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
         "molt_lzma_file_open" => Some(crate::builtins::functions::runtime_fn_addr(

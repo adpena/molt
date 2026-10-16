@@ -181,6 +181,136 @@ fn builtin_gc_slots_share_runtime_edges_and_reject_opaque_native_storage() {
     });
 }
 
+#[test]
+fn public_traversal_omits_internal_owners_but_keeps_physical_edges_and_errors() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    with_gil(|py| unsafe {
+        let hidden = crate::object::builders::alloc_internal_dict(&py);
+        let hidden_bits = MoltObject::from_ptr(hidden).bits();
+        let ordinary = crate::alloc_list(&py, &[]);
+        let ordinary_bits = MoltObject::from_ptr(ordinary).bits();
+        assert!(crate::dict_set_in_place(
+            &py,
+            hidden,
+            MoltObject::from_int(1).bits(),
+            ordinary_bits
+        ));
+        let source = crate::alloc_list(&py, &[hidden_bits, ordinary_bits, ordinary_bits]);
+        let source_bits = MoltObject::from_ptr(source).bits();
+        let source_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(source_bits);
+        let hidden_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(hidden_bits);
+        let ordinary_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(ordinary_bits);
+        assert!(!source_view.is_null() && !hidden_view.is_null() && !ordinary_view.is_null());
+        // Explicit native pointers must obey the same rule as managed edges,
+        // even when an ABI view was acquired before this traversal.
+        for (pointer, visible) in [(hidden_view, false), (ordinary_view, true)] {
+            assert_eq!(
+                crate::object::gc::public_gc_edge_is_visible(molt_cpython_abi::NativeGcEdge {
+                    kind: molt_cpython_abi::NativeGcEdgeKind::NativePointer as u8,
+                    reserved: [0; 7],
+                    value: pointer.addr() as u64,
+                }),
+                visible
+            );
+        }
+        let mut physical = Vec::new();
+        assert_eq!(
+            crate::object::heap_lifecycle::visit_owned_gc_edges(&py, source, &mut |edge| {
+                if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
+                    physical.push(edge.value);
+                }
+            }),
+            0
+        );
+        assert_eq!(
+            physical.iter().filter(|&&bits| bits == hidden_bits).count(),
+            1
+        );
+        assert_eq!(
+            physical
+                .iter()
+                .filter(|&&bits| bits == ordinary_bits)
+                .count(),
+            2
+        );
+        let mut witness = TraverseWitness {
+            source: source_view,
+            expected: ordinary_view,
+            matches: 0,
+            calls: 0,
+            clear_source: false,
+            stop: 73,
+        };
+        // The first physical edge is hidden. The first public callback must
+        // instead see the ordinary child and propagate its exact stop code.
+        assert_eq!(
+            memory::molt_managed_gc_traverse(
+                source_view,
+                visit_builtin_edge as *const () as *mut c_void,
+                (&raw mut witness).cast(),
+            ),
+            73
+        );
+        assert_eq!((witness.calls, witness.matches), (1, 1));
+        witness.calls = 0;
+        witness.matches = 0;
+        witness.stop = 0;
+        witness.clear_source = true;
+        assert_eq!(
+            memory::molt_managed_gc_traverse(
+                source_view,
+                visit_builtin_edge as *const () as *mut c_void,
+                (&raw mut witness).cast(),
+            ),
+            0
+        );
+        assert_eq!((witness.calls, witness.matches), (2, 2));
+        witness.calls = 0;
+        witness.source = std::ptr::null_mut();
+        assert_eq!(
+            memory::molt_managed_gc_traverse(
+                hidden_view,
+                visit_builtin_edge as *const () as *mut c_void,
+                (&raw mut witness).cast(),
+            ),
+            0
+        );
+        assert_eq!(
+            witness.calls, 0,
+            "a private source never reveals its contents"
+        );
+        unsafe extern "C" fn record_managed_edge(
+            edge: molt_cpython_abi::NativeGcEdge,
+            context: *mut c_void,
+        ) -> c_int {
+            if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
+                unsafe { &mut *context.cast::<Vec<u64>>() }.push(edge.value);
+            }
+            0
+        }
+        let items = crate::molt_dict_items(hidden_bits);
+        let iterator = crate::molt_iter(items);
+        let mut edges = Vec::<u64>::new();
+        assert_eq!(
+            super::hook_managed_gc_traverse(iterator, record_managed_edge, (&raw mut edges).cast(),),
+            0
+        );
+        assert!(edges.contains(&items));
+        edges.clear();
+        assert_eq!(
+            super::hook_managed_gc_traverse(items, record_managed_edge, (&raw mut edges).cast(),),
+            0
+        );
+        assert!(!edges.contains(&hidden_bits));
+        dec_ref_bits(&py, iterator);
+        dec_ref_bits(&py, items);
+        dec_ref_bits(&py, source_bits);
+        dec_ref_bits(&py, ordinary_bits);
+        dec_ref_bits(&py, hidden_bits);
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
 struct NativeListRetirement {
     list: *mut PyObject,
     replacement: *mut PyObject,

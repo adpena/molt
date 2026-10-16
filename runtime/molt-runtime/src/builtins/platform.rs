@@ -10,10 +10,11 @@ use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decisi
 use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending};
 use crate::builtins::modules::{ExecutionMetadata, execute_compiled_module, sys_modules_dict_bits};
 use crate::object::ops_sys::runtime_target_minor;
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 pub(crate) use molt_runtime_platform::env_support::{
-    env_state, env_state_get, locale_encoding_label, locale_state, os_name_str, process_env_state,
-    sys_platform_str, trace_env_get,
+    locale_encoding, os_name_str, process_env_set, process_env_snapshot, set_locale,
+    sys_platform_str,
 };
 pub(crate) use molt_runtime_platform::importlib_support::{
     append_unique_path, append_unique_path_hashed, split_nonempty_paths,
@@ -48,6 +49,10 @@ pub extern "C" fn molt_bridge_unavailable(msg_bits: u64) -> u64 {
 const PLATFORM_OBJECT_SLOT_COUNT: usize = 4;
 
 pub(crate) struct PlatformRuntimeState {
+    encoding: OnceLock<molt_runtime_platform::env_support::StartupEncoding>,
+    startup_environment: OnceLock<StartupEnvironment>,
+    // 0: uninitialized; true: initializing; None: terminal retirement.
+    environment_mapping: AtomicU64,
     errno_constants_cache: AtomicU64,
     socket_constants_cache: AtomicU64,
     os_name_cache: AtomicU64,
@@ -57,6 +62,9 @@ pub(crate) struct PlatformRuntimeState {
 impl PlatformRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
+            encoding: OnceLock::new(),
+            startup_environment: OnceLock::new(),
+            environment_mapping: AtomicU64::new(0),
             errno_constants_cache: AtomicU64::new(0),
             socket_constants_cache: AtomicU64::new(0),
             os_name_cache: AtomicU64::new(0),
@@ -78,6 +86,148 @@ fn platform_state(_py: &PyToken<'_>) -> &'static PlatformRuntimeState {
     &runtime_state(_py).platform
 }
 
+pub(crate) fn startup_encoding<'py>(
+    _py: &'py PyToken<'_>,
+) -> &'py molt_runtime_platform::env_support::StartupEncoding {
+    platform_state(_py)
+        .encoding
+        .get()
+        .expect("startup encoding precedes Python execution")
+}
+
+pub(crate) fn initialize_startup_encoding(state: &crate::state::RuntimeState) {
+    let mut policy =
+        molt_runtime_platform::env_support::startup_encoding().unwrap_or_else(|error| {
+            eprintln!("Fatal Python error: startup encoding: {error}");
+            std::process::exit(1);
+        });
+    // Configuration selects actual encodings. Resolve their codec identity
+    // once before publication, never independently in sys or path consumers.
+    for label in [&mut policy.filesystem_encoding, &mut policy.stdio_encoding] {
+        let Some(codec) = molt_stdlib_text::codec_registry::normalize_encoding(label) else {
+            eprintln!("Fatal Python error: startup encoding: unknown encoding: {label}");
+            std::process::exit(1);
+        };
+        if codec.text_class().is_none() {
+            eprintln!("Fatal Python error: startup encoding: {label} is not a text encoding");
+            std::process::exit(1);
+        }
+    }
+    // CPython canonicalizes the filesystem codec name; stdio retains the
+    // selected spelling for TextIOWrapper.encoding.
+    policy.filesystem_encoding =
+        molt_stdlib_text::codec_registry::normalize_encoding(&policy.filesystem_encoding)
+            .expect("validated filesystem codec")
+            .name()
+            .to_owned();
+    assert!(
+        state.platform.encoding.set(policy).is_ok(),
+        "startup encoding published twice"
+    );
+}
+
+#[derive(Clone)]
+struct StartupEnvironment {
+    module_roots: String,
+    pwd: String,
+    entry_is_spawn: bool,
+    mp_spawn_enabled: bool,
+    executable: Option<Vec<u8>>,
+}
+
+pub(crate) fn initialize_startup_environment(state: &crate::state::RuntimeState) {
+    // Selected bootstrap controls are immutable startup facts, not a second
+    // environment mapping. No full process snapshot is needed at startup.
+    let startup = StartupEnvironment {
+        module_roots: std::env::var("MOLT_MODULE_ROOTS").unwrap_or_default(),
+        pwd: resolve_bootstrap_pwd(&std::env::var("PWD").unwrap_or_default()),
+        entry_is_spawn: std::env::var("MOLT_ENTRY_MODULE").as_deref()
+            == Ok("multiprocessing.spawn"),
+        mp_spawn_enabled: runtime_flags::enabled(RuntimeFlag::MOLT_MP_SPAWN),
+        executable: std::env::var("MOLT_SYS_EXECUTABLE")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(String::into_bytes),
+    };
+    assert!(state.platform.startup_environment.set(startup).is_ok());
+}
+
+pub(crate) fn inherit_startup_state(
+    child: &crate::state::RuntimeState,
+    primary: &crate::state::RuntimeState,
+) {
+    assert!(
+        child
+            .platform
+            .encoding
+            .set(
+                primary
+                    .platform
+                    .encoding
+                    .get()
+                    .expect("primary startup encoding")
+                    .clone()
+            )
+            .is_ok()
+    );
+    assert!(
+        child
+            .platform
+            .startup_environment
+            .set(
+                primary
+                    .platform
+                    .startup_environment
+                    .get()
+                    .expect("primary startup controls")
+                    .clone()
+            )
+            .is_ok()
+    );
+    // Each interpreter owns a separate, still-uninitialized Python mapping.
+}
+
+pub(crate) fn startup_executable(py: &PyToken<'_>) -> Option<Vec<u8>> {
+    platform_state(py)
+        .startup_environment
+        .get()
+        .expect("startup controls")
+        .executable
+        .clone()
+}
+
+pub(crate) fn startup_sys_path(py: &PyToken<'_>) -> Vec<String> {
+    sys_bootstrap_state_from_module_file(py, None).path
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_startup_entry_is_spawn() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        MoltObject::from_bool(
+            platform_state(py)
+                .startup_environment
+                .get()
+                .expect("startup controls")
+                .entry_is_spawn,
+        )
+        .bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_startup_mp_spawn_enabled() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        MoltObject::from_bool(
+            platform_state(py)
+                .startup_environment
+                .get()
+                .expect("startup controls")
+                .mp_spawn_enabled,
+        )
+        .bits()
+    })
+}
+
 fn init_platform_cached_owned_bits(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
@@ -94,7 +244,19 @@ pub(crate) fn platform_clear_runtime_state(
 ) -> bool {
     crate::gil_assert();
     let slots = state.platform.object_slots();
-    crate::state::cache::clear_atomic_slots(_py, &slots)
+    // Publish terminal retirement before releasing Python objects. Finalizer
+    // reentry must never recreate the mapping or mutate the process environment.
+    let previous = state
+        .platform
+        .environment_mapping
+        .swap(MoltObject::none().bits(), Ordering::AcqRel);
+    let rooted = previous != 0
+        && previous != MoltObject::none().bits()
+        && previous != MoltObject::from_bool(true).bits();
+    if rooted {
+        dec_ref_bits(_py, previous);
+    }
+    crate::state::cache::clear_atomic_slots(_py, &slots) || rooted
 }
 
 static EXTENSION_METADATA_OK_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
@@ -166,25 +328,19 @@ struct SysBootstrapState {
     include_cwd: bool,
 }
 
-fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBootstrapState {
-    let (module_roots_raw, capability_tier_raw, pwd_raw, windows_paths) = {
-        let guard = env_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (
-            guard.get("MOLT_MODULE_ROOTS").cloned().unwrap_or_default(),
-            guard
-                .get("MOLT_CAPABILITY_TIER")
-                .cloned()
-                .unwrap_or_default(),
-            guard.get("PWD").cloned().unwrap_or_default(),
-            sys_platform_str().starts_with("win"),
-        )
-    };
-
+fn sys_bootstrap_state_from_module_file(
+    py: &PyToken<'_>,
+    module_file: Option<String>,
+) -> SysBootstrapState {
+    let startup = platform_state(py)
+        .startup_environment
+        .get()
+        .expect("startup controls");
+    let module_roots_raw = &startup.module_roots;
+    let windows_paths = sys_platform_str().starts_with("win");
     let sep = if windows_paths { ';' } else { ':' };
     let path_sep = if windows_paths { '\\' } else { '/' };
-    let pwd = resolve_bootstrap_pwd(&pwd_raw);
+    let pwd = startup.pwd.clone();
     let pythonpath_entries: Vec<String> = Vec::new();
     let mut paths: Vec<String> = pythonpath_entries.clone();
     let mut paths_seen: HashSet<String> = pythonpath_entries.iter().cloned().collect();
@@ -209,7 +365,7 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
 
     // The working directory joins sys.path only at the full capability tier;
     // the default tier runs untrusted, as CI does.
-    let include_cwd = capability_tier_raw.trim().eq_ignore_ascii_case("full");
+    let include_cwd = is_trusted(py);
     if include_cwd && !paths.iter().any(|entry| entry.is_empty()) {
         paths.insert(0, String::new());
     }
@@ -1177,9 +1333,9 @@ fn traceback_exception_suppress_context_bits(
 }
 
 #[cfg(test)]
-fn bootstrap_resolve_abspath(path: &str, module_file: Option<String>) -> String {
+fn bootstrap_resolve_abspath(py: &PyToken<'_>, path: &str, module_file: Option<String>) -> String {
     let sep = bootstrap_path_sep();
-    let state = sys_bootstrap_state_from_module_file(module_file);
+    let state = sys_bootstrap_state_from_module_file(py, module_file);
     let joined = if path_is_absolute_text(path, sep) || state.pwd.is_empty() {
         path.to_string()
     } else {

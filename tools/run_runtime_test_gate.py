@@ -42,6 +42,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
+from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 
 COMMANDS = CommandExecutor.for_file(__file__)
@@ -57,6 +58,17 @@ ISOLATED = (
     "state::runtime_state::tests::concurrent_init_waits_for_ready_publication",
     "state::runtime_state::tests::finalizing_unpublishes_before_atexit_reentry_and_racing_entrants",
     "state::runtime_state::tests::shutdown_refuses_attached_and_detached_foreign_thread_state_owners",
+    "concurrency::isolates::bootstrap_failure_tests::completed_isolate_preserves_primary_resource_factory_for_new_workers",
+    "state::runtime_state::tests::runtime_policy_freezes_before_first_consumers_and_keeps_absent_vfs_absent",
+    "state::runtime_state::tests::runtime_vfs_freezes_route_and_quota_without_loading_payload",
+    "state::runtime_state::tests::runtime_relative_vfs_route_keeps_startup_cwd_until_first_use",
+    "state::runtime_state::tests::runtime_output_sinks_keep_startup_cwd_until_first_write",
+)
+# The lost-CWD oracle removes its current directory, which Rust compiles only
+# under cfg(unix). This policy executes native host images; WASI has its own
+# lifecycle policy and does not use this host partition.
+ISOLATED_UNIX = (
+    "state::runtime_state::tests::relative_output_sink_capture_failure_disables_without_fallback",
 )
 PROBES = (
     "builtins::functools::tests::lru_cache_cost_probe",
@@ -87,6 +99,7 @@ OBSERVER_CASES = {
     "molt_runtime": (
         "builtins::frames::namespace_tests::task_growth_refusal::both_task_producers_refuse_actual_late_map_growth_and_restore_owners",
         "call::bind::inline_cache::binding_tests::direct_call_ic_hot_path_is_allocation_free_with_slow_path_control",
+        "cpython_abi_hooks::pending_cleanup_tests::writable_buffer_lease_preparation_failure_precedes_exporter_dispatch",
         "cpython_abi_hooks::tests::cpython_abi_gil_custody_is_allocation_free_after_warmup",
         "object::gc::tests::repeated_reachable_collection_workspace_allocations",
         "cpython_abi_hooks::exception_rendering_tests::decimal_output_limits::rejected_decimal_magnitude_does_not_allocate_decimal_storage",
@@ -149,6 +162,11 @@ def observer_selections(
     }
 
 
+def isolated_for(platform: str) -> tuple[str, ...]:
+    """Return semantic fresh-process obligations for the native host image."""
+    return ISOLATED if platform == "win32" else ISOLATED + ISOLATED_UNIX
+
+
 def probes_for(platform: str) -> tuple[str, ...]:
     """Return the probes the runtime inventory must carry on ``platform``."""
     return tuple(
@@ -167,8 +185,9 @@ def selections(
         )
     if len(inventory) != len(set(inventory)):
         raise RuntimeError("duplicate test discovery identity")
+    isolated = isolated_for(platform)
     probes = probes_for(platform)
-    required = set(ISOLATED + probes)
+    required = set(isolated + probes)
     if not required <= set(inventory):
         raise RuntimeError(
             f"missing required runtime cases: {sorted(required - set(inventory))}"
@@ -177,7 +196,7 @@ def selections(
     if not remainder:
         raise RuntimeError("empty parallel runtime remainder")
     parallel = [f"--test-threads={threads}", "--nocapture"]
-    for name in ISOLATED + probes:
+    for name in isolated + probes:
         # libtest skip filters match substrings: final row-set validation ensures
         # no lateral test accidentally disappears through a matching name.
         parallel.extend(["--skip", name])
@@ -188,7 +207,7 @@ def selections(
                 ["--exact", name, "--ignored", "--test-threads=1", "--nocapture"],
                 {name},
             )
-            for name in ISOLATED
+            for name in isolated
         }
     )
     return result
@@ -641,6 +660,7 @@ def lifecycle_artifact(
     target: str,
     kind: str,
     test: bool = True,
+    manifest: Path | None = None,
 ) -> dict[str, str]:
     """Select one compiler-produced lifecycle image before any execution."""
     emitted = [
@@ -667,7 +687,8 @@ def lifecycle_artifact(
         p
         for p in packages
         if p.get("name") == package
-        and p.get("manifest_path") == str(ROOT / "runtime" / package / "Cargo.toml")
+        and p.get("manifest_path")
+        == str(manifest or ROOT / "runtime" / package / "Cargo.toml")
         and p.get("source") is None
     ]
     if len(canonical) != 1 or emitted[0].get("package_id") != canonical[0]["id"]:
@@ -675,6 +696,28 @@ def lifecycle_artifact(
     if artifact["target_name"] != target or artifact["target_kind"] != kind:
         raise RuntimeError("lifecycle artifact has wrong target authority")
     return artifact
+
+
+def cargo_build(
+    command: list[str],
+    directory: Path,
+    timeout: float,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    admit_cargo_build(command, cwd=ROOT, env=environment)
+    build = COMMANDS.run(
+        command,
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        encoding="utf-8",
+    )
+    (directory / "build.stdout.jsonl").write_text(build.stdout, encoding="utf-8")
+    (directory / "build.stderr.log").write_text(build.stderr, encoding="utf-8")
+    return build
 
 
 def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
@@ -749,19 +792,7 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
         }
         if plan is not None:
             image["resolved_rustflags"] = list(plan.rustflags)
-        admit_cargo_build(command, cwd=ROOT, env=environment)
-        build = COMMANDS.run(
-            command,
-            cwd=ROOT,
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=args.build_timeout_seconds,
-            check=False,
-            encoding="utf-8",
-        )
-        (directory / "build.stdout.jsonl").write_text(build.stdout, encoding="utf-8")
-        (directory / "build.stderr.log").write_text(build.stderr, encoding="utf-8")
+        build = cargo_build(command, directory, args.build_timeout_seconds, environment)
         image["build_returncode"] = build.returncode
         if build.returncode:
             raise RuntimeError(
@@ -892,6 +923,285 @@ def run_wasi_lifecycle(args: argparse.Namespace, run: Path, aggregate: dict) -> 
     aggregate["status"] = "success"
 
 
+# Fixed semantic obligations, checked against actual libtest discovery. This
+# policy does not claim Molt WASM runtime or native ZLIB_DEBUG coverage.
+ZLIB_WASI_CASES = frozenset(
+    {
+        "inflate::tests::counter_wrap_checksum_completion_and_gzip_length",
+        "inflate::tests::counter_wrap_sync_preserves_recovered_totals",
+        "deflate::test::counter_wrap_stored_and_compressed_streams",
+        "stable::tests::counter_wrap_stable_totals_preserve_u64_width",
+    }
+)
+
+
+def zlib_wasi_flags(
+    command: list[str], environment: dict[str, str]
+) -> tuple[dict, dict]:
+    # Reuse the queue's captured Cargo cfg/flag precedence (including wrappers),
+    # without the runtime planner's unrelated external WASI C SDK requirement.
+    from molt.cli.runtime_cargo_plan import (
+        capture_cargo_configuration_inputs,
+        cargo_selected_value,
+        _tool_path,
+    )
+    from molt.rust_toolchain import resolve_rustup_proxy, rust_flag_spans
+    from tools.proof_queue_pkg.toolchain_capture import _cargo_flag_context
+
+    captured = capture_cargo_configuration_inputs(
+        ROOT, env=environment, cargo_command=command
+    )
+    configured_env, configuration, cli = captured[1], captured[4], captured[7]
+    selector = cargo_selected_value(
+        configuration,
+        cli,
+        configured_env,
+        ("build", "rustc"),
+        ("RUSTC", "CARGO_BUILD_RUSTC"),
+        "rustc",
+    )
+    rustc = resolve_rustup_proxy(
+        _tool_path(selector, root=ROOT, env=configured_env, role="rustc"),
+        role="rustc",
+        root=ROOT,
+        env=configured_env,
+    )
+    probes = []
+    context, configured_env = _cargo_flag_context(
+        command=command,
+        cwd=ROOT,
+        env=environment,
+        target=WASI_TARGET,
+        host_unit=False,
+        rustc=rustc,
+        probes=probes,
+    )
+    allowed = {
+        "opt-level": {"0"},
+        "overflow-checks": {"yes", "on", "true", "1"},
+        "debug-assertions": {"yes", "on", "true", "1"},
+    }
+    for span in rust_flag_spans(context["selected_flags"]):
+        short = (
+            span.leading
+            if span.option is not None
+            else context["selected_flags"][span.start : span.stop]
+        )
+        if any(
+            word.startswith("-") and not word.startswith("--") and "O" in word[1:]
+            for word in short
+        ):
+            raise RuntimeError("provider flags contradict opt0: -O")
+        if span.codegen is not None:
+            key, _, value = span.codegen.partition("=")
+            if key in allowed and value not in allowed[key]:
+                raise RuntimeError(
+                    f"provider flags contradict checked opt0: {span.codegen}"
+                )
+    return {"inputs": context, "probes": probes}, configured_env
+
+
+def zlib_wasi_artifact(
+    output: str, metadata: str, profile: str, environment: dict[str, str]
+) -> tuple[dict, dict]:
+    finished = [
+        loads_exact(line) for line in output.splitlines() if line.startswith("{")
+    ]
+    finished = [
+        row
+        for row in finished
+        if isinstance(row, dict) and row.get("reason") == "build-finished"
+    ]
+    if len(finished) != 1 or finished[0].get("success") is not True:
+        raise RuntimeError("provider Cargo build did not finish successfully")
+    artifact = lifecycle_artifact(
+        output,
+        metadata,
+        package="zlib-rs",
+        target="zlib_rs",
+        kind="lib",
+        manifest=ROOT / "vendor/rust/zlib-rs/Cargo.toml",
+    )
+    package = next(
+        row
+        for row in loads_exact(metadata)["packages"]
+        if row["manifest_path"] == str(ROOT / "vendor/rust/zlib-rs/Cargo.toml")
+    )
+    if package["version"] != "0.6.8":
+        raise RuntimeError("provider version differs from maintained package selector")
+    observed = observed_build(output, artifact, profile, environment)
+    if observed["target"].get("src_path") != str(
+        ROOT / "vendor/rust/zlib-rs/src/lib.rs"
+    ):
+        raise RuntimeError("provider target has foreign source")
+    actual = observed["observed_profile"]
+    if (
+        actual["opt_level"] != "0"
+        or actual["debug_assertions"] is not True
+        or actual.get("overflow_checks") is not True
+        or observed["features"] != ["rust-allocator"]
+    ):
+        raise RuntimeError(
+            "provider requires opt0, checked arithmetic and rust-allocator only"
+        )
+    binary = Path(artifact["executable"])
+    target_root = Path(loads_exact(metadata)["target_directory"]).resolve()
+    if not binary.is_relative_to(target_root / WASI_TARGET) or binary.suffix != ".wasm":
+        raise RuntimeError("provider image is not in the selected WASI target")
+    with binary.open("rb") as stream:
+        if stream.read(8) != b"\0asm\x01\0\0\0":
+            raise RuntimeError("provider image is not a WebAssembly module")
+    return artifact, observed
+
+
+def run_zlib_wasi(args: argparse.Namespace, run: Path, aggregate: dict) -> None:
+    if args.profile != "dev-fast":
+        raise RuntimeError("zlib-wasi requires the checked dev-fast profile")
+    source = truth.git_source_identity()
+    aggregate["source_identity"] = source
+    environment = dict(os.environ)
+    if environment.get("NODE_OPTIONS"):
+        raise RuntimeError("zlib-wasi requires explicit Node options")
+    node = resolve_node_runtime(source_root=ROOT, environment=environment)
+    node_identity = truth._file_identity(node.path)
+    aggregate["node"] = {
+        "path": str(node.path),
+        "version": node.version,
+        "retained": descendants.retain_file(node.path, run),
+    }
+    cargo = os.environ.get("CARGO", "cargo")
+    metadata = COMMANDS.run(
+        [cargo, "metadata", "--locked", "--format-version=1", "--no-deps"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+        encoding="utf-8",
+    ).stdout
+    (run / "cargo.metadata.json").write_text(metadata, encoding="utf-8")
+    aggregate["metadata_sha256"] = hashlib.sha256(metadata.encode()).hexdigest()
+    command = [
+        cargo,
+        "test",
+        "--locked",
+        "--profile",
+        args.profile,
+        "-p",
+        "zlib-rs@0.6.8",
+        "--lib",
+        "--target",
+        WASI_TARGET,
+        "--no-default-features",
+        "--features",
+        "rust-allocator",
+        "--no-run",
+        "--message-format=json",
+    ]
+    context, environment = zlib_wasi_flags(command, environment)
+    aggregate["cargo_flags"] = context
+    if environment.get("NODE_OPTIONS"):
+        raise RuntimeError("zlib-wasi requires explicit Node options")
+    aggregate["build_command"] = command
+    build = cargo_build(command, run, args.build_timeout_seconds, environment)
+    aggregate["build_returncode"] = build.returncode
+    if build.returncode:
+        raise RuntimeError(f"provider Cargo build failed: {build.returncode}")
+    artifact, observed = zlib_wasi_artifact(
+        build.stdout, metadata, args.profile, environment
+    )
+    wasm = Path(artifact["executable"])
+    wasm_identity = truth._file_identity(wasm)
+    image = aggregate["images"]["zlib_rs"] = {
+        "artifact": artifact,
+        "observed": observed,
+        "target_triple": WASI_TARGET,
+        "retained": descendants.retain_file(wasm, run),
+    }
+    bootstrap = "\n".join(
+        [
+            'const fs = require("node:fs");',
+            'const {WASI} = require("node:wasi");',
+            f"const image = {json.dumps(str(wasm))};",
+            'const wasi = new WASI({version:"preview1",args:[image,...process.argv.slice(1)],env:{},returnOnExit:true});',
+            "const wasmModule = new WebAssembly.Module(fs.readFileSync(image));",
+            "const instance = new WebAssembly.Instance(wasmModule,{wasi_snapshot_preview1:wasi.wasiImport});",
+            "process.exitCode = wasi.start(instance);",
+        ]
+    )
+    # --eval is a flag, so the existing libtest runner preserves the bootstrap
+    # while independently listing or narrowing libtest arguments after --.
+    child_args = [
+        f"--redirect-warnings={run / 'node-warnings.log'}",
+        "--eval=" + bootstrap,
+        "--",
+        "counter_wrap",
+        "--test-threads=1",
+    ]
+    aggregate["node_invocation"] = [str(node.path), *child_args]
+    if (
+        truth.git_source_identity() != source
+        or truth._file_identity(node.path) != node_identity
+    ):
+        raise RuntimeError("provider source/Node changed before discovery")
+    runner._ACTIVE_EVIDENCE_DIR = run / "discovery-evidence"
+    runner._ACTIVE_EVIDENCE_DIR.mkdir()
+    inventory, discovery = runner.listed_tests(
+        str(node.path), child_args, timeout_seconds=args.child_timeout_seconds
+    )
+    image["discovery"] = discovery.receipt()
+    if (
+        not discovery.succeeded
+        or len(inventory) != len(ZLIB_WASI_CASES)
+        or set(inventory) != ZLIB_WASI_CASES
+    ):
+        raise RuntimeError(f"provider counter inventory mismatch: {inventory}")
+    directory = run / "counter-controls"
+    directory.mkdir()
+    child, receipts = execute_child(
+        node.path,
+        child_args,
+        ZLIB_WASI_CASES,
+        directory=directory,
+        run_id=aggregate["run_id"],
+        source=source,
+        timeout=args.child_timeout_seconds,
+        require_passed=True,
+        retained_root=run,
+        environment=environment,
+    )
+    image["child_returncode"] = child.returncode
+    if child.returncode:
+        raise RuntimeError(
+            child_failure_summary(
+                "counter_wrap", child.returncode, receipts, child.stderr
+            )
+        )
+    image["verified"] = validate_children(
+        {"counter_wrap": receipts},
+        {"counter_wrap": (child_args, ZLIB_WASI_CASES)},
+        source=source,
+        run_id=aggregate["run_id"],
+        binary=node.path,
+        identity=node_identity,
+        require_passed=True,
+    )
+    if (
+        truth.git_source_identity() != source
+        or truth._file_identity(node.path) != node_identity
+        or truth._file_identity(wasm) != wasm_identity
+    ):
+        raise RuntimeError("provider source/Node/WASM changed during execution")
+    for row in context["inputs"]["sources"]:
+        if truth._file_identity(Path(row["path"])) != (row["size"], row["sha256"]):
+            raise RuntimeError("provider Cargo configuration changed during execution")
+    for retained in (image["retained"], aggregate["node"]["retained"]):
+        descendants.retained_file(retained, root=run)
+    aggregate["passed_test_count"] = len(ZLIB_WASI_CASES)
+    aggregate["status"] = "success"
+
+
 def finish_aggregate(run: Path, aggregate: dict) -> int:
     runner.write_receipt(run / "aggregate.json", aggregate)
     print(
@@ -911,7 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default="release-output")
     parser.add_argument(
         "--policy",
-        choices=("semantic", "allocation-observer", "wasi-lifecycle"),
+        choices=("semantic", "allocation-observer", "wasi-lifecycle", "zlib-wasi"),
         default="semantic",
     )
     parser.add_argument(
@@ -948,11 +1258,16 @@ def main(argv: list[str] | None = None) -> int:
             if args.policy == "semantic"
             else "declared WASI micro-runtime lifecycle cases through the production host only"
             if args.policy == "wasi-lifecycle"
+            else "maintained provider four wasm32 counter controls only; no Molt WASM runtime claim"
+            if args.policy == "zlib-wasi"
             else "declared untimed allocation/refusal controls only; no timed performance acceptance"
         ),
         "images": {},
     }
     try:
+        if args.policy == "zlib-wasi":
+            run_zlib_wasi(args, run, aggregate)
+            return finish_aggregate(run, aggregate)
         if args.policy == "wasi-lifecycle":
             run_wasi_lifecycle(args, run, aggregate)
             return finish_aggregate(run, aggregate)
@@ -990,18 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
         (run / "cargo.metadata.json").write_bytes(metadata.stdout.encode("utf-8"))
-        admit_cargo_build(command, cwd=ROOT, env=None)
-        build = COMMANDS.run(
-            command,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=args.build_timeout_seconds,
-            check=False,
-            encoding="utf-8",
-        )
-        (run / "build.stdout.jsonl").write_bytes(build.stdout.encode("utf-8"))
-        (run / "build.stderr.log").write_text(build.stderr, encoding="utf-8")
+        build = cargo_build(command, run, args.build_timeout_seconds)
         aggregate["build_command"] = command
         aggregate["build_returncode"] = build.returncode
         if build.returncode:

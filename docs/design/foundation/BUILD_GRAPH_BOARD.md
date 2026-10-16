@@ -26,8 +26,8 @@ None  -  every dependency edge respects the declared layer ordering.
 | 22 | `molt-runtime-core` | L2 | molt-cext-discovery, molt-gpu-runtime, molt-runtime, molt-runtime-asyncio, molt-runtime-collections, molt-runtime-compression... |
 | 7 | `molt-ir` | L0 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-passes... |
 | 6 | `molt-passes` | L1 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-tir |
+| 6 | `molt-runtime-platform` | L0 | molt-cext-discovery, molt-lang-cpython-abi, molt-runtime, molt-runtime-path, molt-runtime-tk, molt-wasm-host |
 | 5 | `molt-tir` | L2 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm |
-| 4 | `molt-runtime-platform` | L0 | molt-cext-discovery, molt-lang-cpython-abi, molt-runtime, molt-wasm-host |
 | 3 | `molt-db` | L0 | molt-cext-discovery, molt-runtime, molt-worker |
 | 3 | `molt-gpu` | L0 | molt-cext-discovery, molt-gpu-runtime, molt-runtime |
 | 3 | `molt-runtime-resource` | L3 | molt-cext-discovery, molt-runtime, molt-wasm-host |

@@ -17,6 +17,8 @@ mod selection_commands;
 mod state;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 mod tcl;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+pub(crate) use tcl::initialize_library_policy;
 mod tix_commands;
 mod trace_commands;
 mod ttk;

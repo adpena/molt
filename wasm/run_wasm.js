@@ -5398,11 +5398,8 @@ const runDirectLink = async () => {
         const state = entry ? 'set' : 'null';
         const entryName = entry && entry.name ? entry.name : 'unknown';
         const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
-        const envGet =
-          runtimeInstance && runtimeInstance.exports ? runtimeInstance.exports.molt_env_get : null;
-        const isEnvGet = entry && envGet ? entry === envGet : false;
         console.error(
-          `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} entry=${state} name=${entryName} len=${entryLen} env_get=${isEnvGet}`
+          `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} entry=${state} name=${entryName} len=${entryLen}`
         );
       }
       const fn = table ? table.get(dispatchIdx) : null;

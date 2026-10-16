@@ -99,6 +99,12 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_os_utime_at",
             crate::molt_os_utime_at as *const (),
         )),
+        "molt_os_need_current_directory_for_exe_path" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_os_need_current_directory_for_exe_path",
+                crate::molt_os_need_current_directory_for_exe_path as *const (),
+            ))
+        }
         "molt_os_access" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_os_access",
             crate::molt_os_access as *const (),
@@ -350,10 +356,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_os_fspath" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_os_fspath",
             crate::molt_os_fspath as *const (),
-        )),
-        "molt_os_environ" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_os_environ",
-            crate::molt_os_environ as *const (),
         )),
         "molt_os_makedirs" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_os_makedirs",

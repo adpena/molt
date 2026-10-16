@@ -8,16 +8,27 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
 ));
 
 use molt_runtime::resource::{
-    LimitedTracker, ResourceLimits, ResourceTracker, UnlimitedTracker,
-    clear_global_tracker_factory, install_memory_backstop, parse_human_size, set_tracker,
-    with_tracker,
+    LimitedTracker, ResourceLimits, ResourceTracker, UnlimitedTracker, install_memory_backstop,
+    parse_human_size, set_tracker, with_tracker,
 };
 
+#[allow(dead_code)]
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+mod captured_runtime_children {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/captured_runtime_children.rs"
+    ));
+}
+
 unsafe extern "C" {
-    /// The real runtime startup entrypoint that parses the resource env vars
-    /// and installs the global tracker (and, when a memory cap is set, the
-    /// OS memory backstop). Compiled binaries call this from runtime init.
-    fn molt_runtime_init_resources();
+    fn molt_runtime_init() -> u64;
+    fn molt_runtime_shutdown() -> u64;
 }
 
 /// Runtime init installs the process-wide OS memory backstop. Tests that drive
@@ -52,25 +63,103 @@ impl Drop for OsBackstopRestore {
     }
 }
 
-/// Serialize env-mutating tests in this integration binary. The runtime's
-/// internal `TEST_MUTEX` is not visible here, but these tests run in a separate
-/// process from the unit tests, so an integration-local mutex is sufficient.
-static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const RESOURCE_ENV: &[&str] = &[
+    "MOLT_RESOURCE_MAX_MEMORY",
+    "MOLT_RESOURCE_MAX_DURATION_MS",
+    "MOLT_RESOURCE_MAX_ALLOCATIONS",
+    "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
+    "MOLT_RESOURCE_MAX_OPERATION_RESULT",
+    "MOLT_RESOURCE_MAX_POW_RESULT",
+    "MOLT_RESOURCE_MAX_REPEAT_RESULT",
+    "MOLT_RESOURCE_MAX_SHIFT_RESULT",
+    "MOLT_RESOURCE_MAX_STRING_RESULT",
+];
 
-fn clear_all_resource_env() {
-    for key in [
-        "MOLT_RESOURCE_MAX_MEMORY",
-        "MOLT_RESOURCE_MAX_DURATION_MS",
-        "MOLT_RESOURCE_MAX_ALLOCATIONS",
-        "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
-        "MOLT_RESOURCE_MAX_OPERATION_RESULT",
-        "MOLT_RESOURCE_MAX_POW_RESULT",
-        "MOLT_RESOURCE_MAX_REPEAT_RESULT",
-        "MOLT_RESOURCE_MAX_SHIFT_RESULT",
-        "MOLT_RESOURCE_MAX_STRING_RESULT",
-    ] {
-        unsafe { std::env::remove_var(key) };
+fn run_startup_child(child: &str, values: &[(&str, &str)]) {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "--exact",
+        child,
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ]);
+    for key in RESOURCE_ENV {
+        command.env_remove(key);
     }
+    command.envs(values.iter().copied());
+    let output = captured_runtime_children::capture(&mut command, "resource-startup", child);
+    assert!(
+        output.status.success(),
+        "{child}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Exercise the installed tracker without allocating a large host buffer. The
+/// oracle allows real bootstrap charges and balances every successful charge.
+fn assert_startup_budget(memory_limited: bool, allocation_limited: bool) {
+    use molt_runtime::resource::ResourceError;
+    const MEMORY: usize = 64 * 1024 * 1024;
+    with_tracker(|tracker| {
+        if memory_limited {
+            assert!(matches!(
+                tracker.on_grow(MEMORY + 1),
+                Err(ResourceError::Memory { limit: MEMORY, .. })
+            ));
+            assert!(tracker.on_grow(1024 * 1024).is_ok());
+            tracker.on_shrink(1024 * 1024);
+        } else {
+            assert!(tracker.on_grow(256 * 1024 * 1024).is_ok());
+            tracker.on_shrink(256 * 1024 * 1024);
+        }
+        if allocation_limited {
+            let mut accepted = 0;
+            let mut rejection = None;
+            for _ in 0..100_001 {
+                match tracker.on_allocate(0) {
+                    Ok(()) => accepted += 1,
+                    Err(error) => {
+                        rejection = Some(error);
+                        break;
+                    }
+                }
+            }
+            for _ in 0..accepted {
+                tracker.on_free(0);
+            }
+            assert!(
+                accepted > 0,
+                "bootstrap must leave room under the declared budget"
+            );
+            assert!(matches!(
+                rejection,
+                Some(ResourceError::Allocation {
+                    limit: 100_000,
+                    count: 100_001
+                })
+            ));
+        }
+    });
+}
+
+fn startup_contract(memory_limited: bool, allocation_limited: bool) {
+    let _restore = OsBackstopRestore::capture();
+    assert_eq!(unsafe { molt_runtime_init() }, 1);
+    assert_startup_budget(memory_limited, allocation_limited);
+    // Both widening a cap and adding a cap to an unlimited runtime must leave
+    // the already published policy unchanged on the public repeated-init path.
+    unsafe {
+        std::env::set_var(
+            "MOLT_RESOURCE_MAX_MEMORY",
+            if memory_limited { "1G" } else { "64M" },
+        );
+        std::env::set_var("MOLT_RESOURCE_MAX_ALLOCATIONS", "1000000");
+    }
+    assert_eq!(unsafe { molt_runtime_init() }, 1);
+    assert_startup_budget(memory_limited, allocation_limited);
+    assert_eq!(unsafe { molt_runtime_shutdown() }, 1);
 }
 
 #[test]
@@ -134,132 +223,61 @@ fn limited_tracker_memory_limit() {
 
 #[test]
 fn env_var_init_installs_tracker() {
-    let _g = ENV_GUARD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
-
-    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576") };
-    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_ALLOCATIONS", "2") };
-
-    // The runtime-init C entrypoint parses both fields into one tracker.
-    let _restore = OsBackstopRestore::capture();
-    unsafe { molt_runtime_init_resources() };
-
-    assert!(matches!(
-        with_tracker(|t| t.on_grow(2 * 1024 * 1024)).unwrap_err(),
-        molt_runtime::resource::ResourceError::Memory { .. }
-    ));
-    let allocations = with_tracker(|t| (0..3).map(|_| t.on_allocate(8)).collect::<Vec<_>>());
-    assert!(allocations[..2].iter().all(Result::is_ok));
-    assert!(matches!(
-        allocations[2],
-        Err(molt_runtime::resource::ResourceError::Allocation { .. })
-    ));
-
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
+    run_startup_child(
+        "env_var_init_installs_tracker_child",
+        &[
+            ("MOLT_RESOURCE_MAX_MEMORY", "67108864"),
+            ("MOLT_RESOURCE_MAX_ALLOCATIONS", "100000"),
+        ],
+    );
 }
 
-/// End-to-end demonstration: `MOLT_RESOURCE_MAX_MEMORY=64M` set BEFORE runtime init
-/// causes a >64MB allocation to be rejected by the in-VM tracker (Layer 1) —
-/// the host is never OOM-ed. This is the exact path a compiled binary takes at
-/// startup (`molt_runtime_init_resources` is the runtime-init C entrypoint).
+#[test]
+#[ignore = "real runtime lifecycle; invoked by its owning subprocess test"]
+fn env_var_init_installs_tracker_child() {
+    startup_contract(true, true);
+}
+
 #[test]
 fn molt_memory_limit_alias_enforces_via_real_init_path() {
-    let _g = ENV_GUARD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
-
-    // A human-readable size resolves into ResourceLimits.max_memory.
-    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "64M") };
-
-    // Run the actual runtime resource initialization (parses env, installs the
-    // global LimitedTracker + OS memory backstop).
-    let _restore = OsBackstopRestore::capture();
-    unsafe { molt_runtime_init_resources() };
-
-    // A small allocation under the cap succeeds.
-    assert!(
-        with_tracker(|t| t.on_grow(1024 * 1024)).is_ok(),
-        "1 MiB should fit under the 64 MiB cap"
+    run_startup_child(
+        "molt_memory_limit_alias_enforces_via_real_init_path_child",
+        &[("MOLT_RESOURCE_MAX_MEMORY", "64M")],
     );
-    // A single allocation past the 64 MiB cap is rejected (logical Python heap
-    // accounting) — NOT an OS OOM-kill of the test process.
-    let over = 64 * 1024 * 1024 + 1;
-    let err = with_tracker(|t| t.on_grow(over)).unwrap_err();
-    assert!(
-        matches!(err, molt_runtime::resource::ResourceError::Memory { .. }),
-        "allocation past the cap must raise ResourceError::Memory, got {err:?}"
-    );
-
-    // Teardown so sibling tests and later processes start clean.
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
 }
 
-/// Without any memory-limit env set, runtime init installs NO limit: a large
-/// allocation succeeds (unchanged default behavior).
+#[test]
+#[ignore = "real runtime lifecycle; invoked by its owning subprocess test"]
+fn molt_memory_limit_alias_enforces_via_real_init_path_child() {
+    startup_contract(true, false);
+}
+
 #[test]
 fn no_memory_limit_env_means_unchanged_behavior() {
-    let _g = ENV_GUARD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
-
-    unsafe { molt_runtime_init_resources() };
-
-    // No tracker installed -> the default UnlimitedTracker permits a large grow.
-    assert!(
-        with_tracker(|t| t.on_grow(256 * 1024 * 1024)).is_ok(),
-        "with no limit configured, a 256 MiB grow must succeed (default behavior)"
-    );
-
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
+    run_startup_child("no_memory_limit_env_means_unchanged_behavior_child", &[]);
 }
 
-/// `MOLT_RESOURCE_MAX_MEMORY` accepts a human-readable size as well as the raw
-/// byte count the capability manifest emits; both resolve to the SAME limit
-/// (single enforcement path).
+#[test]
+#[ignore = "real runtime lifecycle; invoked by its owning subprocess test"]
+fn no_memory_limit_env_means_unchanged_behavior_child() {
+    startup_contract(false, false);
+}
+
+/// Paired with the 64M child above: both spellings reject at exactly 64 MiB.
 #[test]
 fn human_size_and_raw_bytes_resolve_to_one_limit() {
-    let _g = ENV_GUARD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
-
-    // 1 MiB written as a human size is the effective cap.
-    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1M") };
-    let _restore = OsBackstopRestore::capture();
-    unsafe { molt_runtime_init_resources() };
-
-    // A 2 MiB grow is rejected under the 1 MiB cap.
-    let err = with_tracker(|t| t.on_grow(2 * 1024 * 1024)).unwrap_err();
-    assert!(matches!(
-        err,
-        molt_runtime::resource::ResourceError::Memory { .. }
-    ));
-
-    clear_all_resource_env();
-    clear_global_tracker_factory();
-    set_tracker(Box::new(UnlimitedTracker));
+    run_startup_child(
+        "human_size_and_raw_bytes_resolve_to_one_limit_child",
+        &[("MOLT_RESOURCE_MAX_MEMORY", "67108864")],
+    );
 }
 
-/// The size parser behind `MOLT_RESOURCE_MAX_MEMORY` accepts the documented
-/// forms, including the raw byte count the manifest emits.
+#[test]
+#[ignore = "real runtime lifecycle; invoked by its owning subprocess test"]
+fn human_size_and_raw_bytes_resolve_to_one_limit_child() {
+    startup_contract(true, false);
+}
+
 #[test]
 fn human_size_parser_accepts_documented_forms() {
     assert_eq!(parse_human_size("536870912").unwrap(), 512 * 1024 * 1024);

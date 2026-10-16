@@ -2455,3 +2455,62 @@ def test_default_cache_does_not_expand_unused_platform_root(
     assert DEFAULT_PATHS._default_molt_cache(environ=env) == tmp_path / "cache" / (
         "Molt" if windows else "molt"
     )
+
+
+def test_cli_imported_syntax_errors_keep_native_identity_and_payload(
+    tmp_path: Path,
+) -> None:
+    sources = {
+        "bad_syntax": b"def broken(:\n    pass\n",
+        "bad_indent": b"if True:\npass\n",
+        "bad_tabs": b"if True:\n\tpass\n        pass\n",
+        "bad_cookie": b"# coding: not-a-real-encoding\nvalue = 1\n",
+        "bad_bytes": b"# coding: utf-8\nvalue = '\xff'\n",
+        "bad_unicode": "value = ('α',\n         ) +\n".encode("utf-8"),
+        "good_cookie": b"# coding: latin-1\nvalue = 'caf\xe9'\n",
+    }
+    for name, content in sources.items():
+        (tmp_path / f"{name}.py").write_bytes(content)
+    script = tmp_path / "entry.py"
+    imports = "\n".join(
+        f"try:\n    import {name}\nexcept saved_syntax as error:\n    report(error)"
+        for name in sources
+        if name != "good_cookie"
+    )
+    script.write_text(
+        "import builtins\n"
+        "saved_syntax = builtins.SyntaxError\n"
+        "saved_indent = builtins.IndentationError\n"
+        "saved_tabs = builtins.TabError\n"
+        "def report(error):\n"
+        "    print(type(error).__name__, error.args, error.msg, error.filename, "
+        "error.lineno, error.offset, repr(error.text), error.end_lineno, "
+        "error.end_offset, error.print_file_and_line, str(error))\n"
+        "builtins.SyntaxError = ValueError\n"
+        "builtins.IndentationError = ValueError\n"
+        "builtins.TabError = ValueError\n" + imports + "\n"
+        "builtins.SyntaxError = saved_syntax\n"
+        "builtins.IndentationError = saved_indent\n"
+        "builtins.TabError = saved_tabs\n"
+        "import good_cookie\nprint('valid', good_cookie.value)\n",
+        encoding="utf-8",
+    )
+    oracle = run_cli_test_process(
+        [_python_executable(), str(script)],
+        cwd=tmp_path,
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=_cli_timeout(),
+    )
+    assert oracle.returncode == 0, oracle.stderr
+    assert oracle.stderr == ""
+    assert len(oracle.stdout.splitlines()) == len(sources)
+    # Repeat the actual loader to cover persisted lowering reuse as well as cold.
+    for _ in range(2):
+        result = _run_cli(["run", "--json", str(script)])
+        assert result.returncode == 0, result.stderr
+        data = json.loads(result.stdout)["data"]
+        assert data["returncode"] == 0, data.get("stderr")
+        assert data.get("stderr", "") == ""
+        assert data.get("stdout", "") == oracle.stdout

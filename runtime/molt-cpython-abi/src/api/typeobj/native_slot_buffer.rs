@@ -23,6 +23,19 @@ pub(crate) fn export_type_shell() -> *mut PyTypeObject {
     &raw mut EXPORT_TYPE
 }
 
+/// Borrow the actual memoryview retained by our own Python buffer wrapper.
+/// This is a layout fact of EXPORT_TYPE, never a guess about foreign exporters.
+/// The caller must retain `object` throughout use of the returned pointer.
+pub(crate) unsafe fn export_memoryview(object: *mut PyObject) -> *mut PyObject {
+    unsafe {
+        if !object.is_null() && (*object).ob_type == export_type_shell() {
+            (*object.cast::<PythonBufferExport>()).view.obj
+        } else {
+            object
+        }
+    }
+}
+
 unsafe fn export_type() -> *mut PyTypeObject {
     INITIALIZE.call_once(|| unsafe {
         EXPORT_TYPE.ob_base.ob_base.ob_refcnt = 1;

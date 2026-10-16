@@ -610,6 +610,34 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         backend.module.verify().expect("owned hash aggregate CFG");
         let ir = llvm_fn.print_to_string().to_string();
+        if width == 2 {
+            assert_eq!(
+                ir.matches("call i64 @molt_dict_from_pairs(").count(),
+                1,
+                "{ir}"
+            );
+            assert!(
+                !ir.contains("@molt_dict_new(") && !ir.contains("@molt_dict_set("),
+                "{ir}"
+            );
+            assert_eq!(
+                ir.matches("call i64 @molt_int_from_i64(").count(),
+                1,
+                "{ir}"
+            );
+            assert!(
+                ir.find("call i64 @molt_int_from_i64(").unwrap()
+                    < ir.find("call i64 @molt_dict_from_pairs(").unwrap(),
+                "{ir}"
+            );
+            assert_eq!(
+                ir.matches("call void @molt_dec_ref_obj(i64 %dictionary_owner_bits")
+                    .count(),
+                1,
+                "the repeated operand owns one temporary on success and failure: {ir}"
+            );
+            continue;
+        }
         assert!(ir.contains(&format!("@{new_symbol}(i64 2)")), "{ir}");
         assert!(ir.contains(&format!("call i64 @{mutate_symbol}")), "{ir}");
         assert!(
@@ -674,11 +702,11 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
 }
 
 #[test]
-fn hash_constructor_entries_are_boxed_after_the_previous_insertion() {
+fn dictionary_full_pairs_materialize_once_before_the_constructor() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
     let mut func = TirFunction::new(
-        "lazy_dict_entries".into(),
+        "dictionary_full_pairs".into(),
         vec![],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
@@ -706,32 +734,32 @@ fn hash_constructor_entries_are_boxed_after_the_previous_insertion() {
     backend
         .module
         .verify()
-        .expect("lazy hash aggregate entries must verify");
+        .expect("full-pairs dictionary construction must verify");
     let ir = llvm_fn.print_to_string().to_string();
     let at =
         |needle: &str| -> Vec<usize> { ir.match_indices(needle).map(|(index, _)| index).collect() };
     let boxes = at("call i64 @molt_int_from_i64(");
-    let inserts = at("call i64 @molt_dict_set(");
+    let constructors = at("call i64 @molt_dict_from_pairs(");
     assert_eq!(boxes.len(), 2, "each distinct value is boxed once: {ir}");
-    assert_eq!(inserts.len(), 2, "{ir}");
+    assert_eq!(constructors.len(), 1, "{ir}");
     assert!(
-        boxes[0] < inserts[0] && inserts[0] < boxes[1] && boxes[1] < inserts[1],
-        "a later entry is boxed only after the previous insertion: {ir}"
+        boxes[0] < boxes[1] && boxes[1] < constructors[0],
+        "both complete pairs precede the single constructor: {ir}"
     );
-    let insert_line = |index: usize| ir[inserts[index]..].lines().next().unwrap().trim_end();
     assert!(
-        insert_line(0).ends_with("i64 %boxed_int, i64 %boxed_int)"),
+        !ir.contains("@molt_dict_set(") && !ir.contains("@molt_dict_new("),
         "{ir}"
-    );
-    assert!(
-        insert_line(1).ends_with("i64 %boxed_int)") && !insert_line(1).contains("i64 %boxed_int, "),
-        "the repeated value reuses its first box beside the new key's box: {ir}"
     );
     assert_eq!(
-        ir.matches("call void @molt_dec_ref_obj(i64 %aggregate_owner_bits")
+        ir.matches("store i64 %boxed_int,").count(),
+        3,
+        "the first identity supplies the first key and both values: {ir}"
+    );
+    assert_eq!(
+        ir.matches("call void @molt_dec_ref_obj(i64 %dictionary_owner_bits")
             .count(),
         2,
-        "{ir}"
+        "each distinct temporary retires once: {ir}"
     );
 }
 
@@ -1269,7 +1297,8 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
     assert!(ir.contains("call i64 @molt_list_from_values("), "{ir}");
     assert!(ir.contains("call i64 @molt_tuple_from_values("), "{ir}");
     assert!(!ir.contains("molt_list_builder"), "{ir}");
-    assert!(ir.contains("call i64 @molt_dict_set"), "{ir}");
+    assert!(ir.contains("call i64 @molt_dict_from_pairs"), "{ir}");
+    assert!(!ir.contains("call i64 @molt_dict_set"), "{ir}");
     assert!(ir.contains("call i64 @molt_set_add"), "{ir}");
     assert!(
         ir.contains("aggregate_abort") && ir.contains("call void @molt_dec_ref_obj"),

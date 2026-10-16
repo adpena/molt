@@ -12,10 +12,14 @@ pub extern "C" fn molt_tk_event_subst_parse(_widget_path_bits: u64, event_args_b
         let Some(raw_args) = decode_value_list(obj_from_bits(event_args_bits)) else {
             return MoltObject::none().bits();
         };
-        let args: Vec<u64> = raw_args.into_iter().map(flatten_event_subst_arg).collect();
-        if args.len() != TK_EVENT_SUBST_FIELD_COUNT {
+        if raw_args.len() != TK_EVENT_SUBST_FIELD_COUNT {
             return MoltObject::none().bits();
         }
+        let mut snapshots = Vec::new();
+        let args: Vec<u64> = raw_args
+            .iter()
+            .map(|&bits| flatten_event_subst_arg(bits, &mut snapshots))
+            .collect();
 
         let payload = [
             normalize_event_subst_int_field(args[0]),

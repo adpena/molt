@@ -144,16 +144,22 @@ pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_path_object_type_id(ptr) }
 }
 
-pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
+pub fn string_obj_bytes(obj: MoltObject) -> Option<Vec<u8>> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
     let ok = unsafe { __molt_path_string_obj_to_owned(obj.bits(), &mut out_ptr, &mut out_len) };
     if ok != 0 {
-        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        Some(String::from_utf8_lossy(&boxed).into_owned())
+        Some(unsafe { bridge_owned_u8_buffer(out_ptr, out_len) }.into_vec())
     } else {
         None
     }
+}
+
+pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
+    string_obj_bytes(obj).map(|raw| {
+        String::from_utf8(raw)
+            .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
+    })
 }
 
 pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
@@ -199,6 +205,29 @@ pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
 unsafe extern "C" {
     fn __molt_path_to_i64(bits: u64, out: *mut i64) -> i32;
     fn __molt_path_to_f64(bits: u64, out: *mut f64) -> i32;
+}
+
+unsafe extern "C" {
+    fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i32;
+    fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32;
+}
+
+pub fn index_c_int_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i32> {
+    let mut value = 0;
+    if unsafe { __molt_path_index_c_int(bits, &mut value) } != 0 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+pub fn index_i64_checked_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
+    let mut value = 0;
+    if unsafe { __molt_path_index_i64(bits, &mut value) } != 0 {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -318,16 +347,31 @@ pub fn molt_object_hash(bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_path_path_from_bits(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    fn __molt_path_path_from_bits(
+        bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+        out_bytes: *mut bool,
+    ) -> i32;
+    fn __molt_path_path_result(data: *const u8, len: usize, bytes: bool) -> u64;
     fn __molt_path_fspath_bits(bits: u64) -> u64;
 
     fn __molt_path_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
 }
 
-pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBuf, u64> {
+pub fn path_from_bits(py: &CoreGilToken, bits: u64) -> Result<std::path::PathBuf, u64> {
+    path_from_bits_with_flavor(py, bits).map(|(path, _)| path)
+}
+
+pub fn path_from_bits_with_flavor(
+    _py: &CoreGilToken,
+    bits: u64,
+) -> Result<(std::path::PathBuf, bool), u64> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_path_path_from_bits(bits, &mut out_ptr, &mut out_len) };
+    let mut bytes_flavor = false;
+    let ok =
+        unsafe { __molt_path_path_from_bits(bits, &mut out_ptr, &mut out_len, &mut bytes_flavor) };
     if ok == 0 {
         return Err(MoltObject::none().bits());
     }
@@ -335,7 +379,12 @@ pub fn path_from_bits(_py: &CoreGilToken, bits: u64) -> Result<std::path::PathBu
     // SAFETY: unchanged OsString::into_encoded_bytes output from this process's
     // runtime, built with the same Rust version and target.
     let path = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(&bytes) };
-    Ok(std::path::PathBuf::from(path))
+    Ok((std::path::PathBuf::from(path), bytes_flavor))
+}
+
+pub fn path_result(_py: &CoreGilToken, value: &std::path::Path, bytes: bool) -> u64 {
+    let raw = value.as_os_str().as_encoded_bytes();
+    unsafe { __molt_path_path_result(raw.as_ptr(), raw.len(), bytes) }
 }
 
 pub fn fspath_bits(bits: u64) -> u64 {

@@ -564,11 +564,11 @@ pub use crate::builtins::codecs::*;
 pub use crate::builtins::codecs_ext::*;
 pub use crate::builtins::concurrent::*;
 pub(crate) use crate::builtins::containers::{
-    DictEntry, HashStorage, SetEntry, StoredHash, dict_entries, dict_entries_ptr, dict_len,
-    dict_live_entries, dict_method_bits, dict_next_entry, dict_storage, dict_table, dict_table_ptr,
-    dict_view_dict_bits, dict_view_len, frozenset_method_bits, is_set_like_type, is_set_view_type,
-    list_len, list_method_bits, set_entries, set_entries_ptr, set_len, set_method_bits,
-    set_next_entry, set_storage, set_table, set_table_ptr, tuple_len,
+    DictEntry, DictKeyKind, DictStorage, HashStorage, SetEntry, StoredHash, dict_entries,
+    dict_entries_ptr, dict_len, dict_live_entries, dict_method_bits, dict_next_entry, dict_storage,
+    dict_table, dict_table_ptr, dict_view_dict_bits, dict_view_len, frozenset_method_bits,
+    is_set_like_type, is_set_view_type, list_len, list_method_bits, set_entries, set_entries_ptr,
+    set_len, set_method_bits, set_next_entry, set_storage, set_table, set_table_ptr, tuple_len,
 };
 pub(crate) use crate::builtins::containers_alloc::{DictSeqError, dict_pair_from_item};
 pub use crate::builtins::containers_alloc::{

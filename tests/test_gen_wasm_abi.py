@@ -48,6 +48,7 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     input_files = {path.resolve() for path in manifest.generator_input_files()}
     assert (ROOT / "src/molt/rust_source_scan.py").resolve() in input_files
     assert (ROOT / "tools/intrinsic_manifest.py").resolve() in input_files
+    assert (ROOT / "src/molt/_host_capabilities_generated.py").resolve() in input_files
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
     assert OUT_RUNTIME_BOXED_ABI_RS.resolve() not in input_files
     assert OUT_RUNTIME_CALLABLE_ABI_RS.resolve() not in input_files
@@ -132,6 +133,7 @@ def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> N
         ("molt_importlib_import_transaction", 5, "unpack_args"),
         ("molt_cpython_abi_cext_call_trampoline", 3, "call_frame"),
         ("molt_sqlite3_connect", 1, "unpack_args"),
+        ("molt_locale_getdefaultlocale", 0, "unpack_args"),
     ):
         assert symbols[symbol] == {
             "runtime_name": symbol,
@@ -140,6 +142,7 @@ def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> N
         }
     # A native provider's ABI survives the separate WASM availability projection.
     assert "sqlite3_connect" not in {entry["name"] for entry in data["import"]}
+    assert "locale_getdefaultlocale" not in {entry["name"] for entry in data["import"]}
     assert (
         not {
             "molt_int_from_i64",
@@ -213,6 +216,52 @@ def test_runtime_callable_abi_rejects_transport_arity_drift() -> None:
         manifest.WasmAbiManifestError, match="molt_abs_builtin.*import ABI"
     ):
         manifest.runtime_callable_abi_specs(data)
+
+
+def test_target_neutral_declarations_own_native_and_wasm_abi_views() -> None:
+    data = gen_wasm_abi.load_manifest()
+    declarations = {row["name"]: row for row in data["runtime_import"]}
+    providers = {row["name"]: row for row in data["import"]}
+    assert providers.keys() < declarations.keys()
+    assert all(row is declarations[name] for name, row in providers.items())
+    assert "locale_getdefaultlocale" not in providers
+    assert "sqlite3_connect" not in providers
+    for name in ("locale_getencoding", "locale_setlocale", "locale_constants"):
+        assert name in providers
+    boxed = {
+        row["runtime_name"]: row for row in manifest.runtime_boxed_call_specs(data)
+    }
+    assert boxed["molt_locale_getdefaultlocale"] == {
+        "runtime_name": "molt_locale_getdefaultlocale",
+        "arity": 0,
+        "result": "i64",
+    }
+    assert boxed["molt_sqlite3_connect"] == {
+        "runtime_name": "molt_sqlite3_connect",
+        "arity": 1,
+        "result": "i64",
+    }
+    assert "molt_locale_getdefaultlocale" in gen_wasm_abi.render_runtime_boxed_abi_rs(
+        data
+    )
+
+
+@pytest.mark.parametrize("projection", ["callable", "boxed"])
+def test_native_only_abi_mutation_is_validated_from_canonical_declarations(
+    projection: str,
+) -> None:
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    declaration = next(
+        row
+        for row in data["runtime_import"]
+        if row["name"] == "locale_getdefaultlocale"
+    )
+    declaration["callable_arity"] = 1
+    with pytest.raises(manifest.WasmAbiManifestError, match="shape.*import ABI"):
+        if projection == "callable":
+            manifest.runtime_callable_abi_specs(data)
+        else:
+            manifest.runtime_boxed_call_specs(data)
 
 
 def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
@@ -390,6 +439,7 @@ def test_compiler_only_boxed_abi_keeps_owned_results_private() -> None:
             "static_type": data["static_type"],
             "import": [copy.deepcopy(entry)],
         }
+        probe["runtime_import"] = probe["import"]
         probe["import"][0].pop("boxed_call")
         assert manifest.runtime_boxed_call_specs(probe) == []
         with pytest.raises(
@@ -405,7 +455,7 @@ def test_compiler_only_boxed_abi_keeps_owned_results_private() -> None:
 
 
 def _boxed_abi_fixture() -> dict:
-    return {
+    data = {
         "static_type": [
             {"params": ["i64"], "results": ["i64"]},
             {"params": ["i32"], "results": ["i64"]},
@@ -413,6 +463,8 @@ def _boxed_abi_fixture() -> dict:
         ],
         "import": [{"name": "example", "type": 0}],
     }
+    data["runtime_import"] = data["import"]
+    return data
 
 
 @pytest.mark.parametrize(
@@ -1511,9 +1563,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["file_open_ex"]["callable_arity"] == 8
     assert imports["file_exit_method"]["runtime_name"] == "molt_file_exit_method"
     assert imports["file_exit_method"]["callable_arity"] == 4
-    assert imports["env_clear"]["runtime_name"] == "molt_env_clear"
-    assert imports["env_clear"]["callable_arity"] == 0
-    assert imports["env_clear"].get("callable_result", "i64") == "i64"
+    assert imports["env_mapping_keys"]["runtime_name"] == "molt_env_mapping_keys"
+    assert imports["env_mapping_keys"]["callable_arity"] == 0
+    assert imports["env_mapping_keys"].get("callable_result", "i64") == "i64"
     assert imports["typing_type_param"]["runtime_name"] == "molt_typing_type_param"
     assert imports["typing_type_param"]["callable_arity"] == 2
 
@@ -1671,9 +1723,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         assert imports[name]["callable_arity"] == arity
     assert imports["runtime_active_runtime"]["callable_arity"] == 0
     assert imports["codecs_decode"]["runtime_name"] == "molt_codecs_decode"
-    assert imports["codecs_decode"]["callable_arity"] == 3
+    assert imports["codecs_decode"]["callable_arity"] == 4
     assert imports["codecs_encode"]["runtime_name"] == "molt_codecs_encode"
-    assert imports["codecs_encode"]["callable_arity"] == 3
+    assert imports["codecs_encode"]["callable_arity"] == 4
     assert imports["cbor_parse_scalar_obj"]["runtime_name"] == (
         "molt_cbor_parse_scalar_obj"
     )
@@ -1748,6 +1800,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "def wasm_runtime_callable_result" not in rendered_py
     assert "molt_sqlite3_" not in rendered_rs
     assert "molt_sqlite3_" not in rendered_py
+    assert "locale_getdefaultlocale" not in rendered_rs
+    assert "locale_getdefaultlocale" not in rendered_py
     assert "ReservedRuntimeCallableSpec" in rendered_rs
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
     assert "ReservedRuntimeCallableDispatch" in rendered_rs
@@ -1980,12 +2034,27 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
     loaded_imports = {entry["name"]: entry for entry in loaded["import"]}
 
     assert loaded_imports["hash_builtin"].get("runtime_feature") is None
+    assert not {
+        "bz2_compressor_drop",
+        "bz2_decompressor_drop",
+        "bz2_file_drop",
+        "gzip_decompress",
+        "gzip_drop",
+        "hash_drop",
+        "hmac_drop",
+        "lzma_compressor_drop",
+        "lzma_decompressor_drop",
+        "lzma_file_drop",
+        "secrets_compare_digest",
+        "zlib_compressobj_drop",
+        "zlib_decompressobj_drop",
+    }.intersection(loaded_imports)
+
     for name in (
         "hash_new",
         "hash_update",
         "hash_copy",
         "hash_digest",
-        "hash_drop",
     ):
         assert loaded_imports[name]["runtime_feature"] == "stdlib_crypto"
 
@@ -2655,7 +2724,8 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
 
     assert signature("function_set_builtin") == (("i64",), ("i64",))
     assert signature("string_from_bytes") == (("i32", "i64", "i32"), ("i32",))
-    assert signature("codecs_decode") == (("i64", "i64", "i64"), ("i64",))
+    assert signature("codecs_decode") == (("i64", "i64", "i64", "i64"), ("i64",))
+    assert signature("codecs_encode") == (("i64", "i64", "i64", "i64"), ("i64",))
 
     rendered_py = gen.render_py(data)
     assert "WASM_IMPORT_SIGNATURES" in rendered_py

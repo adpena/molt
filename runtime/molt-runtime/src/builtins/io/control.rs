@@ -1,4 +1,5 @@
 use super::*;
+use num_traits::ToPrimitive;
 
 pub(crate) extern "C" fn io_base_check_closed(object: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -110,6 +111,12 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"write"], true) {
+                return error;
+            }
+            if buffered_writer::applies(ptr) {
+                return buffered_writer::detach(_py, handle_bits, ptr);
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -129,7 +136,10 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
                     "detach is unsupported for in-memory streams",
                 );
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -172,7 +182,7 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
                     }
                 }
                 handle.buffer_bits = MoltObject::none().bits();
-                handle.detached = true;
+                handle.attachment = crate::object::FileAttachment::Detached;
                 handle.owns_fd = false;
                 return buffer_bits;
             }
@@ -185,7 +195,7 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
             };
             let handle = &mut *handle_ptr;
             let stored = std::mem::replace(&mut handle.buffer_bits, MoltObject::none().bits());
-            handle.detached = true;
+            handle.attachment = crate::object::FileAttachment::Detached;
             handle.owns_fd = false;
             handle.read_buf.clear();
             handle.read_pos = 0;
@@ -228,7 +238,10 @@ pub extern "C" fn molt_file_reconfigure(
             if !handle.text {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "not a text file");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -249,12 +262,12 @@ pub extern "C" fn molt_file_reconfigure(
             if encoding_bits != missing
                 && let Some(encoding) = reconfigure_arg_type(_py, encoding_bits, "encoding")
             {
-                let (label, _kind) = match normalize_text_encoding(&encoding) {
+                let (label, display) = match selected_text_encoding(_py, Some(&encoding)) {
                     Ok(val) => val,
                     Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
                 };
-                new_encoding = Some(label.clone());
-                new_encoding_original = Some(label);
+                new_encoding = Some(label);
+                new_encoding_original = Some(display);
             }
             let mut new_errors = handle.errors.clone();
             if errors_bits != missing
@@ -306,7 +319,15 @@ pub extern "C" fn molt_file_reconfigure(
             if encoding_bits != missing {
                 handle.encoding_original = new_encoding_original;
                 handle.text_bom_seen = false;
-                handle.text_bom_written = false;
+                handle.text_bom_written = super::handle::initial_text_bom_written(
+                    match file_handle_physical_state(_py, handle) {
+                        Ok(state) => state,
+                        Err(error) => return error,
+                    },
+                    handle.buffer_bits,
+                    handle.writable,
+                    handle.encoding.as_deref(),
+                );
             }
             if encoding_bits != missing || errors_bits != missing {
                 handle.text_pending_bytes.clear();
@@ -328,192 +349,314 @@ pub extern "C" fn molt_file_reconfigure(
     })
 }
 
+// FileIO append and text positioning use the platform's actual offset error
+// domain. A pipe is unsupported text positioning; EBADF/EIO remain OSError.
+fn require_seekable_text_backend(
+    py: &PyToken<'_>,
+    state: &MoltFileState,
+    backend: &mut MoltFileBackend,
+) -> Result<(), u64> {
+    if let MoltFileBackend::File(file) = backend {
+        let error = host_file_seek(state, file, std::io::SeekFrom::Current(0)).err();
+        if let Some(error) = error {
+            #[cfg(windows)]
+            let nonseekable = error.raw_os_error() == Some(libc::ESPIPE);
+            #[cfg(not(windows))]
+            let nonseekable = error.kind() == ErrorKind::NotSeekable;
+            if nonseekable {
+                return Err(raise_exception::<_>(
+                    py,
+                    "UnsupportedOperation",
+                    "underlying stream is not seekable",
+                ));
+            }
+            return Err(match error.raw_os_error() {
+                Some(errno) => raise_os_error_errno::<u64>(py, i64::from(errno), "tell"),
+                None => raise_os_error::<u64>(py, error, "tell"),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_seek(handle_bits: u64, offset_bits: u64, whence_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let handle_obj = obj_from_bits(handle_bits);
-        let Some(ptr) = handle_obj.as_ptr() else {
+        file_seek(_py, handle_bits, offset_bits, whence_bits)
+    })
+}
+
+fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits: u64) -> u64 {
+    let handle_obj = obj_from_bits(handle_bits);
+    let Some(ptr) = handle_obj.as_ptr() else {
+        return raise_exception::<_>(_py, "TypeError", "expected file handle");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        }
+        let handle_ptr = file_handle_ptr(ptr);
+        if handle_ptr.is_null() {
+            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+        }
+        // seek's Clinic whence conversion precedes readiness, including an
+        // uninitialized writer whose __index__ callback initializes it.
+        if buffered_writer::is_writer(_py, ptr)
+            && (*handle_ptr).attachment != crate::object::FileAttachment::Attached
+        {
+            return buffered_writer::seek(_py, handle_bits, ptr, offset_bits, whence_bits);
+        }
+        if crate::builtins::numbers::index_i64_integral_bits(offset_bits).is_none()
+            || crate::builtins::numbers::index_i64_integral_bits(whence_bits).is_none()
+        {
+            if let Err(error) = buffered_writer::prepare_conversion(_py, ptr) {
+                return error;
+            }
+        }
+        if let Err(error) =
+            buffered_writer::prepare(_py, ptr, &[b"seekable", b"write", b"seek"], false)
+        {
+            return error;
+        }
+        if buffered_writer::applies(ptr) {
+            return buffered_writer::seek(_py, handle_bits, ptr, offset_bits, whence_bits);
+        }
+        let handle = &mut *handle_ptr;
+        if let Err(bits) = file_handle_require_attached(_py, handle) {
+            return bits;
+        }
+        if file_handle_is_closed(handle) {
+            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+        }
+        // Index callbacks may close/detach the stream; no backing borrow or
+        // mutex is retained across argument conversion.
+        let Some(whence) = crate::builtins::numbers::index_c_int_from_obj(_py, whence_bits) else {
+            return MoltObject::none().bits();
         };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
-            }
-            let handle_ptr = file_handle_ptr(ptr);
-            if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-            }
-            let handle = &mut *handle_ptr;
-            if let Err(bits) = file_handle_require_attached(_py, handle) {
-                return bits;
-            }
-            if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-            }
-            let whence = match to_i64(obj_from_bits(whence_bits)) {
-                Some(val) => val,
-                None => {
-                    let type_name = class_name_for_error(type_of_bits(_py, whence_bits));
-                    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            };
-            let backend_state = Arc::clone(&handle.state);
-            let mut guard = backend_state.backend.lock().unwrap();
+        let whence = i64::from(whence);
+        let type_name = class_name_for_error(type_of_bits(_py, offset_bits));
+        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
+        let Some(value) = index_bigint_from_obj(_py, offset_bits, &msg) else {
+            return MoltObject::none().bits();
+        };
+        let handle = &mut *handle_ptr;
+        if let Err(bits) = file_handle_require_attached(_py, handle) {
+            return bits;
+        }
+        if file_handle_is_closed(handle) {
+            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+        }
+        let flush_text = if handle.text {
+            let state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
+            let mut guard = state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if !handle.write_buf.is_empty()
-                && let Err(bits) = flush_write_buffer(_py, handle, backend)
-            {
-                return bits;
-            }
-            if handle.text {
-                if let MoltFileBackend::Text(_) = backend {
-                    let offset = match to_i64(obj_from_bits(offset_bits)) {
-                        Some(val) => val,
-                        None => {
-                            let type_name = class_name_for_error(type_of_bits(_py, offset_bits));
-                            let msg =
-                                format!("'{type_name}' object cannot be interpreted as an integer");
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                    };
-                    let pos = match text_backend_seek(_py, backend, offset, whence) {
-                        Ok(pos) => pos,
-                        Err(bits) => return bits,
-                    };
-                    handle.pending_byte = None;
-                    handle.text_pending_bytes.clear();
-                    handle.text_pending_text.clear();
-                    clear_read_buffer(handle);
-                    clear_write_buffer(handle);
-                    return MoltObject::from_int(pos).bits();
-                }
-                if whence == 0 {
-                    let type_name = class_name_for_error(type_of_bits(_py, offset_bits));
-                    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-                    let Some(value) = index_bigint_from_obj(_py, offset_bits, &msg) else {
-                        return MoltObject::none().bits();
-                    };
-                    let cookie = match text_cookie_decode_value(value) {
-                        Ok(val) => val,
-                        Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
-                    };
-                    let pos = match backend_seek(
-                        _py,
-                        handle,
-                        backend,
-                        std::io::SeekFrom::Start(cookie.pos),
-                    ) {
-                        Ok(pos) => pos,
-                        Err(bits) => return bits,
-                    };
-                    handle.pending_byte = cookie.pending_byte;
-                    handle.text_pending_bytes = cookie.pending_bytes;
-                    handle.text_pending_text = cookie.pending_text;
-                    clear_read_buffer(handle);
-                    clear_write_buffer(handle);
-                    let at_start = cookie.pos == 0
-                        && handle.pending_byte.is_none()
-                        && handle.text_pending_bytes.is_empty()
-                        && handle.text_pending_text.is_empty();
-                    if let Some(original) = handle.encoding_original.as_ref() {
-                        if (original == "utf-16" || original == "utf-32") && at_start {
-                            handle.encoding = Some(original.clone());
-                        }
-                        if original == "utf-8-sig" {
-                            handle.text_bom_seen = !at_start;
-                            handle.text_bom_written = !at_start;
-                        }
-                    }
-                    return match text_cookie_encode_bits(
-                        _py,
-                        pos,
-                        handle.pending_byte,
-                        &handle.text_pending_bytes,
-                        &handle.text_pending_text,
-                    ) {
-                        Ok(bits) => bits,
-                        Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
-                    };
-                }
-            }
-            let offset = match to_i64(obj_from_bits(offset_bits)) {
-                Some(val) => val,
-                None => {
-                    let type_name = class_name_for_error(type_of_bits(_py, offset_bits));
-                    let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            };
-            if handle.text && offset != 0 && (whence == 1 || whence == 2) {
-                let msg = if whence == 1 {
-                    "can't do nonzero cur-relative seeks"
-                } else {
-                    "can't do nonzero end-relative seeks"
-                };
-                return raise_exception::<_>(_py, "UnsupportedOperation", msg);
-            }
-            if !handle.write_buf.is_empty()
-                && let Err(bits) = flush_write_buffer(_py, handle, backend)
-            {
-                return bits;
-            }
-            let mut seek_offset = offset;
-            if whence == 1 {
-                let unread = unread_bytes(handle) as i64;
-                let pending = if handle.pending_byte.is_some() { 1 } else { 0 };
-                let pending = pending + handle.text_pending_bytes.len() as i64;
-                seek_offset = seek_offset.saturating_sub(unread + pending);
-            }
-            let from = match whence {
-                0 => {
-                    if seek_offset < 0 {
-                        let msg = format!("negative seek position {seek_offset}");
-                        return raise_exception::<_>(_py, "ValueError", &msg);
-                    }
-                    std::io::SeekFrom::Start(seek_offset as u64)
-                }
-                1 => std::io::SeekFrom::Current(seek_offset),
-                2 => std::io::SeekFrom::End(seek_offset),
-                _ => return raise_exception::<_>(_py, "ValueError", "invalid whence"),
-            };
-            let pos = match backend_seek(_py, handle, backend, from) {
-                Ok(pos) => pos,
-                Err(bits) => return bits,
-            };
-            handle.pending_byte = None;
-            handle.text_pending_bytes.clear();
-            handle.text_pending_text.clear();
-            clear_read_buffer(handle);
-            if handle.text {
-                match text_cookie_encode_bits(_py, pos, None, &[], &[]) {
-                    Ok(bits) => bits,
-                    Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
-                }
+            if matches!(backend, MoltFileBackend::Text(_)) {
+                false
             } else {
-                MoltObject::from_int(pos as i64).bits()
+                if let Err(bits) = require_seekable_text_backend(_py, &state, backend) {
+                    return bits;
+                }
+                match whence {
+                    0 if value.sign() == num_bigint::Sign::Minus => {
+                        return raise_exception::<_>(_py, "ValueError", "negative seek position");
+                    }
+                    1 | 2 if value != num_bigint::BigInt::from(0) => {
+                        return raise_exception::<_>(
+                            _py,
+                            "UnsupportedOperation",
+                            if whence == 1 {
+                                "can't do nonzero cur-relative seeks"
+                            } else {
+                                "can't do nonzero end-relative seeks"
+                            },
+                        );
+                    }
+                    0..=2 => {}
+                    _ => return raise_exception::<_>(_py, "ValueError", "invalid whence"),
+                }
+                true
+            }
+        } else {
+            false
+        };
+        if handle.text && whence == 1 && value == num_bigint::BigInt::from(0) {
+            let cookie = if flush_text {
+                io_call_noargs(_py, handle_bits, b"tell")
+            } else {
+                file_tell(_py, handle_bits)
+            };
+            if exception_pending(_py) {
+                dec_ref_bits(_py, cookie);
+                return MoltObject::none().bits();
+            }
+            let result = file_seek(_py, handle_bits, cookie, MoltObject::from_int(0).bits());
+            dec_ref_bits(_py, cookie);
+            return result;
+        }
+        if flush_text {
+            // SEEK_SET/END honor the same overridable flush protocol as tell.
+            // The temporary admission borrow/lock has ended before the call.
+            let result = io_call_noargs(_py, handle_bits, b"flush");
+            dec_ref_bits(_py, result);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
             }
         }
-    })
+        let handle = &mut *handle_ptr;
+        if let Err(bits) = file_handle_require_attached(_py, handle) {
+            return bits;
+        }
+        if file_handle_is_closed(handle) {
+            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+        }
+        let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+            Ok(state) => state,
+            Err(error) => return error,
+        });
+        let mut guard = backend_state.backend.lock().unwrap();
+        let Some(backend) = guard.as_mut() else {
+            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+        };
+        // BytesIO/StringIO admit target Py_ssize_t before any flush/position
+        // mutation. Text wrappers over memory still accept their opaque cookie.
+        let memory_offset = if matches!(backend, MoltFileBackend::Text(_))
+            || (!handle.text && matches!(backend, MoltFileBackend::Memory(_)))
+        {
+            match value.to_isize() {
+                Some(offset) => Some(offset as i64),
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "Python int too large to convert to C ssize_t",
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        if !handle.write_buf.is_empty()
+            && let Err(bits) = flush_write_buffer(_py, handle, backend)
+        {
+            return bits;
+        }
+        if handle.text {
+            if let MoltFileBackend::Text(_) = backend {
+                let offset = memory_offset.expect("StringIO offset was admitted as Py_ssize_t");
+                let pos = match text_backend_seek(_py, backend, offset, whence) {
+                    Ok(pos) => pos,
+                    Err(bits) => return bits,
+                };
+                handle.pending_byte = None;
+                handle.text_pending_bytes.clear();
+                handle.text_pending_text.clear();
+                clear_read_buffer(handle);
+                clear_write_buffer(handle);
+                return int_bits_from_i128(_py, i128::from(pos));
+            }
+            if whence == 0 {
+                let cookie = match text_cookie_decode_value(&value) {
+                    Ok(val) => val,
+                    Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+                };
+                match backend_seek(_py, handle, backend, std::io::SeekFrom::Start(cookie.pos)) {
+                    Ok(_) => {}
+                    Err(bits) => return bits,
+                };
+                text_cookie_restore_decoder(handle, &cookie);
+                handle.pending_byte = cookie.pending_byte;
+                handle.text_pending_bytes = cookie.pending_bytes;
+                handle.text_pending_text = cookie.pending_text;
+                clear_read_buffer(handle);
+                clear_write_buffer(handle);
+                return int_bits_from_bigint(_py, value);
+            }
+        }
+        let Some(offset) = memory_offset.or_else(|| value.to_i64()) else {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "Python int too large to convert to C long",
+            );
+        };
+        if handle.text && offset != 0 && (whence == 1 || whence == 2) {
+            let msg = if whence == 1 {
+                "can't do nonzero cur-relative seeks"
+            } else {
+                "can't do nonzero end-relative seeks"
+            };
+            return raise_exception::<_>(_py, "UnsupportedOperation", msg);
+        }
+        if !handle.write_buf.is_empty()
+            && let Err(bits) = flush_write_buffer(_py, handle, backend)
+        {
+            return bits;
+        }
+        let mut seek_offset = offset;
+        if whence == 1 {
+            let unread = unread_bytes(handle) as i64;
+            let pending = if handle.pending_byte.is_some() { 1 } else { 0 };
+            let pending = pending + handle.text_pending_bytes.len() as i64;
+            seek_offset = seek_offset.saturating_sub(unread + pending);
+        }
+        let from = match whence {
+            0 => {
+                if seek_offset < 0 {
+                    let msg = format!("negative seek position {seek_offset}");
+                    return raise_exception::<_>(_py, "ValueError", &msg);
+                }
+                std::io::SeekFrom::Start(seek_offset as u64)
+            }
+            1 => std::io::SeekFrom::Current(seek_offset),
+            2 => std::io::SeekFrom::End(seek_offset),
+            _ => return raise_exception::<_>(_py, "ValueError", "invalid whence"),
+        };
+        let pos = match backend_seek(_py, handle, backend, from) {
+            Ok(pos) => pos,
+            Err(bits) => return bits,
+        };
+        handle.pending_byte = None;
+        handle.text_pending_bytes.clear();
+        handle.text_pending_text.clear();
+        clear_read_buffer(handle);
+        if handle.text {
+            reset_text_decoder(handle);
+            handle.text_bom_written = pos != 0;
+        }
+        int_bits_from_i128(_py, i128::from(pos))
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle_obj = obj_from_bits(handle_bits);
-        let Some(ptr) = handle_obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(_py, { file_tell(_py, handle_bits) })
+}
+
+fn file_tell(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
+    let handle_obj = obj_from_bits(handle_bits);
+    let Some(ptr) = handle_obj.as_ptr() else {
+        return raise_exception::<_>(_py, "TypeError", "expected file handle");
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
-            }
-            let handle_ptr = file_handle_ptr(ptr);
-            if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
-            }
+        }
+        let handle_ptr = file_handle_ptr(ptr);
+        if handle_ptr.is_null() {
+            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+        }
+        if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"tell"], false) {
+            return error;
+        }
+        if buffered_writer::applies(ptr) {
+            return buffered_writer::tell(_py, handle_bits, ptr);
+        }
+        let flush_text = {
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -521,46 +664,87 @@ pub extern "C" fn molt_file_tell(handle_bits: u64) -> u64 {
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
-            let backend_state = Arc::clone(&handle.state);
-            let mut guard = backend_state.backend.lock().unwrap();
+            let state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
+            let mut guard = state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if handle.text
-                && let MoltFileBackend::Text(_) = backend
-            {
-                let pos = match text_backend_tell(_py, backend) {
-                    Ok(pos) => pos,
-                    Err(bits) => return bits,
-                };
-                return MoltObject::from_int(pos).bits();
+            let flush_text = handle.text && !matches!(backend, MoltFileBackend::Text(_));
+            if flush_text {
+                // Refuse nonseekable text streams before flushing, as CPython
+                // does. Binary buffered tell retains its nonflushing behavior.
+                if let Err(bits) = require_seekable_text_backend(_py, &state, backend) {
+                    return bits;
+                }
+                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
+                    return bits;
+                }
             }
-            let pos = match backend_tell(_py, backend) {
-                Ok(pos) => pos,
-                Err(bits) => return bits,
-            } as i64;
-            let unread = unread_bytes(handle) as i64;
-            let buffered_write = handle.write_buf.len() as i64;
-            let logical = pos - unread + buffered_write;
-            if handle.text {
-                if logical < 0 {
-                    return raise_exception::<_>(_py, "OSError", "tell failed");
-                }
-                match text_cookie_encode_bits(
-                    _py,
-                    logical as u64,
-                    handle.pending_byte,
-                    &handle.text_pending_bytes,
-                    &handle.text_pending_text,
-                ) {
-                    Ok(bits) => bits,
-                    Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
-                }
-            } else {
-                MoltObject::from_int(logical).bits()
+            flush_text
+        };
+        if flush_text {
+            // No backing borrow or lock may span the overridable flush call.
+            let result = io_call_noargs(_py, handle_bits, b"flush");
+            dec_ref_bits(_py, result);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
             }
         }
-    })
+        // A flush callback may close/detach the stream: revalidate its owner.
+        let handle = &mut *handle_ptr;
+        if let Err(bits) = file_handle_require_attached(_py, handle) {
+            return bits;
+        }
+        if file_handle_is_closed(handle) {
+            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+        }
+        let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+            Ok(state) => state,
+            Err(error) => return error,
+        });
+        let mut guard = backend_state.backend.lock().unwrap();
+        let Some(backend) = guard.as_mut() else {
+            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+        };
+        if handle.text
+            && let MoltFileBackend::Text(_) = backend
+        {
+            let pos = match text_backend_tell(_py, backend) {
+                Ok(pos) => pos,
+                Err(bits) => return bits,
+            };
+            return int_bits_from_i128(_py, i128::from(pos));
+        }
+        let pos = match backend_tell(_py, &backend_state, backend) {
+            Ok(pos) => pos,
+            Err(bits) => return bits,
+        };
+        let unread = unread_bytes(handle) as i128;
+        let buffered_write = (handle.write_buf.len() - handle.write_start) as i128;
+        let logical = i128::from(pos) - unread + buffered_write;
+        if handle.text {
+            if !(0..=i128::from(u64::MAX)).contains(&logical) {
+                return raise_exception::<_>(_py, "OSError", "tell failed");
+            }
+            match text_cookie_encode_bits(
+                _py,
+                logical as u64,
+                handle.pending_byte,
+                &handle.text_pending_bytes,
+                &handle.text_pending_text,
+                text_cookie_decoder(handle),
+                handle.text_bom_seen,
+            ) {
+                Ok(bits) => bits,
+                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            }
+        } else {
+            int_bits_from_i128(_py, logical)
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -578,6 +762,12 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"fileno"], false) {
+                return error;
+            }
+            if buffered_writer::is_writer(_py, ptr) {
+                return buffered_writer::query(_py, handle_bits, ptr, b"fileno");
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -585,7 +775,10 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_ref() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -632,6 +825,21 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if !obj_from_bits(size_bits).is_none()
+                && crate::builtins::numbers::index_i64_integral_bits(size_bits).is_none()
+            {
+                if let Err(error) = buffered_writer::prepare_conversion(_py, ptr) {
+                    return error;
+                }
+            }
+            if let Err(error) =
+                buffered_writer::prepare(_py, ptr, &[b"write", b"truncate", b"tell"], false)
+            {
+                return error;
+            }
+            if buffered_writer::applies(ptr) {
+                return buffered_writer::truncate(_py, handle_bits, ptr, size_bits);
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -642,7 +850,10 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
             if !handle.writable {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "truncate");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -681,12 +892,12 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
                 return bits;
             }
             let size = if obj_from_bits(size_bits).is_none() {
-                let pos = match backend_tell(_py, backend) {
+                let pos = match backend_tell(_py, &backend_state, backend) {
                     Ok(pos) => pos as i64,
                     Err(bits) => return bits,
                 };
                 let unread = unread_bytes(handle) as i64;
-                let buffered_write = handle.write_buf.len() as i64;
+                let buffered_write = (handle.write_buf.len() - handle.write_start) as i64;
                 let logical = pos - unread + buffered_write;
                 if logical < 0 {
                     return raise_exception::<_>(_py, "OSError", "Invalid argument");
@@ -731,6 +942,11 @@ pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if buffered_writer::is_writer(_py, ptr) {
+                // BufferedWriter inherits IOBase.readable; it does not expose
+                // _Buffered.readable's forwarding descriptor.
+                return MoltObject::from_bool(false).bits();
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -757,6 +973,12 @@ pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"writable"], false) {
+                return error;
+            }
+            if buffered_writer::is_writer(_py, ptr) {
+                return buffered_writer::query(_py, handle_bits, ptr, b"writable");
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -785,6 +1007,12 @@ pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"seekable"], false) {
+                return error;
+            }
+            if buffered_writer::is_writer(_py, ptr) {
+                return buffered_writer::query(_py, handle_bits, ptr, b"seekable");
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -792,13 +1020,19 @@ pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
             let seekable = match backend {
-                MoltFileBackend::File(file) => file.stream_position().is_ok(),
+                MoltFileBackend::File(file) => {
+                    host_file_seek(&backend_state, file, std::io::SeekFrom::Current(0)).is_ok()
+                }
+
                 MoltFileBackend::Memory(_) | MoltFileBackend::Text(_) => true,
             };
             MoltObject::from_bool(seekable).bits()
@@ -821,6 +1055,12 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"isatty"], false) {
+                return error;
+            }
+            if buffered_writer::is_writer(_py, ptr) {
+                return buffered_writer::query(_py, handle_bits, ptr, b"isatty");
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -828,7 +1068,10 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_ref() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");

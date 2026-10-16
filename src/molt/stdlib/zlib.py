@@ -16,7 +16,6 @@ _MOLT_ZLIB_ADLER32 = _require_intrinsic("molt_zlib_adler32")
 _MOLT_ZLIB_COMPRESSOBJ_NEW = _require_intrinsic("molt_zlib_compressobj_new")
 _MOLT_ZLIB_COMPRESSOBJ_COMPRESS = _require_intrinsic("molt_zlib_compressobj_compress")
 _MOLT_ZLIB_COMPRESSOBJ_FLUSH = _require_intrinsic("molt_zlib_compressobj_flush")
-_MOLT_ZLIB_COMPRESSOBJ_DROP = _require_intrinsic("molt_zlib_compressobj_drop")
 
 # --- decompressobj handle operations ---
 _MOLT_ZLIB_DECOMPRESSOBJ_NEW = _require_intrinsic("molt_zlib_decompressobj_new")
@@ -24,7 +23,6 @@ _MOLT_ZLIB_DECOMPRESSOBJ_DECOMPRESS = _require_intrinsic(
     "molt_zlib_decompressobj_decompress"
 )
 _MOLT_ZLIB_DECOMPRESSOBJ_FLUSH = _require_intrinsic("molt_zlib_decompressobj_flush")
-_MOLT_ZLIB_DECOMPRESSOBJ_DROP = _require_intrinsic("molt_zlib_decompressobj_drop")
 _MOLT_ZLIB_DECOMPRESSOBJ_EOF = _require_intrinsic("molt_zlib_decompressobj_eof")
 _MOLT_ZLIB_DECOMPRESSOBJ_UNCONSUMED_TAIL = _require_intrinsic(
     "molt_zlib_decompressobj_unconsumed_tail"
@@ -57,53 +55,31 @@ class error(Exception):
     """Exception raised on compression and decompression errors."""
 
 
+_ZLIB_ERROR = error
+_ZDICT_OMITTED = object()
+
+
 def compress(
     data: bytes, /, level: int = Z_DEFAULT_COMPRESSION, wbits: int = MAX_WBITS
 ) -> bytes:
     """Compress *data* in one shot, returning compressed bytes."""
-    if not isinstance(data, (bytes, bytearray)):
-        raise TypeError(f"a bytes-like object is required, not {type(data).__name__!r}")
-    if not isinstance(level, int):
-        raise TypeError("an integer is required")
-    if not isinstance(wbits, int):
-        raise TypeError("an integer is required")
-    try:
-        return bytes(_MOLT_ZLIB_COMPRESS(data, level))
-    except Exception as exc:
-        raise error(str(exc)) from exc
+    return bytes(_MOLT_ZLIB_COMPRESS(_ZLIB_ERROR, data, level, wbits))
 
 
 def decompress(
     data: bytes, /, wbits: int = MAX_WBITS, bufsize: int = DEF_BUF_SIZE
 ) -> bytes:
     """Decompress *data* in one shot, returning uncompressed bytes."""
-    if not isinstance(data, (bytes, bytearray)):
-        raise TypeError(f"a bytes-like object is required, not {type(data).__name__!r}")
-    if not isinstance(wbits, int):
-        raise TypeError("an integer is required")
-    if not isinstance(bufsize, int):
-        raise TypeError("an integer is required")
-    try:
-        return bytes(_MOLT_ZLIB_DECOMPRESS(data, wbits, bufsize))
-    except Exception as exc:
-        raise error(str(exc)) from exc
+    return bytes(_MOLT_ZLIB_DECOMPRESS(_ZLIB_ERROR, data, wbits, bufsize))
 
 
 def crc32(data: bytes, value: int = 0) -> int:
     """Compute CRC-32 checksum of *data*, optionally continuing from *value*."""
-    if not isinstance(data, (bytes, bytearray)):
-        raise TypeError(f"a bytes-like object is required, not {type(data).__name__!r}")
-    if not isinstance(value, int):
-        raise TypeError("an integer is required")
     return int(_MOLT_ZLIB_CRC32(data, value)) & 0xFFFFFFFF
 
 
 def adler32(data: bytes, value: int = 1) -> int:
     """Compute Adler-32 checksum of *data*, optionally continuing from *value*."""
-    if not isinstance(data, (bytes, bytearray)):
-        raise TypeError(f"a bytes-like object is required, not {type(data).__name__!r}")
-    if not isinstance(value, int):
-        raise TypeError("an integer is required")
     return int(_MOLT_ZLIB_ADLER32(data, value)) & 0xFFFFFFFF
 
 
@@ -113,28 +89,10 @@ def compressobj(
     wbits: int = MAX_WBITS,
     memLevel: int = DEF_MEM_LEVEL,
     strategy: int = Z_DEFAULT_STRATEGY,
-    zdict: bytes | None = None,
+    zdict=_ZDICT_OMITTED,
 ) -> "Compress":
-    """Return a streaming compression object.
-
-    The *zdict* parameter is accepted for API compatibility but is currently
-    not forwarded to the Rust intrinsic (which silently ignores it).
-    """
-    if not isinstance(level, int):
-        raise TypeError("an integer is required")
-    if not isinstance(method, int):
-        raise TypeError("an integer is required")
-    if not isinstance(wbits, int):
-        raise TypeError("an integer is required")
-    if not isinstance(memLevel, int):
-        raise TypeError("an integer is required")
-    if not isinstance(strategy, int):
-        raise TypeError("an integer is required")
-    if zdict is not None and not isinstance(zdict, (bytes, bytearray)):
-        raise TypeError(
-            f"a bytes-like object is required, not {type(zdict).__name__!r}"
-        )
-    return Compress(level, method, wbits, memLevel, strategy)
+    """Return a streaming compression object."""
+    return Compress(level, method, wbits, memLevel, strategy, zdict)
 
 
 def decompressobj(wbits: int = MAX_WBITS, zdict: bytes | None = None) -> "Decompress":
@@ -143,8 +101,6 @@ def decompressobj(wbits: int = MAX_WBITS, zdict: bytes | None = None) -> "Decomp
     The *zdict* parameter is accepted for API compatibility but is currently
     not forwarded to the Rust intrinsic (which silently ignores it).
     """
-    if not isinstance(wbits, int):
-        raise TypeError("an integer is required")
     if zdict is not None and not isinstance(zdict, (bytes, bytearray)):
         raise TypeError(
             f"a bytes-like object is required, not {type(zdict).__name__!r}"
@@ -162,27 +118,22 @@ class Compress:
         wbits: int,
         memLevel: int,
         strategy: int,
+        zdict=_ZDICT_OMITTED,
     ) -> None:
-        try:
-            self._handle = _MOLT_ZLIB_COMPRESSOBJ_NEW(
-                level, method, wbits, memLevel, strategy
-            )
-        except Exception as exc:
-            raise error(str(exc)) from exc
-        self._flushed = False
+        self._handle = _MOLT_ZLIB_COMPRESSOBJ_NEW(
+            _ZLIB_ERROR,
+            level,
+            method,
+            wbits,
+            memLevel,
+            strategy,
+            zdict,
+            zdict is not _ZDICT_OMITTED,
+        )
 
     def compress(self, data: bytes) -> bytes:
         """Compress *data*, returning a partial compressed bytes object."""
-        if self._flushed:
-            raise error("compressobj finished")
-        if not isinstance(data, (bytes, bytearray)):
-            raise TypeError(
-                f"a bytes-like object is required, not {type(data).__name__!r}"
-            )
-        try:
-            return bytes(_MOLT_ZLIB_COMPRESSOBJ_COMPRESS(self._handle, data))
-        except Exception as exc:
-            raise error(str(exc)) from exc
+        return bytes(_MOLT_ZLIB_COMPRESSOBJ_COMPRESS(_ZLIB_ERROR, self._handle, data))
 
     def flush(self, mode: int = Z_FINISH) -> bytes:
         """Flush remaining compressed output.
@@ -190,38 +141,14 @@ class Compress:
         *mode* may be Z_NO_FLUSH, Z_SYNC_FLUSH, Z_FULL_FLUSH, or Z_FINISH
         (default).  After a Z_FINISH flush, compress() must not be called again.
         """
-        if self._flushed:
-            raise error("compressobj finished")
-        if not isinstance(mode, int):
-            raise TypeError("an integer is required")
-        try:
-            result = bytes(_MOLT_ZLIB_COMPRESSOBJ_FLUSH(self._handle, mode))
-        except Exception as exc:
-            raise error(str(exc)) from exc
-        if mode == Z_FINISH:
-            self._flushed = True
-        return result
-
-    def __del__(self, _drop=_MOLT_ZLIB_COMPRESSOBJ_DROP) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
-        object.__setattr__(self, "_handle", None)
-        try:
-            _drop(handle)
-        except Exception:
-            pass
+        return bytes(_MOLT_ZLIB_COMPRESSOBJ_FLUSH(_ZLIB_ERROR, self._handle, mode))
 
 
 class Decompress:
     """Streaming decompressor backed by a Rust handle."""
 
     def __init__(self, wbits: int) -> None:
-        try:
-            self._handle = _MOLT_ZLIB_DECOMPRESSOBJ_NEW(wbits)
-        except Exception as exc:
-            raise error(str(exc)) from exc
-        self._flushed = False
+        self._handle = _MOLT_ZLIB_DECOMPRESSOBJ_NEW(wbits)
 
     def decompress(self, data: bytes, max_length: int = 0) -> bytes:
         """Decompress *data*, returning uncompressed bytes.
@@ -229,41 +156,24 @@ class Decompress:
         If *max_length* is non-zero the returned buffer is at most that many
         bytes; any remaining input is accessible via *unconsumed_tail*.
         """
-        if self.eof:
-            raise error("end of stream already reached")
-        if not isinstance(data, (bytes, bytearray)):
-            raise TypeError(
-                f"a bytes-like object is required, not {type(data).__name__!r}"
-            )
-        if not isinstance(max_length, int):
-            raise TypeError("an integer is required")
-        try:
-            return bytes(
-                _MOLT_ZLIB_DECOMPRESSOBJ_DECOMPRESS(self._handle, data, max_length)
-            )
-        except Exception as exc:
-            raise error(str(exc)) from exc
+        return bytes(
+            _MOLT_ZLIB_DECOMPRESSOBJ_DECOMPRESS(_ZLIB_ERROR, self._handle, data, max_length)
+        )
 
     def flush(self, length: int = DEF_BUF_SIZE) -> bytes:
         """Process all pending input and return remaining uncompressed output."""
-        if not isinstance(length, int):
-            raise TypeError("an integer is required")
-        try:
-            result = bytes(_MOLT_ZLIB_DECOMPRESSOBJ_FLUSH(self._handle, length))
-        except Exception as exc:
-            raise error(str(exc)) from exc
-        self._flushed = True
+        result = bytes(_MOLT_ZLIB_DECOMPRESSOBJ_FLUSH(_ZLIB_ERROR, self._handle, length))
         return result
 
     @property
     def eof(self) -> bool:
         """True if the end of the compressed data stream has been reached."""
-        return bool(_MOLT_ZLIB_DECOMPRESSOBJ_EOF(self._handle))
+        return bool(_MOLT_ZLIB_DECOMPRESSOBJ_EOF(_ZLIB_ERROR, self._handle))
 
     @property
     def unconsumed_tail(self) -> bytes:
         """Data not consumed by the last decompress() call due to max_length."""
-        return bytes(_MOLT_ZLIB_DECOMPRESSOBJ_UNCONSUMED_TAIL(self._handle))
+        return bytes(_MOLT_ZLIB_DECOMPRESSOBJ_UNCONSUMED_TAIL(_ZLIB_ERROR, self._handle))
 
     @property
     def unused_data(self) -> bytes:
@@ -274,17 +184,8 @@ class Decompress:
         bytes found after the compressed stream ended (e.g. concatenated
         streams). It is distinct from :attr:`unconsumed_tail`.
         """
-        return bytes(_MOLT_ZLIB_DECOMPRESSOBJ_UNUSED_DATA(self._handle))
+        return bytes(_MOLT_ZLIB_DECOMPRESSOBJ_UNUSED_DATA(_ZLIB_ERROR, self._handle))
 
-    def __del__(self, _drop=_MOLT_ZLIB_DECOMPRESSOBJ_DROP) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is None:
-            return
-        object.__setattr__(self, "_handle", None)
-        try:
-            _drop(handle)
-        except Exception:
-            pass
 
 
 __all__ = [

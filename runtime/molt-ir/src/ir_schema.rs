@@ -987,11 +987,7 @@ mod op_shape_tests {
                 );
             }
         }
-        for kind in [
-            "get_attr_generic_ptr",
-            "class_set_layout_version",
-            "code_slot_set",
-        ] {
+        for kind in ["get_attr_generic_ptr", "code_slot_set"] {
             assert!(validate_class_definition_symbol(kind, None).is_ok());
             assert_eq!(
                 validate_class_definition_symbol(kind, Some("class:m:P"))

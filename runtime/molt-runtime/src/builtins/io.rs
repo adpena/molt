@@ -22,23 +22,25 @@ use std::io::{ErrorKind, Read, Seek, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[path = "io/buffered_writer.rs"]
+mod buffered_writer;
+
 #[path = "io/buffer.rs"]
 mod buffer;
-pub(crate) use buffer::collect_bytes_like;
 #[cfg(test)]
 use buffer::file_remaining_bytes_hint;
 use buffer::{
     backend_flush, backend_read_bytes, backend_seek, backend_tell, backend_truncate,
     backend_write_bytes, buffered_read_bytes, buffered_read_into, clear_read_buffer,
-    clear_write_buffer, file_read1_bytes, flush_write_buffer, handle_read_byte,
+    clear_write_buffer, file_read1_bytes, flush_write_buffer, handle_read_byte, host_file_seek,
     memory_backend_bits, memory_backend_vec_ref, prepend_read_buffer, rewind_read_buffer,
     unread_bytes,
 };
 #[path = "io/handle.rs"]
 mod handle;
 use handle::{
-    VfsWritebackEntry, alloc_file_handle_with_state, file_handle_mode, file_handle_raw_bits,
-    resolve_file_handle_ptr, vfs_writeback_register, vfs_writeback_take,
+    VfsWritebackEntry, alloc_file_handle_with_state, file_handle_mode, file_handle_physical_state,
+    file_handle_raw_bits, resolve_file_handle_ptr, vfs_writeback_register, vfs_writeback_take,
 };
 pub(crate) use handle::{
     file_handle_close_detached, file_handle_close_ptr, file_handle_detached_message,
@@ -61,9 +63,11 @@ use open::{open_arg_newline, reconfigure_arg_newline, reconfigure_arg_type};
 pub(crate) use open::{windows_crt_fd_from_handle, windows_path_from_handle};
 #[path = "io/construct.rs"]
 mod construct;
+pub(crate) use construct::buffered_writer_new_method;
 pub use construct::{
     molt_buffered_init, molt_buffered_new, molt_bytesio_init, molt_bytesio_new, molt_io_class,
-    molt_stringio_init, molt_stringio_new, molt_text_io_wrapper_init, molt_text_io_wrapper_new,
+    molt_io_default_buffer_size, molt_stringio_init, molt_stringio_new, molt_text_io_wrapper_init,
+    molt_text_io_wrapper_new,
 };
 #[path = "io/read.rs"]
 mod read;
@@ -146,7 +150,15 @@ fn io_chain_close_error(py: &PyToken<'_>, previous: crate::builtins::exceptions:
     }
 }
 
-const DEFAULT_BUFFER_SIZE: i64 = 8192;
+// CPython Modules/_io/_iomodule.h increased this default in Python 3.14.
+// Native constructors, open/stdio and both Python facades share this authority.
+pub(crate) fn default_buffer_size(py: &PyToken<'_>) -> i64 {
+    if crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+        128 * 1024
+    } else {
+        8 * 1024
+    }
+}
 
 pub(crate) struct IoRuntimeState {
     pub(crate) sys_stdin_handle_bits: AtomicU64,
@@ -270,19 +282,24 @@ mod tests {
             let classes = crate::builtin_classes(py);
             for close_child in [false, true] {
                 let path = temp_path("borrowed_close");
+                let file = File::create(&path).unwrap();
+                #[cfg(windows)]
+                let crt_fd = {
+                    use std::os::windows::io::AsRawHandle;
+                    super::windows_crt_fd_from_handle(file.as_raw_handle(), false, true, false)
+                        .expect("fixture file owns its CRT descriptor")
+                };
                 let state = Arc::new(MoltFileState {
-                    backend: Mutex::new(Some(crate::object::MoltFileBackend::File(
-                        File::create(&path).unwrap(),
-                    ))),
+                    backend: Mutex::new(Some(crate::object::MoltFileBackend::File(file))),
                     #[cfg(windows)]
-                    crt_fd: Mutex::new(None),
+                    crt_fd: Mutex::new(Some(crt_fd)),
                     host_descriptor: false,
                 });
                 // The enclosing test owns the backend, just as the WASI host
                 // owns stdio. Neither Python handle may retire that resource.
                 let raw = super::alloc_file_handle_with_state(
                     py,
-                    Arc::clone(&state),
+                    Some(Arc::clone(&state)),
                     true,
                     false,
                     false,
@@ -356,6 +373,15 @@ mod tests {
         crate::MoltObject::from_ptr(ptr).bits()
     }
 
+    fn bytes_output(bits: u64) -> Vec<u8> {
+        let pointer = obj_from_bits(bits).as_ptr().unwrap();
+        unsafe {
+            assert_eq!(crate::object_type_id(pointer), crate::TYPE_ID_BYTES);
+            std::slice::from_raw_parts(crate::bytes_data(pointer), crate::bytes_len(pointer))
+                .to_vec()
+        }
+    }
+
     fn io_error(py: &crate::PyToken<'_>) -> (String, String) {
         assert!(crate::exception_pending(py));
         let error = crate::molt_exception_last();
@@ -366,6 +392,32 @@ mod tests {
         dec_ref_bits(py, message);
         dec_ref_bits(py, error);
         (kind, text)
+    }
+
+    fn io_error_errno(py: &crate::PyToken<'_>) -> i64 {
+        assert!(crate::exception_pending(py));
+        let error = crate::molt_exception_last();
+        crate::molt_exception_clear();
+        let errno = crate::builtins::exceptions::exception_typed_field_get(
+            py,
+            obj_from_bits(error).as_ptr().unwrap(),
+            molt_obj_model::ExceptionTypedField::OSErrorErrno,
+        )
+        .expect("host positioning raises OSError")
+        .expect("host positioning preserves errno");
+        let value = crate::to_i64(obj_from_bits(errno)).expect("errno must be an integer");
+        dec_ref_bits(py, errno);
+        dec_ref_bits(py, error);
+        value
+    }
+
+    fn host_error_errno(error: &std::io::Error) -> i64 {
+        let errno = error
+            .raw_os_error()
+            .expect("host operation has an OS error");
+        #[cfg(windows)]
+        let errno = crate::windows_abi::winerror_to_errno(errno);
+        i64::from(errno)
     }
 
     fn selected_grants(required: &[&str], mask: usize) -> String {
@@ -406,13 +458,325 @@ mod tests {
     }
 
     #[test]
+    fn text_positions_preserve_raw_offsets_and_disjoint_decoder_cookies() {
+        use molt_stdlib_text::codec_registry::EncodingKind;
+        use num_bigint::{BigInt, Sign};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for offset in [0, 2, 3, 6, (1_u64 << 46) + 7, u64::MAX] {
+                let bits = super::text_cookie_encode_bits(py, offset, None, &[], &[], None, false)
+                    .unwrap();
+                let integer =
+                    crate::index_bigint_from_obj(py, bits, "position must be int").unwrap();
+                assert_eq!(
+                    integer,
+                    BigInt::from(offset),
+                    "stateless tell is a byte offset"
+                );
+                let restored = super::text_cookie_decode_value(&integer).unwrap();
+                assert_eq!(restored.pos, offset);
+                assert!(restored.pending_byte.is_none());
+                assert!(restored.pending_bytes.is_empty());
+                assert!(restored.pending_text.is_empty());
+                assert!(restored.decoder.is_none());
+                dec_ref_bits(py, bits);
+            }
+            for (offset, pending, bytes, text, decoder) in [
+                (0, Some(0), &[][..], &[][..], None),
+                (6, Some(b'\r'), &b"\xe2\x82"[..], &b"tail"[..], None),
+                (10, None, &[][..], &[][..], Some(EncodingKind::Utf16BE)),
+                (16, None, &[][..], &b"x"[..], Some(EncodingKind::Utf32LE)),
+            ] {
+                let bits =
+                    super::text_cookie_encode_bits(py, offset, pending, bytes, text, decoder, true)
+                        .unwrap();
+                let integer =
+                    crate::index_bigint_from_obj(py, bits, "position must be int").unwrap();
+                assert!(
+                    integer > BigInt::from(u64::MAX),
+                    "state cannot alias any raw offset"
+                );
+                let restored = super::text_cookie_decode_value(&integer).unwrap();
+                assert_eq!(restored.pos, offset);
+                assert_eq!(restored.pending_byte, pending);
+                assert_eq!(restored.pending_bytes, bytes);
+                assert_eq!(restored.pending_text, text);
+                assert_eq!(restored.decoder, decoder);
+                assert_eq!(restored.bom_seen, Some(true));
+                let (_, wire) = integer.to_bytes_le();
+                let mut truncated = wire.clone();
+                truncated.remove(0);
+                assert!(
+                    super::text_cookie_decode_value(&BigInt::from_bytes_le(Sign::Plus, &truncated))
+                        .is_err()
+                );
+                let mut unknown_flags = wire.clone();
+                unknown_flags[8] |= 0x80;
+                assert!(
+                    super::text_cookie_decode_value(&BigInt::from_bytes_le(
+                        Sign::Plus,
+                        &unknown_flags
+                    ))
+                    .is_err()
+                );
+                let mut unknown_decoder = wire.clone();
+                unknown_decoder[11] = 255;
+                assert!(
+                    super::text_cookie_decode_value(&BigInt::from_bytes_le(
+                        Sign::Plus,
+                        &unknown_decoder
+                    ))
+                    .is_err()
+                );
+                let mut oversized = wire.clone();
+                oversized[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+                assert!(
+                    super::text_cookie_decode_value(&BigInt::from_bytes_le(Sign::Plus, &oversized))
+                        .is_err()
+                );
+                let mut extra = wire;
+                extra.insert(16, 0);
+                assert!(
+                    super::text_cookie_decode_value(&BigInt::from_bytes_le(Sign::Plus, &extra))
+                        .is_err()
+                );
+                dec_ref_bits(py, bits);
+            }
+            assert!(super::text_cookie_decode_value(&BigInt::from(-1)).is_err());
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn memory_positions_use_target_ssize_bounds_and_preserve_failure_position() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let classes = crate::builtin_classes(py);
+            let data = crate::MoltObject::from_ptr(crate::alloc_bytes(py, b"abc")).bits();
+            let text = io_string(py, "abc");
+            let newline = io_string(py, "\n");
+            let bytes_io = super::molt_bytesio_new(classes.bytes_io, data);
+            let string_io = super::molt_stringio_new(classes.string_io, text, newline);
+            assert!(!crate::exception_pending(py));
+            let limit = isize::MAX as i128;
+            for (handle, string) in [(bytes_io, false), (string_io, true)] {
+                let offset = crate::int_bits_from_i128(py, limit);
+                let result =
+                    super::molt_file_seek(handle, offset, crate::MoltObject::from_int(0).bits());
+                assert!(!crate::exception_pending(py));
+                assert_eq!(crate::to_i64(obj_from_bits(result)), Some(limit as i64));
+                dec_ref_bits(py, result);
+                for (delta, origin, kind) in [
+                    (limit + 1, 0, "OverflowError"),
+                    (-limit - 2, 0, "OverflowError"),
+                    (-1, 0, "ValueError"),
+                    (1, 1, if string { "OSError" } else { "OverflowError" }),
+                    (limit, 2, if string { "OSError" } else { "OverflowError" }),
+                ] {
+                    let delta = crate::int_bits_from_i128(py, delta);
+                    super::molt_file_seek(
+                        handle,
+                        delta,
+                        crate::MoltObject::from_int(origin).bits(),
+                    );
+                    assert_eq!(io_error(py).0, kind);
+                    let current = super::molt_file_tell(handle);
+                    assert_eq!(crate::to_i64(obj_from_bits(current)), Some(limit as i64));
+                    dec_ref_bits(py, current);
+                    dec_ref_bits(py, delta);
+                }
+                if !string {
+                    let negative = crate::int_bits_from_i128(py, -limit - 1);
+                    let clamped = super::molt_file_seek(
+                        handle,
+                        negative,
+                        crate::MoltObject::from_int(1).bits(),
+                    );
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(crate::to_i64(obj_from_bits(clamped)), Some(0));
+                    dec_ref_bits(py, negative);
+                    dec_ref_bits(py, clamped);
+                }
+                let end = super::molt_file_seek(
+                    handle,
+                    crate::MoltObject::from_int(0).bits(),
+                    crate::MoltObject::from_int(2).bits(),
+                );
+                assert!(!crate::exception_pending(py));
+                assert_eq!(crate::to_i64(obj_from_bits(end)), Some(3));
+                dec_ref_bits(py, end);
+                dec_ref_bits(py, offset);
+                super::molt_file_close(handle);
+                dec_ref_bits(py, handle);
+            }
+            for bits in [data, text, newline] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn host_append_entrypoints_publish_eof_and_full_width_positions() {
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("fs.write", |py| {
+            let path = temp_path("append_position");
+            let path_bits = io_string(py, path.to_str().unwrap());
+            let mode = io_string(py, "ab");
+            for entry in 0..4 {
+                std::fs::write(&path, b"prefix").unwrap();
+                let handle =
+                    open_entry(py, entry, path_bits, mode, crate::MoltObject::none().bits());
+                assert!(!crate::exception_pending(py));
+                let position = super::molt_file_tell(handle);
+                assert_eq!(crate::to_i64(obj_from_bits(position)), Some(6));
+                dec_ref_bits(py, position);
+                // A filesystem may reject even a seek-only offset above its
+                // maximum file position. Compare against an independent host
+                // descriptor on the same filesystem, including refusal state.
+                let large = (1_i128 << 47) + 3;
+                let mut reference = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap();
+                assert_eq!(reference.seek(SeekFrom::End(0)).unwrap(), 6);
+                let expected = reference.seek(SeekFrom::Start(large as u64));
+                let expected_position = reference.stream_position().unwrap();
+                let offset = crate::int_bits_from_i128(py, large);
+                let result =
+                    super::molt_file_seek(handle, offset, crate::MoltObject::from_int(0).bits());
+                match expected {
+                    Ok(position) => {
+                        assert_eq!(position, large as u64);
+                        assert!(!crate::exception_pending(py), "entry {entry}");
+                        assert_eq!(crate::to_i64(obj_from_bits(result)), Some(large as i64));
+                    }
+                    Err(error) => {
+                        assert_eq!(expected_position, 6);
+                        assert_eq!(io_error_errno(py), host_error_errno(&error));
+                    }
+                }
+                let position = super::molt_file_tell(handle);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(
+                    crate::to_i64(obj_from_bits(position)),
+                    Some(expected_position as i64)
+                );
+                super::molt_file_close(handle);
+                assert!(!crate::exception_pending(py));
+                for bits in [offset, result, position, handle] {
+                    dec_ref_bits(py, bits);
+                }
+                assert_eq!(std::fs::read(&path).unwrap(), b"prefix");
+            }
+            for bits in [path_bits, mode] {
+                dec_ref_bits(py, bits);
+            }
+            remove_file(path).unwrap();
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn descriptor_positions_preserve_host_results_and_checked_whence() {
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("fs.read", |py| {
+            let path = temp_path("descriptor_position");
+            std::fs::write(&path, b"prefix").unwrap();
+            let path_bits = io_string(py, path.to_str().unwrap());
+            let mode = io_string(py, "rb");
+            let handle = open_entry(py, 2, path_bits, mode, crate::MoltObject::none().bits());
+            assert!(!crate::exception_pending(py));
+            let descriptor = super::molt_file_fileno(handle);
+            let zero = crate::MoltObject::from_int(0).bits();
+            let current = crate::MoltObject::from_int(1).bits();
+            assert_eq!(
+                crate::to_i64(obj_from_bits(crate::molt_os_lseek(
+                    descriptor,
+                    crate::MoltObject::from_int(6).bits(),
+                    zero,
+                ))),
+                Some(6),
+            );
+            assert!(!crate::exception_pending(py));
+            let large = (1_i128 << 47) + 3;
+            let mut reference = File::open(&path).unwrap();
+            reference.seek(SeekFrom::Start(6)).unwrap();
+            let expected = reference.seek(SeekFrom::Start(large as u64));
+            let expected_position = reference.stream_position().unwrap();
+            let offset = crate::int_bits_from_i128(py, large);
+            let result = crate::molt_os_lseek(descriptor, offset, zero);
+            match expected {
+                Ok(position) => {
+                    assert_eq!(position, large as u64);
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(crate::to_i64(obj_from_bits(result)), Some(large as i64));
+                }
+                Err(error) => {
+                    assert_eq!(expected_position, 6);
+                    assert_eq!(io_error_errno(py), host_error_errno(&error));
+                }
+            }
+            for invalid in [1_i128 << 40, -(1_i128 << 40)] {
+                let invalid = crate::int_bits_from_i128(py, invalid);
+                crate::molt_os_lseek(descriptor, zero, invalid);
+                assert_eq!(io_error(py).0, "OverflowError");
+                let position = crate::molt_os_lseek(descriptor, zero, current);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(
+                    crate::to_i64(obj_from_bits(position)),
+                    Some(expected_position as i64)
+                );
+                dec_ref_bits(py, position);
+                dec_ref_bits(py, invalid);
+            }
+            for invalid in [i128::from(i64::MAX) + 1, i128::from(i64::MIN) - 1] {
+                let invalid = crate::int_bits_from_i128(py, invalid);
+                crate::molt_os_lseek(descriptor, invalid, zero);
+                assert_eq!(io_error(py).0, "OverflowError");
+                let position = crate::molt_os_lseek(descriptor, zero, current);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(
+                    crate::to_i64(obj_from_bits(position)),
+                    Some(expected_position as i64)
+                );
+                dec_ref_bits(py, position);
+                dec_ref_bits(py, invalid);
+            }
+            let invalid_descriptor = crate::int_bits_from_i128(py, 1_i128 << 40);
+            crate::molt_os_lseek(invalid_descriptor, zero, zero);
+            assert_eq!(io_error(py).0, "OverflowError");
+            let position = super::molt_file_tell(handle);
+            assert!(!crate::exception_pending(py));
+            assert_eq!(
+                crate::to_i64(obj_from_bits(position)),
+                Some(expected_position as i64)
+            );
+            super::molt_file_close(handle);
+            assert!(!crate::exception_pending(py));
+            for bits in [
+                position,
+                invalid_descriptor,
+                result,
+                offset,
+                descriptor,
+                handle,
+                mode,
+                path_bits,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            drop(reference);
+            assert_eq!(std::fs::read(&path).unwrap(), b"prefix");
+            remove_file(path).unwrap();
+        });
+    }
+
+    #[test]
     fn open_entrypoints_report_selected_mode_missing_set_without_mutation() {
         let required = ["fs.read", "fs.write"];
         for mask in 0..4 {
-            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
                 &selected_grants(&required, mask),
+                None,
                 |py| {
-                    assert!(runtime_state(py).vfs_state.set(None).is_ok());
                     for entry in 0..4 {
                         for (mode, selected, operation) in [
                             ("rb", 1, "io.open.read"),
@@ -566,17 +930,13 @@ mod tests {
         instance
     }
 
-    fn tmp_mount(py: &crate::PyToken<'_>) -> std::sync::Arc<crate::vfs::tmp::TmpFs> {
-        let backend = std::sync::Arc::new(crate::vfs::tmp::TmpFs::new(1));
+    fn tmp_mount(
+        quota_mb: usize,
+    ) -> (crate::vfs::VfsState, std::sync::Arc<crate::vfs::tmp::TmpFs>) {
+        let backend = std::sync::Arc::new(crate::vfs::tmp::TmpFs::new(quota_mb));
         let mut table = crate::vfs::MountTable::new();
         table.add_mount("/tmp", backend.clone());
-        assert!(
-            runtime_state(py)
-                .vfs_state
-                .set(Some(crate::vfs::VfsState::from_table(table)))
-                .is_ok()
-        );
-        backend
+        (crate::vfs::VfsState::from_table(table), backend)
     }
 
     #[test]
@@ -584,10 +944,11 @@ mod tests {
         use crate::vfs::VfsBackend;
         let required = ["fs.read", "fs.write", "fs.tmp.read", "fs.tmp.write"];
         for mask in 0..16 {
-            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            let (vfs, backend) = tmp_mount(1);
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
                 &selected_grants(&required, mask),
+                Some(vfs),
                 |py| {
-                    let backend = tmp_mount(py);
                     for pathlike in [false, true] {
                         backend.open_write("selected", b"retained").unwrap();
                         FSPATH_CALLS.store(0, Ordering::Relaxed);
@@ -611,10 +972,7 @@ mod tests {
                                 handle,
                                 crate::MoltObject::from_int(-1).bits(),
                             );
-                            assert_eq!(
-                                unsafe { super::collect_bytes_like(py, data) }.unwrap(),
-                                b"retained"
-                            );
+                            assert_eq!(bytes_output(data), b"retained");
                             dec_ref_bits(py, data);
                             let suffix =
                                 crate::MoltObject::from_ptr(crate::alloc_bytes(py, b"!")).bits();
@@ -643,6 +1001,124 @@ mod tests {
     #[cfg(all(feature = "stdlib_fs_extra", not(target_arch = "wasm32")))]
     extern "C" fn codec_opener(_path: u64, _flags: u64) -> u64 {
         crate::MoltObject::from_int(CODEC_OPENER_FD.load(Ordering::Relaxed)).bits()
+    }
+
+    #[cfg(all(feature = "stdlib_fs_extra", target_os = "linux"))]
+    #[test]
+    fn append_seek_failure_preserves_caller_fd_but_retires_opener_fd_and_accepts_pipe() {
+        use std::os::fd::{AsRawFd, IntoRawFd};
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("fs.write", |py| {
+            let path = temp_path("append_admission");
+            std::fs::write(&path, b"prefix").unwrap();
+            let path_bits = io_string(py, path.to_str().unwrap());
+            let path_c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+            let mode = io_string(py, "ab");
+            let none = crate::MoltObject::none().bits();
+            for (closefd, custom_opener) in [(true, false), (false, false), (true, true)] {
+                let descriptor = unsafe { libc::open(path_c.as_ptr(), libc::O_PATH) };
+                assert!(descriptor >= 0);
+                CODEC_OPENER_FD.store(i64::from(descriptor), Ordering::Relaxed);
+                let opener = if custom_opener {
+                    test_callable(py, codec_opener as *const (), 2)
+                } else {
+                    none
+                };
+                super::molt_file_io_new(
+                    crate::builtin_classes(py).file_io,
+                    if custom_opener {
+                        path_bits
+                    } else {
+                        crate::MoltObject::from_int(i64::from(descriptor)).bits()
+                    },
+                    mode,
+                    crate::MoltObject::from_bool(closefd).bits(),
+                    opener,
+                );
+                assert_eq!(
+                    io_error(py).0,
+                    "OSError",
+                    "EBADF is not a nonseekable stream"
+                );
+                let live = unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0;
+                assert_eq!(
+                    live, !custom_opener,
+                    "failed FileIO never owns the caller's descriptor"
+                );
+                if live {
+                    unsafe {
+                        libc::close(descriptor);
+                    }
+                }
+                dec_ref_bits(py, opener);
+            }
+            // Supplied descriptors and real opener descriptors share the EOF
+            // publication rule, even though O_APPEND itself is a write policy.
+            for custom_opener in [false, true] {
+                let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                let descriptor = file.into_raw_fd();
+                CODEC_OPENER_FD.store(i64::from(descriptor), Ordering::Relaxed);
+                let opener = if custom_opener {
+                    test_callable(py, codec_opener as *const (), 2)
+                } else {
+                    none
+                };
+                let handle = super::molt_file_io_new(
+                    crate::builtin_classes(py).file_io,
+                    if custom_opener {
+                        path_bits
+                    } else {
+                        crate::MoltObject::from_int(i64::from(descriptor)).bits()
+                    },
+                    mode,
+                    crate::MoltObject::from_bool(true).bits(),
+                    opener,
+                );
+                assert!(!crate::exception_pending(py));
+                let position = super::molt_file_tell(handle);
+                assert_eq!(crate::to_i64(obj_from_bits(position)), Some(6));
+                super::molt_file_close(handle);
+                for bits in [handle, position, opener] {
+                    dec_ref_bits(py, bits);
+                }
+                assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } < 0);
+            }
+            let (mut reader, writer) = std::io::pipe().unwrap();
+            let descriptor = unsafe { libc::dup(writer.as_raw_fd()) };
+            assert!(descriptor >= 0);
+            let handle = super::molt_file_io_new(
+                crate::builtin_classes(py).file_io,
+                crate::MoltObject::from_int(i64::from(descriptor)).bits(),
+                mode,
+                crate::MoltObject::from_bool(true).bits(),
+                none,
+            );
+            assert!(
+                !crate::exception_pending(py),
+                "only ESPIPE is admitted on append initialization"
+            );
+            // Append construction suppresses ESPIPE, but public positioning
+            // must retain the actual errno instead of a generic OSError.
+            super::molt_file_tell(handle);
+            assert_eq!(io_error_errno(py), i64::from(libc::ESPIPE));
+            super::molt_file_seek(
+                handle,
+                crate::MoltObject::from_int(0).bits(),
+                crate::MoltObject::from_int(0).bits(),
+            );
+            assert_eq!(io_error_errno(py), i64::from(libc::ESPIPE));
+            let data = crate::MoltObject::from_ptr(crate::alloc_bytes(py, b"x")).bits();
+            super::molt_file_write(handle, data);
+            super::molt_file_close(handle);
+            assert!(!crate::exception_pending(py));
+            drop(writer);
+            let mut observed = String::new();
+            std::io::Read::read_to_string(&mut reader, &mut observed).unwrap();
+            assert_eq!(observed, "x");
+            for bits in [data, handle, path_bits, mode] {
+                dec_ref_bits(py, bits);
+            }
+            remove_file(path).unwrap();
+        });
     }
 
     #[cfg(all(feature = "stdlib_fs_extra", not(target_arch = "wasm32")))]
@@ -791,10 +1267,7 @@ mod tests {
                     dec_ref_bits(py, repeated);
                     let first =
                         super::molt_file_read(stream, crate::MoltObject::from_int(1).bits());
-                    assert_eq!(
-                        unsafe { super::collect_bytes_like(py, first) }.unwrap(),
-                        b"a"
-                    );
+                    assert_eq!(bytes_output(first), b"a");
                     dec_ref_bits(py, first);
                     assert_eq!(
                         crate::to_i64(obj_from_bits(super::molt_file_tell(raw))),
@@ -804,10 +1277,7 @@ mod tests {
                     assert_eq!(detached, raw);
                     let remaining =
                         super::molt_file_read(raw, crate::MoltObject::from_int(-1).bits());
-                    assert_eq!(
-                        unsafe { super::collect_bytes_like(py, remaining) }.unwrap(),
-                        b"ef"
-                    );
+                    assert_eq!(bytes_output(remaining), b"ef");
                     dec_ref_bits(py, remaining);
                     super::molt_file_close(raw);
                     for value in [raw, detached, stream] {
@@ -829,10 +1299,11 @@ mod tests {
     #[test]
     fn denied_custom_opener_is_never_called_and_requires_no_mount_grants() {
         for mask in 0..3 {
-            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            let (vfs, _backend) = tmp_mount(1);
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
                 &selected_grants(&["fs.read", "fs.write"], mask),
+                Some(vfs),
                 |py| {
-                    let _backend = tmp_mount(py);
                     let path = io_string(py, "/tmp/selected");
                     let mode = io_string(py, "r+b");
                     let opener = test_callable(py, forbidden_opener as *const (), 2);
@@ -858,23 +1329,18 @@ mod tests {
     fn bundle_missing_set_precedes_readonly_and_invalid_mode_precedes_admission() {
         let required = ["fs.read", "fs.write", "fs.bundle.read"];
         for mask in 0..8 {
-            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+            let mut table = crate::vfs::MountTable::new();
+            table.add_mount(
+                "/bundle",
+                std::sync::Arc::new(crate::vfs::bundle::BundleFs::from_entries(vec![(
+                    "selected".to_string(),
+                    b"retained".to_vec(),
+                )])),
+            );
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
                 &selected_grants(&required, mask),
+                Some(crate::vfs::VfsState::from_table(table)),
                 |py| {
-                    let mut table = crate::vfs::MountTable::new();
-                    table.add_mount(
-                        "/bundle",
-                        std::sync::Arc::new(crate::vfs::bundle::BundleFs::from_entries(vec![(
-                            "selected".to_string(),
-                            b"retained".to_vec(),
-                        )])),
-                    );
-                    assert!(
-                        runtime_state(py)
-                            .vfs_state
-                            .set(Some(crate::vfs::VfsState::from_table(table)))
-                            .is_ok()
-                    );
                     let path = io_string(py, "/bundle/selected");
                     let mode = io_string(py, "r+b");
                     open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
@@ -908,76 +1374,77 @@ mod tests {
     #[test]
     fn dev_append_only_uses_write_adapter_but_readwrite_still_refuses_reads() {
         for grants in ["fs.write", "fs.read,fs.write"] {
-            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
-                let backend = std::sync::Arc::new(crate::vfs::dev::DevFs::new());
-                let mut table = crate::vfs::MountTable::new();
-                table.add_mount("/dev", backend.clone());
-                assert!(
-                    runtime_state(py)
-                        .vfs_state
-                        .set(Some(crate::vfs::VfsState::from_table(table)))
-                        .is_ok()
-                );
-                for (path_name, mode_name, expected_error) in [
-                    ("/dev/stdout", "ab", None),
-                    ("/dev/stderr", "ab", None),
-                    ("/dev/stdin", "ab", Some("PermissionError")),
-                    ("/dev", "ab", Some("IsADirectoryError")),
-                    ("/dev/missing", "ab", Some("FileNotFoundError")),
-                ] {
-                    let path = io_string(py, path_name);
-                    let mode = io_string(py, mode_name);
-                    let handle = open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
-                    if let Some(kind) = expected_error {
-                        assert_eq!(io_error(py).0, kind);
-                    } else {
-                        assert!(!crate::exception_pending(py));
-                        let data =
-                            crate::MoltObject::from_ptr(crate::alloc_bytes(py, b"stream")).bits();
-                        super::molt_file_write(handle, data);
-                        super::molt_file_close(handle);
-                        assert!(!crate::exception_pending(py));
-                        for bits in [handle, data] {
+            let backend = std::sync::Arc::new(crate::vfs::dev::DevFs::new());
+            let mut table = crate::vfs::MountTable::new();
+            table.add_mount("/dev", backend.clone());
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
+                grants,
+                Some(crate::vfs::VfsState::from_table(table)),
+                |py| {
+                    for (path_name, mode_name, expected_error) in [
+                        ("/dev/stdout", "ab", None),
+                        ("/dev/stderr", "ab", None),
+                        ("/dev/stdin", "ab", Some("PermissionError")),
+                        ("/dev", "ab", Some("IsADirectoryError")),
+                        ("/dev/missing", "ab", Some("FileNotFoundError")),
+                    ] {
+                        let path = io_string(py, path_name);
+                        let mode = io_string(py, mode_name);
+                        let handle =
+                            open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
+                        if let Some(kind) = expected_error {
+                            assert_eq!(io_error(py).0, kind);
+                        } else {
+                            assert!(!crate::exception_pending(py));
+                            let data =
+                                crate::MoltObject::from_ptr(crate::alloc_bytes(py, b"stream"))
+                                    .bits();
+                            super::molt_file_write(handle, data);
+                            super::molt_file_close(handle);
+                            assert!(!crate::exception_pending(py));
+                            for bits in [handle, data] {
+                                dec_ref_bits(py, bits);
+                            }
+                        }
+                        for bits in [path, mode] {
                             dec_ref_bits(py, bits);
                         }
                     }
-                    for bits in [path, mode] {
-                        dec_ref_bits(py, bits);
+                    assert_eq!(backend.take_stdout(), b"stream");
+                    assert_eq!(backend.take_stderr(), b"stream");
+                    for mode_name in ["r+b", "a+b"] {
+                        let path = io_string(py, "/dev/stdout");
+                        let mode = io_string(py, mode_name);
+                        open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
+                        if grants == "fs.write" {
+                            assert_missing(py, "io.open.readwrite", &["fs.read"]);
+                        } else {
+                            assert_eq!(
+                                io_error(py),
+                                (
+                                    "PermissionError".to_string(),
+                                    "Permission denied: '/dev/stdout'".to_string()
+                                )
+                            );
+                        }
+                        for bits in [path, mode] {
+                            dec_ref_bits(py, bits);
+                        }
                     }
-                }
-                assert_eq!(backend.take_stdout(), b"stream");
-                assert_eq!(backend.take_stderr(), b"stream");
-                for mode_name in ["r+b", "a+b"] {
-                    let path = io_string(py, "/dev/stdout");
-                    let mode = io_string(py, mode_name);
-                    open_entry(py, 3, path, mode, crate::MoltObject::none().bits());
-                    if grants == "fs.write" {
-                        assert_missing(py, "io.open.readwrite", &["fs.read"]);
-                    } else {
-                        assert_eq!(
-                            io_error(py),
-                            (
-                                "PermissionError".to_string(),
-                                "Permission denied: '/dev/stdout'".to_string()
-                            )
-                        );
-                    }
-                    for bits in [path, mode] {
-                        dec_ref_bits(py, bits);
-                    }
-                }
-                assert!(backend.take_stdout().is_empty());
-            });
+                    assert!(backend.take_stdout().is_empty());
+                },
+            );
         }
     }
 
     #[test]
     fn vfs_modes_retain_append_truncate_and_exclusive_semantics() {
         use crate::vfs::VfsBackend;
-        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+        let (vfs, backend) = tmp_mount(1);
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
             "fs.write,fs.tmp.write",
+            Some(vfs),
             |py| {
-                let backend = tmp_mount(py);
                 for (mode, initial, expected) in [
                     ("wb", Some(&b"old"[..]), &b"new"[..]),
                     ("ab", Some(&b"old"[..]), &b"oldnew"[..]),
@@ -995,6 +1462,16 @@ mod tests {
                     let handle =
                         open_entry(py, 3, path, mode_bits, crate::MoltObject::none().bits());
                     assert!(!crate::exception_pending(py), "{mode}");
+                    let position = super::molt_file_tell(handle);
+                    assert_eq!(
+                        crate::to_i64(obj_from_bits(position)),
+                        Some(if mode == "ab" && initial.is_some() {
+                            3
+                        } else {
+                            0
+                        })
+                    );
+                    dec_ref_bits(py, position);
                     assert_eq!(
                         super::molt_file_readable(handle),
                         crate::MoltObject::from_bool(false).bits()
@@ -1021,31 +1498,79 @@ mod tests {
     }
 
     #[test]
+    fn vfs_refused_construction_never_publishes_a_writeback_owner() {
+        use crate::vfs::VfsBackend;
+        let backend = std::sync::Arc::new(crate::vfs::tmp::TmpFs::new(1024));
+        let mut table = crate::vfs::MountTable::new();
+        table.add_mount("/tmp", backend.clone());
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
+            "fs.write,fs.tmp.write",
+            Some(crate::vfs::VfsState::from_table(table)),
+            |py| {
+                let path = io_string(py, "/tmp/selected");
+                let mode = io_string(py, "w");
+                let invalid = io_string(py, "molt-invalid-codec");
+                let encoding = io_string(py, "utf-8");
+                let none = crate::MoltObject::none().bits();
+                let yes = crate::MoltObject::from_bool(true).bits();
+                let buffering = crate::MoltObject::from_int(-1).bits();
+                super::molt_file_open_ex(path, mode, buffering, invalid, none, none, yes, none);
+                assert_eq!(io_error(py).0, "LookupError");
+                assert!(
+                    runtime_state(py)
+                        .io
+                        .vfs_writebacks
+                        .lock()
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(!backend.exists("selected"));
+                let stream = super::molt_file_open_ex(
+                    path, mode, buffering, encoding, none, none, yes, none,
+                );
+                assert!(!crate::exception_pending(py));
+                assert_eq!(runtime_state(py).io.vfs_writebacks.lock().unwrap().len(), 1);
+                let content = io_string(py, "retained");
+                super::molt_file_write(stream, content);
+                super::molt_file_close(stream);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(backend.open_read("selected").unwrap(), b"retained");
+                assert!(
+                    runtime_state(py)
+                        .io
+                        .vfs_writebacks
+                        .lock()
+                        .unwrap()
+                        .is_empty()
+                );
+                for bits in [path, mode, invalid, encoding, stream, content] {
+                    dec_ref_bits(py, bits);
+                }
+            },
+        );
+    }
+
+    #[test]
     fn vfs_close_reports_quota_failure_and_retires_writeback_once() {
         use crate::vfs::VfsBackend;
         for device in [false, true] {
             for text in [false, true] {
-                crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+                let tmp = std::sync::Arc::new(crate::vfs::tmp::TmpFs::new(0));
+                let dev = std::sync::Arc::new(crate::vfs::dev::DevFs::new());
+                let mut table = crate::vfs::MountTable::new();
+                if device {
+                    // Actual device capacity: existing bytes must survive
+                    // the rejected close, not merely an injected error.
+                    dev.open_write("stdout", &vec![b'x'; 16 * 1024 * 1024])
+                        .unwrap();
+                    table.add_mount("/dev", dev.clone());
+                } else {
+                    table.add_mount("/tmp", tmp.clone());
+                }
+                crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
                     "fs.write,fs.tmp.write",
+                    Some(crate::vfs::VfsState::from_table(table)),
                     |py| {
-                        let tmp = std::sync::Arc::new(crate::vfs::tmp::TmpFs::new(0));
-                        let dev = std::sync::Arc::new(crate::vfs::dev::DevFs::new());
-                        let mut table = crate::vfs::MountTable::new();
-                        if device {
-                            // Actual device capacity: existing bytes must survive
-                            // the rejected close, not merely an injected error.
-                            dev.open_write("stdout", &vec![b'x'; 16 * 1024 * 1024])
-                                .unwrap();
-                            table.add_mount("/dev", dev.clone());
-                        } else {
-                            table.add_mount("/tmp", tmp.clone());
-                        }
-                        assert!(
-                            runtime_state(py)
-                                .vfs_state
-                                .set(Some(crate::vfs::VfsState::from_table(table)))
-                                .is_ok()
-                        );
                         let path = io_string(
                             py,
                             if device {
@@ -1060,7 +1585,10 @@ mod tests {
                         let ptr = obj_from_bits(handle).as_ptr().unwrap();
                         let (key, child) = unsafe {
                             let raw = &*crate::file_handle_ptr(ptr);
-                            (std::sync::Arc::as_ptr(&raw.state) as usize, raw.buffer_bits)
+                            (
+                                std::sync::Arc::as_ptr(raw.state.as_ref().unwrap()) as usize,
+                                raw.buffer_bits,
+                            )
                         };
                         assert!(
                             runtime_state(py)

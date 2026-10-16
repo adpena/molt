@@ -1127,6 +1127,14 @@ pub unsafe extern "C" fn molt_socket_setsockopt(
         let level = to_i64(obj_from_bits(level_bits)).unwrap_or(0) as i32;
         let optname = to_i64(obj_from_bits(opt_bits)).unwrap_or(0) as i32;
         let obj = obj_from_bits(value_bits);
+        let input_export = if to_i64(obj).is_some() {
+            None
+        } else {
+            match crate::object::buffer_exports::ScopedBuffer::simple(_py, value_bits) {
+                Ok(input) => Some(input),
+                Err(error) => return error.raise(_py, "invalid optval"),
+            }
+        };
         let res = with_socket_mut(socket_ptr, |inner| {
             #[cfg(unix)]
             let fd = inner
@@ -1152,10 +1160,8 @@ pub unsafe extern "C" fn molt_socket_setsockopt(
                 } else {
                     Err(std::io::Error::last_os_error())
                 }
-            } else if let Some(ptr) = obj.as_ptr() {
-                let bytes = unsafe { bytes_like_slice_raw(ptr) }.ok_or_else(|| {
-                    std::io::Error::new(ErrorKind::InvalidInput, "invalid optval")
-                })?;
+            } else if let Some(input) = input_export.as_ref() {
+                let bytes = input.as_slice();
                 let ret = unsafe {
                     libc::setsockopt(
                         libc_socket(fd),

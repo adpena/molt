@@ -111,7 +111,7 @@ stdlib_crypto_legacy = [
     "dep:molt-runtime-crypto",
     "molt-runtime-crypto/legacy",
 ]
-stdlib_compression = ["dep:bzip2", "dep:flate2", "dep:xz2", "dep:molt-runtime-compression"]
+stdlib_compression = ["dep:molt-runtime-compression"]
 stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
 stdlib_archive = ["dep:zip", "stdlib_serial"]
 # Gates the Python ast APIs. The parser also owns traceback expression ranges
@@ -237,9 +237,7 @@ digest = "0.11"
 sha1 = "0.11"
 sha2 = "0.11"
 
-# Compression (all optional)
-bzip2 = { version = "0.6", optional = true }
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"], optional = true }
+# Archive access owned directly by importlib and shutil.
 zip = { version = "9.0.4", default-features = false, features = ["deflate"], optional = true }
 
 # Serialization (partial)
@@ -259,7 +257,6 @@ tempfile = { version = "3", optional = true }
 molt-db = { package = "molt-db", path = "../molt-db", optional = true }
 parking_lot = "0.12"
 mimalloc = { version = "0.1", default-features = false }
-xz2 = { version = "0.1", optional = true, features = ["static"] }
 simdutf = { version = "0.7", optional = true }
 getrandom = "0.4"
 mio = { version = "1.2", features = ["os-poll", "net"], optional = true }

@@ -52,6 +52,22 @@ BUILTIN_DICT = 45
 BUILTIN_RANGE = 46
 BUILTIN_LEN = 47
 BUILTIN_OPEN = 48
+INTRINSIC_SYS_PLATFORM = 49
+INTRINSIC_OS_NAME = 50
+
+[target_property]
+SYS_PLATFORM = "sys_platform"
+OS_NAME = "os_name"
+
+[[intrinsic_callable]]
+name = "molt_sys_platform"
+identity = "INTRINSIC_SYS_PLATFORM"
+target_property = "SYS_PLATFORM"
+
+[[intrinsic_callable]]
+name = "molt_os_name"
+identity = "INTRINSIC_OS_NAME"
+target_property = "OS_NAME"
 
 [member_bits]
 IMPORTLIB_IMPORT_MODULE = 0

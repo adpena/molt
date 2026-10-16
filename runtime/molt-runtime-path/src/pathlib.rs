@@ -2,9 +2,8 @@
 //
 // pathlib intrinsics: PurePath / Path operations delegated to Rust std::path.
 //
-// Every public Python-visible method on PurePosixPath, PureWindowsPath, and
-// Path is backed by a Rust intrinsic so the stdlib module contains zero
-// Python-only logic.
+// Native projections share one root parser. The compiled Python facade owns
+// version-selected callback protocols; exact paths stay in these native paths.
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
@@ -21,16 +20,6 @@ use std::path::{Path, PathBuf};
 // ---------------------------------------------------------------------------
 
 #[inline]
-fn str_bits(py: &CoreGilToken, s: &str) -> u64 {
-    let ptr = alloc_string(py, s.as_bytes());
-    if ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(ptr).bits()
-    }
-}
-
-#[inline]
 fn bool_bits(val: bool) -> u64 {
     MoltObject::from_bool(val).bits()
 }
@@ -43,225 +32,260 @@ fn audit_path_arg(bits: u64) -> AuditArg {
     }
 }
 
-fn require_str(py: &CoreGilToken, bits: u64, label: &str) -> Result<String, u64> {
-    match string_obj_to_owned(obj_from_bits(bits)) {
-        Some(s) => Ok(s),
-        None => Err(raise_exception::<u64>(
-            py,
-            "TypeError",
-            &format!("{label} must be str"),
-        )),
+fn list_of_paths(py: &CoreGilToken, items: &[PathBuf]) -> u64 {
+    let mut values = Vec::with_capacity(items.len());
+    for path in items {
+        let value = path_result(py, path, false);
+        if exception_pending(py) {
+            for value in values {
+                dec_ref_bits(py, value);
+            }
+            return MoltObject::none().bits();
+        }
+        values.push(value);
     }
-}
-
-fn list_of_strings(py: &CoreGilToken, items: &[String]) -> u64 {
-    let bits: Vec<u64> = items.iter().map(|s| str_bits(py, s)).collect();
-    let ptr = alloc_list(py, &bits);
-    if ptr.is_null() {
-        raise_exception::<u64>(py, "MemoryError", "out of memory")
+    let pointer = alloc_list(py, &values);
+    for value in values {
+        dec_ref_bits(py, value);
+    }
+    if pointer.is_null() {
+        MoltObject::none().bits()
     } else {
-        MoltObject::from_ptr(ptr).bits()
+        MoltObject::from_ptr(pointer).bits()
     }
 }
 
-fn tuple_of_strings(py: &CoreGilToken, items: &[String]) -> u64 {
-    let bits: Vec<u64> = items.iter().map(|s| str_bits(py, s)).collect();
-    let ptr = alloc_tuple(py, &bits);
-    if ptr.is_null() {
-        raise_exception::<u64>(py, "MemoryError", "out of memory")
+/// All root decisions use the shared parser. Python callers choose the native
+/// Windows provider only where their target version imports that provider.
+fn root_coordinate(
+    windows_utf16: bool,
+    bytes: bool,
+) -> molt_runtime_platform::path_text::PathCoordinate {
+    if windows_utf16 {
+        molt_runtime_platform::path_text::PathCoordinate::WindowsUtf16
+    } else if bytes {
+        molt_runtime_platform::path_text::PathCoordinate::Bytes
     } else {
-        MoltObject::from_ptr(ptr).bits()
+        molt_runtime_platform::path_text::PathCoordinate::PythonCodePoints
     }
 }
 
-/// Normalize a Windows path string to forward slashes for internal representation.
-fn normalize_win_separators(s: &str) -> String {
-    s.replace('\\', "/")
+/// Storage is owned across allocation/codec callbacks; offsets always refer to it.
+struct ParsedRoot {
+    raw: Vec<u8>,
+    bytes: bool,
+    drive: usize,
+    root: usize,
 }
 
-/// Split a path into (drive, root, tail) per CPython _splitroot semantics.
-fn splitroot(path: &str, posix: bool) -> (String, String, String) {
-    if posix {
-        if path.starts_with("//") && !path.starts_with("///") {
-            // POSIX two-slash root
-            let rest = &path[2..];
-            let idx = rest.find('/').unwrap_or(rest.len());
-            let drive = String::new();
-            let root = format!("//{}", &rest[..idx]);
-            let tail = if idx < rest.len() {
-                rest[idx..].to_string()
+impl ParsedRoot {
+    /// PurePath normalizes separators and supplies a root for complete UNC
+    /// shares without a trailing separator. Raw ntpath splitroot does neither.
+    fn normalize_pathlib(&mut self, posix: bool) {
+        if posix {
+            return;
+        }
+        for byte in &mut self.raw {
+            if *byte == b'/' {
+                *byte = b'\\';
+            }
+        }
+        let drive = &self.raw[..self.drive];
+        if self.drive != self.root || !drive.starts_with(b"\\") || drive.ends_with(b"\\") {
+            return;
+        }
+        let mut count = 0;
+        let mut ordinary_server = false;
+        for (index, part) in drive.split(|byte| *byte == b'\\').enumerate() {
+            count += 1;
+            if index == 2 {
+                ordinary_server = !part.is_empty() && part != b"?" && part != b".";
+            }
+        }
+        if (count == 4 && ordinary_server) || count == 6 {
+            self.raw.insert(self.drive, b'\\');
+            self.root += 1;
+        }
+    }
+}
+
+fn parse_root(
+    py: &CoreGilToken,
+    bits: u64,
+    posix: bool,
+    windows_utf16: bool,
+) -> Result<ParsedRoot, u64> {
+    let (raw, bytes) = {
+        #[cfg(windows)]
+        if windows_utf16 && !posix {
+            let (path, bytes) = path_from_bits_with_flavor(py, bits)?;
+            (path.into_os_string().into_encoded_bytes(), bytes)
+        } else {
+            if let Some(raw) = string_obj_bytes(obj_from_bits(bits)) {
+                (raw, false)
+            } else if let Some(pointer) = obj_from_bits(bits).as_ptr()
+                && unsafe { object_type_id(pointer) } == TYPE_ID_BYTES
+            {
+                (
+                    unsafe { bytes_like_slice(pointer) }
+                        .expect("bytes storage")
+                        .to_vec(),
+                    true,
+                )
             } else {
-                String::new()
-            };
-            return (drive, root, tail);
+                return Err(raise_exception::<u64>(
+                    py,
+                    "TypeError",
+                    "path must be str or bytes",
+                ));
+            }
         }
-        if let Some(stripped) = path.strip_prefix('/') {
-            return (String::new(), "/".to_string(), stripped.to_string());
+        #[cfg(not(windows))]
+        {
+            if let Some(raw) = string_obj_bytes(obj_from_bits(bits)) {
+                (raw, false)
+            } else if let Some(pointer) = obj_from_bits(bits).as_ptr()
+                && unsafe { object_type_id(pointer) } == TYPE_ID_BYTES
+            {
+                (
+                    unsafe { bytes_like_slice(pointer) }
+                        .expect("bytes storage")
+                        .to_vec(),
+                    true,
+                )
+            } else {
+                return Err(raise_exception::<u64>(
+                    py,
+                    "TypeError",
+                    "path must be str or bytes",
+                ));
+            }
         }
-        return (String::new(), String::new(), path.to_string());
-    }
-    // Windows flavor
-    let norm = normalize_win_separators(path);
-    let p = norm.as_str();
-    // UNC path: //server/share
-    if let Some(rest) = p.strip_prefix("//") {
-        let idx = rest.find('/').unwrap_or(rest.len());
-        let server = &rest[..idx];
-        let after_server = if idx < rest.len() {
-            &rest[idx + 1..]
-        } else {
-            ""
-        };
-        let idx2 = after_server.find('/').unwrap_or(after_server.len());
-        let share = &after_server[..idx2];
-        let drive = format!("//{server}/{share}");
-        let tail_start = if idx2 < after_server.len() {
-            &after_server[idx2..]
-        } else {
-            ""
-        };
-        let (root, tail) = if let Some(stripped) = tail_start.strip_prefix('/') {
-            ("/".to_string(), stripped.to_string())
-        } else {
-            (String::new(), tail_start.to_string())
-        };
-        return (drive, root, tail);
-    }
-    // Drive letter: C:/
-    if p.len() >= 2 && p.as_bytes()[0].is_ascii_alphabetic() && p.as_bytes()[1] == b':' {
-        let drive = p[..2].to_string();
-        let rest = &p[2..];
-        if let Some(stripped) = rest.strip_prefix('/') {
-            return (drive, "/".to_string(), stripped.to_string());
-        }
-        return (drive, String::new(), rest.to_string());
-    }
-    // Relative path
-    if let Some(stripped) = p.strip_prefix('/') {
-        return (String::new(), "/".to_string(), stripped.to_string());
-    }
-    (String::new(), String::new(), p.to_string())
-}
-
-fn path_parts(path: &str, posix: bool) -> Vec<String> {
-    let (drive, root, tail) = splitroot(path, posix);
-    let mut parts = Vec::new();
-    let anchor = format!("{drive}{root}");
-    if !anchor.is_empty() {
-        parts.push(anchor);
-    }
-    for seg in tail.split('/') {
-        if !seg.is_empty() {
-            parts.push(seg.to_string());
-        }
-    }
-    parts
+    };
+    let sep = if posix { b'/' } else { b'\\' };
+    let (drive, root) = molt_runtime_platform::path_text::path_root_offsets(
+        &raw,
+        sep,
+        root_coordinate(windows_utf16, bytes),
+    );
+    Ok(ParsedRoot {
+        raw,
+        bytes,
+        drive,
+        root,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Public intrinsics -- Pure path operations
 // ---------------------------------------------------------------------------
 
-/// `pathlib._molt_path_str(path)` -> str  (normalized)
+/// Returns normalized pathlib parts using the same root provider as splitroot.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_str(path_bits: u64) -> u64 {
+pub extern "C" fn molt_pathlib_parts(
+    path_bits: u64,
+    posix_bits: u64,
+    windows_utf16_bits: u64,
+) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let posix = is_truthy(_py, obj_from_bits(posix_bits));
+        let windows_utf16 = is_truthy(_py, obj_from_bits(windows_utf16_bits));
+        let mut parsed = match parse_root(_py, path_bits, posix, windows_utf16) {
+            Ok(value) => value,
+            Err(error) => return error,
         };
-        if s.is_empty() {
-            return str_bits(_py, ".");
+        if parsed.bytes {
+            return raise_exception::<u64>(_py, "TypeError", "path must be str");
         }
-        str_bits(_py, &s)
-    })
-}
-
-/// Returns the parts tuple for a path.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_parts(path_bits: u64, posix_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        let posix = is_truthy(_py, obj_from_bits(posix_bits));
-        let parts = path_parts(&s, posix);
-        tuple_of_strings(_py, &parts)
-    })
-}
-
-/// `_splitroot(path, posix)` -> tuple[str, str, str]  (drive, root, tail)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_splitroot(path_bits: u64, posix_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        let posix = is_truthy(_py, obj_from_bits(posix_bits));
-        let (drive, root, tail) = splitroot(&s, posix);
-        let elems = [
-            str_bits(_py, &drive),
-            str_bits(_py, &root),
-            str_bits(_py, &tail),
-        ];
+        parsed.normalize_pathlib(posix);
+        let sep = if posix { b'/' } else { b'\\' };
+        let raw = &parsed.raw;
+        let root = parsed.root;
+        let mut slices = Vec::new();
+        if root != 0 {
+            slices.push(&raw[..root]);
+        }
+        slices.extend(
+            raw[root..]
+                .split(|byte| *byte == sep)
+                .filter(|part| !part.is_empty() && *part != b"."),
+        );
+        let mut owners = Vec::with_capacity(slices.len());
+        for part in slices {
+            let ptr = alloc_string(_py, part);
+            if ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            owners.push(unsafe {
+                molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(
+                    _py,
+                    MoltObject::from_ptr(ptr).bits(),
+                )
+            });
+        }
+        let elems: Vec<_> = owners.iter().map(|owner| owner.bits()).collect();
         let ptr = alloc_tuple(_py, &elems);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
         }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 
-/// `path.__hash__()` -> int  (hash of the string representation)
+/// Split original separator spelling; pathlib normalizes its own input first.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_hash(path_bits: u64) -> u64 {
-    // Hash the underlying string representation using the runtime hash.
-    molt_object_hash(path_bits)
-}
-
-/// `path.__eq__(other)` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_eq(path_bits: u64, other_bits: u64) -> u64 {
+pub extern "C" fn molt_path_splitroot(
+    path_bits: u64,
+    posix_bits: u64,
+    windows_utf16_bits: u64,
+    pathlib_bits: u64,
+) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let posix = is_truthy(_py, obj_from_bits(posix_bits));
+        let windows_utf16 = is_truthy(_py, obj_from_bits(windows_utf16_bits));
+        let mut parsed = match parse_root(_py, path_bits, posix, windows_utf16) {
+            Ok(value) => value,
+            Err(error) => return error,
         };
-        let other = match string_obj_to_owned(obj_from_bits(other_bits)) {
-            Some(o) => o,
-            None => return bool_bits(false),
-        };
-        bool_bits(s == other)
-    })
-}
-
-/// `path.__lt__(other)` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_lt(path_bits: u64, other_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        let other = match require_str(_py, other_bits, "other") {
-            Ok(o) => o,
-            Err(bits) => return bits,
-        };
-        bool_bits(s < other)
-    })
-}
-
-/// `path.as_posix()` -> str
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_as_posix(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        str_bits(_py, &s.replace('\\', "/"))
+        if is_truthy(_py, obj_from_bits(pathlib_bits)) {
+            parsed.normalize_pathlib(posix);
+        }
+        let raw = &parsed.raw;
+        let (drive, root) = (parsed.drive, parsed.root);
+        let mut owners = Vec::with_capacity(3);
+        for part in [&raw[..drive], &raw[drive..root], &raw[root..]] {
+            let bits = if parsed.bytes && !(cfg!(windows) && windows_utf16 && !posix) {
+                let pointer = alloc_bytes(_py, part);
+                if pointer.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(pointer).bits()
+            } else if parsed.bytes {
+                // A native Windows codec projection uses unchanged OsStr
+                // storage cut only at ASCII parser boundaries.
+                let value = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(part) };
+                path_result(_py, Path::new(value), true)
+            } else {
+                let ptr = alloc_string(_py, part);
+                if ptr.is_null() {
+                    return MoltObject::none().bits();
+                }
+                MoltObject::from_ptr(ptr).bits()
+            };
+            let owner = unsafe { ProtectedRuntimeValue::from_owned_bits(_py, bits) };
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            owners.push(owner);
+        }
+        let elems: Vec<_> = owners.iter().map(|owner| owner.bits()).collect();
+        let ptr = alloc_tuple(_py, &elems);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
     })
 }
 
@@ -274,28 +298,8 @@ pub extern "C" fn molt_pathlib_as_posix(path_bits: u64) -> u64 {
 pub extern "C" fn molt_pathlib_cwd() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         match std::env::current_dir() {
-            Ok(p) => str_bits(_py, &p.to_string_lossy()),
+            Ok(p) => path_result(_py, &p, false),
             Err(err) => raise_os_error::<u64>(_py, err, "cwd"),
-        }
-    })
-}
-
-/// `Path.home()` -> str
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_home() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        #[cfg(unix)]
-        let home = std::env::var("HOME").ok();
-        #[cfg(windows)]
-        let home = std::env::var("USERPROFILE").ok();
-        #[cfg(not(any(unix, windows)))]
-        let home: Option<String> = None;
-
-        match home {
-            Some(h) => str_bits(_py, &h),
-            None => {
-                raise_exception::<u64>(_py, "RuntimeError", "Could not determine home directory")
-            }
         }
     })
 }
@@ -307,58 +311,23 @@ pub extern "C" fn molt_pathlib_resolve(path_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "pathlib.resolve", audit_path_arg(path_bits)) {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        let p = if s.is_empty() {
+        let p = if s.as_os_str().is_empty() {
             PathBuf::from(".")
         } else {
-            PathBuf::from(&s)
+            s.clone()
         };
         match fs::canonicalize(&p) {
-            Ok(abs) => str_bits(_py, &abs.to_string_lossy()),
+            Ok(abs) => path_result(_py, &abs, false),
             Err(_) => {
                 // If the path doesn't exist, just make it absolute
                 match std::env::current_dir() {
-                    Ok(cwd) => str_bits(_py, &cwd.join(&p).to_string_lossy()),
+                    Ok(cwd) => path_result(_py, &cwd.join(&p), false),
                     Err(err) => raise_os_error::<u64>(_py, err, "resolve"),
                 }
-            }
-        }
-    })
-}
-
-/// `path.expanduser()` -> str
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_expanduser(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        if !s.starts_with('~') {
-            return str_bits(_py, &s);
-        }
-        #[cfg(unix)]
-        let home = std::env::var("HOME").ok();
-        #[cfg(windows)]
-        let home = std::env::var("USERPROFILE").ok();
-        #[cfg(not(any(unix, windows)))]
-        let home: Option<String> = None;
-
-        match home {
-            Some(h) => {
-                if s == "~" {
-                    str_bits(_py, &h)
-                } else if s.starts_with("~/") || s.starts_with("~\\") {
-                    str_bits(_py, &format!("{h}{}", &s[1..]))
-                } else {
-                    str_bits(_py, &s)
-                }
-            }
-            None => {
-                raise_exception::<u64>(_py, "RuntimeError", "Could not determine home directory")
             }
         }
     })
@@ -371,7 +340,7 @@ pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "pathlib.is_mount", audit_path_arg(path_bits)) {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -411,7 +380,7 @@ pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "pathlib.iterdir", audit_path_arg(path_bits)) {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -422,65 +391,11 @@ pub extern "C" fn molt_pathlib_iterdir(path_bits: u64) -> u64 {
         let mut names = Vec::new();
         for entry in entries {
             match entry {
-                Ok(e) => names.push(e.path().to_string_lossy().into_owned()),
+                Ok(e) => names.push(e.path()),
                 Err(err) => return raise_os_error::<u64>(_py, err, "iterdir"),
             }
         }
-        list_of_strings(_py, &names)
-    })
-}
-
-/// `path.rglob(pattern)` -> list[str]  (recursive glob)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "pathlib.rglob", audit_path_arg(path_bits)) {
-            return error;
-        }
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        let pattern = match require_str(_py, pattern_bits, "pattern") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        let full_pattern = if s == "." || s.is_empty() {
-            format!("**/{pattern}")
-        } else {
-            format!("{s}/**/{pattern}")
-        };
-        #[cfg(feature = "stdlib_fs_extra")]
-        {
-            let mut results: Vec<String> = Vec::new();
-            match glob::glob(&full_pattern) {
-                Ok(paths) => {
-                    for entry in paths {
-                        match entry {
-                            Ok(p) => results.push(p.to_string_lossy().into_owned()),
-                            Err(_) => continue,
-                        }
-                    }
-                }
-                Err(err) => {
-                    return raise_exception::<u64>(
-                        _py,
-                        "ValueError",
-                        &format!("invalid glob pattern: {err}"),
-                    );
-                }
-            }
-            list_of_strings(_py, &results)
-        }
-        #[cfg(not(feature = "stdlib_fs_extra"))]
-        {
-            let _ = &full_pattern;
-            raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "pathlib.rglob requires the stdlib_fs_extra feature",
-            )
-        }
+        list_of_paths(_py, &names)
     })
 }
 
@@ -491,7 +406,7 @@ pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 
         if let Err(error) = require_operation(_py, "pathlib.touch", audit_path_arg(path_bits)) {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -502,7 +417,7 @@ pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 
                 return raise_exception::<u64>(
                     _py,
                     "FileExistsError",
-                    &format!("File exists: '{s}'"),
+                    &format!("File exists: '{}'", s.display()),
                 );
             }
             // Update mtime
@@ -526,11 +441,11 @@ pub extern "C" fn molt_pathlib_hardlink_to(path_bits: u64, target_bits: u64) -> 
         {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        let target = match require_str(_py, target_bits, "target") {
+        let target = match path_from_bits(_py, target_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -549,24 +464,6 @@ pub extern "C" fn molt_pathlib_hardlink_to(_path_bits: u64, _target_bits: u64) -
     })
 }
 
-/// `path.read_text(encoding=None)` -> str
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_read_text(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "pathlib.read_text", audit_path_arg(path_bits)) {
-            return error;
-        }
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        match fs::read_to_string(&s) {
-            Ok(text) => str_bits(_py, &text),
-            Err(err) => raise_os_error::<u64>(_py, err, "read_text"),
-        }
-    })
-}
-
 /// `path.read_bytes()` -> bytes
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
@@ -575,7 +472,7 @@ pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
         {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -593,29 +490,6 @@ pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
     })
 }
 
-/// `path.write_text(data)` -> int
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_write_text(path_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "pathlib.write_text", audit_path_arg(path_bits))
-        {
-            return error;
-        }
-        let s = match require_str(_py, path_bits, "path") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        let data = match require_str(_py, data_bits, "data") {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        match fs::write(&s, &data) {
-            Ok(()) => MoltObject::from_int(data.len() as i64).bits(),
-            Err(err) => raise_os_error::<u64>(_py, err, "write_text"),
-        }
-    })
-}
-
 /// `path.write_bytes(data)` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u64 {
@@ -624,22 +498,28 @@ pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u6
         {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        let data = match obj_from_bits(data_bits).as_ptr() {
-            Some(ptr) => match unsafe { bytes_like_slice(ptr) } {
-                Some(sl) => sl.to_vec(),
-                None => {
-                    return raise_exception::<u64>(_py, "TypeError", "data must be bytes-like");
-                }
-            },
-            None => {
-                return raise_exception::<u64>(_py, "TypeError", "data must be bytes-like");
-            }
+        // The Python facade has already acquired memoryview(data), as
+        // pathlib does. Opening/truncating precedes the file writer's SIMPLE
+        // request, including rejection of a noncontiguous memoryview.
+        let mut file = match fs::File::create(&s) {
+            Ok(file) => file,
+            Err(err) => return raise_os_error::<u64>(_py, err, "write_bytes"),
         };
-        match fs::write(&s, &data) {
+        let input = match unsafe {
+            molt_runtime_core::native_custody::acquire_buffer(
+                data_bits,
+                molt_runtime_core::native_custody::PyBUF_SIMPLE,
+            )
+        } {
+            Ok(input) => input,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let data = unsafe { molt_runtime_core::native_custody::buffer_bytes(&input) };
+        match std::io::Write::write_all(&mut file, data) {
             Ok(()) => MoltObject::from_int(data.len() as i64).bits(),
             Err(err) => raise_os_error::<u64>(_py, err, "write_bytes"),
         }
@@ -653,7 +533,7 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "pathlib.owner", audit_path_arg(path_bits)) {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -670,7 +550,14 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "KeyError", &format!("no user with uid {uid}"));
             }
             let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
-            str_bits(_py, &name.to_string_lossy())
+            {
+                use std::os::unix::ffi::OsStrExt;
+                path_result(
+                    _py,
+                    Path::new(std::ffi::OsStr::from_bytes(name.to_bytes())),
+                    false,
+                )
+            }
         }
         #[cfg(not(unix))]
         {
@@ -691,7 +578,7 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "pathlib.group", audit_path_arg(path_bits)) {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -712,7 +599,14 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
                 );
             }
             let name = unsafe { std::ffi::CStr::from_ptr((*gr).gr_name) };
-            str_bits(_py, &name.to_string_lossy())
+            {
+                use std::os::unix::ffi::OsStrExt;
+                path_result(
+                    _py,
+                    Path::new(std::ffi::OsStr::from_bytes(name.to_bytes())),
+                    false,
+                )
+            }
         }
         #[cfg(not(unix))]
         {
@@ -733,11 +627,11 @@ pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 
         if let Err(error) = require_operation(_py, "pathlib.samefile", audit_path_arg(path_bits)) {
             return error;
         }
-        let s = match require_str(_py, path_bits, "path") {
+        let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        let other = match require_str(_py, other_bits, "other") {
+        let other = match path_from_bits(_py, other_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
@@ -765,4 +659,67 @@ pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 
             }
         }
     })
+}
+
+#[cfg(test)]
+mod root_projection_tests {
+    use super::ParsedRoot;
+
+    #[test]
+    fn raw_and_pathlib_unc_projections_have_distinct_required_roots() {
+        for (raw, drive, root, expected) in [
+            (
+                b"//server/share".as_slice(),
+                14,
+                14,
+                b"\\\\server\\share\\".as_slice(),
+            ),
+            (
+                b"//?/UNC/server/share".as_slice(),
+                20,
+                20,
+                b"\\\\?\\UNC\\server\\share\\".as_slice(),
+            ),
+            (
+                b"//./device".as_slice(),
+                10,
+                10,
+                b"\\\\.\\device".as_slice(),
+            ),
+            (
+                b"//server/share/leaf".as_slice(),
+                14,
+                15,
+                b"\\\\server\\share\\leaf".as_slice(),
+            ),
+        ] {
+            let mut parsed = ParsedRoot {
+                raw: raw.to_vec(),
+                bytes: false,
+                drive,
+                root,
+            };
+            assert_eq!(parsed.raw, raw); // raw projection preserves spelling
+            parsed.normalize_pathlib(false);
+            assert_eq!(parsed.raw, expected);
+            assert_eq!(parsed.drive, drive);
+            assert_eq!(
+                parsed.root,
+                if expected.get(drive) == Some(&b'\\') {
+                    drive + 1
+                } else {
+                    root
+                }
+            );
+        }
+        let mut posix = ParsedRoot {
+            raw: b"//server/share".to_vec(),
+            bytes: false,
+            drive: 0,
+            root: 2,
+        };
+        posix.normalize_pathlib(true);
+        assert_eq!(posix.raw, b"//server/share");
+        assert_eq!((posix.drive, posix.root), (0, 2));
+    }
 }

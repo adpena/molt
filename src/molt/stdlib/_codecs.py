@@ -16,12 +16,10 @@ class _CodecProxy:
         self.encoding = encoding
 
     def encode(self, input, errors="strict"):
-        out = _MOLT_CODECS_ENCODE(input, self.encoding, errors)
-        return out, len(input)
+        return _MOLT_CODECS_ENCODE(input, self.encoding, errors, True)
 
     def decode(self, input, errors="strict"):
-        out = _MOLT_CODECS_DECODE(input, self.encoding, errors)
-        return out, len(input)
+        return _MOLT_CODECS_DECODE(input, self.encoding, errors, True)
 
 
 def getcodec(name):
@@ -32,11 +30,11 @@ def getcodec(name):
 
 
 def encode(obj, encoding="utf-8", errors="strict"):
-    return _MOLT_CODECS_ENCODE(obj, encoding, errors)
+    return _MOLT_CODECS_ENCODE(obj, encoding, errors, False)
 
 
 def decode(obj, encoding="utf-8", errors="strict"):
-    return _MOLT_CODECS_DECODE(obj, encoding, errors)
+    return _MOLT_CODECS_DECODE(obj, encoding, errors, False)
 
 
 def lookup(encoding):

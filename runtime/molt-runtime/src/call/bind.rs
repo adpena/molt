@@ -112,28 +112,6 @@ pub use inline_cache::{
     molt_invoke_ffi_ic, molt_load_method, molt_load_super_method,
 };
 
-/// Test-only bridge for the worker method-cache witness in
-/// `state/lifecycle.rs`, which another lane owns: a zero-argument method load
-/// and its call. Delete it when that test calls `molt_load_method` and
-/// `molt_call_loaded_method0` itself (HF-216).
-#[cfg(test)]
-pub(crate) fn molt_call_method_ic0(
-    site_bits: u64,
-    recv_bits: u64,
-    name_ptr: *const u8,
-    name_len_bits: u64,
-) -> u64 {
-    let mut self_or_null = 0u64;
-    let callable = molt_load_method(
-        site_bits,
-        recv_bits,
-        name_ptr,
-        name_len_bits,
-        (&raw mut self_or_null) as usize as u64,
-    );
-    molt_call_loaded_method0(callable, self_or_null)
-}
-
 /// Cached trace mode for `molt_call_bind`.  The env var is read once;
 /// subsequent calls use the cached result — eliminates a
 /// `std::env::var` syscall on every function call.

@@ -251,7 +251,9 @@ fn refresh_buffer_fields<'py>(
     if !builtin_matches(unsafe { object_class_bits(format_ptr) }, "str") {
         return Err(fail("GPU buffer format must be an exact string"));
     }
-    let format_text = string_obj_to_owned(obj_from_bits(format.bits()))
+    let format_text = format
+        .string_bytes(py)
+        .map(String::from_utf8_lossy)
         .ok_or_else(|| fail("GPU buffer format must be an exact string"))?;
     let scalar = scalar_format_from_text(&format_text)
         .ok_or_else(|| fail("GPU buffer format is outside the hardware numeric capability"))?;
@@ -286,7 +288,7 @@ fn refresh_buffer_fields<'py>(
     // Retain it through dispatch; dropping it during final admission could run
     // a destructor and invalidate already-checked siblings.
     pins.push(std::mem::replace(&mut buffer.data, data));
-    buffer.original_format = format_text;
+    buffer.original_format = format_text.into_owned();
     buffer.size = size;
     Ok(())
 }
@@ -355,10 +357,7 @@ fn admit_buffer_methods<'py>(
         pins.push(require_builtin(py, normalize.bits(), "isinstance")?);
         pins.push(require_builtin(py, normalize.bits(), "str")?);
         let dependencies: &[(&str, &str)] = if role == "struct_pack_into" {
-            &[
-                ("_MOLT_STRUCT_PACK", "molt_struct_pack"),
-                ("_MOLT_STRUCT_PACK_INTO", "molt_struct_pack_into"),
-            ]
+            &[("_MOLT_STRUCT_PACK_INTO", "molt_struct_pack_into")]
         } else {
             &[("_MOLT_STRUCT_UNPACK_FROM", "molt_struct_unpack_from")]
         };
@@ -373,7 +372,19 @@ fn admit_buffer_methods<'py>(
             }
             pins.push(intrinsic);
         }
-        pins.extend([module, body, normalize]);
+        // The native primitive receives the module-owned exception class as an
+        // ordinary argument. Retain the actual body binding through dispatch;
+        // descriptor bounds/numeric admission proves its failure path unreachable.
+        let error = owned_lookup(py, function_binding(body.bits(), "_STRUCT_ERROR"))?;
+        let declared_error = owned_lookup(py, module_binding(module.bits(), "_STRUCT_ERROR"))?;
+        if error.bits() != declared_error.bits() {
+            return Err(raise_exception::<u64>(
+                py,
+                "RuntimeError",
+                "GPU buffer struct error identity disagrees with its module",
+            ));
+        }
+        pins.extend([module, body, normalize, error, declared_error]);
     }
     pins.extend([get, set]);
     Ok(())

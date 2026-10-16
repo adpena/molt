@@ -2353,7 +2353,7 @@ pub unsafe extern "C" fn molt_bytearray_getbuffer(
         if unsafe { bytearray_data(object) }.is_none() {
             return -1;
         }
-        return unsafe { crate::api::buffer::PyObject_GetBuffer(object, view, flags) };
+        return unsafe { crate::api::buffer::managed_storage_getbuffer(object, view, flags) };
     }
     let Some(bytearray) = (unsafe { foreign_bytearray_layout(object) }) else {
         unsafe { bytearray_type_error() };

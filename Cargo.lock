@@ -12,12 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "adler2"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -102,6 +96,9 @@ name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
+dependencies = [
+ "derive_arbitrary",
+]
 
 [[package]]
 name = "arrayvec"
@@ -1303,6 +1300,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_arbitrary"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1561,8 +1569,6 @@ version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
- "crc32fast",
- "miniz_oxide",
  "zlib-rs",
 ]
 
@@ -2413,6 +2419,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "libz-rs-sys"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "434324ee61a8e4a05dd3fdf03d51c073ea7fdaf5a35b2ca33c4ca9f3f37def4a"
+dependencies = [
+ "zlib-rs",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2526,22 +2541,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "mimalloc"
 version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
 dependencies = [
  "libmimalloc-sys",
-]
-
-[[package]]
-name = "miniz_oxide"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
-dependencies = [
- "adler2",
- "simd-adler32",
 ]
 
 [[package]]
@@ -2781,12 +2795,10 @@ dependencies = [
 name = "molt-runtime"
 version = "0.1.0"
 dependencies = [
- "bzip2",
  "cc",
  "crossbeam-channel",
  "crossbeam-deque",
  "digest 0.11.3",
- "flate2",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "glob",
@@ -2855,7 +2867,6 @@ dependencies = [
  "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
  "wtf8",
- "xz2",
  "zip",
 ]
 
@@ -2885,6 +2896,7 @@ version = "0.1.0"
 dependencies = [
  "bzip2",
  "flate2",
+ "libz-rs-sys",
  "molt-runtime-core",
  "xz2",
  "zip",
@@ -2899,6 +2911,7 @@ name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "num-bigint 0.5.1",
  "num-traits",
@@ -3003,10 +3016,10 @@ name = "molt-runtime-path"
 version = "0.1.0"
 dependencies = [
  "filetime",
- "glob",
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "molt-runtime-platform",
  "num_cpus",
 ]
 
@@ -3073,6 +3086,7 @@ dependencies = [
  "libloading 0.9.0",
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "molt-runtime-platform",
 ]
 
 [[package]]
@@ -3805,6 +3819,15 @@ name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
+
+[[package]]
+name = "quickcheck"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95c589f335db0f6aaa168a7cd27b1fc6920f5e1470c804f814d9cd6e62a0f70b"
+dependencies = [
+ "rand 0.10.3",
+]
 
 [[package]]
 name = "quote"
@@ -6658,8 +6681,12 @@ dependencies = [
 [[package]]
 name = "zlib-rs"
 version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "memoffset",
+ "quickcheck",
+]
 
 [[package]]
 name = "zmij"

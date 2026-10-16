@@ -44,10 +44,29 @@ class PythonSourceSnapshot:
         return hashlib.sha256(self.content).hexdigest()
 
     @functools.cached_property
-    def text(self) -> str:
+    def _decoded_text(self) -> str:
         encoding, _ = tokenize.detect_encoding(io.BytesIO(self.content).readline)
         source = self.content.decode(encoding)
         return source.replace("\r\n", "\n").replace("\r", "\n")
+
+    @property
+    def text(self) -> str:
+        return self.text_for_filename(str(self.path))
+
+    def text_for_filename(self, filename: str) -> str:
+        """Decode Python source, preserving native parser encoding diagnostics.
+
+        Only a failed encoding decode enters the host parser. It consumes the
+        same captured bytes and logical filename; successful reads do no extra
+        parsing. Selected-version grammar admission belongs to target_python.
+        """
+        try:
+            return self._decoded_text
+        except (SyntaxError, UnicodeDecodeError) as decode_error:
+            ast.parse(self.content, filename=filename)
+            raise RuntimeError(
+                "Python source decoder rejected bytes accepted by the parser"
+            ) from decode_error
 
     @functools.cached_property
     def tree(self) -> ast.Module:

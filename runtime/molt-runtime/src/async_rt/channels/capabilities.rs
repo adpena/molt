@@ -51,16 +51,32 @@ fn load_execution_target() -> String {
         .unwrap_or_else(|_| "wasi".to_owned())
 }
 
+/// Freeze target selection together with the grant set before bootstrap can
+/// admit operations, including hash-secret entropy during class construction.
+pub(crate) fn freeze_capabilities(py: &PyToken<'_>) {
+    let state = runtime_state(py);
+    assert!(
+        state
+            .trusted
+            .set(load_maximum_builtin_tier_selected())
+            .is_ok()
+    );
+    assert!(state.capabilities.set(load_capabilities()).is_ok());
+    assert!(state.execution_target.set(load_execution_target()).is_ok());
+}
+
 pub(crate) fn is_trusted(_py: &PyToken<'_>) -> bool {
     *runtime_state(_py)
         .trusted
-        .get_or_init(load_maximum_builtin_tier_selected)
+        .get()
+        .expect("runtime trust must be frozen before use")
 }
 
 pub(crate) fn has_capability(_py: &PyToken<'_>, name: &str) -> bool {
     let caps = runtime_state(_py)
         .capabilities
-        .get_or_init(load_capabilities);
+        .get()
+        .expect("runtime grants must be frozen before use");
     caps.contains(name)
 }
 
@@ -83,7 +99,8 @@ fn operation_platform() -> &'static str {
 fn operation_supported_here(_py: &PyToken<'_>, operation: OperationId) -> bool {
     let target = runtime_state(_py)
         .execution_target
-        .get_or_init(load_execution_target);
+        .get()
+        .expect("runtime execution target must be frozen before use");
     let python = crate::object::ops_sys::runtime_target_python_info(runtime_state(_py));
     operation.supports_target(
         target,
@@ -163,7 +180,8 @@ pub(crate) fn require_operation_with_capabilities<
 ) -> Result<(), T> {
     let target = runtime_state(_py)
         .execution_target
-        .get_or_init(load_execution_target);
+        .get()
+        .expect("runtime execution target must be frozen before use");
     let platform = operation_platform();
     let architecture = std::env::consts::ARCH;
     if !operation_supported_here(_py, operation) {

@@ -22,6 +22,7 @@ from molt.cli.module_stdlib_policy import _looks_like_stdlib_module_name
 from molt.dx import _memory_bounded_worker_count_from_samples, _system_memory_bytes
 
 if TYPE_CHECKING:
+    from molt.cli.models import ModuleSyntaxErrorInfo
     from molt.frontend import ClassId, ClassInfo
 
 
@@ -455,7 +456,7 @@ def _frontend_parallel_policy_payload(
 def _frontend_layer_plan(
     layer: Sequence[str],
     *,
-    syntax_error_modules: Mapping[str, Any],
+    syntax_error_modules: Mapping[str, "ModuleSyntaxErrorInfo"],
     module_source_catalog: _ModuleSourceCatalog,
     module_graph: Mapping[str, Path],
     module_deps: dict[str, set[str]],

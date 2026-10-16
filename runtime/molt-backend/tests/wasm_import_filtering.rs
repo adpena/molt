@@ -588,10 +588,38 @@ fn pure_profile_keeps_core_arithmetic() {
 
 #[test]
 fn pure_profile_keeps_collection_ops() {
-    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Pure);
+    // Pure strips unused imports, so exercise the actual collection producers.
+    // Parameters keep the nonempty complete-pairs constructor observable.
+    let mut ir = empty_main_ir();
+    let main = &mut ir.functions[0];
+    main.return_abi = molt_ir::FunctionReturnAbi::Value;
+    main.params = vec!["key".to_string(), "value".to_string()];
+    main.ops.clear();
+    for (kind, out, args) in [
+        ("dict_new", "dictionary", vec!["key", "value"]),
+        ("list_new", "list", vec!["key", "value"]),
+        ("set_new", "set", vec!["key"]),
+    ] {
+        let mut collection = op(kind);
+        collection.out = Some(out.to_string());
+        collection.args = Some(args.into_iter().map(str::to_string).collect());
+        main.ops.push(collection);
+    }
+    let mut result = op("tuple_new");
+    result.out = Some("collections".to_string());
+    result.args = Some(vec![
+        "dictionary".to_string(),
+        "list".to_string(),
+        "set".to_string(),
+    ]);
+    let mut ret = op("ret");
+    ret.args = Some(vec!["collections".to_string()]);
+    main.ops.extend([result, ret]);
+
+    let wasm = compile_with_profile(ir, WasmProfile::Pure);
     let names = import_names(&wasm);
 
-    for core in ["dict_new", "list_from_values", "set_new"] {
+    for core in ["dict_from_pairs", "list_from_values", "set_new"] {
         assert!(
             names.contains(core),
             "Pure profile should keep collection import: {core}"

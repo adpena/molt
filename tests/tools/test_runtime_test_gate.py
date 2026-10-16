@@ -46,7 +46,7 @@ def selected_cargo(monkeypatch, tmp_path):
 
 def fixture_ledger(tmp_path):
     binary = support.make_image(tmp_path)
-    inventory = [*gate.ISOLATED, *gate.PROBES, *REMAINDER]
+    inventory = [*gate.isolated_for("linux"), *gate.probes_for("linux"), *REMAINDER]
     selections = gate.selections(inventory, 4, "linux")
     data = binary.read_bytes()
     identity = (len(data), support.sha256(data))
@@ -75,11 +75,11 @@ def test_complete_parallel_and_fresh_process_ledger_passes(tmp_path):
     verified = gate.validate_children(children, selections, **binding)
     assert {name: value and value["children"] for name, value in verified.items()} == {
         "parallel": 2,
-        **{name: None for name in gate.ISOLATED},
+        **{name: None for name in gate.isolated_for("linux")},
         support.EXIT: 2,
     }
     assert "--test-threads=4" in selections["parallel"][0]
-    for name in gate.ISOLATED:
+    for name in gate.isolated_for("linux"):
         assert selections[name][0] == [
             "--exact",
             name,
@@ -206,7 +206,7 @@ def test_aggregate_rederives_descendants_from_raw_child_evidence(
     "problem", ["serial", "duplicate", "missing_semantic", "missing_probe", "empty"]
 )
 def test_inventory_and_parallel_witness_are_mandatory(problem):
-    inventory = [*gate.ISOLATED, *gate.PROBES, "ordinary"]
+    inventory = [*gate.isolated_for("linux"), *gate.probes_for("linux"), "ordinary"]
     threads = 4
     if problem == "serial":
         threads = 1
@@ -242,7 +242,11 @@ def test_probe_is_required_only_where_the_runtime_compiles_it():
         PINNED_BENCH,
         PINNED_LIFECYCLE,
     }
-    darwin_inventory = [*gate.ISOLATED, *gate.probes_for("darwin"), "ordinary"]
+    darwin_inventory = [
+        *gate.isolated_for("darwin"),
+        *gate.probes_for("darwin"),
+        "ordinary",
+    ]
     selection = gate.selections(darwin_inventory, 4, "darwin")
     assert PINNED_BENCH not in selection["parallel"][0]
     assert selection["parallel"][1] == {"ordinary"}
@@ -727,6 +731,14 @@ FRESH_OWNERS = (
     "cpython_abi_hooks::pending_cleanup_tests::canonical_cache_allocation_failure_reentry_and_ascii_no_retry",
     "cpython_abi_hooks::immortal_ownership_tests::immortal_c_views_preserve_runtime_roots_and_gc",
     "state::lifecycle::shutdown_tests::embedding_shutdown_collects_native_type_cycles_across_module_retirement",
+    "concurrency::isolates::bootstrap_failure_tests::completed_isolate_preserves_primary_resource_factory_for_new_workers",
+    "state::runtime_state::tests::runtime_policy_freezes_before_first_consumers_and_keeps_absent_vfs_absent",
+    "state::runtime_state::tests::runtime_vfs_freezes_route_and_quota_without_loading_payload",
+    "state::runtime_state::tests::runtime_relative_vfs_route_keeps_startup_cwd_until_first_use",
+    "state::runtime_state::tests::runtime_output_sinks_keep_startup_cwd_until_first_write",
+)
+UNIX_FRESH_OWNERS = (
+    "state::runtime_state::tests::relative_output_sink_capture_failure_disables_without_fallback",
 )
 DEVELOPMENT_PROBES = (
     "builtins::functools::tests::lru_cache_cost_probe",
@@ -739,18 +751,19 @@ DEVELOPMENT_PROBES = (
 def test_ignored_runtime_inventory_has_explicit_semantic_and_profile_owners(platform):
     # Names are independent observations of Rust #[ignore] contracts, not a
     # table copied from the selection under test. Missing declarations fail.
+    fresh_owners = FRESH_OWNERS + (() if platform == "win32" else UNIX_FRESH_OWNERS)
     inventory = sorted(
         set(
-            gate.ISOLATED
+            gate.isolated_for(platform)
             + gate.probes_for(platform)
-            + FRESH_OWNERS
+            + fresh_owners
             + DEVELOPMENT_PROBES
             + ("ordinary",)
         )
     )
     selected = gate.selections(inventory, 4, platform)
     assert selected["parallel"][1] == {"ordinary"}
-    for name in FRESH_OWNERS:
+    for name in fresh_owners:
         assert selected[name] == (
             ["--exact", name, "--ignored", "--test-threads=1", "--nocapture"],
             {name},
@@ -761,7 +774,7 @@ def test_ignored_runtime_inventory_has_explicit_semantic_and_profile_owners(plat
         assert all(name not in tests for _argv, tests in selected.values())
 
 
-@pytest.mark.parametrize("name", FRESH_OWNERS)
+@pytest.mark.parametrize("name", FRESH_OWNERS + UNIX_FRESH_OWNERS)
 def test_new_fresh_semantic_owner_cannot_remain_ignored(tmp_path, name):
     children, selected, binding = fixture_ledger(tmp_path)
     children[name][0]["test_results"][0]["status"] = "ignored"
@@ -769,11 +782,43 @@ def test_new_fresh_semantic_owner_cannot_remain_ignored(tmp_path, name):
         gate.validate_children(children, selected, **binding)
 
 
+@pytest.mark.parametrize("platform", ["linux", "darwin", "freebsd14", "win32"])
+def test_lost_cwd_semantic_owner_follows_the_native_source_cfg(platform):
+    name = UNIX_FRESH_OWNERS[0]
+    inventory = [*gate.ISOLATED, *gate.probes_for(platform), "ordinary"]
+    if platform != "win32":
+        # An actual Unix image must contain the ignored lost-CWD oracle, and
+        # its absence must fail before any semantic child can be credited.
+        with pytest.raises(RuntimeError, match=name):
+            gate.selections(inventory, 4, platform)
+        inventory.append(name)
+    selected = gate.selections(inventory, 4, platform)
+    assert selected["parallel"][1] == {"ordinary"}
+    if platform == "win32":
+        assert name not in selected
+        assert name not in selected["parallel"][0]
+    else:
+        assert selected[name] == (
+            ["--exact", name, "--ignored", "--test-threads=1", "--nocapture"],
+            {name},
+        )
+        assert name in selected["parallel"][0]
+
+
+@pytest.mark.parametrize("name", FRESH_OWNERS + UNIX_FRESH_OWNERS)
+def test_missing_fresh_semantic_owner_is_refused_before_execution(name):
+    inventory = [*gate.isolated_for("linux"), *gate.probes_for("linux"), "ordinary"]
+    inventory.remove(name)
+    with pytest.raises(RuntimeError, match=name):
+        gate.selections(inventory, 4, "linux")
+
+
 # Independent required controls from their Rust owners, not a test-count quota.
 OBSERVER_WITNESSES = {
     "molt_runtime": {
         "builtins::frames::namespace_tests::task_growth_refusal::both_task_producers_refuse_actual_late_map_growth_and_restore_owners",
         "call::bind::inline_cache::binding_tests::direct_call_ic_hot_path_is_allocation_free_with_slow_path_control",
+        "cpython_abi_hooks::pending_cleanup_tests::writable_buffer_lease_preparation_failure_precedes_exporter_dispatch",
         "cpython_abi_hooks::tests::cpython_abi_gil_custody_is_allocation_free_after_warmup",
         "object::gc::tests::repeated_reachable_collection_workspace_allocations",
         "cpython_abi_hooks::exception_rendering_tests::decimal_output_limits::rejected_decimal_magnitude_does_not_allocate_decimal_storage",
@@ -1360,3 +1405,271 @@ def test_wasi_policy_hands_exact_compiler_image_to_existing_consumer(
         assert (
             "ABI allocation features contradict semantic policy" in aggregate["error"]
         )
+
+
+# Independent names from the provider's actual normal-width test modules;
+# singular deflate::test is deliberate. Debug-only tests are a native policy.
+ZLIB_WASI_WITNESSES = {
+    "inflate::tests::counter_wrap_checksum_completion_and_gzip_length",
+    "inflate::tests::counter_wrap_sync_preserves_recovered_totals",
+    "deflate::test::counter_wrap_stored_and_compressed_streams",
+    "stable::tests::counter_wrap_stable_totals_preserve_u64_width",
+}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "registry",
+        "version",
+        "source_path",
+        "extra_image",
+        "wrong_target",
+        "not_wasm",
+        "optimized",
+        "unchecked",
+        "no_debug",
+        "features",
+        "incomplete",
+        "missing_case",
+        "extra_case",
+        "duplicate_case",
+        "discovery_failure",
+        "ignored",
+        "changed_wasm",
+        "changed_node",
+        "changed_source",
+    ],
+)
+def test_provider_wasi_requires_actual_checked_image_and_four_passes(
+    monkeypatch,
+    tmp_path,
+    selected_cargo,
+    mutation,
+):
+    import json
+    from types import SimpleNamespace
+
+    node = support.make_image(tmp_path / "node")
+    wasm = tmp_path / "target/wasm32-wasip1/debug/deps/zlib_rs.wasm"
+    wasm.parent.mkdir(parents=True)
+    wasm.write_bytes(b"\0asm\x01\0\0\0provider test")
+    package_id = "path+file:///vendor/zlib-rs#0.6.8"
+    metadata = {
+        "target_directory": str(tmp_path / "target"),
+        "packages": [
+            {
+                "id": package_id,
+                "name": "zlib-rs",
+                "version": "0.6.8",
+                "source": None,
+                "manifest_path": str(gate.ROOT / "vendor/rust/zlib-rs/Cargo.toml"),
+            }
+        ],
+    }
+    artifact = {
+        "reason": "compiler-artifact",
+        "package_id": package_id,
+        "target": {
+            "name": "zlib_rs",
+            "kind": ["lib"],
+            "src_path": str(gate.ROOT / "vendor/rust/zlib-rs/src/lib.rs"),
+        },
+        "profile": {
+            "test": True,
+            "opt_level": "0",
+            "debug_assertions": True,
+            "overflow_checks": True,
+        },
+        "features": ["rust-allocator"],
+        "executable": str(wasm),
+    }
+    if mutation == "registry":
+        metadata["packages"][0]["source"] = "registry+https://example.invalid/index"
+    elif mutation == "version":
+        metadata["packages"][0]["version"] = "0.6.9"
+    elif mutation == "source_path":
+        artifact["target"]["src_path"] = str(tmp_path / "foreign.rs")
+    elif mutation == "wrong_target":
+        other = tmp_path / "target/debug/zlib_rs.wasm"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(wasm.read_bytes())
+        artifact["executable"] = str(other)
+    elif mutation == "not_wasm":
+        wasm.write_bytes(b"native executable")
+    elif mutation == "optimized":
+        artifact["profile"]["opt_level"] = "1"
+    elif mutation == "unchecked":
+        artifact["profile"]["overflow_checks"] = False
+    elif mutation == "no_debug":
+        artifact["profile"]["debug_assertions"] = False
+    elif mutation == "features":
+        artifact["features"].append("ZLIB_DEBUG")
+    artifacts = [artifact]
+    if mutation == "extra_image":
+        artifacts.append(deepcopy(artifact))
+    inventory = sorted(ZLIB_WASI_WITNESSES)
+    if mutation == "missing_case":
+        inventory.pop()
+    elif mutation == "extra_case":
+        inventory.append("foreign::counter_wrap")
+    elif mutation == "duplicate_case":
+        inventory.append(inventory[0])
+    reads = 0
+
+    def source():
+        nonlocal reads
+        reads += 1
+        return (
+            dict(support.SOURCE, head="changed")
+            if mutation == "changed_source" and reads > 2
+            else support.SOURCE
+        )
+
+    monkeypatch.setattr(gate.truth, "git_source_identity", source)
+    monkeypatch.setattr(
+        gate,
+        "resolve_node_runtime",
+        lambda **kw: SimpleNamespace(path=node, version="26.11.1"),
+    )
+    monkeypatch.setattr(
+        gate,
+        "zlib_wasi_flags",
+        lambda command, env: ({"inputs": {"sources": []}, "probes": []}, env),
+    )
+    monkeypatch.delenv("NODE_OPTIONS", raising=False)
+    discovered = []
+
+    def discover(binary, inherited_args, **kwargs):
+        assert binary == str(node)
+        assert inherited_args[-3:] == ["--", "counter_wrap", "--test-threads=1"]
+        assert str(wasm) in inherited_args[1] and "node:wasi" in inherited_args[1]
+        discovered.append(binary)
+        return inventory, SimpleNamespace(
+            succeeded=mutation != "discovery_failure", receipt=lambda: {}
+        )
+
+    monkeypatch.setattr(gate.runner, "listed_tests", discover)
+    builds, children = [], []
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            result = SimpleNamespace(returncode=0, stdout="", stderr="")
+            if argv[:2] == [selected_cargo, "metadata"]:
+                result.stdout = json.dumps(metadata)
+            elif argv[:2] == [selected_cargo, "test"]:
+                builds.append(argv)
+                rows = artifacts + (
+                    []
+                    if mutation == "incomplete"
+                    else [{"reason": "build-finished", "success": True}]
+                )
+                result.stdout = "\n".join(json.dumps(row) for row in rows)
+            else:
+                assert discovered
+                split = argv.index("--")
+                assert argv[split + 1] == str(node)
+                args = argv[split + 2 :]
+                directory = Path(argv[argv.index("--receipt-dir") + 1])
+                required = {
+                    argv[i + 1]
+                    for i, word in enumerate(argv[:-1])
+                    if word == "--require-passed-test"
+                }
+                assert required == ZLIB_WASI_WITNESSES
+                receipt = support.binary_receipt(
+                    directory,
+                    node,
+                    sorted(ZLIB_WASI_WITNESSES),
+                    [],
+                    args=args,
+                    retained_root=Path(argv[argv.index("--retained-root") + 1]),
+                    run_id=argv[argv.index("--run-id") + 1],
+                    invocation="provider-child",
+                    statuses={next(iter(ZLIB_WASI_WITNESSES)): "ignored"}
+                    if mutation == "ignored"
+                    else None,
+                )
+                receipt["required_passed_tests"] = sorted(required)
+                gate.runner.write_receipt(directory / "receipt.json", receipt)
+                children.append(argv)
+                if mutation == "changed_wasm":
+                    wasm.write_bytes(b"replacement")
+                if mutation == "changed_node":
+                    node.write_bytes(b"replacement")
+            return result
+
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    root = tmp_path / "receipts"
+    code = gate.main(
+        ["--policy", "zlib-wasi", "--profile", "dev-fast", "--receipt-root", str(root)]
+    )
+    aggregate = json.loads(next(root.glob("*/aggregate.json")).read_text())
+    assert len(builds) == 1
+    argv = builds[0]
+    assert argv[argv.index("-p") + 1] == "zlib-rs@0.6.8"
+    assert argv[argv.index("--target") + 1] == "wasm32-wasip1"
+    assert argv[argv.index("--features") + 1] == "rust-allocator"
+    assert "--lib" in argv and "--no-default-features" in argv and "--no-run" in argv
+    assert "--test" not in argv
+    if mutation is None:
+        assert code == 0 and aggregate["passed_test_count"] == 4
+        assert len(children) == 1
+        assert (
+            aggregate["images"]["zlib_rs"]["retained"]["sha256"]
+            != aggregate["node"]["retained"]["sha256"]
+        )
+    else:
+        assert code == 1 and aggregate["status"] == "failed"
+        if mutation not in {
+            "ignored",
+            "changed_wasm",
+            "changed_node",
+            "changed_source",
+        }:
+            assert not children
+
+
+@pytest.mark.parametrize(
+    "flags,refused",
+    [
+        (["-Dwarnings", "-Clink-arg=--strip-debug"], False),
+        (["-C", "overflow_checks=yes", "--codegen=opt-level=0"], False),
+        (["-Coverflow-checks=no"], True),
+        (["--codegen", "debug_assertions=false"], True),
+        (["-C", "opt-level=3"], True),
+        (["-O"], True),
+    ],
+)
+def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
+    monkeypatch,
+    tmp_path,
+    flags,
+    refused,
+):
+    from molt.cli import runtime_cargo_plan as plan
+    from molt import rust_toolchain
+    from tools.proof_queue_pkg import toolchain_capture
+
+    environment = {"RUSTFLAGS": "-Dwarnings", "UNRELATED": "preserved"}
+    captured = (tmp_path, environment, [], [], {}, {}, None, {}, [], {})
+    monkeypatch.setattr(
+        plan, "capture_cargo_configuration_inputs", lambda *a, **kw: captured
+    )
+    monkeypatch.setattr(plan, "_tool_path", lambda *a, **kw: tmp_path / "rustc")
+    monkeypatch.setattr(rust_toolchain, "resolve_rustup_proxy", lambda path, **kw: path)
+
+    def capture(**kw):
+        assert kw["env"] == environment and kw["target"] == "wasm32-wasip1"
+        return {"selected_flags": flags, "sources": []}, dict(environment)
+
+    monkeypatch.setattr(toolchain_capture, "_cargo_flag_context", capture)
+    if refused:
+        with pytest.raises(RuntimeError, match="flags contradict"):
+            gate.zlib_wasi_flags(["cargo", "test"], environment)
+    else:
+        context, actual = gate.zlib_wasi_flags(["cargo", "test"], environment)
+        assert actual == environment
+        assert context["inputs"]["selected_flags"] == flags
+        assert "CARGO_ENCODED_RUSTFLAGS" not in actual

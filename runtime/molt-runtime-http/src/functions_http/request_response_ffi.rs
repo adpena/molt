@@ -92,8 +92,44 @@ pub extern "C" fn molt_urllib_request_add_handler(opener_bits: u64, handler_bits
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) -> u64 {
+pub extern "C" fn molt_urllib_request_open(
+    opener_bits: u64,
+    request_bits: u64,
+    scheme_bits: u64,
+    selected_proxy_bits: u64,
+) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        let Some(route_scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
+            return raise_exception::<u64>(_py, "TypeError", "route scheme must be str");
+        };
+        let environment = !obj_from_bits(selected_proxy_bits).is_none();
+        use molt_runtime_core::host_capabilities_generated::OperationId;
+        let operation = match route_scheme.as_str() {
+            "http" => Some(OperationId::HttpRequest),
+            "https" => Some(OperationId::HttpsRequest),
+            _ if environment => {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "proxy route must use HTTP or HTTPS",
+                );
+            }
+            _ => None,
+        };
+        if let Some(operation) = operation {
+            if let Err(error) = crate::bridge::require_route_operation(_py, operation, environment)
+            {
+                return error;
+            }
+        }
+        let selected_proxy = if environment {
+            let Some(proxy) = string_obj_to_owned(obj_from_bits(selected_proxy_bits)) else {
+                return raise_exception::<u64>(_py, "TypeError", "proxy URL must be str");
+            };
+            Some(proxy)
+        } else {
+            None
+        };
         let mut owned_request_refs: Vec<u64> = Vec::new();
         let out_bits = (|| -> u64 {
             let mut active_request_bits = request_bits;
@@ -118,6 +154,13 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                 text
             };
             let mut scheme = urllib_split_scheme(&full_url, "").0;
+            if scheme != route_scheme {
+                return raise_exception::<u64>(
+                    _py,
+                    "ValueError",
+                    "request URL does not match selected route scheme",
+                );
+            }
 
             let previous_cursor = match urllib_request_get_cursor(_py, opener_bits) {
                 Ok(value) => value.max(0),
@@ -287,7 +330,16 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                 let mut proxy_auth_header: Option<String> = None;
                 let mut proxy_auth_attempted = false;
                 let mut current_url = full_url.clone();
-                let mut redirects = 0usize;
+                let mut redirects =
+                    match attr_optional(_py, active_request_bits, b"_molt_redirect_count") {
+                        Ok(Some(bits)) => {
+                            let count = to_i64(obj_from_bits(bits)).unwrap_or(0).max(0) as usize;
+                            dec_ref_bits(_py, bits);
+                            count
+                        }
+                        Ok(None) => 0,
+                        Err(error) => return error,
+                    };
                 let cookiejar_handles =
                     match urllib_cookiejar_handles_from_handlers(_py, handlers.as_ref()) {
                         Ok(value) => value,
@@ -318,17 +370,27 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         return urllib_raise_url_error(_py, "no host given");
                     }
                     // Authentication retries keep the already selected peer.
-                    // Redirects reset this phase and select the new hop's route.
+                    // Redirects dispatch a new request with fresh authentication state.
                     if !proxy_auth_attempted {
-                        proxy = match urllib_http_find_proxy_for_scheme(
+                        if let Err(error) = crate::bridge::require_route_operation(
                             _py,
-                            opener_bits,
-                            hop_scheme,
-                            &host_now,
+                            if hop_scheme == "https" {
+                                OperationId::HttpsRequest
+                            } else {
+                                OperationId::HttpRequest
+                            },
+                            environment,
                         ) {
-                            Ok(value) => value,
-                            Err(bits) => return bits,
-                        };
+                            return error;
+                        }
+                        proxy = selected_proxy.clone();
+                        if proxy.is_some() {
+                            match urllib_http_proxy_bypass(_py, &host_now) {
+                                Ok(true) => proxy = None,
+                                Ok(false) => {}
+                                Err(error) => return error,
+                            }
+                        }
                     }
                     let mut effective_headers = base_headers.clone();
                     urllib_cookiejar_apply_header_for_url(
@@ -474,8 +536,7 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                         let next =
                             urllib_http_join_url(&current_url, location.as_deref().unwrap_or(""));
                         current_url = next;
-                        proxy_auth_header = None;
-                        proxy_auth_attempted = false;
+                        drop(proxy_auth_header);
                         if code == 303 || ((code == 301 || code == 302) && method != "HEAD") {
                             method = "GET".to_string();
                             body.clear();
@@ -484,7 +545,157 @@ pub extern "C" fn molt_urllib_request_open(opener_bits: u64, request_bits: u64) 
                                     && !name.eq_ignore_ascii_case("Content-Type")
                             });
                         }
-                        continue;
+                        let next_scheme = urllib_split_scheme(&current_url, "").0;
+                        let next_operation = match next_scheme.as_str() {
+                            "http" => OperationId::HttpRequest,
+                            "https" => OperationId::HttpsRequest,
+                            _ => {
+                                return urllib_raise_url_error(
+                                    _py,
+                                    "redirect target must use HTTP or HTTPS",
+                                );
+                            }
+                        };
+                        if let Err(error) = crate::bridge::require_operation(_py, next_operation) {
+                            return error;
+                        }
+                        let owned_string = |text: &str| {
+                            let pointer = alloc_string(_py, text.as_bytes());
+                            if pointer.is_null() {
+                                Err(MoltObject::none().bits())
+                            } else {
+                                Ok(unsafe {
+                                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                        _py,
+                                        MoltObject::from_ptr(pointer).bits(),
+                                    )
+                                })
+                            }
+                        };
+                        let url = match owned_string(&current_url) {
+                            Ok(value) => value,
+                            Err(error) => return error,
+                        };
+                        let method = match owned_string(&method) {
+                            Ok(value) => value,
+                            Err(error) => return error,
+                        };
+                        let body_ptr = alloc_bytes(_py, &body);
+                        if body_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        let body = unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                _py,
+                                MoltObject::from_ptr(body_ptr).bits(),
+                            )
+                        };
+                        let mut pairs = Vec::with_capacity(base_headers.len() * 2);
+                        for (name, value) in &base_headers {
+                            for text in [name, value] {
+                                let pointer = alloc_string(_py, text.as_bytes());
+                                if pointer.is_null() {
+                                    return MoltObject::none().bits();
+                                }
+                                pairs.push(unsafe {
+                                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                        _py,
+                                        MoltObject::from_ptr(pointer).bits(),
+                                    )
+                                });
+                            }
+                        }
+                        let headers_ptr = alloc_dict_with_pairs(
+                            _py,
+                            molt_runtime_core::OwnedRuntimeValue::as_bits_slice(&pairs),
+                        );
+                        if headers_ptr.is_null() {
+                            return MoltObject::none().bits();
+                        }
+                        let headers = unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                _py,
+                                MoltObject::from_ptr(headers_ptr).bits(),
+                            )
+                        };
+                        let request_class = match crate::bridge::resolve_global_bits(
+                            _py,
+                            "urllib.request",
+                            "Request",
+                        ) {
+                            Ok(value) => value,
+                            Err(error) => return error,
+                        };
+                        let request_class = unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                                _py,
+                                request_class,
+                            )
+                        };
+                        let next = crate::bridge::call_class_init_with_args(
+                            _py,
+                            request_class.bits(),
+                            &[url.bits(), body.bits(), headers.bits(), method.bits()],
+                        );
+                        let next = unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py, next)
+                        };
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        if !urllib_request_set_attr(
+                            _py,
+                            next.bits(),
+                            b"_molt_redirect_count",
+                            MoltObject::from_int(redirects as i64).bits(),
+                        ) {
+                            return MoltObject::none().bits();
+                        }
+                        let timeout = match attr_optional(_py, active_request_bits, b"timeout") {
+                            Ok(value) => value.map(|bits| unsafe {
+                                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py, bits)
+                            }),
+                            Err(error) => return error,
+                        };
+                        if let Some(timeout) = timeout.as_ref() {
+                            if !urllib_request_set_attr(
+                                _py,
+                                next.bits(),
+                                b"timeout",
+                                timeout.bits(),
+                            ) {
+                                return MoltObject::none().bits();
+                            }
+                        }
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        if !urllib_request_set_cursor(_py, opener_bits, 0) {
+                            return MoltObject::none().bits();
+                        }
+                        let open = match attr_optional(_py, opener_bits, b"open") {
+                            Ok(Some(value)) => value,
+                            Ok(None) => {
+                                return raise_exception::<u64>(
+                                    _py,
+                                    "TypeError",
+                                    "opener has no open method",
+                                );
+                            }
+                            Err(error) => return error,
+                        };
+                        let open = unsafe {
+                            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py, open)
+                        };
+                        return crate::bridge::call_callable1_keyword(
+                            _py,
+                            open.bits(),
+                            next.bits(),
+                            b"timeout",
+                            timeout
+                                .as_ref()
+                                .map_or(MoltObject::none().bits(), |value| value.bits()),
+                        );
                     }
                     let Some(handle) = urllib_response_store(urllib_response_from_parts(
                         resp_body,
@@ -656,24 +867,22 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
-        let mut export = crate::bridge::BufferExport::default();
-        if crate::bridge::molt_buffer_export(buffer_bits, &mut export)
-            || export.readonly != 0
-            || export.ndim != 1
-            || export.itemsize != 1
-            || export.strides[0] != 1
-        {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "readinto() argument must be a writable bytes-like object",
-            );
-        }
-        let out_len = export.len as usize;
+        let export = match unsafe {
+            molt_runtime_core::native_custody::acquire_buffer(
+                buffer_bits,
+                molt_runtime_core::native_custody::PyBUF_WRITABLE,
+            )
+        } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let descriptor = unsafe { &*export.descriptor() };
+        let out_len = descriptor.len as usize;
         if out_len == 0 {
             return MoltObject::from_int(0).bits();
         }
-        let out_buf = unsafe { std::slice::from_raw_parts_mut(export.ptr as *mut u8, out_len) };
+        let out_buf =
+            unsafe { std::slice::from_raw_parts_mut(descriptor.buf.cast::<u8>(), out_len) };
         let Some(out) =
             urllib_response_with_mut(handle, |resp| urllib_response_readinto_len(resp, out_buf))
         else {

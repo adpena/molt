@@ -183,9 +183,19 @@ const hooks = {
   add(a, b) { live(a); live(b); calls++; return none; },
   is(a, b) { live(a); live(b); calls++; assert.equal(a, b); return yes; },
   is_truthy(value) { if (truthFail) { pending = 'TruthError'; return 0n; } return 1n; },
-  dict_new(capacity) { assert.equal(capacity, 1n); return newContainer(); },
-  dict_set(dict, key, value) {
-    return append(dict, [key, value]) ? none : dict;
+  dict_from_pairs(keys, values, len) {
+    assert.equal(len, 1n);
+    assert.equal(typeof keys, 'number'); assert.equal(typeof values, 'number');
+    assert.deepEqual({ptr: BigInt(keys), size: len * 16n}, scratch);
+    assert.equal(values, keys + Number(len) * 8);
+    const view = new DataView(memory.buffer);
+    const key = view.getBigInt64(keys, true), value = view.getBigInt64(values, true);
+    live(key); live(value);
+    assert.equal(integers.get(key), wide); assert.equal(integers.get(value), wide + 1n);
+    const dict = newContainer();
+    if (pending) return none;
+    if (append(dict, [key, value])) { dec(dict); return none; }
+    return dict;
   },
   set_new(capacity) { assert.equal(capacity, BigInt(config.raw_two)); return newContainer(); },
   set_add(set, value) { append(set, [value]); return none; },
@@ -300,7 +310,7 @@ for (const name of ['dict', 'set', 'list', 'tuple']) {
 }
 // A failed range allocation publishes MemoryError, skips the constructor and
 // releases both operation-owned boxes.
-for (const name of ['tuple', 'list']) {
+for (const name of ['tuple', 'list', 'dict']) {
   reset(); scratchFail = true;
   assert.equal(loaded[name](wide, wide + 1n), none);
   assert.equal(pending, 'MemoryError'); assert.equal(calls, 0); assert.equal(refs.size, 0);

@@ -39,3 +39,118 @@ show("bacount0", ba.count(b"ab", -6, -1))
 show_err("err_starts", lambda: b"abc".startswith((b"a", 1)))
 show_err("err_find", lambda: b"abc".find("a"))
 show_err("err_ba_find", lambda: bytearray(b"abc").find("a"))
+
+
+class SearchBuffer:
+    def __init__(self, events, value=b"b"):
+        self.events = events
+        self.value = value
+        self.view = None
+
+    def __buffer__(self, flags):
+        self.events.append(("get", flags))
+        self.view = memoryview(self.value)
+        return self.view
+
+    def __release_buffer__(self, view):
+        self.events.append(("release", view is self.view))
+
+
+class SearchBound:
+    def __init__(self, events, label, value):
+        self.events, self.label, self.value = events, label, value
+
+    def __index__(self):
+        self.events.append(self.label)
+        return self.value
+
+
+for factory in (bytes, bytearray):
+    for method in ("find", "rfind", "index", "rindex", "count", "startswith", "endswith"):
+        events = []
+        needle = SearchBuffer(events)
+        receiver = factory(b"abc")
+        result = getattr(receiver, method)(needle, SearchBound(events, "start", 0), SearchBound(events, "end", 3))
+        print("search-protocol", method, result, events)
+    for method in ("split", "rsplit", "partition", "rpartition", "strip", "lstrip", "rstrip", "removeprefix", "removesuffix"):
+        events = []
+        needle = SearchBuffer(events)
+        result = getattr(factory(b"babb"), method)(needle)
+        # bytes.partition preserves Py_buffer.obj. A Python exporter returns
+        # CPython's internal wrapper; its address-bearing repr is not an oracle.
+        if method in ("partition", "rpartition"):
+            result = (result[0], type(result[1]).__name__, result[2])
+        print("byte-argument-protocol", method, result, events)
+
+
+class PhysicalTail(bytes):
+    def __buffer__(self, flags):
+        raise AssertionError("tailmatch must use physical bytes")
+
+
+for receiver in (b"abc", bytearray(b"abc")):
+    print("tail-physical-subclass", receiver.startswith(PhysicalTail(b"a")), receiver.endswith(PhysicalTail(b"c")))
+    try:
+        receiver.startswith(1)
+    except TypeError as error:
+        print("tail-invalid-direct", str(error))
+    try:
+        receiver.startswith((b"x", 1))
+    except TypeError as error:
+        print("tail-invalid-tuple", str(error))
+
+
+# Immutable partition preserves semantic identity; mutable partition copies.
+class PartitionBytes(bytes):
+    pass
+
+
+class PartitionString(str):
+    pass
+
+
+class PartitionBytearray(bytearray):
+    pass
+
+
+for factory, text, separator in (
+    (PartitionBytes, b"left<>right<>tail", b"<>"),
+    (PartitionString, "left<>right<>tail", PartitionString("<>")),
+    (PartitionBytearray, b"left<>right<>tail", bytearray(b"<>")),
+):
+    receiver = factory(text)
+    for method in ("partition", "rpartition"):
+        parts = getattr(receiver, method)(separator)
+        absent = getattr(receiver, method)("missing" if isinstance(receiver, str) else b"missing")
+        whole = absent[0 if method == "partition" else 2]
+        print("partition-identity", factory.__name__, method, parts, parts[1] is separator, whole is receiver, type(whole).__name__)
+
+
+for method in ("partition", "rpartition"):
+    separator = bytearray(b"<>")
+    view = memoryview(separator)
+    parts = getattr(b"left<>right<>tail", method)(view)
+    print("partition-view-owner", method, parts[0], parts[1] is view, parts[2])
+    parts = getattr(b"left<>right<>tail", method)(separator)
+    separator[:] = b"[]"
+    print("partition-mutable-separator", method, parts, parts[1] is separator)
+    view.release()
+
+
+class PartitionExporter(bytes):
+    def __buffer__(self, flags):
+        self.events.append(("get", flags))
+        self.view = memoryview(b"<>")
+        return self.view
+
+    def __release_buffer__(self, view):
+        self.events.append(("release", view is self.view))
+
+
+for method in ("partition", "rpartition"):
+    for matched in (True, False):
+        exporter = PartitionExporter(b"ignored-physical")
+        exporter.events = []
+        receiver = PartitionBytes(b"left<>right" if matched else b"absent")
+        parts = getattr(receiver, method)(exporter)
+        print("partition-overridden-export", method, matched, parts[0], type(parts[1]).__name__, parts[2], any(part is receiver for part in parts), exporter.events)

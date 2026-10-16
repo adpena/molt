@@ -110,24 +110,6 @@ pub extern "C" fn molt_bridge_alloc_bytes(data_ptr: *const u8, data_len: usize) 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bridge_bytes_like_slice(ptr: *mut u8, out_len: *mut usize) -> *const u8 {
-    match unsafe { bytes_like_slice(ptr) } {
-        Some(slice) => {
-            unsafe {
-                *out_len = slice.len();
-            }
-            slice.as_ptr()
-        }
-        None => {
-            unsafe {
-                *out_len = 0;
-            }
-            std::ptr::null()
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_bytes_data(ptr: *mut u8) -> *const u8 {
     unsafe { bytes_data(ptr) }
 }
@@ -221,3 +203,53 @@ pub extern "C" fn molt_bridge_object_type_id(ptr: *mut u8) -> u32 {
 pub extern "C" fn molt_bridge_release_ptr(ptr: *mut u8) {
     let _ = release_ptr(ptr);
 }
+
+// Typed payload owners share the root native-handle seal and Arc lifetime.
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_zlib_compressor_owner_new,
+    __molt_compression_zlib_compressor_owner_clone,
+    molt_runtime_compression::zlib::CompressorHandle
+);
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_zlib_decompressor_owner_new,
+    __molt_compression_zlib_decompressor_owner_clone,
+    molt_runtime_compression::zlib::DecompressorHandle
+);
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_bz2_compressor_owner_new,
+    __molt_compression_bz2_compressor_owner_clone,
+    molt_runtime_compression::bz2::Bz2CompressorHandle
+);
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_bz2_decompressor_owner_new,
+    __molt_compression_bz2_decompressor_owner_clone,
+    molt_runtime_compression::bz2::Bz2DecompressorHandle
+);
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_bz2_file_owner_new,
+    __molt_compression_bz2_file_owner_clone,
+    molt_runtime_compression::bz2::Bz2FileHandle
+);
+#[cfg(not(target_arch = "wasm32"))]
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_lzma_compressor_owner_new,
+    __molt_compression_lzma_compressor_owner_clone,
+    molt_runtime_compression::lzma::LzmaCompressorHandle
+);
+#[cfg(not(target_arch = "wasm32"))]
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_lzma_decompressor_owner_new,
+    __molt_compression_lzma_decompressor_owner_clone,
+    molt_runtime_compression::lzma::LzmaDecompressorHandle
+);
+#[cfg(not(target_arch = "wasm32"))]
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_lzma_file_owner_new,
+    __molt_compression_lzma_file_owner_clone,
+    molt_runtime_compression::lzma::LzmaFileHandle
+);
+crate::object::native_handle::native_handle_bridge!(
+    __molt_compression_gzip_file_owner_new,
+    __molt_compression_gzip_file_owner_clone,
+    molt_runtime_compression::gzip::GzipFileHandle
+);

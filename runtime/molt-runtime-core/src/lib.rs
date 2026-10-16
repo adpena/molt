@@ -13,6 +13,7 @@ pub mod crc32;
 pub mod float_repr;
 pub mod host_capabilities_generated;
 pub mod integer_decimal;
+pub mod native_custody;
 pub mod numeric_error_policy_generated;
 
 // ---------------------------------------------------------------------------
@@ -410,6 +411,11 @@ pub mod ffi {
     //! in the parent module for the most common operations.
 
     unsafe extern "C" {
+        /// Complete the existing native exception retirement policy.
+        pub fn __molt_native_reference_complete();
+        pub fn molt_memoryview_new(bits: u64) -> u64;
+        pub fn molt_memoryview_tobytes(bits: u64) -> u64;
+
         /// Canonical owned iteration transport. Writes an owned value and
         /// returns false for an item, true for exhaustion, or None on error.
         pub fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: u64) -> u64;
@@ -490,6 +496,9 @@ pub mod ffi {
         /// `kind_bits`: NaN-boxed string for the exception class name.
         /// `args_bits`: NaN-boxed tuple of arguments.
         pub fn molt_exception_new(kind_bits: u64, args_bits: u64) -> u64;
+
+        /// Construct from an actual owning module exception class.
+        pub fn molt_exception_new_from_class(class_bits: u64, args_bits: u64) -> u64;
 
         /// Create a new exception object from a canonical builtin exception tag.
         /// `tag`: frontend/runtime agreed builtin-exception constructor tag.
@@ -784,6 +793,40 @@ impl<'py, P: RuntimeValueRelease> RuntimeValueOwner<'py, P> {
         self.bits
     }
 
+    /// Borrow immutable string storage while both this owner and GIL custody live.
+    /// No additional reference or allocation is created.
+    ///
+    /// ```compile_fail
+    /// use molt_runtime_core::{OwnedRuntimeValue, PyToken};
+    /// fn escape(py: &PyToken, owner: OwnedRuntimeValue<'_>) -> &'static [u8] {
+    ///     owner.string_bytes(py).unwrap()
+    /// }
+    /// ```
+    #[inline]
+    pub fn string_bytes<'view>(&'view self, _py: &'view PyToken) -> Option<&'view [u8]> {
+        // SAFETY: self owns the immutable payload for the complete view and
+        // _py borrows the caller's live execution custody for that same scope.
+        unsafe { rt_string_as_bytes(self.bits) }
+    }
+
+    /// Borrow immutable bytes storage while both this owner and GIL custody live.
+    /// Mutable exporters require the runtime's counted buffer export protocol.
+    ///
+    /// ```compile_fail
+    /// use molt_runtime_core::{OwnedRuntimeValue, PyToken};
+    /// fn retire(py: &PyToken, owner: OwnedRuntimeValue<'_>) {
+    ///     let bytes = owner.bytes_slice(py).unwrap();
+    ///     drop(owner);
+    ///     std::hint::black_box(bytes);
+    /// }
+    /// ```
+    #[inline]
+    pub fn bytes_slice<'view>(&'view self, _py: &'view PyToken) -> Option<&'view [u8]> {
+        // SAFETY: bytes objects are immutable and this borrow retains their
+        // existing owner and the caller's execution custody through every use.
+        unsafe { rt_bytes_as_slice(self.bits) }
+    }
+
     /// Borrow handles without allocating a second collection. The transparent
     /// representation has only the u64 payload; the token remains a lifetime
     /// and !Send/!Sync proof, including for empty collections.
@@ -878,6 +921,29 @@ pub fn rt_raise_str(kind: &str, message: &str) -> u64 {
     unsafe { ffi::molt_raise(exc_bits) }
 }
 
+/// Raise the owning module's actual exception class, retaining each temporary
+/// through construction and preserving failures from the existing authority.
+pub fn rt_raise_class(py: &PyToken, class: u64, message: &str) -> u64 {
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(message)) };
+    if rt_exception_pending() {
+        return MoltObject::none().bits();
+    }
+    let args = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_tuple(&[text.bits()])) };
+    if rt_exception_pending() {
+        return MoltObject::none().bits();
+    }
+    let error = unsafe {
+        OwnedRuntimeValue::from_owned_bits(
+            py,
+            ffi::molt_exception_new_from_class(class, args.bits()),
+        )
+    };
+    if rt_exception_pending() {
+        return MoltObject::none().bits();
+    }
+    rt_raise(error.bits())
+}
+
 /// Clear the pending exception. Returns None bits.
 #[inline]
 pub fn rt_exception_clear() -> u64 {
@@ -910,10 +976,23 @@ pub fn rt_repr(bits: u64) -> u64 {
     unsafe { ffi::molt_repr_from_obj(bits) }
 }
 
-/// Read the UTF-8 bytes from a Molt string handle.
+/// Borrow the encoded bytes of an externally owned Molt string.
 ///
-/// Returns `None` if the handle is not a valid string or if the pointer is null.
-pub fn rt_string_as_bytes(string_bits: u64) -> Option<&'static [u8]> {
+/// Prefer `RuntimeValueOwner::string_bytes` for an existing Rust owner.
+///
+/// # Safety
+/// `string_bits` must remain a live borrowed value for the entire returned
+/// lifetime. The caller must hold execution/GIL custody throughout every use,
+/// without suspension, shutdown or transfer to another thread. The token alone
+/// does not own this value; its frame, argument or other real owner must remain
+/// live. Returns `None` if the value is not a string or the provider fails.
+///
+/// ```compile_fail
+/// fn unowned(bits: u64) -> Option<&'static [u8]> {
+///     molt_runtime_core::rt_string_as_bytes(bits)
+/// }
+/// ```
+pub unsafe fn rt_string_as_bytes<'borrow>(string_bits: u64) -> Option<&'borrow [u8]> {
     let mut len: u64 = 0;
     let ptr = unsafe { ffi::molt_string_as_ptr(string_bits, &mut len) };
     if ptr.is_null() {
@@ -923,10 +1002,23 @@ pub fn rt_string_as_bytes(string_bits: u64) -> Option<&'static [u8]> {
     Some(unsafe { std::slice::from_raw_parts(ptr, len) })
 }
 
-/// Read the raw bytes from a Molt bytes handle.
+/// Borrow immutable bytes from an externally owned Molt bytes handle.
 ///
-/// Returns `None` if the handle is not a valid bytes object or if the pointer is null.
-pub fn rt_bytes_as_slice(bytes_bits: u64) -> Option<&'static [u8]> {
+/// Prefer `RuntimeValueOwner::bytes_slice` for an existing Rust owner. This
+/// bytes-only API does not admit bytearray or other mutable buffer exporters.
+///
+/// # Safety
+/// `bytes_bits` must remain a live borrowed value for the entire returned
+/// lifetime, under uninterrupted execution/GIL custody on the calling thread.
+/// Its real owner must not be retired while the view is used. Mutable payloads
+/// require a counted buffer export, never an inferred immutable borrow.
+///
+/// ```compile_fail
+/// fn unowned(bits: u64) -> Option<&'static [u8]> {
+///     molt_runtime_core::rt_bytes_as_slice(bits)
+/// }
+/// ```
+pub unsafe fn rt_bytes_as_slice<'borrow>(bytes_bits: u64) -> Option<&'borrow [u8]> {
     let mut len: u64 = 0;
     let ptr = unsafe { ffi::molt_bytes_as_ptr(bytes_bits, &mut len) };
     if ptr.is_null() {

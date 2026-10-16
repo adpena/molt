@@ -81,7 +81,7 @@ class CallNamedBuiltinDispatchMixin(
         return self._emit_dynamic_call(node, callee)
 
     def _emit_proven_shape_builtin_call(self, node: ast.Call, name: str) -> Any:
-        """Emit one identity-proven, callback-free positional shape operation."""
+        """Emit one identity-proven positional shape operation."""
         if name == "str" and len(node.args) > 1:
             # Decoding is a runtime codec protocol, including error handlers.
             return CALL_NOT_HANDLED
@@ -105,7 +105,22 @@ class CallNamedBuiltinDispatchMixin(
                     Diagnostic.OPERAND_VALUE, "Unsupported constructor input"
                 )
             if name == "list":
-                return self._emit_list_from_iter(iterable)
+                # The runtime extension protocol acquires the iterator before
+                # consulting the original operand's length hint. An inline
+                # comprehension-style loop omits that observable callback.
+                result = MoltValue(self.next_var(), type_hint="list")
+                self.emit(MoltOp("LIST_NEW", [], result))
+                self._record_list_element_write(
+                    result, None, self._iterable_element_hint(iterable)
+                )
+                self.emit(
+                    MoltOp(
+                        "LIST_EXTEND",
+                        [result, iterable],
+                        MoltValue(self.next_var(), type_hint="None"),
+                    )
+                )
+                return result
             if name == "set":
                 return self._emit_set_from_iter(iterable)
             if name == "frozenset":

@@ -25,7 +25,7 @@ pub extern "C" fn molt_importlib_metadata_dist_paths(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let resolved = importlib_metadata_dist_paths(&search_paths, module_file);
+        let resolved = importlib_metadata_dist_paths(_py, &search_paths, module_file);
         match alloc_string_list_bits(_py, &resolved) {
             Some(bits) => bits,
             None => crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),
@@ -58,7 +58,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let payload = importlib_metadata_entry_points_payload(&search_paths, module_file);
+        let payload = importlib_metadata_entry_points_payload(_py, &search_paths, module_file);
         match alloc_string_triplets_list_bits(_py, &payload) {
             Some(bits) => bits,
             None => crate::builtins::exceptions::ExceptionSentinel::exception_sentinel(),
@@ -107,6 +107,7 @@ pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
             Err(bits) => return bits,
         };
         let payload = importlib_metadata_entry_points_filter_payload(
+            _py,
             &search_paths,
             module_file,
             group.as_deref(),
@@ -299,7 +300,7 @@ pub extern "C" fn molt_importlib_metadata_distributions_payload(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let payloads = importlib_metadata_distributions_payload(&search_paths, module_file);
+        let payloads = importlib_metadata_distributions_payload(_py, &search_paths, module_file);
         let mut item_bits: Vec<u64> = Vec::with_capacity(payloads.len());
         for payload in &payloads {
             let bits = match alloc_importlib_metadata_payload_dict_bits(_py, payload) {
@@ -436,7 +437,8 @@ pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let payload = importlib_metadata_packages_distributions_payload(&search_paths, module_file);
+        let payload =
+            importlib_metadata_packages_distributions_payload(_py, &search_paths, module_file);
         let mut pairs: Vec<u64> = Vec::with_capacity(payload.len() * 2);
         let mut owned: Vec<u64> = Vec::with_capacity(payload.len() * 2);
         for (package, providers) in payload {

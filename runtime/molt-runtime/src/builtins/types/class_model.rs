@@ -314,17 +314,22 @@ pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
     })
 }
 
+/// Return the owned public type identity under the caller's execution custody.
+/// Generic `type(value)` and the lowered intrinsic share native projection and
+/// failure transfer; physical borrowed class queries remain a separate contract.
+pub(crate) fn type_of_owned(py: &PyToken<'_>, val_bits: u64) -> u64 {
+    match unsafe { crate::object::class_layout::real_type_bits(py, val_bits) } {
+        Ok(bits) => bits,
+        Err(()) => {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "object type");
+            MoltObject::none().bits()
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        match unsafe { crate::object::class_layout::real_type_bits(_py, val_bits) } {
-            Ok(bits) => bits,
-            Err(()) => {
-                crate::cpython_abi_hooks::propagate_native_failure(_py, "object type");
-                MoltObject::none().bits()
-            }
-        }
-    })
+    crate::with_gil_entry_nopanic!(_py, { type_of_owned(_py, val_bits) })
 }
 
 #[unsafe(no_mangle)]

@@ -146,6 +146,7 @@ _TYPE_CHECKING_IMPORTS = {
     "MoltBuiltinGuardArm": "molt.frontend.lowering.builtin_guards",
     "MoltBuiltinGuardArmExpr": "molt.frontend.lowering.builtin_guards",
     "MoltBuiltinGuardTest": "molt.frontend.lowering.builtin_guards",
+    "MoltSyntaxError": "molt.frontend.lowering.exception_lowering",
     "PythonDependencyAuthority": "molt.compiler_analysis.python_lexical_scope",
     "ClassDefinitionIndex": "molt.frontend.lowering.class_resolution",
     "PythonCodeNameLayout": "molt.compiler_analysis.python_lexical_scope",

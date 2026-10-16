@@ -1,5 +1,5 @@
 use super::*;
-use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::audit::AuditArgs;
 use molt_runtime_platform::socket_constants::{collect_errno_constants, socket_constants};
 
 #[unsafe(no_mangle)]
@@ -165,92 +165,110 @@ pub extern "C" fn molt_sys_platform() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_locale_setlocale(_category_bits: u64, locale_bits: u64) -> u64 {
+pub extern "C" fn molt_locale_setlocale(category_bits: u64, locale_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if obj_from_bits(locale_bits).is_none() {
-            let current = locale_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
-            return match alloc_str_bits(_py, &current) {
-                Ok(bits) => bits,
-                Err(err_bits) => err_bits,
+        let Some(category) = crate::builtins::numbers::index_c_int_from_obj(_py, category_bits)
+        else {
+            return MoltObject::none().bits();
+        };
+        let locale = if obj_from_bits(locale_bits).is_none() {
+            None
+        } else {
+            let Some(value) = string_obj_to_owned(obj_from_bits(locale_bits)) else {
+                return raise_exception::<u64>(_py, "TypeError", "locale must be str or None");
             };
-        }
-        let Some(mut locale) = string_obj_to_owned(obj_from_bits(locale_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "locale must be str or None");
+            if value.contains('\0') {
+                return raise_exception::<u64>(_py, "ValueError", "embedded null character");
+            }
+            Some(value)
         };
-        if locale.is_empty() {
-            // POSIX setlocale("") — resolve from environment variables in
-            // priority order: LC_ALL, LC_<category>, LANG. Honors live OS
-            // locale rather than the Rust-internal default.
-            locale = std::env::var("LC_ALL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| std::env::var("LC_CTYPE").ok().filter(|s| !s.is_empty()))
-                .or_else(|| std::env::var("LANG").ok().filter(|s| !s.is_empty()))
-                .unwrap_or_else(|| String::from("C"));
-        }
-        if locale == "POSIX" {
-            locale = String::from("C");
-        }
-        *locale_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = locale.clone();
-        match alloc_str_bits(_py, &locale) {
-            Ok(bits) => bits,
-            Err(err_bits) => err_bits,
+        match set_locale(category, locale.as_deref()) {
+            Ok(value) => alloc_str_bits(_py, &value).unwrap_or_else(|error| error),
+            // _locale owns its public Error class. A refused libc transition
+            // leaves the current locale intact and has no Python value.
+            Err(_) => MoltObject::none().bits(),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_locale_getpreferredencoding(_do_setlocale_bits: u64) -> u64 {
+pub extern "C" fn molt_locale_getencoding() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let current = locale_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        match alloc_str_bits(_py, locale_encoding_label(&current)) {
-            Ok(bits) => bits,
-            Err(err_bits) => err_bits,
+        match locale_encoding() {
+            Ok(value) => alloc_str_bits(_py, &value).unwrap_or_else(|error| error),
+            Err(error) => raise_exception::<u64>(_py, "RuntimeError", &error),
         }
     })
 }
 
+#[cfg(windows)]
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_locale_getlocale(_category_bits: u64) -> u64 {
+pub extern "C" fn molt_locale_getdefaultlocale() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let legacy_lcid = !crate::object::ops_sys::runtime_target_at_least(py, 3, 15);
+        let (language, encoding) =
+            molt_runtime_platform::env_support::windows_default_locale(legacy_lcid);
+        let language_bits = match language {
+            Some(value) => match alloc_str_bits(py, &value) {
+                Ok(bits) => bits,
+                Err(error) => return error,
+            },
+            None => MoltObject::none().bits(),
+        };
+        let encoding_bits = match alloc_str_bits(py, &encoding) {
+            Ok(bits) => bits,
+            Err(error) => {
+                dec_ref_bits(py, language_bits);
+                return error;
+            }
+        };
+        let ptr = alloc_tuple_owned(py, &[language_bits, encoding_bits]);
+        if ptr.is_null() {
+            dec_ref_bits(py, language_bits);
+            dec_ref_bits(py, encoding_bits);
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_locale_constants() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let current = locale_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        if current == "C" || current == "POSIX" {
-            let tuple_ptr =
-                alloc_tuple(_py, &[MoltObject::none().bits(), MoltObject::none().bits()]);
-            if tuple_ptr.is_null() {
-                return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
-            }
-            return MoltObject::from_ptr(tuple_ptr).bits();
+        let entries = [
+            ("LC_CTYPE", libc::LC_CTYPE),
+            ("LC_NUMERIC", libc::LC_NUMERIC),
+            ("LC_TIME", libc::LC_TIME),
+            ("LC_COLLATE", libc::LC_COLLATE),
+            ("LC_MONETARY", libc::LC_MONETARY),
+            ("LC_ALL", libc::LC_ALL),
+            ("CHAR_MAX", libc::c_char::MAX as i32),
+            #[cfg(not(windows))]
+            ("LC_MESSAGES", libc::LC_MESSAGES),
+        ];
+        let mut pairs = Vec::with_capacity(entries.len() * 2);
+        for (name, value) in entries {
+            let key = match alloc_str_bits(_py, name) {
+                Ok(bits) => bits,
+                Err(error) => {
+                    for owned in pairs {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return error;
+                }
+            };
+            pairs.push(key);
+            pairs.push(MoltObject::from_int(i64::from(value)).bits());
         }
-        let locale_bits = match alloc_str_bits(_py, &current) {
-            Ok(bits) => bits,
-            Err(err_bits) => return err_bits,
-        };
-        let encoding_bits = match alloc_str_bits(_py, locale_encoding_label(&current)) {
-            Ok(bits) => bits,
-            Err(err_bits) => {
-                dec_ref_bits(_py, locale_bits);
-                return err_bits;
-            }
-        };
-        let tuple_ptr = alloc_tuple(_py, &[locale_bits, encoding_bits]);
-        dec_ref_bits(_py, locale_bits);
-        dec_ref_bits(_py, encoding_bits);
-        if tuple_ptr.is_null() {
-            return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
+        let ptr = alloc_dict_with_pairs(_py, &pairs);
+        for bits in pairs {
+            dec_ref_bits(_py, bits);
         }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
     })
 }
 
@@ -377,323 +395,493 @@ pub extern "C" fn molt_socket_constants() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_get(key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(key) => key,
-            None => return default_bits,
-        };
-        let allowed = has_capability(_py, "env.read");
-        audit_capability_decision(
-            "env.get",
-            "env.read",
-            AuditArgs::Env { key: key.clone() },
-            allowed,
-        );
-        if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
-        }
-        let value = {
-            let guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.get(&key).cloned()
-        };
-        match value {
-            Some(val) => {
-                if trace_env_get() {
-                    eprintln!("molt_env_get key={key} hit=true");
-                }
-                let ptr = alloc_string(_py, val.as_bytes());
-                if ptr.is_null() {
-                    default_bits
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                }
+fn env_key_audit_args(bits: u64) -> AuditArgs {
+    let Some(pointer) = obj_from_bits(bits).as_ptr() else {
+        return AuditArgs::None;
+    };
+    // Inspect only exact owned string/bytes storage. Permission checks must
+    // precede codecs, __fspath__, descriptors and all inspection of values.
+    let raw = unsafe {
+        match object_type_id(pointer) {
+            TYPE_ID_STRING => {
+                std::slice::from_raw_parts(string_bytes(pointer), string_len(pointer))
             }
-            None => {
-                if trace_env_get() {
-                    eprintln!("molt_env_get key={key} hit=false");
-                }
-                default_bits
-            }
+            TYPE_ID_BYTES => std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)),
+            _ => return AuditArgs::None,
         }
-    })
+    };
+    AuditArgs::Env {
+        key: String::from_utf8_lossy(raw).into_owned(),
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_set(key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(key) => key,
-            None => return MoltObject::none().bits(),
-        };
-        let allowed = has_capability(_py, "env.write");
-        audit_capability_decision(
-            "env.set",
-            "env.write",
-            AuditArgs::Env { key: key.clone() },
-            allowed,
-        );
-        if !allowed {
-            return raise_capability_denied(_py, "env.write");
-        }
-        let value = match string_obj_to_owned(obj_from_bits(value_bits)) {
-            Some(value) => value,
-            None => return MoltObject::none().bits(),
-        };
-        {
-            let mut guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.insert(key, value);
-        }
+#[cfg(windows)]
+fn env_string_from_bits(py: &PyToken<'_>, bits: u64) -> Result<std::ffi::OsString, u64> {
+    let Some(pointer) = obj_from_bits(bits)
+        .as_ptr()
+        .filter(|pointer| unsafe { object_type_id(*pointer) == TYPE_ID_STRING })
+    else {
+        return Err(raise_exception::<u64>(py, "TypeError", "str expected"));
+    };
+    let text = unsafe { std::slice::from_raw_parts(string_bytes(pointer), string_len(pointer)) };
+    crate::builtins::io::os_string_from_text(py, text, Some(bits))
+}
+
+#[cfg(windows)]
+fn env_string_bits(py: &PyToken<'_>, value: &std::ffi::OsStr) -> u64 {
+    let text = match crate::builtins::io::os_string_text(py, value) {
+        Ok(text) => text,
+        Err(error) => return error,
+    };
+    let pointer = alloc_string(py, &text);
+    if pointer.is_null() {
         MoltObject::none().bits()
-    })
+    } else {
+        MoltObject::from_ptr(pointer).bits()
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_unset(key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(key) => key,
-            None => return MoltObject::from_bool(false).bits(),
-        };
-        let allowed = has_capability(_py, "env.write");
-        audit_capability_decision(
-            "env.unset",
-            "env.write",
-            AuditArgs::Env { key: key.clone() },
-            allowed,
-        );
-        if !allowed {
-            return raise_capability_denied(_py, "env.write");
-        }
-        let removed = {
-            let mut guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.remove(&key).is_some()
-        };
-        MoltObject::from_bool(removed).bits()
-    })
+#[cfg(not(windows))]
+fn checked_process_env_string(
+    py: &PyToken<'_>,
+    value: std::ffi::OsString,
+) -> Result<std::ffi::OsString, u64> {
+    if value.as_encoded_bytes().contains(&0) {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "embedded null byte",
+        ));
+    }
+    Ok(value)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_len() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "env.read");
-        audit_capability_decision("env.len", "env.read", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
-        }
-        let len = {
-            let guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.len()
-        };
-        MoltObject::from_int(len as i64).bits()
-    })
+fn process_env_string_from_bits(py: &PyToken<'_>, bits: u64) -> Result<std::ffi::OsString, u64> {
+    #[cfg(windows)]
+    {
+        env_string_from_bits(py, bits)
+    }
+    #[cfg(not(windows))]
+    {
+        // CPython's POSIX putenv/unsetenv use FSConverter, accepting the same
+        // str/bytes/PathLike protocol and filesystem codec as path consumers.
+        let value = crate::builtins::io::path_from_bits(py, bits)?.into_os_string();
+        checked_process_env_string(py, value)
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_contains(key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(key) => key,
-            None => return MoltObject::from_bool(false).bits(),
-        };
-        let allowed = has_capability(_py, "env.read");
-        audit_capability_decision(
-            "env.contains",
-            "env.read",
-            AuditArgs::Env { key: key.clone() },
-            allowed,
-        );
-        if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+fn raise_environment_error(
+    py: &PyToken<'_>,
+    error: molt_runtime_platform::env_support::EnvironmentError,
+) -> u64 {
+    match error {
+        molt_runtime_platform::env_support::EnvironmentError::Value(message) => {
+            raise_exception::<u64>(py, "ValueError", message)
         }
-        let contains = {
-            let guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.contains_key(&key)
-        };
-        MoltObject::from_bool(contains).bits()
-    })
+        molt_runtime_platform::env_support::EnvironmentError::Errno(errno) => {
+            raise_os_error_errno::<u64>(py, i64::from(errno), "environment")
+        }
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_snapshot() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "env.read");
-        audit_capability_decision("env.snapshot", "env.read", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<u64>(_py, "PermissionError", "missing env.read capability");
+// The platform root owns one exact Python dict. No raw map mirrors it and no
+// intrinsic publishes its handle. Every borrower retains it across callbacks.
+fn environment_mapping<'a>(
+    py: &'a PyToken<'_>,
+) -> Result<molt_runtime_core::OwnedRuntimeValue<'a>, u64> {
+    let slot = &platform_state(py).environment_mapping;
+    let initializing = MoltObject::from_bool(true).bits();
+    let retired = MoltObject::none().bits();
+    let current = slot.load(Ordering::Acquire);
+    if current == retired {
+        return Err(raise_exception::<u64>(
+            py,
+            "RuntimeError",
+            "environment mapping is retired",
+        ));
+    }
+    if current == initializing {
+        return Err(raise_exception::<u64>(
+            py,
+            "RuntimeError",
+            "reentrant environment initialization",
+        ));
+    }
+    if current != 0 {
+        return Ok(molt_runtime_core::OwnedRuntimeValue::retain(
+            py.core_token(),
+            current,
+        ));
+    }
+    if slot
+        .compare_exchange(0, initializing, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(raise_exception::<u64>(
+            py,
+            "RuntimeError",
+            "environment initialization state changed",
+        ));
+    }
+    struct Reset<'a>(&'a AtomicU64, u64);
+    impl Drop for Reset<'_> {
+        fn drop(&mut self) {
+            let _ = self
+                .0
+                .compare_exchange(self.1, 0, Ordering::AcqRel, Ordering::Acquire);
         }
-        let env_pairs: Vec<(String, String)> = {
-            let guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard
-                .iter()
-                .map(|(key, val)| (key.clone(), val.clone()))
-                .collect()
-        };
-        let mut pairs = Vec::with_capacity(env_pairs.len() * 2);
-        let mut owned_bits = Vec::with_capacity(env_pairs.len() * 2);
-        for (key, val) in env_pairs {
-            let key_ptr = alloc_string(_py, key.as_bytes());
-            let val_ptr = alloc_string(_py, val.as_bytes());
-            if key_ptr.is_null() || val_ptr.is_null() {
-                if !key_ptr.is_null() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(key_ptr).bits());
-                }
-                if !val_ptr.is_null() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(val_ptr).bits());
-                }
-                continue;
-            }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            let val_bits = MoltObject::from_ptr(val_ptr).bits();
-            pairs.push(key_bits);
-            pairs.push(val_bits);
-            owned_bits.push(key_bits);
-            owned_bits.push(val_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        if dict_ptr.is_null() {
-            for bits in owned_bits {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-        for bits in owned_bits {
-            dec_ref_bits(_py, bits);
-        }
-        dict_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_popitem() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "env.write");
-        audit_capability_decision("env.popitem", "env.write", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_capability_denied(_py, "env.write");
-        }
-        let (key, value) = {
-            let mut guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some((key, value)) = guard
-                .iter()
-                .next_back()
-                .map(|(key, value)| (key.clone(), value.clone()))
-            else {
-                return raise_exception::<_>(_py, "KeyError", "popitem(): dictionary is empty");
+    }
+    let _reset = Reset(slot, initializing);
+    // The provider releases its process lock before any Python allocation.
+    let snapshot = process_env_snapshot();
+    let dict = crate::object::builders::alloc_internal_dict(py);
+    if dict.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let root = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            MoltObject::from_ptr(dict).bits(),
+        )
+    };
+    for (key, value) in snapshot {
+        #[cfg(windows)]
+        let (key_bits, value_bits) = {
+            let key_bits = env_string_bits(py, &key);
+            let key_owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), key_bits)
             };
-            guard.remove(&key);
-            (key, value)
+            if exception_pending(py) {
+                return Err(MoltObject::none().bits());
+            }
+            // Exact startup strings use the same versioned Unicode operation as
+            // the Python key encoder; do not uppercase UTF-16 or Rust chars.
+            let upper = crate::object::ops_string::molt_string_upper(key_owner.bits());
+            (upper, env_string_bits(py, &value))
         };
-        let key_ptr = alloc_string(_py, key.as_bytes());
-        if key_ptr.is_null() {
-            return MoltObject::none().bits();
+        #[cfg(not(windows))]
+        let (key_bits, value_bits) = {
+            let key = crate::builtins::io::os_string_bytes(py, &key)?;
+            let value = crate::builtins::io::os_string_bytes(py, &value)?;
+            let key = alloc_bytes(py, &key);
+            if key.is_null() {
+                return Err(MoltObject::none().bits());
+            }
+            let key_bits = MoltObject::from_ptr(key).bits();
+            let value = alloc_bytes(py, &value);
+            if value.is_null() {
+                dec_ref_bits(py, key_bits);
+                return Err(MoltObject::none().bits());
+            }
+            (key_bits, MoltObject::from_ptr(value).bits())
+        };
+        let key = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), key_bits)
+        };
+        let value = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), value_bits)
+        };
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
         }
-        let value_ptr = alloc_string(_py, value.as_bytes());
-        if value_ptr.is_null() {
-            dec_ref_bits(_py, MoltObject::from_ptr(key_ptr).bits());
-            return MoltObject::none().bits();
+        let displaced =
+            unsafe { crate::object::ops::dict_set_deferred(py, dict, key.bits(), value.bits()) }
+                .map_err(|()| MoltObject::none().bits())?;
+        drop(displaced);
+    }
+    if slot
+        .compare_exchange(
+            initializing,
+            root.bits(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return Err(raise_exception::<u64>(
+            py,
+            "RuntimeError",
+            "environment mapping retired during initialization",
+        ));
+    }
+    let bits = root.into_bits(); // Published reference belongs to PlatformRuntimeState.
+    Ok(molt_runtime_core::OwnedRuntimeValue::retain(
+        py.core_token(),
+        bits,
+    ))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_env_mapping_init() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        match environment_mapping(py) {
+            Ok(_) => MoltObject::none().bits(),
+            Err(error) => error,
         }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let value_bits = MoltObject::from_ptr(value_ptr).bits();
-        let tuple_ptr = alloc_tuple(_py, &[key_bits, value_bits]);
-        dec_ref_bits(_py, key_bits);
-        dec_ref_bits(_py, value_bits);
-        if tuple_ptr.is_null() {
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_env_mapping_get(key_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) =
+            require_operation::<u64>(py, OperationId::EnvGet, env_key_audit_args(key_bits))
+        {
+            return error;
+        }
+        let root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        let found = unsafe {
+            dict_get_in_place(py, obj_from_bits(root.bits()).as_ptr().unwrap(), key_bits)
+        };
+        match found {
+            Ok(Some(value)) => {
+                molt_runtime_core::OwnedRuntimeValue::retain(py.core_token(), value).into_bits()
+            }
+            Ok(None) => crate::raise_key_error_with_key(py, key_bits),
+            Err(()) => MoltObject::none().bits(),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_env_mapping_set(key_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) =
+            require_operation::<u64>(py, OperationId::EnvSet, env_key_audit_args(key_bits))
+        {
+            return error;
+        }
+        let root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        let key = match process_env_string_from_bits(py, key_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let value = match process_env_string_from_bits(py, value_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        if let Err(error) = process_env_set(&key, Some(&value)) {
+            return raise_environment_error(py, error);
+        }
+        // CPython mutates the process before hashing/storing the exact encoded
+        // objects. A subsequent Python hash/allocation error is observable.
+        match unsafe {
+            crate::object::ops::dict_set_deferred(
+                py,
+                obj_from_bits(root.bits()).as_ptr().unwrap(),
+                key_bits,
+                value_bits,
+            )
+        } {
+            Ok(displaced) => {
+                drop(displaced);
+                MoltObject::none().bits()
+            }
+            Err(()) => MoltObject::none().bits(),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_env_mapping_delete(key_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) =
+            require_operation::<u64>(py, OperationId::EnvUnset, env_key_audit_args(key_bits))
+        {
+            return error;
+        }
+        let root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        let key = match process_env_string_from_bits(py, key_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        if let Err(error) = process_env_set(&key, None) {
+            return raise_environment_error(py, error);
+        }
+        match unsafe {
+            crate::object::ops::dict_del_deferred(
+                py,
+                obj_from_bits(root.bits()).as_ptr().unwrap(),
+                key_bits,
+            )
+        } {
+            Ok(Some(detached)) => {
+                drop(detached);
+                MoltObject::none().bits()
+            }
+            Ok(None) => crate::raise_key_error_with_key(py, key_bits),
+            Err(()) => MoltObject::none().bits(),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_env_mapping_keys() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) = require_operation::<u64>(py, OperationId::EnvKeys, AuditArgs::None) {
+            return error;
+        }
+        let root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        let keys = match unsafe {
+            crate::object::ops_dict::dict_snapshot(
+                py,
+                obj_from_bits(root.bits()).as_ptr().unwrap(),
+                crate::object::ops_dict::DictSnapshotKind::Keys,
+            )
+        } {
+            Some(keys) => keys,
+            None => return MoltObject::none().bits(),
+        };
+        let list = alloc_list(py, &keys);
+        if list.is_null() {
             MoltObject::none().bits()
         } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
+            MoltObject::from_ptr(list).bits()
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_env_clear() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "env.write");
-        audit_capability_decision("env.clear", "env.write", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_capability_denied(_py, "env.write");
+pub extern "C" fn molt_env_mapping_len() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) = require_operation::<u64>(py, OperationId::EnvLen, AuditArgs::None) {
+            return error;
         }
+        let root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        MoltObject::from_int(
+            unsafe { dict_len(obj_from_bits(root.bits()).as_ptr().unwrap()) } as i64,
+        )
+        .bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_env_mapping_items_iter() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) = require_operation::<u64>(py, OperationId::EnvSnapshot, AuditArgs::None)
         {
-            let mut guard = env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.clear();
+            return error;
         }
-        MoltObject::none().bits()
+        let root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        let view = crate::object::ops_dict::molt_dict_items(root.bits());
+        let view =
+            unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), view) };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        crate::molt_iter(view.bits())
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(key) => key,
-            None => return MoltObject::none().bits(),
-        };
-        let allowed = has_capability(_py, "env.write");
-        audit_capability_decision(
-            "env.putenv",
-            "env.write",
-            AuditArgs::Env { key: key.clone() },
-            allowed,
-        );
-        if !allowed {
-            return raise_capability_denied(_py, "env.write");
-        }
-        let value = match string_obj_to_owned(obj_from_bits(value_bits)) {
-            Some(value) => value,
-            None => return MoltObject::none().bits(),
-        };
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) =
+            require_operation::<u64>(py, OperationId::EnvPutenv, env_key_audit_args(key_bits))
         {
-            let mut guard = process_env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.insert(key, value);
+            return error;
         }
-        MoltObject::none().bits()
+        let _root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        let key = match process_env_string_from_bits(py, key_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let value = match process_env_string_from_bits(py, value_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        match process_env_set(&key, Some(&value)) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(error) => raise_environment_error(py, error),
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(key) => key,
-            None => return MoltObject::none().bits(),
-        };
-        let allowed = has_capability(_py, "env.write");
-        audit_capability_decision(
-            "env.unsetenv",
-            "env.write",
-            AuditArgs::Env { key: key.clone() },
-            allowed,
-        );
-        if !allowed {
-            return raise_capability_denied(_py, "env.write");
-        }
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) =
+            require_operation::<u64>(py, OperationId::EnvUnsetenv, env_key_audit_args(key_bits))
         {
-            let mut guard = process_env_state()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.remove(&key);
+            return error;
         }
-        MoltObject::none().bits()
+        let _root = match environment_mapping(py) {
+            Ok(root) => root,
+            Err(error) => return error,
+        };
+        let key = match process_env_string_from_bits(py, key_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        match process_env_set(&key, None) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(error) => raise_environment_error(py, error),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_need_current_directory_for_exe_path(command_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) = require_operation::<u64>(
+            py,
+            OperationId::OsNeedCurrentDirectoryForExePath,
+            AuditArgs::Env {
+                key: "NoDefaultCurrentDirectoryInExePath".to_owned(),
+            },
+        ) {
+            return error;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            let command = match env_string_from_bits(py, command_bits) {
+                Ok(value) => value,
+                Err(error) => return error,
+            };
+            let mut wide: Vec<u16> = command.encode_wide().collect();
+            if wide.contains(&0) {
+                return raise_exception::<u64>(py, "ValueError", "embedded null character");
+            }
+            wide.push(0);
+            MoltObject::from_bool(
+                unsafe {
+                    molt_runtime_platform::windows_abi::NeedCurrentDirectoryForExePathW(
+                        wide.as_ptr(),
+                    )
+                } != 0,
+            )
+            .bits()
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = command_bits;
+            raise_exception::<u64>(
+                py,
+                "RuntimeError",
+                "Windows executable directory policy is unavailable on this target",
+            )
+        }
     })
 }

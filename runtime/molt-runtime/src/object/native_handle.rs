@@ -35,10 +35,90 @@ impl sealed::Sealed for std::sync::Mutex<crate::builtins::array_mod::ArrayHandle
 unsafe impl NativeHandleNoMoltEdges for std::sync::Mutex<crate::builtins::array_mod::ArrayHandle> {}
 impl sealed::Sealed for crate::builtins::array_mod::ArrayBufferLease {}
 unsafe impl NativeHandleNoMoltEdges for crate::builtins::array_mod::ArrayBufferLease {}
+#[cfg(feature = "stdlib_crypto")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_crypto::hashlib::HashHandle> {}
+#[cfg(feature = "stdlib_crypto")]
+unsafe impl NativeHandleNoMoltEdges for std::sync::Mutex<molt_runtime_crypto::hashlib::HashHandle> {}
+#[cfg(feature = "stdlib_crypto")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_crypto::hmac::HmacHandle> {}
+#[cfg(feature = "stdlib_crypto")]
+unsafe impl NativeHandleNoMoltEdges for std::sync::Mutex<molt_runtime_crypto::hmac::HmacHandle> {}
 #[cfg(not(target_arch = "wasm32"))]
 impl sealed::Sealed for crate::concurrency::isolates::MoltThreadHandle {}
 #[cfg(not(target_arch = "wasm32"))]
 unsafe impl NativeHandleNoMoltEdges for crate::concurrency::isolates::MoltThreadHandle {}
+
+#[cfg(feature = "stdlib_compression")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::zlib::CompressorHandle> {}
+#[cfg(feature = "stdlib_compression")]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::zlib::CompressorHandle>
+{
+}
+
+#[cfg(feature = "stdlib_compression")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::zlib::DecompressorHandle> {}
+#[cfg(feature = "stdlib_compression")]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::zlib::DecompressorHandle>
+{
+}
+
+#[cfg(feature = "stdlib_compression")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::bz2::Bz2CompressorHandle> {}
+#[cfg(feature = "stdlib_compression")]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::bz2::Bz2CompressorHandle>
+{
+}
+
+#[cfg(feature = "stdlib_compression")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::bz2::Bz2DecompressorHandle> {}
+#[cfg(feature = "stdlib_compression")]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::bz2::Bz2DecompressorHandle>
+{
+}
+
+#[cfg(feature = "stdlib_compression")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::bz2::Bz2FileHandle> {}
+#[cfg(feature = "stdlib_compression")]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::bz2::Bz2FileHandle>
+{
+}
+
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::lzma::LzmaCompressorHandle> {}
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::lzma::LzmaCompressorHandle>
+{
+}
+
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::lzma::LzmaDecompressorHandle> {}
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::lzma::LzmaDecompressorHandle>
+{
+}
+
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::lzma::LzmaFileHandle> {}
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::lzma::LzmaFileHandle>
+{
+}
+
+#[cfg(feature = "stdlib_compression")]
+impl sealed::Sealed for std::sync::Mutex<molt_runtime_compression::gzip::GzipFileHandle> {}
+#[cfg(feature = "stdlib_compression")]
+unsafe impl NativeHandleNoMoltEdges
+    for std::sync::Mutex<molt_runtime_compression::gzip::GzipFileHandle>
+{
+}
 
 unsafe fn drop_arc_payload<T: Send + Sync + 'static>(data: *const ()) {
     unsafe {
@@ -106,6 +186,39 @@ pub(crate) fn native_handle_release(detached: DetachedNativeHandle) {
         (payload.drop_fn)(payload.data);
     }
 }
+
+/// Typed satellite projection of the existing Arc payload authority. The
+/// declaring root crate still supplies the sealed green-edge admission.
+macro_rules! native_handle_bridge {
+    ($new:ident, $clone:ident, $payload:ty) => {
+        /// Consumes one Arc<Mutex<Payload>> raw reference on every outcome.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $new(pointer: *const std::ffi::c_void) -> u64 {
+            $crate::with_gil_entry_nopanic!(py, {
+                let payload = unsafe {
+                    std::sync::Arc::<std::sync::Mutex<$payload>>::from_raw(pointer.cast())
+                };
+                let bits = $crate::object::native_handle::native_handle_new(py, payload);
+                if bits == 0 {
+                    $crate::MoltObject::none().bits()
+                } else {
+                    bits
+                }
+            })
+        }
+
+        /// Returns one owned Arc raw reference, or null on typed mismatch.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $clone(bits: u64) -> *const std::ffi::c_void {
+            $crate::with_gil_entry_nopanic!(_py, {
+                $crate::object::native_handle::native_handle_arc::<std::sync::Mutex<$payload>>(bits)
+                    .map(|payload| std::sync::Arc::into_raw(payload).cast())
+                    .unwrap_or(std::ptr::null())
+            })
+        }
+    };
+}
+pub(crate) use native_handle_bridge;
 
 #[cfg(test)]
 mod tests {

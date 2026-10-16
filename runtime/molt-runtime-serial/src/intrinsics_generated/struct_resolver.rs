@@ -26,6 +26,10 @@ pub fn resolve_symbol_with(
             "molt_runtime_serial::structs::molt_struct_unpack_from",
             crate::structs::molt_struct_unpack_from as *const (),
         )),
+        "molt_struct_unpack_iterator_type" => Some(runtime_fn_addr(
+            "molt_runtime_serial::structs::molt_struct_unpack_iterator_type",
+            crate::structs::molt_struct_unpack_iterator_type as *const (),
+        )),
         "molt_struct_iter_unpack" => Some(runtime_fn_addr(
             "molt_runtime_serial::structs::molt_struct_iter_unpack",
             crate::structs::molt_struct_iter_unpack as *const (),

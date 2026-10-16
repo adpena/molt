@@ -22,10 +22,6 @@ pub fn resolve_symbol_with(
             "molt_runtime_crypto::hashlib::molt_hash_digest",
             crate::hashlib::molt_hash_digest as *const (),
         )),
-        "molt_hash_drop" => Some(runtime_fn_addr(
-            "molt_runtime_crypto::hashlib::molt_hash_drop",
-            crate::hashlib::molt_hash_drop as *const (),
-        )),
         "molt_hmac_new" => Some(runtime_fn_addr(
             "molt_runtime_crypto::hmac::molt_hmac_new",
             crate::hmac::molt_hmac_new as *const (),
@@ -41,10 +37,6 @@ pub fn resolve_symbol_with(
         "molt_hmac_digest" => Some(runtime_fn_addr(
             "molt_runtime_crypto::hmac::molt_hmac_digest",
             crate::hmac::molt_hmac_digest as *const (),
-        )),
-        "molt_hmac_drop" => Some(runtime_fn_addr(
-            "molt_runtime_crypto::hmac::molt_hmac_drop",
-            crate::hmac::molt_hmac_drop as *const (),
         )),
         "molt_compare_digest" => Some(runtime_fn_addr(
             "molt_runtime_crypto::hmac::molt_compare_digest",
@@ -65,10 +57,6 @@ pub fn resolve_symbol_with(
         "molt_secrets_choice" => Some(runtime_fn_addr(
             "molt_runtime_crypto::secrets::molt_secrets_choice",
             crate::secrets::molt_secrets_choice as *const (),
-        )),
-        "molt_secrets_compare_digest" => Some(runtime_fn_addr(
-            "molt_runtime_crypto::secrets::molt_secrets_compare_digest",
-            crate::secrets::molt_secrets_compare_digest as *const (),
         )),
         "molt_secrets_randbits" => Some(runtime_fn_addr(
             "molt_runtime_crypto::secrets::molt_secrets_randbits",

@@ -21,12 +21,19 @@ pub(crate) unsafe fn dict_commit_structure(ptr: *mut u8) {
 /// replaced: `clear()` and the C-API `PyDict_Clear`, staged publication, and
 /// lifecycle and cycle clearing. It bumps the structural epoch and resets the
 /// namespace binding guard state, so no path that empties or swaps a
-/// namespace can leave its guard bits stale (HF-79). Lifecycle clearing can
-/// reach a dictionary whose order vector was never allocated; it has no epoch.
+/// namespace can leave its guard bits stale (HF-79). The index backing's own
+/// generation marks key-layout replacement for callback-safe lookup; ordinary
+/// insertion/removal advances only the separate structural row epoch. Lifecycle
+/// clearing can reach partially initialized storage, whose absent owners have
+/// no generation.
 pub(crate) unsafe fn dict_commit_reset(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         if !dict_entries_ptr(ptr).is_null() {
             dict_commit_structure(ptr);
+        }
+        let table = dict_table_ptr(ptr);
+        if !table.is_null() {
+            crate::object::backing::tracked_vec_bump_mutation_epoch(table);
         }
         crate::builtins::binding_guards::note_namespace_reset(py, ptr);
     }
@@ -77,7 +84,11 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
             crate::object::gc::gc_is_tracked(live) || crate::object::gc::gc_is_tracked(staged);
         crate::object::backing::tracked_vec_swap_contents(live_entries, dict_entries_ptr(staged));
         std::mem::swap(&mut dict_storage(live).live, &mut dict_storage(staged).live);
-        std::mem::swap(&mut dict_storage(live).fill, &mut dict_storage(staged).fill);
+        std::mem::swap(
+            &mut dict_storage(live).usable,
+            &mut dict_storage(staged).usable,
+        );
+        std::mem::swap(&mut dict_storage(live).kind, &mut dict_storage(staged).kind);
         crate::object::backing::tracked_vec_swap_contents(live_table, dict_table(staged));
         let live_refs =
             (*header_from_obj_ptr(live)).has_flag(crate::object::HEADER_FLAG_CONTAINS_REFS);
@@ -303,42 +314,8 @@ pub(crate) extern "C" fn dict_fromkeys_method(
         if !issubclass_bits(class_bits, builtins.dict) {
             return raise_exception::<_>(_py, "TypeError", "dict.fromkeys expects dict type");
         }
-        let capacity_hint = {
-            let obj = obj_from_bits(iterable_bits);
-            let mut hint = if let Some(ptr) = obj.as_ptr() {
-                unsafe {
-                    match object_type_id(ptr) {
-                        TYPE_ID_LIST => list_len(ptr),
-                        TYPE_ID_TUPLE => tuple_len(ptr),
-                        TYPE_ID_DICT => dict_len(ptr),
-                        TYPE_ID_SET | TYPE_ID_FROZENSET => set_len(ptr),
-                        TYPE_ID_DICT_KEYS_VIEW
-                        | TYPE_ID_DICT_VALUES_VIEW
-                        | TYPE_ID_DICT_ITEMS_VIEW => dict_view_len(ptr),
-                        TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => bytes_len(ptr),
-                        TYPE_ID_STRING => string_len(ptr),
-                        TYPE_ID_RANGE => {
-                            if let Some((start, stop, step)) = range_components_bigint(ptr) {
-                                let len = range_len_bigint(&start, &stop, &step);
-                                len.to_usize().unwrap_or(usize::MAX)
-                            } else {
-                                0
-                            }
-                        }
-                        _ => 0,
-                    }
-                }
-            } else {
-                0
-            };
-            let max_entries = (isize::MAX as usize) / 2;
-            if hint > max_entries {
-                hint = max_entries;
-            }
-            hint
-        };
         let dict_bits = if class_bits == builtins.dict {
-            molt_dict_new(capacity_hint as u64)
+            molt_dict_new(0)
         } else {
             let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 return MoltObject::none().bits() as i64;
@@ -348,41 +325,99 @@ pub(crate) extern "C" fn dict_fromkeys_method(
         if exception_pending(_py) {
             return MoltObject::none().bits() as i64;
         }
-        let iter_bits = molt_iter(iterable_bits);
-        if obj_from_bits(iter_bits).is_none() {
-            return raise_not_iterable(_py, iterable_bits);
-        }
-        loop {
-            let pair_bits = molt_iter_next(iter_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits() as i64;
+        let result = crate::builtins::exceptions::ExceptionValue::adopt(_py, dict_bits);
+        let exact_target = type_of_bits(_py, dict_bits) == builtins.dict;
+        if exact_target {
+            let target = obj_from_bits(dict_bits).as_ptr().unwrap();
+            let source_class = type_of_bits(_py, iterable_bits);
+            let modern = crate::object::ops_sys::runtime_target_at_least(_py, 3, 13);
+            if (modern || unsafe { dict_len(target) } == 0)
+                && (source_class == builtins.dict
+                    || source_class == builtins.set
+                    || source_class == builtins.frozenset)
+            {
+                let source = obj_from_bits(iterable_bits).as_ptr().unwrap();
+                unsafe {
+                    let is_dict = source_class == builtins.dict;
+                    let (length, kind) = if is_dict {
+                        (dict_len(source), dict_storage(source).kind)
+                    } else {
+                        (set_len(source), DictKeyKind::General)
+                    };
+                    let Some(capacity) = checked_dict_capacity(length) else {
+                        crate::record_memory_error_without_allocation(_py);
+                        return MoltObject::none().bits() as i64;
+                    };
+                    // 3.13+ also admits a nonempty exact dict returned by
+                    // subclass __new__; its live storage may not be shrunk.
+                    let capacity = if modern {
+                        capacity.max(dict_table(target).len())
+                    } else {
+                        capacity
+                    };
+                    if !dict_require_writable(_py, target)
+                        || !dict_resize(_py, target, capacity, kind, &mut [])
+                    {
+                        return MoltObject::none().bits() as i64;
+                    }
+                    let mut cursor = 0;
+                    loop {
+                        let next = if is_dict {
+                            dict_next_entry(source, &mut cursor)
+                                .map(|row| (row.key, row.hash.unwrap().get()))
+                        } else {
+                            set_next_entry(source, &mut cursor)
+                                .map(|row| (row.key, row.hash.unwrap().get()))
+                        };
+                        let Some((key, hash)) = next else {
+                            break;
+                        };
+                        // The source can change during a destination comparison;
+                        // only this current key crosses it, never a row borrow.
+                        inc_ref_bits(_py, key);
+                        let inserted =
+                            dict_set_with_hash_in_place(_py, target, key, default_bits, hash);
+                        dec_ref_bits(_py, key);
+                        if !inserted {
+                            return MoltObject::none().bits() as i64;
+                        }
+                    }
+                }
+                return result.into_bits() as i64;
             }
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                return MoltObject::none().bits() as i64;
-            };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let Some((key_bits, done_bits)) =
-                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                        items.first().copied().zip(items.get(1).copied())
-                    })
-                    .flatten()
-                else {
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                let _ = molt_store_index(dict_bits, key_bits, default_bits);
-                if exception_pending(_py) {
+        }
+        // Generic iterables have no presize/length-hint phase. The iterator
+        // retires before the partial result on every failure, as PyDict_FromKeys.
+        let Some(mut iter) = crate::object::iterable::OwnedIterator::new(_py, iterable_bits) else {
+            return MoltObject::none().bits() as i64;
+        };
+        loop {
+            let key = match iter.next() {
+                Ok(Some(key)) => key,
+                Ok(None) => break,
+                Err(molt_runtime_core::ErrorIndicatorSet) => {
                     return MoltObject::none().bits() as i64;
                 }
+            };
+            let inserted = unsafe {
+                if exact_target {
+                    dict_set_in_place(
+                        _py,
+                        obj_from_bits(dict_bits).as_ptr().unwrap(),
+                        key,
+                        default_bits,
+                    )
+                } else {
+                    dict_update_set_via_store(_py, dict_bits, key, default_bits)
+                }
+            };
+            dec_ref_bits(_py, key);
+            if !inserted {
+                return MoltObject::none().bits() as i64;
             }
         }
-        dict_bits as i64
+        drop(iter);
+        result.into_bits() as i64
     })
 }
 
@@ -856,7 +891,7 @@ pub extern "C" fn molt_string_split_sep_dict_inc(
     })
 }
 
-pub(crate) fn checked_dict_table_capacity(entries: usize) -> Option<usize> {
+pub(crate) fn checked_set_table_capacity(entries: usize) -> Option<usize> {
     let mut cap = entries.checked_mul(2)?.checked_next_power_of_two()?;
     if cap < 8 {
         cap = 8;
@@ -912,49 +947,45 @@ fn install_hash_index(table: &mut [usize], row: usize, hash: StoredHash) -> bool
     }
 }
 
+/// Dictionary key tables admit two thirds of their index slots. Compute the
+/// fraction without overflowing at the largest representable power of two.
+pub(crate) fn dict_usable_capacity(capacity: usize) -> usize {
+    (capacity / 3) * 2 + (capacity % 3) * 2 / 3
+}
+
+fn checked_dict_capacity(entries: usize) -> Option<usize> {
+    let minimum = entries.checked_mul(3)?.checked_add(1)? / 2;
+    Some(minimum.max(8).checked_next_power_of_two()?)
+}
+
+/// _PyDict_NewPresized bounds speculative preallocation, including huge hints.
+pub(crate) fn dict_presize_capacity(entries: usize) -> Option<usize> {
+    if entries <= dict_usable_capacity(8) {
+        Some(0)
+    } else {
+        checked_dict_capacity(entries.min(dict_usable_capacity(1 << 17)))
+    }
+}
+
+fn checked_dict_growth_capacity(live: usize) -> Option<usize> {
+    Some(live.checked_mul(3)?.max(8).checked_next_power_of_two()?)
+}
+
 /// Reserve every allocation before moving any live row or changing the index.
-/// The only saved indices are the bounded namespace transaction's at most four.
-unsafe fn reserve_hash_storage<E: HashRow>(
+/// Dictionary and set policies choose their own capacity/compaction boundary;
+/// physical movement, retained hashes and bounded index remapping have one owner.
+unsafe fn reserve_hash_rows<E: HashRow>(
     py: &PyToken<'_>,
-    storage: *mut HashStorage<E>,
-    added: usize,
+    entries: *mut Vec<E>,
+    table: *mut Vec<usize>,
+    live: usize,
+    (capacity, required): (usize, usize),
+    compact: bool,
     resolved: &mut [Option<usize>],
 ) -> bool {
     unsafe {
         assert!(resolved.len() <= DICT_STRING_BINDING_LIMIT);
-        let entries = (*storage).entries;
-        let table = (*storage).table;
-        let live = (*storage).live;
         let extent = (*entries).len();
-        let Some(next_live) = live.checked_add(added) else {
-            crate::record_memory_error_without_allocation(py);
-            return false;
-        };
-        let Some(next_fill) = (*storage).fill.checked_add(added) else {
-            crate::record_memory_error_without_allocation(py);
-            return false;
-        };
-        let load_full = match (next_fill.checked_mul(10), (*table).len().checked_mul(7)) {
-            (Some(fill), Some(limit)) => fill >= limit,
-            _ => {
-                crate::record_memory_error_without_allocation(py);
-                return false;
-            }
-        };
-        let compact = load_full || (extent > live && extent - live >= live);
-        let capacity = if compact {
-            let Some(capacity) = checked_dict_table_capacity(next_live) else {
-                crate::record_memory_error_without_allocation(py);
-                return false;
-            };
-            capacity
-        } else {
-            (*table).len()
-        };
-        let Some(required) = (if compact { live } else { extent }).checked_add(added) else {
-            crate::record_memory_error_without_allocation(py);
-            return false;
-        };
         if !crate::object::backing::tracked_vec_reserve_for_len(entries, required)
             || !crate::object::backing::tracked_vec_reserve_for_len(table, capacity)
         {
@@ -985,9 +1016,225 @@ unsafe fn reserve_hash_storage<E: HashRow>(
                     install_hash_index(&mut *table, index, hash);
                 }
             }
-            (*storage).fill = live;
             crate::object::backing::tracked_vec_bump_mutation_epoch(entries);
         }
+        true
+    }
+}
+
+/// Sets retain their existing occupied-index and tombstone compaction policy.
+unsafe fn reserve_set_storage(py: &PyToken<'_>, ptr: *mut u8, added: usize) -> bool {
+    unsafe {
+        let storage = set_storage(ptr);
+        let live = storage.live;
+        let extent = (*storage.entries).len();
+        let Some(next_live) = live.checked_add(added) else {
+            crate::record_memory_error_without_allocation(py);
+            return false;
+        };
+        let Some(next_fill) = storage.fill.checked_add(added) else {
+            crate::record_memory_error_without_allocation(py);
+            return false;
+        };
+        let load_full = match (
+            next_fill.checked_mul(10),
+            (*storage.table).len().checked_mul(7),
+        ) {
+            (Some(fill), Some(limit)) => fill >= limit,
+            _ => {
+                crate::record_memory_error_without_allocation(py);
+                return false;
+            }
+        };
+        let compact = load_full || (extent > live && extent - live >= live);
+        let capacity = if compact {
+            let Some(capacity) = checked_set_table_capacity(next_live) else {
+                crate::record_memory_error_without_allocation(py);
+                return false;
+            };
+            capacity
+        } else {
+            (*storage.table).len()
+        };
+        let Some(required) = (if compact { live } else { extent }).checked_add(added) else {
+            crate::record_memory_error_without_allocation(py);
+            return false;
+        };
+        if !reserve_hash_rows(
+            py,
+            storage.entries,
+            storage.table,
+            live,
+            (capacity, required),
+            compact,
+            &mut [],
+        ) {
+            return false;
+        }
+        if compact {
+            set_storage(ptr).fill = live;
+        }
+        true
+    }
+}
+
+unsafe fn dict_resize(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    capacity: usize,
+    kind: DictKeyKind,
+    resolved: &mut [Option<usize>],
+) -> bool {
+    unsafe {
+        let live = dict_len(ptr);
+        let usable = dict_usable_capacity(capacity);
+        assert!(usable >= live);
+        if !reserve_hash_rows(
+            py,
+            dict_entries_ptr(ptr),
+            dict_table_ptr(ptr),
+            live,
+            (capacity, usable),
+            true,
+            resolved,
+        ) {
+            return false;
+        }
+        let storage = dict_storage(ptr);
+        storage.usable = usable - live;
+        // Resizing a general table never changes it back into a string table.
+        if kind == DictKeyKind::General {
+            storage.kind = kind;
+        }
+        // Reindexing replaces the key layout even when reserved allocation
+        // addresses and table length are unchanged. Reuse the index backing's
+        // existing generation rather than the row epoch of ordinary mutations.
+        crate::object::backing::tracked_vec_bump_mutation_epoch(storage.table);
+        true
+    }
+}
+
+/// Convert at the selected insertion phase: before lookup on 3.12, only
+/// after absence on 3.13+. This is real row compaction/capacity, not history.
+unsafe fn dict_prepare_key(py: &PyToken<'_>, ptr: *mut u8, key: u64) -> bool {
+    unsafe {
+        if dict_storage(ptr).kind == DictKeyKind::General || exact_string_bytes(py, key).is_some() {
+            return true;
+        }
+        let Some(capacity) = checked_dict_growth_capacity(dict_len(ptr)) else {
+            crate::record_memory_error_without_allocation(py);
+            return false;
+        };
+        dict_resize(py, ptr, capacity, DictKeyKind::General, &mut [])
+    }
+}
+
+/// Reserve one insertion or the bounded namespace batch. A batch admits all
+/// memory before publication, but chooses the capacity the same sequential
+/// insertions would reach, including capacity consumed before the resize.
+unsafe fn dict_reserve_entries(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    added: usize,
+    resolved: &mut [Option<usize>],
+) -> bool {
+    unsafe {
+        assert!(added <= DICT_STRING_BINDING_LIMIT);
+        let mut usable = dict_storage(ptr).usable;
+        if added <= usable {
+            return true;
+        }
+        let mut live = dict_len(ptr);
+        let mut remaining = added;
+        let mut capacity = 0;
+        while remaining > usable {
+            let Some(next_live) = live.checked_add(usable) else {
+                crate::record_memory_error_without_allocation(py);
+                return false;
+            };
+            live = next_live;
+            remaining -= usable;
+            let Some(next_capacity) = checked_dict_growth_capacity(live) else {
+                crate::record_memory_error_without_allocation(py);
+                return false;
+            };
+            capacity = next_capacity;
+            usable = dict_usable_capacity(capacity) - live;
+        }
+        dict_resize(py, ptr, capacity, dict_storage(ptr).kind, resolved)
+    }
+}
+
+/// Direct merge performs one preflight resize instead of repeated growth.
+pub(crate) unsafe fn dict_reserve_merge(
+    py: &PyToken<'_>,
+    target: *mut u8,
+    source: *mut u8,
+) -> bool {
+    unsafe {
+        if !dict_require_writable(py, target) {
+            return false;
+        }
+        if dict_usable_capacity(dict_table(target).len()) >= dict_len(source) {
+            return true;
+        }
+        let Some(capacity) = dict_len(target)
+            .checked_add(dict_len(source))
+            .and_then(checked_dict_capacity)
+        else {
+            crate::record_memory_error_without_allocation(py);
+            return false;
+        };
+        dict_resize(py, target, capacity, dict_storage(source).kind, &mut [])
+    }
+}
+
+/// Clone the real key table, including holes and consumed append capacity.
+/// The caller chooses the copy/merge admission rule; no Python callback or
+/// repeated key hash/equality is performed while acquiring the new owners.
+pub(crate) unsafe fn dict_clone_into_empty(
+    py: &PyToken<'_>,
+    source: *mut u8,
+    target: *mut u8,
+) -> bool {
+    unsafe {
+        assert_ne!(source, target);
+        assert_eq!(dict_len(target), 0);
+        if !dict_require_writable(py, target) {
+            return false;
+        }
+        let extent = dict_entries(source).len();
+        let capacity = dict_table(source).len();
+        if !reserve_hash_rows(
+            py,
+            dict_entries_ptr(target),
+            dict_table_ptr(target),
+            0,
+            (capacity, dict_usable_capacity(capacity)),
+            false,
+            &mut [],
+        ) {
+            return false;
+        }
+        dict_entries(target).clear();
+        for index in 0..extent {
+            let row = dict_entries(source)[index];
+            if row.hash.is_some() {
+                inc_ref_bits(py, row.key);
+                inc_ref_bits(py, row.value);
+            }
+            dict_entries(target).push(row);
+            if row.hash.is_some() {
+                dict_storage(target).live += 1;
+                dict_commit_insertion(py, target, row.key, row.value);
+            }
+        }
+        dict_table(target).clear();
+        dict_table(target).extend_from_slice(dict_table(source));
+        dict_storage(target).live = dict_len(source);
+        dict_storage(target).usable = dict_storage(source).usable;
+        dict_storage(target).kind = dict_storage(source).kind;
+        dict_commit_reset(py, target);
         true
     }
 }
@@ -1328,7 +1575,8 @@ unsafe fn dict_probe_with_hash(
 ) -> Result<Option<HashProbe>, ()> {
     unsafe {
         'restart: loop {
-            let epoch = dict_structural_epoch(dict);
+            let layout_epoch =
+                crate::object::backing::tracked_vec_mutation_epoch(dict_table_ptr(dict));
             let (table_address, table_len) = {
                 let table = dict_table(dict);
                 (table.as_ptr(), table.len())
@@ -1373,11 +1621,15 @@ unsafe fn dict_probe_with_hash(
                             dec_ref_bits(_py, candidate);
                             let equal = equal.ok_or(())?;
                             // Python equality/truth/destruction may mutate this
-                            // dict, including resizing or removing the candidate.
-                            // Re-acquire backing and restart from its new table.
+                            // dict. CPython restarts only after key-layout or
+                            // compared-key replacement. Insertion/removal elsewhere
+                            // keeps this probe valid; re-acquire every borrowed view
+                            // without replaying its equality callback.
                             let unchanged = {
                                 let table = dict_table(dict);
-                                dict_structural_epoch(dict) == epoch
+                                crate::object::backing::tracked_vec_mutation_epoch(dict_table_ptr(
+                                    dict,
+                                )) == layout_epoch
                                     && table.as_ptr() == table_address
                                     && table.len() == table_len
                                     && table.get(slot).copied() == Some(entry)
@@ -1676,13 +1928,23 @@ unsafe fn dict_set_with_hash_deferred<'a, 'py>(
         if !dict_require_writable(_py, ptr) {
             return Err(());
         }
+        // Exact strings never require conversion. Select the non-string
+        // phase once, before equality may clear or replace the live table.
+        let convert_after_lookup = exact_string_bytes(_py, key_bits).is_none()
+            && crate::object::ops_sys::runtime_target_at_least(_py, 3, 13);
+        if !convert_after_lookup && !dict_prepare_key(_py, ptr, key_bits) {
+            return Err(());
+        }
         let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash.get())?;
         if let Some(entry_idx) = found {
             let val_idx = entry_idx;
             return Ok(dict_commit_value_replacement(_py, ptr, val_idx, val_bits));
         }
 
-        if !dict_reserve_entries(_py, ptr, 1) {
+        if convert_after_lookup && !dict_prepare_key(_py, ptr, key_bits) {
+            return Err(());
+        }
+        if !dict_reserve_entries(_py, ptr, 1, &mut []) {
             return Err(());
         }
         dict_append_reserved_entry(_py, ptr, key_bits, val_bits, hash);
@@ -1737,6 +1999,13 @@ pub(crate) unsafe fn dict_setdefault_with_hash_in_place(
 ) -> Option<(u64, bool)> {
     unsafe {
         let hash = admit_stored_hash(py, hash)?;
+        // Frozen layout maps permit an existing-value read, but no physical
+        // key-table conversion. The absent path still uses write admission.
+        let convert_after_lookup = exact_string_bytes(py, key).is_none()
+            && crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
+        if !convert_after_lookup && !dict_layout_frozen(dict) && !dict_prepare_key(py, dict, key) {
+            return None;
+        }
         let found = dict_find_entry_with_hash(py, dict, key, hash.get()).ok()?;
         if let Some(index) = found {
             let value = dict_entries(dict)[index].value;
@@ -1746,7 +2015,10 @@ pub(crate) unsafe fn dict_setdefault_with_hash_in_place(
         if !dict_require_writable(py, dict) {
             return None;
         }
-        if !dict_reserve_entries(py, dict, 1) {
+        if convert_after_lookup && !dict_prepare_key(py, dict, key) {
+            return None;
+        }
+        if !dict_reserve_entries(py, dict, 1, &mut []) {
             return None;
         }
         let value = match default {
@@ -1769,12 +2041,6 @@ pub(crate) unsafe fn dict_setdefault_with_hash_in_place(
     }
 }
 
-/// Ordinary insertion has no resolved namespace indices to remap.
-#[inline]
-unsafe fn dict_reserve_entries(py: &PyToken<'_>, ptr: *mut u8, added: usize) -> bool {
-    unsafe { reserve_hash_storage(py, ptr.cast::<HashStorage<DictEntry>>(), added, &mut []) }
-}
-
 /// All capacity was admitted before this callback-free publication.
 unsafe fn dict_append_reserved_entry(
     py: &PyToken<'_>,
@@ -1792,9 +2058,8 @@ unsafe fn dict_append_reserved_entry(
             value,
             hash: Some(hash),
         });
-        if install_hash_index(dict_table(ptr), index, hash) {
-            dict_storage(ptr).fill += 1;
-        }
+        install_hash_index(dict_table(ptr), index, hash);
+        dict_storage(ptr).usable -= 1;
         dict_storage(ptr).live += 1;
         dict_commit_insertion(py, ptr, key, value);
         crate::builtins::binding_guards::note_namespace_insert(py, ptr, key);
@@ -1821,8 +2086,9 @@ pub(crate) const DICT_STRING_BINDING_LIMIT: usize = 4;
 /// same-hash key of another kind before anything is written; a callback that
 /// restructures the mapping restarts the probe against the live table, so its
 /// effects order before this transition instead of being overwritten or
-/// duplicated. Capacity reservation calls no Python and moves no entry. The
-/// commit then neither allocates nor calls Python. A failure leaves every
+/// duplicated. Capacity reservation calls no Python and admits every allocation
+/// before compaction remaps the bounded resolved indices. The binding commit
+/// then neither allocates nor calls Python. A failure leaves every
 /// binding, the insertion order and the structural epoch unchanged. A present
 /// key keeps its key object, as item assignment does. Displaced values are
 /// returned for release after the caller's dependent state has committed.
@@ -1872,14 +2138,7 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
             if dict_structural_epoch(dict) != epoch {
                 continue;
             }
-            if added != 0
-                && !reserve_hash_storage(
-                    _py,
-                    dict.cast::<HashStorage<DictEntry>>(),
-                    added,
-                    &mut found,
-                )
-            {
+            if added != 0 && !dict_reserve_entries(_py, dict, added, &mut found) {
                 return Err(());
             }
             break;
@@ -1980,7 +2239,7 @@ unsafe fn set_insert_absent_with_hash(
     hash: StoredHash,
 ) -> bool {
     unsafe {
-        if !reserve_hash_storage(py, ptr.cast::<HashStorage<SetEntry>>(), 1, &mut []) {
+        if !reserve_set_storage(py, ptr, 1) {
             return false;
         }
         inc_ref_bits(py, key);
@@ -2355,12 +2614,9 @@ pub(crate) unsafe fn dict_remove_last<'a, 'py>(
         let hash = dict_entries(ptr)[row].hash?;
         let slot = hash_slot_for_row(dict_table(ptr), row, hash)?;
         let removed = dict_remove_row(py, ptr, HashProbe { row, slot });
-        while dict_entries(ptr)
-            .last()
-            .is_some_and(|row| row.hash.is_none())
-        {
-            dict_entries(ptr).pop();
-        }
+        // Earlier holes remain part of the physical cursor extent. Popitem
+        // does not refund consumed append capacity.
+        dict_entries(ptr).truncate(row);
         Some(removed)
     }
 }
@@ -2392,7 +2648,8 @@ unsafe fn dict_detach_contents(
         let removed = crate::object::backing::tracked_vec_take_contents(dict_entries_ptr(ptr));
         dict_table(ptr).clear();
         dict_storage(ptr).live = 0;
-        dict_storage(ptr).fill = 0;
+        dict_storage(ptr).usable = 0;
+        dict_storage(ptr).kind = DictKeyKind::Unicode;
         (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         dict_commit_reset(_py, ptr);
         removed

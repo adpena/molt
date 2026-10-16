@@ -1033,3 +1033,1110 @@ fn memoryview_descriptor_reimport_preserves_readonly_and_source_bounds() {
         refcount::Py_DECREF(view);
     });
 }
+
+#[test]
+fn buffer_export_contract_memoryview_geometry_flags_and_retirement() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        // Literal layout expectations follow CPython memoryobject.c::init_flags,
+        // not PyBuffer_IsContiguous: its empty rank-one rule is different.
+        let layouts: &[(&str, usize, &[isize], &[isize], usize, bool, bool)] = &[
+            ("scalar", 1, &[], &[], 1, true, true),
+            ("empty-linear", 1, &[0], &[1], 0, true, true),
+            ("empty-strided", 1, &[0], &[2], 0, false, false),
+            ("singleton-strided", 1, &[1], &[2], 1, true, true),
+            ("nonempty-strided", 1, &[2], &[2], 2, false, false),
+            ("typed-singleton", 2, &[1], &[4], 2, true, true),
+            ("empty-multidimensional", 1, &[0, 2], &[4, 1], 0, true, true),
+            ("C-only", 1, &[2, 2], &[2, 1], 4, true, false),
+            ("F-only", 1, &[2, 2], &[1, 2], 4, false, true),
+        ];
+        for &(label, itemsize, shape, strides, len, c_contiguous, f_contiguous) in layouts {
+            let base = crate::alloc_bytearray(&py, b"01234567");
+            assert!(!base.is_null());
+            let base_bits = crate::MoltObject::from_ptr(base).bits();
+            let format = crate::alloc_string(&py, if itemsize == 2 { b"H" } else { b"B" });
+            assert!(!format.is_null());
+            let format_bits = crate::MoltObject::from_ptr(format).bits();
+            let storage = crate::object::memoryview::TypedStridedStorage::new(
+                crate::object::buffer_exports::bytearray_data(base).0,
+                false,
+                itemsize,
+                0,
+                base_bits,
+                format_bits,
+                shape.to_vec(),
+                strides.to_vec(),
+            )
+            .unwrap();
+            let view = crate::object::builders::alloc_memoryview_from_storage(&py, storage);
+            assert!(!view.is_null(), "{label}");
+            let bits = crate::MoltObject::from_ptr(view).bits();
+            let object = molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
+            assert!(!object.is_null(), "{label}");
+            assert_eq!(memory::PyMemoryView_Check(object), 1);
+            // FULL_RO exposes geometry; the generic query accepts every empty
+            // descriptor even when this memoryview cannot export SIMPLE/ND.
+            let mut full: Py_buffer = std::mem::zeroed();
+            assert_eq!(
+                buffer::PyObject_GetBuffer(object, &mut full, PyBUF_FULL_RO),
+                0
+            );
+            assert_eq!(
+                buffer::PyBuffer_IsContiguous(&full, b'C' as c_char) != 0,
+                len == 0 || c_contiguous,
+                "{label}"
+            );
+            assert_eq!(
+                buffer::PyBuffer_IsContiguous(&full, b'F' as c_char) != 0,
+                len == 0 || f_contiguous,
+                "{label}"
+            );
+            buffer::PyBuffer_Release(&mut full);
+            // Each row independently specifies admission and the public fields
+            // requested. In particular ND is not a STRIDES request.
+            for (request, flags, accept, has_shape, has_strides, has_format) in [
+                ("simple", PyBUF_SIMPLE, c_contiguous, false, false, false),
+                (
+                    "writable",
+                    PyBUF_WRITABLE,
+                    c_contiguous,
+                    false,
+                    false,
+                    false,
+                ),
+                ("ND", PyBUF_ND, c_contiguous, true, false, false),
+                (
+                    "ND-format",
+                    PyBUF_ND | PyBUF_FORMAT,
+                    c_contiguous,
+                    true,
+                    false,
+                    true,
+                ),
+                ("strides", PyBUF_STRIDES, true, true, true, false),
+                ("C", PyBUF_C_CONTIGUOUS, c_contiguous, true, true, false),
+                ("F", PyBUF_F_CONTIGUOUS, f_contiguous, true, true, false),
+                (
+                    "any",
+                    PyBUF_ANY_CONTIGUOUS,
+                    c_contiguous || f_contiguous,
+                    true,
+                    true,
+                    false,
+                ),
+                ("format-only", PyBUF_FORMAT, false, false, false, true),
+                ("full", PyBUF_FULL, true, true, true, true),
+            ] {
+                let mut exported: Py_buffer = std::mem::zeroed();
+                let status = buffer::PyObject_GetBuffer(object, &mut exported, flags);
+                if !accept {
+                    assert_eq!(status, -1, "{label}/{request}");
+                    assert_ne!(
+                        errors::PyErr_ExceptionMatches((&raw mut PyExc_BufferError).cast()),
+                        0,
+                        "{label}/{request}"
+                    );
+                    assert!(
+                        exported.obj.is_null(),
+                        "failed export published an owner: {label}/{request}"
+                    );
+                    let expected_message = match request {
+                        "F" => "memoryview: underlying buffer is not Fortran contiguous",
+                        "any" => "memoryview: underlying buffer is not contiguous",
+                        "format-only" if c_contiguous => {
+                            "memoryview: cannot cast to unsigned bytes if the format flag is present"
+                        }
+                        _ => "memoryview: underlying buffer is not C-contiguous",
+                    };
+                    // The C API may publish a native exception without a
+                    // managed pending value. Inspect through that same boundary.
+                    let error =
+                        refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                    assert!(!error.as_ptr().is_null(), "{label}/{request}");
+                    let message =
+                        refcount::OwnedPyObject::from_owned(typeobj::PyObject_Str(error.as_ptr()));
+                    assert!(!message.as_ptr().is_null(), "{label}/{request}");
+                    let text = molt_cpython_abi::api::strings::PyUnicode_AsUTF8(message.as_ptr());
+                    assert!(!text.is_null(), "{label}/{request}");
+                    assert_eq!(
+                        std::ffi::CStr::from_ptr(text).to_bytes(),
+                        expected_message.as_bytes(),
+                        "{label}/{request}",
+                    );
+                    drop(message);
+                    drop(error);
+                    assert!(errors::PyErr_Occurred().is_null(), "{label}/{request}");
+                    assert!(!crate::exception_pending(&py), "{label}/{request}");
+                    continue;
+                }
+                assert_eq!(status, 0, "{label}/{request}");
+                assert!(errors::PyErr_Occurred().is_null(), "{label}/{request}");
+                assert_eq!(exported.len, len as isize, "{label}/{request}");
+                assert_eq!(exported.itemsize, itemsize as isize, "{label}/{request}");
+                assert_eq!(
+                    exported.ndim,
+                    if has_shape { shape.len() as i32 } else { 1 },
+                    "{label}/{request}"
+                );
+                assert_eq!(
+                    !exported.shape.is_null(),
+                    has_shape && !shape.is_empty(),
+                    "{label}/{request}"
+                );
+                assert_eq!(
+                    !exported.strides.is_null(),
+                    has_strides && !shape.is_empty(),
+                    "{label}/{request}"
+                );
+                assert_eq!(!exported.format.is_null(), has_format, "{label}/{request}");
+                assert!(exported.suboffsets.is_null());
+                if has_shape && !shape.is_empty() {
+                    assert_eq!(
+                        std::slice::from_raw_parts(exported.shape, shape.len()),
+                        shape
+                    );
+                }
+                if has_strides && !shape.is_empty() {
+                    assert_eq!(
+                        std::slice::from_raw_parts(exported.strides, strides.len()),
+                        strides
+                    );
+                }
+                buffer::PyBuffer_Release(&mut exported);
+            }
+            // All successful and refused exports must have retired their pin.
+            crate::object::ops_memoryview::molt_memoryview_release(bits);
+            assert!(!crate::exception_pending(&py), "export leak: {label}");
+            crate::molt_bytearray_resize(base_bits, crate::MoltObject::from_int(9).bits());
+            assert!(
+                !crate::exception_pending(&py),
+                "backing export leak: {label}"
+            );
+            refcount::Py_DECREF(object);
+            for value in [bits, format_bits, base_bits] {
+                crate::dec_ref_bits(&py, value);
+            }
+        }
+        // FORMAT without ND is legal for bytes/bytearray's FillInfo contract;
+        // the new memoryview refusal must not become a blanket buffer rule.
+        for mutable in [false, true] {
+            let value = if mutable {
+                crate::alloc_bytearray(&py, b"AB")
+            } else {
+                crate::alloc_bytes(&py, b"AB")
+            };
+            assert!(!value.is_null());
+            let bits = crate::MoltObject::from_ptr(value).bits();
+            let object = molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
+            assert!(!object.is_null());
+            let mut exported: Py_buffer = std::mem::zeroed();
+            assert_eq!(
+                buffer::PyObject_GetBuffer(object, &mut exported, PyBUF_FORMAT),
+                0
+            );
+            assert_eq!(*exported.format as u8, b'B');
+            assert_eq!(exported.ndim, 1);
+            assert!(exported.shape.is_null() && exported.strides.is_null());
+            buffer::PyBuffer_Release(&mut exported);
+            if !mutable {
+                assert_eq!(
+                    buffer::PyObject_GetBuffer(object, &mut exported, PyBUF_WRITABLE),
+                    -1
+                );
+                assert_ne!(
+                    errors::PyErr_ExceptionMatches((&raw mut PyExc_BufferError).cast()),
+                    0
+                );
+                assert!(exported.obj.is_null());
+                errors::PyErr_Clear();
+            }
+            refcount::Py_DECREF(object);
+            crate::dec_ref_bits(&py, bits);
+        }
+    });
+}
+
+#[repr(C)]
+struct TypedFormatExporter {
+    header: PyObject,
+    data: [u8; 10],
+    format: *const c_char,
+    first: usize,
+    itemsize: isize,
+    shape: isize,
+    stride: isize,
+}
+
+unsafe extern "C" fn typed_format_exporter_get(
+    object: *mut PyObject,
+    view: *mut Py_buffer,
+    flags: i32,
+) -> i32 {
+    unsafe {
+        assert_eq!(flags, PyBUF_FULL_RO);
+        let source = object.cast::<TypedFormatExporter>();
+        let status = buffer::PyBuffer_FillInfo(
+            view,
+            object,
+            (&raw mut (*source).data)
+                .cast::<u8>()
+                .add((*source).first)
+                .cast(),
+            (*source).shape * (*source).itemsize,
+            1,
+            flags,
+        );
+        if status == 0 {
+            (*view).format = (*source).format.cast_mut();
+            (*view).itemsize = (*source).itemsize;
+            (*view).shape = &raw mut (*source).shape;
+            (*view).strides = &raw mut (*source).stride;
+        }
+        status
+    }
+}
+
+unsafe extern "C" fn typed_format_exporter_dealloc(object: *mut PyObject) {
+    EXPORT_FREES.fetch_add(1, Ordering::SeqCst);
+    unsafe { memory::PyObject_Free(object.cast()) };
+}
+
+// Only evaluated by a failed buffer assertion. Read the selected C error
+// owner so a native-only pending exception is not mistaken for managed state.
+unsafe fn pending_buffer_error() -> String {
+    unsafe {
+        let class = errors::PyErr_Occurred();
+        let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        if raised.as_ptr().is_null() {
+            return format!("class={class:p}, no raised exception instance");
+        }
+        let message = refcount::OwnedPyObject::from_owned(typeobj::PyObject_Str(raised.as_ptr()));
+        let text = if message.as_ptr().is_null() {
+            ptr::null()
+        } else {
+            molt_cpython_abi::api::strings::PyUnicode_AsUTF8(message.as_ptr())
+        };
+        let rendered = if text.is_null() {
+            "<exception text unavailable>".into()
+        } else {
+            std::ffi::CStr::from_ptr(text).to_string_lossy()
+        };
+        format!(
+            "class={class:p}, instance={:p}, message={rendered}",
+            raised.as_ptr()
+        )
+    }
+}
+
+#[test]
+fn native_buffer_formats_preserve_typed_assignment_comparison_and_retirement() {
+    use molt_obj_model::sequence_compare::RichCompareOp;
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let mut class = super::native_test_fixture::NativeType::<PyTypeObject>::subtype(
+            &raw mut PyBaseObject_Type,
+            c"TypedFormatExporter",
+        );
+        class.tp_basicsize = std::mem::size_of::<TypedFormatExporter>() as isize;
+        class.tp_dealloc = Some(typed_format_exporter_dealloc);
+        let mut slots = PyBufferProcs {
+            bf_getbuffer: typed_format_exporter_get as *mut c_void,
+            bf_releasebuffer: exporter_release as *mut c_void,
+        };
+        class.tp_as_buffer = (&raw mut slots).cast();
+        assert_eq!(class.ready(), 0);
+        // Native h and its @ alias agree; negative strides and signed bytes
+        // distinguish addressed span/format from logical nbytes/default B.
+        // A full unsupported format must survive both lease and physical pins.
+        for (format, itemsize, first, stride, expected, compatible, compare_values) in [
+            (c"h", 2usize, 0usize, 4isize, [7i16, 8, 9], true, true),
+            (c"@h", 2, 8, -4, [9, 8, 7], true, true),
+            (c"b", 1, 0, 2, [-1, 2, -3], true, true),
+            (
+                c"T{h:member_with_long_name:}",
+                2,
+                0,
+                4,
+                [7, 8, 9],
+                false,
+                true,
+            ),
+            // Assignment must not erase an explicit non-native prefix.
+            // General struct-format equality is an existing separate limit.
+            (c">h", 2, 0, 4, [7, 8, 9], false, false),
+        ] {
+            EXPORT_RELEASES.store(0, Ordering::SeqCst);
+            EXPORT_FREES.store(0, Ordering::SeqCst);
+            EXPORT_RELEASE_OBSERVED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            let exporter = typeobj::PyType_GenericAlloc(&raw mut *class, 0);
+            assert!(!exporter.is_null());
+            let typed = exporter.cast::<TypedFormatExporter>();
+            (*typed).format = format.as_ptr();
+            (*typed).first = first;
+            (*typed).itemsize = itemsize as isize;
+            (*typed).shape = 3;
+            (*typed).stride = stride;
+            if itemsize == 2 {
+                for (index, value) in [7i16, 99, 8, 99, 9].into_iter().enumerate() {
+                    let bytes = value.to_ne_bytes();
+                    (*typed).data[index * 2] = bytes[0];
+                    (*typed).data[index * 2 + 1] = bytes[1];
+                }
+            } else {
+                (*typed).data = [255, 99, 2, 99, 253, 0, 0, 0, 0, 0];
+            }
+            let source = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_value_for_pyobj(exporter)
+                .unwrap();
+            let mut expected_bytes = Vec::new();
+            for value in expected {
+                if itemsize == 2 {
+                    expected_bytes.extend_from_slice(&value.to_ne_bytes());
+                } else {
+                    expected_bytes.push(value as u8);
+                }
+            }
+            let target_format = crate::MoltObject::from_ptr(crate::alloc_string(
+                &py,
+                if itemsize == 2 { b"h" } else { b"b" },
+            ))
+            .bits();
+            let make_view = |bytes: &[u8]| {
+                let owner = crate::MoltObject::from_ptr(crate::alloc_bytearray(&py, bytes)).bits();
+                let byte_view = crate::molt_memoryview_new(owner);
+                let view = crate::molt_memoryview_cast(
+                    byte_view,
+                    target_format,
+                    crate::MoltObject::none().bits(),
+                    crate::MoltObject::from_bool(false).bits(),
+                );
+                crate::dec_ref_bits(&py, byte_view);
+                assert!(!crate::exception_pending(&py));
+                (owner, view)
+            };
+            let (expected_owner, expected_view) = make_view(&expected_bytes);
+            if compare_values {
+                for (order, (left, right)) in [(expected_view, source), (source, expected_view)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let releases = EXPORT_RELEASES.load(Ordering::SeqCst);
+                    let result = crate::object::ops_compare::molt_eq(left, right);
+                    assert!(
+                        !crate::exception_pending(&py),
+                        "runtime equality: format={format:?}, order={order}: {}",
+                        pending_buffer_error()
+                    );
+                    assert_eq!(result, crate::MoltObject::from_bool(compatible).bits());
+                    assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), releases + 1);
+                }
+                // The C dispatcher and the declaring slot are distinct
+                // consumers. Exercise the mixed native peer in both orders,
+                // including NE; a managed-only comparison can bypass the slot.
+                let view = refcount::OwnedPyObject::from_owned(
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                        .borrowed_handle_to_new_pyobj(expected_view),
+                );
+                assert!(!view.as_ptr().is_null());
+                let slot = (*(&raw mut PyMemoryView_Type)).tp_richcompare.unwrap();
+                for operation in [RichCompareOp::Eq, RichCompareOp::Ne] {
+                    let op = operation as i32;
+                    let expected = if (operation == RichCompareOp::Eq) == compatible {
+                        (&raw mut Py_True).cast::<PyObject>()
+                    } else {
+                        (&raw mut Py_False).cast::<PyObject>()
+                    };
+                    for (order, (left, right)) in
+                        [(view.as_ptr(), exporter), (exporter, view.as_ptr())]
+                            .into_iter()
+                            .enumerate()
+                    {
+                        let releases = EXPORT_RELEASES.load(Ordering::SeqCst);
+                        let result = refcount::OwnedPyObject::from_owned(
+                            typeobj::PyObject_RichCompare(left, right, op),
+                        );
+                        assert!(
+                            !result.as_ptr().is_null() && !crate::exception_pending(&py),
+                            "C equality: format={format:?}, order={order}, op={op}: {}",
+                            pending_buffer_error()
+                        );
+                        assert_eq!(result.as_ptr(), expected);
+                        assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), releases + 1);
+                    }
+                    let releases = EXPORT_RELEASES.load(Ordering::SeqCst);
+                    let result =
+                        refcount::OwnedPyObject::from_owned(slot(view.as_ptr(), exporter, op));
+                    assert!(
+                        !result.as_ptr().is_null() && !crate::exception_pending(&py),
+                        "declaring equality: format={format:?}, op={op}: {}",
+                        pending_buffer_error()
+                    );
+                    assert_eq!(result.as_ptr(), expected);
+                    assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), releases + 1);
+                }
+                // Ordering declines without acquiring a peer export. Public
+                // dispatch must then produce its normal TypeError, not recurse.
+                for operation in [
+                    RichCompareOp::Lt,
+                    RichCompareOp::Le,
+                    RichCompareOp::Gt,
+                    RichCompareOp::Ge,
+                ] {
+                    let op = operation as i32;
+                    let releases = EXPORT_RELEASES.load(Ordering::SeqCst);
+                    let declined =
+                        refcount::OwnedPyObject::from_owned(slot(view.as_ptr(), exporter, op));
+                    assert_eq!(declined.as_ptr(), &raw mut Py_NotImplementedSentinel);
+                    assert!(!crate::exception_pending(&py));
+                    for (left, right) in [(view.as_ptr(), exporter), (exporter, view.as_ptr())] {
+                        let result = typeobj::PyObject_RichCompare(left, right, op);
+                        assert!(result.is_null(), "format={format:?}, ordering op={op}");
+                        assert_ne!(
+                            errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                            0
+                        );
+                        let error =
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(!error.as_ptr().is_null());
+                        drop(error);
+                        assert!(!crate::exception_pending(&py));
+                    }
+                    assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), releases);
+                }
+            }
+            let zeros = vec![0u8; 5 * itemsize];
+            let (destination_owner, destination) = make_view(&zeros);
+            let key = crate::molt_slice_new(
+                crate::MoltObject::none().bits(),
+                crate::MoltObject::none().bits(),
+                crate::MoltObject::from_int(2).bits(),
+            );
+            let releases = EXPORT_RELEASES.load(Ordering::SeqCst);
+            crate::molt_store_index(destination, key, source);
+            assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), releases + 1);
+            let mut assigned = zeros;
+            if compatible {
+                assert!(!crate::exception_pending(&py));
+                for index in 0..3 {
+                    assigned[index * 2 * itemsize..(index * 2 + 1) * itemsize]
+                        .copy_from_slice(&expected_bytes[index * itemsize..(index + 1) * itemsize]);
+                }
+                assert!(
+                    EXPORT_RELEASE_OBSERVED_ERROR
+                        .load(Ordering::SeqCst)
+                        .is_null()
+                );
+            } else {
+                assert_ne!(
+                    errors::PyErr_ExceptionMatches((&raw mut PyExc_ValueError).cast()),
+                    0
+                );
+                let raised =
+                    refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert_eq!(
+                    raised.as_ptr(),
+                    EXPORT_RELEASE_OBSERVED_ERROR.load(Ordering::SeqCst)
+                );
+                let message =
+                    refcount::OwnedPyObject::from_owned(typeobj::PyObject_Str(raised.as_ptr()));
+                let text = molt_cpython_abi::api::strings::PyUnicode_AsUTF8(message.as_ptr());
+                assert!(!text.is_null());
+                assert_eq!(
+                    std::ffi::CStr::from_ptr(text).to_bytes(),
+                    b"memoryview assignment: lvalue and rvalue have different structures"
+                );
+                drop(message);
+                drop(raised);
+                assert!(!crate::exception_pending(&py));
+                EXPORT_RELEASE_OBSERVED_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
+            }
+            assert_eq!(
+                crate::object::memoryview::bytes_like_slice_raw(
+                    crate::obj_from_bits(destination_owner).as_ptr().unwrap()
+                )
+                .unwrap(),
+                assigned
+            );
+            for bits in [
+                key,
+                destination,
+                destination_owner,
+                expected_view,
+                expected_owner,
+                target_format,
+            ] {
+                crate::dec_ref_bits(&py, bits);
+            }
+
+            let native_pin = crate::object::buffer_exports::ScopedBuffer::new(&py, source).unwrap();
+            let view = crate::molt_memoryview_new(source);
+            assert!(!crate::exception_pending(&py));
+            let physical_pin = crate::object::buffer_exports::ScopedBuffer::new(&py, view).unwrap();
+            crate::dec_ref_bits(&py, view);
+            crate::dec_ref_bits(&py, source);
+            refcount::Py_DECREF(exporter);
+            assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 0);
+            assert_eq!(native_pin.format(), format.to_bytes());
+            assert_eq!(physical_pin.format(), format.to_bytes());
+            let releases = EXPORT_RELEASES.load(Ordering::SeqCst);
+            drop(native_pin);
+            assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), releases + 1);
+            assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 0);
+            drop(physical_pin);
+            assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), releases + 2);
+            assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
+            assert!(errors::PyErr_Occurred().is_null());
+            assert!(!crate::exception_pending(&py));
+        }
+    });
+}
+
+#[test]
+fn buffer_rejection_names_the_semantic_type_for_managed_and_native_objects() {
+    use molt_cpython_abi::api::{buffer, errors, refcount, strings, typeobj};
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let managed_bits = crate::molt_object_new();
+        assert!(!crate::exception_pending(&py));
+        let managed = refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(managed_bits),
+        );
+        assert!(!managed.as_ptr().is_null());
+        crate::dec_ref_bits(&py, managed_bits);
+        let string_bits =
+            crate::MoltObject::from_ptr(crate::alloc_string(&py, b"not a buffer")).bits();
+        let string = refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(string_bits),
+        );
+        assert!(!string.as_ptr().is_null());
+        crate::dec_ref_bits(&py, string_bits);
+
+        let mut slots = [PyType_Slot {
+            slot: 0,
+            pfunc: ptr::null_mut(),
+        }];
+        let mut spec = PyType_Spec {
+            name: c"native.NoBuffer".as_ptr(),
+            basicsize: std::mem::size_of::<PyObject>() as i32,
+            itemsize: 0,
+            flags: Py_TPFLAGS_DEFAULT as u32,
+            slots: slots.as_mut_ptr(),
+        };
+        let native_type = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&mut spec));
+        assert!(!native_type.as_ptr().is_null());
+        let native = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+            native_type.as_ptr().cast(),
+            0,
+        ));
+        assert!(!native.as_ptr().is_null());
+        for (object, expected) in [
+            (
+                managed.as_ptr(),
+                "a bytes-like object is required, not 'object'",
+            ),
+            (
+                string.as_ptr(),
+                "a bytes-like object is required, not 'str'",
+            ),
+            (
+                native.as_ptr(),
+                "a bytes-like object is required, not 'native.NoBuffer'",
+            ),
+        ] {
+            for flags in [PyBUF_SIMPLE, PyBUF_FULL_RO] {
+                let count = (*object).ob_refcnt;
+                let mut view: Py_buffer = std::mem::zeroed();
+                assert_eq!(buffer::PyObject_GetBuffer(object, &mut view, flags), -1);
+                assert!(
+                    view.obj.is_null(),
+                    "rejection cannot publish an export owner"
+                );
+                assert_eq!((*object).ob_refcnt, count);
+                assert_ne!(
+                    errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                    0
+                );
+                let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                assert!(!error.as_ptr().is_null());
+                let message =
+                    refcount::OwnedPyObject::from_owned(typeobj::PyObject_Str(error.as_ptr()));
+                assert!(!message.as_ptr().is_null());
+                let text = strings::PyUnicode_AsUTF8(message.as_ptr());
+                assert!(!text.is_null());
+                assert_eq!(
+                    std::ffi::CStr::from_ptr(text).to_bytes(),
+                    expected.as_bytes()
+                );
+                drop(message);
+                drop(error);
+                assert!(errors::PyErr_Occurred().is_null());
+                assert!(!crate::exception_pending(&py));
+            }
+        }
+    });
+}
+
+#[test]
+fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    fn exercise(inject_failure: bool) {
+        crate::concurrency::gil::with_gil(|py| unsafe {
+            use molt_runtime_core::OwnedRuntimeValue;
+            EXPORT_RELEASES.store(0, Ordering::SeqCst);
+            EXPORT_FREES.store(0, Ordering::SeqCst);
+            // Declaration storage must outlive its class, including assertion unwind.
+            let mut slots = PyBufferProcs {
+                bf_getbuffer: exporter_get as *mut c_void,
+                bf_releasebuffer: exporter_release as *mut c_void,
+            };
+            let mut class = super::native_test_fixture::NativeType::<PyTypeObject>::subtype(
+                &raw mut PyBaseObject_Type,
+                c"RawCallbackExporter",
+            );
+            class.tp_basicsize = std::mem::size_of::<Exporter>() as isize;
+            class.tp_flags |= Py_TPFLAGS_HAVE_GC;
+            class.tp_traverse = Some(exporter_traverse);
+            class.tp_clear = Some(exporter_clear);
+            class.tp_dealloc = Some(exporter_dealloc);
+            class.tp_as_buffer = (&raw mut slots).cast();
+            assert_eq!(class.ready(), 0);
+            let exporter_owner = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                &raw mut *class,
+                0,
+            ));
+            let exporter = exporter_owner.as_ptr();
+            assert!(!exporter.is_null());
+            (*exporter.cast::<Exporter>()).data = *b"ABC";
+            (*exporter.cast::<Exporter>()).len = 3;
+            let source = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_value_for_pyobj(exporter)
+                .unwrap();
+            let source_owner = OwnedRuntimeValue::from_owned_bits(py.core_token(), source);
+            let input = crate::object::buffer_exports::ScopedBuffer::simple(&py, source).unwrap();
+            let scope = input.readonly_subview(0, 3).unwrap();
+            let root = scope.bits();
+            let root_ptr = crate::obj_from_bits(root).as_ptr().unwrap();
+            assert_eq!(crate::memoryview_base_bits(root_ptr), 0);
+            assert!(crate::memoryview_readonly(root_ptr));
+            let clone_owner = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::molt_memoryview_new(root),
+            );
+            let clone = clone_owner.bits();
+            let readonly_owner = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::molt_memoryview_toreadonly(root),
+            );
+            let format_owner = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::MoltObject::from_ptr(crate::alloc_string(&py, b"B")).bits(),
+            );
+            let format = format_owner.bits();
+            let none = crate::MoltObject::none().bits();
+            let cast = crate::molt_memoryview_cast(
+                root,
+                format,
+                none,
+                crate::MoltObject::from_bool(false).bits(),
+            );
+            let cast_owner = OwnedRuntimeValue::from_owned_bits(py.core_token(), cast);
+            // This existing real __index__ callback releases the parent before the
+            // slice allocator publishes its already-pinned descendant.
+            SLICE_CALLBACK_PARENT.store(root, Ordering::SeqCst);
+            SLICE_CALLBACK_FAILURE.store(0, Ordering::SeqCst);
+            let index_owner =
+                OwnedRuntimeValue::from_owned_bits(py.core_token(), native_slice_index(&py));
+            let index = index_owner.bits();
+            let sliced =
+                crate::object::memoryview::memoryview_slice(&py, root_ptr, index, none, none);
+            SLICE_CALLBACK_PARENT.store(0, Ordering::SeqCst);
+            let sliced_owner = OwnedRuntimeValue::from_owned_bits(py.core_token(), sliced);
+            assert!(!crate::exception_pending(&py));
+            assert!(crate::memoryview_released(root_ptr));
+            assert_eq!((*crate::memoryview_ptr(root_ptr)).exports.count(), 0);
+            let native_child_owner = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(clone),
+            );
+            let native_child = native_child_owner.as_ptr();
+            let method = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                native_child,
+                c"__buffer__".as_ptr(),
+            ));
+            assert!(
+                !method.as_ptr().is_null(),
+                "active child __buffer__ lookup: {}",
+                pending_buffer_error()
+            );
+            if inject_failure {
+                panic!("scoped-view fixture owner unwind");
+            }
+            let flags = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::numbers::PyLong_FromLong(0),
+            );
+            let native_alias_owner = refcount::OwnedPyObject::from_owned(
+                object::PyObject_CallOneArg(method.as_ptr(), flags.as_ptr()),
+            );
+            let native_alias = native_alias_owner.as_ptr();
+            assert!(
+                !native_alias.is_null(),
+                "active child __buffer__ call: {}",
+                pending_buffer_error()
+            );
+            let alias = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_value_for_pyobj(native_alias)
+                .unwrap();
+            let alias_owner = OwnedRuntimeValue::from_owned_bits(py.core_token(), alias);
+            let alias_clone_owner = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::molt_memoryview_new(alias),
+            );
+            let alias_obj = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                native_alias,
+                c"obj".as_ptr(),
+            ));
+            assert_eq!(alias_obj.as_ptr(), native_child);
+            drop(alias_obj);
+            let mut descriptor = crate::object::memoryview::MoltBufferView::default();
+            let acquired = crate::c_api::molt_buffer_acquire(clone, &mut descriptor);
+            let c_api_alias = if acquired == 0 {
+                crate::c_api::molt_memoryview_from_buffer(&descriptor)
+            } else {
+                crate::MoltObject::none().bits()
+            };
+            let c_api_alias_owner =
+                OwnedRuntimeValue::from_owned_bits(py.core_token(), c_api_alias);
+            // Retire the explicit C descriptor before assertions can unwind.
+            let released = crate::c_api::molt_buffer_release(&mut descriptor);
+            assert_eq!(acquired, 0);
+            assert!(!crate::exception_pending(&py));
+            assert_eq!(released, 0);
+            drop(native_alias_owner);
+            drop(flags);
+            drop(method);
+            drop(native_child_owner);
+            let children = [
+                clone_owner,
+                readonly_owner,
+                cast_owner,
+                sliced_owner,
+                alias_owner,
+                alias_clone_owner,
+                c_api_alias_owner,
+            ];
+            (*exporter.cast::<Exporter>()).data[1] = b'Z';
+            for child in &children {
+                let child = child.bits();
+                let pointer = crate::obj_from_bits(child).as_ptr().unwrap();
+                assert_eq!(crate::memoryview_base_bits(pointer), 0);
+                assert_eq!(
+                    crate::object::memoryview::memoryview_collect_bytes(pointer).unwrap(),
+                    b"AZC"
+                );
+            }
+            let expected_hash_bytes = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::MoltObject::from_ptr(crate::alloc_bytes(&py, b"AZC")).bits(),
+            );
+            assert_eq!(
+                crate::hash_bits_signed(&py, clone),
+                crate::hash_bits_signed(&py, expected_hash_bytes.bits())
+            );
+            drop(expected_hash_bytes);
+            let iterator_owner =
+                OwnedRuntimeValue::from_owned_bits(py.core_token(), crate::molt_iter(clone));
+            let iterator = iterator_owner.bits();
+            let c_child_owner = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(clone),
+            );
+            let c_child = c_child_owner.as_ptr();
+            let native_export =
+                memory::MemoryViewLease::acquire(c_child, PyBUF_SIMPLE, buffer::PyObject_GetBuffer)
+                    .expect("active child exports through the real C API");
+            // Scope expiry never dereferences retained raw C addresses. Their use
+            // beyond RawIOBase.write violates its lifetime precondition; release
+            // remains valid and must retire only this view's counted pin.
+            drop(scope);
+            drop(input);
+            assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
+            drop(source_owner);
+            drop(exporter_owner);
+            assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
+            for child in &children {
+                let child = child.bits();
+                let pointer = crate::obj_from_bits(child).as_ptr().unwrap();
+                assert!(crate::memoryview_released(pointer));
+                let refused_bytes = OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::molt_memoryview_tobytes(child),
+                );
+                assert!(crate::exception_pending(&py));
+                crate::clear_exception(&py);
+                drop(refused_bytes);
+                let refused_view = OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::molt_memoryview_new(child),
+                );
+                assert!(crate::exception_pending(&py));
+                crate::clear_exception(&py);
+                drop(refused_view);
+            }
+            let refused_next = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::molt_iter_next(iterator),
+            );
+            assert!(crate::exception_pending(&py));
+            crate::clear_exception(&py);
+            drop(refused_next);
+            let zero = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::numbers::PyLong_FromLong(0),
+            );
+            let refused_item = refcount::OwnedPyObject::from_owned(object::PyObject_GetItem(
+                c_child,
+                zero.as_ptr(),
+            ));
+            assert!(refused_item.as_ptr().is_null());
+            errors::PyErr_Clear();
+            drop(zero);
+            let mut refused: Py_buffer = std::mem::zeroed();
+            let refused_status = buffer::PyObject_GetBuffer(c_child, &mut refused, PyBUF_SIMPLE);
+            buffer::PyBuffer_Release(&mut refused);
+            assert_eq!(refused_status, -1);
+            errors::PyErr_Clear();
+            drop(native_export);
+            drop(c_child_owner);
+            assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
+            // Release descriptor aliases before their exported source. Cloned
+            // aliases share that export until the final descendant is retired.
+            for child in children.into_iter().rev() {
+                crate::molt_memoryview_release(child.bits());
+                assert!(!crate::exception_pending(&py));
+                drop(child);
+            }
+            drop(iterator_owner);
+            drop(format_owner);
+            drop(index_owner);
+            assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
+        });
+    }
+    let failure = crate::test_support::catch_expected_unwind(|| exercise(true));
+    let error = failure.expect_err("the selected assertion point must unwind");
+    assert_eq!(
+        error.downcast_ref::<&str>().copied(),
+        Some("scoped-view fixture owner unwind")
+    );
+    // The same real native declaration/leases/children as the full regression
+    // must retire before the fixture class is freed, even on assertion failure.
+    assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
+    assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
+    exercise(false);
+}
+
+#[test]
+fn builtin_buffer_names_share_cold_runtime_lookup_and_native_readiness() {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        crate::concurrency::gil::with_gil(|py| unsafe {
+            use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            use molt_runtime_core::OwnedRuntimeValue;
+            let classes = crate::builtin_classes(&py);
+            let bytes = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::MoltObject::from_ptr(crate::alloc_bytes(&py, b"ABC")).bits(),
+            );
+            let mutable = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::MoltObject::from_ptr(crate::alloc_bytearray(&py, b"ABC")).bits(),
+            );
+            let view = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::molt_memoryview_new(bytes.bits()),
+            );
+            let get_name = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::attr_name_bits_from_bytes(&py, b"__buffer__").unwrap(),
+            );
+            let release_name = OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                crate::attr_name_bits_from_bytes(&py, b"__release_buffer__").unwrap(),
+            );
+            let flags = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::numbers::PyLong_FromLong(0),
+            );
+            for (class_bits, value, native, has_release) in [
+                (classes.bytes, bytes.bits(), &raw mut PyBytes_Type, false),
+                (
+                    classes.bytearray,
+                    mutable.bits(),
+                    &raw mut PyByteArray_Type,
+                    true,
+                ),
+                (
+                    classes.memoryview,
+                    view.bits(),
+                    &raw mut PyMemoryView_Type,
+                    true,
+                ),
+            ] {
+                let class = crate::obj_from_bits(class_bits).as_ptr().unwrap();
+                assert!(!crate::object::class_storage::class_declares(
+                    class,
+                    crate::object::class_storage::ClassDeclaration::NativeNamespacePublished
+                ));
+                // Request one real declaration before C readiness. This must
+                // neither enumerate the namespace nor invent missing slots.
+                let descriptor =
+                    crate::builtins::attr::class_namespace_lookup_raw(&py, class, get_name.bits())
+                        .unwrap()
+                        .expect("cold builtin __buffer__ declaration");
+                let descriptor = OwnedRuntimeValue::retain(py.core_token(), descriptor);
+                assert!(!crate::object::class_storage::class_declares(
+                    class,
+                    crate::object::class_storage::ClassDeclaration::NativeNamespacePublished
+                ));
+                let release = crate::builtins::attr::class_namespace_lookup_raw(
+                    &py,
+                    class,
+                    release_name.bits(),
+                )
+                .unwrap();
+                assert_eq!(release.is_some(), has_release);
+                let c_descriptor = refcount::OwnedPyObject::from_owned(
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(descriptor.bits()),
+                );
+                let owner = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                    c_descriptor.as_ptr(),
+                    c"__objclass__".as_ptr(),
+                ));
+                assert_eq!(owner.as_ptr(), native.cast());
+                let source = refcount::OwnedPyObject::from_owned(
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value),
+                );
+                let method = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                    source.as_ptr(),
+                    c"__buffer__".as_ptr(),
+                ));
+                assert!(
+                    !method.as_ptr().is_null(),
+                    "cold builtin lookup: {}",
+                    pending_buffer_error()
+                );
+                let alias = refcount::OwnedPyObject::from_owned(object::PyObject_CallOneArg(
+                    method.as_ptr(),
+                    flags.as_ptr(),
+                ));
+                assert!(
+                    !alias.as_ptr().is_null(),
+                    "cold builtin buffer: {}",
+                    pending_buffer_error()
+                );
+                let alias_owner = refcount::OwnedPyObject::from_owned(
+                    object::PyObject_GetAttrString(alias.as_ptr(), c"obj".as_ptr()),
+                );
+                assert_eq!(alias_owner.as_ptr(), source.as_ptr());
+                let descriptor_view = memory::PyMemoryView_GET_BUFFER(alias.as_ptr());
+                assert_eq!((*descriptor_view).len, 3);
+                assert_eq!(
+                    std::slice::from_raw_parts((*descriptor_view).buf.cast::<u8>(), 3),
+                    b"ABC"
+                );
+                if has_release {
+                    let release =
+                        refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                            source.as_ptr(),
+                            c"__release_buffer__".as_ptr(),
+                        ));
+                    let result = refcount::OwnedPyObject::from_owned(object::PyObject_CallOneArg(
+                        release.as_ptr(),
+                        alias.as_ptr(),
+                    ));
+                    assert_eq!(result.as_ptr(), &raw mut Py_None);
+                }
+                drop(alias_owner);
+                drop(alias);
+                assert_eq!(typeobj::PyType_Ready(native), 0);
+                assert_eq!(
+                    molt_cpython_abi::api::mapping::_PyDict_GetItemStringWithError(
+                        (*native).tp_dict,
+                        c"__buffer__".as_ptr()
+                    ),
+                    c_descriptor.as_ptr()
+                );
+                assert_eq!(
+                    !molt_cpython_abi::api::mapping::_PyDict_GetItemStringWithError(
+                        (*native).tp_dict,
+                        c"__release_buffer__".as_ptr()
+                    )
+                    .is_null(),
+                    has_release
+                );
+            }
+            let object_class = crate::obj_from_bits(classes.object).as_ptr().unwrap();
+            assert!(
+                crate::builtins::attr::class_namespace_lookup_raw(
+                    &py,
+                    object_class,
+                    get_name.bits()
+                )
+                .unwrap()
+                .is_none()
+            );
+            // A real native subtype inherits the exact declaring descriptor;
+            // an actual namespace replacement wins over physical slot synthesis.
+            let mut subtype = super::native_test_fixture::NativeType::<PyTypeObject>::subtype(
+                &raw mut PyBytes_Type,
+                c"BufferNamespaceSubtype",
+            );
+            subtype.tp_basicsize = PyBytes_Type.tp_basicsize;
+            subtype.tp_itemsize = PyBytes_Type.tp_itemsize;
+            assert_eq!(subtype.ready(), 0);
+            let inherited = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                (&raw mut *subtype).cast(),
+                c"__buffer__".as_ptr(),
+            ));
+            let original = molt_cpython_abi::api::mapping::_PyDict_GetItemStringWithError(
+                PyBytes_Type.tp_dict,
+                c"__buffer__".as_ptr(),
+            );
+            assert_eq!(inherited.as_ptr(), original);
+            let replacement = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::numbers::PyLong_FromLong(42),
+            );
+            assert_eq!(
+                molt_cpython_abi::api::mapping::PyDict_SetItemString(
+                    subtype.tp_dict,
+                    c"__buffer__".as_ptr(),
+                    replacement.as_ptr()
+                ),
+                0
+            );
+            typeobj::PyType_Modified(&raw mut *subtype);
+            let replaced = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                (&raw mut *subtype).cast(),
+                c"__buffer__".as_ptr(),
+            ));
+            assert_eq!(replaced.as_ptr(), replacement.as_ptr());
+            drop(replaced);
+            drop(replacement);
+            drop(inherited);
+            drop(subtype);
+            // Once the class namespace is published, deletion remains absent.
+            assert_eq!(
+                molt_cpython_abi::api::mapping::PyDict_DelItemString(
+                    PyBytes_Type.tp_dict,
+                    c"__buffer__".as_ptr()
+                ),
+                0
+            );
+            typeobj::PyType_Modified(&raw mut PyBytes_Type);
+            assert_eq!(typeobj::PyType_Ready(&raw mut PyBytes_Type), 0);
+            let class = crate::obj_from_bits(classes.bytes).as_ptr().unwrap();
+            assert!(
+                crate::builtins::attr::class_namespace_lookup_raw(&py, class, get_name.bits())
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!crate::exception_pending(&py));
+            assert!(errors::PyErr_Occurred().is_null());
+        });
+    });
+}

@@ -7,6 +7,11 @@ from typing import IO as _IO
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_REQUIRE_OPERATION = _require_intrinsic("molt_capabilities_require_operation")
+_MOLT_NEED_CURRENT_DIRECTORY = _require_intrinsic(
+    "molt_os_need_current_directory_for_exe_path"
+)
+
 __all__ = [
     "COPY_BUFSIZE",
     "Error",
@@ -169,15 +174,94 @@ def copystat(src: str, dst: str, *, follow_symlinks: bool = True) -> None:
     _MOLT_SHUTIL_COPYSTAT(src, dst, bool(follow_symlinks))
 
 
-def which(cmd: str, mode: int | None = None, path: str | None = None) -> str | None:
-    """Return the path to an executable which would be run for the given cmd."""
-    del mode
-    out = _MOLT_SHUTIL_WHICH(cmd, path)
-    if out is None:
-        return None
-    if not isinstance(out, str):
-        raise RuntimeError("shutil.which intrinsic returned invalid value")
-    return out
+def _access_check(filename, mode):
+    return (
+        _os.path.exists(filename)
+        and _os.access(filename, mode)
+        and not _os.path.isdir(filename)
+    )
+
+
+def which(cmd, mode=_os.F_OK | _os.X_OK, path=None):
+    """Return the first accessible command from the selected search inputs."""
+    # Inspect builtin storage without dispatching subclass callbacks, so the
+    # complete selected grant set precedes fspath/codecs/mapping callbacks.
+    use_bytes = isinstance(cmd, bytes)
+    raw = bytes if use_bytes else str
+    slash = b"/" if use_bytes else "/"
+    backslash = b"\\" if use_bytes else "\\"
+    has_directory = isinstance(cmd, (str, bytes)) and (
+        raw.rfind(cmd, slash) >= 0
+        or (
+            _os.name == "nt"
+            and (
+                raw.rfind(cmd, backslash) >= 0
+                or raw.find(cmd, b":" if use_bytes else ":") >= 0
+            )
+        )
+    )
+    ambient = _os.name == "nt" or (path is None and not has_directory)
+    _MOLT_REQUIRE_OPERATION("shutil.which" if ambient else "shutil.which.explicit_path")
+    cmd = _os.fspath(cmd)
+    if isinstance(cmd, bytes):
+        use_bytes = True
+    if _os.name == "nt":
+        drive, root, tail = _os._path_splitroot(cmd, False)
+        separators = b"\\/" if use_bytes else "\\/"
+        index = len(tail)
+        while index and tail[index - 1] not in separators:
+            index -= 1
+        head, cmd = tail[:index], tail[index:]
+        dirname = drive + root + head.rstrip(separators)
+    else:
+        separator = b"/" if use_bytes else "/"
+        index = cmd.rfind(separator) + 1
+        dirname, cmd = cmd[:index], cmd[index:]
+        if dirname and dirname != separator * len(dirname):
+            dirname = dirname.rstrip(separator)
+    if dirname:
+        directories = [dirname]
+    else:
+        if path is None:
+            path = _os.environ.get("PATH")
+            if path is None:
+                path = ".;C:\\bin" if _os.name == "nt" else "/bin:/usr/bin"
+        if not path:
+            return None
+        path = _os.fsencode(path) if use_bytes else _os.fsdecode(path)
+        directories = path.split(
+            _os.fsencode(_os.pathsep) if use_bytes else _os.pathsep
+        )
+        if _os.name == "nt" and (
+            not mode & _os.X_OK or _MOLT_NEED_CURRENT_DIRECTORY(_os.fsdecode(cmd))
+        ):
+            directories.insert(0, _os.fsencode(_os.curdir) if use_bytes else _os.curdir)
+    if _os.name == "nt":
+        source = _os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        extensions = [ext.rstrip(".") for ext in source.split(_os.pathsep) if ext]
+        if use_bytes:
+            extensions = [_os.fsencode(ext) for ext in extensions]
+        files = [cmd + ext for ext in extensions]
+        if not mode & _os.X_OK or any(
+            cmd.upper().endswith(ext.upper()) for ext in extensions
+        ):
+            files.insert(0, cmd)
+    else:
+        files = [cmd]
+    seen = set()
+    unique = []
+    for directory in directories:
+        normalized = (
+            directory.lower().replace(
+                b"/" if use_bytes else "/", b"\\" if use_bytes else "\\"
+            )
+            if _os.name == "nt"
+            else directory
+        )
+        if normalized not in seen:
+            seen.add(normalized)
+            unique.append(directory)
+    return _MOLT_SHUTIL_WHICH(files, unique, mode)
 
 
 def rmtree(

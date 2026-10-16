@@ -1,4 +1,5 @@
 use super::*;
+use crate::object::class_layout::{try_is_real_instance, try_is_real_subtype};
 use crate::object::seq_access::with_immutable_tuple_slice;
 
 struct PreparedClassState {
@@ -147,9 +148,21 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
     let mut keepalive_tuples: Vec<u64> = Vec::new();
 
     for (idx, base_bits) in bases.iter().copied().enumerate() {
-        let is_type = obj_from_bits(base_bits)
-            .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE });
+        // Type inquiry is semantic. A native class has foreign storage, but
+        // must never enter the non-type __mro_entries__ protocol.
+        let is_type =
+            match unsafe { try_is_real_instance(_py, base_bits, builtin_classes(_py).type_obj) } {
+                Ok(value) => value,
+                Err(()) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(_py, "base type");
+                    for bits in keepalive_tuples.drain(..) {
+                        dec_ref_bits(_py, bits);
+                    }
+                    dec_ref_bits(_py, mro_entries_name_bits);
+                    dec_ref_bits(_py, bases_tuple_bits);
+                    return MoltObject::none().bits();
+                }
+            };
         if is_type {
             if updated {
                 out.push(base_bits);
@@ -309,9 +322,9 @@ fn prepare_class_impl(
     // `winner_bits` is held as an OWNED reference for the whole function and is
     // returned as an owned reference in `PreparedClassState.metaclass_bits`
     // (both callers decref it, symmetric with `namespace_bits`/`kwds_bits`).
-    // The dict branch is already owned (incref'd above); the registry-backed
-    // branches return borrowed references, so incref them to make ownership
-    // uniform.
+    // The dict branch is already owned (incref'd above); actual type
+    // projection returns an owned reference too. Only the builtin default
+    // below is borrowed from the registry.
     let mut winner_bits = if let Some(bits) = metaclass_bits {
         bits
     } else if is_truthy(_py, obj_from_bits(bases_bits)) {
@@ -321,9 +334,13 @@ fn prepare_class_impl(
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
         }
-        let bits = type_of_bits(_py, first_base_bits);
-        inc_ref_bits(_py, bits);
+        let bits = class_model::type_of_owned(_py, first_base_bits);
         dec_ref_bits(_py, first_base_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, bits);
+            dec_ref_bits(_py, kwds_copy_bits);
+            return None;
+        }
         bits
     } else {
         let bits = builtin_classes(_py).type_obj;
@@ -331,9 +348,16 @@ fn prepare_class_impl(
         bits
     };
 
-    let winner_is_type = obj_from_bits(winner_bits)
-        .as_ptr()
-        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE });
+    let winner_is_type =
+        match unsafe { try_is_real_instance(_py, winner_bits, builtin_classes(_py).type_obj) } {
+            Ok(value) => value,
+            Err(()) => {
+                crate::cpython_abi_hooks::propagate_native_failure(_py, "metaclass type");
+                dec_ref_bits(_py, winner_bits);
+                dec_ref_bits(_py, kwds_copy_bits);
+                return None;
+            }
+        };
     if winner_is_type {
         let Some(bases_tuple_bits) = (unsafe { tuple_from_iter_bits(_py, bases_bits) }) else {
             dec_ref_bits(_py, winner_bits);
@@ -355,15 +379,45 @@ fn prepare_class_impl(
             return None;
         };
         for base_bits in bases.iter().copied() {
-            let base_meta_bits = type_of_bits(_py, base_bits);
-            if issubclass_bits(winner_bits, base_meta_bits) {
+            let base_meta_bits = class_model::type_of_owned(_py, base_bits);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, base_meta_bits);
+                dec_ref_bits(_py, bases_tuple_bits);
+                dec_ref_bits(_py, winner_bits);
+                dec_ref_bits(_py, kwds_copy_bits);
+                return None;
+            }
+            let _base_meta_owner = crate::PtrDropGuard::new(
+                obj_from_bits(base_meta_bits)
+                    .as_ptr()
+                    .expect("owned actual type"),
+            );
+            let relation = unsafe {
+                try_is_real_subtype(_py, winner_bits, base_meta_bits).and_then(|wins| {
+                    if wins {
+                        Ok((true, false))
+                    } else {
+                        try_is_real_subtype(_py, base_meta_bits, winner_bits)
+                            .map(|promote| (false, promote))
+                    }
+                })
+            };
+            let (wins, promote) = match relation {
+                Ok(value) => value,
+                Err(()) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(_py, "metaclass relation");
+                    dec_ref_bits(_py, bases_tuple_bits);
+                    dec_ref_bits(_py, winner_bits);
+                    dec_ref_bits(_py, kwds_copy_bits);
+                    return None;
+                }
+            };
+            if wins {
                 continue;
             }
-            if issubclass_bits(base_meta_bits, winner_bits) {
-                // Promote to the more-derived base metaclass. `winner_bits` is
-                // owned, so release the prior winner and acquire the new one to
-                // keep ownership balanced (the registry-backed `base_meta_bits`
-                // is borrowed).
+            if promote {
+                // Both identities are owned; promotion acquires the reference
+                // that survives this iteration's base-metaclass owner.
                 inc_ref_bits(_py, base_meta_bits);
                 dec_ref_bits(_py, winner_bits);
                 winner_bits = base_meta_bits;
@@ -468,39 +522,86 @@ fn prepare_class_impl(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(cls_ptr) = obj_from_bits(cls_bits).as_ptr() else {
-            let owner = type_name(_py, obj_from_bits(cls_bits));
-            let msg = format!("Expected an instance of type, not '{owner}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        use crate::builtins::exceptions::{
+            ExceptionFieldSlot, ExceptionStackScope, ExceptionValue, exception_context_set,
+            exception_replace_field_bits, molt_exception_last_pending,
         };
-        unsafe {
-            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                let owner = type_name(_py, obj_from_bits(cls_bits));
-                let msg = format!("Expected an instance of type, not '{owner}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+        let _input = ExceptionValue::pin(_py, cls_bits);
+        // Lib/types.py uses the normal namespace protocol, not an inherited
+        // __orig_bases__ lookup or a storage-tag type test. This also permits
+        // metaclass overrides and objects implementing that exact protocol.
+        let read = |object, name: &[u8]| {
+            let name = ExceptionValue::adopt(_py, attr_name_bits_from_bytes(_py, name)?);
+            crate::builtins::attributes::get_attr_name(_py, object, name.bits())
+                .ok()
+                .map(|value| ExceptionValue::adopt(_py, value))
+        };
+        let result = (|| {
+            let namespace = read(cls_bits, b"__dict__")?;
+            let get = read(namespace.bits(), b"get");
+            // Attribute lookup has consumed the namespace receiver. The bound
+            // method, if any, owns it across the following eager default lookup.
+            drop(namespace);
+            let get = get?;
+            let name =
+                ExceptionValue::adopt(_py, attr_name_bits_from_bytes(_py, b"__orig_bases__")?);
+            let bases = read(cls_bits, b"__bases__")?;
+            let result = ExceptionValue::adopt(_py, unsafe {
+                call_callable2(_py, get.bits(), name.bits(), bases.bits())
+            });
+            if exception_pending(_py) {
+                None
+            } else {
+                Some(result.into_bits())
             }
+        })();
+        if let Some(result) = result {
+            return result;
         }
-        let missing = missing_bits(_py);
-        let Some(orig_name_bits) = attr_name_bits_from_bytes(_py, b"__orig_bases__") else {
+        let original = ExceptionValue::adopt(_py, molt_exception_last_pending());
+        if !crate::builtins::attr::exception_is_attribute_error(_py, original.bits()) {
             return MoltObject::none().bits();
-        };
-        let orig_bits = molt_getattr_builtin(cls_bits, orig_name_bits, missing);
-        dec_ref_bits(_py, orig_name_bits);
+        }
+        // Only AttributeError is normalized, with the original handled context
+        // retained and explicit `from None` on the resulting TypeError.
+        let _handler = ExceptionStackScope::push(_py);
+        exception_context_set(_py, original.bits());
+        clear_exception(_py);
+        let class = ExceptionValue::adopt(_py, class_model::type_of_owned(_py, cls_bits));
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        if orig_bits != missing {
-            return orig_bits;
-        }
-        let Some(bases_name_bits) = attr_name_bits_from_bytes(_py, b"__bases__") else {
+        let Some(name) = read(class.bits(), b"__name__") else {
             return MoltObject::none().bits();
         };
-        let bases_bits = molt_getattr_builtin(cls_bits, bases_name_bits, missing);
-        dec_ref_bits(_py, bases_name_bits);
-        if exception_pending(_py) || bases_bits == missing {
+        let rendered = crate::object::ops_format::format_obj_bytes(_py, obj_from_bits(name.bits()));
+        if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        bases_bits
+        let mut message = b"Expected an instance of type, not ".to_vec();
+        message.extend_from_slice(&rendered);
+        let raised = crate::builtins::exceptions::alloc_exception_bytes(_py, "TypeError", &message);
+        if raised.is_null() {
+            if !exception_pending(_py) {
+                crate::builtins::exceptions::record_memory_error_without_allocation(_py);
+            }
+            return MoltObject::none().bits();
+        }
+        let raised_owner = ExceptionValue::adopt(_py, MoltObject::from_ptr(raised).bits());
+        if let Err(message) = exception_replace_field_bits(
+            _py,
+            raised_owner.bits(),
+            ExceptionFieldSlot::Cause,
+            MoltObject::none().bits(),
+        ) {
+            if !exception_pending(_py) {
+                return raise_exception::<u64>(_py, "SystemError", message);
+            }
+            return MoltObject::none().bits();
+        }
+        let _ = raised_owner.into_bits();
+        crate::builtins::exceptions::record_exception_owned(_py, raised);
+        MoltObject::none().bits()
     })
 }
 
@@ -875,6 +976,114 @@ mod keyword_snapshot_tests {
             dec_ref_bits(py, name);
             dec_ref_bits(py, value);
             assert!(!exception_pending(py));
+        });
+    }
+}
+
+#[cfg(test)]
+mod native_base_tests {
+    use super::*;
+    use molt_cpython_abi::abi_types::*;
+    use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, strings, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+    #[test]
+    fn native_base_resolution_and_prepare_preserve_identity_until_layout_admission() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                for (name, flags) in [
+                    (c"native.NotABase", Py_TPFLAGS_DEFAULT),
+                    (
+                        c"native.AllowedBase",
+                        Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+                    ),
+                ] {
+                    let mut slots = [PyType_Slot {
+                        slot: 0,
+                        pfunc: std::ptr::null_mut(),
+                    }];
+                    let mut spec = PyType_Spec {
+                        name: name.as_ptr(),
+                        basicsize: std::mem::size_of::<PyObject>() as i32,
+                        itemsize: 0,
+                        flags: flags as u32,
+                        slots: slots.as_mut_ptr(),
+                    };
+                    let native = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&mut spec));
+                    assert!(!native.as_ptr().is_null());
+                    let class = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
+                    assert_eq!(
+                        object_type_id(obj_from_bits(class).as_ptr().unwrap()),
+                        crate::TYPE_ID_FOREIGN
+                    );
+                    let bases = MoltObject::from_ptr(alloc_tuple(py, &[class])).bits();
+                    dec_ref_bits(py, class);
+                    let child_name = attr_name_bits_from_bytes(py, b"NativeChild").unwrap();
+                    let count = (*native.as_ptr()).ob_refcnt;
+                    for _ in 0..2 {
+                        let original_bases = molt_types_get_original_bases(class);
+                        assert!(!exception_pending(py));
+                        assert_eq!(
+                            with_immutable_tuple_slice(
+                                obj_from_bits(original_bases).as_ptr().unwrap(),
+                                |items| items.to_vec()
+                            ),
+                            Some(vec![builtin_classes(py).object]),
+                        );
+                        dec_ref_bits(py, original_bases);
+                        let resolved = resolve_bases_impl(py, bases);
+                        assert!(!exception_pending(py));
+                        assert_eq!(resolved, bases, "a real class bypasses __mro_entries__");
+                        dec_ref_bits(py, resolved);
+                        let state =
+                            prepare_class_impl(py, child_name, bases, MoltObject::none().bits())
+                                .expect("native bases participate in metaclass selection");
+                        assert_eq!(state.metaclass_bits, builtin_classes(py).type_obj);
+                        assert!(!exception_pending(py));
+                        if flags & Py_TPFLAGS_BASETYPE == 0 {
+                            let result = molt_type_new(
+                                state.metaclass_bits,
+                                child_name,
+                                bases,
+                                state.namespace_bits,
+                                state.kwds_bits,
+                            );
+                            dec_ref_bits(py, result);
+                            assert_ne!(
+                                errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                                0
+                            );
+                            let error =
+                                OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                            assert!(!error.as_ptr().is_null());
+                            let message =
+                                OwnedPyObject::from_owned(typeobj::PyObject_Str(error.as_ptr()));
+                            assert!(!message.as_ptr().is_null());
+                            let text = strings::PyUnicode_AsUTF8(message.as_ptr());
+                            assert!(!text.is_null());
+                            assert_eq!(
+                                std::ffi::CStr::from_ptr(text).to_bytes(),
+                                b"type 'native.NotABase' is not an acceptable base type"
+                            );
+                            drop(message);
+                            drop(error);
+                        }
+                        for bits in [state.metaclass_bits, state.namespace_bits, state.kwds_bits] {
+                            dec_ref_bits(py, bits);
+                        }
+                        assert_eq!(
+                            (*native.as_ptr()).ob_refcnt,
+                            count,
+                            "temporary class inquiries must retire"
+                        );
+                        assert!(errors::PyErr_Occurred().is_null());
+                        assert!(!exception_pending(py));
+                    }
+                    dec_ref_bits(py, child_name);
+                    dec_ref_bits(py, bases);
+                }
+            }
         });
     }
 }

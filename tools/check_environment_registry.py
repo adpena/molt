@@ -32,6 +32,9 @@ WHAT IT PROVES (``--check``)
    must still name it.
 6. No first-party source string or comment mentions an unregistered
    ``MOLT_*`` name (stale messages are drift too).
+7. Shipped runtime process-environment writers, including aliases and dynamic
+   keys, belong only to the platform process writer. Test exemption follows
+   cfg conditions and actual module inclusion, never a filename.
 
 WHAT "DEFINITE ENVIRONMENT ACCESS" MEANS
 ----------------------------------------
@@ -289,6 +292,7 @@ class Violation:
 class Scan:
     sites: tuple[Site, ...]
     unresolved: tuple[Site, ...]
+    writer_violations: tuple[Violation, ...] = ()
 
     def by_name(self) -> dict[str, list[Site]]:
         grouped: dict[str, list[Site]] = defaultdict(list)
@@ -1279,7 +1283,9 @@ class _Tok:
     offset: int
 
 
-def _rust_lex(source: str) -> tuple[list[_Tok], list[tuple[int, str]]]:
+def _rust_lex(
+    source: str, *, strict: bool = False
+) -> tuple[list[_Tok], list[tuple[int, str]]]:
     """Return ``(tokens, comments)``; comments are ``(line, text)``."""
 
     tokens: list[_Tok] = []
@@ -1317,24 +1323,41 @@ def _rust_lex(source: str) -> tuple[list[_Tok], list[tuple[int, str]]]:
                     if source[j] == "\n":
                         line += 1
                     j += 1
+            if strict and depth:
+                raise ValueError(f"line {start_line}: unterminated block comment")
             comments.append((start_line, source[i:j]))
             i = j
             continue
         if ch == "'":
-            if i + 2 < n and (source[i + 2] == "'" or source[i + 1] == "\\"):
-                j = source.find("'", i + 2)
-                if j != -1 and j - i <= 6:
-                    i = j + 1
-                    continue
+            if i + 2 < n and source[i + 1] != "\\" and source[i + 2] == "'":
+                i += 3
+                continue
+            if i + 1 < n and source[i + 1] == "\\":
+                j = i + 1
+                while j < n:
+                    if source[j] == "\\":
+                        j += 2
+                    elif source[j] == "'":
+                        break
+                    else:
+                        j += 1
+                if j >= n and strict:
+                    raise ValueError(f"line {line}: unterminated character literal")
+                i = j + 1
+                continue
             j = i + 1
             while j < n and (source[j].isalnum() or source[j] == "_"):
                 j += 1
+            if strict and j == i + 1:
+                raise ValueError(
+                    f"line {line}: malformed lifetime or character literal"
+                )
             tokens.append(_Tok("lifetime", source[i:j], line, i))
             i = j
             continue
-        if ch == "r" or (ch == "b" and i + 1 < n and source[i + 1] in 'r"'):
-            j = i + (2 if ch == "b" and source[i + 1] == "r" else 1)
-            if ch == "b" and source[i + 1] == '"':
+        if ch == "r" or (ch in "bc" and i + 1 < n and source[i + 1] in 'r"'):
+            j = i + (2 if ch in "bc" and source[i + 1] == "r" else 1)
+            if ch in "bc" and source[i + 1] == '"':
                 j = i + 1
             hashes = 0
             while j < n and source[j] == "#":
@@ -1345,15 +1368,17 @@ def _rust_lex(source: str) -> tuple[list[_Tok], list[tuple[int, str]]]:
                 j < n
                 and source[j] == '"'
                 and not word_before
-                and (ch != "b" or source[i + 1] == "r" or hashes == 0)
+                and (ch not in "bc" or source[i + 1] == "r" or hashes == 0)
             ):
-                if ch == "b" and source[i + 1] == '"':
+                if ch in "bc" and source[i + 1] == '"':
                     # byte string: treat like a normal string
                     pass
                 else:
                     start_line = line
                     closer = '"' + "#" * hashes
                     k = source.find(closer, j + 1)
+                    if k == -1 and strict:
+                        raise ValueError(f"line {start_line}: unterminated raw string")
                     k = n if k == -1 else k
                     body = source[j + 1 : k]
                     tokens.append(_Tok("string", body, start_line, j))
@@ -1378,10 +1403,18 @@ def _rust_lex(source: str) -> tuple[list[_Tok], list[tuple[int, str]]]:
                     line += 1
                 buf.append(c)
                 j += 1
+            if j >= n and strict:
+                raise ValueError(f"line {start_line}: unterminated string")
             tokens.append(_Tok("string", "".join(buf), start_line, i))
             i = j + 1
             continue
         if ch.isalpha() or ch == "_":
+            if (
+                source.startswith("r#", i)
+                and i + 2 < n
+                and (source[i + 2].isalpha() or source[i + 2] == "_")
+            ):
+                i += 2
             j = i + 1
             while j < n and (source[j].isalnum() or source[j] == "_"):
                 j += 1
@@ -1424,6 +1457,468 @@ def _matching(tokens: list[_Tok], start: int, open_text: str, close_text: str) -
             if depth == 0:
                 return index
     return len(tokens)
+
+
+# Current-process writes are a separate invariant from registered MOLT names.
+# Only this primitive may obtain a first-party process-writer capability.
+_PROCESS_WRITER_OWNER = (
+    "runtime/molt-runtime-platform/src/env_support.rs",
+    "process_env_set_unlocked",
+)
+_RAW_PROCESS_WRITERS = frozenset(
+    {
+        "setenv",
+        "unsetenv",
+        "putenv",
+        "clearenv",
+        "_putenv",
+        "_putenv_s",
+        "_wputenv",
+        "_wputenv_s",
+    }
+)
+
+
+def _rust_groups(tokens: list[_Tok]) -> dict[int, int]:
+    """Build balanced delimiter spans once; malformed input never exempts code."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    closers = {")": "(", "]": "[", "}": "{"}
+    for index, token in enumerate(tokens):
+        if token.kind != "punct":
+            continue
+        if token.text in {"(", "[", "{"}:
+            stack.append(index)
+        elif token.text in closers:
+            if not stack or tokens[stack[-1]].text != closers[token.text]:
+                raise ValueError(f"line {token.line}: unmatched {token.text}")
+            opening = stack.pop()
+            pairs[opening] = index
+    if stack:
+        token = tokens[stack[-1]]
+        raise ValueError(f"line {token.line}: unclosed {token.text}")
+    return pairs
+
+
+def _rust_cfg_without_test(
+    tokens: list[_Tok], groups: dict[int, int], start: int, end: int
+) -> bool | None:
+    """Whether a cfg may hold with test=false; other target/features are unknown."""
+    if start >= end or tokens[start].kind != "ident":
+        return None
+    name = tokens[start].text
+    if start + 1 == end:
+        return False if name == "test" else None
+    if tokens[start + 1].text != "(" or groups[start + 1] != end - 1:
+        return None
+    if name not in {"all", "any", "not"}:
+        return None
+    values: list[bool | None] = []
+    index = start + 2
+    while index < end - 1:
+        stop = index
+        while stop < end - 1 and tokens[stop].text != ",":
+            stop = groups[stop] + 1 if stop in groups else stop + 1
+        values.append(_rust_cfg_without_test(tokens, groups, index, stop))
+        index = stop + 1
+    if name == "not":
+        if len(values) != 1:
+            raise ValueError(f"line {tokens[start].line}: malformed cfg(not(...))")
+        return None if values[0] is None else not values[0]
+    if name == "all":
+        return False if False in values else None if None in values else True
+    return True if True in values else None if None in values else False
+
+
+def _rust_use_bindings(
+    tokens: list[_Tok],
+    groups: dict[int, int],
+    start: int,
+    end: int,
+    prefix: tuple[str, ...] = (),
+) -> Iterator[tuple[str, tuple[str, ...]]]:
+    index = start
+    while index < end:
+        stop = index
+        while stop < end and tokens[stop].text != ",":
+            stop = groups[stop] + 1 if stop in groups else stop + 1
+        parts: list[str] = []
+        position = index
+        while position < stop and tokens[position].text not in {"{", "as", "*"}:
+            if tokens[position].kind == "ident":
+                parts.append(tokens[position].text)
+            position += 1
+        path = prefix + tuple(parts)
+        if position < stop and tokens[position].text == "{":
+            yield from _rust_use_bindings(
+                tokens, groups, position + 1, groups[position], path
+            )
+        elif position < stop and tokens[position].text == "*":
+            # Bare libc/CRT names are recognized at their actual references;
+            # an unrelated wildcard must not invent those exported functions.
+            for name in ("set_var", "remove_var"):
+                yield name, path + (name,)
+        elif path:
+            if path[-1] == "self":
+                path = path[:-1]
+            if not path:
+                index = stop + 1
+                continue
+            alias = (
+                tokens[position + 1].text
+                if position + 1 < stop and tokens[position].text == "as"
+                else path[-1]
+            )
+            if alias != "_":
+                yield alias, path
+        index = stop + 1
+
+
+def _writer_path_kinds(
+    path: tuple[str, ...], aliases: dict[str, set[tuple[str, ...]]]
+) -> set[tuple[str, ...]]:
+    """Finite import domain: std, std::env, or a process-writer function."""
+    if not path:
+        return set()
+    if path[-1] in _RAW_PROCESS_WRITERS:
+        return {("<writer>", path[-1])}
+    candidates = {path}
+    for prefix in aliases.get(path[0], ()):
+        if prefix[0] == "<writer>":
+            if len(path) == 1:
+                candidates.add(prefix)
+        else:
+            candidates.add(prefix + path[1:])
+    return {
+        ("<writer>", candidate[-1])
+        if candidate[:2] == ("std", "env")
+        and candidate[2:] in {("set_var",), ("remove_var",)}
+        else candidate
+        for candidate in candidates
+        if candidate in {("std",), ("std", "env")}
+        or candidate[0] == "<writer>"
+        or (
+            candidate[:2] == ("std", "env")
+            and candidate[2:] in {("set_var",), ("remove_var",)}
+        )
+    }
+
+
+@dataclass(slots=True)
+class _WriterFile:
+    test_only: bool
+    modules: list[tuple[Path, bool]]
+    writers: list[tuple[int, str, bool, str | None]]
+
+
+def _rust_writer_file(path: Path, root: Path) -> _WriterFile:
+    tokens, _ = _rust_lex(path.read_text(encoding="utf-8"), strict=True)
+    groups = _rust_groups(tokens)
+    aliases: dict[str, list[tuple[str, ...]]] = defaultdict(list)
+    references: list[tuple[int, tuple[str, ...], bool, str | None]] = []
+    modules: list[tuple[Path, bool]] = []
+    file_test = False
+
+    def walk(
+        start: int,
+        end: int,
+        test_only: bool,
+        function: str | None,
+        module_dir: Path,
+        path_dir: Path,
+        root_items: bool,
+    ) -> None:
+        nonlocal file_test
+        pending_test = False
+        pending_path: str | None = None
+        index = start
+        while index < end:
+            token = tokens[index]
+            if token.kind == "punct" and token.text == "#":
+                opening = index + 1
+                inner = opening < end and tokens[opening].text == "!"
+                opening += int(inner)
+                if opening >= end or tokens[opening].text != "[":
+                    raise ValueError(f"line {token.line}: malformed Rust attribute")
+                closing = groups[opening]
+                first = opening + 1
+                restricted = False
+                if first < closing and tokens[first].text == "cfg":
+                    if first + 1 >= closing or tokens[first + 1].text != "(":
+                        raise ValueError(f"line {token.line}: malformed cfg attribute")
+                    restricted = (
+                        _rust_cfg_without_test(
+                            tokens, groups, first + 2, groups[first + 1]
+                        )
+                        is False
+                    )
+                elif first + 1 == closing and tokens[first].text == "test":
+                    restricted = True
+                elif (
+                    first + 3 == closing
+                    and tokens[first].text == "path"
+                    and tokens[first + 1].text == "="
+                    and tokens[first + 2].kind == "string"
+                ):
+                    try:
+                        pending_path = json.loads('"' + tokens[first + 2].text + '"')
+                    except ValueError:
+                        pending_path = None  # Unknown path never grants an exemption.
+                if inner:
+                    test_only |= restricted
+                    if start == 0:
+                        file_test |= restricted
+                else:
+                    pending_test |= restricted
+                index = closing + 1
+                continue
+            local_test = test_only or pending_test
+            if (
+                token.kind == "ident"
+                and token.text in {"fn", "mod"}
+                and index + 1 < end
+                and tokens[index + 1].kind == "ident"
+            ):
+                name = tokens[index + 1].text
+                opening = index + 2
+                if token.text == "mod" and (
+                    opening == end or tokens[opening].text not in {"{", ";"}
+                ):
+                    raise ValueError(f"line {token.line}: malformed module item")
+                angle_depth = 0
+                parameters = False
+                while opening < end:
+                    text = tokens[opening].text
+                    if text in {"{", ";"} and not angle_depth:
+                        break
+                    if text == "<":
+                        angle_depth += 1
+                    elif text == ">":
+                        angle_depth -= 1
+                    elif text == "(" and not angle_depth:
+                        parameters = True
+                    opening = groups[opening] + 1 if opening in groups else opening + 1
+                if opening == end:
+                    raise ValueError(f"line {token.line}: incomplete {token.text} item")
+                if token.text == "fn" and not parameters:
+                    raise ValueError(f"line {token.line}: missing function parameters")
+                if tokens[opening].text == "{":
+                    child_dir = module_dir
+                    child_path_dir = path_dir
+                    if token.text == "mod":
+                        child_dir = (
+                            path_dir / pending_path
+                            if pending_path is not None
+                            else module_dir / name
+                        )
+                        child_path_dir = child_dir
+                    walk(
+                        opening + 1,
+                        groups[opening],
+                        local_test,
+                        (name if root_items else f"<nested>::{name}")
+                        if token.text == "fn"
+                        else None,
+                        child_dir,
+                        child_path_dir,
+                        False,
+                    )
+                    index = groups[opening] + 1
+                else:
+                    if token.text == "mod":
+                        if pending_path is not None:
+                            target = path_dir / pending_path
+                        else:
+                            candidates = [
+                                module_dir / f"{name}.rs",
+                                module_dir / name / "mod.rs",
+                            ]
+                            target = next(
+                                (
+                                    candidate
+                                    for candidate in candidates
+                                    if candidate.is_file()
+                                ),
+                                candidates[0],
+                            )
+                        modules.append((target.resolve(), local_test))
+                    index = opening + 1
+                pending_test = False
+                pending_path = None
+                continue
+            if token.kind == "ident" and token.text == "use":
+                closing = index + 1
+                while closing < end and tokens[closing].text != ";":
+                    closing = groups[closing] + 1 if closing in groups else closing + 1
+                if closing == end:
+                    raise ValueError(f"line {token.line}: incomplete use item")
+                for alias, target in _rust_use_bindings(
+                    tokens, groups, index + 1, closing
+                ):
+                    aliases[alias].append(target)
+                    references.append((token.line, target, local_test, function))
+                index = closing + 1
+                pending_test = False
+                pending_path = None
+                continue
+            if (
+                token.kind == "ident"
+                and token.text == "extern"
+                and index + 2 < end
+                and tokens[index + 1].text == "crate"
+            ):
+                name = tokens[index + 2].text
+                alias = (
+                    tokens[index + 4].text
+                    if index + 4 < end and tokens[index + 3].text == "as"
+                    else name
+                )
+                aliases[alias].append((name,))
+            if index in groups:
+                walk(
+                    index + 1,
+                    groups[index],
+                    local_test,
+                    function,
+                    module_dir,
+                    path_dir,
+                    False,
+                )
+                index = groups[index] + 1
+                pending_test = False
+                continue
+            if token.kind == "ident":
+                stop = index + 1
+                parts = [token.text]
+                while (
+                    stop + 1 < end
+                    and tokens[stop].text == "::"
+                    and tokens[stop + 1].kind == "ident"
+                ):
+                    parts.append(tokens[stop + 1].text)
+                    stop += 2
+                references.append((token.line, tuple(parts), local_test, function))
+                index = stop
+            else:
+                index += 1
+            if token.kind == "punct" and token.text == ";":
+                pending_test = False
+                pending_path = None
+
+    directory = (
+        path.parent
+        if path.name in {"lib.rs", "main.rs", "mod.rs"}
+        else path.with_suffix("")
+    )
+    walk(0, len(tokens), False, None, directory, path.parent, True)
+    # Every alias can acquire only this small finite set of prefix/function
+    # facts. Propagate changes to dependants, not repeated whole-file scans.
+    kinds: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+    dependants: dict[str, set[str]] = defaultdict(set)
+    for alias, targets in aliases.items():
+        for target in targets:
+            if target and target[0] in aliases and target[0] != alias:
+                dependants[target[0]].add(alias)
+    pending = list(aliases)
+    queued = set(pending)
+    while pending:
+        alias = pending.pop()
+        queued.remove(alias)
+        before = len(kinds[alias])
+        for target in aliases[alias]:
+            kinds[alias].update(_writer_path_kinds(target, kinds))
+        if len(kinds[alias]) != before:
+            for dependant in dependants[alias]:
+                if dependant not in queued:
+                    queued.add(dependant)
+                    pending.append(dependant)
+    writers = [
+        (line, kind[1], test_only, function)
+        for line, reference, test_only, function in references
+        for kind in _writer_path_kinds(reference, kinds)
+        if kind[0] == "<writer>"
+    ]
+    return _WriterFile(file_test, modules, writers)
+
+
+def check_process_environment_writers(root: Path = ROOT) -> list[Violation]:
+    """Scan shipped runtime sources independently of name-registry filtering."""
+    runtime = root / "runtime"
+    files: dict[Path, _WriterFile] = {}
+    violations: list[Violation] = []
+    crates = sorted(
+        path
+        for path in runtime.glob("molt-runtime*")
+        if path.name == "molt-runtime" or path.name.startswith("molt-runtime-")
+    )
+    pending_files = [
+        path.resolve()
+        for crate in crates
+        for path in sorted((crate / "src").rglob("*.rs"))
+    ]
+    visited: set[Path] = set()
+    source_root = root.resolve()
+    while pending_files:
+        path = pending_files.pop()
+        if path in visited:
+            continue
+        visited.add(path)
+        try:
+            facts = _rust_writer_file(path, root)
+            files[path] = facts
+            # Explicit first-party modules outside src/ are compiled inputs,
+            # too. Do not let a path attribute hide a runtime writer.
+            pending_files.extend(
+                target
+                for target, _ in facts.modules
+                if target.is_relative_to(source_root) and target.is_file()
+            )
+        except (ValueError, UnicodeError, RecursionError) as error:
+            violations.append(
+                Violation("process-writer-source", "", _rel(path, root), 0, str(error))
+            )
+    incoming = {
+        target
+        for facts in files.values()
+        for target, _ in facts.modules
+        if target in files
+    }
+    pending = [
+        (path, True)
+        for path in files
+        if path not in incoming or path.name in {"lib.rs", "main.rs"}
+    ]
+    modes: dict[Path, set[bool]] = defaultdict(set)
+    while pending:
+        path, production = pending.pop()
+        facts = files[path]
+        production &= not facts.test_only
+        if production in modes[path]:
+            continue
+        modes[path].add(production)
+        pending.extend(
+            (target, production and not test_only)
+            for target, test_only in facts.modules
+            if target in files
+        )
+    for path, facts in files.items():
+        if modes[path] and True not in modes[path]:
+            continue
+        rel = _rel(path, root)
+        for line, writer, test_only, function in facts.writers:
+            if not test_only and (rel, function) != _PROCESS_WRITER_OWNER:
+                violations.append(
+                    Violation(
+                        "process-writer-owner",
+                        writer,
+                        rel,
+                        line,
+                        f"process writer {writer} must remain inside {_PROCESS_WRITER_OWNER[0]}::{_PROCESS_WRITER_OWNER[1]}",
+                    )
+                )
+    return sorted(
+        set(violations), key=lambda row: (row.path, row.line, row.rule, row.name)
+    )
 
 
 def _rust_param_names(tokens: list[_Tok], start: int, end: int) -> tuple[str, ...]:
@@ -2099,7 +2594,11 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
         sites.extend(scan_text(path, enforced=enforced, root=root))
     sites.extend(scan_docs(root))
     sites.sort(key=lambda s: (s.path, s.line, s.name, s.access))
-    return Scan(sites=tuple(sites), unresolved=tuple(unresolved))
+    return Scan(
+        sites=tuple(sites),
+        unresolved=tuple(unresolved),
+        writer_violations=tuple(check_process_environment_writers(root)),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2116,7 +2615,7 @@ def _registered_prefix(registry: EnvironmentRegistry, prefix: str) -> bool:
 def check(
     registry: EnvironmentRegistry, scan: Scan, root: Path = ROOT
 ) -> list[Violation]:
-    violations: list[Violation] = []
+    violations: list[Violation] = list(scan.writer_violations)
     by_name = scan.by_name()
     retired_suffixes = {row.suffix: row for row in registry.retired_suffixes}
     runtime_flags = frozenset(registry.runtime_flag_names)
@@ -2447,6 +2946,7 @@ def _inventory(scan: Scan) -> dict[str, object]:
             for name, sites in sorted(by_name.items())
         },
         "unresolved": [asdict(site) for site in scan.unresolved],
+        "writer_violations": [asdict(row) for row in scan.writer_violations],
     }
 
 

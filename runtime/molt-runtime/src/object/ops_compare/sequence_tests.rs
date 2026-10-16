@@ -222,8 +222,9 @@ fn bytearray_declaring_comparison_uses_owned_buffer_protocol() {
         use crate::builtins::array_mod::{molt_array_append, molt_array_new};
         use molt_obj_model::sequence_compare::RichCompareOp;
         let format = MoltObject::from_ptr(alloc_string(py, b"B")).bits();
-        let array = molt_array_new(format);
-        let appended = molt_array_append(array, MoltObject::from_int(97).bits());
+        let handle = molt_array_new(format);
+        let array = crate::test_support::declared_array_buffer_instance(py, handle);
+        let appended = molt_array_append(handle, MoltObject::from_int(97).bits());
         dec_ref_bits(py, appended);
         let left = MoltObject::from_ptr(alloc_bytearray(py, b"a")).bits();
         assert_eq!(
@@ -231,7 +232,7 @@ fn bytearray_declaring_comparison_uses_owned_buffer_protocol() {
             MoltObject::from_bool(true).bits()
         );
         // No retained buffer export may prevent a subsequent resize.
-        let appended = molt_array_append(array, MoltObject::from_int(98).bits());
+        let appended = molt_array_append(handle, MoltObject::from_int(98).bits());
         dec_ref_bits(py, appended);
         assert!(!exception_pending(py));
         assert_eq!(
@@ -245,7 +246,7 @@ fn bytearray_declaring_comparison_uses_owned_buffer_protocol() {
         assert!(is_not_implemented_bits(py, declined));
         assert!(!exception_pending(py));
         dec_ref_bits(py, declined);
-        for value in [view, left, array, format] {
+        for value in [view, left, array, handle, format] {
             dec_ref_bits(py, value);
         }
     });

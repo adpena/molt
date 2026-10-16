@@ -435,8 +435,10 @@ semantics align:
 | `molt_socket_connect` / `molt_socket_send` | `wasi:sockets/tcp` |
 | `molt_time_now` | `wasi:clocks/wall-clock` |
 | `molt_random_bytes` | `wasi:random/random` |
-| `molt_env_get` | `wasi:cli/environment` |
+| Process environment snapshot provider | `wasi:cli/environment` (ordered input to the private Python mapping) |
 | `molt_process_spawn` | `wasi:cli/run` (limited) |
+
+The `molt_env_mapping_*` intrinsics retain Python mapping ownership, object identity and capability admission; a WASI environment provider does not replace these semantics. Provider and mapping execution must be qualified separately on each host.
 
 **Molt-specific intrinsics** (no WASI equivalent):
 - Object model operations (NaN-boxing, refcount, GC)

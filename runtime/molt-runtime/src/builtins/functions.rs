@@ -30,13 +30,10 @@ use molt_obj_model::MoltObject;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::builtins::numbers::index_i64_with_overflow;
-use crate::builtins::platform::env_state_get;
 use crate::{
     FunctionCallAbi, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CODE, TYPE_ID_FUNCTION, TYPE_ID_MODULE,
     TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_code_obj, alloc_dict_with_pairs,
@@ -319,34 +316,6 @@ fn absolutize_path(path: &str) -> String {
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     cwd.join(p).to_string_lossy().into_owned()
-}
-
-fn path_is_executable(path: &Path) -> bool {
-    let meta = match fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(_) => return false,
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        (meta.permissions().mode() & 0o111) != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
-fn alloc_optional_path(_py: &crate::PyToken<'_>, candidate: &Path) -> u64 {
-    let out = candidate.to_string_lossy().into_owned();
-    let out_ptr = alloc_string(_py, out.as_bytes());
-    if out_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(out_ptr).bits()
-    }
 }
 
 pub(super) fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &str) -> Option<u64> {
@@ -1062,101 +1031,168 @@ pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_which(cmd_bits: u64, path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(cmd) = string_obj_to_owned(obj_from_bits(cmd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cmd must be str");
-        };
-        if cmd.is_empty() {
-            return MoltObject::none().bits();
-        }
-        let operation = if cfg!(windows) || obj_from_bits(path_bits).is_none() {
-            crate::OperationId::ShutilWhich
-        } else {
-            crate::OperationId::ShutilWhichExplicitPath
-        };
-        if let Err(error) = crate::require_operation(_py, operation, AuditArgs::None) {
+pub extern "C" fn molt_shutil_which(files_bits: u64, directories_bits: u64, mode_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Err(error) = crate::require_operation::<u64>(
+            py,
+            crate::OperationId::ShutilWhichExplicitPath,
+            AuditArgs::None,
+        ) {
             return error;
         }
-        let path = if obj_from_bits(path_bits).is_none() {
-            env_state_get("PATH")
-                .or_else(|| std::env::var("PATH").ok())
-                .unwrap_or_default()
-        } else {
-            let Some(path) = string_obj_to_owned(obj_from_bits(path_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "path must be str or None");
-            };
-            path
-        };
-
-        #[cfg(windows)]
-        let pathexts: Vec<String> = {
-            let raw = env_state_get("PATHEXT")
-                .or_else(|| std::env::var("PATHEXT").ok())
-                .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
-            raw.split(';')
-                .filter_map(|entry| {
-                    let trimmed = entry.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
+        let snapshot = |bits| {
+            let pointer = obj_from_bits(bits)
+                .as_ptr()
+                .filter(|pointer| unsafe {
+                    matches!(
+                        object_type_id(*pointer),
+                        crate::TYPE_ID_LIST | TYPE_ID_TUPLE
+                    )
                 })
-                .collect()
+                .ok_or_else(|| {
+                    raise_exception::<u64>(
+                        py,
+                        "TypeError",
+                        "which search inputs must be lists or tuples",
+                    )
+                })?;
+            unsafe { crate::object::seq_access::snapshot(py, pointer, "which search inputs") }
+                .ok_or(MoltObject::none().bits())
         };
-
-        let cmd_path = Path::new(&cmd);
-        let has_path_sep =
-            cmd.contains(std::path::MAIN_SEPARATOR) || (cfg!(windows) && cmd.contains('/'));
-
-        let check_candidate = |candidate: PathBuf| -> Option<u64> {
-            #[cfg(windows)]
-            {
-                if path_is_executable(&candidate) {
-                    return Some(alloc_optional_path(_py, &candidate));
+        let files = match snapshot(files_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let directories = match snapshot(directories_bits) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let exact_path = |bits: u64| {
+            let Some(pointer) = obj_from_bits(bits).as_ptr() else {
+                return false;
+            };
+            let class = unsafe { object_class_bits(pointer) };
+            unsafe {
+                match object_type_id(pointer) {
+                    TYPE_ID_STRING => class == 0 || class == builtin_classes(py).str,
+                    crate::TYPE_ID_BYTES => class == 0 || class == builtin_classes(py).bytes,
+                    _ => false,
                 }
-                let ext_present = candidate
-                    .extension()
-                    .map(|ext| !ext.is_empty())
-                    .unwrap_or(false);
-                if !ext_present {
-                    for ext in &pathexts {
-                        let ext_clean = ext.trim_start_matches('.');
-                        let with_ext = candidate.with_extension(ext_clean);
-                        if path_is_executable(&with_ext) {
-                            return Some(alloc_optional_path(_py, &with_ext));
-                        }
+            }
+        };
+        let mut parsed_files = Vec::with_capacity(files.len());
+        for &file in files.iter() {
+            let parsed = if exact_path(file) {
+                match crate::builtins::io::path_from_bits_with_flavor(py, file) {
+                    Ok(value) => Some(value),
+                    Err(error) => return error,
+                }
+            } else {
+                None
+            };
+            parsed_files.push((file, parsed));
+        }
+        for &directory_bits in directories.iter() {
+            let directory = if exact_path(directory_bits) {
+                match crate::builtins::io::path_from_bits(py, directory_bits) {
+                    Ok(value) => Some(value),
+                    Err(error) => return error,
+                }
+            } else {
+                None
+            };
+            for (file_bits, file) in &parsed_files {
+                if let (Some(directory), Some((file, flavor))) = (directory.as_ref(), file.as_ref())
+                {
+                    let candidate = directory.join(file);
+                    if !candidate.exists() {
+                        continue;
+                    }
+                    // Conversion repeats at every CPython os.access observation.
+                    let Some(mode) = crate::builtins::numbers::index_c_int_from_obj(py, mode_bits)
+                    else {
+                        return MoltObject::none().bits();
+                    };
+                    if molt_runtime_platform::path_text::path_access(&candidate, mode)
+                        && !candidate.is_dir()
+                    {
+                        return crate::builtins::io::path_result_bits(py, &candidate, *flavor);
+                    }
+                } else {
+                    // Dynamic path objects use the same Python join/access
+                    // authority as the public facade, including callback order
+                    // and exact returned-object identity. Exact paths pay none
+                    // of this dispatch or per-miss Python allocation.
+                    let path = match crate::builtins::functions_pickle::pickle_resolve_global_bits(
+                        py, "os", "path",
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => return error,
+                    };
+                    let path = unsafe {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), path)
+                    };
+                    let name_ptr = alloc_string(py, b"join");
+                    if name_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    let name = unsafe {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            MoltObject::from_ptr(name_ptr).bits(),
+                        )
+                    };
+                    let join = crate::molt_object_getattribute(path.bits(), name.bits());
+                    let join = unsafe {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), join)
+                    };
+                    if exception_pending(py) {
+                        return MoltObject::none().bits();
+                    }
+                    let candidate =
+                        unsafe { call_callable2(py, join.bits(), directory_bits, *file_bits) };
+                    let candidate = unsafe {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            candidate,
+                        )
+                    };
+                    if exception_pending(py) {
+                        return MoltObject::none().bits();
+                    }
+                    let check = match crate::builtins::functions_pickle::pickle_resolve_global_bits(
+                        py,
+                        "shutil",
+                        "_access_check",
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => return error,
+                    };
+                    let check = unsafe {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            check,
+                        )
+                    };
+                    let result =
+                        unsafe { call_callable2(py, check.bits(), candidate.bits(), mode_bits) };
+                    let result = unsafe {
+                        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                            py.core_token(),
+                            result,
+                        )
+                    };
+                    if exception_pending(py) {
+                        return MoltObject::none().bits();
+                    }
+                    let accepted = is_truthy(py, obj_from_bits(result.bits()));
+                    if exception_pending(py) {
+                        return MoltObject::none().bits();
+                    }
+                    if accepted {
+                        return candidate.into_bits();
                     }
                 }
-                None
-            }
-            #[cfg(not(windows))]
-            {
-                if path_is_executable(&candidate) {
-                    Some(alloc_optional_path(_py, &candidate))
-                } else {
-                    None
-                }
-            }
-        };
-
-        if cmd_path.is_absolute() || has_path_sep {
-            if let Some(bits) = check_candidate(PathBuf::from(&cmd)) {
-                return bits;
-            }
-            return MoltObject::none().bits();
-        }
-
-        #[cfg(windows)]
-        let path_sep = ';';
-        #[cfg(not(windows))]
-        let path_sep = ':';
-        for entry in path.split(path_sep) {
-            let dir = if entry.is_empty() { "." } else { entry };
-            let candidate = Path::new(dir).join(&cmd);
-            if let Some(bits) = check_candidate(candidate) {
-                return bits;
             }
         }
         MoltObject::none().bits()

@@ -1,26 +1,123 @@
 // Path, glob, and filesystem utility functions.
 // Extracted from io.rs for compilation-unit size reduction and tree shaking.
 
-use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
 use molt_obj_model::MoltObject;
 pub(crate) use molt_runtime_platform::path_text::{
-    glob_escape_text, glob_has_magic_text, glob_is_hidden_text, glob_join_text,
-    glob_split_path_text, glob_translate_text, path_as_uri_text, path_basename_text,
-    path_compare_text, path_dirname_text, path_expandvars_with_lookup, path_glob_matches,
-    path_isabs_text, path_join_many_text, path_join_text, path_match_simple_pattern,
-    path_match_text, path_name_text, path_normpath_raw, path_normpath_text, path_parents_text,
-    path_relative_to_text, path_splitext_text, path_stem_text, path_suffix_text,
-    path_suffixes_text,
+    glob_translate_text, path_as_uri_text, path_basename_text, path_dirname_text,
+    path_glob_matches, path_isabs_text, path_match_text, path_normpath_raw, path_normpath_text,
+    path_splitext_text,
 };
 use num_bigint::Sign;
 use num_traits::ToPrimitive;
+#[cfg(not(any(unix, windows)))]
 use std::io::ErrorKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PathFlavor {
     Str,
     Bytes,
+}
+
+pub(crate) fn path_root_coordinate(
+    py: &PyToken<'_>,
+    bytes: bool,
+) -> molt_runtime_platform::path_text::PathCoordinate {
+    use molt_runtime_platform::path_text::PathCoordinate;
+    if cfg!(windows) && crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+        PathCoordinate::WindowsUtf16
+    } else if bytes {
+        PathCoordinate::Bytes
+    } else {
+        PathCoordinate::PythonCodePoints
+    }
+}
+
+/// Parse through the selected native provider, then return offsets in the
+/// original Python storage coordinate. Windows byte paths cross the existing
+/// filesystem codec only here; subsequent join/split operations remain bytes.
+pub(crate) fn root_path_parse<'a>(
+    py: &PyToken<'_>,
+    raw: &'a [u8],
+    sep: u8,
+    bytes: bool,
+    coordinate: molt_runtime_platform::path_text::PathCoordinate,
+) -> Result<(std::borrow::Cow<'a, [u8]>, (usize, usize)), u64> {
+    use molt_runtime_platform::path_text::{PathCoordinate, path_root_offsets};
+    if coordinate != PathCoordinate::WindowsUtf16 {
+        return Ok((
+            std::borrow::Cow::Borrowed(raw),
+            path_root_offsets(raw, sep, coordinate),
+        ));
+    }
+    // Valid UTF-8 text already has the canonical UTF-16 round-trip spelling.
+    if !bytes && std::str::from_utf8(raw).is_ok() {
+        return Ok((
+            std::borrow::Cow::Borrowed(raw),
+            path_root_offsets(raw, sep, coordinate),
+        ));
+    }
+    let value = if bytes {
+        os_string_from_bytes(py, raw)?
+    } else {
+        os_string_from_text(py, raw, None)?
+    };
+    let storage = value.as_encoded_bytes();
+    let (drive, root) = path_root_offsets(storage, sep, coordinate);
+    if !bytes {
+        return Ok((
+            std::borrow::Cow::Owned(value.into_encoded_bytes()),
+            (drive, root),
+        ));
+    }
+    let mut projected = Vec::new();
+    let mut offsets = [0; 2];
+    for (index, part) in [&storage[..drive], &storage[drive..root], &storage[root..]]
+        .into_iter()
+        .enumerate()
+    {
+        // Parser boundaries are ASCII in unchanged Windows OsString storage.
+        projected.extend_from_slice(&os_string_bytes(py, unsafe {
+            std::ffi::OsStr::from_encoded_bytes_unchecked(part)
+        })?);
+        if index < 2 {
+            offsets[index] = projected.len();
+        }
+    }
+    Ok((std::borrow::Cow::Owned(projected), (offsets[0], offsets[1])))
+}
+
+fn glob_join_path(
+    py: &PyToken<'_>,
+    base: &[u8],
+    part: &[u8],
+    sep: char,
+    bytes: bool,
+    coordinate: molt_runtime_platform::path_text::PathCoordinate,
+) -> Result<Vec<u8>, u64> {
+    let (base, base_root) = root_path_parse(py, base, sep as u8, bytes, coordinate)?;
+    let (part, part_root) = root_path_parse(py, part, sep as u8, bytes, coordinate)?;
+    let mut joined = molt_runtime_platform::path_text::PathJoin::new(
+        base.into_owned(),
+        sep as u8,
+        !bytes,
+        base_root.0,
+    );
+    joined.push(&part, part_root);
+    Ok(joined.finish())
+}
+
+fn glob_split_path(
+    py: &PyToken<'_>,
+    raw: &[u8],
+    sep: char,
+    bytes: bool,
+    coordinate: molt_runtime_platform::path_text::PathCoordinate,
+) -> Result<(Vec<u8>, Vec<u8>), u64> {
+    let (storage, (_, root)) = root_path_parse(py, raw, sep as u8, bytes, coordinate)?;
+    Ok(molt_runtime_platform::path_text::glob_split_path_with_root(
+        &storage, sep as u8, root,
+    ))
 }
 
 /// Resolve the path protocol once and retain its original result for file.name.
@@ -35,27 +132,15 @@ pub(crate) fn path_and_name_from_bits(
     let pointer = obj_from_bits(value)
         .as_ptr()
         .expect("fspath owns str or bytes storage");
-    let path = if flavor == PathFlavor::Str {
-        let text = string_obj_to_owned(obj_from_bits(value)).expect("fspath string storage");
-        std::path::PathBuf::from(text)
+    let raw = if flavor == PathFlavor::Str {
+        let bytes =
+            unsafe { std::slice::from_raw_parts(string_bytes(pointer), string_len(pointer)) };
+        os_string_from_text(py, bytes, Some(value))?
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)) };
-        #[cfg(any(unix, target_os = "wasi"))]
-        {
-            #[cfg(unix)]
-            use std::os::unix::ffi::OsStringExt;
-            #[cfg(target_os = "wasi")]
-            use std::os::wasi::ffi::OsStringExt;
-            std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
-        }
-        #[cfg(not(any(unix, target_os = "wasi")))]
-        {
-            let text = std::str::from_utf8(bytes).map_err(|_| {
-                raise_exception::<u64>(py, "TypeError", "open path bytes must be utf-8")
-            })?;
-            std::path::PathBuf::from(text)
-        }
+        os_string_from_bytes(py, bytes)?
     };
+    let path = std::path::PathBuf::from(raw);
     Ok((path, owner.into_bits(), flavor))
 }
 
@@ -139,14 +224,139 @@ pub(crate) fn path_from_bits(_py: &PyToken<'_>, file_bits: u64) -> Result<std::p
     path_from_bits_with_flavor(_py, file_bits).map(|(path, _flavor)| path)
 }
 
-pub(crate) fn filesystem_encode_errors() -> &'static str {
+/// Python text is stored as WTF-8; OS strings use the selected filesystem
+/// codec on POSIX and native wide-character storage on Windows.
+pub(crate) fn os_string_from_text(
+    py: &PyToken<'_>,
+    text: &[u8],
+    owner: Option<u64>,
+) -> Result<std::ffi::OsString, u64> {
     #[cfg(windows)]
     {
-        "surrogatepass"
+        use std::os::windows::ffi::OsStringExt;
+        let wide: Vec<u16> = crate::object::ops_string::wtf8_from_bytes(text)
+            .to_ill_formed_utf16()
+            .collect();
+        let _ = (py, owner);
+        Ok(std::ffi::OsString::from_wide(&wide))
     }
     #[cfg(not(windows))]
     {
-        "surrogateescape"
+        let policy = crate::builtins::platform::startup_encoding(py);
+        let raw = crate::object::ops::encode_string_with_errors(
+            text,
+            &policy.filesystem_encoding,
+            Some(policy.filesystem_errors),
+        )
+        .map_err(|error| {
+            if let Some(owner) = owner {
+                return error.raise::<u64>(py, owner);
+            }
+            let pointer = alloc_string(py, text);
+            if pointer.is_null() {
+                return MoltObject::none().bits();
+            }
+            let bits = MoltObject::from_ptr(pointer).bits();
+            let result = error.raise::<u64>(py, bits);
+            dec_ref_bits(py, bits);
+            result
+        })?;
+        // All byte sequences are valid OS strings on POSIX/WASI.
+        Ok(unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(raw) })
+    }
+}
+
+pub(crate) fn os_string_from_bytes(
+    py: &PyToken<'_>,
+    bytes: &[u8],
+) -> Result<std::ffi::OsString, u64> {
+    #[cfg(not(windows))]
+    {
+        let _ = py;
+        Ok(unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(bytes.to_vec()) })
+    }
+    #[cfg(windows)]
+    {
+        let text = filesystem_decode(py, bytes)?;
+        // Wide-character construction does not use the error object argument.
+        os_string_from_text(py, &text, None)
+    }
+}
+
+pub(crate) fn filesystem_decode(py: &PyToken<'_>, bytes: &[u8]) -> Result<Vec<u8>, u64> {
+    let policy = crate::builtins::platform::startup_encoding(py);
+    crate::object::ops::decode_bytes_text(
+        &policy.filesystem_encoding,
+        policy.filesystem_errors,
+        bytes,
+    )
+    .map(|(text, _)| text)
+    .map_err(|error| error.raise::<u64>(py, bytes))
+}
+
+pub(crate) fn os_string_text(py: &PyToken<'_>, value: &std::ffi::OsStr) -> Result<Vec<u8>, u64> {
+    #[cfg(windows)]
+    {
+        let _ = py;
+        // The current Rust target's Windows OsStr representation is WTF-8.
+        Ok(value.as_encoded_bytes().to_vec())
+    }
+    #[cfg(not(windows))]
+    {
+        filesystem_decode(py, value.as_encoded_bytes())
+    }
+}
+
+pub(crate) fn os_string_bytes(py: &PyToken<'_>, value: &std::ffi::OsStr) -> Result<Vec<u8>, u64> {
+    #[cfg(not(windows))]
+    {
+        let _ = py;
+        Ok(value.as_encoded_bytes().to_vec())
+    }
+    #[cfg(windows)]
+    {
+        let text = value.as_encoded_bytes();
+        let policy = crate::builtins::platform::startup_encoding(py);
+        crate::object::ops::encode_string_with_errors(
+            text,
+            &policy.filesystem_encoding,
+            Some(policy.filesystem_errors),
+        )
+        .map_err(|error| {
+            let pointer = alloc_string(py, text);
+            if pointer.is_null() {
+                return MoltObject::none().bits();
+            }
+            let owner = MoltObject::from_ptr(pointer).bits();
+            let result = error.raise::<u64>(py, owner);
+            dec_ref_bits(py, owner);
+            result
+        })
+    }
+}
+
+pub(crate) fn path_result_bits(
+    py: &PyToken<'_>,
+    path: &std::path::Path,
+    flavor: PathFlavor,
+) -> u64 {
+    let raw = match if flavor == PathFlavor::Str {
+        os_string_text(py, path.as_os_str())
+    } else {
+        os_string_bytes(py, path.as_os_str())
+    } {
+        Ok(raw) => raw,
+        Err(error) => return error,
+    };
+    let pointer = if flavor == PathFlavor::Str {
+        alloc_string(py, &raw)
+    } else {
+        alloc_bytes(py, &raw)
+    };
+    if pointer.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(pointer).bits()
     }
 }
 
@@ -154,51 +364,39 @@ pub(crate) fn path_sep_char() -> char {
     std::path::MAIN_SEPARATOR
 }
 
-#[cfg(unix)]
-fn bytes_text_from_raw(raw: &[u8]) -> String {
-    raw.iter().map(|byte| char::from(*byte)).collect()
-}
-
-#[cfg(unix)]
-pub(crate) fn raw_from_bytes_text(text: &str) -> Option<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(text.len());
-    for ch in text.chars() {
-        let code = ch as u32;
-        if code > 0xFF {
-            return None;
+pub(crate) fn path_value_with_flavor_from_bits(
+    py: &PyToken<'_>,
+    bits: u64,
+) -> Result<(Vec<u8>, PathFlavor), u64> {
+    let (bits, flavor) = fspath_bits_with_flavor(py, bits)?;
+    let owner =
+        unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits) };
+    let pointer = obj_from_bits(owner.bits())
+        .as_ptr()
+        .expect("fspath storage");
+    let value = unsafe {
+        if flavor == PathFlavor::Str {
+            std::slice::from_raw_parts(string_bytes(pointer), string_len(pointer)).to_vec()
+        } else {
+            std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)).to_vec()
         }
-        out.push(code as u8);
-    }
-    Some(out)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn raw_from_bytes_text(text: &str) -> Option<Vec<u8>> {
-    Some(text.as_bytes().to_vec())
-}
-
-#[cfg(unix)]
-fn path_text_with_flavor(path: &std::path::Path, flavor: PathFlavor) -> String {
-    if flavor == PathFlavor::Bytes {
-        use std::os::unix::ffi::OsStrExt;
-        return bytes_text_from_raw(path.as_os_str().as_bytes());
-    }
-    path.to_string_lossy().into_owned()
-}
-
-#[cfg(not(unix))]
-fn path_text_with_flavor(path: &std::path::Path, _flavor: PathFlavor) -> String {
-    path.to_string_lossy().into_owned()
+    };
+    Ok((value, flavor))
 }
 
 pub(crate) fn path_string_with_flavor_from_bits(
     _py: &PyToken<'_>,
     bits: u64,
 ) -> Result<(String, PathFlavor), u64> {
-    match path_from_bits_with_flavor(_py, bits) {
-        Ok((path, flavor)) => Ok((path_text_with_flavor(path.as_path(), flavor), flavor)),
-        Err(error) => Err(error),
-    }
+    let (value, flavor) = path_value_with_flavor_from_bits(_py, bits)?;
+    // Legacy text-only lexical operations do not cross the OS boundary. In
+    // particular they must not acquire filesystem-codec admission here.
+    let text = if flavor == PathFlavor::Bytes {
+        value.iter().map(|byte| char::from(*byte)).collect()
+    } else {
+        String::from_utf8_lossy(&value).into_owned()
+    };
+    Ok((text, flavor))
 }
 
 pub(crate) fn path_string_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<String, u64> {
@@ -218,68 +416,13 @@ pub(crate) fn path_str_arg_from_bits(
     Err(raise_exception::<_>(_py, "TypeError", &msg))
 }
 
-pub(crate) fn path_sequence_from_bits(
-    _py: &PyToken<'_>,
-    bits: u64,
-    label: &str,
-) -> Result<Vec<String>, u64> {
-    let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        let msg = format!("{label} must be tuple or list, not NoneType");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
-    };
-    let type_id = unsafe { object_type_id(ptr) };
-    if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
-        let type_name = class_name_for_error(type_of_bits(_py, bits));
-        let msg = format!("{label} must be tuple or list, not {type_name}");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
-    }
-    let Some(elems) = (unsafe {
-        crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
-    }) else {
-        return Err(MoltObject::none().bits());
-    };
-    let mut out = Vec::with_capacity(elems.len());
-    for item_bits in elems.iter() {
-        let value = path_string_from_bits(_py, *item_bits)?;
-        out.push(value);
-    }
-    Ok(out)
-}
-
-pub(crate) fn alloc_string_list_bits(_py: &PyToken<'_>, values: &[String]) -> u64 {
-    let mut out_bits: Vec<u64> = Vec::with_capacity(values.len());
-    for value in values {
-        let ptr = alloc_string(_py, value.as_bytes());
-        if ptr.is_null() {
-            for bits in out_bits {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        out_bits.push(MoltObject::from_ptr(ptr).bits());
-    }
-    let list_ptr = alloc_list(_py, out_bits.as_slice());
-    for bits in out_bits {
-        dec_ref_bits(_py, bits);
-    }
-    if list_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(list_ptr).bits()
-    }
-}
-
-pub(crate) fn alloc_path_list_bits(_py: &PyToken<'_>, values: &[String], bytes_out: bool) -> u64 {
+pub(crate) fn alloc_path_list_bits(_py: &PyToken<'_>, values: &[Vec<u8>], bytes_out: bool) -> u64 {
     let mut out_bits: Vec<u64> = Vec::with_capacity(values.len());
     for value in values {
         let ptr = if bytes_out {
-            match raw_from_bytes_text(value) {
-                Some(raw) => alloc_bytes(_py, raw.as_slice()),
-                None => alloc_bytes(_py, value.as_bytes()),
-            }
+            alloc_bytes(_py, value)
         } else {
-            alloc_string(_py, value.as_bytes())
+            alloc_string(_py, value)
         };
         if ptr.is_null() {
             for bits in out_bits {
@@ -348,7 +491,7 @@ pub(crate) enum GlobDirFdArg {
     None,
     Int(i64),
     PathLike {
-        path: String,
+        path: Vec<u8>,
         flavor: PathFlavor,
         type_name: String,
     },
@@ -392,10 +535,13 @@ pub(crate) fn glob_dir_fd_arg_from_bits(
     if exception_pending(_py) {
         clear_exception(_py);
     }
-    match path_string_with_flavor_from_bits(_py, dir_fd_bits) {
+    match path_value_with_flavor_from_bits(_py, dir_fd_bits) {
         Ok((path, flavor)) => {
             #[cfg(windows)]
-            let path = path.replace('/', "\\");
+            let path = path
+                .into_iter()
+                .map(|byte| if byte == b'/' { b'\\' } else { byte })
+                .collect();
             Ok(GlobDirFdArg::PathLike {
                 path,
                 flavor,
@@ -411,268 +557,200 @@ pub(crate) fn glob_dir_fd_arg_from_bits(
     }
 }
 
-#[cfg(unix)]
-fn glob_text_to_path(text: &str, bytes_mode: bool) -> std::path::PathBuf {
-    if bytes_mode && let Some(raw) = raw_from_bytes_text(text) {
-        use std::os::unix::ffi::OsStringExt;
-        return std::path::PathBuf::from(std::ffi::OsString::from_vec(raw));
-    }
-    std::path::PathBuf::from(text)
-}
-
-#[cfg(not(unix))]
-fn glob_text_to_path(text: &str, _bytes_mode: bool) -> std::path::PathBuf {
-    std::path::PathBuf::from(text)
-}
-
-#[cfg(unix)]
-fn glob_dir_entry_name_text(name: &std::ffi::OsStr, bytes_mode: bool) -> String {
-    if bytes_mode {
-        use std::os::unix::ffi::OsStrExt;
-        return bytes_text_from_raw(name.as_bytes());
-    }
-    name.to_string_lossy().into_owned()
-}
-
-#[cfg(not(unix))]
-fn glob_dir_entry_name_text(name: &std::ffi::OsStr, _bytes_mode: bool) -> String {
-    name.to_string_lossy().into_owned()
-}
-
-#[cfg(all(unix, target_vendor = "apple"))]
-pub(crate) fn glob_dir_fd_root_text(fd: i64, bytes_mode: bool) -> Option<String> {
-    if fd < 0 {
-        return None;
-    }
-    // Apple targets do not provide a stable /proc/self/fd lane; use fcntl(F_GETPATH).
-    let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    let rc = unsafe {
-        libc::fcntl(
-            fd as libc::c_int,
-            libc::F_GETPATH,
-            buf.as_mut_ptr() as *mut libc::c_char,
-        )
+fn glob_text_to_path(
+    py: &PyToken<'_>,
+    text: &[u8],
+    bytes_mode: bool,
+) -> Result<std::path::PathBuf, u64> {
+    let value = if bytes_mode {
+        os_string_from_bytes(py, text)?
+    } else {
+        os_string_from_text(py, text, None)?
     };
-    if rc != -1
-        && let Some(nul_idx) = buf.iter().position(|byte| *byte == 0)
-        && nul_idx > 0
+    Ok(std::path::PathBuf::from(value))
+}
+
+fn glob_dir_entry_name_text(
+    py: &PyToken<'_>,
+    name: &std::ffi::OsStr,
+    bytes_mode: bool,
+) -> Result<Vec<u8>, u64> {
+    if !bytes_mode {
+        return os_string_text(py, name);
+    }
+    #[cfg(not(windows))]
     {
-        return Some(bytes_text_from_raw(&buf[..nul_idx]));
+        Ok(name.as_encoded_bytes().to_vec())
     }
-    for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
-        if let Ok(path) = std::fs::read_link(&candidate) {
-            return Some(path_text_with_flavor(
-                path.as_path(),
-                if bytes_mode {
-                    PathFlavor::Bytes
-                } else {
-                    PathFlavor::Str
-                },
-            ));
-        }
-        if let Ok(path) = std::fs::canonicalize(&candidate) {
-            return Some(path_text_with_flavor(
-                path.as_path(),
-                if bytes_mode {
-                    PathFlavor::Bytes
-                } else {
-                    PathFlavor::Str
-                },
-            ));
-        }
+    #[cfg(windows)]
+    {
+        let policy = crate::builtins::platform::startup_encoding(py);
+        let text = name.as_encoded_bytes();
+        crate::object::ops::encode_string_with_errors(
+            text,
+            &policy.filesystem_encoding,
+            Some(policy.filesystem_errors),
+        )
+        .map_err(|error| {
+            let pointer = alloc_string(py, text);
+            if pointer.is_null() {
+                return MoltObject::none().bits();
+            }
+            let bits = MoltObject::from_ptr(pointer).bits();
+            let result = error.raise::<u64>(py, bits);
+            dec_ref_bits(py, bits);
+            result
+        })
     }
-    None
 }
 
-#[cfg(all(unix, not(target_vendor = "apple")))]
-pub(crate) fn glob_dir_fd_root_text(fd: i64, bytes_mode: bool) -> Option<String> {
+pub(crate) fn glob_dir_fd_root_path(fd: i64) -> Option<std::path::PathBuf> {
     if fd < 0 {
         return None;
     }
-    for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
-        if let Ok(path) = std::fs::read_link(&candidate) {
-            return Some(path_text_with_flavor(
-                path.as_path(),
-                if bytes_mode {
-                    PathFlavor::Bytes
-                } else {
-                    PathFlavor::Str
-                },
-            ));
-        }
-        if let Ok(path) = std::fs::canonicalize(&candidate) {
-            return Some(path_text_with_flavor(
-                path.as_path(),
-                if bytes_mode {
-                    PathFlavor::Bytes
-                } else {
-                    PathFlavor::Str
-                },
-            ));
+    #[cfg(all(unix, target_vendor = "apple"))]
+    {
+        let mut bytes = vec![0u8; libc::PATH_MAX as usize];
+        let rc = unsafe {
+            libc::fcntl(
+                fd as libc::c_int,
+                libc::F_GETPATH,
+                bytes.as_mut_ptr() as *mut libc::c_char,
+            )
+        };
+        if rc != -1
+            && let Some(end) = bytes.iter().position(|byte| *byte == 0)
+            && end > 0
+        {
+            bytes.truncate(end);
+            return Some(std::path::PathBuf::from(unsafe {
+                std::ffi::OsString::from_encoded_bytes_unchecked(bytes)
+            }));
         }
     }
-    None
-}
-
-#[cfg(windows)]
-pub(crate) fn glob_dir_fd_root_text(fd: i64, _bytes_mode: bool) -> Option<String> {
-    if fd < 0 {
-        return None;
-    }
-    let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
-    if handle == -1 {
-        return None;
-    }
-    crate::builtins::io::windows_path_from_handle(handle as *mut std::ffi::c_void)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn glob_dir_fd_root_text(fd: i64, bytes_mode: bool) -> Option<String> {
-    if fd < 0 {
-        return None;
-    }
-    for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
-        if let Ok(path) = std::fs::read_link(&candidate) {
-            return Some(path_text_with_flavor(
-                path.as_path(),
-                if bytes_mode {
-                    PathFlavor::Bytes
-                } else {
-                    PathFlavor::Str
-                },
-            ));
-        }
-        if let Ok(path) = std::fs::canonicalize(&candidate) {
-            return Some(path_text_with_flavor(
-                path.as_path(),
-                if bytes_mode {
-                    PathFlavor::Bytes
-                } else {
-                    PathFlavor::Str
-                },
-            ));
+    #[cfg(any(unix, target_arch = "wasm32"))]
+    {
+        for candidate in [format!("/proc/self/fd/{fd}"), format!("/dev/fd/{fd}")] {
+            if let Ok(path) = std::fs::read_link(&candidate) {
+                return Some(path);
+            }
+            if let Ok(path) = std::fs::canonicalize(&candidate) {
+                return Some(path);
+            }
         }
     }
-    None
-}
-
-#[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
-pub(crate) fn glob_dir_fd_root_text(_fd: i64, _bytes_mode: bool) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
+        if handle != -1 {
+            return crate::builtins::io::windows_path_from_handle(handle as *mut std::ffi::c_void)
+                .map(std::path::PathBuf::from);
+        }
+    }
     None
 }
 
 fn glob_lexists_text(
-    _py: &PyToken<'_>,
-    path: &str,
+    py: &PyToken<'_>,
+    path: &[u8],
     dir_fd: &GlobDirFdArg,
     bytes_mode: bool,
-    sep: char,
+    _sep: char,
 ) -> Result<bool, u64> {
     if path.is_empty() {
         return Ok(false);
     }
-    let resolved = match dir_fd {
-        GlobDirFdArg::None => path.to_string(),
-        GlobDirFdArg::Int(fd) => {
-            if path_isabs_text(path, sep) {
-                path.to_string()
-            } else if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
-                glob_join_text(&root, path, sep)
-            } else {
+    let mut resolved = glob_text_to_path(py, path, bytes_mode)?;
+    match dir_fd {
+        GlobDirFdArg::None => (),
+        GlobDirFdArg::Int(fd) if !resolved.is_absolute() => {
+            let Some(root) = glob_dir_fd_root_path(*fd) else {
                 return Ok(false);
-            }
+            };
+            resolved = root.join(resolved);
         }
+        GlobDirFdArg::Int(_) => (),
         GlobDirFdArg::PathLike { type_name, .. } | GlobDirFdArg::BadType { type_name } => {
-            return Err(glob_dir_fd_type_error_bits(_py, type_name));
+            return Err(glob_dir_fd_type_error_bits(py, type_name));
         }
-    };
-    let resolved_path = glob_text_to_path(&resolved, bytes_mode);
-    Ok(std::fs::symlink_metadata(resolved_path).is_ok())
+    }
+    Ok(std::fs::symlink_metadata(resolved).is_ok())
 }
 
 fn glob_is_dir_text(
-    _py: &PyToken<'_>,
-    path: &str,
+    py: &PyToken<'_>,
+    path: &[u8],
     dir_fd: &GlobDirFdArg,
     bytes_mode: bool,
-    sep: char,
+    _sep: char,
 ) -> Result<bool, u64> {
     if path.is_empty() {
         return Ok(false);
     }
-    let resolved = match dir_fd {
-        GlobDirFdArg::None => path.to_string(),
-        GlobDirFdArg::Int(fd) => {
-            if path_isabs_text(path, sep) {
-                path.to_string()
-            } else if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
-                glob_join_text(&root, path, sep)
-            } else {
+    let mut resolved = glob_text_to_path(py, path, bytes_mode)?;
+    match dir_fd {
+        GlobDirFdArg::None => (),
+        GlobDirFdArg::Int(fd) if !resolved.is_absolute() => {
+            let Some(root) = glob_dir_fd_root_path(*fd) else {
                 return Ok(false);
-            }
+            };
+            resolved = root.join(resolved);
         }
+        GlobDirFdArg::Int(_) => (),
         GlobDirFdArg::PathLike { type_name, .. } | GlobDirFdArg::BadType { type_name } => {
-            return Err(glob_dir_fd_type_error_bits(_py, type_name));
+            return Err(glob_dir_fd_type_error_bits(py, type_name));
         }
-    };
-    let resolved_path = glob_text_to_path(&resolved, bytes_mode);
-    Ok(std::fs::metadata(resolved_path)
+    }
+    Ok(std::fs::metadata(resolved)
         .map(|meta| meta.is_dir())
         .unwrap_or(false))
 }
 
 struct GlobListdirResult {
-    names: Vec<String>,
+    names: Vec<Vec<u8>>,
     names_are_bytes: bool,
 }
 
 fn glob_listdir_text(
-    _py: &PyToken<'_>,
-    dirname: &str,
+    py: &PyToken<'_>,
+    dirname: &[u8],
     dir_fd: &GlobDirFdArg,
     dironly: bool,
     bytes_mode: bool,
-    sep: char,
+    _sep: char,
 ) -> Result<GlobListdirResult, u64> {
-    let target: String;
-    let mut target_bytes_mode = bytes_mode;
-    let arg_is_bytes;
-
-    match dir_fd {
-        GlobDirFdArg::None => {
-            if dirname.is_empty() {
-                target = ".".to_string();
-                arg_is_bytes = bytes_mode;
-            } else {
-                target = dirname.to_string();
-                arg_is_bytes = bytes_mode;
-            }
-        }
+    let mut names_are_bytes = bytes_mode;
+    let target = match dir_fd {
+        GlobDirFdArg::None => glob_text_to_path(
+            py,
+            if dirname.is_empty() { b"." } else { dirname },
+            bytes_mode,
+        )?,
         GlobDirFdArg::Int(fd) => {
             if dirname.is_empty() {
-                if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
-                    target = root;
-                } else if *fd == -1 {
-                    // CPython's scandir(-1) can expose CWD on some hosts.
-                    target = ".".to_string();
+                names_are_bytes = bytes_mode;
+                match glob_dir_fd_root_path(*fd) {
+                    Some(root) => root,
+                    None if *fd == -1 => std::path::PathBuf::from("."),
+                    None => {
+                        return Ok(GlobListdirResult {
+                            names: Vec::new(),
+                            names_are_bytes,
+                        });
+                    }
+                }
+            } else {
+                let path = glob_text_to_path(py, dirname, bytes_mode)?;
+                if path.is_absolute() {
+                    path
+                } else if let Some(root) = glob_dir_fd_root_path(*fd) {
+                    root.join(path)
                 } else {
                     return Ok(GlobListdirResult {
                         names: Vec::new(),
-                        names_are_bytes: bytes_mode,
+                        names_are_bytes,
                     });
                 }
-                arg_is_bytes = false;
-            } else if path_isabs_text(dirname, sep) {
-                target = dirname.to_string();
-                arg_is_bytes = bytes_mode;
-            } else if let Some(root) = glob_dir_fd_root_text(*fd, bytes_mode) {
-                target = glob_join_text(&root, dirname, sep);
-                arg_is_bytes = bytes_mode;
-            } else {
-                return Ok(GlobListdirResult {
-                    names: Vec::new(),
-                    names_are_bytes: bytes_mode,
-                });
             }
         }
         GlobDirFdArg::PathLike {
@@ -681,51 +759,37 @@ fn glob_listdir_text(
             type_name,
         } => {
             if !dirname.is_empty() {
-                return Err(glob_dir_fd_type_error_bits(_py, type_name));
+                return Err(glob_dir_fd_type_error_bits(py, type_name));
             }
-            target = path.clone();
-            target_bytes_mode = *flavor == PathFlavor::Bytes;
-            arg_is_bytes = *flavor == PathFlavor::Bytes;
+            names_are_bytes |= *flavor == PathFlavor::Bytes;
+            glob_text_to_path(py, path, *flavor == PathFlavor::Bytes)?
         }
         GlobDirFdArg::BadType { type_name } => {
-            if dirname.is_empty() {
-                return Err(glob_scandir_type_error_bits(_py, type_name));
-            }
-            return Err(glob_dir_fd_type_error_bits(_py, type_name));
-        }
-    }
-
-    let names_are_bytes = bytes_mode || arg_is_bytes;
-    let target_path = glob_text_to_path(&target, target_bytes_mode);
-    let mut out: Vec<String> = Vec::new();
-    let iter = match std::fs::read_dir(target_path) {
-        Ok(iter) => iter,
-        Err(_) => {
-            return Ok(GlobListdirResult {
-                names: out,
-                names_are_bytes,
+            return Err(if dirname.is_empty() {
+                glob_scandir_type_error_bits(py, type_name)
+            } else {
+                glob_dir_fd_type_error_bits(py, type_name)
             });
         }
     };
-    for entry_res in iter {
-        let Ok(entry) = entry_res else {
-            continue;
-        };
-        if dironly {
-            let Ok(file_type) = entry.file_type() else {
+    let mut names = Vec::new();
+    if let Ok(iter) = std::fs::read_dir(target) {
+        for entry in iter {
+            let Ok(entry) = entry else {
                 continue;
             };
-            if !file_type.is_dir() {
+            if dironly && !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
+            names.push(glob_dir_entry_name_text(
+                py,
+                &entry.file_name(),
+                names_are_bytes,
+            )?);
         }
-        out.push(glob_dir_entry_name_text(
-            entry.file_name().as_os_str(),
-            names_are_bytes,
-        ));
     }
     Ok(GlobListdirResult {
-        names: out,
+        names,
         names_are_bytes,
     })
 }
@@ -733,14 +797,14 @@ fn glob_listdir_text(
 #[allow(clippy::too_many_arguments)]
 fn glob1_text(
     _py: &PyToken<'_>,
-    dirname: &str,
-    pattern: &str,
+    dirname: &[u8],
+    pattern: &[u8],
     dir_fd: &GlobDirFdArg,
     dironly: bool,
     include_hidden: bool,
     bytes_mode: bool,
     sep: char,
-) -> Result<Vec<String>, u64> {
+) -> Result<Vec<Vec<u8>>, u64> {
     let listed = glob_listdir_text(_py, dirname, dir_fd, dironly, bytes_mode, sep)?;
     if listed.names_are_bytes != bytes_mode {
         let msg = if bytes_mode {
@@ -751,30 +815,46 @@ fn glob1_text(
         return Err(raise_exception::<_>(_py, "TypeError", msg));
     }
     let mut names = listed.names;
-    if !(pattern.starts_with('.') || include_hidden) {
-        names.retain(|name| !glob_is_hidden_text(name));
+    if !(pattern.starts_with(b".") || include_hidden) {
+        names.retain(|name| !name.starts_with(b"."));
     }
-    names.retain(|name| path_match_simple_pattern(name, pattern));
+    if bytes_mode {
+        names
+            .retain(|name| molt_runtime_platform::fnmatch::fnmatch_match_bytes_impl(name, pattern));
+    } else {
+        let pattern: Vec<u32> = crate::object::ops_string::wtf8_from_bytes(pattern)
+            .code_points()
+            .map(|point| point.to_u32())
+            .collect();
+        names.retain(|name| {
+            let name: Vec<u32> = crate::object::ops_string::wtf8_from_bytes(name)
+                .code_points()
+                .map(|point| point.to_u32())
+                .collect();
+            molt_runtime_platform::fnmatch::fnmatch_match_units(&name, &pattern)
+        });
+    }
     Ok(names)
 }
 
 fn glob0_text(
     _py: &PyToken<'_>,
-    dirname: &str,
-    basename: &str,
+    dirname: &[u8],
+    basename: &[u8],
     dir_fd: &GlobDirFdArg,
     bytes_mode: bool,
     sep: char,
-) -> Result<Vec<String>, u64> {
+    coordinate: molt_runtime_platform::path_text::PathCoordinate,
+) -> Result<Vec<Vec<u8>>, u64> {
     if !basename.is_empty() {
-        let full = glob_join_text(dirname, basename, sep);
+        let full = glob_join_path(_py, dirname, basename, sep, bytes_mode, coordinate)?;
         if glob_lexists_text(_py, &full, dir_fd, bytes_mode, sep)? {
-            return Ok(vec![basename.to_string()]);
+            return Ok(vec![basename.to_vec()]);
         }
         return Ok(Vec::new());
     }
     if glob_is_dir_text(_py, dirname, dir_fd, bytes_mode, sep)? {
-        return Ok(vec![String::new()]);
+        return Ok(vec![Vec::new()]);
     }
     Ok(Vec::new())
 }
@@ -804,7 +884,7 @@ fn glob0_text(
 //
 // The bounded helpers (`glob1_text`, `glob0_text`, `glob_lexists_text`,
 // `glob_is_dir_text`, `glob_listdir_text`, `glob_split_path_text`,
-// `glob_join_text`, `glob_has_magic_text`) are reused verbatim, so ordering,
+// `glob_join_text`, `molt_runtime_platform::path_text::glob_has_magic_raw`) are reused verbatim, so ordering,
 // hidden rules, byte mode, dir_fd TypeError parity, and include_hidden are
 // identical to the eager path by construction.
 // ===========================================================================
@@ -812,13 +892,13 @@ fn glob0_text(
 /// Cursor over one directory's worth of precomputed names (bounded — the
 /// `_listdir`/`_glob1`/`_glob0` result).
 struct GlobNameCursor {
-    names: Vec<String>,
+    names: Vec<Vec<u8>>,
     idx: usize,
 }
 
 impl GlobNameCursor {
     #[inline]
-    fn next(&mut self) -> Option<String> {
+    fn next(&mut self) -> Option<Vec<u8>> {
         let out = self.names.get(self.idx).cloned();
         if out.is_some() {
             self.idx += 1;
@@ -832,7 +912,7 @@ impl GlobNameCursor {
 enum GlobInDir {
     /// `_glob1` — basename has magic, non-recursive.
     Glob1,
-    /// `_glob2` — basename == "**", recursive.
+    /// `_glob2` — basename == b"**", recursive.
     Glob2,
     /// `_glob0` — basename has no magic (literal existence check).
     Glob0,
@@ -841,23 +921,23 @@ enum GlobInDir {
 /// Source of parent directories for an `Iglob` frame: either a single literal
 /// dirname, or a nested streaming `iglob(dirname, dironly=True)` (magic dirname).
 enum GlobDirSource {
-    Literal(Option<String>),
+    Literal(Option<Vec<u8>>),
     Recursive(Box<GlobIterState>),
 }
 
-/// One resumable frame. Every yielded `String` is a complete root-relative path.
+/// One resumable frame. Every yielded `Vec<u8>` is a complete root-relative path.
 enum GlobFrame {
     /// `_iglob(pathname)` body: for each parent `dir` (literal or streamed),
     /// glob `basename` in `join(root_dir, dir)` and yield `join(dir, name)`.
     Iglob {
         kind: GlobInDir,
-        basename: String,
+        basename: Vec<u8>,
         dironly: bool,
         dirs: GlobDirSource,
         /// The parent dirname currently being globbed (its names are produced
         /// either via `cur_names`, for glob0/glob1, or via a pushed Glob2
         /// child frame whose prefix is this parent).
-        cur_dir: Option<String>,
+        cur_dir: Option<Vec<u8>>,
         cur_names: Option<GlobNameCursor>,
     },
     /// `_glob2(prefix @ dir, dironly)`: yield `prefix` once (if `dir` is a
@@ -865,8 +945,8 @@ enum GlobFrame {
     /// `prefix`. `dironly` is the owning `_iglob` frame's value (False for the
     /// user-facing walk → files+dirs; True for inner dir-expansion → dirs only).
     Glob2 {
-        prefix: String,
-        dir: String,
+        prefix: Vec<u8>,
+        dir: Vec<u8>,
         dironly: bool,
         emitted_empty: bool,
         started: bool,
@@ -874,8 +954,8 @@ enum GlobFrame {
     /// `_rlistdir(dir, dironly)` with results prefixed by `prefix`: for each
     /// non-hidden `name`, yield `join(prefix, name)` and recurse into `dir/name`.
     Rlistdir {
-        prefix: String,
-        dir: String,
+        prefix: Vec<u8>,
+        dir: Vec<u8>,
         dironly: bool,
         names: GlobNameCursor,
     },
@@ -886,7 +966,8 @@ enum GlobFrame {
 
 /// Immutable per-walk configuration shared by all frames.
 struct GlobIterConfig {
-    root_dir: Option<String>,
+    coordinate: molt_runtime_platform::path_text::PathCoordinate,
+    root_dir: Option<Vec<u8>>,
     dir_fd: GlobDirFdArg,
     recursive: bool,
     include_hidden: bool,
@@ -908,7 +989,7 @@ pub(crate) struct GlobIterState {
 /// Outcome of advancing the top frame one step.
 enum GlobStep {
     /// A complete relative path is ready.
-    Yield(String),
+    Yield(Vec<u8>),
     /// Push this child frame and keep driving.
     Push(GlobFrame),
     /// The top frame is exhausted; pop it.
@@ -920,7 +1001,7 @@ impl GlobIterState {
     /// user-facing walk. Mirrors `glob_iglob_text`'s entry.
     fn new(
         _py: &PyToken<'_>,
-        pathname: &str,
+        pathname: &[u8],
         cfg: GlobIterConfig,
         dironly: bool,
     ) -> Result<Self, u64> {
@@ -933,12 +1014,12 @@ impl GlobIterState {
     }
 
     /// Public driver used by the eager `glob()` drain (`list(iglob(...))`).
-    pub(crate) fn next_path_public(&mut self, _py: &PyToken<'_>) -> Result<Option<String>, u64> {
+    pub(crate) fn next_path_public(&mut self, _py: &PyToken<'_>) -> Result<Option<Vec<u8>>, u64> {
         self.next_path(_py)
     }
 
     /// Produce the next matching path (root-relative), or `None` at exhaustion.
-    fn next_path(&mut self, _py: &PyToken<'_>) -> Result<Option<String>, u64> {
+    fn next_path(&mut self, _py: &PyToken<'_>) -> Result<Option<Vec<u8>>, u64> {
         loop {
             match self.drive(_py)? {
                 None => return Ok(None),
@@ -956,7 +1037,7 @@ impl GlobIterState {
     }
 
     /// Advance the frame stack until one path is produced or it empties.
-    fn drive(&mut self, _py: &PyToken<'_>) -> Result<Option<String>, u64> {
+    fn drive(&mut self, _py: &PyToken<'_>) -> Result<Option<Vec<u8>>, u64> {
         loop {
             if self.stack.is_empty() {
                 return Ok(None);
@@ -1049,7 +1130,7 @@ impl GlobIterState {
                 match names.next() {
                     None => return Ok(GlobStep::Pop),
                     Some(name) => {
-                        if !cfg.include_hidden && glob_is_hidden_text(&name) {
+                        if !cfg.include_hidden && name.starts_with(b".") {
                             continue;
                         }
                         break (name, prefix.clone(), dir.clone(), dironly);
@@ -1060,9 +1141,10 @@ impl GlobIterState {
         let child_dir = if dir.is_empty() {
             name.clone()
         } else {
-            glob_join_text(&dir, &name, cfg.sep)
+            glob_join_path(_py, &dir, &name, cfg.sep, cfg.bytes_mode, cfg.coordinate)?
         };
-        let child_prefix = glob_join_text(&prefix, &name, cfg.sep);
+        let child_prefix =
+            glob_join_path(_py, &prefix, &name, cfg.sep, cfg.bytes_mode, cfg.coordinate)?;
         // CPython's `_rlistdir` recurses into every yielded name with the same
         // `dironly`; recursing into a non-directory simply lists nothing.
         let listed = glob_listdir_text(
@@ -1086,7 +1168,14 @@ impl GlobIterState {
                 idx: 0,
             },
         });
-        Ok(GlobStep::Yield(glob_join_text(&prefix, &name, cfg.sep)))
+        Ok(GlobStep::Yield(glob_join_path(
+            _py,
+            &prefix,
+            &name,
+            cfg.sep,
+            cfg.bytes_mode,
+            cfg.coordinate,
+        )?))
     }
 
     fn step_iglob(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<GlobStep, u64> {
@@ -1101,11 +1190,14 @@ impl GlobIterState {
                 };
                 if let (Some(parent), Some(cursor)) = (cur_dir.clone(), cur_names.as_mut()) {
                     if let Some(name) = cursor.next() {
-                        return Ok(GlobStep::Yield(glob_join_text(
+                        return Ok(GlobStep::Yield(glob_join_path(
+                            _py,
                             &parent,
                             &name,
                             self.cfg.sep,
-                        )));
+                            self.cfg.bytes_mode,
+                            self.cfg.coordinate,
+                        )?));
                     }
                     *cur_names = None;
                     *cur_dir = None;
@@ -1137,7 +1229,14 @@ impl GlobIterState {
                 // results are prefixed by `parent` (so they bubble up as
                 // complete `join(parent, fragment)` paths).
                 let search_dir = match self.cfg.root_dir.as_deref() {
-                    Some(root) => glob_join_text(root, &parent, self.cfg.sep),
+                    Some(root) => glob_join_path(
+                        _py,
+                        root,
+                        &parent,
+                        self.cfg.sep,
+                        self.cfg.bytes_mode,
+                        self.cfg.coordinate,
+                    )?,
                     None => parent.clone(),
                 };
                 return Ok(GlobStep::Push(GlobFrame::Glob2 {
@@ -1151,7 +1250,14 @@ impl GlobIterState {
 
             // Bounded glob1/glob0 for this parent.
             let search_dir = match self.cfg.root_dir.as_deref() {
-                Some(root) => glob_join_text(root, &parent, self.cfg.sep),
+                Some(root) => glob_join_path(
+                    _py,
+                    root,
+                    &parent,
+                    self.cfg.sep,
+                    self.cfg.bytes_mode,
+                    self.cfg.coordinate,
+                )?,
                 None => parent.clone(),
             };
             let names = match kind {
@@ -1172,6 +1278,7 @@ impl GlobIterState {
                     &self.cfg.dir_fd,
                     self.cfg.bytes_mode,
                     self.cfg.sep,
+                    self.cfg.coordinate,
                 )?,
                 GlobInDir::Glob2 => unreachable!(),
             };
@@ -1189,7 +1296,7 @@ impl GlobIterState {
 
     /// Produce the next parent directory for an `Iglob` frame (literal or from
     /// the nested recursive `iglob(dirname, dironly=True)`).
-    fn iglob_next_parent(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<Option<String>, u64> {
+    fn iglob_next_parent(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<Option<Vec<u8>>, u64> {
         // Literal source: take the single dirname once.
         {
             let GlobFrame::Iglob { dirs, .. } = &mut self.stack[idx] else {
@@ -1233,6 +1340,7 @@ impl GlobIterState {
 /// `skip_leading_empty` for nested dir-expansion walks (which never skip).
 fn glob_cfg_clone(cfg: &GlobIterConfig, skip: bool) -> GlobIterConfig {
     GlobIterConfig {
+        coordinate: cfg.coordinate,
         root_dir: cfg.root_dir.clone(),
         dir_fd: cfg.dir_fd.clone(),
         recursive: cfg.recursive,
@@ -1247,32 +1355,36 @@ fn glob_cfg_clone(cfg: &GlobIterConfig, skip: bool) -> GlobIterConfig {
 /// `glob_iglob_text`, including the no-magic literal short-circuit).
 fn glob_build_iglob_frame(
     _py: &PyToken<'_>,
-    pathname: &str,
+    pathname: &[u8],
     cfg: &GlobIterConfig,
     dironly: bool,
 ) -> Result<GlobFrame, u64> {
     let sep = cfg.sep;
-    let (dirname, basename) = glob_split_path_text(pathname, sep);
+    let (dirname, basename) = glob_split_path(_py, pathname, sep, cfg.bytes_mode, cfg.coordinate)?;
 
-    if !glob_has_magic_text(pathname) {
+    if !molt_runtime_platform::path_text::glob_has_magic_raw(pathname) {
         // Non-magic: bounded literal existence check.
-        let names: Vec<String> = if !basename.is_empty() {
+        let names: Vec<Vec<u8>> = if !basename.is_empty() {
             let full = match cfg.root_dir.as_deref() {
-                Some(root) => glob_join_text(root, pathname, sep),
-                None => pathname.to_string(),
+                Some(root) => {
+                    glob_join_path(_py, root, pathname, sep, cfg.bytes_mode, cfg.coordinate)?
+                }
+                None => pathname.to_vec(),
             };
             if glob_lexists_text(_py, &full, &cfg.dir_fd, cfg.bytes_mode, sep)? {
-                vec![pathname.to_string()]
+                vec![pathname.to_vec()]
             } else {
                 Vec::new()
             }
         } else {
             let full_dir = match cfg.root_dir.as_deref() {
-                Some(root) => glob_join_text(root, &dirname, sep),
+                Some(root) => {
+                    glob_join_path(_py, root, &dirname, sep, cfg.bytes_mode, cfg.coordinate)?
+                }
                 None => dirname.clone(),
             };
             if glob_is_dir_text(_py, &full_dir, &cfg.dir_fd, cfg.bytes_mode, sep)? {
-                vec![pathname.to_string()]
+                vec![pathname.to_vec()]
             } else {
                 Vec::new()
             }
@@ -1280,8 +1392,8 @@ fn glob_build_iglob_frame(
         return Ok(GlobFrame::Names(GlobNameCursor { names, idx: 0 }));
     }
 
-    let basename_recursive = cfg.recursive && basename == "**";
-    let kind = if glob_has_magic_text(&basename) {
+    let basename_recursive = cfg.recursive && basename == b"**";
+    let kind = if molt_runtime_platform::path_text::glob_has_magic_raw(&basename) {
         if basename_recursive {
             GlobInDir::Glob2
         } else {
@@ -1293,8 +1405,9 @@ fn glob_build_iglob_frame(
 
     let dirs = if dirname.is_empty() {
         // basename globbed directly in root_dir (represented by literal "").
-        GlobDirSource::Literal(Some(String::new()))
-    } else if dirname != pathname && glob_has_magic_text(&dirname) {
+        GlobDirSource::Literal(Some(Vec::new()))
+    } else if dirname != pathname && molt_runtime_platform::path_text::glob_has_magic_raw(&dirname)
+    {
         // Magic dirname: parents come from a nested streaming dir-expansion.
         let inner = GlobIterState::new(_py, &dirname, glob_cfg_clone(cfg, false), true)?;
         GlobDirSource::Recursive(Box::new(inner))
@@ -1318,17 +1431,18 @@ fn glob_build_iglob_frame(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn glob_iter_new_state(
     _py: &PyToken<'_>,
-    pathname: &str,
-    root_dir: Option<&str>,
+    pathname: &[u8],
+    root_dir: Option<&[u8]>,
     dir_fd: GlobDirFdArg,
     recursive: bool,
     include_hidden: bool,
     bytes_mode: bool,
     sep: char,
 ) -> Result<Box<GlobIterState>, u64> {
-    let skip_leading_empty = pathname.is_empty() || (recursive && pathname.starts_with("**"));
+    let skip_leading_empty = pathname.is_empty() || (recursive && pathname.starts_with(b"**"));
     let cfg = GlobIterConfig {
-        root_dir: root_dir.map(str::to_string),
+        coordinate: path_root_coordinate(_py, bytes_mode),
+        root_dir: root_dir.map(<[u8]>::to_vec),
         dir_fd,
         recursive,
         include_hidden,
@@ -1358,12 +1472,9 @@ pub(crate) unsafe fn glob_iter_next_value(_py: &PyToken<'_>, iter_ptr: *mut u8) 
         Ok(None) => MoltObject::none().bits(),
         Ok(Some(path)) => {
             let ptr = if bytes_mode {
-                match raw_from_bytes_text(&path) {
-                    Some(raw) => alloc_bytes(_py, raw.as_slice()),
-                    None => alloc_bytes(_py, path.as_bytes()),
-                }
+                alloc_bytes(_py, &path)
             } else {
-                alloc_string(_py, path.as_bytes())
+                alloc_string(_py, &path)
             };
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1387,16 +1498,6 @@ pub(crate) fn glob_iter_alloc_object(_py: &PyToken<'_>, state: Box<GlobIterState
         *(ptr as *mut *mut GlobIterState) = state_ptr;
     }
     MoltObject::from_ptr(ptr).bits()
-}
-
-pub(crate) fn raise_io_error_for_glob(_py: &PyToken<'_>, err: std::io::Error) -> u64 {
-    let msg = err.to_string();
-    match err.kind() {
-        ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-        ErrorKind::PermissionDenied => raise_exception::<_>(_py, "PermissionError", &msg),
-        ErrorKind::NotADirectory => raise_exception::<_>(_py, "NotADirectoryError", &msg),
-        _ => raise_exception::<_>(_py, "OSError", &msg),
-    }
 }
 
 #[cfg(unix)]
@@ -1471,19 +1572,4 @@ pub(crate) fn path_relpath_text(
     } else {
         Ok(rel_parts.join(&sep.to_string()))
     }
-}
-
-pub(crate) fn path_expandvars_text(_py: &PyToken<'_>, path: &str) -> Result<String, u64> {
-    let allowed = has_capability(_py, "env.read");
-    audit_capability_decision("env.expandvars", "env.read", AuditArgs::None, allowed);
-    if !allowed {
-        return Err(raise_exception::<_>(
-            _py,
-            "PermissionError",
-            "missing env.read capability",
-        ));
-    }
-    Ok(path_expandvars_with_lookup(path, |name| {
-        std::env::var(name).ok()
-    }))
 }

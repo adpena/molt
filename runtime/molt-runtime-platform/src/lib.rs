@@ -1,6 +1,7 @@
 //! Platform support shared by the runtime fan-in crate.
 
 pub mod env_support;
+pub mod fnmatch;
 pub mod importlib_support;
 #[cfg(target_arch = "wasm32")]
 pub mod libc_compat;

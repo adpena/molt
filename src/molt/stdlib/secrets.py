@@ -10,7 +10,7 @@ _molt_secrets_token_urlsafe = _require_intrinsic("molt_secrets_token_urlsafe")
 _molt_secrets_randbits = _require_intrinsic("molt_secrets_randbits")
 _molt_secrets_below = _require_intrinsic("molt_secrets_below")
 _molt_secrets_choice = _require_intrinsic("molt_secrets_choice")
-_molt_secrets_compare_digest = _require_intrinsic("molt_secrets_compare_digest")
+_molt_compare_digest = _require_intrinsic("molt_compare_digest")
 
 DEFAULT_ENTROPY = 32
 
@@ -46,7 +46,7 @@ def choice(seq):
 
 
 def compare_digest(a, b) -> bool:
-    return bool(_molt_secrets_compare_digest(a, b))
+    return bool(_molt_compare_digest(a, b))
 
 
 class SystemRandom:

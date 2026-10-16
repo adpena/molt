@@ -53,18 +53,6 @@ pub(crate) fn async_trace_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_ASYNC_TRACE)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn async_worker_threads() -> usize {
-    static THREADS: OnceLock<usize> = OnceLock::new();
-    *THREADS.get_or_init(|| {
-        let max_threads = num_cpus::get().max(1);
-        let parsed = std::env::var("MOLT_ASYNC_THREADS")
-            .ok()
-            .and_then(|val| val.trim().parse::<usize>().ok());
-        parsed.unwrap_or(0).min(max_threads)
-    })
-}
-
 pub(crate) fn record_async_poll(_py: &PyToken<'_>, task_ptr: *mut u8, pending: bool, site: &str) {
     profile_hit(_py, &ASYNC_POLL_COUNT);
     if pending {

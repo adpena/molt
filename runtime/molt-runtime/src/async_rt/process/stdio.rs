@@ -11,9 +11,6 @@ pub(super) const PROCESS_STDIO_STDOUT: i32 = -2;
 pub(super) const PROCESS_STDIO_FD_BASE: i32 = 1 << 30;
 
 #[cfg(not(target_arch = "wasm32"))]
-const PROCESS_PIPE_MAX_QUEUED_BYTES_ENV: &str = "MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES";
-
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) struct NativeProcessStdio {
     pub(super) stdin_stream: u64,
     pub(super) stdout_stream: u64,
@@ -23,19 +20,24 @@ pub(super) struct NativeProcessStdio {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeProcessStdio {
-    fn from_modes(stdin_mode: i32, stdout_mode: i32, stderr_mode: i32) -> Self {
+    fn from_modes(
+        stdin_mode: i32,
+        stdout_mode: i32,
+        stderr_mode: i32,
+        max_queued_bytes: usize,
+    ) -> Self {
         let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
-            new_process_pipe_stream()
+            new_process_pipe_stream(max_queued_bytes)
         } else {
             0
         };
         let stdout_stream = if stdout_mode == PROCESS_STDIO_PIPE {
-            new_process_pipe_stream()
+            new_process_pipe_stream(max_queued_bytes)
         } else {
             0
         };
         let stderr_stream = if stderr_mode == PROCESS_STDIO_PIPE {
-            new_process_pipe_stream()
+            new_process_pipe_stream(max_queued_bytes)
         } else {
             0
         };
@@ -66,17 +68,8 @@ fn drop_stream(stream_bits: &mut u64) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn process_pipe_max_queued_bytes() -> usize {
-    std::env::var(PROCESS_PIPE_MAX_QUEUED_BYTES_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(super::super::channels::default_stream_max_queued_bytes)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn new_process_pipe_stream() -> u64 {
-    super::super::channels::stream_new_with_byte_budget(0, process_pipe_max_queued_bytes())
+fn new_process_pipe_stream(max_queued_bytes: usize) -> u64 {
+    super::super::channels::stream_new_with_byte_budget(0, max_queued_bytes)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -238,7 +231,12 @@ pub(super) fn configure_native_stdio(
     stdout_mode: i32,
     stderr_mode: i32,
 ) -> Result<NativeProcessStdio, u64> {
-    let mut plan = NativeProcessStdio::from_modes(stdin_mode, stdout_mode, stderr_mode);
+    let mut plan = NativeProcessStdio::from_modes(
+        stdin_mode,
+        stdout_mode,
+        stderr_mode,
+        runtime_state(_py).policy().process_pipe_max_queued_bytes,
+    );
     let result = (|| {
         apply_unmerged_stdio(_py, cmd, NativeStdioSlot::Stdin, stdin_mode)?;
         if stderr_mode == PROCESS_STDIO_STDOUT {

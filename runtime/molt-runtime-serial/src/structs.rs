@@ -1,11 +1,19 @@
 use crate::bridge::*;
+use abi::abi_types::{PyObject, PyTypeObject};
+use abi::api::memory::BufferAcquireError;
+use molt_runtime_core::native_custody::{
+    NativeObjectOwner, PyBUF_SIMPLE, PyBUF_WRITABLE, RuntimeBufferLease, acquire_buffer,
+    cpython_abi as abi, retire_native_reference,
+};
 use molt_runtime_core::prelude::*;
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
+use std::ffi::c_void;
 use std::ffi::{
     c_double, c_float, c_int, c_long, c_longlong, c_short, c_uint, c_ulong, c_ulonglong, c_ushort,
 };
 use std::mem::{align_of, size_of};
+use std::rc::Rc;
 
 #[derive(Clone, Copy)]
 enum StructEndian {
@@ -369,18 +377,33 @@ fn expected_value_count(ops: &[StructOp]) -> usize {
     total
 }
 
-fn align_output(out: &mut Vec<u8>, offset: &mut usize, align: usize) -> Result<(), String> {
-    let aligned =
-        align_up(*offset, align).ok_or_else(|| "total struct size too long".to_string())?;
-    if aligned > *offset {
-        out.extend(std::iter::repeat_n(0u8, aligned - *offset));
-        *offset = aligned;
+// A counted export or the pack output owns this span. No Rust slice survives
+// a Python conversion: writes happen only after each callback has returned.
+struct StructWriter {
+    data: *mut u8,
+    len: usize,
+    position: usize,
+}
+impl StructWriter {
+    fn push(&mut self, byte: u8) {
+        assert!(self.position < self.len);
+        unsafe { self.data.add(self.position).write(byte) };
+        self.position += 1;
     }
-    Ok(())
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        assert!(bytes.len() <= self.len - self.position);
+        // Source can alias a pack_into destination ('s'/'p' bytearray values).
+        unsafe { std::ptr::copy(bytes.as_ptr(), self.data.add(self.position), bytes.len()) };
+        self.position += bytes.len();
+    }
+    fn skip(&mut self, count: usize) {
+        assert!(count <= self.len - self.position);
+        self.position += count;
+    }
 }
 
 fn push_signed(
-    out: &mut Vec<u8>,
+    out: &mut StructWriter,
     endian: StructEndian,
     size: usize,
     val: i128,
@@ -417,7 +440,7 @@ fn push_signed(
 }
 
 fn push_unsigned(
-    out: &mut Vec<u8>,
+    out: &mut StructWriter,
     endian: StructEndian,
     size: usize,
     val: u128,
@@ -555,16 +578,6 @@ fn f16_to_f64(bits: u16) -> f64 {
     molt_obj_model::float_bits::f16_bits_to_f64(bits)
 }
 
-fn obj_to_bigint(obj: MoltObject) -> Result<BigInt, String> {
-    if let Some(val) = to_i64(obj) {
-        return Ok(BigInt::from(val));
-    }
-    if let Some(big) = to_bigint(obj) {
-        return Ok(big);
-    }
-    Err("required argument is not an integer".to_string())
-}
-
 fn signed_range(bits: usize) -> (BigInt, BigInt) {
     let one = BigInt::from(1u8);
     let max = (&one << (bits - 1)) - 1;
@@ -587,99 +600,17 @@ fn unsigned_range_message(code: char, bits: usize) -> String {
     format!("'{code}' format requires 0 <= number <= {max}")
 }
 
-unsafe fn memoryview_contiguous_bytes(ptr: *mut u8) -> Option<&'static [u8]> {
-    unsafe {
-        let (data_ptr, nbytes) = memoryview_contiguous_window(ptr, false)?;
-        Some(std::slice::from_raw_parts(data_ptr.cast_const(), nbytes))
-    }
-}
-
-unsafe fn memoryview_contiguous_window(
-    view_ptr: *mut u8,
-    writable: bool,
-) -> Option<(*mut u8, usize)> {
-    unsafe {
-        if !memoryview_is_c_contiguous_view(view_ptr) {
-            return None;
-        }
-        if writable && memoryview_readonly(view_ptr) {
-            return None;
-        }
-        let nbytes = memoryview_nbytes(view_ptr);
-        let data_ptr = memoryview_data(view_ptr);
-        if data_ptr.is_null() {
-            return None;
-        }
-        Some((data_ptr, nbytes))
-    }
-}
-
 type StructIntrinsicError = (&'static str, String);
 
-fn struct_read_buffer_bytes(
-    _py: &PyToken,
-    buffer_obj: MoltObject,
-) -> Result<&'static [u8], StructIntrinsicError> {
-    let Some(buffer_ptr) = buffer_obj.as_ptr() else {
-        let type_label = type_name(_py, buffer_obj);
-        return Err((
-            "TypeError",
-            format!("a bytes-like object is required, not '{type_label}'"),
-        ));
-    };
-    let type_id = unsafe { object_type_id(buffer_ptr) };
-    let buf = if type_id == TYPE_ID_MEMORYVIEW {
-        if !unsafe { memoryview_is_c_contiguous_view(buffer_ptr) } {
-            return Err((
-                "BufferError",
-                "memoryview: underlying buffer is not C-contiguous".to_string(),
-            ));
-        }
-        unsafe { memoryview_contiguous_bytes(buffer_ptr) }
-    } else if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-        unsafe { bytes_like_slice_raw(buffer_ptr) }
-    } else {
-        None
-    };
-    let Some(buf) = buf else {
-        let type_label = type_name(_py, buffer_obj);
-        return Err((
-            "TypeError",
-            format!("a bytes-like object is required, not '{type_label}'"),
-        ));
-    };
-    Ok(buf)
-}
-
-fn struct_index_offset(_py: &PyToken, offset_bits: u64) -> Option<i64> {
-    let offset_obj = obj_from_bits(offset_bits);
-    let msg = format!(
-        "'{}' object cannot be interpreted as an integer",
-        type_name(_py, offset_obj)
-    );
-    let offset = index_i64_from_obj(_py, offset_bits, msg.as_str());
-    if exception_pending(_py) {
-        return None;
-    }
-    Some(offset)
-}
-
-fn struct_normalize_offset(raw_offset: i64, buf_len: usize) -> Option<usize> {
-    let mut start = i128::from(raw_offset);
-    if start < 0 {
-        start = start.checked_add(buf_len as i128)?;
-    }
-    usize::try_from(start).ok()
-}
-
-fn struct_unpack_values(
-    _py: &PyToken,
+fn struct_unpack_values<'py>(
+    _py: &'py PyToken,
     parsed: StructFormat,
     ops: &[StructOp],
-    buf: &[u8],
-) -> Result<Vec<u64>, StructIntrinsicError> {
+    data: *const u8,
+    size: usize,
+) -> Result<Vec<OwnedRuntimeValue<'py>>, StructIntrinsicError> {
     let expected_values = expected_value_count(ops);
-    let mut out: Vec<u64> = Vec::with_capacity(expected_values);
+    let mut out = Vec::with_capacity(expected_values);
     let mut offset = 0usize;
     for op in ops {
         match op.kind {
@@ -691,7 +622,7 @@ fn struct_unpack_values(
                 offset = offset
                     .checked_add(delta)
                     .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                if offset > buf.len() {
+                if offset > size {
                     return Err((
                         "ValueError",
                         "unpack requires a buffer of sufficient size".to_string(),
@@ -704,13 +635,13 @@ fn struct_unpack_values(
                 let end = offset
                     .checked_add(op.size)
                     .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                if end > buf.len() {
+                if end > size {
                     return Err((
                         "ValueError",
                         "unpack requires a buffer of sufficient size".to_string(),
                     ));
                 }
-                let slice = &buf[offset..end];
+                let slice = unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
                 let bytes = if matches!(op.kind, StructKind::Pascal) {
                     if op.size == 0 {
                         &[][..]
@@ -721,11 +652,14 @@ fn struct_unpack_values(
                 } else {
                     slice
                 };
-                let ptr = alloc_bytes(_py, bytes);
+                let bytes = bytes.to_vec();
+                let ptr = alloc_bytes(_py, &bytes);
                 if ptr.is_null() {
                     return Err(("MemoryError", "allocation failed".to_string()));
                 }
-                out.push(MoltObject::from_ptr(ptr).bits());
+                out.push(unsafe {
+                    OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(ptr).bits())
+                });
                 offset = end;
             }
             StructKind::Char => {
@@ -735,18 +669,22 @@ fn struct_unpack_values(
                     let end = offset
                         .checked_add(1)
                         .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    if end > buf.len() {
+                    if end > size {
                         return Err((
                             "ValueError",
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
-                    let slice = &buf[offset..end];
-                    let ptr = alloc_bytes(_py, slice);
+                    let slice =
+                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
+                    let byte = [slice[0]];
+                    let ptr = alloc_bytes(_py, &byte);
                     if ptr.is_null() {
                         return Err(("MemoryError", "allocation failed".to_string()));
                     }
-                    out.push(MoltObject::from_ptr(ptr).bits());
+                    out.push(unsafe {
+                        OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(ptr).bits())
+                    });
                     offset = end;
                 }
             }
@@ -757,14 +695,20 @@ fn struct_unpack_values(
                     let end = offset
                         .checked_add(1)
                         .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    if end > buf.len() {
+                    if end > size {
                         return Err((
                             "ValueError",
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
-                    let slice = &buf[offset..end];
-                    out.push(MoltObject::from_bool(slice[0] != 0).bits());
+                    let slice =
+                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
+                    out.push(unsafe {
+                        OwnedRuntimeValue::from_owned_bits(
+                            _py,
+                            MoltObject::from_bool(slice[0] != 0).bits(),
+                        )
+                    });
                     offset = end;
                 }
             }
@@ -775,13 +719,14 @@ fn struct_unpack_values(
                     let end = offset
                         .checked_add(op.size)
                         .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    if end > buf.len() {
+                    if end > size {
                         return Err((
                             "ValueError",
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
-                    let slice = &buf[offset..end];
+                    let slice =
+                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
                     let bits = if signed {
                         let val = read_signed(slice, parsed.endian, op.size)
                             .map_err(|msg| ("OverflowError", msg))?;
@@ -791,7 +736,10 @@ fn struct_unpack_values(
                             .map_err(|msg| ("OverflowError", msg))?;
                         int_bits_from_i128(_py, val as i128)
                     };
-                    out.push(bits);
+                    if exception_pending(_py) {
+                        return Err(("", String::new()));
+                    }
+                    out.push(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) });
                     offset = end;
                 }
             }
@@ -802,13 +750,14 @@ fn struct_unpack_values(
                     let end = offset
                         .checked_add(op.size)
                         .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    if end > buf.len() {
+                    if end > size {
                         return Err((
                             "ValueError",
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
-                    let slice = &buf[offset..end];
+                    let slice =
+                        unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
                     let val = match op.size {
                         2 => {
                             let mut buf2 = [0u8; 2];
@@ -841,7 +790,9 @@ fn struct_unpack_values(
                         }
                         _ => return Err(("OverflowError", "unsupported float size".to_string())),
                     };
-                    out.push(MoltObject::from_float(val).bits());
+                    out.push(unsafe {
+                        OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_float(val).bits())
+                    });
                     offset = end;
                 }
             }
@@ -850,648 +801,933 @@ fn struct_unpack_values(
     Ok(out)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_calcsize(format_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let format_obj = obj_from_bits(format_bits);
-        let format = match format_obj_to_owned(_py, format_obj) {
-            Ok(format) => format,
-            Err(msg) => return raise_exception::<u64>(_py, "TypeError", msg.as_str()),
-        };
-        let (_parsed, ops) = match parse_format(&format) {
-            Ok(parsed) => parsed,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
-        };
-        let Some(size) = calc_size(&ops) else {
-            return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
-        };
-        MoltObject::from_int(size as i64).bits()
+struct StructPlan {
+    format: StructFormat,
+    ops: Vec<StructOp>,
+    size: usize,
+    values: usize,
+}
+
+fn struct_error(py: &PyToken, class: u64, message: &str) -> u64 {
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(message)) };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let args = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_tuple(&[text.bits()])) };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let error = unsafe {
+        OwnedRuntimeValue::from_owned_bits(py, exception_new_from_class(py, class, args.bits()))
+    };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    rt_raise(error.bits())
+}
+
+fn plan(py: &PyToken, error: u64, format: u64) -> Result<StructPlan, u64> {
+    let text = format_obj_to_owned(py, obj_from_bits(format))
+        .map_err(|message| raise_exception::<u64>(py, "TypeError", &message))?;
+    let (format, ops) = parse_format(&text).map_err(|message| struct_error(py, error, &message))?;
+    let size = calc_size(&ops)
+        .filter(|&n| n <= isize::MAX as usize)
+        .ok_or_else(|| struct_error(py, error, "total struct size too long"))?;
+    let values = expected_value_count(&ops);
+    Ok(StructPlan {
+        format,
+        ops,
+        size,
+        values,
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_pack(format_bits: u64, values_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let format_obj = obj_from_bits(format_bits);
-        let format = match format_obj_to_owned(_py, format_obj) {
-            Ok(format) => format,
-            Err(msg) => return raise_exception::<u64>(_py, "TypeError", msg.as_str()),
+unsafe fn native_object(bits: u64) -> NativeObjectOwner {
+    unsafe {
+        NativeObjectOwner::from_owned(abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits))
+    }
+}
+
+fn index_object(py: &PyToken, error: u64, bits: u64) -> Result<NativeObjectOwner, u64> {
+    unsafe {
+        let object = native_object(bits);
+        if object.as_ptr().is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        if abi::api::abstract_number::PyIndex_Check(object.as_ptr()) == 0 {
+            return Err(struct_error(
+                py,
+                error,
+                "required argument is not an integer",
+            ));
+        }
+        let integer = NativeObjectOwner::from_owned(abi::api::abstract_number::PyNumber_Index(
+            object.as_ptr(),
+        ));
+        if integer.as_ptr().is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        Ok(integer)
+    }
+}
+
+fn index_value(py: &PyToken, error: u64, bits: u64) -> Result<BigInt, u64> {
+    let obj = obj_from_bits(bits);
+    if obj.is_int() {
+        return Ok(BigInt::from(obj.as_int_unchecked()));
+    }
+    if obj.is_bool() {
+        return Ok(BigInt::from(u8::from(obj.as_bool().unwrap())));
+    }
+    let integer = index_object(py, error, bits)?;
+    unsafe {
+        let Some(value) = abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(integer.as_ptr()) else {
+            return Err(MoltObject::none().bits());
         };
-        let (parsed, ops) = match parse_format(&format) {
-            Ok(parsed) => parsed,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
-        };
-        let values_obj = obj_from_bits(values_bits);
-        let Some(values_ptr) = values_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "pack expects a tuple");
-        };
-        unsafe {
-            if object_type_id(values_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<u64>(_py, "TypeError", "pack expects a tuple");
+        let value = OwnedRuntimeValue::from_owned_bits(py, value);
+        to_bigint(obj_from_bits(value.bits()))
+            .or_else(|| to_i64(obj_from_bits(value.bits())).map(BigInt::from))
+            .ok_or_else(|| {
+                raise_exception::<u64>(py, "SystemError", "index result has no integer storage")
+            })
+    }
+}
+
+fn pointer_value(py: &PyToken, error: u64, bits: u64) -> Result<usize, u64> {
+    let original = unsafe { native_object(bits) };
+    if original.as_ptr().is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let is_original_integer = unsafe { abi::api::numbers::PyLong_Check(original.as_ptr()) != 0 };
+    let integer = index_object(py, error, bits)?;
+    let value = unsafe {
+        retire_native_reference(|| abi::api::numbers::PyLong_AsVoidPtr(integer.as_ptr()))
+    };
+    if exception_pending(py) {
+        if is_original_integer
+            && unsafe {
+                abi::api::errors::PyErr_ExceptionMatches(
+                    (&raw mut abi::abi_types::PyExc_OverflowError).cast(),
+                ) != 0
             }
+        {
+            unsafe {
+                abi::api::errors::PyErr_Clear();
+            }
+            return Err(struct_error(py, error, "int too large to convert"));
         }
-        let values = unsafe { seq_snapshot(values_ptr) };
-        let expected = expected_value_count(&ops);
-        if values.len() != expected {
-            let msg = format!(
-                "pack expected {expected} items for packing (got {})",
-                values.len()
-            );
-            return raise_exception::<u64>(_py, "TypeError", msg.as_str());
+        return Err(MoltObject::none().bits());
+    }
+    Ok(value as usize)
+}
+
+fn index_offset(py: &PyToken, bits: u64, packing: bool) -> Result<isize, u64> {
+    unsafe {
+        let object = native_object(bits);
+        if object.as_ptr().is_null() {
+            return Err(MoltObject::none().bits());
         }
-        let Some(size) = calc_size(&ops) else {
-            return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
+        let result = if packing {
+            retire_native_reference(|| {
+                abi::api::abstract_number::PyNumber_AsSsize_t(
+                    object.as_ptr(),
+                    (&raw mut abi::abi_types::PyExc_IndexError).cast(),
+                )
+            })
+        } else {
+            // Argument Clinic's Py_ssize_t converter preserves PyLong_AsSsize_t's
+            // overflow exception and message; pack_into explicitly requests IndexError.
+            let integer = NativeObjectOwner::from_owned(abi::api::abstract_number::PyNumber_Index(
+                object.as_ptr(),
+            ));
+            if integer.as_ptr().is_null() {
+                return Err(MoltObject::none().bits());
+            }
+            retire_native_reference(|| abi::api::numbers::PyLong_AsSsize_t(integer.as_ptr()))
         };
-        let mut out = Vec::with_capacity(size);
-        let mut offset: usize = 0;
-        let mut idx = 0usize;
-        for op in ops {
+        if exception_pending(py) {
+            Err(MoltObject::none().bits())
+        } else {
+            Ok(result)
+        }
+    }
+}
+
+fn float_value(py: &PyToken, error: u64, bits: u64) -> Result<f64, u64> {
+    unsafe {
+        let object = native_object(bits);
+        if object.as_ptr().is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let value =
+            retire_native_reference(|| abi::api::numbers::PyFloat_AsDouble(object.as_ptr()));
+        if exception_pending(py) {
+            // CPython's struct float converters deliberately replace conversion errors.
+            abi::api::errors::PyErr_Clear();
+            return Err(struct_error(py, error, "required argument is not a float"));
+        }
+        Ok(value)
+    }
+}
+
+fn pack_values(
+    py: &PyToken,
+    error: u64,
+    plan: &StructPlan,
+    values: &[u64],
+    data: *mut u8,
+) -> Result<(), u64> {
+    if plan.size != 0 {
+        unsafe { std::ptr::write_bytes(data, 0, plan.size) };
+    }
+    let mut out = StructWriter {
+        data,
+        len: plan.size,
+        position: 0,
+    };
+    let mut index = 0;
+    for op in &plan.ops {
+        if matches!(op.kind, StructKind::Pad) {
+            out.skip(op.count * op.size);
+            continue;
+        }
+        let count = if matches!(op.kind, StructKind::Bytes | StructKind::Pascal) {
+            1
+        } else {
+            op.count
+        };
+        for _ in 0..count {
+            let aligned = align_up(out.position, op.align).expect("validated struct plan");
+            out.skip(aligned - out.position);
+            let bits = values[index];
+            index += 1;
+            let obj = obj_from_bits(bits);
             match op.kind {
-                StructKind::Pad => {
-                    out.extend(std::iter::repeat_n(0u8, op.count * op.size));
-                    offset = match offset.checked_add(op.count * op.size) {
-                        Some(val) => val,
-                        None => {
-                            return raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "total struct size too long",
-                            );
+                StructKind::Bytes | StructKind::Pascal | StructKind::Char => {
+                    let Some(ptr) = obj.as_ptr() else {
+                        return Err(struct_error(
+                            py,
+                            error,
+                            if matches!(op.kind, StructKind::Char) {
+                                "char format requires a bytes object of length 1"
+                            } else if op.code == 'p' {
+                                "argument for 'p' must be a bytes object"
+                            } else {
+                                "argument for 's' must be a bytes object"
+                            },
+                        ));
+                    };
+                    let kind = unsafe { object_type_id(ptr) };
+                    let is_char = matches!(op.kind, StructKind::Char);
+                    if kind != TYPE_ID_BYTES && (is_char || kind != TYPE_ID_BYTEARRAY) {
+                        return Err(struct_error(
+                            py,
+                            error,
+                            &if is_char {
+                                "char format requires a bytes object of length 1".to_string()
+                            } else {
+                                format!("argument for '{}' must be a bytes object", op.code)
+                            },
+                        ));
+                    }
+                    // Physical admission above guarantees these hooks cannot call Python.
+                    // Keep only raw coordinates: an 's'/'p' source may be the destination.
+                    let mut length = 0;
+                    let hooks = abi::hooks::hooks_or_stubs();
+                    let source = unsafe {
+                        if kind == TYPE_ID_BYTES {
+                            (hooks.bytes_data)(bits, &mut length)
+                        } else {
+                            (hooks.bytearray_data)(bits, &mut length).cast_const()
                         }
                     };
-                }
-                StructKind::Bytes | StructKind::Pascal => {
-                    if align_output(&mut out, &mut offset, op.align).is_err() {
-                        return raise_exception::<u64>(
-                            _py,
-                            "OverflowError",
-                            "total struct size too long",
-                        );
-                    }
-                    let obj = obj_from_bits(values[idx]);
-                    idx += 1;
-                    let Some(ptr) = obj.as_ptr() else {
-                        return raise_exception::<u64>(
-                            _py,
-                            "TypeError",
-                            &format!("argument for '{}' must be a bytes object", op.code),
-                        );
-                    };
-                    let type_id = unsafe { object_type_id(ptr) };
-                    if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-                        return raise_exception::<u64>(
-                            _py,
-                            "TypeError",
-                            &format!("argument for '{}' must be a bytes object", op.code),
-                        );
-                    }
-                    let slice = unsafe { bytes_like_slice_raw(ptr) }.unwrap_or(&[]);
-                    let mut buf = vec![0u8; op.size];
-                    if op.size > 0 {
-                        match op.kind {
-                            StructKind::Bytes => {
-                                let copy_len = std::cmp::min(slice.len(), op.size);
-                                buf[..copy_len].copy_from_slice(&slice[..copy_len]);
-                            }
-                            StructKind::Pascal => {
-                                let max = op.size.saturating_sub(1);
-                                let copy_len = std::cmp::min(slice.len(), max);
-                                buf[0] = copy_len as u8;
-                                if copy_len > 0 {
-                                    buf[1..1 + copy_len].copy_from_slice(&slice[..copy_len]);
+                    if is_char {
+                        if length != 1 {
+                            return Err(struct_error(
+                                py,
+                                error,
+                                "char format requires a bytes object of length 1",
+                            ));
+                        }
+                        out.push(unsafe { source.read() });
+                    } else if matches!(op.kind, StructKind::Pascal) {
+                        if op.size != 0 {
+                            let n = length.min(op.size - 1);
+                            if n != 0 {
+                                unsafe {
+                                    std::ptr::copy(source, data.add(out.position + 1), n);
                                 }
                             }
-                            _ => {}
-                        }
-                    }
-                    out.extend_from_slice(&buf);
-                    offset = match offset.checked_add(op.size) {
-                        Some(val) => val,
-                        None => {
-                            return raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "total struct size too long",
-                            );
-                        }
-                    };
-                }
-                StructKind::Char => {
-                    for _ in 0..op.count {
-                        if align_output(&mut out, &mut offset, op.align).is_err() {
-                            return raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "total struct size too long",
-                            );
-                        }
-                        let obj = obj_from_bits(values[idx]);
-                        idx += 1;
-                        let Some(ptr) = obj.as_ptr() else {
-                            return raise_exception::<u64>(
-                                _py,
-                                "TypeError",
-                                "char format requires a bytes object of length 1",
-                            );
-                        };
-                        let type_id = unsafe { object_type_id(ptr) };
-                        if type_id != TYPE_ID_BYTES {
-                            return raise_exception::<u64>(
-                                _py,
-                                "TypeError",
-                                "char format requires a bytes object of length 1",
-                            );
-                        }
-                        let slice = unsafe { bytes_like_slice_raw(ptr) }.unwrap_or(&[]);
-                        if slice.len() != 1 {
-                            return raise_exception::<u64>(
-                                _py,
-                                "TypeError",
-                                "char format requires a bytes object of length 1",
-                            );
-                        }
-                        out.push(slice[0]);
-                        offset = match offset.checked_add(1) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                );
+                            unsafe {
+                                data.add(out.position).write(n.min(255) as u8);
                             }
-                        };
+                        }
+                        out.skip(op.size);
+                    } else {
+                        let n = length.min(op.size);
+                        if n != 0 {
+                            unsafe {
+                                std::ptr::copy(source, data.add(out.position), n);
+                            }
+                        }
+                        out.skip(op.size);
                     }
                 }
                 StructKind::Bool => {
-                    for _ in 0..op.count {
-                        if align_output(&mut out, &mut offset, op.align).is_err() {
-                            return raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "total struct size too long",
-                            );
-                        }
-                        let obj = obj_from_bits(values[idx]);
-                        idx += 1;
-                        let truthy = is_truthy(_py, obj);
-                        out.push(if truthy { 1 } else { 0 });
-                        offset = match offset.checked_add(1) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                );
-                            }
-                        };
+                    let value = is_truthy(py, obj);
+                    if exception_pending(py) {
+                        return Err(MoltObject::none().bits());
                     }
+                    out.push(u8::from(value));
                 }
                 StructKind::Int { signed } => {
-                    for _ in 0..op.count {
-                        if align_output(&mut out, &mut offset, op.align).is_err() {
-                            return raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "total struct size too long",
-                            );
-                        }
-                        let obj = obj_from_bits(values[idx]);
-                        idx += 1;
-                        let bits = op.size.saturating_mul(8);
-                        let bigint = match obj_to_bigint(obj) {
-                            Ok(val) => val,
-                            Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
-                        };
-                        if signed {
-                            let (min, max) = signed_range(bits);
-                            if bigint < min || bigint > max {
-                                let msg = signed_range_message(op.code, bits);
-                                return raise_exception::<u64>(_py, "OverflowError", &msg);
-                            }
-                            let val = match bigint.to_i128() {
-                                Some(val) => val,
-                                None => {
-                                    let msg = signed_range_message(op.code, bits);
-                                    return raise_exception::<u64>(_py, "OverflowError", &msg);
+                    if op.code == 'P' {
+                        let raw = pointer_value(py, error, bits)?;
+                        push_unsigned(&mut out, plan.format.endian, op.size, raw as u128)
+                            .expect("validated pointer width");
+                        continue;
+                    }
+                    let width = op.size * 8;
+                    let value = match index_value(py, error, bits) {
+                        Ok(value) => value,
+                        Err(bits) => {
+                            // Narrow/native converters replace even callback OverflowError;
+                            // standard q/Q and native P return get_pylong failures unchanged.
+                            let replaces_overflow = op.code != 'P'
+                                && (plan.format.native_sizes || !matches!(op.code, 'q' | 'Q'));
+                            if replaces_overflow
+                                && unsafe {
+                                    abi::api::errors::PyErr_ExceptionMatches(
+                                        (&raw mut abi::abi_types::PyExc_OverflowError).cast(),
+                                    ) != 0
                                 }
-                            };
-                            if let Err(err) = push_signed(&mut out, parsed.endian, op.size, val) {
-                                return raise_exception::<u64>(_py, "OverflowError", &err);
-                            }
-                        } else {
-                            if bigint.sign() == Sign::Minus {
-                                let msg = unsigned_range_message(op.code, bits);
-                                return raise_exception::<u64>(_py, "OverflowError", &msg);
-                            }
-                            let max = unsigned_max(bits);
-                            if bigint > max {
-                                let msg = unsigned_range_message(op.code, bits);
-                                return raise_exception::<u64>(_py, "OverflowError", &msg);
-                            }
-                            let val = match bigint.to_u128() {
-                                Some(val) => val,
-                                None => {
-                                    let msg = unsigned_range_message(op.code, bits);
-                                    return raise_exception::<u64>(_py, "OverflowError", &msg);
+                            {
+                                unsafe {
+                                    abi::api::errors::PyErr_Clear();
                                 }
-                            };
-                            if let Err(err) = push_unsigned(&mut out, parsed.endian, op.size, val) {
-                                return raise_exception::<u64>(_py, "OverflowError", &err);
+                                let message = if signed {
+                                    signed_range_message(op.code, width)
+                                } else {
+                                    unsigned_range_message(op.code, width)
+                                };
+                                return Err(struct_error(py, error, &message));
                             }
+                            return Err(bits);
                         }
-                        offset = match offset.checked_add(op.size) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                );
-                            }
-                        };
+                    };
+                    if signed {
+                        let (min, max) = signed_range(width);
+                        if value < min || value > max {
+                            return Err(struct_error(
+                                py,
+                                error,
+                                &signed_range_message(op.code, width),
+                            ));
+                        }
+                        push_signed(
+                            &mut out,
+                            plan.format.endian,
+                            op.size,
+                            value.to_i128().unwrap(),
+                        )
+                        .expect("validated integer width");
+                    } else {
+                        if value.sign() == Sign::Minus || value > unsigned_max(width) {
+                            return Err(struct_error(
+                                py,
+                                error,
+                                &unsigned_range_message(op.code, width),
+                            ));
+                        }
+                        push_unsigned(
+                            &mut out,
+                            plan.format.endian,
+                            op.size,
+                            value.to_u128().unwrap(),
+                        )
+                        .expect("validated integer width");
                     }
                 }
                 StructKind::Float => {
-                    for _ in 0..op.count {
-                        if align_output(&mut out, &mut offset, op.align).is_err() {
-                            return raise_exception::<u64>(
-                                _py,
-                                "OverflowError",
-                                "total struct size too long",
-                            );
-                        }
-                        let obj = obj_from_bits(values[idx]);
-                        idx += 1;
-                        let Some(val) = to_f64(obj) else {
-                            return raise_exception::<u64>(
-                                _py,
-                                "TypeError",
-                                "required argument is not a float",
-                            );
-                        };
-                        let bytes = match op.size {
-                            2 => {
-                                let bits = match f16_from_f64(val) {
-                                    Ok(bits) => bits,
-                                    Err(
-                                        molt_obj_model::float_bits::FloatNarrowError::FiniteOverflow,
-                                    ) => {
-                                        return raise_exception::<u64>(
-                                            _py,
-                                            "OverflowError",
-                                            "float too large to pack with e format",
-                                        );
-                                    }
-                                };
-                                match parsed.endian {
-                                    StructEndian::Native => bits.to_ne_bytes().to_vec(),
-                                    StructEndian::Little => bits.to_le_bytes().to_vec(),
-                                    StructEndian::Big => bits.to_be_bytes().to_vec(),
-                                }
-                            }
-                            4 => {
-                                let bits = match molt_obj_model::float_bits::f64_to_f32_bits(val) {
-                                    Ok(bits) => bits,
-                                    Err(
-                                        molt_obj_model::float_bits::FloatNarrowError::FiniteOverflow,
-                                    ) => {
-                                        return raise_exception::<u64>(
-                                            _py,
+                    let value = float_value(py, error, bits)?;
+                    let (raw, size) = match op.size {
+                        2 => (
+                            u64::from(f16_from_f64(value).map_err(|_| {
+                                raise_exception::<u64>(
+                                    py,
+                                    "OverflowError",
+                                    "float too large to pack with e format",
+                                )
+                            })?),
+                            2,
+                        ),
+                        4 => {
+                            let bits = if plan.format.native_sizes {
+                                (value as f32).to_bits()
+                            } else {
+                                molt_obj_model::float_bits::f64_to_f32_bits(value).map_err(
+                                    |_| {
+                                        raise_exception::<u64>(
+                                            py,
                                             "OverflowError",
                                             "float too large to pack with f format",
-                                        );
-                                    }
-                                };
-                                match parsed.endian {
-                                    StructEndian::Native => bits.to_ne_bytes().to_vec(),
-                                    StructEndian::Little => bits.to_le_bytes().to_vec(),
-                                    StructEndian::Big => bits.to_be_bytes().to_vec(),
-                                }
-                            }
-                            8 => match parsed.endian {
-                                StructEndian::Native => { val }.to_ne_bytes().to_vec(),
-                                StructEndian::Little => { val }.to_le_bytes().to_vec(),
-                                StructEndian::Big => { val }.to_be_bytes().to_vec(),
-                            },
-                            _ => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "unsupported float size",
-                                );
-                            }
-                        };
-                        out.extend_from_slice(&bytes);
-                        offset = match offset.checked_add(op.size) {
-                            Some(val) => val,
-                            None => {
-                                return raise_exception::<u64>(
-                                    _py,
-                                    "OverflowError",
-                                    "total struct size too long",
-                                );
-                            }
-                        };
-                    }
+                                        )
+                                    },
+                                )?
+                            };
+                            (u64::from(bits), 4)
+                        }
+                        8 => (value.to_bits(), 8),
+                        _ => unreachable!("validated float width"),
+                    };
+                    push_unsigned(&mut out, plan.format.endian, size, u128::from(raw))
+                        .expect("validated float width");
                 }
+                StructKind::Pad => unreachable!(),
             }
         }
-        let ptr = alloc_bytes(_py, &out);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
+    }
+    Ok(())
+}
+
+fn packing_arguments(
+    py: &PyToken,
+    error: u64,
+    plan: &StructPlan,
+    values: u64,
+    operation: &str,
+) -> Result<OwnedBridgeHandleSnapshot, u64> {
+    let Some(ptr) = obj_from_bits(values).as_ptr() else {
+        return Err(struct_error(py, error, "pack expects a tuple"));
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        return Err(struct_error(py, error, "pack expects a tuple"));
+    }
+    let values = unsafe { seq_snapshot(ptr) };
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
+    }
+    if values.len() != plan.values {
+        return Err(struct_error(
+            py,
+            error,
+            &format!(
+                "{operation} expected {} items for packing (got {})",
+                plan.values,
+                values.len()
+            ),
+        ));
+    }
+    Ok(values)
+}
+
+fn unpack_record(py: &PyToken, error: Option<u64>, plan: &StructPlan, data: *const u8) -> u64 {
+    let values = match struct_unpack_values(py, plan.format, &plan.ops, data, plan.size) {
+        Ok(values) => values,
+        Err((kind, message)) => {
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            return match error {
+                Some(error) => struct_error(py, error, &message),
+                None => raise_exception::<u64>(py, kind, &message),
+            };
         }
-        MoltObject::from_ptr(ptr).bits()
+    };
+    let result = alloc_tuple(py, OwnedRuntimeValue::as_bits_slice(&values));
+    if result.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(result).bits()
+    }
+}
+
+fn checked_offset(
+    py: &PyToken,
+    error: u64,
+    raw: isize,
+    len: usize,
+    size: usize,
+    packing: bool,
+) -> Result<usize, u64> {
+    let op = if packing { "pack_into" } else { "unpack_from" };
+    let action = if packing { "packing" } else { "unpacking" };
+    let n = raw as i128;
+    if n < 0 && n + size as i128 > 0 {
+        let msg = if packing {
+            format!("no space to pack {size} bytes at offset {raw}")
+        } else {
+            format!("not enough data to unpack {size} bytes at offset {raw}")
+        };
+        return Err(struct_error(py, error, &msg));
+    }
+    let start = if n < 0 { n + len as i128 } else { n };
+    if start < 0 {
+        return Err(struct_error(
+            py,
+            error,
+            &format!("offset {raw} out of range for {len}-byte buffer"),
+        ));
+    }
+    let start = start as usize;
+    if start > len || size > len - start {
+        return Err(struct_error(
+            py,
+            error,
+            &format!(
+                "{op} requires a buffer of at least {} bytes for {action} {size} bytes at offset {raw} (actual buffer size is {len})",
+                start as u128 + size as u128
+            ),
+        ));
+    }
+    Ok(start)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_struct_calcsize(error: u64, format: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        match plan(py, error, format) {
+            Ok(plan) => int_bits_from_i128(py, plan.size as i128),
+            Err(bits) => bits,
+        }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_unpack(format_bits: u64, buffer_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let format_obj = obj_from_bits(format_bits);
-        let format = match format_obj_to_owned(_py, format_obj) {
-            Ok(format) => format,
-            Err(msg) => return raise_exception::<u64>(_py, "TypeError", msg.as_str()),
+pub extern "C" fn molt_struct_pack(error: u64, format: u64, values: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        let plan = match plan(py, error, format) {
+            Ok(plan) => plan,
+            Err(bits) => return bits,
         };
-        let (parsed, ops) = match parse_format(&format) {
-            Ok(parsed) => parsed,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
-        };
-        let Some(expected_size) = calc_size(&ops) else {
-            return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
-        };
-        let buffer_obj = obj_from_bits(buffer_bits);
-        let buf = match struct_read_buffer_bytes(_py, buffer_obj) {
-            Ok(buf) => buf,
-            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
-        };
-        if buf.len() != expected_size {
-            let msg = format!("unpack requires a buffer of {expected_size} bytes");
-            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-        }
-        let out = match struct_unpack_values(_py, parsed, &ops, buf) {
+        let values = match packing_arguments(py, error, &plan, values, "pack") {
             Ok(values) => values,
-            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+            Err(bits) => return bits,
         };
-        let tuple_ptr = alloc_tuple(_py, &out);
-        if tuple_ptr.is_null() {
-            return MoltObject::none().bits();
+        let mut output = Vec::new();
+        if output.try_reserve_exact(plan.size).is_err() {
+            return raise_exception::<u64>(py, "MemoryError", "struct output allocation failed");
         }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        output.resize(plan.size, 0);
+        if let Err(bits) = pack_values(py, error, &plan, &values, output.as_mut_ptr()) {
+            return bits;
+        }
+        let result = alloc_bytes(py, &output);
+        if result.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(result).bits()
+        }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_pack_into(buffer_bits: u64, offset_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let payload_obj = obj_from_bits(data_bits);
-        let payload_bytes = match struct_read_buffer_bytes(_py, payload_obj) {
-            Ok(buf) => buf,
-            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+pub extern "C" fn molt_struct_pack_into(
+    error: u64,
+    format: u64,
+    buffer: u64,
+    offset: u64,
+    values: u64,
+) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        let plan = match plan(py, error, format) {
+            Ok(plan) => plan,
+            Err(bits) => return bits,
         };
-        let payload = payload_bytes.to_vec();
-        let payload_len = payload.len();
-        let Some(raw_offset) = struct_index_offset(_py, offset_bits) else {
-            return MoltObject::none().bits();
+        let values = match packing_arguments(py, error, &plan, values, "pack_into") {
+            Ok(values) => values,
+            Err(bits) => return bits,
         };
-        let buffer_obj = obj_from_bits(buffer_bits);
-        let Some(buffer_ptr) = buffer_obj.as_ptr() else {
-            let msg = format!(
-                "argument must be read-write bytes-like object, not {}",
-                type_name(_py, buffer_obj)
+        let lease = match unsafe { acquire_buffer(buffer, PyBUF_WRITABLE) } {
+            Ok(lease) => lease,
+            Err(BufferAcquireError::Exporter) => {
+                unsafe {
+                    abi::api::errors::PyErr_Clear();
+                }
+                return raise_exception::<u64>(
+                    py,
+                    "TypeError",
+                    &format!(
+                        "argument must be read-write bytes-like object, not {}",
+                        if obj_from_bits(buffer).is_none() {
+                            "None".into()
+                        } else {
+                            type_name(py, obj_from_bits(buffer))
+                        }
+                    ),
+                );
+            }
+            Err(BufferAcquireError::Preparation) => return MoltObject::none().bits(),
+        };
+        let offset = match index_offset(py, offset, true) {
+            Ok(offset) => offset,
+            Err(bits) => return bits,
+        };
+        let view = unsafe { &*lease.descriptor() };
+        let start = match checked_offset(py, error, offset, view.len as usize, plan.size, true) {
+            Ok(start) => start,
+            Err(bits) => return bits,
+        };
+        let data = if view.len == 0 {
+            std::ptr::NonNull::<u8>::dangling().as_ptr()
+        } else {
+            view.buf.cast::<u8>()
+        };
+        if let Err(bits) = pack_values(py, error, &plan, &values, unsafe { data.add(start) }) {
+            return bits;
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_struct_unpack(error: u64, format: u64, buffer: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        let plan = match plan(py, error, format) {
+            Ok(plan) => plan,
+            Err(bits) => return bits,
+        };
+        let lease = match unsafe { acquire_buffer(buffer, PyBUF_SIMPLE) } {
+            Ok(lease) => lease,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        let view = unsafe { &*lease.descriptor() };
+        if view.len as usize != plan.size {
+            return struct_error(
+                py,
+                error,
+                &format!("unpack requires a buffer of {} bytes", plan.size),
             );
-            return raise_exception::<u64>(_py, "TypeError", msg.as_str());
-        };
-        let type_id = unsafe { object_type_id(buffer_ptr) };
-        let no_space_pack_message = |offset: i64| -> String {
-            format!("no space to pack {payload_len} bytes at offset {offset}")
-        };
-        let out_of_range_message = |offset: i64, buf_len: usize| -> String {
-            format!("offset {offset} out of range for {buf_len}-byte buffer")
-        };
-        let requires_message = |offset: i64, start: usize, buf_len: usize| -> String {
-            format!(
-                "pack_into requires a buffer of at least {} bytes for packing {payload_len} bytes at offset {offset} (actual buffer size is {buf_len})",
-                start.saturating_add(payload_len)
-            )
-        };
-        if type_id == TYPE_ID_BYTEARRAY {
-            let buf = unsafe { bytearray_vec(buffer_ptr) };
-            let buf_len = buf.len();
-            let Some(start) = struct_normalize_offset(raw_offset, buf_len) else {
-                let msg = out_of_range_message(raw_offset, buf_len);
-                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-            };
-            let Some(end) = start.checked_add(payload_len) else {
-                let msg = requires_message(raw_offset, start, buf_len);
-                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-            };
-            if end > buf_len {
-                let msg = if raw_offset < 0 {
-                    no_space_pack_message(raw_offset)
-                } else {
-                    requires_message(raw_offset, start, buf_len)
-                };
-                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-            }
-            if payload_len > 0 {
-                buf[start..end].copy_from_slice(&payload);
-            }
-            return MoltObject::none().bits();
         }
-        if type_id == TYPE_ID_MEMORYVIEW {
-            if !unsafe { memoryview_is_c_contiguous_view(buffer_ptr) } {
-                let msg = format!(
-                    "argument must be read-write bytes-like object, not {}",
-                    type_name(_py, buffer_obj)
-                );
-                return raise_exception::<u64>(_py, "TypeError", msg.as_str());
-            }
-            if unsafe { memoryview_readonly(buffer_ptr) } {
-                let msg = format!(
-                    "argument must be read-write bytes-like object, not {}",
-                    type_name(_py, buffer_obj)
-                );
-                return raise_exception::<u64>(_py, "TypeError", msg.as_str());
-            }
-            let buf_len = unsafe { memoryview_nbytes(buffer_ptr) };
-            let Some(start) = struct_normalize_offset(raw_offset, buf_len) else {
-                let msg = out_of_range_message(raw_offset, buf_len);
-                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-            };
-            let Some(end) = start.checked_add(payload_len) else {
-                let msg = requires_message(raw_offset, start, buf_len);
-                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-            };
-            if end > buf_len {
-                let msg = if raw_offset < 0 {
-                    no_space_pack_message(raw_offset)
-                } else {
-                    requires_message(raw_offset, start, buf_len)
-                };
-                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-            }
-            let Some((data_ptr, owner_nbytes)) =
-                (unsafe { memoryview_contiguous_window(buffer_ptr, true) })
-            else {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "argument must be read-write bytes-like object, not memoryview",
-                );
-            };
-            if owner_nbytes != buf_len {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "argument must be read-write bytes-like object, not memoryview",
-                );
-            }
-            let Some(end_abs) = start.checked_add(payload_len) else {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "argument must be read-write bytes-like object, not memoryview",
-                );
-            };
-            if end_abs > owner_nbytes {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "argument must be read-write bytes-like object, not memoryview",
-                );
-            }
-            if payload_len > 0 {
-                let dst =
-                    unsafe { std::slice::from_raw_parts_mut(data_ptr.add(start), payload_len) };
-                dst.copy_from_slice(&payload);
-            }
-            return MoltObject::none().bits();
-        }
-        let msg = format!(
-            "argument must be read-write bytes-like object, not {}",
-            type_name(_py, buffer_obj)
-        );
-        raise_exception::<u64>(_py, "TypeError", msg.as_str())
+        let data = if view.len == 0 {
+            std::ptr::NonNull::<u8>::dangling().as_ptr()
+        } else {
+            view.buf.cast::<u8>()
+        };
+        unpack_record(py, Some(error), &plan, data)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_struct_unpack_from(
-    format_bits: u64,
-    buffer_bits: u64,
-    offset_bits: u64,
+    error: u64,
+    format: u64,
+    buffer: u64,
+    offset: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let format_obj = obj_from_bits(format_bits);
-        let format = match format_obj_to_owned(_py, format_obj) {
-            Ok(format) => format,
-            Err(msg) => return raise_exception::<u64>(_py, "TypeError", msg.as_str()),
+    molt_runtime_core::with_gil_entry!(py, {
+        let plan = match plan(py, error, format) {
+            Ok(plan) => plan,
+            Err(bits) => return bits,
         };
-        let (parsed, ops) = match parse_format(&format) {
-            Ok(parsed) => parsed,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
+        let lease = match unsafe { acquire_buffer(buffer, PyBUF_SIMPLE) } {
+            Ok(lease) => lease,
+            Err(_) => return MoltObject::none().bits(),
         };
-        let Some(size) = calc_size(&ops) else {
-            return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
+        let offset = match index_offset(py, offset, false) {
+            Ok(offset) => offset,
+            Err(bits) => return bits,
         };
-        let buffer_obj = obj_from_bits(buffer_bits);
-        let buf = match struct_read_buffer_bytes(_py, buffer_obj) {
-            Ok(buf) => buf,
-            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
+        let view = unsafe { &*lease.descriptor() };
+        let start = match checked_offset(py, error, offset, view.len as usize, plan.size, false) {
+            Ok(start) => start,
+            Err(bits) => return bits,
         };
-        let Some(raw_offset) = struct_index_offset(_py, offset_bits) else {
-            return MoltObject::none().bits();
+        let data = if view.len == 0 {
+            std::ptr::NonNull::<u8>::dangling().as_ptr()
+        } else {
+            view.buf.cast::<u8>()
         };
-        let buf_len = buf.len();
-        let Some(start) = struct_normalize_offset(raw_offset, buf_len) else {
-            let msg = format!("offset {raw_offset} out of range for {buf_len}-byte buffer");
-            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-        };
-        let Some(end) = start.checked_add(size) else {
-            let msg = format!(
-                "unpack_from requires a buffer of at least {} bytes for unpacking {size} bytes at offset {raw_offset} (actual buffer size is {buf_len})",
-                start.saturating_add(size)
-            );
-            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-        };
-        if end > buf_len {
-            if raw_offset < 0 {
-                let msg = format!("not enough data to unpack {size} bytes at offset {raw_offset}");
-                return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-            }
-            let msg = format!(
-                "unpack_from requires a buffer of at least {} bytes for unpacking {size} bytes at offset {raw_offset} (actual buffer size is {buf_len})",
-                start.saturating_add(size)
-            );
-            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-        }
-        let out = match struct_unpack_values(_py, parsed, &ops, &buf[start..end]) {
-            Ok(values) => values,
-            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
-        };
-        let tuple_ptr = alloc_tuple(_py, &out);
-        if tuple_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        unpack_record(py, Some(error), &plan, unsafe { data.add(start) })
     })
 }
 
+// A normal native GC object, not an opaque runtime handle. Its only Python
+// edge is the acquired export; the parsed plan contains no Python references.
+#[repr(C)]
+struct UnpackIterator {
+    base: PyObject,
+    state: *mut UnpackState,
+}
+struct UnpackState {
+    plan: Rc<StructPlan>,
+    lease: RuntimeBufferLease,
+    index: usize,
+}
+
+unsafe extern "C" fn unpack_iter_clear(object: *mut PyObject) -> c_int {
+    // Detach before release callbacks can reenter this iterator.
+    let state = unsafe {
+        std::ptr::replace(
+            &mut (*object.cast::<UnpackIterator>()).state,
+            std::ptr::null_mut(),
+        )
+    };
+    if !state.is_null() {
+        unsafe {
+            drop(Box::from_raw(state));
+        }
+    }
+    0
+}
+
+unsafe extern "C" fn unpack_iter_dealloc(object: *mut PyObject) {
+    unsafe {
+        let class = (*object).ob_type;
+        abi::api::memory::PyObject_GC_UnTrack(object.cast());
+        unpack_iter_clear(object);
+        abi::api::memory::PyObject_GC_Del(object.cast());
+        abi::api::refcount::Py_DECREF(class.cast());
+    }
+}
+
+unsafe extern "C" fn unpack_iter_traverse(
+    object: *mut PyObject,
+    visit: *mut c_void,
+    argument: *mut c_void,
+) -> c_int {
+    let visit: unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int =
+        unsafe { std::mem::transmute(visit) };
+    let result = unsafe { visit((*object).ob_type.cast(), argument) };
+    if result != 0 {
+        return result;
+    }
+    let state = unsafe { (*object.cast::<UnpackIterator>()).state };
+    if state.is_null() {
+        return 0;
+    }
+    let owner = unsafe { (*state).lease.owner() };
+    if owner.is_null() {
+        0
+    } else {
+        unsafe { visit(owner, argument) }
+    }
+}
+
+unsafe extern "C" fn unpack_iter_hint(
+    object: *mut PyObject,
+    _unused: *mut PyObject,
+) -> *mut PyObject {
+    let state = unsafe { (*object.cast::<UnpackIterator>()).state };
+    let remaining = if state.is_null() {
+        0
+    } else {
+        unsafe {
+            let state = &*state;
+            ((*state.lease.descriptor()).len - state.index as isize) / state.plan.size as isize
+        }
+    };
+    unsafe { abi::api::numbers::PyLong_FromSsize_t(remaining) }
+}
+
+unsafe extern "C" fn unpack_iter_next(object: *mut PyObject) -> *mut PyObject {
+    molt_runtime_core::with_gil_entry!(py, {
+        let state = unsafe { (*object.cast::<UnpackIterator>()).state };
+        if state.is_null() {
+            return std::ptr::null_mut();
+        }
+        let (plan, lease, index) = unsafe {
+            let state = &*state;
+            if state.index >= (*state.lease.descriptor()).len as usize {
+                unpack_iter_clear(object);
+                return std::ptr::null_mut();
+            }
+            // Allocation/GC can clear the published state. Local owners preserve
+            // the same parsed plan and export without retaining a Rust borrow.
+            (Rc::clone(&state.plan), state.lease.clone(), state.index)
+        };
+        let data = unsafe { (*lease.descriptor()).buf.cast::<u8>().add(index) };
+        let result =
+            unsafe { OwnedRuntimeValue::from_owned_bits(py, unpack_record(py, None, &plan, data)) };
+        let current = unsafe { (*object.cast::<UnpackIterator>()).state };
+        if !current.is_null() {
+            unsafe {
+                (*current).index += plan.size;
+            }
+        }
+        drop(lease);
+        drop(plan);
+        if exception_pending(py) {
+            drop(result);
+            return unsafe {
+                abi::bridge::GLOBAL_BRIDGE
+                    .owned_result_to_pyobj(abi::hooks::OwnedHandleResult::error())
+            };
+        }
+        unsafe { abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(result.into_bits()) }
+    })
+}
+
+static mut UNPACK_ITER_METHODS: [abi::abi_types::PyMethodDef; 2] = [
+    abi::abi_types::PyMethodDef {
+        ml_name: c"__length_hint__".as_ptr(),
+        ml_meth: Some(unpack_iter_hint),
+        ml_flags: abi::abi_types::METH_NOARGS,
+        ml_doc: std::ptr::null(),
+    },
+    abi::abi_types::PyMethodDef {
+        ml_name: std::ptr::null(),
+        ml_meth: None,
+        ml_flags: 0,
+        ml_doc: std::ptr::null(),
+    },
+];
+
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_iter_unpack(format_bits: u64, buffer_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let format_obj = obj_from_bits(format_bits);
-        let format = match format_obj_to_owned(_py, format_obj) {
-            Ok(format) => format,
-            Err(msg) => return raise_exception::<u64>(_py, "TypeError", msg.as_str()),
+pub extern "C" fn molt_struct_unpack_iterator_type() -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        use abi::type_slots::*;
+        let mut slots = [
+            abi::abi_types::PyType_Slot {
+                slot: Py_tp_dealloc,
+                pfunc: unpack_iter_dealloc as *mut c_void,
+            },
+            abi::abi_types::PyType_Slot {
+                slot: Py_tp_clear,
+                pfunc: unpack_iter_clear as *mut c_void,
+            },
+            abi::abi_types::PyType_Slot {
+                slot: Py_tp_traverse,
+                pfunc: unpack_iter_traverse as *mut c_void,
+            },
+            abi::abi_types::PyType_Slot {
+                slot: Py_tp_iter,
+                pfunc: abi::api::object::PyObject_SelfIter as *mut c_void,
+            },
+            abi::abi_types::PyType_Slot {
+                slot: Py_tp_iternext,
+                pfunc: unpack_iter_next as *mut c_void,
+            },
+            abi::abi_types::PyType_Slot {
+                slot: Py_tp_getattro,
+                pfunc: abi::api::object::PyObject_GenericGetAttr as *mut c_void,
+            },
+            abi::abi_types::PyType_Slot {
+                slot: Py_tp_methods,
+                pfunc: (&raw mut UNPACK_ITER_METHODS).cast(),
+            },
+            abi::abi_types::PyType_Slot {
+                slot: 0,
+                pfunc: std::ptr::null_mut(),
+            },
+        ];
+        let mut spec = abi::abi_types::PyType_Spec {
+            name: c"_struct.unpack_iterator".as_ptr(),
+            basicsize: size_of::<UnpackIterator>() as c_int,
+            itemsize: 0,
+            flags: (abi::abi_types::Py_TPFLAGS_HAVE_GC
+                | abi::abi_types::Py_TPFLAGS_IMMUTABLETYPE
+                | abi::abi_types::Py_TPFLAGS_DISALLOW_INSTANTIATION) as u32,
+            slots: slots.as_mut_ptr(),
         };
-        let (parsed, ops) = match parse_format(&format) {
-            Ok(parsed) => parsed,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg.as_str()),
+        unsafe {
+            let class =
+                NativeObjectOwner::from_owned(abi::api::typeobj::PyType_FromSpec(&mut spec));
+            if class.as_ptr().is_null() {
+                return MoltObject::none().bits();
+            }
+            match abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(class.as_ptr()) {
+                Some(bits) => bits,
+                None => {
+                    let _ = py;
+                    MoltObject::none().bits()
+                }
+            }
+        }
+    })
+}
+
+unsafe fn admitted_iterator_class(object: *mut PyObject) -> bool {
+    unsafe {
+        if abi::bridge::molt_capi_pyobj_is_bridge_managed(object) != 0
+            || abi::api::typeobj::PyType_Check(object) == 0
+        {
+            return false;
+        }
+        let class = object.cast::<PyTypeObject>();
+        let required = abi::abi_types::Py_TPFLAGS_HAVE_GC
+            | abi::abi_types::Py_TPFLAGS_IMMUTABLETYPE
+            | abi::abi_types::Py_TPFLAGS_DISALLOW_INSTANTIATION;
+        (*class).tp_flags & required == required
+            && (*class).tp_flags & abi::abi_types::Py_TPFLAGS_BASETYPE == 0
+            && (*class).tp_basicsize == size_of::<UnpackIterator>() as isize
+            && (*class).tp_itemsize == 0
+            && (*class).tp_dictoffset == 0
+            && (*class).tp_weaklistoffset == 0
+            && (*class).tp_flags
+                & (abi::abi_types::Py_TPFLAGS_MANAGED_DICT
+                    | abi::abi_types::Py_TPFLAGS_MANAGED_WEAKREF)
+                == 0
+            && abi::api::typeobj::PyType_GetSlot(class, abi::type_slots::Py_tp_dealloc)
+                == unpack_iter_dealloc as *mut c_void
+            && abi::api::typeobj::PyType_GetSlot(class, abi::type_slots::Py_tp_clear)
+                == unpack_iter_clear as *mut c_void
+            && abi::api::typeobj::PyType_GetSlot(class, abi::type_slots::Py_tp_traverse)
+                == unpack_iter_traverse as *mut c_void
+            && abi::api::typeobj::PyType_GetSlot(class, abi::type_slots::Py_tp_iter)
+                == abi::api::object::PyObject_SelfIter as *mut c_void
+            && abi::api::typeobj::PyType_GetSlot(class, abi::type_slots::Py_tp_iternext)
+                == unpack_iter_next as *mut c_void
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_struct_iter_unpack(error: u64, class: u64, format: u64, buffer: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        let plan = match plan(py, error, format) {
+            Ok(plan) => plan,
+            Err(bits) => return bits,
         };
-        let Some(size) = calc_size(&ops) else {
-            return raise_exception::<u64>(_py, "OverflowError", "total struct size too long");
-        };
-        if size == 0 {
-            return raise_exception::<u64>(
-                _py,
-                "ValueError",
+        if plan.size == 0 {
+            return struct_error(
+                py,
+                error,
                 "cannot iteratively unpack with a struct of length 0",
             );
         }
-        let buffer_obj = obj_from_bits(buffer_bits);
-        let buf = match struct_read_buffer_bytes(_py, buffer_obj) {
-            Ok(buf) => buf,
-            Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
-        };
-        if buf.len() % size != 0 {
-            let msg =
-                format!("iterative unpacking requires a buffer of a multiple of {size} bytes");
-            return raise_exception::<u64>(_py, "ValueError", msg.as_str());
-        }
-        let tuple_count = buf.len() / size;
-        let mut tuples = Vec::with_capacity(tuple_count);
-        let mut offset = 0usize;
-        while offset < buf.len() {
-            let end = offset + size;
-            let values = match struct_unpack_values(_py, parsed, &ops, &buf[offset..end]) {
-                Ok(values) => values,
-                Err((exc, msg)) => return raise_exception::<u64>(_py, exc, msg.as_str()),
-            };
-            let tuple_ptr = alloc_tuple(_py, &values);
-            if tuple_ptr.is_null() {
+        unsafe {
+            let class = native_object(class);
+            if class.as_ptr().is_null() {
                 return MoltObject::none().bits();
             }
-            tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
-            offset = end;
+            if !admitted_iterator_class(class.as_ptr()) {
+                return raise_exception::<u64>(
+                    py,
+                    "TypeError",
+                    "invalid struct iterator declaration",
+                );
+            }
+            let iterator = NativeObjectOwner::from_owned(abi::api::typeobj::PyType_GenericAlloc(
+                class.as_ptr().cast(),
+                0,
+            ));
+            if iterator.as_ptr().is_null() {
+                return MoltObject::none().bits();
+            }
+            let lease = match acquire_buffer(buffer, PyBUF_SIMPLE) {
+                Ok(lease) => lease,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            if (*lease.descriptor()).len as usize % plan.size != 0 {
+                return struct_error(
+                    py,
+                    error,
+                    &format!(
+                        "iterative unpacking requires a buffer of a multiple of {} bytes",
+                        plan.size
+                    ),
+                );
+            }
+            let state = Box::new(UnpackState {
+                plan: Rc::new(plan),
+                lease,
+                index: 0,
+            });
+            (*iterator.as_ptr().cast::<UnpackIterator>()).state = Box::into_raw(state);
+            abi::bridge::GLOBAL_BRIDGE
+                .molt_value_for_pyobj(iterator.as_ptr())
+                .unwrap_or_else(|| MoltObject::none().bits())
         }
-        let list_ptr = alloc_list(_py, &tuples);
-        if list_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(list_ptr).bits()
     })
 }
 

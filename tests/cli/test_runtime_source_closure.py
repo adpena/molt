@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from molt.cli import runtime_source_closure as closure
-from molt.cli.cargo_source_closure import _cargo_crate_source_closure
+from molt.cli.cargo_source_closure import (
+    _cargo_crate_source_closure,
+    _cargo_locked_dependency_projection,
+)
 from molt.cli.runtime_build_identity import _tree_identity
 
 
@@ -317,3 +321,117 @@ def test_workspace_inherited_patch_dependency_rejects_invalid_features(
     )
     with pytest.raises(ValueError, match="Invalid Cargo dependency features"):
         _patched_source_digest(tmp_path, compiler)
+
+
+def _assert_runtime_zlib_provider(
+    repo_root: Path, workspace_root: Path, consumer_root: Path
+) -> None:
+    vendor = (repo_root / "vendor/rust/zlib-rs").resolve()
+    package = tomllib.loads((vendor / "Cargo.toml").read_text(encoding="utf-8"))[
+        "package"
+    ]
+    assert package["name"] == "zlib-rs"
+    workspace = tomllib.loads(
+        (workspace_root / "Cargo.toml").read_text(encoding="utf-8")
+    )
+    patch = workspace["patch"]["crates-io"]["zlib-rs"]
+    assert patch.get("package", "zlib-rs") == "zlib-rs"
+    assert (workspace_root / patch["path"]).resolve() == vendor
+    projection = _cargo_locked_dependency_projection(workspace_root, consumer_root)
+    selected = [node for node in projection["packages"] if node["name"] == "zlib-rs"]
+    # Testing the patched workspace member alone proves nothing about these
+    # actual consumers: a newer registry version can satisfy their ^0.6 ranges.
+    assert selected, f"No zlib provider reachable from {consumer_root}"
+    assert [(node["version"], node.get("source", "")) for node in selected] == [
+        (package["version"], "")
+    ], f"Runtime bypasses its maintained zlib provider: {selected!r}"
+
+
+@pytest.mark.parametrize(
+    ("workspace_relative", "consumer_relative"),
+    [
+        (".", "runtime/molt-runtime-compression"),
+        (".", "runtime/molt-runtime"),
+        ("runtime/molt-runtime/fuzz", "runtime/molt-runtime/fuzz"),
+    ],
+)
+def test_actual_runtime_consumers_select_maintained_zlib_provider(
+    workspace_relative: str, consumer_relative: str
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    _assert_runtime_zlib_provider(
+        repo_root, repo_root / workspace_relative, repo_root / consumer_relative
+    )
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "local",
+        "newer-registry",
+        "same-version-registry",
+        "mixed",
+        "missing",
+        "wrong-path",
+    ],
+)
+def test_runtime_zlib_provider_guard_observes_consumer_edges(
+    tmp_path: Path, selection: str
+) -> None:
+    # Keep the vendor package selected as a workspace member in every case,
+    # including the broken graph where actual runtime edges use the registry.
+    vendor = tmp_path / "vendor/rust/zlib-rs"
+    consumer = tmp_path / "runtime/molt-runtime-compression"
+    for path, name, version in [
+        (vendor, "zlib-rs", "0.6.8"),
+        (consumer, "molt-runtime-compression", "0.1.0"),
+    ]:
+        path.mkdir(parents=True)
+        (path / "Cargo.toml").write_text(
+            f'[package]\nname="{name}"\nversion="{version}"\n', encoding="utf-8"
+        )
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers=["runtime/molt-runtime-compression", "vendor/rust/zlib-rs"]\n'
+        '[patch.crates-io]\nzlib-rs={path="vendor/rust/zlib-rs"}\n',
+        encoding="utf-8",
+    )
+    registry = "registry+https://github.com/rust-lang/crates.io-index"
+    registry_version = "0.6.8" if selection == "same-version-registry" else "0.6.9"
+    selected = ["zlib-rs 0.6.8"]
+    if selection in {"newer-registry", "same-version-registry"}:
+        selected = [f"zlib-rs {registry_version} ({registry})"]
+    elif selection == "mixed":
+        selected.append(f"zlib-rs {registry_version} ({registry})")
+    elif selection == "missing":
+        selected = []
+    dependencies = ", ".join(f'"{reference}"' for reference in selected)
+    (tmp_path / "Cargo.lock").write_text(
+        "version=4\n"
+        '[[package]]\nname="molt-runtime-compression"\nversion="0.1.0"\n'
+        'dependencies=["flate2"]\n'
+        '[[package]]\nname="flate2"\nversion="1.1.9"\n'
+        f'source="{registry}"\ndependencies=[{dependencies}]\n'
+        '[[package]]\nname="zlib-rs"\nversion="0.6.8"\n'
+        f'[[package]]\nname="zlib-rs"\nversion="{registry_version}"\nsource="{registry}"\n'
+        # Unrelated multiple object versions remain valid; this invariant is
+        # specific to the one maintained runtime compression provider family.
+        '[[package]]\nname="object"\nversion="0.39.1"\n'
+        f'[[package]]\nname="object"\nversion="0.40.0"\nsource="{registry}"\n',
+        encoding="utf-8",
+    )
+    if selection == "wrong-path":
+        other = tmp_path / "vendor/other-zlib"
+        other.mkdir()
+        (other / "Cargo.toml").write_bytes((vendor / "Cargo.toml").read_bytes())
+        manifest = tmp_path / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                'path="vendor/rust/zlib-rs"', 'path="vendor/other-zlib"'
+            ),
+            encoding="utf-8",
+        )
+    if selection == "local":
+        _assert_runtime_zlib_provider(tmp_path, tmp_path, consumer)
+    else:
+        with pytest.raises(AssertionError):
+            _assert_runtime_zlib_provider(tmp_path, tmp_path, consumer)

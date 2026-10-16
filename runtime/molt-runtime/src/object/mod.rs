@@ -232,7 +232,9 @@ fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
     if handle.write_buf.is_empty() {
         return;
     }
-    let backend_state = Arc::clone(&handle.state);
+    let Some(backend_state) = handle.state.as_ref().cloned() else {
+        return;
+    };
     let Ok(mut guard) = backend_state.backend.lock() else {
         handle.write_buf.clear();
         return;
@@ -242,6 +244,7 @@ fn flush_file_handle_on_drop(_py: &PyToken<'_>, handle: &mut MoltFileHandle) {
         return;
     };
     let bytes = std::mem::take(&mut handle.write_buf);
+    let bytes = &bytes[std::mem::replace(&mut handle.write_start, 0)..];
     match backend {
         MoltFileBackend::File(file) => {
             let mut written = 0usize;
@@ -890,6 +893,69 @@ pub(crate) struct Buffer2D {
     pub(crate) data: buffer2d::Buffer2DStorage,
 }
 
+/// Ownership of a memoryview descriptor, carried in the existing status byte.
+/// Callback descendants retain their root as an ordinary GC edge; that edge
+/// neither extends the caller's export nor prevents explicit root.release().
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MemoryViewKind {
+    Ordinary,
+    RestrictedRelease,
+    CallbackRoot,
+    CallbackExpired,
+    CallbackDerived,
+    RestrictedCallbackRoot,
+    RestrictedCallbackExpired,
+    RestrictedCallbackDerived,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MemoryViewScope {
+    Independent,
+    Root,
+    Expired,
+    Derived,
+}
+
+impl MemoryViewKind {
+    pub(crate) fn scope(self) -> MemoryViewScope {
+        match self {
+            Self::Ordinary | Self::RestrictedRelease => MemoryViewScope::Independent,
+            Self::CallbackRoot | Self::RestrictedCallbackRoot => MemoryViewScope::Root,
+            Self::CallbackExpired | Self::RestrictedCallbackExpired => MemoryViewScope::Expired,
+            Self::CallbackDerived | Self::RestrictedCallbackDerived => MemoryViewScope::Derived,
+        }
+    }
+
+    pub(crate) fn restricted(self) -> bool {
+        matches!(
+            self,
+            Self::RestrictedRelease
+                | Self::RestrictedCallbackRoot
+                | Self::RestrictedCallbackExpired
+                | Self::RestrictedCallbackDerived
+        )
+    }
+
+    pub(crate) fn restrict(self) -> Self {
+        match self.scope() {
+            MemoryViewScope::Independent => Self::RestrictedRelease,
+            MemoryViewScope::Root => Self::RestrictedCallbackRoot,
+            MemoryViewScope::Expired => Self::RestrictedCallbackExpired,
+            MemoryViewScope::Derived => Self::RestrictedCallbackDerived,
+        }
+    }
+
+    pub(crate) fn expire(self) -> Self {
+        debug_assert_eq!(self.scope(), MemoryViewScope::Root);
+        if self.restricted() {
+            Self::RestrictedCallbackExpired
+        } else {
+            Self::CallbackExpired
+        }
+    }
+}
+
 #[repr(C)]
 pub(crate) struct MemoryView {
     pub(crate) owner_bits: u64,
@@ -902,7 +968,7 @@ pub(crate) struct MemoryView {
     pub(crate) readonly: u8,
     pub(crate) ndim: u8,
     pub(crate) released: u8,
-    pub(crate) restricted: u8,
+    pub(crate) kind: MemoryViewKind,
     pub(crate) _pad: [u8; 4],
     pub(crate) format_bits: u64,
     pub(crate) shape_ptr: *mut Vec<isize>,
@@ -983,17 +1049,39 @@ impl Drop for MoltFileState {
     }
 }
 
+/// Allocated only for a buffered writer whose raw stream may execute Python.
+/// Python values stay in the handle's traced edges, not in the synchronization owner.
+pub(crate) struct BufferedWriteOperation {
+    pub(crate) owner: std::sync::Mutex<BufferedWriteOwner>,
+    pub(crate) ready: std::sync::Condvar,
+}
+
+#[derive(Default)]
+pub(crate) struct BufferedWriteOwner {
+    pub(crate) thread: u64,
+    // Observable pending bytes while the operation temporarily owns write_buf.
+    pub(crate) pending: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileAttachment {
+    Uninitialized,
+    Attached,
+    Detached,
+}
+
 pub(crate) struct MoltFileHandle {
+    pub(crate) write_operation: Option<Arc<BufferedWriteOperation>>,
     // One Python dictionary owner shared by every native IO handle family.
     pub(crate) dict_bits: u64,
-    pub(crate) state: Arc<MoltFileState>,
+    pub(crate) state: Option<Arc<MoltFileState>>,
     pub(crate) readable: bool,
     pub(crate) writable: bool,
     pub(crate) text: bool,
     pub(crate) closefd: bool,
     pub(crate) owns_fd: bool,
     pub(crate) closed: bool,
-    pub(crate) detached: bool,
+    pub(crate) attachment: FileAttachment,
     pub(crate) line_buffering: bool,
     pub(crate) write_through: bool,
     pub(crate) buffer_size: i64,
@@ -1013,6 +1101,7 @@ pub(crate) struct MoltFileHandle {
     pub(crate) read_buf: Vec<u8>,
     pub(crate) read_pos: usize,
     pub(crate) write_buf: Vec<u8>,
+    pub(crate) write_start: usize,
     pub(crate) newlines_mask: u8,
     pub(crate) newlines_len: u8,
     pub(crate) newlines_seen: [u8; 3],
@@ -1038,6 +1127,17 @@ pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
 pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
 pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
 pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
+/// Runtime-owned storage whose identity must never escape through public heap
+/// introspection. Set while unpublished and retained for the object's lifetime;
+/// internal RC and cycle traversal still observe every owned edge.
+pub(crate) const HEADER_FLAG_INTERNAL_OWNER: u32 = 1 << 13;
+
+#[inline]
+pub(crate) unsafe fn object_is_internal_owner(ptr: *mut u8) -> bool {
+    let flags = unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() };
+    flags & HEADER_FLAG_INTERNAL_OWNER != 0
+}
+
 /// This allocation contributes to generation-0 allocation accounting. Membership
 /// may change and payload/class edges may be cleared while this lifetime claim
 /// remains set; terminal retirement consumes it exactly once.
@@ -1111,7 +1211,7 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 31] = [
+const HEADER_FLAG_REGISTRY: [u32; 32] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_REVIVAL_WINDOW,
     HEADER_FLAG_GEN_RUNNING,
@@ -1125,6 +1225,7 @@ const HEADER_FLAG_REGISTRY: [u32; 31] = [
     HEADER_FLAG_TASK_DONE,
     HEADER_FLAG_TRACEBACK_SUPPRESSED,
     HEADER_FLAG_COROUTINE,
+    HEADER_FLAG_INTERNAL_OWNER,
     HEADER_FLAG_GC_ACCOUNTED,
     HEADER_FLAG_IMMORTAL,
     HEADER_FLAG_FINALIZER_RAN,
@@ -3107,7 +3208,23 @@ pub(crate) unsafe fn memoryview_ndim(ptr: *mut u8) -> usize {
 }
 
 pub(crate) unsafe fn memoryview_released(ptr: *mut u8) -> bool {
-    unsafe { (*memoryview_ptr(ptr)).released != 0 }
+    unsafe {
+        let view = &*memoryview_ptr(ptr);
+        if view.released != 0 {
+            return true;
+        }
+        match view.kind.scope() {
+            MemoryViewScope::Expired => true,
+            MemoryViewScope::Derived => {
+                // The strong anchor edge is detached only together with released.
+                let root = obj_from_bits(view.owner_bits)
+                    .as_ptr()
+                    .expect("callback root");
+                (*memoryview_ptr(root)).kind.scope() == MemoryViewScope::Expired
+            }
+            MemoryViewScope::Independent | MemoryViewScope::Root => false,
+        }
+    }
 }
 
 pub(crate) unsafe fn memoryview_format_bits(ptr: *mut u8) -> u64 {

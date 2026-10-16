@@ -160,6 +160,11 @@ feature_prefixes = ["sqlite3_"]
 # host database channel (`db_`) but must not resolve native sqlite entrypoints.
 unsupported_target_arches = ["wasm32"]
 target_prefixes = ["sqlite3_"]
+[stdlib.locale]
+prefixes = ["locale_"]
+# CPython publishes _locale._getdefaultlocale only on Windows.
+supported_target_oses = ["windows"]
+target_prefixes = ["locale_getdefaultlocale"]
 [stdlib.crypto]
 prefixes = [
     "hash_",

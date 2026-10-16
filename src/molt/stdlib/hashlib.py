@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -38,122 +38,31 @@ _molt_hash_new = _require_intrinsic("molt_hash_new")
 _molt_hash_update = _require_intrinsic("molt_hash_update")
 _molt_hash_copy = _require_intrinsic("molt_hash_copy")
 _molt_hash_digest = _require_intrinsic("molt_hash_digest")
-_molt_hash_drop = _require_intrinsic("molt_hash_drop")
 _molt_compare_digest = _require_intrinsic("molt_compare_digest")
 _molt_pbkdf2_hmac = _require_intrinsic("molt_pbkdf2_hmac")
 _molt_scrypt = _require_intrinsic("molt_scrypt")
-
-_HASH_INFO: dict[str, tuple[int, int, bool]] = {
-    "md4": (16, 64, False),
-    "md5": (16, 64, False),
-    "ripemd160": (20, 64, False),
-    "sha1": (20, 64, False),
-    "sha224": (28, 64, False),
-    "sha256": (32, 64, False),
-    "sha384": (48, 128, False),
-    "sha512": (64, 128, False),
-    "sha512_224": (28, 128, False),
-    "sha512_256": (32, 128, False),
-    "sha3_224": (28, 144, False),
-    "sha3_256": (32, 136, False),
-    "sha3_384": (48, 104, False),
-    "sha3_512": (64, 72, False),
-    "shake_128": (0, 168, True),
-    "shake_256": (0, 136, True),
-    "blake2b": (64, 128, False),
-    "blake2s": (32, 64, False),
-}
-
-_ALIASES = {
-    "ripemd-160": "ripemd160",
-    "sha-1": "sha1",
-    "sha-224": "sha224",
-    "sha-256": "sha256",
-    "sha-384": "sha384",
-    "sha-512": "sha512",
-    "sha-512/224": "sha512_224",
-    "sha512/224": "sha512_224",
-    "sha512-224": "sha512_224",
-    "sha-512/256": "sha512_256",
-    "sha512/256": "sha512_256",
-    "sha512-256": "sha512_256",
-    "sha3-224": "sha3_224",
-    "sha3-256": "sha3_256",
-    "sha3-384": "sha3_384",
-    "sha3-512": "sha3_512",
-    "shake-128": "shake_128",
-    "shake-256": "shake_256",
-    "shake128": "shake_128",
-    "shake256": "shake_256",
-}
-
-_BLAKE2_OPTIONS = {
-    "digest_size",
-    "key",
-    "salt",
-    "person",
-    "fanout",
-    "depth",
-    "leaf_size",
-    "node_offset",
-    "node_depth",
-    "inner_size",
-    "last_node",
-}
-
-
-def _normalize_name(name: str) -> str:
-    lowered = name.strip().lower()
-    return _ALIASES.get(lowered, lowered)
-
-
-def _validate_options(
-    name: str,
-    options: dict[str, Any],
-    func_name: str,
-) -> dict[str, Any] | None:
-    opts = dict(options)
-    if "usedforsecurity" in opts:
-        opts.pop("usedforsecurity", None)
-    if not opts:
-        return None
-    allowed = _BLAKE2_OPTIONS if name in {"blake2b", "blake2s"} else set()
-    for key in opts:
-        if key not in allowed:
-            raise TypeError(f"{func_name}() got an unexpected keyword argument '{key}'")
-    return opts
-
 
 class UnsupportedDigestmodError(ValueError):
     pass
 
 
+# Native module-state identity survives rebinding its exported alias.
+_UnsupportedDigestmodError = UnsupportedDigestmodError
+
+
 class _Hash:
-    __slots__ = ("_handle", "name", "digest_size", "block_size", "_is_xof", "_options")
+    __slots__ = ("_handle", "name", "digest_size", "block_size")
 
     def __init__(
         self,
         name: str,
         data: Any = b"",
         options: dict[str, Any] | None = None,
+        unsupported_error: type[Exception] | None = None,
     ) -> None:
-        info = _HASH_INFO.get(name)
-        if info is None:
-            raise ValueError(f"unsupported hash type {name}")
-        self.name = name
-        digest_size, block_size, is_xof = info
-        if options and "digest_size" in options:
-            try:
-                digest_size = int(options["digest_size"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"digest_size must be an integer, got {type(options['digest_size']).__name__}"
-                ) from exc
-        self.digest_size = digest_size
-        self.block_size = block_size
-        self._is_xof = is_xof
-        self._options = options
-        self._handle = _molt_hash_new(name, data, options)
+        self._handle, self.name, self.digest_size, self.block_size = _molt_hash_new(
+            name, data, options, unsupported_error
+        )
 
     def update(self, data: Any) -> None:
         _molt_hash_update(self._handle, data)
@@ -164,8 +73,6 @@ class _Hash:
         other.name = self.name
         other.digest_size = self.digest_size
         other.block_size = self.block_size
-        other._is_xof = self._is_xof
-        other._options = self._options
         return other
 
     def digest(self, length: int | None = None) -> bytes:
@@ -173,16 +80,6 @@ class _Hash:
 
     def hexdigest(self, length: int | None = None) -> str:
         return self.digest(length).hex()
-
-    def __del__(self, _drop=_molt_hash_drop) -> None:
-        try:
-            handle = getattr(self, '_handle', None)
-            if handle is None:
-                return
-            object.__setattr__(self, '_handle', None)
-            _drop(handle)
-        except Exception:
-            pass
 
 
 _GUARANTEED_ALGORITHMS = {
@@ -203,27 +100,21 @@ _GUARANTEED_ALGORITHMS = {
 }
 
 algorithms_guaranteed = set(_GUARANTEED_ALGORITHMS)
-algorithms_available = set(_HASH_INFO.keys())
+algorithms_available = algorithms_guaranteed | {
+    "md4", "ripemd160", "sha512_224", "sha512_256"
+}
 
 
 def new(name: str, data: Any = b"", **kwargs: Any) -> _Hash:
-    if not isinstance(name, str):
-        raise TypeError(f"new() argument 'name' must be str, not {type(name).__name__}")
-    normalized = _normalize_name(name)
-    if normalized not in _HASH_INFO:
-        raise ValueError(f"unsupported hash type {name}")
-    options = _validate_options(normalized, kwargs, "new")
-    return _Hash(normalized, data, options)
-
-
-def __get_builtin_constructor(name: str) -> Callable[..., _Hash]:
-    if not isinstance(name, str):
-        raise TypeError("name must be str")
-    normalized = _normalize_name(name)
-    constructor = _CONSTRUCTORS.get(normalized)
-    if constructor is None:
-        raise ValueError(f"unsupported hash type {name}")
-    return constructor
+    # CPython's public dispatch observes the original object's hash before
+    # native argument conversion. Its populated builtin cache is separately
+    # queried only for the two BLAKE constructors.
+    if name in _BLAKE2_NAMES:
+        return _BLAKE2_CONSTRUCTORS[name](data, **kwargs)
+    for key in kwargs:
+        if key != "usedforsecurity":
+            raise TypeError(f"'{key}' is an invalid keyword argument for new()")
+    return _Hash(name, data, kwargs or None)
 
 
 def md4(data: Any = b"", *, usedforsecurity: bool = True) -> _Hash:
@@ -312,7 +203,6 @@ def blake2b(
         "last_node": last_node,
         "usedforsecurity": usedforsecurity,
     }
-    options = _validate_options("blake2b", options, "blake2b")
     return _Hash("blake2b", data, options)
 
 
@@ -346,8 +236,13 @@ def blake2s(
         "last_node": last_node,
         "usedforsecurity": usedforsecurity,
     }
-    options = _validate_options("blake2s", options, "blake2s")
     return _Hash("blake2s", data, options)
+
+
+# Capture the declared constructors once, as CPython's populated builtin cache
+# does. Rebinding the public blake2 aliases does not alter new(name)'s dispatch.
+_BLAKE2_NAMES = {"blake2b", "blake2s"}
+_BLAKE2_CONSTRUCTORS = {"blake2b": blake2b, "blake2s": blake2s}
 
 
 def pbkdf2_hmac(
@@ -357,7 +252,9 @@ def pbkdf2_hmac(
     iterations: int,
     dklen: int | None = None,
 ) -> bytes:
-    return _molt_pbkdf2_hmac(name, password, salt, iterations, dklen)
+    return _molt_pbkdf2_hmac(
+        name, password, salt, iterations, dklen, _UnsupportedDigestmodError
+    )
 
 
 def scrypt(
@@ -409,24 +306,5 @@ def file_digest(fileobj: Any, digest: Any) -> _Hash:
 def compare_digest(a: Any, b: Any) -> bool:
     return bool(_molt_compare_digest(a, b))
 
-
-_CONSTRUCTORS: dict[str, Callable[..., _Hash]] = {
-    "md4": md4,
-    "md5": md5,
-    "ripemd160": ripemd160,
-    "sha1": sha1,
-    "sha224": sha224,
-    "sha256": sha256,
-    "sha384": sha384,
-    "sha512": sha512,
-    "sha3_224": sha3_224,
-    "sha3_256": sha3_256,
-    "sha3_384": sha3_384,
-    "sha3_512": sha3_512,
-    "shake_128": shake_128,
-    "shake_256": shake_256,
-    "blake2b": blake2b,
-    "blake2s": blake2s,
-}
 
 globals().pop("_require_intrinsic", None)

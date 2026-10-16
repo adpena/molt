@@ -79,16 +79,19 @@ def test_builtins_facade_only_acquires_its_wrapper_dependencies(
     monkeypatch.setattr(builtins, "_molt_runtime", True, raising=False)
     monkeypatch.setitem(sys.modules, "_intrinsics", loader)
     # Site helpers are a separate runtime-owned surface, outside this bootstrap
-    # dependency contract. Use CPython's published values for the facade inputs.
+    # dependency contract. Distinct provider values also exercise isolated
+    # interpreter startup, where CPython has not published site helpers.
     site_names = ("help", "credits", "copyright", "license", "quit", "exit")
+    site_helpers = {name: object() for name in site_names}
     monkeypatch.setitem(
         sys.modules,
         "_sitebuiltins",
-        types.SimpleNamespace(**{name: getattr(builtins, name) for name in site_names}),
+        types.SimpleNamespace(**site_helpers),
     )
     path = STDLIB_INTRINSICS_PATH.parent / "builtins.py"
     namespace = dict(vars(builtins))
     exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
+    assert all(namespace[name] is value for name, value in site_helpers.items())
     assert {fn.__name__ for fn in marked} == {
         "compile",
         "input",
@@ -378,8 +381,8 @@ def test_capabilities_use_package_intrinsics_loader(
 
     def _fake_require(name: str, namespace=None):  # type: ignore[no-untyped-def]
         captured.append((name, namespace))
-        if name == "molt_env_get":
-            return lambda _key, _default="": "net,fs"
+        if name == "molt_capabilities_list":
+            return lambda: ["net", "fs"]
         if name == "molt_capabilities_trusted":
             return lambda: True
         if name == "molt_capabilities_has":
@@ -388,11 +391,12 @@ def test_capabilities_use_package_intrinsics_loader(
             return lambda _cap: None
         raise AssertionError(f"unexpected intrinsic lookup: {name}")
 
+    monkeypatch.setattr(capabilities._intrinsics, "runtime_active", lambda: True)
     monkeypatch.setattr(capabilities._intrinsics, "require", _fake_require)
     assert capabilities.capabilities() == {"net", "fs"}
     assert capabilities.trusted() is True
     assert capabilities.has("net") is True
     capabilities.require("net")
     first_name, first_namespace = captured[0]
-    assert first_name == "molt_env_get"
+    assert first_name == "molt_capabilities_list"
     assert first_namespace is capabilities.__dict__

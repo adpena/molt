@@ -4,9 +4,9 @@ use crate::{
     MemoryViewFormat, MemoryViewFormatKind, MoltObject, PyToken, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES,
     TYPE_ID_MEMORYVIEW, TYPE_ID_STRING, alloc_bytes, bytes_data, bytes_len, index_bigint_from_obj,
     is_truthy, memoryview_base_bits, memoryview_data, memoryview_format_bits, memoryview_itemsize,
-    memoryview_offset, memoryview_owner_bits, memoryview_readonly, memoryview_released,
-    memoryview_shape, memoryview_strides, obj_from_bits, object_type_id, raise_exception,
-    string_bytes, string_len, string_obj_to_owned,
+    memoryview_offset, memoryview_readonly, memoryview_released, memoryview_shape,
+    memoryview_strides, obj_from_bits, object_type_id, raise_exception, string_bytes, string_len,
+    string_obj_to_owned,
 };
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -21,7 +21,7 @@ pub(crate) unsafe fn require_exportable(py: &PyToken<'_>, view: *mut u8) -> bool
             let _ = raise_released_memoryview::<u64>(py);
             return false;
         }
-        if (*crate::memoryview_ptr(view)).restricted != 0 {
+        if (*crate::memoryview_ptr(view)).kind.restricted() {
             let _ = raise_exception::<u64>(
                 py,
                 "ValueError",
@@ -137,12 +137,7 @@ pub(crate) unsafe fn memoryview_assign_slice(
             };
             destination.slice_first_axis(py, start, stop, step)?;
             let src = source.view();
-            let format_end = src
-                .format
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(src.format.len());
-            let src_format = &src.format[..format_end];
+            let src_format = source.format();
             if src.ndim != 1
                 || src.itemsize != destination.itemsize as u64
                 || src.shape[0] != destination.shape[0]
@@ -375,6 +370,7 @@ pub(crate) unsafe fn memoryview_format_export_bytes(
 
 #[derive(Clone)]
 pub(crate) struct TypedStridedStorage {
+    pub(crate) kind: super::MemoryViewKind,
     pub(crate) data: *mut u8,
     pub(crate) len: usize,
     pub(crate) span_len: usize,
@@ -487,6 +483,7 @@ impl TypedStridedStorage {
             itemsize,
             offset,
             base_bits,
+            kind: super::MemoryViewKind::Ordinary,
             owner_bits: base_bits,
             native_lease: None,
             format_bits,
@@ -522,6 +519,34 @@ impl TypedStridedStorage {
 
     pub(crate) fn memoryview_len_field(&self) -> usize {
         self.shape.first().copied().unwrap_or(0).max(0) as usize
+    }
+
+    /// Reuse one scoped root for all descendants; ordinary views retain their
+    /// original counted owner and native lease exactly as before.
+    pub(crate) unsafe fn with_memoryview_owner(mut self, ptr: *mut u8) -> Self {
+        unsafe {
+            let view = &*crate::memoryview_ptr(ptr);
+            // Descriptor-derived scoped aliases own a real export of the
+            // callback view; descendants must share its counted retirement.
+            self.native_lease = view.native_lease.clone();
+            match view.kind.scope() {
+                super::MemoryViewScope::Root => {
+                    self.kind = super::MemoryViewKind::CallbackDerived;
+                    self.owner_bits = MoltObject::from_ptr(ptr).bits();
+                }
+                super::MemoryViewScope::Derived => {
+                    self.kind = super::MemoryViewKind::CallbackDerived;
+                    self.owner_bits = view.owner_bits;
+                }
+                _ => {
+                    self.owner_bits = view.owner_bits;
+                }
+            }
+            if view.kind.restricted() {
+                self.kind = self.kind.restrict();
+            }
+        }
+        self
     }
 
     pub(crate) fn with_owner(mut self, owner_bits: u64) -> Self {
@@ -621,11 +646,7 @@ impl TypedStridedStorage {
                 storage.shape.to_vec(),
                 storage.strides.to_vec(),
             )
-            .map(|storage| {
-                storage
-                    .with_owner(memoryview_owner_bits(ptr))
-                    .with_native_lease((*crate::memoryview_ptr(ptr)).native_lease.clone())
-            })
+            .map(|storage| storage.with_memoryview_owner(ptr))
             .ok_or(TypedStridedStorageError::InvalidDescriptor)
         }
     }
@@ -852,36 +873,12 @@ fn memoryview_is_contiguous(
     itemsize: usize,
     order: MemoryViewOrder,
 ) -> bool {
-    if shape.len() != strides.len() || itemsize == 0 || shape.iter().any(|&dim| dim < 0) {
-        return false;
-    }
-    // CPython keeps the rank-one stride flag even for an empty slice, whereas
-    // multidimensional empty buffers are contiguous regardless of strides.
-    if shape.len() > 1 && shape.contains(&0) {
-        return true;
-    }
-    let Ok(mut expected) = isize::try_from(itemsize) else {
-        return false;
-    };
-    for step in 0..shape.len() {
-        let idx = if order == MemoryViewOrder::Fortran {
-            step
-        } else {
-            shape.len() - 1 - step
-        };
-        let dim = shape[idx];
-        let stride = strides[idx];
-        // A singleton axis has no second element whose stride can matter.
-        // An empty strided view still retains its non-contiguous layout.
-        if dim < 0 || (dim != 1 && stride != expected) {
-            return false;
-        }
-        let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
-            return false;
-        };
-        expected = next_expected;
-    }
-    true
+    molt_cpython_abi::api::buffer::memoryview_layout_is_contiguous(
+        shape,
+        strides,
+        itemsize,
+        order == MemoryViewOrder::Fortran,
+    )
 }
 
 pub(crate) unsafe fn memoryview_is_c_contiguous_view(ptr: *mut u8) -> bool {
@@ -1554,6 +1551,30 @@ pub(crate) unsafe fn from_native_descriptor(
                     return raise_exception(py, "BufferError", "memoryview span overflow");
                 }
             };
+            if let Some(lease) = &lease {
+                // __buffer__ descriptor aliases retain the actual view export,
+                // including a Python __buffer__ wrapper's existing view edge.
+                // Preserve scope identity before crossing this descriptor seam.
+                let owner = unsafe {
+                    molt_cpython_abi::api::typeobj::buffer_export_memoryview(lease.owner())
+                };
+                if let Some(bits) =
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(owner)
+                    && let Some(pointer) = crate::obj_from_bits(bits.bits()).as_ptr()
+                    && unsafe { crate::object_type_id(pointer) } == TYPE_ID_MEMORYVIEW
+                {
+                    if unsafe { memoryview_released(pointer) } {
+                        crate::dec_ref_bits(py, format_bits);
+                        return raise_released_memoryview(py);
+                    }
+                    if matches!(
+                        unsafe { (*crate::memoryview_ptr(pointer)).kind.scope() },
+                        super::MemoryViewScope::Root | super::MemoryViewScope::Derived
+                    ) {
+                        storage = unsafe { storage.with_memoryview_owner(pointer) };
+                    }
+                }
+            }
             crate::alloc_memoryview_from_storage(py, storage.with_native_lease(lease))
         }
         _ => std::ptr::null_mut(),

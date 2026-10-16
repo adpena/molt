@@ -208,7 +208,7 @@
 - **Weakref:** molt_weakref_callback
 - **Traceback:** molt_traceback_format_exception, molt_traceback_extract_tb, molt_traceback_exception_chain_payload, molt_traceback_exception_suppress_context
 - **GPU:** molt_gpu_* (tensor, buffer, scheduler ops — see LANE 3)
-- **Env:** molt_env_snapshot, molt_env_set, molt_env_unset, molt_env_putenv, molt_env_unsetenv
+- **Env:** molt_env_mapping_init/get/set/delete/keys/len/items_iter own one protected Python-object mapping; molt_env_putenv/unsetenv own separate process mutation. Source implementation and target qualification are distinct; see [the findings ledger](../../agent/V1_HANDOFF_FINDINGS.md).
 - **Time:** molt_time_* (from runtime/molt-runtime/src/builtins/time.rs)
 - **Process/OS:** molt_os_getpid, molt_getuid, molt_uname, molt_cpu_count, molt_getlogin
 - **Collections:** molt_bisect_* (insort, bisect_left/right)

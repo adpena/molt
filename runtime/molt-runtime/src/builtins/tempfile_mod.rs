@@ -2,41 +2,14 @@
 
 use crate::audit::AuditArgs;
 use crate::builtins::io::{
-    PathFlavor, path_abspath_path, path_abspath_text, path_from_bits_with_flavor, path_sep_char,
+    PathFlavor, path_abspath_path, path_abspath_text, path_from_bits_with_flavor, path_result_bits,
+    path_sep_char,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::*;
 use std::io::Write;
-use std::path::{Path, PathBuf};
-
-fn path_result(py: &PyToken<'_>, path: &Path, flavor: PathFlavor) -> u64 {
-    let pointer = if flavor == PathFlavor::Bytes {
-        #[cfg(unix)]
-        use std::os::unix::ffi::OsStrExt;
-        #[cfg(target_os = "wasi")]
-        use std::os::wasi::ffi::OsStrExt;
-        #[cfg(any(unix, target_os = "wasi"))]
-        let bytes = path.as_os_str().as_bytes();
-        #[cfg(not(any(unix, target_os = "wasi")))]
-        let bytes = path.as_os_str().as_encoded_bytes();
-        alloc_bytes(py, bytes)
-    } else {
-        let Some(text) = path.to_str() else {
-            return raise_exception::<u64>(
-                py,
-                "UnicodeError",
-                "temporary path is not valid Unicode",
-            );
-        };
-        alloc_string(py, text.as_bytes())
-    };
-    if pointer.is_null() {
-        MoltObject::none().bits()
-    } else {
-        MoltObject::from_ptr(pointer).bits()
-    }
-}
+use std::path::PathBuf;
 
 fn creation_paths(
     py: &PyToken<'_>,
@@ -126,7 +99,7 @@ pub extern "C" fn molt_tempfile_gettempdir(candidates_bits: u64) -> u64 {
             let written = probe.write_all(b"blat");
             let removed = probe.close();
             if written.is_ok() && removed.is_ok() {
-                return path_result(py, &path, PathFlavor::Str);
+                return path_result_bits(py, &path, PathFlavor::Str);
             }
         }
         // The Python policy reports its original candidate list and leaves tempdir unset.
@@ -156,7 +129,7 @@ pub extern "C" fn molt_tempfile_mkdtemp(suffix: u64, prefix: u64, dir: u64) -> u
                     Ok(path) => path,
                     Err(error) => return error,
                 };
-                let result = path_result(py, &absolute, kind);
+                let result = path_result_bits(py, &absolute, kind);
                 if obj_from_bits(result).is_none() {
                     return result;
                 }
@@ -196,7 +169,7 @@ pub extern "C" fn molt_tempfile_mkstemp(suffix: u64, prefix: u64, dir: u64, text
             Ok(named) => named,
             Err(error) => return raise_os_error::<u64>(py, error, "mkstemp"),
         };
-        let path_bits = path_result(py, named.path(), kind);
+        let path_bits = path_result_bits(py, named.path(), kind);
         if obj_from_bits(path_bits).is_none() {
             return path_bits;
         }

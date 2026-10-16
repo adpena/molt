@@ -2,8 +2,8 @@
 use crate::exception_pending;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_SET, TYPE_ID_TUPLE,
-    dec_ref_bits, dict_len, dict_update_apply, dict_update_set_in_place, obj_from_bits,
-    object_type_id, raise_exception, usize_from_bits,
+    dec_ref_bits, dict_update_apply, dict_update_set_in_place, obj_from_bits, object_type_id,
+    raise_exception, usize_from_bits,
 };
 
 #[unsafe(no_mangle)]
@@ -95,16 +95,9 @@ pub(crate) fn dict_pair_from_item(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(obj_bits);
-        let mut capacity = 0usize;
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_DICT {
-                    capacity = dict_len(ptr);
-                }
-            }
-        }
-        let dict_bits = molt_dict_new(capacity as u64);
+        // Direct mapping merge owns its clone/presize policy; generic mappings
+        // begin empty and grow while consuming their real protocol.
+        let dict_bits = molt_dict_new(0);
         if obj_from_bits(dict_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -146,7 +139,7 @@ pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::set_len;
+    use crate::{dict_len, set_len};
 
     #[test]
     fn hash_aggregate_constructors_accept_raw_capacity_counts() {

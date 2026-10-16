@@ -1265,12 +1265,19 @@ def _load_module_import_scan(
         project_root = None
     snapshot = source_snapshot
     if snapshot is not None:
-        if snapshot.path != path or source is not None and source != snapshot.text:
+        if snapshot.path != path:
             raise ValueError("source scan snapshot does not match supplied source")
-        source = snapshot.text
+        captured_source = snapshot.text_for_filename(
+            str(path) if source_filename is None else source_filename
+        )
+        if source is not None and source != captured_source:
+            raise ValueError("source scan snapshot does not match supplied source")
+        source = captured_source
     elif source is None and tree is None:
         snapshot = _module_source.PythonSourceSnapshot.capture(path)
-        source = snapshot.text
+        source = snapshot.text_for_filename(
+            str(path) if source_filename is None else source_filename
+        )
 
     if snapshot is not None and source is not None and retain_source:
         resolution_cache.source_cache[resolution_cache.resolved_path(path)] = source
