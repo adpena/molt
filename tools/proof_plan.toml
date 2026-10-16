@@ -4829,6 +4829,17 @@ timeout_seconds = 1800
 
 [[named_lane]]
 cache_domain = "cargo-workspace"
+id = "runtime.compression-streams"
+description = "Exercise persistent compression decoder policy and its shared native integer conversion contracts without rebuilding the root runtime."
+argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "--no-fail-fast", "-p", "molt-runtime-compression", "-p", "molt-lang-cpython-abi", "--lib", "--test", "test_numbers", "--", "--test-threads=4"]
+toolchains = ["cargo", "rustc", "python"]
+cargo_native_units = { target = ["c"] }
+resource_family = "rust"
+contention_key = "cargo-native-runtime"
+timeout_seconds = 600
+
+[[named_lane]]
+cache_domain = "cargo-workspace"
 id = "runtime.abi-fixture-authorities"
 description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
@@ -5160,3 +5171,10 @@ globs = [
   "runtime/molt-cpython-abi-test-support/**",
 ]
 gates = ["cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4"]
+
+[[rule]]
+name = "compression-stream-state"
+toolchains = ["rustc", "cargo", "python"]
+description = "Compression engine and bounded stream state use one small Cargo graph, with the existing native integer oracle."
+globs = ["runtime/molt-runtime-compression/src/**/*.rs"]
+gates = ["cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-compression -p molt-lang-cpython-abi --lib --test test_numbers -- --test-threads=4"]

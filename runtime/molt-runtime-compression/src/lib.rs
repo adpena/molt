@@ -11,6 +11,7 @@ mod bridge_test_stubs;
 pub mod bz2;
 pub mod compression_common;
 pub mod gzip;
+mod stream;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lzma;
 #[allow(dead_code)]

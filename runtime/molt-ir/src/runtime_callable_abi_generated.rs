@@ -6309,7 +6309,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_lzma_decompressor_new",
-        arity: 2,
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {

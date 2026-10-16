@@ -196,6 +196,18 @@ selection must not acquire a second implementation in Rust or an ambient host
 program. Requested output bounds and owner-backed streaming state bound retained
 memory and avoid repeated whole-input decoding or copying (V1-19/V1-30).
 
+Incremental BZ2/LZMA decoding shares `molt-runtime-compression/src/stream.rs`:
+one persistent maintained engine, borrowed fresh input, an amortized cursor for
+retained compressed tails, and output windows bounded by the caller's request.
+The [pinned BZ2](https://github.com/python/cpython/blob/v3.12.13/Modules/_bz2module.c)
+and [LZMA](https://github.com/python/cpython/blob/v3.12.13/Modules/_lzmamodule.c)
+modules govern EOF, zero-output calls, unused input and their distinct
+`needs_input` rules. Failed processing retires pending input so it cannot replay
+against an advanced engine. Argument conversion reuses the native integer
+owner, with an immediate-integer fast path. Zlib keeps its distinct public
+`max_length=0` and unconsumed-tail protocol. File-object, raw-filter and target
+qualification remain with the existing release obligations.
+
 ### D. Typed identity everywhere
 
 Class facts are keyed by binding-flow definition identity, and decorators are

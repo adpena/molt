@@ -1686,7 +1686,12 @@ unsafe fn layout_long_as_native_bytes(
 ) -> Py_ssize_t {
     let sign = layout_long_sign(tag);
     if sign < 0 && reject_negative {
-        set_long_overflow_msg(c"can't convert negative int to unsigned");
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast::<PyObject>(),
+                c"Cannot convert negative int".as_ptr(),
+            );
+        }
         return -1;
     }
     let bits = unsafe { layout_long_num_bits(op, tag) };

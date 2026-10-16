@@ -244,7 +244,7 @@ fn test_native_lzma_c_exports_resolve_to_extracted_owners() {
     check_export!(molt_lzma_compressor_new(u64, u64, u64));
     check_export!(molt_lzma_compressor_compress(u64, u64, u64));
     check_export!(molt_lzma_compressor_flush(u64, u64));
-    check_export!(molt_lzma_decompressor_new(u64, u64));
+    check_export!(molt_lzma_decompressor_new(u64, u64, u64));
     check_export!(molt_lzma_decompressor_decompress(u64, u64, u64, u64));
     check_export!(molt_lzma_decompressor_eof(u64, u64));
     check_export!(molt_lzma_decompressor_needs_input(u64, u64));

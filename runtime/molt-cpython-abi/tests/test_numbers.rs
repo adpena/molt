@@ -1972,6 +1972,115 @@ unsafe extern "C" fn owned_index_slot_result(_object: *mut PyObject) -> *mut PyO
     SLOT_RESULT.with(|value| value.replace(0)) as *mut PyObject
 }
 
+#[test]
+fn native_bytes_reject_negative_preserves_error_and_buffer_across_integer_owners() {
+    use molt_cpython_abi::api::{errors, numbers, refcount};
+    let _abi_test = init();
+    with_numeric_warning_provider(|| unsafe {
+        // Pinned CPython 3.13–3.15 Objects/longobject.c rejects negatives with
+        // ValueError before writing bytes, including size queries. Physical
+        // digits and literal byte patterns are independent conversion oracles.
+        let mut exact =
+            physical_long_fixture(&raw mut molt_cpython_abi::abi_types::PyLong_Type, true, 257);
+        let mut subtype = support::StaticType::new();
+        subtype.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+        subtype.tp_base = &raw mut molt_cpython_abi::abi_types::PyLong_Type;
+        subtype.tp_name = c"NegativeInt".as_ptr();
+        let mut physical = physical_long_fixture(subtype.as_ptr(), true, 1u128 << 100);
+        let fresh = refcount::OwnedPyObject::from_owned(numbers::PyLong_FromLong(-257));
+        let runtime = refcount::OwnedPyObject::from_owned(
+            GLOBAL_BRIDGE
+                .owned_handle_to_pyobj(support::fake_runtime::heap_integer(-(1i128 << 100))),
+        );
+        assert!(!fresh.as_ptr().is_null());
+        assert!(!runtime.as_ptr().is_null());
+
+        let mut slots: PyNumberMethods = std::mem::zeroed();
+        slots.nb_index = borrowed_slot_result as *const () as *mut c_void;
+        let mut source_type = support::StaticType::new();
+        source_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
+        source_type.tp_name = c"NegativeIndex".as_ptr();
+        source_type.tp_as_number = (&raw mut slots).cast();
+        let mut indexed = PyObject {
+            ob_refcnt: 1,
+            ob_type: source_type.as_ptr(),
+        };
+        SLOT_RESULT.with(|value| value.set((&raw mut exact) as usize));
+
+        let cases = [
+            ((&raw mut exact).cast(), false, 2, (-257i64).to_ne_bytes()),
+            ((&raw mut physical).cast(), false, 13, [0; 8]),
+            (fresh.as_ptr(), false, 2, (-257i64).to_ne_bytes()),
+            (runtime.as_ptr(), false, 13, [0; 8]),
+            (&raw mut indexed, true, 2, (-257i64).to_ne_bytes()),
+        ];
+        for (object, indexed, width, encoded) in cases {
+            let refcount_before = (*object).ob_refcnt;
+            for flags in [8, 8 | 4, 8 | 2, 8 | 2 | 4, 8 | 256] {
+                let flags = flags | if indexed { 16 } else { 0 };
+                for n_bytes in [0, 1, 8] {
+                    let mut buffer = [0xa5u8; 8];
+                    let destination = if n_bytes == 0 {
+                        ptr::null_mut()
+                    } else {
+                        buffer.as_mut_ptr().cast()
+                    };
+                    assert_eq!(
+                        numbers::PyLong_AsNativeBytes(object, destination, n_bytes, flags),
+                        -1,
+                        "flags {flags}, n_bytes {n_bytes}"
+                    );
+                    assert_eq!(buffer, [0xa5; 8], "rejection must not write output");
+                    assert_eq!(
+                        errors::PyErr_ExceptionMatches(
+                            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast()
+                        ),
+                        1
+                    );
+                    assert_eq!(
+                        support::take_current_error_text().as_deref(),
+                        Some("Cannot convert negative int")
+                    );
+                    errors::PyErr_Clear();
+                }
+            }
+            // DEFAULTS=-1 includes the REJECT_NEGATIVE bit numerically, but
+            // explicitly does not enable it. ALLOW_INDEX uses explicit flags.
+            let flags = if indexed { 2 | 4 | 16 } else { -1 };
+            let mut buffer = [0xa5u8; 8];
+            let required =
+                numbers::PyLong_AsNativeBytes(object, buffer.as_mut_ptr().cast(), 8, flags);
+            if width <= 8 {
+                // CPython may report the supplied width for compact values;
+                // this control owns flag semantics, not minimal-size policy.
+                assert!((1..=8).contains(&required));
+            } else {
+                assert_eq!(required, width);
+            }
+            assert_eq!(buffer, encoded);
+            assert!(errors::PyErr_Occurred().is_null());
+            assert_eq!((*object).ob_refcnt, refcount_before);
+
+            if !indexed {
+                // The distinct AsUnsigned* API keeps its OverflowError.
+                assert_eq!(numbers::PyLong_AsUnsignedLongLong(object), u64::MAX);
+                assert_eq!(
+                    errors::PyErr_ExceptionMatches(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast()
+                    ),
+                    1
+                );
+                assert_eq!(
+                    support::take_current_error_text().as_deref(),
+                    Some("can't convert negative int to unsigned")
+                );
+                errors::PyErr_Clear();
+            }
+        }
+        assert_eq!(exact.ob_base.ob_refcnt, 1, "index result must be retired");
+    });
+}
+
 thread_local! {
     static INDEX_RESULT_ERROR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static INDEX_OVERFLOW_OUTPUT: Cell<*mut i32> = const { Cell::new(ptr::null_mut()) };

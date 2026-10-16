@@ -1,4 +1,6 @@
 use crate::bridge::*;
+use crate::compression_common::{CodecIndexRole, codec_index};
+use crate::stream::{DecodeError, DecodeStep, Decoder, StreamDecoder};
 use bzip2::Compression as BzCompression;
 use bzip2::read::BzDecoder;
 use bzip2::write::BzEncoder;
@@ -210,10 +212,38 @@ pub extern "C" fn molt_bz2_compressor_flush(handle_bits: u64) -> u64 {
 
 // ── Stateful BZ2Decompressor handle ──────────────────────────────────────────
 
+impl Decoder for bzip2::Decompress {
+    const DRAIN_AFTER_FULL_OUTPUT: bool = false;
+
+    fn process(&mut self, input: &[u8], output: &mut [u8]) -> Result<DecodeStep, DecodeError> {
+        let before_in = self.total_in();
+        let before_out = self.total_out();
+        let status = self
+            .decompress(input, output)
+            .map_err(|error| match error {
+                bzip2::Error::Data | bzip2::Error::DataMagic => {
+                    DecodeError::Codec("Invalid data stream")
+                }
+                bzip2::Error::Param => {
+                    DecodeError::Value("Internal error - invalid parameters passed to libbzip2")
+                }
+                bzip2::Error::Sequence => DecodeError::Runtime(
+                    "Internal error - Invalid sequence of commands sent to libbzip2",
+                ),
+            })?;
+        if status == bzip2::Status::MemNeeded {
+            return Err(DecodeError::Memory);
+        }
+        Ok(DecodeStep {
+            consumed: (self.total_in() - before_in) as usize,
+            written: (self.total_out() - before_out) as usize,
+            end: status == bzip2::Status::StreamEnd,
+        })
+    }
+}
+
 pub struct Bz2DecompressorHandle {
-    leftover: Vec<u8>,
-    eof: bool,
-    needs_input: bool,
+    state: StreamDecoder<bzip2::Decompress>,
 }
 
 fn bz2_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2DecompressorHandle>>> {
@@ -227,9 +257,7 @@ fn bz2_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2DecompressorHand
 pub extern "C" fn molt_bz2_decompressor_new() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let handle = Arc::new(Mutex::new(Bz2DecompressorHandle {
-            leftover: Vec::new(),
-            eof: false,
-            needs_input: true,
+            state: StreamDecoder::new(bzip2::Decompress::new(false)),
         }));
         unsafe {
             molt_runtime_core::transfer_native_arc(
@@ -264,50 +292,28 @@ pub extern "C" fn molt_bz2_decompressor_decompress(
         ) {
             return MoltObject::none().bits();
         }
-        let max_len = {
-            let obj = obj_from_bits(max_length_bits);
-            if obj.is_none() {
-                -1i64
-            } else {
-                let val = index_i64_from_obj(_py, max_length_bits, "max_length must be an integer");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                val
-            }
+        let max_len = match codec_index(_py, max_length_bits, CodecIndexRole::OutputSize) {
+            Ok(value) => value,
+            Err(bits) => return bits,
         };
 
         let mut handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if handle.eof {
-            drop(handle);
-            return raise_exception(_py, "EOFError", "End of stream already reached");
-        }
-        // Concatenate leftover + new data then run through a single-shot decoder.
-        // This is correct for bzip2 because each bz2 stream is independently decodeable.
-        let mut input = std::mem::take(&mut handle.leftover);
-        input.extend_from_slice(unsafe { new_data_export.bytes(_py) });
-        let mut decoder = BzDecoder::new(input.as_slice());
-        let mut out = Vec::new();
-        match decoder.read_to_end(&mut out) {
-            Ok(_) => {
-                handle.eof = true;
-                handle.needs_input = false;
-            }
-            Err(_) => {
-                // Partial data — store for next call
-                handle.leftover = input;
-                handle.needs_input = true;
-                // Return whatever we managed to decode (may be empty)
-            }
-        }
-        // Honour max_length
-        if max_len >= 0 && out.len() > max_len as usize {
-            out.truncate(max_len as usize);
-        }
+        let result = handle
+            .state
+            .decompress(unsafe { new_data_export.bytes(_py) }, max_len);
         drop(handle);
-        return_bytes(_py, &out)
+        match result {
+            Ok(output) => return_bytes(_py, &output),
+            Err(DecodeError::Memory) => raise_exception(_py, "MemoryError", "out of memory"),
+            Err(DecodeError::Codec(message)) => raise_exception(_py, "OSError", message),
+            Err(DecodeError::Value(message)) => raise_exception(_py, "ValueError", message),
+            Err(DecodeError::Runtime(message)) => raise_exception(_py, "RuntimeError", message),
+            Err(DecodeError::Eof) => {
+                raise_exception(_py, "EOFError", "End of stream already reached")
+            }
+        }
     })
 }
 
@@ -322,7 +328,7 @@ pub extern "C" fn molt_bz2_decompressor_eof(handle_bits: u64) -> u64 {
         let handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        MoltObject::from_bool(handle.eof).bits()
+        MoltObject::from_bool(handle.state.eof).bits()
     })
 }
 
@@ -337,7 +343,7 @@ pub extern "C" fn molt_bz2_decompressor_needs_input(handle_bits: u64) -> u64 {
         let handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        MoltObject::from_bool(handle.needs_input).bits()
+        MoltObject::from_bool(handle.state.needs_input).bits()
     })
 }
 
@@ -352,20 +358,12 @@ pub extern "C" fn molt_bz2_decompressor_unused_data(handle_bits: u64) -> u64 {
             return raise_exception(_py, "OSError", "invalid bz2 decompressor handle");
         };
 
-        // unused_data is the data after the end-of-stream (empty until eof)
         let handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if handle.eof {
-            {
-                let bytes = handle.leftover.clone();
-                drop(handle);
-                return_bytes(_py, &bytes)
-            }
-        } else {
-            drop(handle);
-            return_bytes(_py, &[])
-        }
+        let bytes = handle.state.unused_data().to_vec();
+        drop(handle);
+        return_bytes(_py, &bytes)
     })
 }
 

@@ -1,4 +1,6 @@
 use crate::bridge::*;
+use crate::compression_common::{CodecIndexRole, codec_index, codec_uint64};
+use crate::stream::{DecodeError, DecodeStep, Decoder, StreamDecoder};
 use molt_cpython_abi::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
@@ -461,12 +463,45 @@ pub extern "C" fn molt_lzma_compressor_flush(error_class: u64, handle_bits: u64)
 
 // ── Stateful LZMADecompressor handle ─────────────────────────────────────────
 
+fn lzma_decode_error(error: xz2::stream::Error) -> DecodeError {
+    use xz2::stream::Error;
+    match error {
+        Error::Mem => DecodeError::Memory,
+        Error::MemLimit => DecodeError::Codec("Memory usage limit exceeded"),
+        Error::Format => DecodeError::Codec("Input format not supported by decoder"),
+        Error::Data => DecodeError::Codec("Corrupt input data"),
+        Error::Options => DecodeError::Codec("Invalid or unsupported options"),
+        _ => DecodeError::Codec("Internal error"),
+    }
+}
+
+impl Decoder for xz2::stream::Stream {
+    const DRAIN_AFTER_FULL_OUTPUT: bool = true;
+
+    fn process(&mut self, input: &[u8], output: &mut [u8]) -> Result<DecodeStep, DecodeError> {
+        use xz2::stream::{Action, Error, Status};
+        let before_in = self.total_in();
+        let before_out = self.total_out();
+        let status = self.process(input, output, Action::Run);
+        let consumed = (self.total_in() - before_in) as usize;
+        let written = (self.total_out() - before_out) as usize;
+        let end = match status {
+            Ok(Status::MemNeeded) if consumed == input.len() && written < output.len() => false,
+            Ok(Status::MemNeeded) => return Err(DecodeError::Codec("Insufficient buffer space")),
+            Ok(status) => status == Status::StreamEnd,
+            Err(Error::NoCheck) => false,
+            Err(error) => return Err(lzma_decode_error(error)),
+        };
+        Ok(DecodeStep {
+            consumed,
+            written,
+            end,
+        })
+    }
+}
+
 pub struct LzmaDecompressorHandle {
-    format: i64,
-    input_buffer: Vec<u8>,
-    eof: bool,
-    unused_data: Vec<u8>,
-    needs_input: bool,
+    state: StreamDecoder<xz2::stream::Stream>,
 }
 
 fn lzma_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaDecompressorHandle>>> {
@@ -475,18 +510,68 @@ fn lzma_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaDecompressorHa
     }
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_new(format_bits: u64, _memlimit_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_new(
+    error_class: u64,
+    format_bits: u64,
+    memlimit_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let format = match opt_i64(_py, format_bits, FORMAT_AUTO, "format") {
-            Ok(v) => v,
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let format = match codec_index(_py, format_bits, CodecIndexRole::CInt) {
+            Ok(value) => value,
             Err(bits) => return bits,
         };
+        if format == FORMAT_RAW && !obj_from_bits(memlimit_bits).is_none() {
+            return raise_exception(
+                _py,
+                "ValueError",
+                "Cannot specify memory limit with FORMAT_RAW",
+            );
+        }
+        let memlimit = if obj_from_bits(memlimit_bits).is_none() {
+            u64::MAX
+        } else {
+            match codec_uint64(_py, memlimit_bits) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            }
+        };
+        let engine = match format {
+            FORMAT_AUTO => xz2::stream::Stream::new_auto_decoder(memlimit, 0),
+            FORMAT_XZ => xz2::stream::Stream::new_stream_decoder(memlimit, 0),
+            FORMAT_ALONE => xz2::stream::Stream::new_lzma_decoder(memlimit),
+            FORMAT_RAW => {
+                let message = if obj_from_bits(memlimit_bits).is_none() {
+                    "Must specify filters for FORMAT_RAW"
+                } else {
+                    "Cannot specify memory limit with FORMAT_RAW"
+                };
+                return raise_exception(_py, "ValueError", message);
+            }
+            _ => {
+                return raise_exception(
+                    _py,
+                    "ValueError",
+                    &format!("Invalid container format: {format}"),
+                );
+            }
+        };
+        let engine = match engine {
+            Ok(engine) => engine,
+            Err(error) => {
+                return match lzma_decode_error(error) {
+                    DecodeError::Memory => raise_exception(_py, "MemoryError", "out of memory"),
+                    DecodeError::Codec(message) => {
+                        molt_runtime_core::rt_raise_class(_py, error_owner.bits(), message)
+                    }
+                    DecodeError::Value(message) => raise_exception(_py, "ValueError", message),
+                    DecodeError::Runtime(message) => raise_exception(_py, "RuntimeError", message),
+                    DecodeError::Eof => unreachable!(),
+                };
+            }
+        };
         let handle = Arc::new(Mutex::new(LzmaDecompressorHandle {
-            format,
-            input_buffer: Vec::new(),
-            eof: false,
-            unused_data: Vec::new(),
-            needs_input: true,
+            state: StreamDecoder::new(engine),
         }));
         unsafe {
             molt_runtime_core::transfer_native_arc(
@@ -528,74 +613,26 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
         ) {
             return MoltObject::none().bits();
         }
-        let max_len = match opt_i64(_py, max_length_bits, -1, "max_length") {
-            Ok(v) => v,
+        let max_len = match codec_index(_py, max_length_bits, CodecIndexRole::OutputSize) {
+            Ok(value) => value,
             Err(bits) => return bits,
         };
-
         let mut handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if handle.eof {
-            drop(handle);
-            return raise_exception(_py, "EOFError", "End of stream already reached");
-        }
-        handle
-            .input_buffer
-            .extend_from_slice(unsafe { new_data_export.bytes(_py) });
-        let input = std::mem::take(&mut handle.input_buffer);
-        let format = handle.format;
-        let effective_format = if format == FORMAT_AUTO {
-            if input.starts_with(b"\xfd7zXZ\x00") {
-                FORMAT_XZ
-            } else {
-                FORMAT_ALONE
-            }
-        } else {
-            format
-        };
-        let result: Result<Vec<u8>, std::io::Error> = match effective_format {
-            FORMAT_XZ => {
-                let mut dec = xz2::read::XzDecoder::new(input.as_slice());
-                let mut out = Vec::new();
-                dec.read_to_end(&mut out).map(|_| out)
-            }
-            FORMAT_ALONE | FORMAT_RAW => {
-                let stream = match xz2::stream::Stream::new_lzma_decoder(u64::MAX) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        handle.input_buffer = input;
-                        let msg = format!("lzma init error: {e}");
-                        drop(handle);
-                        return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
-                    }
-                };
-                let mut dec = xz2::read::XzDecoder::new_stream(input.as_slice(), stream);
-                let mut out = Vec::new();
-                dec.read_to_end(&mut out).map(|_| out)
-            }
-            _ => {
-                drop(handle);
-                return raise_exception(_py, "ValueError", "unknown format");
-            }
-        };
+        let result = handle
+            .state
+            .decompress(unsafe { new_data_export.bytes(_py) }, max_len);
+        drop(handle);
         match result {
-            Ok(mut out) => {
-                handle.eof = true;
-                handle.needs_input = false;
-                handle.unused_data = Vec::new();
-                if max_len >= 0 && out.len() > max_len as usize {
-                    out.truncate(max_len as usize);
-                }
-                drop(handle);
-                return_bytes(_py, &out)
+            Ok(output) => return_bytes(_py, &output),
+            Err(DecodeError::Memory) => raise_exception(_py, "MemoryError", "out of memory"),
+            Err(DecodeError::Codec(message)) => {
+                molt_runtime_core::rt_raise_class(_py, error_class, message)
             }
-            Err(_) => {
-                handle.input_buffer = input;
-                handle.needs_input = true;
-                drop(handle);
-                return_bytes(_py, &[])
-            }
+            Err(DecodeError::Value(message)) => raise_exception(_py, "ValueError", message),
+            Err(DecodeError::Runtime(message)) => raise_exception(_py, "RuntimeError", message),
+            Err(DecodeError::Eof) => raise_exception(_py, "EOFError", "Already at end of stream"),
         }
     })
 }
@@ -617,7 +654,7 @@ pub extern "C" fn molt_lzma_decompressor_eof(error_class: u64, handle_bits: u64)
         let handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        MoltObject::from_bool(handle.eof).bits()
+        MoltObject::from_bool(handle.state.eof).bits()
     })
 }
 
@@ -638,7 +675,7 @@ pub extern "C" fn molt_lzma_decompressor_needs_input(error_class: u64, handle_bi
         let handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        MoltObject::from_bool(handle.needs_input).bits()
+        MoltObject::from_bool(handle.state.needs_input).bits()
     })
 }
 
@@ -659,7 +696,8 @@ pub extern "C" fn molt_lzma_decompressor_unused_data(error_class: u64, handle_bi
         let handle = handle_owner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let tail = handle.unused_data.clone();
+        let tail = handle.state.unused_data().to_vec();
+        drop(handle);
         return_bytes(_py, &tail)
     })
 }
