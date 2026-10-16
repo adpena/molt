@@ -17542,6 +17542,75 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     assert captured == {"selected": custody_spelling(expected)}
 
 
+@pytest.mark.parametrize("transport", ["cargo", "python", "uv-script", "uv-module"])
+@pytest.mark.parametrize("selector", [None, "", "explicit"])
+def test_cargo_build_tool_binding_preserves_outer_python_resolution_context(
+    tmp_path, monkeypatch, transport, selector
+):
+    path_dir = tmp_path / "path"
+    selected_dir = tmp_path / "selected"
+    path_dir.mkdir()
+    selected_dir.mkdir()
+    path_cargo = path_dir / native_executable_name("cargo")
+    explicit_cargo = selected_dir / native_executable_name("cargo")
+    for image, content in (
+        (path_cargo, b"PATH Cargo"),
+        (explicit_cargo, b"selected Cargo"),
+    ):
+        image.write_bytes(content)
+        image.chmod(0o755)
+    payload = ["cargo", "build", "--locked", "-p", "molt-runtime", "--lib"]
+    uv_prefix = [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+    ]
+    if transport == "cargo":
+        command = payload
+    elif transport == "python":
+        command = [sys.executable, "tools/guarded_exec.py", "--", *payload]
+    elif transport == "uv-script":
+        command = [*uv_prefix, "python", "tools/guarded_exec.py", "--", *payload]
+    else:
+        command = [*uv_prefix, "python", "-m", "tools.guarded_exec", "--", *payload]
+    env = {"PATH": str(path_dir)}
+    if selector is not None:
+        env["CARGO"] = str(explicit_cargo) if selector == "explicit" else selector
+    probes = []
+
+    def capture_probe(argv, *, cwd, env):
+        # Independent transport oracle: a Cargo PATH query runs in the outer
+        # uv-selected Python, never by appending Python flags to Cargo argv.
+        assert argv[: len(uv_prefix) + 2] == [*uv_prefix, "python", "-c"]
+        assert argv[-1] == "cargo"
+        assert "guarded_exec.py" not in argv
+        probes.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps({"path": str(path_cargo)}), ""
+        )
+
+    monkeypatch.setattr(command_identity, "_run_captured", capture_probe)
+    monkeypatch.setattr(
+        execution_environment.toolchain_capture,
+        "select_cargo_build_tool_environment",
+        lambda **_kwargs: ({}, {}),
+    )
+    envelope = command_admission.envelope_for_command(command)
+    selected, contract = execution_environment._bind_cargo_build_tool_environment(
+        envelope, env, {}, cwd=state.ROOT
+    )
+    expected = explicit_cargo if selector == "explicit" else path_cargo
+    assert selected["CARGO"] == str(expected)
+    assert "CARGO" in contract["passed_names"]
+    assert len(probes) == int(transport.startswith("uv-") and selector != "explicit")
+
+
 @pytest.mark.parametrize("selector", [None, "", "missing"])
 def test_cargo_selection_has_no_missing_selector_path_fallback(tmp_path, selector):
     proxy = tmp_path / ("cargo.exe" if os.name == "nt" else "cargo")

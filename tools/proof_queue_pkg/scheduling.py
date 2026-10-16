@@ -21,10 +21,28 @@ def _lane_maturity_admission(
     logical_id: str,
     resource_family: str,
     depends_on: Sequence[str] = (),
+    edge_kind: str = state.DEFAULT_EDGE_KIND,
+    existing_run_id: str | None = None,
 ) -> lane_maturity.Decision:
+    if edge_kind not in state.EDGE_KINDS:
+        allowed = ", ".join(sorted(state.EDGE_KINDS))
+        raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
+    # Incoming --depends-on values share one edge kind. A queued replay owns
+    # its already-persisted, potentially mixed-kind DAG instead of caller args.
+    # Only scheduling dependencies require cross-lane artifact readiness.
+    if existing_run_id is not None:
+        scheduling_parents = {
+            str(parent["parent_run_id"])
+            for parent in _parent_statuses(conn, existing_run_id)
+            if parent["kind"] in state._SCHEDULING_EDGE_KINDS
+        }
+    else:
+        scheduling_parents = (
+            set(depends_on) if edge_kind in state._SCHEDULING_EDGE_KINDS else set()
+        )
     parent_lanes = {
         str(row[0])
-        for parent in depends_on
+        for parent in scheduling_parents
         for row in conn.execute(
             "SELECT logical_id FROM proof_runs WHERE run_id = ?", (parent,)
         ).fetchall()

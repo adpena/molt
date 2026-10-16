@@ -1193,6 +1193,7 @@ def _queue_one(
         logical_id=logical_id,
         resource_family=resource_family,
         depends_on=depends_on or (),
+        edge_kind=edge_kind,
     )
     if not maturity.allow:
         print(f"lane maturity refused {logical_id}: {maturity.reason}", file=sys.stderr)
@@ -1497,8 +1498,13 @@ def _run_one(
     logs_root = state._logs_root(args)
     repo_root = state._repo_root(args)
     conn = state._connect(db)
+    if edge_kind not in state.EDGE_KINDS:
+        allowed = ", ".join(sorted(state.EDGE_KINDS))
+        raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
     for parent_run_id in depends_on or []:
-        if not state._run_exists(conn, parent_run_id):
+        if state._edge_kind_requires_local_parent(edge_kind) and not state._run_exists(
+            conn, parent_run_id
+        ):
             raise SystemExit(f"unknown parent proof run {parent_run_id!r}")
     maturity = scheduling._lane_maturity_admission(
         conn=conn,
@@ -1506,13 +1512,12 @@ def _run_one(
         logical_id=logical_id,
         resource_family=resource_family,
         depends_on=depends_on or (),
+        edge_kind=edge_kind,
+        existing_run_id=existing_run_id,
     )
     if not maturity.allow:
         print(f"lane maturity refused {logical_id}: {maturity.reason}", file=sys.stderr)
         return 2
-    if edge_kind not in state.EDGE_KINDS:
-        allowed = ", ".join(sorted(state.EDGE_KINDS))
-        raise SystemExit(f"unknown proof edge kind {edge_kind!r}; allowed: {allowed}")
     active = scheduling._active_contention_conflicts(
         conn,
         resource_family=resource_family,
