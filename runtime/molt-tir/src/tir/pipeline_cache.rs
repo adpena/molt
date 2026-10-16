@@ -15,9 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{FunctionIR, OpIR};
 
-use super::cache::{
-    CompilationCache, CompilationCacheKey, CompilationCacheWriteError, backend_cache_dir,
-};
+use super::cache::{CompilationCache, CompilationCacheKey, CompilationCacheWriteError};
 use super::function::{TirFunction, TirModule};
 use super::target_info::TargetInfo;
 
@@ -457,6 +455,23 @@ pub fn request_thread_pool() -> std::sync::Arc<rayon::ThreadPool> {
     compile_thread_pool(tir_optimization_cpu_thread_limit())
 }
 
+/// Map `work` over `items` on the request's compiler pool, each item inside
+/// the request's settings scope. Results keep `items` order. Concurrent
+/// compiles share the pool's threads, so a blocking item (a worker process)
+/// holds one slot of the request's CPU limit, as a jobserver token would.
+pub fn request_parallel_map<I: Sync, O: Send>(
+    items: &[I],
+    work: impl Fn(&I) -> O + Sync + Send,
+) -> Vec<O> {
+    let request = molt_ir::backend_environment::carry();
+    request_thread_pool().install(|| {
+        items
+            .par_iter()
+            .map(|item| request.enter(|| work(item)))
+            .collect()
+    })
+}
+
 fn parse_positive_usize_env(key: molt_ir::backend_environment::BackendEnv) -> Option<usize> {
     molt_ir::backend_environment::var(key)
         .ok()
@@ -533,8 +548,10 @@ where
         && !options.tir_stats
         && !molt_ir::backend_environment::compilation_diagnostics_requested();
     let mut cached_tir_custody = CachedTirCustody::new();
-    let mut tir_cache =
-        CompilationCache::open(options.cache_dir.clone().unwrap_or_else(backend_cache_dir));
+    let mut tir_cache = options.cache_dir.clone().map_or_else(
+        CompilationCache::open_backend_namespace,
+        CompilationCache::open,
+    );
     let work_items: Vec<TirPreparationWorkItem> = input
         .functions()
         .iter()
@@ -695,8 +712,8 @@ where
         }
     }
 
-    if let Err(error) = tir_cache.save_index() {
-        eprintln!("MOLT_CACHE: persistent TIR cache index unavailable: {error}");
+    if let Err(error) = tir_cache.trim_if_due() {
+        eprintln!("MOLT_CACHE: persistent TIR cache trim failed: {error}");
     }
     TirPipelineRun {
         cached_tir: cached_tir_custody,
@@ -1250,7 +1267,6 @@ mod tests {
                             &super::super::serialize::serialize_tir_function(&wrong).unwrap(),
                         )
                         .unwrap();
-                    cache.save_index().unwrap();
                 }
                 let error = catch_unwind(AssertUnwindSafe(|| {
                     let input = if projected {

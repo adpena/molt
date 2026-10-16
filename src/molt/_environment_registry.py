@@ -1178,7 +1178,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_BACKEND_TIR_CACHE_DISK_MB",
       "owner": "runtime/molt-passes/src/tir/cache.rs",
-      "summary": "MiB limit of the persistent TIR cache on disk, consulted when MOLT_BACKEND_TIR_CACHE_DISK_BYTES is unset; unset or non-numeric means 4096.",
+      "summary": "MiB limit of one persistent TIR cache namespace on disk, enforced by its hourly trim; unset or non-numeric means 4096.",
       "values": []
     },
     {
@@ -1187,7 +1187,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES",
       "owner": "runtime/molt-passes/src/tir/cache.rs",
-      "summary": "Maximum entry count of the persistent TIR cache on disk; unset or non-numeric means 65536.",
+      "summary": "Maximum file count (artifacts and quarantine sidecars) of one persistent TIR cache namespace, enforced by its hourly trim; unset or non-numeric means 65536.",
       "values": []
     },
     {
@@ -1196,7 +1196,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_BACKEND_TIR_CACHE_MEMORY_MB",
       "owner": "runtime/molt-passes/src/tir/cache.rs",
-      "summary": "MiB limit of the in-memory TIR cache, consulted when MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES is unset; unset falls through to the memory-derived default.",
+      "summary": "MiB limit of the in-memory TIR cache; unset falls through to the memory-derived default.",
       "values": []
     },
     {

@@ -23,5 +23,5 @@ pub(crate) use temp::{
     preserve_native_batch_worker_failure_artifacts, remove_native_batch_temp_dir,
 };
 pub(crate) use worker::{
-    compile_native_batch_object_job_file, run_native_batch_worker_with_failure_artifacts,
+    NativeBatchWork, compile_native_batch_object_job_file, run_native_batch_workers,
 };
