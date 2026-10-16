@@ -703,7 +703,6 @@ OPERATION_TARGETS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxyTy
         OperationId.OS_GETLOADAVG: ("native",),
         OperationId.OS_UNAME: ("native",),
         OperationId.OS_UMASK: ("native",),
-        OperationId.OS_PATH_SAMEFILE: ("native",),
         OperationId.OS_DUP2: ("native",),
         OperationId.OS_LSEEK: ("native",),
         OperationId.OS_FTRUNCATE: ("native",),

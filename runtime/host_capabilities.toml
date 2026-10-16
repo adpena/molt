@@ -918,7 +918,6 @@ capabilities = ["fs.read"]
 
 [[operation]]
 name = "os.path.samefile"
-targets = ["native"]
 capabilities = ["fs.read"]
 
 [[operation]]
