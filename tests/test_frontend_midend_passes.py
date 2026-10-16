@@ -4932,6 +4932,17 @@ def f():
         assert len(_module_global_reads_named(ops, name)) == 1
 
 
+@pytest.mark.parametrize("host_platform", ["linux", "darwin", "win32"])
+def test_unknown_target_platform_does_not_inherit_host_exception_namespace(
+    monkeypatch, host_platform
+) -> None:
+    import sys
+
+    monkeypatch.setattr(sys, "platform", host_platform)
+    gen = SimpleTIRGenerator(target_sys_platform=None)
+    assert not gen._builtin_exception_is_available("WindowsError")
+
+
 def test_with_context_exit_checks_after_exception_frame_release() -> None:
     source = """
 def f(cm):

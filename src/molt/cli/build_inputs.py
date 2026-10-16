@@ -1241,9 +1241,13 @@ def _runtime_policy_flag_environment(
     return env
 
 
-def _target_sys_platform(target: Target) -> str:
+def _target_sys_platform(target: Target) -> str | None:
     """Use the runtime's platform value for the admitted compiler target."""
     normalized = target.strip().lower()
+    # Source backends have no selected runtime OS. Preserve that unknown fact
+    # instead of parsing a backend name as a native triple or using the host.
+    if normalized in {"rust", "luau", "mlir"}:
+        return None
     if normalized in {"wasm", "wasm-freestanding"} or normalized.startswith("wasm32"):
         return "wasi"
     spec = resolve_native_target_spec(None if normalized == "native" else normalized)

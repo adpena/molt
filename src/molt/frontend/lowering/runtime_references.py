@@ -11,7 +11,6 @@ from __future__ import annotations
 from molt.opcode_literal_payloads import integer_literal_bytes
 
 import ast
-import sys
 from typing import Sequence
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -44,8 +43,7 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         if name == "PythonFinalizationError":
             return self.target_python >= (3, 13)
         if name == "WindowsError":
-            target_platform = self.target_sys_platform or sys.platform
-            return target_platform == "win32"
+            return self.target_sys_platform == "win32"
         return True
 
     def _emit_const_value(self, value: object) -> MoltValue:
