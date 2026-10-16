@@ -165,7 +165,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     mutated_classes: set[ClassId]
     native_callable_exports: dict[str, dict[str, Any]]
     native_python_exports: set[str]
-    native_support_function_roots: set[str]
+    native_support_function_roots: set[str] | None
     nonlocal_decls: set[str]
     optimization_profile: MidendProfile
     parameter_bindings: dict[str, str]

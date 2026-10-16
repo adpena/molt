@@ -383,6 +383,7 @@ def _module_uses_runtime_import_protocol(
     tree: ast.AST | None = None,
     is_package: bool | None = None,
     namespace_premise: PythonNamespacePremise | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> bool:
     if module_name in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES:
         return False
@@ -416,6 +417,17 @@ def _module_uses_runtime_import_protocol(
                 return True
         else:
             ast_digest_admission = _PythonAstDigestAdmission(scan_tree)
+        if native_support_function_roots:
+            if not isinstance(scan_tree, ast.Module):
+                raise ValueError("native support selection requires a module source")
+            selected, _pruned = module_resolution_cache.native_support_view(
+                module_path,
+                scan_tree,
+                native_support_function_roots,
+                ast_digest_admission=ast_digest_admission,
+                target_python=target_python,
+            )
+            scan_tree, ast_digest_admission = selected.tree, selected.admission
         return _tree_uses_runtime_import_protocol(
             scan_tree,
             module_name=module_name,
@@ -439,6 +451,7 @@ def _module_uses_runtime_import_protocol(
         source_arguments=source_arguments,
         target_python_tag=target_python.tag,
         namespace_premise=namespace_premise,
+        native_support_function_roots=native_support_function_roots,
     )
 
 
@@ -490,6 +503,9 @@ def _module_graph_needs_runtime_import_support(
                     namespace_premise=scan_authority.by_module[
                         module_name
                     ].namespace_premise,
+                    native_support_function_roots=scan_authority.by_module[
+                        module_name
+                    ].native_support_function_roots,
                 ):
                     return _RuntimeImportSupportPolicy(
                         needs_generated_importer=False,

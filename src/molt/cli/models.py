@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from molt.cli.installed_runtime_contract import InstalledNativeAdmission
     from molt.cli.build_output_layout import _BuildOutputLayout
     from molt.cli.module_resolution import _ModuleResolutionCache
+    from molt.cli.module_graph_discovery import _ModuleGraphDiscovery
     from molt.cli.module_source import _ModuleSourceCatalog, PythonSourceSnapshot
     from molt.cli.source_extension_link_requirements import (
         SourceExtensionLinkRequirements,
@@ -117,6 +118,7 @@ class _ModuleSourceScanAuthority:
     namespace_premise: PythonNamespacePremise | None = None
     source_sha256: str | None = None
     package_paths: tuple[Path, ...] = ()
+    native_support_function_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in {"module_init", "full"}:
@@ -143,6 +145,16 @@ class _ModuleSourceScanAuthority:
         elif package_paths:
             raise ValueError("non-package source cannot own package search paths")
         object.__setattr__(self, "package_paths", package_paths)
+        if self.native_support_function_roots:
+            from molt.compiler_analysis.native_support_slice import (
+                canonical_native_support_roots,
+            )
+
+            object.__setattr__(
+                self,
+                "native_support_function_roots",
+                canonical_native_support_roots(self.native_support_function_roots),
+            )
 
     def validate(self, module_name: str, source_path: Path) -> None:
         if self.module_name != module_name or self.source_path != source_path.resolve():
@@ -203,6 +215,21 @@ class _ModuleGraphScanAuthority:
                 if prior.source_sha256 is not None and source.source_sha256 is not None:
                     prior.validate_generation(source.source_sha256)
                 source_sha256 = prior.source_sha256 or source.source_sha256
+                native_support_function_roots = (
+                    ()
+                    if (
+                        not prior.native_support_function_roots
+                        and prior.source_sha256 is not None
+                        or not source.native_support_function_roots
+                        and source.source_sha256 is not None
+                    )
+                    else tuple(
+                        sorted(
+                            set(prior.native_support_function_roots)
+                            | set(source.native_support_function_roots)
+                        )
+                    )
+                )
                 requires_runtime_package_anchor = (
                     prior.requires_runtime_package_anchor
                     or source.requires_runtime_package_anchor
@@ -219,6 +246,8 @@ class _ModuleGraphScanAuthority:
                     != source.requires_runtime_package_anchor
                     or namespace_premise != source.namespace_premise
                     or source_sha256 != source.source_sha256
+                    or native_support_function_roots
+                    != source.native_support_function_roots
                 ):
                     source = replace(
                         source,
@@ -226,6 +255,7 @@ class _ModuleGraphScanAuthority:
                         deferred_owners=deferred_owners,
                         namespace_premise=namespace_premise,
                         source_sha256=source_sha256,
+                        native_support_function_roots=native_support_function_roots,
                     )
             sources[source.module_name] = source
         return _ModuleGraphScanAuthority(
@@ -270,6 +300,9 @@ class _ModuleGraphScanAuthority:
                 ],
                 "is_package": source.is_package,
                 "package_paths": [os.fspath(path) for path in source.package_paths],
+                "native_support_function_roots": list(
+                    source.native_support_function_roots
+                ),
                 "requires_runtime_package_anchor": (
                     source.requires_runtime_package_anchor
                 ),
@@ -314,6 +347,10 @@ class _DiscoveredModuleGraph:
     graph: dict[str, Path]
     explicit_imports: set[str]
     scan_authority: _ModuleGraphScanAuthority
+    discovery: "_ModuleGraphDiscovery | None" = field(
+        default=None, compare=False, repr=False
+    )
+    revised_sources: tuple[_ModuleSourceScanAuthority, ...] = ()
 
     def __post_init__(self) -> None:
         self.scan_authority.validate_graph(self.graph)
@@ -1015,6 +1052,7 @@ class _FrontendTimingRecorderConfig:
 class _SupportModuleAugmentation:
     namespace_module_names: frozenset[str]
     generated_module_source_paths: dict[str, str]
+    explicit_imports: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1959,6 +1997,7 @@ class _PreparedEntryModuleGraph:
     stdlib_allowlist: set[str]
     roots: list[Path]
     module_resolution_cache: "_ModuleResolutionCache"
+    discovery: "_ModuleGraphDiscovery"
     module_graph: dict[str, Path]
     scan_authority: _ModuleGraphScanAuthority
     target: str

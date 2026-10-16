@@ -705,7 +705,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 32
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 33
 
 
 def _import_scan_cache_path(
@@ -718,6 +718,7 @@ def _import_scan_cache_path(
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
@@ -730,6 +731,7 @@ def _import_scan_cache_path(
         import_scan_mode,
         repr(source_owner),
         repr(source_arguments),
+        repr(native_support_function_roots),
         repr(_namespace_premise_cache_identity(namespace_premise)),
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
@@ -791,6 +793,7 @@ def _read_persisted_import_scan_record(
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
     path_stat: os.stat_result | None = None,
     snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -804,6 +807,7 @@ def _read_persisted_import_scan_record(
         source_owner=source_owner,
         source_arguments=source_arguments,
         namespace_premise=namespace_premise,
+        native_support_function_roots=native_support_function_roots,
         target_python=target_python,
     )
     payload = _read_artifact_sync_state(cache_path)
@@ -821,6 +825,7 @@ def _read_persisted_import_scan_record(
         "source_owner",
         "source_arguments",
         "namespace_premise",
+        "native_support_function_roots",
         "source_demands",
         "source_sites",
         "all_exports",
@@ -857,6 +862,8 @@ def _read_persisted_import_scan_record(
         != _frontend_semantic_tooling_fingerprint()
         or payload.get("module_name") != module_name
         or payload.get("is_package") != is_package
+        or payload.get("native_support_function_roots")
+        != list(native_support_function_roots)
         or payload.get("target_python") != target_python.tag
         or payload.get("parser") != [sys.implementation.name, sys.version]
         or payload.get("import_scan_mode") != import_scan_mode
@@ -1098,6 +1105,7 @@ def _write_persisted_import_scan(
     source_owner: PythonSourceKey | None = None,
     source_arguments: tuple[str, ...] = (),
     namespace_premise: PythonNamespacePremise | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
     scan: _ImportScanRequests,
     snapshot: _module_source.PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1114,6 +1122,7 @@ def _write_persisted_import_scan(
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
+        "native_support_function_roots": list(native_support_function_roots),
         "import_scan_mode": import_scan_mode,
         "source_owner": source_owner,
         "source_arguments": source_arguments,
@@ -1197,6 +1206,7 @@ def _write_persisted_import_scan(
         source_owner=source_owner,
         source_arguments=source_arguments,
         namespace_premise=namespace_premise,
+        native_support_function_roots=native_support_function_roots,
         target_python=target_python,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)

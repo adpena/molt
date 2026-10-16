@@ -34,6 +34,7 @@ from molt.compiler_analysis.python_imports import (
     _ImportDiscoveryProjection,
 )
 from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
+from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
 from molt.cli.module_resolution import _ModuleResolutionCache
@@ -49,7 +50,14 @@ def _source(path: Path, source: str) -> Path:
     return path.resolve()
 
 
-def _discover(path: Path, root: Path, *, full: bool, project: Path | None = None):
+def _discover(
+    path: Path,
+    root: Path,
+    *,
+    full: bool,
+    project: Path | None = None,
+    state: discovery._ModuleGraphDiscovery | None = None,
+):
     return discovery._discover_module_graph_from_paths(
         (path,),
         [root, root / "stdlib"],
@@ -58,6 +66,8 @@ def _discover(path: Path, root: Path, *, full: bool, project: Path | None = None
         project,
         {"runtime_owner"},
         full_scan_roots=full,
+        discovery=state,
+        resolver_cache=state.resolver_cache if state is not None else None,
     )
 
 
@@ -349,7 +359,9 @@ def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
         scanner, "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES", ("runtime_owner",)
     )
     initial = _discover(entry, tmp_path, full=True)
+    assert initial.discovery is not None
     prepared = _PreparedEntryModuleGraph(
+        discovery=initial.discovery,
         image_scope=_BinaryImageScope.from_entry(
             kind="entry_script",
             selector_source="test:entry",
@@ -361,7 +373,7 @@ def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
         declared_root_modules=frozenset({"entry"}),
         stdlib_allowlist={"runtime_owner"},
         roots=[tmp_path, tmp_path / "stdlib"],
-        module_resolution_cache=_ModuleResolutionCache(),
+        module_resolution_cache=initial.discovery.resolver_cache,
         module_graph=initial.graph,
         scan_authority=initial.scan_authority,
         target=target,
@@ -375,7 +387,7 @@ def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
     )
 
     def add_native_root(*, module_graph, scan_authorities, **kwargs):
-        result = _discover(late, tmp_path, full=True)
+        result = _discover(late, tmp_path, full=True, state=kwargs["discovery"])
         discovery._merge_discovered_module_graph(module_graph, scan_authorities, result)
         return frozenset(result.explicit_imports | {"late"})
 
@@ -422,11 +434,13 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
     initial = _discover(entry, tmp_path, full=True)
     graph, roles = initial.graph, dict(initial.scan_authority.by_module)
     assert graph["leaf"] == leaf
+    assert initial.discovery is not None
     common = dict(
+        discovery=initial.discovery,
         module_graph=graph,
         scan_authorities=roles,
         module_reasons={},
-        module_resolution_cache=_ModuleResolutionCache(),
+        module_resolution_cache=initial.discovery.resolver_cache,
         roots=[tmp_path, owner.parent],
         stdlib_root=owner.parent,
         stdlib_allowlist={"runtime_owner"},
@@ -451,7 +465,7 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
     assert extend.call_count == extensions
     late = _source(tmp_path / "late.py", "pass\n")
     discovery._merge_discovered_module_graph(
-        graph, roles, _discover(late, tmp_path, full=True)
+        graph, roles, _discover(late, tmp_path, full=True, state=initial.discovery)
     )
     second = graphs._finalize_runtime_import_closure(
         **common,
@@ -490,35 +504,49 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
             dispatch_roots=second.dispatch_roots,
             previous_custody=second.custody,
         )
-    # A fresh source admission is an explicit generation replacement. Catalog
-    # refresh cannot silently carry an older graph's namespace assumptions.
-    discovery._merge_discovered_module_graph(
-        graph,
-        roles,
-        _discover(owner, tmp_path, full=True),
-        source_replacements={"runtime_owner": roles["runtime_owner"]},
-    )
-    refreshed = graphs._finalize_runtime_import_closure(
-        **common,
-        explicit_imports={"leaf", "late"},
-        dispatch_roots=second.dispatch_roots,
-        previous_custody=second.custody,
-    )
-    assert refreshed.custody is not None
-    assert refreshed.custody.owner_ast_digests != second.custody.owner_ast_digests
-    # Source-keyed AST memoization also makes a fresh operation agree.
-    common["module_resolution_cache"] = _ModuleResolutionCache()
-    changed = graphs._finalize_runtime_import_closure(
-        **common,
-        explicit_imports={"leaf", "late"},
-        dispatch_roots=second.dispatch_roots,
-        previous_custody=second.custody,
-    )
-    assert changed.custody is not None and changed.custody != second.custody
-    assert changed.custody.owners == second.custody.owners
-    assert changed.custody.catalog == second.custody.catalog
-    assert changed.custody.owner_ast_digests != second.custody.owner_ast_digests
-    assert changed.custody == refreshed.custody
+    # A new byte generation starts a complete operation. Earlier namespace and
+    # source-value summaries cannot be transplanted into that new graph.
+    fresh_custodies = []
+    for _ in range(2):
+        cache = _ModuleResolutionCache()
+        state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+        rebuilt = discovery._discover_module_graph_from_paths(
+            (entry, late),
+            [tmp_path, owner.parent],
+            [tmp_path],
+            owner.parent,
+            None,
+            {"runtime_owner"},
+            full_scan_roots=True,
+            resolver_cache=cache,
+            discovery=state,
+            entry_imports={"runtime_owner"},
+        )
+        rebuilt_graph = dict(rebuilt.graph)
+        rebuilt_roles = dict(rebuilt.scan_authority.by_module)
+        assert set(rebuilt_graph) == {"entry", "leaf", "late", "runtime_owner"}
+        refreshed = graphs._finalize_runtime_import_closure(
+            discovery=state,
+            module_graph=rebuilt_graph,
+            scan_authorities=rebuilt_roles,
+            module_reasons={},
+            module_resolution_cache=cache,
+            roots=[tmp_path, owner.parent],
+            stdlib_root=owner.parent,
+            stdlib_allowlist={"runtime_owner"},
+            entry_module="entry",
+            target_python=PYTHON,
+            import_admission_policy=None,
+            explicit_imports={"leaf", "late"},
+            dispatch_roots=second.dispatch_roots,
+            previous_custody=second.custody,
+        )
+        assert refreshed.custody is not None and refreshed.custody != second.custody
+        assert refreshed.custody.owners == second.custody.owners
+        assert refreshed.custody.catalog == second.custody.catalog
+        assert refreshed.custody.owner_ast_digests != second.custody.owner_ast_digests
+        fresh_custodies.append(refreshed.custody)
+    assert fresh_custodies[0] == fresh_custodies[1]
     assert extend.call_count > extensions
 
 
@@ -547,17 +575,28 @@ def test_dynamic_owner_fixed_point_uses_custody_names_and_admitted_roots(
         "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
         ("support.owner",),
     )
-    graph = {"app.entry": entry}
-    roles = {
-        "app.entry": _ModuleSourceScanAuthority("app.entry", entry, "full", False),
-    }
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    initial = discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path / "app", tmp_path / "vendor", stdlib],
+        [tmp_path],
+        stdlib,
+        None,
+        {"support.owner"},
+        full_scan_roots=True,
+        resolver_cache=cache,
+        discovery=state,
+    )
+    graph, roles = initial.graph, dict(initial.scan_authority.by_module)
     common = dict(
+        discovery=state,
         module_graph=graph,
         scan_authorities=roles,
         module_reasons={},
         explicit_imports={"support.owner"},
         dispatch_roots={"support.owner"},
-        module_resolution_cache=_ModuleResolutionCache(),
+        module_resolution_cache=cache,
         roots=[tmp_path / "app", tmp_path / "vendor", stdlib],
         stdlib_root=stdlib,
         stdlib_allowlist={"support.owner"},
@@ -599,25 +638,28 @@ def test_ordinary_nested_package_owner_rescans_under_original_project_root(
         "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
         ("runtime_owner",),
     )
-    graph = {"entry": entry, "pkg.nested.owner": owner}
-    roles = {
-        "entry": _ModuleSourceScanAuthority("entry", entry, "full", False),
-        "pkg.nested.owner": _ModuleSourceScanAuthority(
-            "pkg.nested.owner",
-            owner,
-            "module_init",
-            False,
-            True,
-        ),
-    }
-
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    initial = discovery._discover_module_graph_from_paths(
+        (entry, owner),
+        [project, stdlib],
+        [project],
+        stdlib,
+        None,
+        {"runtime_owner"},
+        full_scan_roots=False,
+        resolver_cache=cache,
+        discovery=state,
+    )
+    graph, roles = initial.graph, dict(initial.scan_authority.by_module)
     closure = graphs._finalize_runtime_import_closure(
+        discovery=state,
         module_graph=graph,
         scan_authorities=roles,
         module_reasons={},
         explicit_imports={"pkg.nested.owner"},
         dispatch_roots={"pkg.nested.owner"},
-        module_resolution_cache=_ModuleResolutionCache(),
+        module_resolution_cache=cache,
         roots=[project, stdlib],
         stdlib_root=stdlib,
         stdlib_allowlist={"runtime_owner"},
@@ -635,7 +677,7 @@ def test_ordinary_nested_package_owner_rescans_under_original_project_root(
 
 
 @pytest.mark.parametrize("source_name", ["support.py", "support/__init__.py"])
-def test_generated_native_slice_carries_one_source_for_both_scan_projections(
+def test_native_slice_preserves_original_source_for_both_scan_projections(
     tmp_path: Path,
     source_name: str,
 ) -> None:
@@ -666,19 +708,27 @@ def test_generated_native_slice_carries_one_source_for_both_scan_projections(
     result = graphs._native_support_source_slices(
         native_artifact_plan=NativePlan(),
         roots_by_module={"support": ("used",)},
+        resolution_cache=_ModuleResolutionCache(),
         artifacts_root=artifacts,
         slice_cache={},
         operation_counts=counts,
     )[source]
-    assert result.generated_path is not None
-    assert result.scan.authority.source_path == result.generated_path.resolve()
+    assert result.scan.authority.source_path == source
+    assert (
+        result.scan.authority.source_sha256
+        == hashlib.sha256(source.read_bytes()).hexdigest()
+    )
+    assert result.scan.authority.native_support_function_roots == ("used",)
     assert result.scan.authority.mode == "full"
     assert result.scan.authority.package_paths == (
         (source.parent,) if source.name == "__init__.py" else ()
     )
     assert "leaf" in result.scan.scan.imports and "dead" not in result.scan.scan.imports
     assert result.scan.scan.source_executions == ()
-    assert "unused" not in result.generated_path.read_text(encoding="utf-8")
+    assert "def unused" in source.read_text(encoding="utf-8")
+    assert not tuple(artifacts.glob("_molt_generated_*.py"))
+    assert counts["native_support_source_parses"] == 1
+    assert counts["native_support_source_prunes"] == 1
 
 
 def test_generated_sources_are_content_addressed_without_self_referential_identity(
@@ -700,7 +750,254 @@ def test_generated_sources_are_content_addressed_without_self_referential_identi
         assert path.name not in path.read_text(encoding="utf-8")
 
 
-def test_native_runtime_import_generations_share_resolver_without_stale_source(
+@pytest.mark.parametrize("source_name", ["support.py", "support/__init__.py"])
+def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_key(
+    tmp_path: Path,
+    source_name: str,
+) -> None:
+    text = (
+        "# Original coordinates are part of source custody.\n\n"
+        "def first():\n    import leaf1\n\n\n"
+        "def later():\n    import leaf2\n\n"
+        "def unused():\n    import dead\n"
+    )
+    source = _source(tmp_path / source_name, text)
+    leaf1 = _source(tmp_path / "leaf1.py", "pass\n")
+    leaf2 = _source(tmp_path / "leaf2.py", "pass\n")
+    _source(tmp_path / "dead.py", "pass\n")
+    snapshot = PythonSourceSnapshot.capture(source)
+    expected = ast.parse(text, filename=str(source))
+    expected_later = next(
+        node
+        for node in expected.body
+        if isinstance(node, ast.FunctionDef) and node.name == "later"
+    )
+    expected_key = python_node_source_key(expected_later)
+    original_namespace = {}
+    exec(compile(expected, str(source), "exec"), original_namespace)
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    graph, roles = {}, {}
+    loaded = []
+    solver = None
+    for roots in (("later",), ("first", "later"), ("first", "later")):
+        result = discovery._load_module_import_scan(
+            source,
+            module_name="support",
+            is_package=source.name == "__init__.py",
+            import_scan_mode="full",
+            resolution_cache=cache,
+            project_root=None,
+            source_snapshot=snapshot,
+            native_support_function_roots=roots,
+            target_python=PYTHON,
+        )
+        loaded.append(result)
+        record = discovery._bind_precomputed_module_import_scan(
+            source,
+            module_name="support",
+            import_scan_mode="full",
+            is_package=source.name == "__init__.py",
+            package_paths=(source.parent,) if source.name == "__init__.py" else (),
+            scan=result.scan,
+            snapshot=snapshot,
+            native_support_function_roots=roots,
+            target_python=PYTHON,
+        )
+        closure = discovery._discover_module_graph_from_paths(
+            (source,),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            None,
+            set(),
+            full_scan_roots=True,
+            resolver_cache=cache,
+            discovery=state,
+            precomputed_scans_by_path={source: record},
+            enclosing_scan_authority=_ModuleGraphScanAuthority(tuple(roles.values())),
+        )
+        discovery._merge_discovered_module_graph(graph, roles, closure)
+        assert closure.discovery is state
+        if solver is None:
+            solver = state.demands
+            assert solver is not None
+        else:
+            assert state.demands is solver
+        assert graph == (
+            {"support": source, "leaf2": leaf2}
+            if roots == ("later",)
+            else {"support": source, "leaf1": leaf1, "leaf2": leaf2}
+        )
+        assert roles["support"].native_support_function_roots == roots
+        assert roles["support"].source_sha256 == snapshot.sha256
+        assert expected_key in {
+            row.owner for row in result.scan.source_values.functions
+        }
+        assert isinstance(result.tree, ast.Module)
+        later = next(
+            node
+            for node in result.tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "later"
+        )
+        assert python_node_source_key(later) == expected_key
+        selected_namespace = {}
+        exec(compile(result.tree, str(source), "exec"), selected_namespace)
+        assert (
+            selected_namespace["later"].__code__.co_firstlineno
+            == original_namespace["later"].__code__.co_firstlineno
+        )
+        assert "unused" not in selected_namespace
+        assert result.snapshot is snapshot
+    assert [result.source_parsed for result in loaded] == [True, False, False]
+    assert [result.source_pruned for result in loaded] == [True, True, False]
+    # The two dependency modules each need one additional original-source parse.
+    assert cache.source_parse_count == 3
+    assert len(cache.native_support_view_cache) == 1
+    assert [set(result.scan.imports) for result in loaded] == [
+        {"leaf2"},
+        {"leaf1", "leaf2"},
+        {"leaf1", "leaf2"},
+    ]
+    assert source.read_text(encoding="utf-8") == text
+    assert snapshot.sha256 == hashlib.sha256(text.encode()).hexdigest()
+    assert tuple(tmp_path.glob("_molt_generated_*.py")) == ()
+
+
+@pytest.mark.parametrize("selected_first", [False, True])
+@pytest.mark.parametrize("acquisition", ["import", "execute"])
+def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_orders(
+    tmp_path: Path,
+    selected_first: bool,
+    acquisition: str,
+) -> None:
+    support = _source(
+        tmp_path / "support.py",
+        "import initializer_leaf\nINITIALIZED = True\n"
+        "def later():\n    import selected_leaf\n    import consumer\n",
+    )
+    initializer = _source(tmp_path / "initializer_leaf.py", "pass\n")
+    selected = _source(tmp_path / "selected_leaf.py", "pass\n")
+    consumer = _source(
+        tmp_path / "consumer.py",
+        "import support\n"
+        if acquisition == "import"
+        else "import importlib.util\n"
+        + f"spec = importlib.util.spec_from_file_location('support', {str(support)!r})\n"
+        + "support = importlib.util.module_from_spec(spec)\n"
+        + "spec.loader.exec_module(support)\n",
+    )
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys,json; sys.path.insert(0,sys.argv[1]); import consumer; "
+            "consumer.support.later(); print(json.dumps(["
+            "consumer.support.INITIALIZED, 'initializer_leaf' in sys.modules, "
+            "'selected_leaf' in sys.modules]))",
+            str(tmp_path),
+        ],
+        timeout=10,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(observed.stdout) == [True, True, True]
+    snapshot = PythonSourceSnapshot.capture(support)
+    cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
+    loaded = discovery._load_module_import_scan(
+        support,
+        module_name="support",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        source_snapshot=snapshot,
+        native_support_function_roots=("later",),
+        target_python=PYTHON,
+    )
+    assert "initializer_leaf" not in loaded.scan.imports
+    record = discovery._bind_precomputed_module_import_scan(
+        support,
+        module_name="support",
+        import_scan_mode="full",
+        scan=loaded.scan,
+        snapshot=snapshot,
+        native_support_function_roots=("later",),
+        target_python=PYTHON,
+    )
+    result = discovery._discover_module_graph_from_paths(
+        (support, consumer) if selected_first else (consumer, support),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=True,
+        resolver_cache=cache,
+        discovery=state,
+        precomputed_scans_by_path={support: record},
+    )
+    expected = {
+        "support": support,
+        "consumer": consumer,
+        "initializer_leaf": initializer,
+        "selected_leaf": selected,
+    }
+    assert result.graph == state.graph == expected
+    owner = result.scan_authority.by_module["support"]
+    assert owner.native_support_function_roots == ()
+    assert owner.mode == "full"
+    assert owner.source_sha256 == snapshot.sha256
+    solver = state.demands
+    assert solver is not None
+    repeated = discovery._discover_module_graph_from_paths(
+        (support,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=True,
+        resolver_cache=cache,
+        discovery=state,
+        precomputed_scans_by_path={support: record},
+    )
+    assert state.demands is solver
+    assert state.graph == expected
+    assert repeated.scan_authority.by_module["support"] == owner
+    assert snapshot.content == support.read_bytes()
+    assert tuple(tmp_path.glob("_molt_generated_*.py")) == ()
+
+
+def test_native_slice_absent_demand_does_not_read_manifest_helpers(
+    tmp_path: Path,
+) -> None:
+    class NativePlan:
+        def support_source_paths_by_module(self):
+            return {"unused": tmp_path / "missing.py"}
+
+    cache = _ModuleResolutionCache()
+    counts = {}
+    assert (
+        graphs._native_support_source_slices(
+            native_artifact_plan=NativePlan(),
+            roots_by_module={},
+            resolution_cache=cache,
+            artifacts_root=tmp_path / "artifacts",
+            slice_cache={},
+            operation_counts=counts,
+        )
+        == {}
+    )
+    assert counts == {}
+    assert cache.source_parse_count == 0
+    assert cache.source_cache == {}
+
+
+def test_native_runtime_import_requests_share_live_discovery_without_generated_source(
     tmp_path: Path,
 ) -> None:
     first = _source(tmp_path / "first.py", "pass\n")
@@ -711,15 +1008,16 @@ def test_native_runtime_import_generations_share_resolver_without_stale_source(
             return frozenset(requested)
 
     cache = _ModuleResolutionCache()
+    state = discovery._ModuleGraphDiscovery(cache, PYTHON)
     graph, roles = {}, {}
     artifacts = tmp_path / "generated"
     for requested in ({"first"}, {"first", "second"}):
         graphs._extend_native_runtime_python_import_closure(
+            discovery=state,
             module_graph=graph,
             scan_authorities=roles,
             module_reasons={},
             native_artifact_plan=NativePlan(),
-            artifacts_root=artifacts,
             roots=[tmp_path],
             stdlib_root=tmp_path / "stdlib",
             stdlib_allowlist=set(),
@@ -729,16 +1027,14 @@ def test_native_runtime_import_generations_share_resolver_without_stale_source(
     assert graph == {"first": first, "second": second}
     assert set(roles) == {"first", "second"}
     assert all(source.mode == "module_init" for source in roles.values())
+    assert state.graph == graph
+    assert cache.source_parse_count == 2
     generations = tuple(artifacts.glob("_molt_generated_*.py"))
-    assert len(generations) == 2
-    assert {path.read_text(encoding="utf-8") for path in generations} == {
-        "import first\n",
-        "import second\n",
-    }
+    assert generations == ()
 
 
 @pytest.mark.parametrize("source_name", ["support.py", "support/__init__.py"])
-def test_native_slice_generation_transfer_retains_roots_and_dependency_identity(
+def test_native_slice_root_growth_retains_source_and_dependency_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     source_name: str,
@@ -776,6 +1072,7 @@ def test_native_slice_generation_transfer_retains_roots_and_dependency_identity(
     graph, roles, slices = {}, {}, {}
     cache = _ModuleResolutionCache()
     common = dict(
+        discovery=discovery._ModuleGraphDiscovery(cache, PYTHON),
         module_graph=graph,
         scan_authorities=roles,
         module_reasons={},
@@ -790,16 +1087,28 @@ def test_native_slice_generation_transfer_retains_roots_and_dependency_identity(
         operation_counts=counts,
     )
     graphs._extend_native_support_source_closure(**common)
-    first_generation = graph["support"]
+    assert graph["support"] == support
+    first_sha = roles["support"].source_sha256
+    assert roles["support"].native_support_function_roots == ("first",)
+    assert "leaf1" in graph and "leaf2" not in graph
     selected = ("first", "second")
     graphs._extend_native_support_source_closure(**common)
-    second_generation = graph["support"]
-    assert second_generation != first_generation
-    assert "def second" not in first_generation.read_text(encoding="utf-8")
-    assert "def second" in second_generation.read_text(encoding="utf-8")
+    assert graph["support"] == support
+    assert roles["support"].source_sha256 == first_sha
+    assert roles["support"].native_support_function_roots == ("first", "second")
     assert {"leaf1", "leaf2"} <= set(graph)
+    counts_after_growth = dict(counts)
     graphs._extend_native_support_source_closure(**common)
-    assert graph["support"] == second_generation
+    assert graph["support"] == support
+    assert (
+        counts["native_support_source_parses"]
+        == counts_after_growth["native_support_source_parses"]
+    )
+    assert (
+        counts["native_support_source_prunes"]
+        == counts_after_growth["native_support_source_prunes"]
+    )
+    assert not tuple((tmp_path / "generated").glob("_molt_generated_*.py"))
     consumer = _source(tmp_path / "consumer.py", "import support\n")
     result = discovery._discover_module_graph_from_paths(
         (consumer,),
@@ -810,15 +1119,98 @@ def test_native_slice_generation_transfer_retains_roots_and_dependency_identity(
         set(),
         full_scan_roots=True,
         resolver_cache=cache,
+        discovery=common["discovery"],
         enclosing_scan_authority=_ModuleGraphScanAuthority(tuple(roles.values())),
     )
-    assert result.graph["support"] == second_generation
-    assert set(result.graph) == {"consumer", "support"}
+    assert result.graph["support"] == support
+    assert set(result.graph) == {"consumer", "support", "leaf1", "leaf2"}
     discovery._merge_discovered_module_graph(graph, roles, result)
     assert roles["support"].mode == "full"
+    assert roles["support"].native_support_function_roots == ()
+    assert roles["support"].source_sha256 == first_sha
     assert roles["support"].package_paths == (
         (support.parent,) if support.name == "__init__.py" else ()
     )
+
+
+@pytest.mark.parametrize("raw_first", [False, True])
+def test_native_raw_source_dominates_selected_roots_without_losing_depth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_first: bool,
+) -> None:
+    support = _source(
+        tmp_path / "support.py",
+        "import initializer\n\ndef used():\n    import selected\n\ndef unused():\n    import other\n",
+    )
+    for name in ("initializer", "selected", "other"):
+        _source(tmp_path / f"{name}.py", "pass\n")
+    raw = raw_first
+
+    class NativePlan(_ExternalPackageNativeArtifactPlan):
+        def support_source_paths_by_module(self):
+            return {"support": support}
+
+        def runtime_python_import_module_names(self):
+            return frozenset({"support"}) if raw else frozenset()
+
+    monkeypatch.setattr(
+        graphs,
+        "_native_support_function_roots_by_module",
+        lambda *args, **kwargs: {"support": ("used",)},
+    )
+    counts = {
+        name: 0
+        for name in (
+            "native_support_slice_requests",
+            "native_support_legacy_equivalent_source_parses",
+            "native_support_slice_cache_hits",
+            "native_support_slice_cache_misses",
+            "native_support_persisted_import_scan_hits",
+            "native_support_persisted_import_scan_misses",
+            "native_support_source_parses",
+            "native_support_source_prunes",
+        )
+    }
+    graph, roles = {}, {}
+    cache = _ModuleResolutionCache()
+    common = dict(
+        discovery=discovery._ModuleGraphDiscovery(cache, PYTHON),
+        module_graph=graph,
+        scan_authorities=roles,
+        module_reasons={},
+        native_artifact_plan=NativePlan(),
+        artifacts_root=tmp_path / "artifacts",
+        roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        stdlib_allowlist=set(),
+        resolver_cache=cache,
+        target_python=PYTHON,
+        slice_cache={},
+        operation_counts=counts,
+    )
+    graphs._extend_native_support_source_closure(**common)
+    assert roles["support"].native_support_function_roots == (
+        () if raw_first else ("used",)
+    )
+    assert set(graph) == (
+        {"support", "initializer"} if raw_first else {"support", "selected"}
+    )
+    raw = not raw
+    graphs._extend_native_support_source_closure(**common)
+    assert graph["support"] == support
+    assert (
+        roles["support"].source_sha256
+        == hashlib.sha256(support.read_bytes()).hexdigest()
+    )
+    assert roles["support"].native_support_function_roots == ()
+    assert roles["support"].mode == ("module_init" if raw_first else "full")
+    assert set(graph) == (
+        {"support", "initializer"}
+        if raw_first
+        else {"support", "initializer", "selected", "other"}
+    )
+    assert tuple((tmp_path / "artifacts").glob("_molt_generated_*.py")) == ()
 
 
 def test_graph_cache_binds_admitted_source_generation(
@@ -1084,7 +1476,7 @@ def test_package_search_paths_are_canonical_ordered_source_authority(tmp_path):
             _ModuleGraphScanAuthority((generated_owner,)).merged(
                 _ModuleGraphScanAuthority((changed,))
             )
-        with pytest.raises(ValueError, match="generation transfer lost scan custody"):
+        with pytest.raises(ValueError, match="package search paths changed"):
             discovery._merge_discovered_module_graph(
                 {"pkg": generated},
                 {"pkg": generated_owner},
@@ -1093,7 +1485,6 @@ def test_package_search_paths_are_canonical_ordered_source_authority(tmp_path):
                     set(),
                     _ModuleGraphScanAuthority((changed,)),
                 ),
-                source_replacements={"pkg": generated_owner},
             )
     with pytest.raises(ValueError, match="lacks original search paths"):
         _ModuleSourceScanAuthority("pkg", generated, "full", is_package=True)
@@ -1174,7 +1565,10 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
             assert result.scan_authority == expected
 
 
-def test_materialized_namespace_package_identity_matches_cpython(tmp_path):
+@pytest.mark.parametrize("namespace_writer", [False, True])
+def test_materialized_namespace_package_identity_matches_cpython(
+    tmp_path, namespace_writer
+):
     for name in (
         "importlib/__init__.py",
         "importlib/util.py",
@@ -1184,9 +1578,15 @@ def test_materialized_namespace_package_identity_matches_cpython(tmp_path):
     roots = [tmp_path / "first", tmp_path / "second"]
     _source(roots[0] / "hf226_namespace" / "alpha.py", "pass\n")
     _source(roots[1] / "hf226_namespace" / "beta.py", "pass\n")
+    if namespace_writer:
+        _source(
+            tmp_path / "writer.py",
+            "import hf226_namespace\nhf226_namespace.marker = True\n",
+        )
     entry = _source(
         tmp_path / "entry.py",
-        "import hf226_namespace.alpha\nimport hf226_namespace.beta\n",
+        ("import writer\n" if namespace_writer else "")
+        + "import hf226_namespace.alpha\nimport hf226_namespace.beta\n",
     )
     initial = discovery._discover_module_graph_from_paths(
         (entry,),
@@ -1197,7 +1597,12 @@ def test_materialized_namespace_package_identity_matches_cpython(tmp_path):
         set(),
         full_scan_roots=True,
     )
+    assert initial.discovery is not None
+    # The writer has no source path for its namespace receiver until the real
+    # package materialization joins this same discovery operation.
+    assert "hf226_namespace" not in initial.graph
     prepared = _PreparedEntryModuleGraph(
+        discovery=initial.discovery,
         image_scope=_BinaryImageScope.from_entry(
             kind="entry_script",
             selector_source="test:namespace",
@@ -1209,7 +1614,7 @@ def test_materialized_namespace_package_identity_matches_cpython(tmp_path):
         declared_root_modules=frozenset({"entry"}),
         stdlib_allowlist={"importlib"},
         roots=[tmp_path, *roots],
-        module_resolution_cache=_ModuleResolutionCache(),
+        module_resolution_cache=initial.discovery.resolver_cache,
         module_graph=initial.graph,
         scan_authority=initial.scan_authority,
         target="native",
@@ -1235,15 +1640,17 @@ def test_materialized_namespace_package_identity_matches_cpython(tmp_path):
             "-I",
             "-c",
             "import sys,json; sys.path[:0] = json.loads(sys.argv[1]); "
-            "import hf226_namespace.alpha,hf226_namespace.beta; "
+            "import entry,hf226_namespace; "
             "print(json.dumps([list(hf226_namespace.__path__), "
-            "list(hf226_namespace.__spec__.submodule_search_locations)]))",
-            json.dumps([str(p) for p in roots]),
+            "list(hf226_namespace.__spec__.submodule_search_locations), "
+            "getattr(hf226_namespace, 'marker', False)]))",
+            json.dumps([str(tmp_path), *(str(p) for p in roots)]),
         ],
         timeout=30,
         check=True,
     )
-    paths, spec_paths = json.loads(reference.stdout)
+    paths, spec_paths, marker = json.loads(reference.stdout)
+    assert marker is namespace_writer
     owner = plan.scan_authority.by_module["hf226_namespace"]
     assert owner.is_package
     assert [str(path) for path in owner.package_paths] == paths == spec_paths
@@ -1251,9 +1658,10 @@ def test_materialized_namespace_package_identity_matches_cpython(tmp_path):
         owner.source_sha256
         == hashlib.sha256(owner.source_path.read_bytes()).hexdigest()
     )
-    assert (
-        owner.namespace_premise is None
-    )  # Captured bytes do not prove writer convergence.
+    assert owner.namespace_premise == PythonNamespacePremise(
+        ("alpha", "beta", "marker") if namespace_writer else ("alpha", "beta"),
+        0,
+    )
     metadata = plan.module_graph_metadata
     assert metadata.module_is_package_by_module["hf226_namespace"]
     assert metadata.module_is_namespace_by_module["hf226_namespace"]

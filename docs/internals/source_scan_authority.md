@@ -197,9 +197,10 @@ the file does not refresh its retained AST, and reusing that admission after
 mutation must fail the strict precomputed-scan content check.
 Even a matching precomputed premise retains a captured byte generation through
 the operation's final content fence. Explicit supplied source or AST takes
-precedence over a precomputed disk projection. Source-slice generation transfer
-uses current graph authority after validating the slice's source/root custody;
-an earlier slice receipt cannot erase a subsequently widened namespace premise.
+precedence over a precomputed disk projection. Native helper root growth retains
+the original source bytes and spans; a byte-generation change requires a new
+operation. An earlier selected-view receipt cannot erase a widened premise or
+narrow an admitted raw source.
 
 Wrapper cache publication retains the complete pre-build input payload and key.
 Its entry fences resolve the original selector with the child's explicit
@@ -253,10 +254,19 @@ Precomputed records retain source requests with source content, target, mode,
 and capability identity. Every reuse recompletes package exports and filesystem
 edges in the current operation; a valid entry digest is not authority for stale
 package topology. Native-artifact-owned exclusions keep their explicit source
-execution roots without reinterpreting their implementation as Python source. Selected native helper slices are
-scanned from their emitted generated source. Unsliced initialization scans remain
-initialization scans. A previously admitted real source is not silently replaced
-by a narrower helper slice.
+execution roots without reinterpreting their implementation as Python source.
+Selected native helpers are semantic views of the original captured AST, using
+the same pruning authority as lowering. Root selection belongs to the source-scan
+authority and participates in request/syntax/runtime-policy cache identity; raw
+initialization remains raw. Growing views preserve original source keys and reuse
+one parse rather than generating replacement Python files.
+
+One explicit `_ModuleGraphDiscovery` continues through entry, package/core, native
+support, runtime owner and generated namespace/importer admission. Each source
+retains its own roots and admission policy. Writer deltas revisit affected prior
+projections; logical receiver incidences survive until a later generated package
+is admitted. Closure publication applies only changed source rows. Frozen graphs
+cannot substitute for the live operation's writer and value provenance.
 
 Runtime policy is a projection of the current source authority, not an entry-name
 classifier. Its operation-local memo contains booleans keyed by source content,

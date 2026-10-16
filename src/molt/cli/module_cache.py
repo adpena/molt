@@ -15,6 +15,7 @@ from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
 from molt.frontend.sema import collect_module_func_kinds
 from molt.frontend.sema.funcmeta import collect_module_func_defaults
+from molt.compiler_analysis.native_support_slice import canonical_native_support_roots
 from molt.type_facts import TypeFacts
 
 from molt.cli.artifact_state import _build_state_subdir_cached
@@ -750,7 +751,7 @@ def _module_lowering_execution_view(
     )
 
 
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 11
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 12
 
 
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 5
@@ -767,20 +768,23 @@ def _module_analysis_cache_key(
     is_package: bool | None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> str:
     """Content-addressed key for one module-analysis identity.
 
     Single authority for the analysis cache key: the session-local filename and
     the shared-tier slot both derive from this so they can never drift. The key
     covers the resolved source path, the module identity, the import scan mode,
-    the target Python tag and the frontend tooling fingerprint. Runtime policy
-    is installed after compilation and does not change module analysis.
+    the native support selection, the target Python tag and the frontend tooling
+    fingerprint. Runtime policy is installed after compilation and does not
+    change module analysis.
     """
     package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
     key_parts = [
         module_name,
         package_kind,
         import_scan_mode,
+        repr(native_support_function_roots),
         kind,
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
@@ -800,6 +804,7 @@ def _module_analysis_cache_path(
     is_package: bool | None = None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -812,6 +817,7 @@ def _module_analysis_cache_path(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        native_support_function_roots=native_support_function_roots,
     )
     return root / f"{path.stem}.{cache_key}.json"
 
@@ -824,6 +830,7 @@ def _shared_module_analysis_cache_path_for(
     is_package: bool | None = None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> Path | None:
     cache_key = _module_analysis_cache_key(
         path,
@@ -832,6 +839,7 @@ def _shared_module_analysis_cache_path_for(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        native_support_function_roots=native_support_function_roots,
     )
     return _shared_module_analysis_cache_path(path.stem, cache_key)
 
@@ -910,6 +918,7 @@ def _validate_persisted_module_analysis_payload(
     import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None,
     snapshot: PythonSourceSnapshot | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     """Validate one analysis payload; the single correctness gate for both tiers.
 
@@ -926,6 +935,8 @@ def _validate_persisted_module_analysis_payload(
         or payload.get("compiler_fingerprint")
         != _frontend_semantic_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
+        or payload.get("native_support_function_roots")
+        != list(native_support_function_roots)
         or "imports" in payload
     ):
         return None
@@ -979,6 +990,7 @@ def _read_persisted_module_analysis(
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     snapshot: PythonSourceSnapshot | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]] | None:
     # Debug opt-out: force a cold re-analysis (no session-local or shared reuse).
     if _frontend_lowering_cache_disabled():
@@ -990,6 +1002,7 @@ def _read_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        native_support_function_roots=native_support_function_roots,
     )
     result = _validate_persisted_module_analysis_payload(
         _read_artifact_sync_state(cache_path),
@@ -997,6 +1010,7 @@ def _read_persisted_module_analysis(
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
         snapshot=snapshot,
+        native_support_function_roots=native_support_function_roots,
     )
     if result is not None:
         return result
@@ -1011,6 +1025,7 @@ def _read_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        native_support_function_roots=native_support_function_roots,
     )
     observed = _hydrate_shared_frontend_cache(cache_path=shared_path, dest=cache_path)
     if observed is None:
@@ -1021,6 +1036,7 @@ def _read_persisted_module_analysis(
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
         snapshot=snapshot,
+        native_support_function_roots=native_support_function_roots,
     )
     if result is not None and shared_path is not None:
         refresh_cache_entry_recency(
@@ -1041,6 +1057,7 @@ def _write_persisted_module_analysis(
     func_kinds: dict[str, str],
     snapshot: PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> None:
     cache_path = _module_analysis_cache_path(
         project_root,
@@ -1049,6 +1066,7 @@ def _write_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        native_support_function_roots=native_support_function_roots,
     )
     stat = path.stat()
     if snapshot.path.resolve() != path.resolve() or not _payload_source_matches(
@@ -1061,6 +1079,7 @@ def _write_persisted_module_analysis(
         "module_name": module_name,
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
+        "native_support_function_roots": list(native_support_function_roots),
         "target_python": target_python.tag,
         "size": len(snapshot.content),
         "mtime_ns": stat.st_mtime_ns,
@@ -1083,6 +1102,7 @@ def _write_persisted_module_analysis(
             is_package=is_package,
             import_scan_mode=import_scan_mode,
             target_python=target_python,
+            native_support_function_roots=native_support_function_roots,
         ),
     )
 
@@ -1208,6 +1228,7 @@ def _load_module_analysis(
     stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
+    native_support_function_roots: tuple[str, ...] = (),
 ) -> tuple[
     ast.AST | None,
     tuple[str, ...],
@@ -1217,6 +1238,10 @@ def _load_module_analysis(
     bool,
     os.stat_result | None,
 ]:
+    if native_support_function_roots:
+        native_support_function_roots = canonical_native_support_roots(
+            native_support_function_roots
+        )
     if source is not None:
         # Caller-supplied text is an operation-local generation, not proof that
         # the path still contains the bytes which produced it.
@@ -1249,6 +1274,7 @@ def _load_module_analysis(
         stdlib_allowlist=stdlib_allowlist,
         target_python=target_python,
         runtime_import_custody=runtime_import_custody,
+        native_support_function_roots=native_support_function_roots,
     )
     imports = loaded_scan.scan.imports
     snapshot = loaded_scan.snapshot
@@ -1264,6 +1290,7 @@ def _load_module_analysis(
             path_stat=path_stat,
             target_python=target_python,
             snapshot=snapshot,
+            native_support_function_roots=native_support_function_roots,
         )
         if project_root is not None
         else None
@@ -1292,13 +1319,25 @@ def _load_module_analysis(
 
     tree = loaded_scan.tree
     if tree is None:
-        tree = resolution_cache.parse_module_ast(
+        parsed = resolution_cache.parse_module_ast(
             path,
             source,
             filename=logical_source_path,
             retain=retain_tree,
             target_python=target_python,
-        ).tree
+        )
+        tree = parsed.tree
+        if native_support_function_roots:
+            if not isinstance(tree, ast.Module):
+                raise ValueError("native support selection requires a module AST")
+            selected, _source_pruned = resolution_cache.native_support_view(
+                path,
+                tree,
+                native_support_function_roots,
+                ast_digest_admission=parsed.admission,
+                target_python=target_python,
+            )
+            tree = selected.tree
     func_defaults = persisted_defaults
     if func_defaults is None:
         func_defaults = _collect_func_defaults(tree)
@@ -1318,6 +1357,7 @@ def _load_module_analysis(
                     func_kinds=func_kinds,
                     snapshot=snapshot,
                     target_python=target_python,
+                    native_support_function_roots=native_support_function_roots,
                 )
     return (
         tree if retain_tree else None,

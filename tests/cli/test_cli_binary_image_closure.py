@@ -101,6 +101,7 @@ def _materialize_plan(
 def _prepare_analysis_for_plan(project_root: Path, import_plan):
     analysis, error = cli_frontend_pipeline._prepare_frontend_analysis(
         module_graph=import_plan.module_graph,
+        scan_authority=import_plan.scan_authority,
         module_graph_metadata=import_plan.module_graph_metadata,
         module_resolution_cache=import_plan.module_resolution_cache,
         roots=list(import_plan.roots),

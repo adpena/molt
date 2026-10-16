@@ -490,7 +490,8 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
         }
         slices = module_graph._native_support_source_slices(
             native_artifact_plan=NativeSupportPlan(),
-            roots_by_module={},
+            roots_by_module={"support": ()},
+            resolution_cache=module_resolution._ModuleResolutionCache(),
             artifacts_root=app,
             slice_cache={},
             operation_counts=native_counts,
@@ -684,6 +685,20 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
 
+    cache = module_resolution._ModuleResolutionCache()
+    operation = discovery._ModuleGraphDiscovery(cache, _DEFAULT_TARGET_PYTHON_VERSION)
+    discovery._discover_module_graph_from_paths(
+        (target,),
+        [tmp_path, stdlib],
+        [tmp_path],
+        stdlib,
+        tmp_path,
+        set(),
+        resolver_cache=cache,
+        discovery=operation,
+        full_scan_roots=True,
+    )
+
     def forbidden(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError(
             "runtime custody cannot read or publish strict persisted scans"
@@ -704,12 +719,11 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
         set(),
         full_scan_roots=True,
         runtime_import_custody=custody,
-        enclosing_scan_authority=_ModuleGraphScanAuthority(
-            (_ModuleSourceScanAuthority("target", target, "full"),)
-        ),
+        resolver_cache=cache,
+        discovery=operation,
     )
-    graph = discovery_result.graph
-    assert graph == dict(custody.catalog)
+    assert discovery_result.discovery is operation
+    assert operation.graph == dict(custody.catalog)
 
 
 def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction(

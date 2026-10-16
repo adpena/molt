@@ -73,6 +73,7 @@ from molt.cli.models import (
     _FrontendTimingRecorderConfig,
     _ImportPlan,
     _ModuleGraphMetadata,
+    _ModuleGraphScanAuthority,
     _PreparedBuildCallbacks,
     _PreparedBuildConfig,
     _PreparedBuildModuleOutputs,
@@ -217,6 +218,7 @@ def _prepare_build_module_outputs(
 def _prepare_frontend_analysis(
     *,
     module_graph: Mapping[str, Path],
+    scan_authority: _ModuleGraphScanAuthority,
     module_graph_metadata: _ModuleGraphMetadata,
     module_resolution_cache: "_ModuleResolutionCache",
     roots: Sequence[Path],
@@ -229,6 +231,8 @@ def _prepare_frontend_analysis(
     dependency_known_modules: Collection[str] = (),
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None,
 ) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
+    scan_authority.validate_graph(module_graph)
+    source_authorities = scan_authority.by_module
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
     module_source_leases: dict[str, _ModuleSourceLease] = {}
@@ -255,6 +259,9 @@ def _prepare_frontend_analysis(
                 ],
                 import_scan_mode="full",
                 runtime_import_custody=runtime_import_scan_custody,
+                native_support_function_roots=source_authorities[
+                    module_name
+                ].native_support_function_roots,
                 source=None,
                 logical_source_path=module_graph_metadata.logical_source_path_by_module[
                     module_name
@@ -895,6 +902,7 @@ def _prepare_frontend_stage_state(
     prepared_frontend_analysis, prepared_frontend_analysis_error = (
         _prepare_frontend_analysis(
             module_graph=dict(import_plan.module_graph),
+            scan_authority=import_plan.scan_authority,
             module_graph_metadata=import_plan.module_graph_metadata,
             module_resolution_cache=import_plan.module_resolution_cache,
             roots=import_plan.roots,

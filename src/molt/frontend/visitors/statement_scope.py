@@ -163,11 +163,9 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         )
 
     def _native_support_function_roots(self) -> frozenset[str]:
-        roots: set[str] = {
-            name
-            for name in getattr(self, "native_support_function_roots", set())
-            if isinstance(name, str) and name
-        }
+        if self.native_support_function_roots is not None:
+            return frozenset(self.native_support_function_roots)
+        roots: set[str] = set()
         for qualified_name, spec in self.native_callable_exports.items():
             provider_module = spec.get("provider_module")
             if provider_module != self.module_name:
