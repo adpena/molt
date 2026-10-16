@@ -304,13 +304,16 @@ def test_seal_tree_flush_has_one_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flushed: list[Path] = []
-    real_flush = file_publication._flush_staged_file
+    real_validate = file_publication._validate_staged_file
 
-    def observe(path: Path) -> int:
+    def observe(
+        path: Path, *, durability: file_publication.PublicationDurability
+    ) -> int:
+        assert durability is file_publication.PublicationDurability.DURABLE
         flushed.append(path)
-        return real_flush(path)
+        return real_validate(path, durability=durability)
 
-    monkeypatch.setattr(file_publication, "_flush_staged_file", observe)
+    monkeypatch.setattr(file_publication, "_validate_staged_file", observe)
     seal = _stage_fixture(tmp_path)
     payload_flushes = [path for path in flushed if "files" in path.parts]
     assert len(payload_flushes) == len(seal.files)

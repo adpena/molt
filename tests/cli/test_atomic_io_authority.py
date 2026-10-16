@@ -25,7 +25,7 @@ from molt.wasm_artifact import (
     _write_wasm_string,
     transform_wasm_publication_file,
 )
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import current_thread_only, install_module_view
 from tests.runtime_build_identity_helper import runtime_build_identity
 
 
@@ -201,6 +201,141 @@ def test_windows_namespace_commit_requests_replace_and_write_through(
             | file_publication.MOVEFILE_WRITE_THROUGH,
         )
     ]
+
+
+@pytest.mark.parametrize("operation", ["bytes", "text", "json", "copy"])
+def test_reconstructible_publication_is_complete_without_durability_barriers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    def unexpected_flush(_fd: int) -> None:
+        pytest.fail("disposable cache crossed a durability barrier")
+
+    install_module_view(monkeypatch, "os", os, file_publication, fsync=unexpected_flush)
+    destination = tmp_path / "cache.json"
+    destination.write_bytes(b"previous")
+    policy = file_publication.PublicationDurability.RECONSTRUCTIBLE
+    if operation == "bytes":
+        file_publication.atomic_write_bytes(destination, b"complete", durability=policy)
+    elif operation == "text":
+        atomic_io._atomic_write_text(destination, "complete", durability=policy)
+    elif operation == "json":
+        atomic_io._atomic_write_json(destination, {"complete": True}, durability=policy)
+    else:
+        source = tmp_path / "source"
+        source.write_bytes(b"complete")
+        atomic_io._atomic_copy_file(source, destination, durability=policy)
+    assert destination.read_bytes() == (
+        b'{\n  "complete": true\n}\n' if operation == "json" else b"complete"
+    )
+    assert not list(tmp_path.glob(".molt-*.tmp"))
+
+
+def test_windows_reconstructible_replace_uses_atomic_replace_without_write_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged, destination = tmp_path / "stage", tmp_path / "destination"
+    staged.write_bytes(b"complete")
+    destination.write_bytes(b"previous")
+    attempts = 0
+
+    def replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            error = PermissionError("sharing violation")
+            error.winerror = 32  # type: ignore[attr-defined]
+            raise error
+        os.replace(source, target)
+
+    install_module_view(
+        monkeypatch, "os", os, file_publication, name="nt", replace=replace
+    )
+    monkeypatch.setattr(
+        file_publication,
+        "windows_replace_write_through",
+        lambda *_args: pytest.fail("cache requested WRITE_THROUGH"),
+    )
+    install_module_view(
+        monkeypatch, "time", time, file_publication, sleep=lambda _: None
+    )
+    file_publication.atomic_replace(
+        staged,
+        destination,
+        durability=file_publication.PublicationDurability.RECONSTRUCTIBLE,
+    )
+    assert attempts == 2
+    assert destination.read_bytes() == b"complete"
+    assert not staged.exists()
+
+
+@pytest.mark.parametrize("operation", ["bytes", "copy"])
+def test_reconstructible_replace_failure_preserves_old_leaf_and_cleans_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    destination = tmp_path / "destination"
+    destination.write_bytes(b"previous")
+    destination.chmod(stat.S_IREAD)
+    old_mode = destination.stat().st_mode
+    primary = OSError("namespace commit refused")
+
+    def fail_replace(_source: Path, _destination: Path) -> None:
+        raise primary
+
+    install_module_view(monkeypatch, "os", os, file_publication, replace=fail_replace)
+    policy = file_publication.PublicationDurability.RECONSTRUCTIBLE
+    with pytest.raises(OSError) as caught:
+        if operation == "bytes":
+            file_publication.atomic_write_bytes(
+                destination, b"complete", durability=policy
+            )
+        else:
+            source = tmp_path / "source"
+            source.write_bytes(b"complete")
+            atomic_io._atomic_copy_file(source, destination, durability=policy)
+    assert caught.value is primary
+    assert destination.read_bytes() == b"previous"
+    assert destination.stat().st_mode == old_mode
+    assert not list(tmp_path.glob(".molt-*.tmp"))
+
+
+def test_reconstructible_readonly_stage_needs_no_write_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged, destination = tmp_path / "stage", tmp_path / "destination"
+    staged.write_bytes(b"complete")
+    staged.chmod(stat.S_IREAD)
+    monkeypatch.setattr(
+        Path,
+        "chmod",
+        current_thread_only(
+            lambda *_args: pytest.fail("cache stage requested write access"),
+            Path.chmod,
+        ),
+    )
+    file_publication.atomic_replace(
+        staged,
+        destination,
+        durability=file_publication.PublicationDurability.RECONSTRUCTIBLE,
+    )
+    assert destination.read_bytes() == b"complete"
+    assert not destination.stat().st_mode & stat.S_IWRITE
+
+
+@pytest.mark.parametrize("invalid", ["unknown", "exclusive", "callback"])
+def test_invalid_publication_policy_fails_before_filesystem_effects(
+    tmp_path: Path, invalid: str
+) -> None:
+    parent = tmp_path / "never-created"
+    options = {"durability": file_publication.PublicationDurability.RECONSTRUCTIBLE}
+    if invalid == "unknown":
+        options["durability"] = "reconstructible"
+    elif invalid == "exclusive":
+        options["exclusive"] = True
+    else:
+        options["replace"] = lambda *_args: None
+    with pytest.raises(ValueError):
+        file_publication.atomic_write_bytes(parent / "cache", b"value", **options)
+    assert not parent.exists()
 
 
 def test_windows_write_through_replace_retries_only_sharing_violations(

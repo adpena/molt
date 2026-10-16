@@ -243,9 +243,7 @@ def test_intrinsic_source_cache_publication_failure_is_visible_and_nonfatal(
     def cannot_publish(*_args, **_kwargs):
         raise OSError("read-only cache")
 
-    monkeypatch.setattr(
-        module_graph_cache, "_write_artifact_sync_payload", cannot_publish
-    )
+    monkeypatch.setattr(module_graph_cache, "_write_cached_json_object", cannot_publish)
     counts = {}
     assert (
         provider("owner", path, operation_counts=counts).status

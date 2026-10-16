@@ -817,6 +817,28 @@ Regrtest runs set `MOLT_CAPABILITIES=fs.read,env.read` by default; override with
 Benchmarks that cannot survive a disconnect are not acceptable.
 
 ### Build time
+
+Compiler caches use atomic publication without durability barriers when their
+contents can be reconstructed: source/import/analysis records, lowering JSON,
+toolchain and backend-analysis memos, wrapper build manifests, and both directions
+of shared frontend-cache copying. Missing or malformed cache data is a miss;
+each consumer still qualifies its source, context, tooling, target or artifact
+content before reuse. The in-process JSON memo holds candidates, not attestations
+of current cache-file bytes. Its metadata hint avoids rereading large JSON on a
+warm lookup; the consumer's semantic identity remains authoritative. Writes
+invalidate that memo rather than associating a submitted payload with a later
+stat of a possibly replaced path. Artifact sync receipts retain their separate
+current-byte reader and durability contract.
+
+The shared `molt.file_publication.PublicationDurability` policy keeps required
+outputs durable by default. `RECONSTRUCTIBLE` is an explicit owner choice, with
+the same staging, complete-write, close, custody, atomic replacement and cleanup
+protocol. It skips file/directory flushes and Windows write-through, without
+unlinking an old entry first or copying across filesystems after a failed rename.
+This follows [CPython's bytecode cache publication](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap_external.py#L183-L202),
+which writes a private file and replaces it atomically without a flush barrier.
+It changes compiler/development I/O only; emitted programs do no cache validation.
+
 - `MOLT_BUILD_DIAGNOSTICS=1` with `MOLT_BUILD_DIAGNOSTICS_FILE=<path>` writes one
   `molt build`'s phase seconds (`phase_sec`, `ranked_phases`) and its entry as
   JSON. A value ending in `/` names a directory that receives one file per build;

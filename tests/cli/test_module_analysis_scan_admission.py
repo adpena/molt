@@ -462,7 +462,7 @@ def test_analysis_publication_rejects_a_changed_snapshot(
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("changed source must not publish analysis metadata")
 
-    monkeypatch.setattr(module_cache, "_write_artifact_sync_payload", forbidden)
+    monkeypatch.setattr(module_cache, "_write_cached_json_object", forbidden)
     module_cache._write_persisted_module_analysis(
         tmp_path,
         path,

@@ -54,6 +54,7 @@ import re
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_copy_file
+from molt.file_publication import PublicationDurability
 from molt.default_paths import _default_molt_cache
 
 
@@ -154,7 +155,9 @@ def _hydrate_shared_frontend_cache(
         observed = cache_path.lstat()
         if not stat.S_ISREG(observed.st_mode):
             return None
-        _atomic_copy_file(cache_path, dest)
+        _atomic_copy_file(
+            cache_path, dest, durability=PublicationDurability.RECONSTRUCTIBLE
+        )
     except OSError:
         return None
     return observed if dest.is_file() else None
@@ -175,6 +178,8 @@ def _publish_shared_frontend_cache(*, src: Path, cache_path: Path | None) -> Non
     if cache_path is None or not src.is_file():
         return
     try:
-        _atomic_copy_file(src, cache_path)
+        _atomic_copy_file(
+            src, cache_path, durability=PublicationDurability.RECONSTRUCTIBLE
+        )
     except OSError:
         return

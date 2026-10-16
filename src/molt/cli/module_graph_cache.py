@@ -23,9 +23,10 @@ from itertools import pairwise
 from typing import Any, cast, get_args
 
 from molt.cli.artifact_state import _build_state_subdir_cached
-from molt.cli.artifact_sync import (
-    _read_artifact_sync_state,
-    _write_artifact_sync_payload,
+from molt.cli.json_cache import (
+    SOURCE_ANALYSIS_CACHE_MAX_BYTES,
+    _read_cached_json_object,
+    _write_cached_json_object,
 )
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
@@ -489,7 +490,9 @@ def _stdlib_intrinsic_namespace_summary(
         target_python=target_python,
     ).with_suffix(".intrinsic.json")
     expected = _intrinsic_source_identity(snapshot, module_name, target_python, None)
-    payload = _read_artifact_sync_state(cache_path)
+    payload = _read_cached_json_object(
+        cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
+    )
     if payload is not None:
         identity = payload.get("identity")
         if (
@@ -561,7 +564,9 @@ def _stdlib_intrinsic_source_facts(
     identity = _intrinsic_source_identity(
         snapshot, module_name, target_python, namespace_premise
     )
-    payload = _read_artifact_sync_state(cache_path)
+    payload = _read_cached_json_object(
+        cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
+    )
     if payload is not None and payload.get("identity") == identity:
         try:
             if (
@@ -612,7 +617,7 @@ def _stdlib_intrinsic_source_facts(
             snapshot=snapshot,
             target_python=target_python,
         )
-        _write_artifact_sync_payload(
+        _write_cached_json_object(
             cache_path,
             {"identity": identity, "facts": _encode_intrinsic_source_facts(facts)},
         )
@@ -810,7 +815,9 @@ def _read_persisted_import_scan_record(
         native_support_function_roots=native_support_function_roots,
         target_python=target_python,
     )
-    payload = _read_artifact_sync_state(cache_path)
+    payload = _read_cached_json_object(
+        cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
+    )
     if payload is None:
         return None
     # Source records are a closed versioned protocol. Retired projections and
@@ -1210,4 +1217,4 @@ def _write_persisted_import_scan(
         target_python=target_python,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_artifact_sync_payload(cache_path, payload)
+    _write_cached_json_object(cache_path, payload)

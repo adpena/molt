@@ -16,6 +16,7 @@ import tomllib
 from typing import Literal, cast
 
 from molt.cli.atomic_io import _atomic_write_text
+from molt.file_publication import PublicationDurability
 from molt.default_paths import _default_molt_cache
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.compiler_analysis.python_namespace_graph import (
@@ -118,8 +119,12 @@ def _read_graph_cache(
 ) -> tuple[dict[str, dict[str, object]], bool]:
     cache_path = python_source_closure_cache_path(project_root)
     try:
-        payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        source = cache_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return {}, True
+    try:
+        payload = json.loads(source)
+    except (ValueError, RecursionError):
         return {}, True
     if not isinstance(payload, dict):
         return {}, True
@@ -205,6 +210,7 @@ def _write_graph_cache(
         _atomic_write_text(
             cache_path,
             json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            durability=PublicationDurability.RECONSTRUCTIBLE,
         )
     except OSError:
         return

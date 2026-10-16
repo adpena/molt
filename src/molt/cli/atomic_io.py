@@ -15,8 +15,15 @@ from molt import file_publication
 from molt.toolchain_identity import StableRegularFileIdentity
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    file_publication.atomic_write_bytes(path, text.encode("utf-8"))
+def _atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    durability: file_publication.PublicationDurability = file_publication.PublicationDurability.DURABLE,
+) -> None:
+    file_publication.atomic_write_bytes(
+        path, text.encode("utf-8"), durability=durability
+    )
 
 
 def _write_text_if_changed(path: Path, content: str) -> None:
@@ -47,6 +54,7 @@ def _atomic_write_json(
     indent: int | None = 2,
     sort_keys: bool = False,
     default: Any | None = None,
+    durability: file_publication.PublicationDurability = file_publication.PublicationDurability.DURABLE,
 ) -> None:
     _atomic_write_text(
         path,
@@ -58,6 +66,7 @@ def _atomic_write_json(
             allow_nan=False,
         )
         + "\n",
+        durability=durability,
     )
 
 
@@ -78,14 +87,19 @@ def _atomic_copy_file(
     *,
     expected_sha256: str | None = None,
     observed: StableRegularFileIdentity | None = None,
+    durability: file_publication.PublicationDurability = file_publication.PublicationDurability.DURABLE,
 ) -> None:
+    file_publication._require_durability(durability)
     with _staged_copy_file(
         src,
         dst,
         expected_sha256=expected_sha256,
         observed=observed,
     ) as tmp_path:
-        file_publication.durable_replace(tmp_path, dst)
+        if durability is file_publication.PublicationDurability.DURABLE:
+            file_publication.durable_replace(tmp_path, dst)
+        else:
+            file_publication.atomic_replace(tmp_path, dst, durability=durability)
 
 
 @contextmanager

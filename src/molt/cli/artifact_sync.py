@@ -13,18 +13,9 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
 )
 
-# Low-level artifact-sync state primitives.
-#
-# The per-module frontend caches (``module_cache``, ``module_graph_cache``) read
-# and write this artifact-sync state to decide whether a previously staged output
-# is still current. That is a lowering-context concern, but the primitives
-# themselves are pure filesystem state — they must not pull in the backend/codegen
-# layer. Historically they lived in ``backend_cache`` (which transitively imports
-# the whole native/wasm backend), so any lowering-context module that needed them
-# dragged the backend onto the frontend import path and cold-started the lowering
-# cache on unrelated backend edits. They live here instead: a leaf module that
-# uses the shared direct-file identity authority. The ``molt.cli`` facade points
-# to this leaf authority, so public imports do not route through backend_cache.
+# Backend sync receipts use durable publication and freshly captured bytes.
+# Only parsing is memoized; receipt matching separately re-admits the actual
+# artifact. Reconstructible source-analysis candidates belong to json_cache.
 
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[str, dict[str, Any] | None]] = {}
 _ARTIFACT_SYNC_STATE_VERSION = 2
@@ -57,7 +48,7 @@ def _read_artifact_sync_state(path: Path) -> dict[str, Any] | None:
         return cached[1]
     try:
         decoded = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (ValueError, RecursionError):
         payload = None
     else:
         payload = decoded if isinstance(decoded, dict) else None
@@ -86,16 +77,7 @@ def _write_artifact_sync_state(
         "size": identity.size,
         "sha256": identity.sha256,
     }
-    _write_artifact_sync_payload(path, payload)
-
-
-def _write_artifact_sync_payload(
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    default: Any | None = None,
-) -> None:
-    _atomic_write_json(path, payload, indent=2, default=default)
+    _atomic_write_json(path, payload, indent=2)
     # Only a read of the published generation may populate the process cache;
     # a peer can replace the path immediately after atomic publication.
     _ARTIFACT_SYNC_STATE_CACHE.pop(path, None)

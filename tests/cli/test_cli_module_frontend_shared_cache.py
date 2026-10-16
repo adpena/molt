@@ -947,3 +947,26 @@ def test_shared_frontend_hydration_refuses_special_file_before_copy(
     output = tmp_path / "owned.json"
     assert MFC._hydrate_shared_frontend_cache(cache_path=device, dest=output) is None
     assert not output.exists()
+
+
+def test_shared_cache_copies_need_no_durability_barriers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import file_publication
+    from tests.process_guard_common import install_module_view
+
+    def unexpected_flush(_fd: int) -> None:
+        pytest.fail("shared cache copy requested a durability barrier")
+
+    install_module_view(monkeypatch, "os", os, file_publication, fsync=unexpected_flush)
+    source, shared, hydrated = (
+        tmp_path / name for name in ("local", "shared", "fresh")
+    )
+    source.write_bytes(b'{"independent_semantic_validation":"still required"}\n')
+    MFC._publish_shared_frontend_cache(src=source, cache_path=shared)
+    assert shared.read_bytes() == source.read_bytes()
+    assert (
+        MFC._hydrate_shared_frontend_cache(cache_path=shared, dest=hydrated) is not None
+    )
+    assert hydrated.read_bytes() == source.read_bytes()
+    assert not list(tmp_path.glob(".molt-*.tmp"))

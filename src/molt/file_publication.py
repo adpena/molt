@@ -1,4 +1,4 @@
-"""Cross-platform crash-consistent publication of one filesystem leaf."""
+"""Cross-platform atomic publication with explicit durability for each owner."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from collections.abc import Callable
 import contextlib
 import ctypes
 import errno
+from enum import Enum
 import hashlib
 import os
 import re
@@ -34,7 +35,19 @@ class MoveFileEx(Protocol):
 
 
 GetLastError = Callable[[], int]
-DurableReplace = Callable[[Path, Path], None]
+FileReplace = Callable[[Path, Path], None]
+
+
+class PublicationDurability(Enum):
+    """Outputs request durability barriers; disposable caches may be rebuilt."""
+
+    DURABLE = "durable"
+    RECONSTRUCTIBLE = "reconstructible"
+
+
+def _require_durability(durability: PublicationDurability) -> None:
+    if not isinstance(durability, PublicationDurability):
+        raise ValueError(f"invalid publication durability: {durability!r}")
 
 
 def _warn_after_commit(message: str) -> None:
@@ -132,7 +145,13 @@ def windows_replace_write_through(
     staged: Path,
     destination: Path,
     *,
-    replace_once: DurableReplace = move_file_ex_write_through,
+    replace_once: FileReplace = move_file_ex_write_through,
+) -> None:
+    _windows_replace(staged, destination, replace_once=replace_once)
+
+
+def _windows_replace(
+    staged: Path, destination: Path, *, replace_once: FileReplace
 ) -> None:
     for attempt in range(25):
         try:
@@ -146,9 +165,20 @@ def windows_replace_write_through(
             time.sleep(0.01)
 
 
-def namespace_replace_once(staged: Path, destination: Path) -> None:
+def namespace_replace_once(
+    staged: Path,
+    destination: Path,
+    *,
+    durability: PublicationDurability = PublicationDurability.DURABLE,
+) -> None:
+    _require_durability(durability)
     if os.name == "nt":
-        windows_replace_write_through(staged, destination)
+        if durability is PublicationDurability.DURABLE:
+            windows_replace_write_through(staged, destination)
+        else:
+            # CPython's same-filesystem os.replace uses REPLACE_EXISTING,
+            # without WRITE_THROUGH. Sharing failures retain the old leaf.
+            _windows_replace(staged, destination, replace_once=os.replace)
     else:
         os.replace(staged, destination)
 
@@ -343,7 +373,9 @@ def _flush_staged_directory_tree(root: Path) -> None:
                     )
                 identity = (metadata.st_dev, metadata.st_ino)
                 if not metadata.st_ino or identity not in flushed_files:
-                    _flush_staged_file(child)
+                    _validate_staged_file(
+                        child, durability=PublicationDurability.DURABLE
+                    )
                     if metadata.st_ino:
                         flushed_files.add(identity)
     for directory in reversed(directories):
@@ -577,23 +609,25 @@ def durable_remove_path(path: Path, *, retirement_scope: str | None = None) -> N
         raise
 
 
-def _flush_staged_file(staged: Path) -> int:
+def _validate_staged_file(staged: Path, *, durability: PublicationDurability) -> int:
     metadata = staged.lstat()
     if not stat.S_ISREG(metadata.st_mode) or metadata_is_link_like(metadata):
         raise ValueError(f"staged publication source is not a real file: {staged}")
-    staged_was_readonly = not metadata.st_mode & stat.S_IWRITE
-    if staged_was_readonly:
+    flush = durability is PublicationDurability.DURABLE
+    restore_readonly = flush and not metadata.st_mode & stat.S_IWRITE
+    if restore_readonly:
         staged.chmod(metadata.st_mode | stat.S_IWRITE)
     try:
-        with staged.open("r+b") as handle:
+        with staged.open("r+b" if flush else "rb") as handle:
             before = os.fstat(handle.fileno())
             if (before.st_dev, before.st_ino) != (metadata.st_dev, metadata.st_ino):
                 raise ValueError(f"staged publication source changed: {staged}")
-            os.fsync(handle.fileno())
+            if flush:
+                os.fsync(handle.fileno())
             after = os.fstat(handle.fileno())
         final = staged.lstat()
     finally:
-        if staged_was_readonly and staged.exists() and not is_link_like(staged):
+        if restore_readonly and staged.exists() and not is_link_like(staged):
             staged.chmod(metadata.st_mode)
     if (before.st_dev, before.st_ino, before.st_size) != (
         after.st_dev,
@@ -611,9 +645,26 @@ def _flush_staged_file(staged: Path) -> int:
 def durable_replace(staged: Path, destination: Path) -> None:
     """Durably replace one public file with one same-filesystem staged file."""
 
+    atomic_replace(staged, destination)
+
+
+def atomic_replace(
+    staged: Path,
+    destination: Path,
+    *,
+    durability: PublicationDurability = PublicationDurability.DURABLE,
+) -> None:
+    """Replace one complete staged file with the owner's durability contract.
+
+    Reconstructible caches retain atomic visibility and custody checks but need
+    no file or namespace durability barrier. Their consumers must independently
+    qualify cached data and reconstruct a missing or corrupt entry.
+    """
+
+    _require_durability(durability)
     staged = Path(staged)
     destination = Path(destination)
-    _flush_staged_file(staged)
+    _validate_staged_file(staged, durability=durability)
     if is_link_like(destination):
         raise ValueError(f"file publication destination is indirect: {destination}")
     if destination.exists() and not destination.is_file():
@@ -625,7 +676,10 @@ def durable_replace(staged: Path, destination: Path) -> None:
         if destination.exists() and not destination.stat().st_mode & stat.S_IWRITE:
             replaced_mode = destination.stat().st_mode
             destination.chmod(replaced_mode | stat.S_IWRITE)
-        durable_namespace_replace(staged, destination)
+        if durability is PublicationDurability.DURABLE:
+            durable_namespace_replace(staged, destination)
+        else:
+            namespace_replace_once(staged, destination, durability=durability)
     except BaseException:
         if replaced_mode is not None and destination.exists():
             with contextlib.suppress(OSError):
@@ -638,7 +692,7 @@ def durable_publish_exclusive(staged: Path, destination: Path) -> None:
 
     staged = Path(staged)
     destination = Path(destination)
-    _flush_staged_file(staged)
+    _validate_staged_file(staged, durability=PublicationDurability.DURABLE)
     if destination.exists() or is_link_like(destination):
         raise FileExistsError(destination)
     # Link-then-unlink changes the visible inode's ctime after publication and
@@ -740,14 +794,22 @@ def atomic_write_bytes(
     data: bytes,
     *,
     exclusive: bool = False,
-    replace: DurableReplace | None = None,
+    replace: FileReplace | None = None,
+    durability: PublicationDurability = PublicationDurability.DURABLE,
 ) -> None:
-    """Publish complete bytes atomically after crossing the durability barrier.
+    """Publish complete bytes atomically with the owner's durability policy.
 
     Only an absent stage is harmless cleanup. A cleanup failure propagates,
     or annotates an existing publication error without replacing that error.
     """
 
+    _require_durability(durability)
+    if durability is PublicationDurability.RECONSTRUCTIBLE and (
+        exclusive or replace is not None
+    ):
+        raise ValueError(
+            "reconstructible publication requires ordinary atomic replacement"
+        )
     destination = canonical_file_leaf(path, create_parent=True)
     if exclusive and destination.exists():
         raise FileExistsError(destination)
@@ -766,8 +828,10 @@ def atomic_write_bytes(
                 pending = pending[written:]
         if exclusive:
             durable_publish_exclusive(staged, destination)
-        else:
+        elif durability is PublicationDurability.DURABLE:
             (replace or durable_replace)(staged, destination)
+        else:
+            atomic_replace(staged, destination, durability=durability)
     except BaseException as exc:
         primary = exc
         raise
