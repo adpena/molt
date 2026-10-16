@@ -231,8 +231,12 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
                     };
                     let mut names = Vec::with_capacity(archive.len());
                     for i in 0..archive.len() {
-                        if let Ok(entry) = archive.by_index(i) {
-                            names.push(entry.name().to_string());
+                        // An entry that cannot be opened or named is skipped,
+                        // as before; zip 9 decodes names on demand.
+                        if let Ok(entry) = archive.by_index(i)
+                            && let Ok(name) = entry.name()
+                        {
+                            names.push(name.into_owned());
                         }
                     }
                     Ok(names)
