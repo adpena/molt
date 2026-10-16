@@ -694,7 +694,7 @@ fn structured_return_keeps_explicit_exception_cleanup() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_custody() {
+fn lune_oracle_checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_custody() {
     let mut ir = path_local_exception_fixture();
     // The raw oracle below probes these otherwise provider-private entrypoints.
     // Declare its dependencies as ordinary guest references so runtime closure
@@ -922,6 +922,9 @@ local poisoned_ok, verified = coroutine.resume(poisoned)
 assert(poisoned_ok and verified)
 print("luau-path-local-exception-flow-ok")
 "#);
-    let output = execute_lune_oracle("path_local_exception_flow", &source);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-path-local-exception-flow-ok"));
+    execute_lune_oracle(
+        "path_local_exception_flow",
+        &source,
+        LuneStdout::Contains(&["luau-path-local-exception-flow-ok"]),
+    );
 }

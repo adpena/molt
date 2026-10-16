@@ -48,7 +48,7 @@ fn compute_kinds(ir: &SimpleIR) -> Vec<&str> {
 }
 
 #[test]
-fn shared_pipeline_folding_admits_and_executes_exact_integer_programs() {
+fn lune_oracle_shared_pipeline_folding_admits_and_executes_exact_integer_programs() {
     let plain = folding_program();
     // Without the pipeline Luau cannot prove the integer domain of `mul`.
     let refusal = LuauBackend::new()
@@ -80,7 +80,9 @@ fn shared_pipeline_folding_admits_and_executes_exact_integer_programs() {
     let source = format!(
         "{compiled}\n;(function()\nassert(compute() == 43)\nprint(\"luau-pipeline-\" .. tostring(compute()))\nend)()\n"
     );
-    let output = execute_lune_oracle("pipeline_folded", &source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("luau-pipeline-43"), "{stdout}");
+    execute_lune_oracle(
+        "pipeline_folded",
+        &source,
+        LuneStdout::Contains(&["luau-pipeline-43"]),
+    );
 }

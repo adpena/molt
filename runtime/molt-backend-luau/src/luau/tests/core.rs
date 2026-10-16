@@ -939,13 +939,16 @@ fn runtime_provider_scopes_hoist_only_guest_and_cross_provider_exports() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn runtime_provider_scopes_preserve_recursive_cells_and_initialization_order() {
+fn lune_oracle_runtime_provider_scopes_preserve_recursive_cells_and_initialization_order() {
     let prelude = scoped_runtime_fixture()
         .emit(SCOPED_RUNTIME_ORACLE, false)
         .unwrap();
     let source = format!("{}{SCOPED_RUNTIME_ORACLE}", prelude.source);
-    let output = execute_lune_oracle("provider_scopes", &source);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-provider-scopes-ok"));
+    execute_lune_oracle(
+        "provider_scopes",
+        &source,
+        LuneStdout::Contains(&["luau-provider-scopes-ok"]),
+    );
 }
 
 #[test]
@@ -1256,7 +1259,7 @@ fn compile_checked_rejects_kwstar_without_canonical_ordered_mapping_provenance()
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
+fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
     let callargs_new = |out: &str| OpIR {
         kind: "callargs_new".to_string(),
         out: Some(out.to_string()),
@@ -1611,11 +1614,10 @@ print("luau-callargs-checked-execution-ok")
 "#;
     let source = format!("{compiled}\n;(function()\n{oracle}\nend)()\n");
     validate_luau_source(&source).expect("checked CallArgs execution source must validate");
-    let output = execute_lune_oracle("checked_callargs", &source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("luau-callargs-checked-execution-ok"),
-        "{stdout}"
+    execute_lune_oracle(
+        "checked_callargs",
+        &source,
+        LuneStdout::Contains(&["luau-callargs-checked-execution-ok"]),
     );
 }
 
@@ -1931,7 +1933,7 @@ fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn execution_frame_runtime_is_coroutine_local_fail_closed_and_allocation_stable() {
+fn lune_oracle_execution_frame_runtime_is_coroutine_local_fail_closed_and_allocation_stable() {
     let oracle = r#"
 local outer_code = {co_filename="frame_oracle.py", co_name="outer", co_firstlineno=10}
 local inner_code = {co_filename="frame_oracle.py", co_name="inner", co_firstlineno=20}
@@ -2230,11 +2232,11 @@ local weak_mode = getmetatable(molt_frame_contexts).__mode
 assert(weak_mode == "kv", "frame_registry_is_not_non_owning_kv")
 print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0 contexts_baseline=%d contexts_after_abandonment=%d contexts_after_completed=%d baseline_elapsed=%.6f framed_elapsed=%.6f added_elapsed=%.6f heap_delta_kib=%.1f", context_baseline, contexts_after_abandonment, contexts_after_completed, baseline_elapsed, elapsed, elapsed - baseline_elapsed, heap_delta_kib))
 "#;
-    let source = runtime_prelude::library()
+    let prelude = runtime_prelude::library()
         .expect("canonical runtime library")
         .emit(oracle, true)
-        .expect("execution-frame oracle dependencies")
-        .source;
+        .expect("execution-frame oracle dependencies");
+    let source = format!("{}{oracle}", prelude.source);
     // The shared context also owns explicit exception state; keep its complete
     // runtime bounded without excluding that protocol from the size budget.
     assert!(frame_runtime::FRAME_RUNTIME.len() < 19_000);
@@ -2254,12 +2256,14 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
         "direct owner lookup/removal belongs only to the ownership helper pair"
     );
     validate_luau_source(&source).expect("execution-frame oracle must pass source validation");
-    let output = execute_lune_oracle("execution_frame", &source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0"),
-        "{stdout}"
+    let output = execute_lune_oracle(
+        "execution_frame",
+        &source,
+        LuneStdout::Contains(&[
+            "luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0",
+        ]),
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     eprintln!(
         "luau-execution-frame-source-bytes={} {stdout}",
         frame_runtime::FRAME_RUNTIME.len()
@@ -2268,7 +2272,7 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn module_frame_publication_preserves_builtins_presence_and_capture() {
+fn lune_oracle_module_frame_publication_preserves_builtins_presence_and_capture() {
     let oracle = r#"
 local code = {co_filename="module_builtins.py", co_name="<module>", co_firstlineno=1}
 local captured = molt_module_cache["builtins"]
@@ -2335,15 +2339,16 @@ assert(not molt_dict_contains(captured, "__builtins__"))
 assert(context.depth == 0)
 print("luau-module-builtins-publication-ok")
 "#;
-    let source = runtime_prelude::library()
+    let prelude = runtime_prelude::library()
         .expect("canonical runtime library")
         .emit(oracle, true)
-        .expect("module builtins oracle dependencies")
-        .source;
+        .expect("module builtins oracle dependencies");
+    let source = format!("{}{oracle}", prelude.source);
     validate_luau_source(&source).expect("module builtins oracle source");
-    let output = execute_lune_oracle("module_builtins_publication", &source);
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("luau-module-builtins-publication-ok")
+    execute_lune_oracle(
+        "module_builtins_publication",
+        &source,
+        LuneStdout::Contains(&["luau-module-builtins-publication-ok"]),
     );
 }
 
@@ -2407,7 +2412,7 @@ fn public_builtin_acquisition_uses_operand_and_one_published_namespace() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn public_builtin_lookup_preserves_capture_identity_none_and_mapping_errors() {
+fn lune_oracle_public_builtin_lookup_preserves_capture_identity_none_and_mapping_errors() {
     let mut ir = public_builtin_lookup_ir();
     // The appended oracle uses this frame protocol outside its provider scope.
     // Root the real helpers through guest IR, just as compiled code would.
@@ -2605,8 +2610,11 @@ print("luau-public-builtin-namespace-ok")
 "#;
     let source = format!("{source}\n{oracle}\nend)()\n");
     validate_luau_source(&source).expect("namespace oracle source");
-    let output = execute_lune_oracle("public_builtin_namespace", &source);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-public-builtin-namespace-ok"));
+    execute_lune_oracle(
+        "public_builtin_namespace",
+        &source,
+        LuneStdout::Contains(&["luau-public-builtin-namespace-ok"]),
+    );
 }
 
 fn isolated_builtin_module_ir() -> SimpleIR {
@@ -2697,7 +2705,7 @@ fn isolated_module_cache_and_attribute_consumers_select_namespace_bootstrap() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn isolated_module_cache_and_attribute_consumers_execute_published_defaults() {
+fn lune_oracle_isolated_module_cache_and_attribute_consumers_execute_published_defaults() {
     let compiled = LuauBackend::new()
         .compile_checked(&isolated_builtin_module_ir())
         .unwrap();
@@ -2721,8 +2729,11 @@ end)()
     );
     let source = format!("{compiled}\n{oracle}\n");
     validate_luau_source(&source).unwrap();
-    let output = execute_lune_oracle("isolated_builtin_cache", &source);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-isolated-builtin-cache-ok"));
+    execute_lune_oracle(
+        "isolated_builtin_cache",
+        &source,
+        LuneStdout::Contains(&["luau-isolated-builtin-cache-ok"]),
+    );
 }
 
 #[test]
@@ -2761,7 +2772,7 @@ fn runtime_adapters_require_real_providers_but_public_names_remain_lookup() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn public_any_all_execute_transitive_helpers_with_many_guest_functions() {
+fn lune_oracle_public_any_all_execute_transitive_helpers_with_many_guest_functions() {
     let mut ir = public_builtin_lookup_ir();
     // This body has no bool operation or explicit bool helper reference. The
     // only bool dependency comes from the any/all provider bodies themselves.
@@ -2800,15 +2811,16 @@ end)()
         emit_function_ident("additional_builtin_probe_79"),
     );
     validate_luau_source(&source).unwrap();
-    let output = execute_lune_oracle("transitive_builtin_helpers", &source);
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("luau-transitive-builtins-and-locals-ok")
+    execute_lune_oracle(
+        "transitive_builtin_helpers",
+        &source,
+        LuneStdout::Contains(&["luau-transitive-builtins-and-locals-ok"]),
     );
 }
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn callable_frames_keep_exact_definition_context_across_rebinding_and_call_shapes() {
+fn lune_oracle_callable_frames_keep_exact_definition_context_across_rebinding_and_call_shapes() {
     let oracle = r#"
 local first_builtins = molt_dict_new(); molt_dict_set(first_builtins, "builtin_value", 41)
 local second_builtins = molt_dict_new(); molt_dict_set(second_builtins, "builtin_value", 99)
@@ -2912,11 +2924,10 @@ print("luau-callable-frame-context-ok")
     backend.emit_prelude_conditional(oracle, false);
     let source = format!("{}\n;(function()\n{oracle}\nend)()\n", backend.output);
     validate_luau_source(&source).expect("callable-context oracle must pass source validation");
-    let output = execute_lune_oracle("callable_frame_context", &source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("luau-callable-frame-context-ok"),
-        "{stdout}"
+    execute_lune_oracle(
+        "callable_frame_context",
+        &source,
+        LuneStdout::Contains(&["luau-callable-frame-context-ok"]),
     );
 }
 
@@ -3039,7 +3050,7 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn ordered_dict_runtime_executes_full_semantics_in_lune() {
+fn lune_oracle_ordered_dict_runtime_executes_full_semantics_in_lune() {
     let oracle = r#"
 local function run_authority_oracle()
 local d = molt_dict_new()
@@ -3452,13 +3463,12 @@ run_authority_oracle()
         "luau-source-size runtime_bytes={runtime_bytes} callable_metadata_bytes={callable_metadata_bytes} prelude_bytes={prelude_bytes} oracle_bytes={}",
         source.len()
     );
-    let output = execute_lune_oracle("ordered_dict", &source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout
-            .trim()
-            .starts_with("luau-authority-ok dict5k_elapsed=")
+    let output = execute_lune_oracle(
+        "ordered_dict",
+        &source,
+        LuneStdout::TrimmedPrefix("luau-authority-ok dict5k_elapsed="),
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     eprintln!("{}", stdout.trim());
 }
 
@@ -5254,7 +5264,7 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
 
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
-fn store_var_result_snapshots_execute_in_structured_and_labelled_flow() {
+fn lune_oracle_store_var_result_snapshots_execute_in_structured_and_labelled_flow() {
     let float = |name: &str, value: f64| OpIR {
         kind: "const_float".to_string(),
         out: Some(name.to_string()),
@@ -5374,8 +5384,11 @@ fn store_var_result_snapshots_execute_in_structured_and_labelled_flow() {
         "{compiled}\nassert(structured_store_results() == 36)\nassert(labelled_store_results() == 36)\nassert(tuple_snapshot_after_rebind() == true)\nprint(\"luau-store-var-results-ok\")\n"
     );
     validate_luau_source(&source).expect("result-carrying store_var source must validate");
-    let output = execute_lune_oracle("store_var_results", &source);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-store-var-results-ok"));
+    execute_lune_oracle(
+        "store_var_results",
+        &source,
+        LuneStdout::Contains(&["luau-store-var-results-ok"]),
+    );
 }
 
 #[test]
@@ -5605,7 +5618,7 @@ fn execution_frame_siblings_have_real_luau_lowering() {
 }
 
 #[test]
-fn execution_frame_cookie_survives_operation_capture_and_dispatch() {
+fn lune_oracle_execution_frame_cookie_survives_operation_capture_and_dispatch() {
     for (guarded, expected_slot) in [(false, 0), (true, 1)] {
         let mut ops = vec![
             OpIR {
@@ -5704,10 +5717,10 @@ assert(molt_frame_context().depth == 0)
 print("frame cookie scope OK")
 "#,
         );
-        let output = execute_lune_oracle("frame_cookie_scope", &source);
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout).trim(),
-            "frame cookie scope OK"
+        execute_lune_oracle(
+            "frame_cookie_scope",
+            &source,
+            LuneStdout::TrimmedExact("frame cookie scope OK"),
         );
     }
 }
