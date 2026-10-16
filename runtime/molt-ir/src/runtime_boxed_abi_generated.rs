@@ -8219,11 +8219,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_os_path_exists",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_os_path_getatime",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -8240,16 +8235,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_os_path_getsize",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_os_path_isdir",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_os_path_isfile",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
@@ -8276,11 +8261,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_os_read",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_os_readlink",
-        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {

@@ -2,6 +2,7 @@
 use std::path::PathBuf;
 
 use crate::audit::AuditArgs;
+use molt_runtime_core::host_capabilities_generated::OperationId;
 use molt_runtime_core::prelude::*;
 
 pub enum AuditArg {
@@ -114,4 +115,49 @@ mod tests {
             }
         });
     }
+}
+
+#[cfg(not(feature = "stdlib_path"))]
+pub fn path_metadata(
+    _py: &CoreGilToken,
+    path: &std::path::Path,
+    follow: bool,
+    operation: OperationId,
+    suppress: bool,
+) -> Result<Option<molt_runtime_platform::stat_support::PathMetadata>, u64> {
+    crate::with_gil_entry_nopanic!(py, {
+        match crate::builtins::io::path_metadata(py, path, follow, operation) {
+            Err(error) => Err(error),
+            Ok(Ok(metadata)) => Ok(Some(metadata)),
+            Ok(Err(_)) if suppress => Ok(None),
+            Ok(Err(error)) => Err(error.raise(py, operation.as_str())),
+        }
+    })
+}
+
+#[cfg(not(feature = "stdlib_path"))]
+pub fn paths_same_file(
+    _py: &CoreGilToken,
+    left: &std::path::Path,
+    right: &std::path::Path,
+    operation: OperationId,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        match crate::builtins::io::paths_same_file(py, left, right, operation) {
+            Err(error) => error,
+            Ok(Ok(same)) => MoltObject::from_bool(same).bits(),
+            Ok(Err(error)) => error.raise(py, operation.as_str()),
+        }
+    })
+}
+
+#[cfg(not(feature = "stdlib_path"))]
+pub fn path_read_link(_py: &CoreGilToken, path: &std::path::Path, bytes: bool) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        match crate::builtins::io::path_read_link(py, path, OperationId::OsReadlink) {
+            Err(error) => error,
+            Ok(Ok(value)) => path_result(_py, &value, bytes),
+            Ok(Err(error)) => error.raise(py, "readlink"),
+        }
+    })
 }

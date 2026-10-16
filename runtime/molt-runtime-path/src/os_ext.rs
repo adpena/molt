@@ -18,6 +18,7 @@ const EBADF_VALUE: i32 = 9; // EBADF = 9 on WASI
 
 use crate::bridge::*;
 use molt_obj_model::MoltObject;
+use molt_runtime_core::host_capabilities_generated::OperationId;
 use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
 use std::path::{Path, PathBuf};
@@ -587,24 +588,6 @@ pub extern "C" fn molt_os_symlink(src_bits: u64, dst_bits: u64) -> u64 {
 pub extern "C" fn molt_os_symlink(_src_bits: u64, _dst_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
-    })
-}
-
-/// `os.readlink(path)` → str or bytes, matching the path flavor
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_readlink(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.readlink", AuditArg::None) {
-            return error;
-        }
-        let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
-            Ok(p) => p,
-            Err(bits) => return bits,
-        };
-        match std::fs::read_link(&path) {
-            Ok(target) => path_result(_py, &target, bytes_flavor),
-            Err(err) => os_err_bits(_py, err, "readlink"),
-        }
     })
 }
 
@@ -1318,16 +1301,21 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.path.getsize", AuditArg::None) {
-            return error;
-        }
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(bits) => return bits,
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        match std::fs::metadata(&path) {
-            Ok(meta) => MoltObject::from_int(meta.len() as i64).bits(),
-            Err(err) => os_err_bits(_py, err, "getsize"),
+        match path_metadata(_py, &path, true, OperationId::OsPathGetsize, false) {
+            Ok(Some(metadata)) => match i64::try_from(metadata.fields[6]) {
+                Ok(size) => molt_runtime_core::rt_int(size),
+                Err(_) => raise_exception::<u64>(
+                    _py,
+                    "OverflowError",
+                    "file size exceeds runtime integer range",
+                ),
+            },
+            Ok(None) => MoltObject::none().bits(),
+            Err(error) => error,
         }
     })
 }
@@ -1336,19 +1324,14 @@ pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.path.getmtime", AuditArg::None) {
-            return error;
-        }
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(bits) => return bits,
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        match std::fs::metadata(&path).and_then(|m| m.modified()) {
-            Ok(t) => {
-                let dur = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                MoltObject::from_float(dur.as_secs_f64()).bits()
-            }
-            Err(err) => os_err_bits(_py, err, "getmtime"),
+        match path_metadata(_py, &path, true, OperationId::OsPathGetmtime, false) {
+            Ok(Some(metadata)) => MoltObject::from_float(metadata.fields[8] as f64).bits(),
+            Ok(None) => MoltObject::none().bits(),
+            Err(error) => error,
         }
     })
 }
@@ -1357,19 +1340,14 @@ pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.path.getatime", AuditArg::None) {
-            return error;
-        }
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(bits) => return bits,
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        match std::fs::metadata(&path).and_then(|m| m.accessed()) {
-            Ok(t) => {
-                let dur = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-                MoltObject::from_float(dur.as_secs_f64()).bits()
-            }
-            Err(err) => os_err_bits(_py, err, "getatime"),
+        match path_metadata(_py, &path, true, OperationId::OsPathGetatime, false) {
+            Ok(Some(metadata)) => MoltObject::from_float(metadata.fields[7] as f64).bits(),
+            Ok(None) => MoltObject::none().bits(),
+            Err(error) => error,
         }
     })
 }
@@ -1378,79 +1356,31 @@ pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.path.getctime", AuditArg::None) {
-            return error;
-        }
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(bits) => return bits,
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        // std::fs::Metadata::created() is the closest portable equivalent.
-        // On Linux it returns ENOTSUP; we fall back to mtime in that case.
-        let meta = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            Err(err) => return os_err_bits(_py, err, "getctime"),
-        };
-        let t = meta.created().or_else(|_| meta.modified());
-        match t {
-            Ok(time) => {
-                let dur = time
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default();
-                MoltObject::from_float(dur.as_secs_f64()).bits()
-            }
-            Err(err) => os_err_bits(_py, err, "getctime"),
+        match path_metadata(_py, &path, true, OperationId::OsPathGetctime, false) {
+            Ok(Some(metadata)) => MoltObject::from_float(metadata.fields[9] as f64).bits(),
+            Ok(None) => MoltObject::none().bits(),
+            Err(error) => error,
         }
     })
 }
 
-/// `os.path.samefile(path1, path2)` → bool
-#[cfg(not(target_arch = "wasm32"))]
+/// `os.path.samefile(path1, path2)` uses the selected filesystem identity.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_samefile(path1_bits: u64, path2_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.path.samefile", AuditArg::None) {
-            return error;
-        }
-        let p1 = match require_path(_py, path1_bits, "path1") {
-            Ok(p) => p,
-            Err(bits) => return bits,
+        let left = match path_from_bits(_py, path1_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        let p2 = match require_path(_py, path2_bits, "path2") {
-            Ok(p) => p,
-            Err(bits) => return bits,
+        let right = match path_from_bits(_py, path2_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let m1 = match std::fs::metadata(&p1) {
-                Ok(m) => m,
-                Err(err) => return os_err_bits(_py, err, "samefile"),
-            };
-            let m2 = match std::fs::metadata(&p2) {
-                Ok(m) => m,
-                Err(err) => return os_err_bits(_py, err, "samefile"),
-            };
-            MoltObject::from_bool(m1.dev() == m2.dev() && m1.ino() == m2.ino()).bits()
-        }
-        #[cfg(not(unix))]
-        {
-            // On Windows: resolve to absolute canonicalized paths and compare.
-            let c1 = std::fs::canonicalize(&p1);
-            let c2 = std::fs::canonicalize(&p2);
-            match (c1, c2) {
-                (Ok(c1), Ok(c2)) => MoltObject::from_bool(c1 == c2).bits(),
-                (Err(err), _) | (_, Err(err)) => os_err_bits(_py, err, "samefile"),
-            }
-        }
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_samefile(_path1_bits: u64, _path2_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "samefile")
+        paths_same_file(_py, &left, &right, OperationId::OsPathSamefile)
     })
 }
 
@@ -2449,36 +2379,49 @@ fn at_resolve_dir_fd(_py: &CoreGilToken, dir_fd_bits: u64) -> Result<libc::c_int
 }
 
 /// `os.readlink(path, dir_fd=...)` → str or bytes, matching the path flavor.
-#[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
+        let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
+        };
+        let directory = obj_from_bits(dir_fd_bits);
+        let dir_fd = if directory.is_none() {
+            None
+        } else {
+            match to_i64(directory).and_then(|value| libc::c_int::try_from(value).ok()) {
+                Some(value) => Some(value),
+                None => return raise_exception::<u64>(_py, "TypeError", "an integer is required"),
+            }
+        };
+        let mut default_directory = dir_fd.is_none();
+        #[cfg(unix)]
+        {
+            default_directory |= dir_fd == Some(libc::AT_FDCWD);
+        }
+        // POSIX absolute paths ignore a valid descriptor. Default-CWD paths
+        // share the canonical mount selection and aggregate capability gate.
+        if path.is_absolute() || default_directory {
+            return path_read_link(_py, &path, bytes_flavor);
+        }
         if let Err(error) = require_operation(_py, "os.readlink_at", AuditArg::None) {
             return error;
         }
-        let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
-            Ok(p) => p,
-            Err(bits) => return bits,
-        };
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
-            let dir_fd = match at_resolve_dir_fd(_py, dir_fd_bits) {
-                Ok(fd) => fd,
-                Err(bits) => return bits,
-            };
             let c_path = match at_path_to_cstring(_py, &path) {
-                Ok(c) => c,
-                Err(bits) => return bits,
+                Ok(path) => path,
+                Err(error) => return error,
             };
-            // Loop-grow so an oversized link target is never silently truncated.
             let mut cap: usize = 256;
             loop {
                 let mut buf: Vec<u8> = vec![0u8; cap];
                 let rc = unsafe {
                     libc::readlinkat(
-                        dir_fd,
+                        dir_fd.unwrap(),
                         c_path.as_ptr(),
-                        buf.as_mut_ptr() as *mut libc::c_char,
+                        buf.as_mut_ptr().cast(),
                         cap,
                     )
                 };
@@ -2489,25 +2432,19 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
                 if n < cap {
                     buf.truncate(n);
                     use std::os::unix::ffi::OsStringExt;
-                    let path = PathBuf::from(std::ffi::OsString::from_vec(buf));
-                    return path_result(_py, &path, bytes_flavor);
+                    return path_result(
+                        _py,
+                        &PathBuf::from(std::ffi::OsString::from_vec(buf)),
+                        bytes_flavor,
+                    );
                 }
                 cap *= 2;
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
         {
-            let _ = (path, dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "readlink")
         }
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_readlink_at(_p: u64, _d: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "readlink")
     })
 }
 
@@ -2928,41 +2865,5 @@ pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits
                 Err(err) => os_err_bits(_py, err, "makedirs"),
             }
         }
-    })
-}
-
-/// `os.path.exists(path)` → bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_exists(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(_) => return MoltObject::from_bool(false).bits(),
-        };
-        MoltObject::from_bool(path.exists()).bits()
-    })
-}
-
-/// `os.path.isfile(path)` → bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_isfile(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(_) => return MoltObject::from_bool(false).bits(),
-        };
-        MoltObject::from_bool(path.is_file()).bits()
-    })
-}
-
-/// `os.path.isdir(path)` → bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_isdir(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(_) => return MoltObject::from_bool(false).bits(),
-        };
-        MoltObject::from_bool(path.is_dir()).bits()
     })
 }

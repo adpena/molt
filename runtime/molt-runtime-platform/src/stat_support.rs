@@ -334,3 +334,146 @@ mod tests {
         assert_eq!(stat_filemode(S_IFDIR | S_ISVTX | S_IXOTH), "d--------t");
     }
 }
+
+/// Fixed metadata projection shared by direct and satellite filesystem callers.
+/// Virtual files expose only their backend-owned facts; zero identity fields
+/// are unknown and must never be used by samefile.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PathMetadata {
+    pub fields: [i128; 10],
+    pub virtual_file: bool,
+}
+
+impl PathMetadata {
+    pub fn is_dir(&self) -> bool {
+        stat_isdir(self.fields[ST_MODE as usize] as i64)
+    }
+    pub fn is_file(&self) -> bool {
+        stat_isreg(self.fields[ST_MODE as usize] as i64)
+    }
+    pub fn is_symlink(&self) -> bool {
+        stat_islnk(self.fields[ST_MODE as usize] as i64)
+    }
+
+    #[cfg(unix)]
+    pub fn from_unix_stat(st: &libc::stat) -> Self {
+        Self {
+            fields: [
+                i128::from(st.st_mode),
+                st.st_ino as i128,
+                st.st_dev as i128,
+                st.st_nlink as i128,
+                i128::from(st.st_uid),
+                i128::from(st.st_gid),
+                st.st_size as i128,
+                st.st_atime as i128,
+                st.st_mtime as i128,
+                st.st_ctime as i128,
+            ],
+            virtual_file: false,
+        }
+    }
+
+    pub fn from_host(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        let fields = {
+            use std::os::unix::fs::MetadataExt;
+            [
+                i128::from(metadata.mode()),
+                metadata.ino() as i128,
+                metadata.dev() as i128,
+                metadata.nlink() as i128,
+                i128::from(metadata.uid()),
+                i128::from(metadata.gid()),
+                metadata.size() as i128,
+                i128::from(metadata.atime()),
+                i128::from(metadata.mtime()),
+                i128::from(metadata.ctime()),
+            ]
+        };
+        #[cfg(not(unix))]
+        let fields = {
+            let mode = if metadata.is_dir() {
+                S_IFDIR
+            } else if metadata.file_type().is_symlink() {
+                S_IFLNK
+            } else {
+                S_IFREG
+            };
+            let permissions = if metadata.permissions().readonly() {
+                if metadata.is_dir() { 0o555 } else { 0o444 }
+            } else if metadata.is_dir() {
+                0o777
+            } else {
+                0o666
+            };
+            let seconds = |time: std::io::Result<std::time::SystemTime>| -> i128 {
+                match time {
+                    Ok(time) => match time.duration_since(std::time::UNIX_EPOCH) {
+                        Ok(duration) => i128::from(duration.as_secs()),
+                        Err(error) => {
+                            -i128::from(error.duration().as_secs())
+                                - i128::from(error.duration().subsec_nanos() != 0)
+                        }
+                    },
+                    Err(_) => 0,
+                }
+            };
+            [
+                i128::from(mode | permissions),
+                0,
+                0,
+                0,
+                0,
+                0,
+                i128::from(metadata.len()),
+                seconds(metadata.accessed()),
+                seconds(metadata.modified()),
+                seconds(metadata.created()),
+            ]
+        };
+        Self {
+            fields,
+            virtual_file: false,
+        }
+    }
+
+    pub fn from_virtual(
+        is_file: bool,
+        is_dir: bool,
+        readonly: bool,
+        size: u64,
+        mtime: u64,
+    ) -> Self {
+        let kind = if is_dir {
+            S_IFDIR
+        } else if is_file {
+            S_IFREG
+        } else {
+            0
+        };
+        let permissions = if readonly {
+            if is_dir { 0o555 } else { 0o444 }
+        } else if is_dir {
+            0o777
+        } else {
+            0o666
+        };
+        Self {
+            fields: [
+                i128::from(kind | permissions),
+                0,
+                0,
+                0,
+                0,
+                0,
+                i128::from(size),
+                0,
+                i128::from(mtime),
+                0,
+            ],
+            virtual_file: true,
+        }
+    }
+}

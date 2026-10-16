@@ -16,7 +16,7 @@ mod support;
 
 use support::host;
 
-const CASES: [&str; 5] = [
+const CASES: [&str; 8] = [
     "concurrency::execution::tests::wasm_shutdown_custody_owns_c_state_without_an_execution_frame",
     "concurrency::execution::tests::wasm_logical_gil_and_execution_nesting_are_distinct",
     // wasm32-wasip1 uses panic=abort. C-state cleanup is observable here;
@@ -24,6 +24,11 @@ const CASES: [&str; 5] = [
     "concurrency::execution::tests::cleanup_owned_entry_destroys_retained_c_thread_state",
     "concurrency::execution::tests::ordinary_scoped_entries_preserve_the_c_error_indicator",
     "cpython_abi_hooks::native_deallocation_tests::shutdown_record_survives_post_drain_native_deallocation_and_republished_c_owners",
+    // Exercise the same metadata admission/transport through the production
+    // WASI host. No host filesystem or symlink privilege is part of this cell.
+    "builtins::io::tests::vfs_metadata_admission_and_call_budget",
+    "builtins::io::tests::vfs_metadata_aliases_and_errno_domain",
+    "builtins::io::tests::vfs_metadata_samefile_owner_identity",
 ];
 
 // Keep the production phase breakdown without per-function compiler traces.

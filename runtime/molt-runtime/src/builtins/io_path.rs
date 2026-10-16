@@ -11,10 +11,10 @@ use super::io::glob_dir_fd_root_path;
 use super::io::{
     PathFlavor, alloc_path_list_bits, create_symlink_path, dup_fd, glob_dir_fd_arg_from_bits,
     glob_iter_alloc_object, glob_iter_new_state, glob_translate_text, path_abspath_text,
-    path_as_uri_text, path_basename_text, path_dirname_text, path_from_bits, path_glob_matches,
-    path_isabs_text, path_match_text, path_normpath_text, path_relpath_text, path_sep_char,
-    path_splitext_text, path_str_arg_from_bits, path_string_from_bits,
-    path_value_with_flavor_from_bits,
+    path_as_uri_text, path_basename_text, path_dirname_text, path_from_bits,
+    path_from_bits_with_flavor, path_glob_matches, path_isabs_text, path_match_text,
+    path_normpath_text, path_relpath_text, path_sep_char, path_splitext_text,
+    path_str_arg_from_bits, path_string_from_bits, path_value_with_flavor_from_bits,
 };
 use crate::PyToken;
 use crate::audit::{AuditArgs, audit_capability_decision};
@@ -33,93 +33,206 @@ use std::io::ErrorKind;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 
+enum MetadataInput {
+    Path(std::path::PathBuf),
+    Fd(libc::c_int),
+}
+
+fn metadata_input(py: &PyToken<'_>, bits: u64, allow_fd: bool) -> Result<MetadataInput, u64> {
+    let path_storage = obj_from_bits(bits).as_ptr().is_some_and(|pointer| unsafe {
+        matches!(object_type_id(pointer), TYPE_ID_STRING | TYPE_ID_BYTES)
+    });
+    if allow_fd && !path_storage {
+        if let Some(index) = crate::builtins::numbers::index_from_number_protocol(py, bits) {
+            let _owner = unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), index)
+            };
+            let Some(value) = crate::builtins::numbers::index_c_int_from_obj(py, index) else {
+                return Err(MoltObject::none().bits());
+            };
+            return Ok(MetadataInput::Fd(value));
+        }
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+    }
+    let path = path_from_bits(py, bits)?;
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "embedded null byte",
+        ));
+    }
+    Ok(MetadataInput::Path(path))
+}
+
+fn descriptor_metadata(
+    fd: libc::c_int,
+) -> Result<molt_runtime_platform::stat_support::PathMetadata, super::io::PathIoError> {
+    if fd < 0 {
+        return Err(super::io::PathIoError::canonical(
+            libc::EBADF,
+            "bad file descriptor",
+        ));
+    }
+    use molt_runtime_platform::stat_support::PathMetadata;
+    #[cfg(unix)]
+    {
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
+            return Err(super::io::PathIoError::from_native(
+                std::io::Error::last_os_error(),
+            ));
+        }
+        Ok(PathMetadata::from_unix_stat(unsafe {
+            &metadata.assume_init()
+        }))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::FromRawHandle;
+        let handle = unsafe { libc::get_osfhandle(fd) };
+        if handle == -1 {
+            return Err(super::io::PathIoError::canonical(
+                libc::EBADF,
+                "bad file descriptor",
+            ));
+        }
+        // Borrow the CRT descriptor's handle; never duplicate or close it.
+        let file = std::mem::ManuallyDrop::new(unsafe {
+            std::fs::File::from_raw_handle(handle as *mut _)
+        });
+        file.metadata()
+            .map(|metadata| PathMetadata::from_host(&metadata))
+            .map_err(super::io::PathIoError::from_native)
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+    {
+        use std::os::wasi::io::FromRawFd;
+        let fd = fd as u32; // checked nonnegative C-int above
+        let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+        file.metadata()
+            .map(|metadata| PathMetadata::from_host(&metadata))
+            .map_err(super::io::PathIoError::from_native)
+    }
+    #[cfg(not(any(unix, windows, all(target_arch = "wasm32", target_os = "wasi"))))]
+    {
+        let _ = fd;
+        Err(super::io::PathIoError::canonical(
+            libc::ENOSYS,
+            "descriptor metadata unavailable",
+        ))
+    }
+}
+
+fn metadata_for_input(
+    py: &PyToken<'_>,
+    input: &MetadataInput,
+    follow: bool,
+    operation: OperationId,
+) -> Result<Result<molt_runtime_platform::stat_support::PathMetadata, super::io::PathIoError>, u64>
+{
+    match input {
+        MetadataInput::Path(path) => super::io::path_metadata(py, path, follow, operation),
+        MetadataInput::Fd(fd) => {
+            crate::require_operation::<u64>(py, operation, crate::audit::AuditArgs::None)?;
+            Ok(descriptor_metadata(*fd))
+        }
+    }
+}
+
+fn suppress_predicate_conversion_error(py: &PyToken<'_>, is_link: bool) -> bool {
+    use crate::builtins::exceptions::{ExceptionValue, exception_matches_builtin_name};
+    if !exception_pending(py) {
+        return false;
+    }
+    let pending = ExceptionValue::adopt(
+        py,
+        crate::builtins::exceptions::molt_exception_last_pending(),
+    );
+    let suppress = exception_matches_builtin_name(py, pending.bits(), "OSError")
+        || exception_matches_builtin_name(py, pending.bits(), "ValueError")
+        || (is_link && exception_matches_builtin_name(py, pending.bits(), "AttributeError"));
+    if suppress {
+        clear_exception(py);
+    }
+    suppress
+}
+
+#[derive(Clone, Copy)]
+enum MetadataPredicate {
+    Exists,
+    Directory,
+    RegularFile,
+    Symlink,
+}
+
+fn metadata_predicate(py: &PyToken<'_>, bits: u64, predicate: MetadataPredicate) -> u64 {
+    let is_link = matches!(predicate, MetadataPredicate::Symlink);
+    let input = match metadata_input(py, bits, !is_link) {
+        Ok(input) => input,
+        Err(error) => {
+            return if suppress_predicate_conversion_error(py, is_link) {
+                MoltObject::from_bool(false).bits()
+            } else {
+                error
+            };
+        }
+    };
+    // Admission is outside genericpath's ordinary error-suppression domain.
+    match metadata_for_input(py, &input, !is_link, OperationId::OsStat) {
+        Err(error) => error,
+        Ok(Err(_)) => MoltObject::from_bool(false).bits(),
+        Ok(Ok(metadata)) => MoltObject::from_bool(match predicate {
+            MetadataPredicate::Exists => true,
+            MetadataPredicate::Directory => metadata.is_dir(),
+            MetadataPredicate::RegularFile => metadata.is_file(),
+            MetadataPredicate::Symlink => metadata.is_symlink(),
+        })
+        .bits(),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        MoltObject::from_bool(std::fs::metadata(path).is_ok()).bits()
+    crate::with_gil_entry_nopanic!(py, {
+        metadata_predicate(py, path_bits, MetadataPredicate::Exists)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_isdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        let is_dir = std::fs::metadata(path)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false);
-        MoltObject::from_bool(is_dir).bits()
+    crate::with_gil_entry_nopanic!(py, {
+        metadata_predicate(py, path_bits, MetadataPredicate::Directory)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_isfile(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        let is_file = std::fs::metadata(path)
-            .map(|meta| meta.is_file())
-            .unwrap_or(false);
-        MoltObject::from_bool(is_file).bits()
+    crate::with_gil_entry_nopanic!(py, {
+        metadata_predicate(py, path_bits, MetadataPredicate::RegularFile)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_islink(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        let is_link = std::fs::symlink_metadata(path)
-            .map(|meta| meta.file_type().is_symlink())
-            .unwrap_or(false);
-        MoltObject::from_bool(is_link).bits()
+    crate::with_gil_entry_nopanic!(py, {
+        metadata_predicate(py, path_bits, MetadataPredicate::Symlink)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_readlink(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
+    crate::with_gil_entry_nopanic!(py, {
+        let (path, flavor) = match path_from_bits_with_flavor(py, path_bits) {
+            Ok(input) => input,
             Err(error) => return error,
         };
-        match std::fs::read_link(&path) {
-            Ok(target) => super::io::path_result_bits(_py, &target, PathFlavor::Str),
-            Err(err) => {
-                let msg = err.to_string();
-                match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                }
-            }
+        match super::io::path_read_link(py, &path, OperationId::OsReadlink) {
+            Err(error) => error,
+            Ok(Ok(target)) => super::io::path_result_bits(py, &target, flavor),
+            Ok(Err(error)) => error.raise(py, "readlink"),
         }
     })
 }
@@ -1477,13 +1590,6 @@ fn unix_seconds_from_system_time(value: std::time::SystemTime) -> i128 {
 }
 
 #[cfg(not(unix))]
-fn metadata_time_seconds(value: Result<std::time::SystemTime, std::io::Error>) -> i128 {
-    match value {
-        Ok(time) => unix_seconds_from_system_time(time),
-        Err(_) => 0,
-    }
-}
-
 fn stat_tuple_from_values(_py: &PyToken<'_>, fields: [i128; 10]) -> u64 {
     let tuple_fields = fields.map(|value| int_bits_from_i128(_py, value));
     let tuple_ptr = alloc_tuple(_py, &tuple_fields);
@@ -1491,61 +1597,6 @@ fn stat_tuple_from_values(_py: &PyToken<'_>, fields: [i128; 10]) -> u64 {
         return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
     }
     MoltObject::from_ptr(tuple_ptr).bits()
-}
-
-#[cfg(unix)]
-fn stat_tuple_from_metadata(_py: &PyToken<'_>, metadata: &std::fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    stat_tuple_from_values(
-        _py,
-        [
-            i128::from(metadata.mode()),
-            metadata.ino() as i128,
-            metadata.dev() as i128,
-            metadata.nlink() as i128,
-            i128::from(metadata.uid()),
-            i128::from(metadata.gid()),
-            metadata.size() as i128,
-            i128::from(metadata.atime()),
-            i128::from(metadata.mtime()),
-            i128::from(metadata.ctime()),
-        ],
-    )
-}
-
-#[cfg(not(unix))]
-fn stat_tuple_from_metadata(_py: &PyToken<'_>, metadata: &std::fs::Metadata) -> u64 {
-    let is_dir = metadata.is_dir();
-    #[cfg(windows)]
-    let kind = if is_dir {
-        i128::from(libc::S_IFDIR as i64)
-    } else {
-        i128::from(libc::S_IFREG as i64)
-    };
-    #[cfg(not(windows))]
-    let kind = 0i128;
-    let mode_bits = if metadata.permissions().readonly() {
-        if is_dir { 0o555 } else { 0o444 }
-    } else if is_dir {
-        0o777
-    } else {
-        0o666
-    };
-    stat_tuple_from_values(
-        _py,
-        [
-            kind | i128::from(mode_bits),
-            0,
-            0,
-            0,
-            0,
-            0,
-            i128::from(metadata.len()),
-            metadata_time_seconds(metadata.accessed()),
-            metadata_time_seconds(metadata.modified()),
-            metadata_time_seconds(metadata.created()),
-        ],
-    )
 }
 
 /// Convert a path to a NUL-terminated `CString` for the `*at` POSIX syscall
@@ -1607,142 +1658,126 @@ pub(crate) fn at_resolve_dir_fd(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<l
 /// to `st_atime: time_t` just like Linux/BSD, so a single field path covers all
 /// unix targets.
 #[cfg(unix)]
-pub(crate) fn stat_tuple_from_libc_stat(_py: &PyToken<'_>, st: &libc::stat) -> u64 {
+pub(crate) fn stat_tuple_from_libc_stat(py: &PyToken<'_>, st: &libc::stat) -> u64 {
     stat_tuple_from_values(
-        _py,
-        [
-            i128::from(st.st_mode),
-            st.st_ino as i128,
-            st.st_dev as i128,
-            st.st_nlink as i128,
-            i128::from(st.st_uid),
-            i128::from(st.st_gid),
-            st.st_size as i128,
-            st.st_atime as i128,
-            st.st_mtime as i128,
-            st.st_ctime as i128,
-        ],
+        py,
+        molt_runtime_platform::stat_support::PathMetadata::from_unix_stat(st).fields,
     )
+}
+
+fn metadata_stat(py: &PyToken<'_>, bits: u64, follow: bool) -> u64 {
+    let input = match metadata_input(py, bits, follow) {
+        Ok(input) => input,
+        Err(error) => return error,
+    };
+    match metadata_for_input(py, &input, follow, OperationId::OsStat) {
+        Err(error) => error,
+        Ok(Ok(metadata)) => stat_tuple_from_values(py, metadata.fields),
+        Ok(Err(error)) => error.raise(py, if follow { "stat" } else { "lstat" }),
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_stat(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        match std::fs::metadata(&path) {
-            Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
-            Err(err) => raise_os_error::<u64>(_py, err, "stat"),
-        }
-    })
+    crate::with_gil_entry_nopanic!(py, { metadata_stat(py, path_bits, true) })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_lstat(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let path = match path_from_bits(_py, path_bits) {
+    crate::with_gil_entry_nopanic!(py, { metadata_stat(py, path_bits, false) })
+}
+
+/// Both metadata aliases select a virtual/host path route before a genuinely
+/// descriptor-relative operation can access a host directory descriptor.
+fn metadata_stat_at(
+    py: &PyToken<'_>,
+    path_bits: u64,
+    dir_fd_bits: u64,
+    follow_bits: u64,
+    operation: OperationId,
+) -> u64 {
+    let path = match metadata_input(py, path_bits, false) {
+        Ok(MetadataInput::Path(path)) => path,
+        Ok(MetadataInput::Fd(_)) => unreachable!("path-only conversion"),
+        Err(error) => return error,
+    };
+    let dir_fd = if obj_from_bits(dir_fd_bits).is_none() {
+        None
+    } else {
+        match crate::builtins::numbers::index_c_int_from_obj(py, dir_fd_bits) {
+            Some(fd) => Some(fd),
+            None => return MoltObject::none().bits(),
+        }
+    };
+    let follow = is_truthy(py, obj_from_bits(follow_bits));
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let default_directory = dir_fd.is_none();
+    #[cfg(all(not(target_arch = "wasm32"), unix))]
+    let default_directory = default_directory || dir_fd == Some(libc::AT_FDCWD);
+    if path.is_absolute() || default_directory {
+        return match super::io::path_metadata(py, &path, follow, OperationId::OsStat) {
+            Err(error) => error,
+            Ok(Ok(metadata)) => stat_tuple_from_values(py, metadata.fields),
+            Ok(Err(error)) => error.raise(py, if follow { "stat" } else { "lstat" }),
+        };
+    }
+    if let Err(error) = crate::require_operation::<u64>(py, operation, AuditArgs::None) {
+        return error;
+    }
+    #[cfg(all(not(target_arch = "wasm32"), unix))]
+    {
+        let c_path = match at_path_to_cstring(py, &path) {
             Ok(path) => path,
             Err(error) => return error,
         };
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
-            Err(err) => raise_os_error::<u64>(_py, err, "lstat"),
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let flags = if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW };
+        let result = unsafe {
+            libc::fstatat(
+                dir_fd.expect("relative descriptor"),
+                c_path.as_ptr(),
+                metadata.as_mut_ptr(),
+                flags,
+            )
+        };
+        if result != 0 {
+            return super::io::PathIoError::from_native(std::io::Error::last_os_error())
+                .raise(py, "stat");
         }
-    })
+        stat_tuple_from_libc_stat(py, unsafe { &metadata.assume_init() })
+    }
+    #[cfg(not(all(not(target_arch = "wasm32"), unix)))]
+    {
+        let _ = dir_fd;
+        raise_os_error_errno::<u64>(py, libc::ENOSYS as i64, "stat")
+    }
 }
 
-/// `os.lstat(path, dir_fd=...)` → stat tuple — directory-relative, always nofollow.
-///
-/// Co-located with `molt_os_lstat` and `stat_tuple_from_libc_stat` (which live
-/// here and are always compiled), so a single definition serves both the
-/// `stdlib_path` and `not(stdlib_path)` link configurations.
-#[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_lstat_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("os.lstat_at", "fs.read", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        #[cfg(unix)]
-        {
-            let dir_fd = match at_resolve_dir_fd(_py, dir_fd_bits) {
-                Ok(fd) => fd,
-                Err(bits) => return bits,
-            };
-            let c_path = match at_path_to_cstring(_py, &path) {
-                Ok(c) => c,
-                Err(bits) => return bits,
-            };
-            let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
-            let rc = unsafe {
-                libc::fstatat(
-                    dir_fd,
-                    c_path.as_ptr(),
-                    &mut stat_buf,
-                    libc::AT_SYMLINK_NOFOLLOW,
-                )
-            };
-            if rc < 0 {
-                return raise_os_error::<u64>(_py, std::io::Error::last_os_error(), "lstat");
-            }
-            stat_tuple_from_libc_stat(_py, &stat_buf)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (path, dir_fd_bits);
-            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "lstat")
-        }
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_lstat_at(_p: u64, _d: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "lstat")
+    crate::with_gil_entry_nopanic!(py, {
+        metadata_stat_at(
+            py,
+            path_bits,
+            dir_fd_bits,
+            MoltObject::from_bool(false).bits(),
+            OperationId::OsLstatAt,
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_fstat(fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
-            let msg = format!("an integer is required (got {type_name})");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(fd) = crate::builtins::numbers::index_c_int_from_obj(py, fd_bits) else {
+            return MoltObject::none().bits();
         };
-        if fd < 0 {
-            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "fstat");
-        }
-        #[cfg(unix)]
-        {
-            use std::mem::ManuallyDrop;
-            use std::os::fd::FromRawFd;
-
-            let raw_fd: libc::c_int = match libc::c_int::try_from(fd) {
-                Ok(raw_fd) => raw_fd,
-                Err(_) => return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "fstat"),
-            };
-            // SAFETY: we only borrow the descriptor for metadata lookup and prevent close via
-            // ManuallyDrop so ownership of `raw_fd` stays with the caller.
-            let file = unsafe { ManuallyDrop::new(std::fs::File::from_raw_fd(raw_fd)) };
-            match file.metadata() {
-                Ok(metadata) => stat_tuple_from_metadata(_py, &metadata),
-                Err(err) => raise_os_error::<u64>(_py, err, "fstat"),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = fd;
-            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "fstat")
+        match metadata_for_input(py, &MetadataInput::Fd(fd), true, OperationId::OsStat) {
+            Err(error) => error,
+            Ok(Ok(metadata)) => stat_tuple_from_values(py, metadata.fields),
+            Ok(Err(error)) => error.raise(py, "fstat"),
         }
     })
 }
@@ -1789,56 +1824,17 @@ pub extern "C" fn molt_os_replace(src_bits: u64, dst_bits: u64) -> u64 {
 // raise OSError(ENOSYS); Windows is covered by the `#[cfg(not(unix))]` arm.
 // ---------------------------------------------------------------------------
 
-/// `os.stat(path, dir_fd=..., follow_symlinks=...)` → stat tuple.
-#[cfg(not(target_arch = "wasm32"))]
+/// Directory-relative stat shares the path route and descriptor custody of lstat.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_os_stat_at(
-    path_bits: u64,
-    dir_fd_bits: u64,
-    follow_symlinks_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision("os.stat_at", "fs.read", AuditArgs::None, allowed);
-        if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(error) => return error,
-        };
-        #[cfg(unix)]
-        {
-            let dir_fd = match at_resolve_dir_fd(_py, dir_fd_bits) {
-                Ok(fd) => fd,
-                Err(bits) => return bits,
-            };
-            let follow = is_truthy(_py, obj_from_bits(follow_symlinks_bits));
-            let flags = if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW };
-            let c_path = match at_path_to_cstring(_py, &path) {
-                Ok(c) => c,
-                Err(bits) => return bits,
-            };
-            let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
-            let rc = unsafe { libc::fstatat(dir_fd, c_path.as_ptr(), &mut stat_buf, flags) };
-            if rc < 0 {
-                return raise_os_error::<u64>(_py, std::io::Error::last_os_error(), "stat");
-            }
-            stat_tuple_from_libc_stat(_py, &stat_buf)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (path, dir_fd_bits, follow_symlinks_bits);
-            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "stat")
-        }
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_stat_at(_p: u64, _d: u64, _f: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "stat")
+pub extern "C" fn molt_os_stat_at(path_bits: u64, dir_fd_bits: u64, follow_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        metadata_stat_at(
+            py,
+            path_bits,
+            dir_fd_bits,
+            follow_bits,
+            OperationId::OsStatAt,
+        )
     })
 }
 

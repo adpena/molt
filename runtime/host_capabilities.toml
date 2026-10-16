@@ -687,6 +687,10 @@ name = "os.replace_at"
 capabilities = ["fs.write"]
 
 [[operation]]
+name = "os.stat"
+capabilities = ["fs.read"]
+
+[[operation]]
 name = "os.stat_at"
 capabilities = ["fs.read"]
 

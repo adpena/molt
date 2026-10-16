@@ -85,6 +85,17 @@ permission checks. File descriptors and custom openers do not acquire unrelated
 virtual-mount requirements. Bundle payloads are loaded only on authorized bundle
 access; mount selection itself performs no host file access.
 
+Filesystem metadata uses the same selected-route boundary. `stat`, `lstat`,
+path predicates and `readlink` require `fs.read` together with the selected
+mount's read grant before consulting metadata. A mounted miss stays a mounted
+miss; it must never retry the host filesystem. Predicates may suppress ordinary
+filesystem errors according to the Python contract, but must propagate an
+authorization refusal. Descriptor metadata borrows the descriptor and does not
+acquire an unrelated mount grant. Python facades delegate this admission to the
+runtime so the exception can report the complete missing grant set in one call.
+The [filesystem design](design/foundation/19_os-dir-fd-intrinsic-design.md)
+records ownership, costs and the remaining conformance obligations.
+
 ## Using Capabilities in Code
 
 In Molt-compiled code (or shims), you check for capabilities using the `molt.capabilities` module:

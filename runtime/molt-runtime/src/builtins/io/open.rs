@@ -574,11 +574,14 @@ fn open_impl(
     // Normalize arguments before selecting one route. No descriptor, opener,
     // host filesystem, or bundle payload access occurs before this gate.
     let vfs_route = if opener_is_none {
-        path.as_ref().and_then(|path| {
-            runtime_state(_py)
-                .get_vfs()
-                .and_then(|vfs| vfs.resolve(&path.to_string_lossy()))
-        })
+        match path
+            .as_ref()
+            .map(|path| super::selected_vfs_route(_py, path))
+            .transpose()
+        {
+            Ok(route) => route.flatten(),
+            Err(error) => return error,
+        }
     } else {
         None
     };
