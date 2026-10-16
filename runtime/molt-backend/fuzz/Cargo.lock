@@ -581,7 +581,6 @@ dependencies = [
  "memmap2",
  "molt-ir",
  "num-integer",
- "rayon",
  "rmp-serde",
  "serde",
  "serde_json",

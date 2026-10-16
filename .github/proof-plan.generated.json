@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "7e159f45da5ea10e0f4787f16475ec5980a27fc553e81c72a28cbc2b7542b903",
+  "authority_sha256": "59eb5d4dee72b767ceb8f768c7497a63af3eaf2efe79a9bad60b565edb96caa5",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -758,9 +758,13 @@
       "inputs": [
         ".github/workflows/security_hardening.yml",
         "Cargo.lock",
+        "**/Cargo.lock",
         "Cargo.toml",
+        "**/Cargo.toml",
         "deny.toml",
-        "rust-toolchain.toml"
+        "rust-toolchain.toml",
+        "tools/cargo_lock_audit.py",
+        "tools/dependency_manifests.py"
       ],
       "job": "rust-security",
       "job_reserve_seconds": 360,
@@ -3191,6 +3195,7 @@
         "tests/test_version_compat.py",
         "tests/tools/test_hosted_ci_env.py",
         "tests/tools/test_toolchain_env.py",
+        "tests/tools/test_cargo_lock_audit.py",
         "tests/test_linear_hygiene_tool.py",
         "tests/tools/test_benchmark_cext_trampoline.py",
         "tests/tools/test_cold_start_decompose.py",
@@ -7548,9 +7553,9 @@
     },
     {
       "argv": [
-        "cargo",
-        "deny",
-        "check"
+        "python3",
+        "tools/cargo_lock_audit.py",
+        "deny"
       ],
       "cache_domain": "cargo-security",
       "cell": "linux-x86_64-rust-audit",
@@ -7565,6 +7570,7 @@
       ],
       "timeout_seconds": 450,
       "toolchains": [
+        "python",
         "rustc",
         "cargo",
         "cargo-deny"
@@ -7572,7 +7578,8 @@
     },
     {
       "argv": [
-        "cargo",
+        "python3",
+        "tools/cargo_lock_audit.py",
         "audit",
         "--db",
         "tmp/security/cargo-audit-advisory-db"
@@ -7592,6 +7599,7 @@
       ],
       "timeout_seconds": 450,
       "toolchains": [
+        "python",
         "rustc",
         "cargo",
         "cargo-audit"

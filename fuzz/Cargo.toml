@@ -4,6 +4,7 @@ version = "0.0.0"
 publish = false
 edition = "2024"
 rust-version = "1.99.0"
+license = "Apache-2.0"
 
 [package.metadata]
 cargo-fuzz = true
