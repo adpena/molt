@@ -85,6 +85,7 @@ def _bind_precomputed_module_import_scan(
     scan: _CompleteImportScan,
     snapshot: _module_source.PythonSourceSnapshot,
     is_package: bool | None = None,
+    package_paths: tuple[Path, ...] = (),
     target_python: TargetPythonVersion,
     namespace_premise: PythonNamespacePremise | None = None,
 ) -> _PrecomputedModuleImportScan:
@@ -99,6 +100,7 @@ def _bind_precomputed_module_import_scan(
             scan.requires_runtime_package_anchor,
             namespace_premise=namespace_premise,
             source_sha256=snapshot.sha256,
+            package_paths=package_paths,
         ),
         target_python.tag,
         scan,
@@ -152,6 +154,7 @@ def _merge_discovered_module_graph(
             or previous.mode != "full"
             or following.mode != "full"
             or previous.is_package != following.is_package
+            or previous.package_paths != following.package_paths
         ):
             raise ValueError(f"source generation transfer lost scan custody: {name!r}")
     merged = _ModuleGraphScanAuthority(
@@ -488,7 +491,7 @@ def _discover_module_graph_from_paths(
         str, dict[PythonSourceKey | None, list[PythonNamespaceWrite]]
     ] = {}
     modules_by_source: dict[Path, set[str]] = {}
-    package_children: dict[Path, frozenset[str]] = {}
+    package_children: dict[tuple[Path, ...], frozenset[str]] = {}
 
     def queue_scan(module, owner=None, arguments=()):
         job = _SourceScanJob(module, owner, arguments)
@@ -496,18 +499,22 @@ def _discover_module_graph_from_paths(
             queued_scans.add(job)
             queue.append(job)
 
-    def namespace_premise(path: Path, is_package: bool) -> PythonNamespacePremise:
+    def namespace_premise(
+        path: Path, package_paths: tuple[Path, ...]
+    ) -> PythonNamespacePremise:
         path = resolution_cache.resolved_path(path)
         bounded = namespace_index.premise(path, frozenset())
-        if not is_package or bounded.foreign_writes is None:
+        if not package_paths or bounded.foreign_writes is None:
             return bounded
-        if path not in package_children:
+        if package_paths not in package_children:
             try:
-                package_children[path] = python_package_child_names(path)
+                package_children[package_paths] = python_package_child_names(
+                    package_paths
+                )
             except (OSError, ValueError):
                 merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
                 return namespace_index.premise(path, frozenset())
-        return namespace_index.premise(path, package_children[path])
+        return namespace_index.premise(path, package_children[package_paths])
 
     def merge_namespace_writes(batch: PythonGraphNamespaceWrites) -> None:
         changed = namespace_index.merge(batch)
@@ -518,7 +525,7 @@ def _discover_module_graph_from_paths(
         )
         for module in affected:
             prior = scan_sources[module]
-            premise = namespace_premise(prior.source_path, bool(prior.is_package))
+            premise = namespace_premise(prior.source_path, prior.package_paths)
             if prior.namespace_premise == premise:
                 continue
             scan_sources[module] = replace(prior, namespace_premise=premise)
@@ -536,7 +543,7 @@ def _discover_module_graph_from_paths(
             modules_by_source.setdefault(source.source_path, set()).add(module)
             scan_sources[module] = replace(
                 source,
-                namespace_premise=namespace_premise(path, bool(source.is_package)),
+                namespace_premise=namespace_premise(path, source.package_paths),
             )
 
     def admit_imports(names, source_path):
@@ -782,14 +789,21 @@ def _discover_module_graph_from_paths(
         )
         if precomputed_scan is not None:
             is_package = bool(precomputed_scan.authority.is_package)
-        premise = namespace_premise(path, is_package)
-        scan_sources[module_name] = _ModuleSourceScanAuthority(
+        source_authority = _ModuleSourceScanAuthority(
             module_name,
             path,
             import_scan_mode,
             is_package,
-            namespace_premise=premise,
+            package_paths=(
+                precomputed_scan.authority.package_paths
+                if precomputed_scan is not None
+                else admitted_source.package_paths
+                if admitted_source is not None
+                else ()
+            ),
         )
+        premise = namespace_premise(path, source_authority.package_paths)
+        scan_sources[module_name] = replace(source_authority, namespace_premise=premise)
         modules_by_source.setdefault(resolution_cache.resolved_path(path), set()).add(
             module_name
         )
@@ -854,13 +868,9 @@ def _discover_module_graph_from_paths(
                 loaded_scan.scan.requires_runtime_package_anchor
             )
             source_executions = loaded_scan.scan.source_executions
-        scan_sources[module_name] = _ModuleSourceScanAuthority(
-            module_name,
-            path,
-            import_scan_mode,
-            is_package,
-            requires_runtime_package_anchor,
-            namespace_premise=scan_sources[module_name].namespace_premise,
+        scan_sources[module_name] = replace(
+            scan_sources[module_name],
+            requires_runtime_package_anchor=requires_runtime_package_anchor,
         )
         accepted_scan = _CompleteImportScan(
             _ImportScanRequests((), ()),

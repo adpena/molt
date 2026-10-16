@@ -89,6 +89,17 @@ class ModuleSyntaxErrorInfo:
     text: str | None
 
 
+class _CanonicalPackagePaths(tuple[Path, ...]):
+    """Resolve search roots once; immutable authority updates reuse the value."""
+
+    __slots__ = ()
+
+    def __new__(cls, paths: tuple[Path, ...]) -> _CanonicalPackagePaths:
+        if isinstance(paths, cls):
+            return paths
+        return super().__new__(cls, dict.fromkeys(path.resolve() for path in paths))
+
+
 @dataclass(frozen=True)
 class _ModuleSourceScanAuthority:
     """A scan's source path, captured bytes and depth, never source/AST storage.
@@ -105,6 +116,7 @@ class _ModuleSourceScanAuthority:
     deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
     namespace_premise: PythonNamespacePremise | None = None
     source_sha256: str | None = None
+    package_paths: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in {"module_init", "full"}:
@@ -120,6 +132,17 @@ class _ModuleSourceScanAuthority:
             object.__setattr__(
                 self, "is_package", self.source_path.name == "__init__.py"
             )
+        package_paths = (
+            _CanonicalPackagePaths(self.package_paths) if self.package_paths else ()
+        )
+        if self.is_package:
+            if not package_paths:
+                if self.source_path.name != "__init__.py":
+                    raise ValueError("generated package lacks original search paths")
+                package_paths = _CanonicalPackagePaths((self.source_path.parent,))
+        elif package_paths:
+            raise ValueError("non-package source cannot own package search paths")
+        object.__setattr__(self, "package_paths", package_paths)
 
     def validate(self, module_name: str, source_path: Path) -> None:
         if self.module_name != module_name or self.source_path != source_path.resolve():
@@ -172,6 +195,10 @@ class _ModuleGraphScanAuthority:
                 if prior.is_package != source.is_package:
                     raise ValueError(
                         f"module package scan authority changed: {source.module_name!r}"
+                    )
+                if prior.package_paths != source.package_paths:
+                    raise ValueError(
+                        f"module package search paths changed: {source.module_name!r}"
                     )
                 if prior.source_sha256 is not None and source.source_sha256 is not None:
                     prior.validate_generation(source.source_sha256)
@@ -242,6 +269,7 @@ class _ModuleGraphScanAuthority:
                     for owner, arguments in sorted(source.deferred_owners)
                 ],
                 "is_package": source.is_package,
+                "package_paths": [os.fspath(path) for path in source.package_paths],
                 "requires_runtime_package_anchor": (
                     source.requires_runtime_package_anchor
                 ),

@@ -412,7 +412,7 @@ def _augment_support_modules(
         explicit_imports,
         resolver_cache=resolver_cache,
     )
-    namespace_modules: dict[str, Path] = {}
+    namespace_sources: dict[str, _ModuleSourceScanAuthority] = {}
     if namespace_parents:
         for name in sorted(namespace_parents):
             paths = _namespace_paths(
@@ -427,24 +427,30 @@ def _augment_support_modules(
             if not paths:
                 continue
             stub_path = _write_namespace_module(name, paths, artifacts_root)
-            namespace_modules[name] = stub_path
-        if namespace_modules:
-            module_graph.update(namespace_modules)
-            for name, path in namespace_modules.items():
-                scan_authorities[name] = _ModuleSourceScanAuthority(
-                    name,
-                    path,
-                    _source_import_scan._module_import_scan_mode(name, full_scan=False),
-                )
-            for name in namespace_modules:
+            namespace_sources[name] = _ModuleSourceScanAuthority(
+                name,
+                stub_path,
+                _source_import_scan._module_import_scan_mode(name, full_scan=False),
+                is_package=True,
+                source_sha256=_module_source.PythonSourceSnapshot.capture(
+                    stub_path
+                ).sha256,
+                package_paths=tuple(Path(path) for path in paths),
+            )
+        if namespace_sources:
+            module_graph.update(
+                (name, source.source_path) for name, source in namespace_sources.items()
+            )
+            scan_authorities.update(namespace_sources)
+            for name in namespace_sources:
                 _graph_discovery._record_module_reason(
                     module_reasons, name, "namespace_stub"
                 )
     generated_module_source_paths: dict[str, str] = {
-        name: _logical_generated_module_path(name) for name in namespace_modules
+        name: _logical_generated_module_path(name) for name in namespace_sources
     }
     for stub in stub_parents:
-        if stub != entry_module and stub in namespace_modules:
+        if stub != entry_module and stub in namespace_sources:
             module_graph.pop(stub, None)
             scan_authorities.pop(stub, None)
     if (
@@ -458,6 +464,9 @@ def _augment_support_modules(
                 _module_import_scanner.IMPORTER_MODULE_NAME,
                 importer_path,
                 "module_init",
+                source_sha256=_module_source.PythonSourceSnapshot.capture(
+                    importer_path
+                ).sha256,
             )
         )
         _graph_discovery._record_module_reason(
@@ -474,7 +483,7 @@ def _augment_support_modules(
             _logical_generated_module_path(_module_import_scanner.IMPORTER_MODULE_NAME),
         )
     return _SupportModuleAugmentation(
-        namespace_module_names=frozenset(namespace_modules),
+        namespace_module_names=frozenset(namespace_sources),
         generated_module_source_paths=generated_module_source_paths,
     )
 
@@ -1071,6 +1080,7 @@ def _native_support_source_slices(
                 module_name=module,
                 import_scan_mode="full",
                 is_package=path.name == "__init__.py",
+                package_paths=(path.parent,) if path.name == "__init__.py" else (),
                 scan=loaded_scan.scan,
                 snapshot=loaded_scan.snapshot,
                 target_python=target_python,

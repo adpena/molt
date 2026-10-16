@@ -599,7 +599,9 @@ def local_python_import_closure(
                     dynamic_import_overrides.get(source, (None, ()))
                 )
                 if is_package and source not in package_children:
-                    package_children[source] = python_package_child_names(source)
+                    package_children[source] = python_package_child_names(
+                        (source.parent,)
+                    )
                 premise = graph_writes.premise(
                     source, package_children.get(source, frozenset())
                 )

@@ -1148,7 +1148,7 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
 ) -> None:
     import json
     from molt.cli import module_graph_cache, module_source
-    from molt.compiler_analysis.python_imports import _ImportScanRequests
+    from molt.cli.module_graph_discovery import _load_module_import_scan
 
     owner = tmp_path / "entry.py"
     owner.write_text(
@@ -1159,13 +1159,21 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
         "_frontend_semantic_tooling_fingerprint",
         lambda: "star-provenance",
     )
-    requests = _ImportScanRequests(
-        imports=("bundle",),
-        source_executions=(),
-        dynamic_relative_import_candidates=("bundle",),
-        requires_runtime_package_anchor=True,
-        dynamic_star_modules=("bundle",),
-    )
+    requests = _load_module_import_scan(
+        owner,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=_ModuleResolutionCache(),
+        project_root=None,
+        roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        stdlib_allowlist=set(),
+    ).scan.source_requests
+    assert requests.imports == ("bundle",)
+    assert requests.requires_runtime_package_anchor
+    assert requests.star_modules == ()
+    assert requests.dynamic_star_modules == ("bundle",)
     module_graph_cache._write_persisted_import_scan(
         tmp_path,
         owner,

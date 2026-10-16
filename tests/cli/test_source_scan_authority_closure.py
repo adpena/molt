@@ -3,8 +3,14 @@ from __future__ import annotations
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
+import hashlib
+import json
+import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
+
+from tests.process_guard_common import run_guarded_test_process
 
 import pytest
 
@@ -628,11 +634,13 @@ def test_ordinary_nested_package_owner_rescans_under_original_project_root(
     assert roles["pkg.nested.owner"].mode == "full"
 
 
+@pytest.mark.parametrize("source_name", ["support.py", "support/__init__.py"])
 def test_generated_native_slice_carries_one_source_for_both_scan_projections(
     tmp_path: Path,
+    source_name: str,
 ) -> None:
     source = _source(
-        tmp_path / "support.py",
+        tmp_path / source_name,
         "def used():\n    return __import__('leaf')\n\ndef unused():\n    return __import__('dead')\n",
     )
 
@@ -665,6 +673,9 @@ def test_generated_native_slice_carries_one_source_for_both_scan_projections(
     assert result.generated_path is not None
     assert result.scan.authority.source_path == result.generated_path.resolve()
     assert result.scan.authority.mode == "full"
+    assert result.scan.authority.package_paths == (
+        (source.parent,) if source.name == "__init__.py" else ()
+    )
     assert "leaf" in result.scan.scan.imports and "dead" not in result.scan.scan.imports
     assert result.scan.scan.source_executions == ()
     assert "unused" not in result.generated_path.read_text(encoding="utf-8")
@@ -726,12 +737,14 @@ def test_native_runtime_import_generations_share_resolver_without_stale_source(
     }
 
 
+@pytest.mark.parametrize("source_name", ["support.py", "support/__init__.py"])
 def test_native_slice_generation_transfer_retains_roots_and_dependency_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    source_name: str,
 ) -> None:
     support = _source(
-        tmp_path / "support.py",
+        tmp_path / source_name,
         "def first():\n    import leaf1\n\ndef second():\n    import leaf2\n",
     )
     _source(tmp_path / "leaf1.py", "pass\n")
@@ -803,6 +816,9 @@ def test_native_slice_generation_transfer_retains_roots_and_dependency_identity(
     assert set(result.graph) == {"consumer", "support"}
     discovery._merge_discovered_module_graph(graph, roles, result)
     assert roles["support"].mode == "full"
+    assert roles["support"].package_paths == (
+        (support.parent,) if support.name == "__init__.py" else ()
+    )
 
 
 def test_graph_cache_binds_admitted_source_generation(
@@ -921,7 +937,13 @@ def test_generated_package_graph_cache_validates_source_role_authority(
         "from . import child\n",
         tmp_path / "generated",
     )
-    authority = _ModuleSourceScanAuthority("pkg", generated, "full", True)
+    authority = _ModuleSourceScanAuthority(
+        "pkg",
+        generated,
+        "full",
+        True,
+        package_paths=(child.parent,),
+    )
     source_inputs = {}
     root = entry
     if source_kind == "admitted":
@@ -937,6 +959,7 @@ def test_generated_package_graph_cache_validates_source_role_authority(
                 module_name="pkg",
                 import_scan_mode="full",
                 is_package=True,
+                package_paths=(child.parent,),
                 scan=_CompleteImportScan(
                     _ImportScanRequests(("pkg.child",), ()), ("pkg.child",), ()
                 ),
@@ -1023,4 +1046,221 @@ def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_ent
     assert "pkg.first" in first.scan.imports and "pkg.second" not in first.scan.imports
     assert (
         "pkg.second" in second.scan.imports and "pkg.first" not in second.scan.imports
+    )
+
+
+def test_package_search_paths_are_canonical_ordered_source_authority(tmp_path):
+    source = _source(tmp_path / "pkg" / "__init__.py", "pass\n")
+    generated = _source(tmp_path / "generated.py", "pass\n")
+    second_root = tmp_path / "second" / "pkg"
+    second_root.mkdir(parents=True)
+    regular = _ModuleSourceScanAuthority("pkg", source, "full")
+    assert regular.package_paths == (source.parent,)
+    roots = (source.parent, second_root.resolve())
+    generated_owner = _ModuleSourceScanAuthority(
+        "pkg",
+        generated,
+        "full",
+        is_package=True,
+        package_paths=(source.parent / ".", second_root, source.parent),
+    )
+    assert generated_owner.package_paths == roots
+    assert (
+        replace(generated_owner, mode="module_init").package_paths
+        is generated_owner.package_paths
+    )
+    assert _ModuleGraphScanAuthority((generated_owner,)).payload()[0][
+        "package_paths"
+    ] == [str(path) for path in roots]
+    for changed_roots in (roots[::-1], (source.parent,)):
+        changed = _ModuleSourceScanAuthority(
+            "pkg",
+            generated,
+            "full",
+            is_package=True,
+            package_paths=changed_roots,
+        )
+        with pytest.raises(ValueError, match="package search paths changed"):
+            _ModuleGraphScanAuthority((generated_owner,)).merged(
+                _ModuleGraphScanAuthority((changed,))
+            )
+        with pytest.raises(ValueError, match="generation transfer lost scan custody"):
+            discovery._merge_discovered_module_graph(
+                {"pkg": generated},
+                {"pkg": generated_owner},
+                discovery._DiscoveredModuleGraph(
+                    {"pkg": generated},
+                    set(),
+                    _ModuleGraphScanAuthority((changed,)),
+                ),
+                source_replacements={"pkg": generated_owner},
+            )
+    with pytest.raises(ValueError, match="lacks original search paths"):
+        _ModuleSourceScanAuthority("pkg", generated, "full", is_package=True)
+    with pytest.raises(ValueError, match="non-package"):
+        _ModuleSourceScanAuthority("plain", generated, "full", package_paths=roots)
+
+
+def test_generated_package_discovery_uses_original_paths_and_reuses_child_inventory(
+    tmp_path,
+    monkeypatch,
+):
+
+    roots = (tmp_path / "first" / "pkg", tmp_path / "second" / "pkg")
+    _source(roots[0] / "alpha.py", "pass\n")
+    _source(roots[1] / "beta.py", "pass\n")
+    generated = _source(tmp_path / "artifacts" / "package.digest.py", "pass\n")
+    _source(generated.parent / "artifact_only.py", "pass\n")
+    snapshot = PythonSourceSnapshot.capture(generated)
+    loaded = discovery._load_module_import_scan(
+        generated,
+        module_name="pkg",
+        is_package=True,
+        import_scan_mode="full",
+        resolution_cache=_ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+        target_python=PYTHON,
+    )
+    bound = discovery._bind_precomputed_module_import_scan(
+        generated,
+        module_name="pkg",
+        is_package=True,
+        package_paths=roots,
+        import_scan_mode="full",
+        scan=loaded.scan,
+        snapshot=snapshot,
+        target_python=PYTHON,
+    )
+    visits = []
+    child_names = discovery.python_package_child_names
+
+    def counted(paths):
+        visits.append(tuple(paths))
+        return child_names(paths)
+
+    monkeypatch.setattr(discovery, "python_package_child_names", counted)
+    monkeypatch.setattr(
+        graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "package-paths"
+    )
+    expected = None
+    for _ in range(2):
+        visits.clear()
+        result = discovery._discover_module_graph_from_paths(
+            (generated,),
+            [tmp_path / "first", tmp_path / "second"],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            precomputed_scans_by_path={generated: bound},
+            full_scan_roots=True,
+        )
+        owner = result.scan_authority.by_module["pkg"]
+        assert owner.package_paths == roots
+        assert owner.namespace_premise == PythonNamespacePremise(("alpha", "beta"), 0)
+        assert set(result.graph) == {"pkg"}
+        assert visits == [roots]
+        if expected is None:
+            expected = result.scan_authority
+
+            def forbidden(*args, **kwargs):
+                raise AssertionError("warm package discovery repeated source analysis")
+
+            monkeypatch.setattr(
+                _source_import_scan, "_collect_import_scan_requests", forbidden
+            )
+        else:
+            assert result.scan_authority == expected
+
+
+def test_materialized_namespace_package_identity_matches_cpython(tmp_path):
+    for name in (
+        "importlib/__init__.py",
+        "importlib/util.py",
+        "importlib/machinery.py",
+    ):
+        _source(tmp_path / "stdlib" / name, "pass\n")
+    roots = [tmp_path / "first", tmp_path / "second"]
+    _source(roots[0] / "hf226_namespace" / "alpha.py", "pass\n")
+    _source(roots[1] / "hf226_namespace" / "beta.py", "pass\n")
+    entry = _source(
+        tmp_path / "entry.py",
+        "import hf226_namespace.alpha\nimport hf226_namespace.beta\n",
+    )
+    initial = discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path, *roots],
+        [tmp_path, *roots],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    prepared = _PreparedEntryModuleGraph(
+        image_scope=_BinaryImageScope.from_entry(
+            kind="entry_script",
+            selector_source="test:namespace",
+            entry_module="entry",
+            source_path=entry,
+            project_root=tmp_path,
+            module_roots=[tmp_path, *roots],
+        ),
+        declared_root_modules=frozenset({"entry"}),
+        stdlib_allowlist={"importlib"},
+        roots=[tmp_path, *roots],
+        module_resolution_cache=_ModuleResolutionCache(),
+        module_graph=initial.graph,
+        scan_authority=initial.scan_authority,
+        target="native",
+        explicit_imports=initial.explicit_imports,
+        runtime_import_dispatch_roots=frozenset(),
+        stub_parents=set(),
+        spawn_enabled=False,
+        runtime_import_support_policy=_RuntimeImportSupportPolicy(False, False),
+        native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+        target_python=PYTHON,
+    )
+    plan = graphs._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons={},
+        stdlib_root=tmp_path / "stdlib",
+        artifacts_root=tmp_path / "artifacts",
+        entry_module="entry",
+        diagnostics_enabled=False,
+    )
+    reference = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys,json; sys.path[:0] = json.loads(sys.argv[1]); "
+            "import hf226_namespace.alpha,hf226_namespace.beta; "
+            "print(json.dumps([list(hf226_namespace.__path__), "
+            "list(hf226_namespace.__spec__.submodule_search_locations)]))",
+            json.dumps([str(p) for p in roots]),
+        ],
+        timeout=30,
+        check=True,
+    )
+    paths, spec_paths = json.loads(reference.stdout)
+    owner = plan.scan_authority.by_module["hf226_namespace"]
+    assert owner.is_package
+    assert [str(path) for path in owner.package_paths] == paths == spec_paths
+    assert (
+        owner.source_sha256
+        == hashlib.sha256(owner.source_path.read_bytes()).hexdigest()
+    )
+    assert (
+        owner.namespace_premise is None
+    )  # Captured bytes do not prove writer convergence.
+    metadata = plan.module_graph_metadata
+    assert metadata.module_is_package_by_module["hf226_namespace"]
+    assert metadata.module_is_namespace_by_module["hf226_namespace"]
+    namespace = {}
+    exec(owner.source_path.read_bytes(), namespace)
+    assert namespace["__path__"] == paths
+    assert (
+        metadata.logical_source_path_by_module["hf226_namespace"]
+        == "/__molt_generated__/hf226_namespace.py"
     )
