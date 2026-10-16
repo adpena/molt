@@ -7,8 +7,13 @@ selected = right
 def make_codes():
     retained = None
     def initial():
+        'immutable declaration doc'
         return retained
     def replacement():
+        'replacement declaration doc'
         retained
         return selected
+    initial.__name__ = 'mutated source name'
+    initial.__qualname__ = 'mutated source qualname'
+    initial.__doc__ = 'mutated source doc'
     return initial.__code__, replacement.__code__, initial.__closure__

@@ -481,7 +481,7 @@ shape = "fixed"
 drop = "code"
 metrics = "none"
 acyclic_capability = "code_metadata"
-acyclic_slots = { filename = "str", name = "str", linetable = "bytes_or_none", varnames = "str_tuple", names = "str_tuple", arg_names = "str_tuple", posonly = "int", kwonly = "str_tuple", vararg = "str_or_none", varkw = "str_or_none", freevars = "str_tuple", cellvars = "str_tuple", gpu_descriptor = "str_or_none" }
+acyclic_slots = { filename = "str", name = "str", linetable = "bytes_or_none", varnames = "str_tuple", names = "str_tuple", arg_names = "str_tuple", posonly = "int", kwonly = "str_tuple", vararg = "str_or_none", varkw = "str_or_none", freevars = "str_tuple", cellvars = "str_tuple", gpu_descriptor = "str_or_none", qualname = "str", doc = "str_or_none" }
 
 [[kind]]
 name = "ELLIPSIS"

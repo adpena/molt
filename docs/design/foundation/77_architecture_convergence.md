@@ -67,7 +67,8 @@ transform (HF-203).
   DSL into the interpreter, tier-2 uops, optimizer cases, metadata and JIT
   stencils. rustc MIR uses closed enums with exhaustive matches.
 - **One-way lowering with facts on values.** MLIR progressive dialect
-  conversion and Cranelift CLIF keep facts on SSA values and never re-lift.
+  conversion makes legality and type conversion explicit; Cranelift CLIF
+  keeps optimizer facts on SSA values.
   Cranelift runs one aegraph mid-end. LLVM's new pass manager tracks preserved
   analyses; `mlir-opt --verify-each` checks every pass; FileCheck and `.clif`
   filetests test IR as text.
@@ -91,6 +92,31 @@ for explicit SSA/block arguments; and
 [CPython's buffer protocol](https://docs.python.org/3/c-api/buffer.html)
 for owner-backed views and balanced release. These are design references,
 not evidence that Molt's migration or a target cell is complete.
+
+### Current comparison
+
+Source inspection on 2026-10-16 distinguishes incomplete adoption from absent
+infrastructure. Molt already has a pass/analysis manager, generated operation
+effects, differential/property/fuzz tests, shrinking, source custody and
+content-addressed caches. Reimplementing those owners would increase cost.
+The findings ledger owns each remaining obligation; this comparison adds no
+parallel roadmap or release gate.
+
+| Practice in the referenced projects | Current Molt difference and owning obligation |
+| --- | --- |
+| [MLIR ODS](https://mlir.llvm.org/docs/DefiningDialects/Operations/) generates operation interfaces, verification and builders from declarations. | Generated op facts exist, but generic string-keyed operands/properties and ABI signature scraping remain. Complete their typed producer/consumer migration under HF-197/HF-202/HF-211. |
+| [MLIR analysis management](https://mlir.llvm.org/docs/PassManagement/) and [rustc queries](https://rustc-dev-guide.rust-lang.org/query.html) cache demanded facts and track invalidation or dependencies. | The shared analysis owner exists. Native retains final TIR, but still projects names for codegen; WASM reconstructs facts after projection. Complete the existing HF-201 migration rather than add another optimizer. HF-250 owns unchanged-input frontend work. |
+| [Cranelift](https://cranelift.dev/) explicitly avoids pathological compiler complexity and uses fuzzing, custom oracles and validation. [MLIR filetests](https://mlir.llvm.org/getting_started/TestingGuide/) exercise individual transformations without full application builds. | Reuse existing fuzz/shrink and pass-test authorities. Qualify affected semantic and compiler-resource properties, and retain minimized failures; an inventory or test count does not prove their execution. HF-212 owns coverage, while V1-07 owns resource/performance acceptance. |
+| [Wasmtime minimal builds](https://docs.wasmtime.dev/examples-minimal.html) select runtime features separately from compilation. | Molt's feature/reachability owners must close actual linked binary size and startup costs, including remaining stubs, under HF-189/HF-195. Development custody and verification belong outside emitted programs. |
+| [V8](https://v8.dev/blog/wasm-speculative-optimizations) uses feedback, guarded specialization and deoptimization. | Molt needs proven/guarded compiled paths and connected profiling, preserving standalone execution. An interpreter-dependent recovery design does not satisfy that contract. HF-198/HF-205/HF-206 own repeated runtime boundary work; W1/HF-222 own connected feedback and regression history. |
+| [TypeScript 7](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) parallelizes independent stages while documenting duplicated worker work, ordering and memory tradeoffs. | Recent TIR cache and batch changes already address serialization. Qualify deterministic output and total time/memory through those owners; more workers or a language rewrite alone does not establish a gain. |
+
+These projects make different optimization tradeoffs; there is no single design
+that minimizes every metric. Molt's policy must select measured latency,
+throughput, code size, memory and compilation costs for the actual target and
+profile. Rich Python semantics, standalone AOT execution and co-equal native/WASM
+targets are product constraints. They justify necessary machinery, not duplicate
+semantic authorities, inactive optimization paths or unmeasured release claims.
 
 ## Target architecture
 

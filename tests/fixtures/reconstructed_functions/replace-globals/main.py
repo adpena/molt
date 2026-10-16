@@ -13,3 +13,4 @@ print([error is markers['left_provider'] for error in consumer.seen])
 checks = [consumer.a.__globals__ is consumer.left_namespace, consumer.b.__globals__ is consumer.right_namespace]
 checks.extend([len(consumer.replacement_code.co_freevars) == 1, consumer.a.__closure__ is consumer.retained_closure, consumer.b.__closure__ is consumer.retained_closure, consumer.a.__code__ is consumer.replacement_code, consumer.b.__code__ is consumer.replacement_code])
 print(checks)
+print(consumer.metadata_checks)

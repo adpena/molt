@@ -1156,11 +1156,14 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         };
 
         if !set_attr(b"__name__", name_bits)
-            || !set_attr(b"__qualname__", name_bits)
+            || !set_attr(
+                b"__qualname__",
+                crate::object::layout::code_qualname_bits(code_ptr),
+            )
             || !set_attr(b"__module__", module_bits)
             || !set_attr(b"__defaults__", defaults_bits)
             || !set_attr(b"__kwdefaults__", kwdefaults_bits)
-            || !set_attr(b"__doc__", none_bits)
+            || !set_attr(b"__doc__", crate::object::layout::code_doc_bits(code_ptr))
         {
             dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
             return MoltObject::none().bits();
@@ -1238,11 +1241,13 @@ unsafe fn prepare_function_metadata_code(
     code_bits: u64,
     signature: Option<crate::object::layout::PreparedCodeSignature>,
     lexical: Option<(u64, u64, crate::object::layout::CodeExecutionKind)>,
+    declaration: [u64; 2],
 ) -> Result<crate::object::layout::PreparedFunctionCode, ()> {
     unsafe {
         let prepared = crate::object::layout::prepare_function_code_bits(
             py, func_ptr, code_bits, None, signature,
-        )?;
+        )?
+        .with_declaration_metadata(py, declaration[0], declaration[1])?;
         match lexical {
             Some((freevars, cellvars, kind)) => {
                 prepared.with_lexical_metadata(py, freevars, cellvars, kind)
@@ -1367,8 +1372,17 @@ fn initialize_function_metadata(
         None
     };
     if code_ptr.is_some()
-        && unsafe { prepare_function_metadata_code(_py, func_ptr, code_bits, signature, lexical) }
-            .is_err()
+        && unsafe {
+            prepare_function_metadata_code(
+                _py,
+                func_ptr,
+                code_bits,
+                signature,
+                lexical,
+                [qualname_bits, doc_bits],
+            )
+        }
+        .is_err()
     {
         return MoltObject::none().bits();
     }
@@ -1410,7 +1424,14 @@ fn initialize_function_metadata(
 
     if code_ptr.is_some() {
         let prepared = match unsafe {
-            prepare_function_metadata_code(_py, func_ptr, code_bits, signature, lexical)
+            prepare_function_metadata_code(
+                _py,
+                func_ptr,
+                code_bits,
+                signature,
+                lexical,
+                [qualname_bits, doc_bits],
+            )
         } {
             Ok(prepared) => prepared,
             Err(()) => return MoltObject::none().bits(),

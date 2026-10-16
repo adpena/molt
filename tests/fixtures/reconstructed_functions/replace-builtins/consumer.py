@@ -9,12 +9,38 @@ left_builtins = {'selected': left}
 right_builtins = {'selected': right}
 left_namespace = {'__builtins__': left_builtins}
 right_namespace = {'__builtins__': right_builtins}
-a = FunctionType(first_code, left_namespace, closure=retained_closure)
-b = FunctionType.__new__(FunctionType, first_code, right_namespace, closure=retained_closure)
+a = FunctionType(first_code, left_namespace, 'class name', closure=retained_closure)
+b = FunctionType.__new__(FunctionType, first_code, right_namespace, 'direct name', closure=retained_closure)
+metadata_checks = [
+    a.__name__ == 'class name', b.__name__ == 'direct name',
+    first_code.co_qualname == 'make_codes.<locals>.initial',
+    a.__qualname__ == 'make_codes.<locals>.initial',
+    b.__qualname__ == 'make_codes.<locals>.initial',
+    a.__doc__ == 'immutable declaration doc',
+    b.__doc__ == 'immutable declaration doc',
+]
+a.__qualname__ = 'mutated first owner'
+a.__doc__ = 'mutated first owner doc'
+metadata_checks.extend([
+    first_code.co_qualname == 'make_codes.<locals>.initial',
+    b.__qualname__ == 'make_codes.<locals>.initial',
+    b.__doc__ == 'immutable declaration doc',
+])
 left_namespace['__builtins__'] = right_builtins
 right_namespace['__builtins__'] = left_builtins
 a.__code__ = replacement_code
 b.__code__ = replacement_code
+c = FunctionType(replacement_code, left_namespace, 'new code owner', closure=retained_closure)
+metadata_checks.extend([
+    a.__qualname__ == 'mutated first owner',
+    a.__doc__ == 'mutated first owner doc',
+    b.__qualname__ == 'make_codes.<locals>.initial',
+    b.__doc__ == 'immutable declaration doc',
+    replacement_code.co_qualname == 'make_codes.<locals>.replacement',
+    c.__qualname__ == 'make_codes.<locals>.replacement',
+    c.__doc__ == 'replacement declaration doc',
+    c.__name__ == 'new code owner',
+])
 def entry():
     try:
         a()()

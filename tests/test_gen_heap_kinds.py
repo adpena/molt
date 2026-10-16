@@ -92,8 +92,37 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
         "stop": "int",
         "step": "int",
     }
-    assert by_name["CODE"]["acyclic_slots"] == dict(_gen().ACYCLIC_SLOT_SCHEMAS["CODE"])
+    assert by_name["CODE"]["acyclic_slots"] == {
+        "filename": "str",
+        "name": "str",
+        "linetable": "bytes_or_none",
+        "varnames": "str_tuple",
+        "names": "str_tuple",
+        "arg_names": "str_tuple",
+        "posonly": "int",
+        "kwonly": "str_tuple",
+        "vararg": "str_or_none",
+        "varkw": "str_or_none",
+        "freevars": "str_tuple",
+        "cellvars": "str_tuple",
+        "gpu_descriptor": "str_or_none",
+        "qualname": "str",
+        "doc": "str_or_none",
+    }
     assert by_name["BUFFER2D"]["acyclic_slots"] == {"cell": "int"}
+
+
+@pytest.mark.parametrize("slot", ["qualname", "doc"])
+def test_code_declaration_edges_cannot_disappear_from_acyclic_authority(
+    tmp_path: Path, slot: str
+) -> None:
+    gen = _gen()
+    source = gen.TABLE.read_text(encoding="utf-8")
+    domain = "str" if slot == "qualname" else "str_or_none"
+    table = tmp_path / "heap_kinds.toml"
+    table.write_text(source.replace(f', {slot} = "{domain}"', "", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="CODE requires exact acyclic slots"):
+        gen.load_table(table)
 
 
 @pytest.mark.parametrize("retired_id", [205, 220, 231])

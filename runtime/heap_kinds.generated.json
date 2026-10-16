@@ -667,6 +667,7 @@
       "acyclic_slots": {
         "arg_names": "str_tuple",
         "cellvars": "str_tuple",
+        "doc": "str_or_none",
         "filename": "str",
         "freevars": "str_tuple",
         "gpu_descriptor": "str_or_none",
@@ -675,6 +676,7 @@
         "name": "str",
         "names": "str_tuple",
         "posonly": "int",
+        "qualname": "str",
         "vararg": "str_or_none",
         "varkw": "str_or_none",
         "varnames": "str_tuple"

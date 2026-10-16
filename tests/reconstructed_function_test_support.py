@@ -103,9 +103,15 @@ def _activation_context_sources(route):
         alternatives += (
             "def make_codes():\n"
             "    retained = None\n"
-            "    def initial():\n        return retained\n"
+            "    def initial():\n"
+            "        'immutable declaration doc'\n"
+            "        return retained\n"
             "    def replacement():\n"
+            "        'replacement declaration doc'\n"
             "        retained\n        return selected\n"
+            "    initial.__name__ = 'mutated source name'\n"
+            "    initial.__qualname__ = 'mutated source qualname'\n"
+            "    initial.__doc__ = 'mutated source doc'\n"
             "    return initial.__code__, replacement.__code__, initial.__closure__\n"
         )
         consumer += (
@@ -125,9 +131,25 @@ def _activation_context_sources(route):
                 "right_namespace = {'selected': right}\n"
             )
         consumer += (
-            "a = FunctionType(first_code, left_namespace, closure=retained_closure)\n"
-            "b = FunctionType.__new__(FunctionType, first_code, right_namespace, "
+            "a = FunctionType(first_code, left_namespace, 'class name', "
             "closure=retained_closure)\n"
+            "b = FunctionType.__new__(FunctionType, first_code, right_namespace, "
+            "'direct name', closure=retained_closure)\n"
+            "metadata_checks = [\n"
+            "    a.__name__ == 'class name', b.__name__ == 'direct name',\n"
+            "    first_code.co_qualname == 'make_codes.<locals>.initial',\n"
+            "    a.__qualname__ == 'make_codes.<locals>.initial',\n"
+            "    b.__qualname__ == 'make_codes.<locals>.initial',\n"
+            "    a.__doc__ == 'immutable declaration doc',\n"
+            "    b.__doc__ == 'immutable declaration doc',\n"
+            "]\n"
+            "a.__qualname__ = 'mutated first owner'\n"
+            "a.__doc__ = 'mutated first owner doc'\n"
+            "metadata_checks.extend([\n"
+            "    first_code.co_qualname == 'make_codes.<locals>.initial',\n"
+            "    b.__qualname__ == 'make_codes.<locals>.initial',\n"
+            "    b.__doc__ == 'immutable declaration doc',\n"
+            "])\n"
         )
         if route == "replace-builtins":
             consumer += (
@@ -135,6 +157,20 @@ def _activation_context_sources(route):
                 "right_namespace['__builtins__'] = left_builtins\n"
             )
         consumer += "a.__code__ = replacement_code\nb.__code__ = replacement_code\n"
+        consumer += (
+            "c = FunctionType(replacement_code, left_namespace, 'new code owner', "
+            "closure=retained_closure)\n"
+            "metadata_checks.extend([\n"
+            "    a.__qualname__ == 'mutated first owner',\n"
+            "    a.__doc__ == 'mutated first owner doc',\n"
+            "    b.__qualname__ == 'make_codes.<locals>.initial',\n"
+            "    b.__doc__ == 'immutable declaration doc',\n"
+            "    replacement_code.co_qualname == 'make_codes.<locals>.replacement',\n"
+            "    c.__qualname__ == 'make_codes.<locals>.replacement',\n"
+            "    c.__doc__ == 'replacement declaration doc',\n"
+            "    c.__name__ == 'new code owner',\n"
+            "])\n"
+        )
     else:
         body = {
             "shared-return": "    return selected\n",
@@ -207,6 +243,8 @@ def activation_target_sources(route: str) -> dict[str, str]:
                 "consumer.b.__globals__['__builtins__'] is consumer.left_builtins])\n"
             )
         observation += "print(checks)\n"
+        if route.startswith("replace-"):
+            observation += "print(consumer.metadata_checks)\n"
     else:
         raise ValueError(f"unknown reconstructed-function case: {route}")
     providers = (
