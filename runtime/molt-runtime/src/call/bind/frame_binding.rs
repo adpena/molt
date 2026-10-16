@@ -208,7 +208,9 @@ unsafe fn function_kwdefault_owned(
         let _owner = PtrDropGuard::new(defaults_ptr);
         let backing_bits = crate::object::ops::dict_backing_bits(py, defaults_bits)
             .map_err(|()| MoltObject::none().bits())?
-            .ok_or_else(|| raise_exception::<_>(py, "TypeError", "call expects function object"))?;
+            .ok_or_else(|| {
+                raise_exception::<u64>(py, "TypeError", "call expects function object")
+            })?;
         let backing_ptr = obj_from_bits(backing_bits)
             .as_ptr()
             .expect("dictionary admission returned backing storage");
