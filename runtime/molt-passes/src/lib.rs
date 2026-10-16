@@ -7,7 +7,12 @@
 #![allow(clippy::needless_range_loop)] // index vars used in mutation / skip-set patterns
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
-#![allow(clippy::should_implement_trait)] // generated op_kind enum parsers are deliberate tables
+#![allow(clippy::should_implement_trait)]
+// generated op_kind enum parsers are deliberate tables
+
+// Tests save, set and restore process settings around fixtures; production
+// code reads them through `molt_ir::backend_environment` (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 pub mod memory_budget;
 pub mod representation_facts;

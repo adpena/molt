@@ -4,6 +4,10 @@ use super::super::config::DEFAULT_STDIN_REQUEST_LIMIT_BYTES;
 #[cfg(molt_backend_daemon)]
 use super::super::config::{DEFAULT_DAEMON_MAX_JOBS, DEFAULT_DAEMON_REQUEST_LIMIT_BYTES};
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "request size limits are process configuration"
+)]
 fn env_usize_limit(name: &str, default: usize, min_value: usize) -> usize {
     env::var(name)
         .ok()

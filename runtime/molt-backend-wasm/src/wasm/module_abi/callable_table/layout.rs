@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, BTreeSet};
 
 use wasm_encoder::{EntityType, ExportKind, RefType, TableType};
@@ -769,7 +770,7 @@ impl WasmBackend {
             })
             .collect();
 
-        if let Ok(raw_slot) = std::env::var("MOLT_DEBUG_WASM_TABLE_SLOT")
+        if let Ok(raw_slot) = backend_env::var(BackendEnv::MOLT_DEBUG_WASM_TABLE_SLOT)
             && let Ok(target_slot) = raw_slot.parse::<u32>()
         {
             for (name, slot) in &func_to_table_idx {

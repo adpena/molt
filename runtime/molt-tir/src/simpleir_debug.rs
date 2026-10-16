@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::fmt::Write as _;
 
 use crate::FunctionIR;
@@ -8,7 +9,7 @@ pub struct DumpIrConfig {
 }
 
 pub fn should_dump_ir() -> Option<DumpIrConfig> {
-    let raw = std::env::var("MOLT_DUMP_IR").ok()?;
+    let raw = backend_env::var(BackendEnv::MOLT_DUMP_IR).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -108,7 +109,7 @@ pub fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
         return;
     }
     eprintln!("IR ops for {} (mode={}):\n{}", func_ir.name, mode, out);
-    if std::env::var("MOLT_DUMP_IR_FILE").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_DUMP_IR_FILE).as_deref() == Ok("1") {
         let sanitized = func_ir
             .name
             .chars()

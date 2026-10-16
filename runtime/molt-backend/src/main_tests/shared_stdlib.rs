@@ -913,10 +913,11 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
             },
         }),
         ir_path: None,
+        config_namespace: None,
     };
 
-    let mut cache = DaemonCache::new(None);
-    let result = compile_single_job(job, &mut cache);
+    let cache = DaemonCache::new(None);
+    let result = compile_single_job(job, &cache);
 
     assert!(result.ok, "daemon compile failed: {:?}", result.message);
     assert_native_archive_members(

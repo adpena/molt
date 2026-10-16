@@ -276,14 +276,14 @@ fn constituent_key_preserves_float_bits_and_function_order() {
 
 #[test]
 fn constituent_key_binds_actual_emitter_and_presence_gated_pass_inputs() {
-    use molt_ir::backend_environment::NativeCodegenEnvironment;
+    use molt_ir::backend_environment::{BackendEnv, NativeCodegenEnvironment};
     let cache = cache();
     let mut original = job();
     original.codegen_environment = NativeCodegenEnvironment::from_lookup(|_| Ok(None)).unwrap();
     let key = cache.input_key(&original).unwrap();
     for (name, value) in [
-        ("MOLT_BACKEND_INLINE_EXC_DISABLED", "1"),
-        ("MOLT_DISABLE_RC_COALESCE", ""),
+        (BackendEnv::MOLT_BACKEND_INLINE_EXC_DISABLED, "1"),
+        (BackendEnv::MOLT_DISABLE_RC_COALESCE, ""),
     ] {
         let mut changed = roundtrip(&original);
         changed.codegen_environment = NativeCodegenEnvironment::from_lookup(|setting| {
@@ -293,7 +293,8 @@ fn constituent_key_binds_actual_emitter_and_presence_gated_pass_inputs() {
         assert_ne!(
             key,
             cache.input_key(&changed).unwrap(),
-            "omitted actual codegen control {name}"
+            "omitted actual codegen control {}",
+            name.name()
         );
     }
 }

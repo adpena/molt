@@ -2,6 +2,7 @@ use super::*;
 use crate::stdlib_module_symbols::{
     is_user_owned_symbol, original_partition_source, partition_user_owned_functions,
 };
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
@@ -192,7 +193,7 @@ impl NativeFinalFunctions {
         self.ir.functions = kept_functions;
         self.facts = kept_facts;
         let eliminated = original_count - self.ir.functions.len();
-        if eliminated > 0 && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+        if eliminated > 0 && backend_env::var(BackendEnv::MOLT_DEBUG_DEAD_FUNC_ELIM).is_ok() {
             eprintln!(
                 "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
                 self.ir.functions.len()
@@ -444,7 +445,7 @@ impl NativeBackendModuleContext {
         };
         let partition_sources = split_megafunctions(&mut ir);
         *functions = ir.functions;
-        let timing = crate::env_setting("MOLT_BACKEND_TIMING")
+        let timing = crate::env_setting(BackendEnv::MOLT_BACKEND_TIMING)
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
@@ -768,8 +769,8 @@ fn shared_stdlib_external_symbol_plan(
     ir: &SimpleIR,
     partition_sources: &BTreeMap<String, String>,
 ) -> Option<BTreeSet<String>> {
-    let stdlib_obj_path = std::env::var("MOLT_STDLIB_OBJ").ok()?;
-    let Ok(entry_module) = std::env::var("MOLT_ENTRY_MODULE") else {
+    let stdlib_obj_path = backend_env::var(BackendEnv::MOLT_STDLIB_OBJ).ok()?;
+    let Ok(entry_module) = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE) else {
         return None;
     };
     if !std::path::Path::new(&stdlib_obj_path).exists() {
@@ -798,10 +799,10 @@ pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_parti
     module_registry_roots: &BTreeSet<String>,
     partition_sources: &BTreeMap<String, String>,
 ) {
-    let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
+    let Some(stdlib_obj_path) = backend_env::var(BackendEnv::MOLT_STDLIB_OBJ).ok() else {
         return;
     };
-    let Ok(entry_module) = std::env::var("MOLT_ENTRY_MODULE") else {
+    let Ok(entry_module) = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE) else {
         return;
     };
     let stdlib_path = std::path::Path::new(&stdlib_obj_path);

@@ -13,7 +13,7 @@ pub(crate) use constants::{
 #[cfg(molt_backend_daemon)]
 pub(crate) use constants::{DEFAULT_DAEMON_MAX_JOBS, DEFAULT_DAEMON_REQUEST_LIMIT_BYTES, MIB};
 #[cfg(molt_backend_daemon)]
-pub(crate) use daemon_env::{BACKEND_DAEMON_PROTOCOL_VERSION, DAEMON_REQUEST_ENV_KEYS};
+pub(crate) use daemon_env::BACKEND_DAEMON_PROTOCOL_VERSION;
 pub(crate) use memory::default_backend_max_rss_gb;
 #[cfg(test)]
 pub(crate) use memory::default_backend_max_rss_gb_from_physical_mem_bytes;

@@ -1,4 +1,5 @@
 use super::super::*;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 /// Single-source kind authority for [`handle_runtime_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -181,7 +182,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
         }
         "warn_stderr" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            if std::env::var("MOLT_DEBUG_WARN_BACKEND").is_ok() {
+            if backend_env::var(BackendEnv::MOLT_DEBUG_WARN_BACKEND).is_ok() {
                 eprintln!(
                     "[WARN_BACKEND] warn_stderr op in func={} args={:?} is_block_filled={}",
                     func_name, args, is_block_filled

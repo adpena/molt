@@ -78,6 +78,7 @@
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_is_state_machine_table;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 use super::PassStats;
 
@@ -128,7 +129,7 @@ pub fn run(func: &mut TirFunction, _am: &mut crate::tir::analysis::AnalysisManag
         name: "overflow_peel",
         ..PassStats::default()
     };
-    let debug = std::env::var("MOLT_OVERFLOW_PEEL_STATS").as_deref() == Ok("1");
+    let debug = backend_env::var(BackendEnv::MOLT_OVERFLOW_PEEL_STATS).as_deref() == Ok("1");
     let mut refusals: Vec<(BlockId, Refusal)> = Vec::new();
     let mut peeled: Vec<BlockId> = Vec::new();
 

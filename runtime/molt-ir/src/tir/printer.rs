@@ -14,7 +14,9 @@ use super::types::{FuncSignature, TirType};
 
 /// Returns true if `TIR_DUMP=1` is set in the environment.
 pub fn tir_dump_enabled() -> bool {
-    std::env::var("TIR_DUMP").map(|v| v == "1").unwrap_or(false)
+    crate::backend_environment::var(crate::backend_environment::BackendEnv::TIR_DUMP)
+        .map(|v| v == "1")
+        .unwrap_or(false)
 }
 
 /// Print a TirModule in MLIR-like syntax.

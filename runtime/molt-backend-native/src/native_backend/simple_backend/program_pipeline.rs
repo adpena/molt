@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_tir::ir_rewrites::{elide_useless_try_blocks_for_function, rewrite_phi_to_store_load};
 use std::fmt::Write as _;
 
@@ -67,8 +68,8 @@ impl SimpleBackend {
                     cache_dir: None,
                     process_externs: false,
                     verify_lir: true,
-                    tir_dump: env_setting("TIR_DUMP").as_deref() == Some("1"),
-                    tir_stats: env_setting("TIR_OPT_STATS").as_deref() == Some("1"),
+                    tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),
+                    tir_stats: env_setting(BackendEnv::TIR_OPT_STATS).as_deref() == Some("1"),
                     progress_prefix: Some("MOLT_BACKEND"),
                     resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
                 },
@@ -207,7 +208,7 @@ fn detect_gpu_kernels(functions: &[FunctionIR]) {
 }
 
 fn dump_raw_ir_if_requested(functions: &[FunctionIR]) {
-    let Some(pattern) = std::env::var("MOLT_DUMP_FUNC_IR").ok() else {
+    let Some(pattern) = backend_env::var(BackendEnv::MOLT_DUMP_FUNC_IR).ok() else {
         return;
     };
     for func_ir in functions
@@ -250,7 +251,7 @@ fn dump_raw_ir_if_requested(functions: &[FunctionIR]) {
 }
 
 fn dump_rewritten_ir_if_requested(functions: &[FunctionIR]) {
-    let Ok(requested) = std::env::var("MOLT_DUMP_REWRITTEN_FUNC") else {
+    let Ok(requested) = backend_env::var(BackendEnv::MOLT_DUMP_REWRITTEN_FUNC) else {
         return;
     };
     if let Some(function) = functions.iter().find(|function| function.name == requested) {
@@ -260,7 +261,7 @@ fn dump_rewritten_ir_if_requested(functions: &[FunctionIR]) {
 
 #[cfg(feature = "llvm")]
 pub(super) fn dump_rewritten_tir_if_requested(functions: &[(bool, crate::tir::TirFunction)]) {
-    let Ok(requested) = std::env::var("MOLT_DUMP_REWRITTEN_FUNC") else {
+    let Ok(requested) = backend_env::var(BackendEnv::MOLT_DUMP_REWRITTEN_FUNC) else {
         return;
     };
     if let Some((_, function)) = functions

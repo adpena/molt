@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{HashMap, HashSet};
 
 use crate::ir::OpIR;
@@ -92,7 +93,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
 
     // Compute block visit order (reverse-postorder from entry).
     let rpo = reverse_postorder(func, &state_yield_resume_after);
-    let debug_lower_func = std::env::var("MOLT_DEBUG_LOWER_FUNC").ok();
+    let debug_lower_func = backend_env::var(BackendEnv::MOLT_DEBUG_LOWER_FUNC).ok();
     let debug_loop_if_return = func.name == "loop_if_return_continue_roundtrip"
         || debug_lower_func.as_deref() == Some(func.name.as_str());
     if debug_loop_if_return {

@@ -33,7 +33,6 @@ const CACHE_ARTIFACT_DIGEST_BYTES: usize = 32;
 const CACHE_ARTIFACT_FIXED_BYTES: usize =
     CACHE_ARTIFACT_MAGIC.len() + 1 + CACHE_ARTIFACT_KEY_BYTES + 8 + CACHE_ARTIFACT_DIGEST_BYTES;
 const CACHE_INDEX_MAX_LINE_BYTES: usize = 160;
-const BACKEND_COMPILER_FINGERPRINT_ENV: &str = "MOLT_BACKEND_COMPILER_FINGERPRINT";
 const DEFAULT_MEMORY_CACHE_BYTES_FALLBACK: usize = 64 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_AVAILABLE_BYTES_MIN: usize = 8 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_BYTES_MIN: usize = 32 * 1024 * 1024;
@@ -2727,6 +2726,10 @@ fn read_bounded_line<R: BufRead>(
 /// The namespace is rooted under `MOLT_CACHE` when configured, or `.molt_cache`
 /// otherwise, and salted with the current executable path + mtime so cached
 /// optimized IR is invalidated automatically when the backend binary changes.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "TIR cache placement and limits are process configuration, outside the backend catalog"
+)]
 pub fn backend_cache_dir() -> PathBuf {
     let root = std::env::var_os("MOLT_CACHE")
         .map(PathBuf::from)
@@ -2767,8 +2770,9 @@ pub(crate) fn backend_cache_dir_for(
 }
 
 fn backend_build_identity(executable: &std::path::Path) -> Vec<u8> {
-    if let Some(provided) = std::env::var_os(BACKEND_COMPILER_FINGERPRINT_ENV)
-        && !provided.is_empty()
+    if let Some(provided) = molt_ir::backend_environment::var_os(
+        molt_ir::backend_environment::BackendEnv::MOLT_BACKEND_COMPILER_FINGERPRINT,
+    ) && !provided.is_empty()
     {
         let (encoding, bytes) = platform_os_str_identity(&provided);
         let mut key = CompilationCacheKey::new(b"molt-provided-backend-build-identity-v1");
@@ -2869,12 +2873,20 @@ fn default_persistent_cache_max_bytes() -> u64 {
         .unwrap_or(DEFAULT_PERSISTENT_CACHE_MAX_BYTES)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "TIR cache placement and limits are process configuration, outside the backend catalog"
+)]
 fn env_cache_limit_bytes(name: &str) -> Option<usize> {
     std::env::var(name)
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "TIR cache placement and limits are process configuration, outside the backend catalog"
+)]
 fn env_cache_limit_u64(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()

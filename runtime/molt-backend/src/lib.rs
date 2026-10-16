@@ -1,6 +1,11 @@
 #![allow(clippy::needless_range_loop)] // index vars used in mutation / skip-set patterns
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
-#![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
+#![allow(clippy::type_complexity)]
+// complex return types in TIR CFG helpers
+
+// Tests save, set and restore process settings around fixtures; production
+// code reads them through `molt_ir::backend_environment` (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 // Immutable IR/data lives in molt-ir; pass/fact orchestration and SimpleIR<->TIR
 // round-tripping live in molt-passes behind molt-tir re-exports; backend
@@ -8,8 +13,8 @@
 // `crate::*` routes explicit so moved facts are not silently borrowed through a
 // legacy crate boundary.
 pub use molt_ir::{
-    MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,
-    repr, runtime_callable_symbols, stdlib_module_symbols,
+    MOLT_CLOSURE_PARAM_NAME, backend_environment, debug_artifacts, ir, ir_schema, json_boundary,
+    process_diagnostics, repr, runtime_callable_symbols, stdlib_module_symbols,
 };
 pub use molt_tir::trampolines::externalize_function_with_signature;
 pub use molt_tir::{passes, representation_plan, tir};
@@ -37,7 +42,7 @@ pub use molt_ir::runtime_callable_symbols::{
     runtime_callable_symbols_from_env, runtime_callable_symbols_required,
 };
 pub use molt_ir::stdlib_module_symbols::{
-    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
+    parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };
 
 #[cfg(feature = "luau-backend")]

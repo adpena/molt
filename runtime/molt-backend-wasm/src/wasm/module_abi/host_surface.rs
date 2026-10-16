@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::BTreeSet;
 
 use wasm_encoder::{EntityType, ExportKind, MemoryType};
@@ -18,7 +19,7 @@ impl WasmBackend {
     pub(super) fn emit_linear_memory_surface(&mut self) {
         let page_size: u64 = 64 * 1024;
         let required_pages = (self.data_segments.offset() as u64).div_ceil(page_size);
-        let floor_pages = std::env::var("MOLT_WASM_MIN_PAGES")
+        let floor_pages = backend_env::var(BackendEnv::MOLT_WASM_MIN_PAGES)
             .ok()
             .and_then(|val| val.parse::<u64>().ok())
             .unwrap_or(64);

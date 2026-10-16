@@ -32,6 +32,10 @@ pub(crate) struct DaemonHealthResponse {
     pub(crate) jobs_total: u64,
     pub(crate) cache_hits: u64,
     pub(crate) cache_misses: u64,
+    /// Jobs admitted and not yet answered; zero means idle.
+    pub(crate) active_jobs: usize,
+    /// The daemon accepts no new connections and exits when drained.
+    pub(crate) retiring: bool,
 }
 
 #[derive(Debug)]

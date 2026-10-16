@@ -1,4 +1,5 @@
-use super::*;
+#[cfg(feature = "native-backend")]
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 #[cfg(feature = "native-backend")]
 pub(crate) struct TraceOpsConfig {
@@ -7,15 +8,12 @@ pub(crate) struct TraceOpsConfig {
 
 #[cfg(feature = "native-backend")]
 pub(crate) fn should_trace_ops(func_name: &str) -> Option<TraceOpsConfig> {
-    static RAW: OnceLock<Option<String>> = OnceLock::new();
-    let raw = RAW
-        .get_or_init(|| {
-            std::env::var("MOLT_TRACE_OP_PROGRESS")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .as_ref()?;
+    // Read per function, not once per process: a daemon serves builds with
+    // different settings.
+    let raw = backend_env::var(BackendEnv::MOLT_TRACE_OP_PROGRESS)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
     let (filter_part, stride_part) = match raw.split_once(':') {
         Some((left, right)) => (left.trim(), Some(right.trim())),
         None => (raw.as_str(), None),

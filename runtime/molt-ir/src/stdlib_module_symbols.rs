@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-pub const STDLIB_MODULE_SYMBOLS_ENV: &str = "MOLT_STDLIB_MODULE_SYMBOLS";
+use crate::backend_environment::{self as backend_env, BackendEnv};
+
+const STDLIB_MODULE_SYMBOLS_ENV: &str = BackendEnv::MOLT_STDLIB_MODULE_SYMBOLS.name();
 
 pub fn parse_stdlib_module_symbols(raw: &str) -> Result<BTreeSet<String>, String> {
     let parsed: Vec<String> = serde_json::from_str(raw).map_err(|err| {
@@ -31,7 +33,7 @@ pub fn parse_stdlib_module_symbols(raw: &str) -> Result<BTreeSet<String>, String
 }
 
 pub fn stdlib_module_symbols_from_env() -> Result<Option<BTreeSet<String>>, String> {
-    match std::env::var(STDLIB_MODULE_SYMBOLS_ENV) {
+    match backend_env::var(BackendEnv::MOLT_STDLIB_MODULE_SYMBOLS) {
         Ok(raw) => parse_stdlib_module_symbols(&raw).map(Some),
         Err(std::env::VarError::NotPresent) => Ok(None),
         Err(err) => Err(format!(

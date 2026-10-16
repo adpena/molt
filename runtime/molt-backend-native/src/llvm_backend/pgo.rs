@@ -38,6 +38,10 @@ pub fn instrument_function(func_name: &str, num_counters: u32) -> Vec<String> {
 /// into a `.profdata` file using `llvm-profdata merge`. The binary used is
 /// controlled by the `LLVM_PROFDATA` environment variable; if unset it
 /// defaults to `"llvm-profdata"`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "LLVM_PROFDATA names a host tool, outside the backend catalog"
+)]
 pub fn load_profile(profile_path: &str) -> HashMap<String, Vec<u64>> {
     // Resolve the llvm-profdata binary.
     let profdata_bin =

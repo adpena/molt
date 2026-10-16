@@ -36,7 +36,9 @@ static UNKNOWN_STAGE_WARNING: Once = Once::new();
 /// Unset or empty audits nothing. An unknown value audits nothing and warns
 /// once, so a misspelled stage is not mistaken for a quiet run.
 pub fn stage_audit_enabled(stage: AuditStage) -> bool {
-    let Ok(raw) = std::env::var("MOLT_STAGE_AUDIT") else {
+    let Ok(raw) =
+        crate::backend_environment::var(crate::backend_environment::BackendEnv::MOLT_STAGE_AUDIT)
+    else {
         return false;
     };
     if raw.trim().is_empty() {

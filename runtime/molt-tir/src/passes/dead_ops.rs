@@ -6,6 +6,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::tir::simple_def_use::{visit_simple_ir_reads, visit_simple_ir_result_names};
 use crate::tir::target_info::TargetInfo;
 use crate::{OpIR, SimpleIR};
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::HashSet;
 
 fn simple_ir_unused_result_is_removable(
@@ -84,11 +85,11 @@ fn simple_ir_unused_result_is_removable(
 }
 
 pub fn eliminate_dead_ops(ir: &mut SimpleIR, target_info: &TargetInfo) {
-    if std::env::var("MOLT_DISABLE_DEAD_OP_ELIM").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_DISABLE_DEAD_OP_ELIM).is_ok() {
         return;
     }
 
-    let trace = std::env::var("MOLT_DEBUG_DEAD_OP_ELIM").is_ok();
+    let trace = backend_env::var(BackendEnv::MOLT_DEBUG_DEAD_OP_ELIM).is_ok();
     let mut total_removed = 0usize;
 
     for func in &mut ir.functions {

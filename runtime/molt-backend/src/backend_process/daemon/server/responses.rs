@@ -23,6 +23,17 @@ pub(crate) fn daemon_ping_response(health: DaemonHealthResponse) -> DaemonRespon
     }
 }
 
+/// Acknowledges a retirement request; the health reports `retiring`.
+pub(crate) fn daemon_retire_response(health: DaemonHealthResponse) -> DaemonResponse {
+    DaemonResponse {
+        ok: true,
+        pong: false,
+        jobs: Vec::new(),
+        error: None,
+        health: Some(health),
+    }
+}
+
 pub(crate) fn daemon_jobs_response(
     jobs: Vec<DaemonJobResponse>,
     health: Option<DaemonHealthResponse>,

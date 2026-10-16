@@ -13,6 +13,7 @@ pub(crate) use admission::{
     admit_or_invalidate_shared_stdlib_cache, hydrate_shared_stdlib_cache_archive,
 };
 pub(crate) use archive::publish_shared_stdlib_cache_archive;
+pub(crate) use lock::with_shared_stdlib_cache_producer_lock;
 #[cfg(test)]
 pub(crate) use lock::with_shared_stdlib_cache_publish_lock;
 #[cfg(test)]

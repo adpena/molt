@@ -7,6 +7,7 @@ use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::borrow::Cow;
 use std::fmt::Write as _;
 use wasm_encoder::{BlockType, Catch, Function, Instruction, RefType, ValType};
@@ -29,7 +30,7 @@ impl WasmFunctionFrame {
     }
 
     pub(in crate::wasm) fn emit_debug_local_map(&self, func_ir: &FunctionIR, func_index: u32) {
-        let Some(filter) = std::env::var("MOLT_DEBUG_WASM_LOCALS_FUNC").ok() else {
+        let Some(filter) = backend_env::var(BackendEnv::MOLT_DEBUG_WASM_LOCALS_FUNC).ok() else {
             return;
         };
         if filter != "1" && !func_ir.name.contains(&filter) {

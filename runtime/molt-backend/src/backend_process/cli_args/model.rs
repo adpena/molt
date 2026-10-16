@@ -1,5 +1,7 @@
 use molt_backend::BackendIrDocument;
 use molt_backend::tir::target_info::TargetInfo;
+#[cfg(feature = "native-backend")]
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::io;
 
 #[cfg(feature = "native-backend")]
@@ -141,10 +143,12 @@ impl BackendTarget {
     pub(crate) fn fact_graph_target_info(&self) -> io::Result<TargetInfo> {
         match self {
             #[cfg(feature = "native-backend")]
-            Self::Native(_) => Ok(match std::env::var("MOLT_BACKEND").ok().as_deref() {
-                Some("llvm") => TargetInfo::llvm_release_fast(),
-                _ => TargetInfo::native_release_fast(),
-            }),
+            Self::Native(_) => Ok(
+                match backend_env::var(BackendEnv::MOLT_BACKEND).ok().as_deref() {
+                    Some("llvm") => TargetInfo::llvm_release_fast(),
+                    _ => TargetInfo::native_release_fast(),
+                },
+            ),
             #[cfg(feature = "wasm-backend")]
             Self::Wasm(_) => Ok(TargetInfo::wasm_release_fast()),
             #[cfg(feature = "luau-backend")]

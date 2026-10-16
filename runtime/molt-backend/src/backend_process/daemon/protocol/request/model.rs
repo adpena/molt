@@ -15,6 +15,8 @@ pub(crate) struct DaemonJobRequest {
     pub(crate) probe_cache_only: bool,
     pub(crate) ir: Option<molt_backend::BackendIrDocument>,
     pub(crate) ir_path: Option<String>,
+    /// The request's backend configuration digest, which scopes its cache keys.
+    pub(crate) config_namespace: Option<String>,
 }
 
 /// The artifact a daemon job builds. The daemon serves native and WASM jobs
@@ -31,7 +33,11 @@ pub(crate) enum DaemonJobTarget {
 pub(crate) struct DaemonRequest {
     pub(crate) version: Option<u32>,
     pub(crate) ping: Option<bool>,
+    /// Asks the daemon to stop taking connections and exit once drained.
+    pub(crate) retire: Option<bool>,
     pub(crate) include_health: Option<bool>,
     pub(crate) config_digest: Option<String>,
     pub(crate) jobs: Option<Vec<DaemonJobRequest>>,
+    /// The request's backend settings, installed per compiling thread.
+    pub(crate) environment: std::sync::Arc<molt_backend::backend_environment::BackendEnvironment>,
 }

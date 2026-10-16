@@ -395,6 +395,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "generated_object_abi_link",
         "native_artifact_facts",
         "native_batch_worker_spawn",
+        "daemon_server",
         "integration",
         "basic",
         "native_extern_linkage",

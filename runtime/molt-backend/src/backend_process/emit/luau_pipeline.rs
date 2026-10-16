@@ -1,4 +1,5 @@
 use molt_backend::SimpleIR;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,8 +21,8 @@ pub(crate) fn run_luau_tir_module_pipeline(
             cache_dir: None,
             process_externs: false,
             verify_lir: false,
-            tir_dump: std::env::var("TIR_DUMP").ok().as_deref() == Some("1"),
-            tir_stats: std::env::var("TIR_OPT_STATS").ok().as_deref() == Some("1"),
+            tir_dump: backend_env::var(BackendEnv::TIR_DUMP).ok().as_deref() == Some("1"),
+            tir_stats: backend_env::var(BackendEnv::TIR_OPT_STATS).ok().as_deref() == Some("1"),
             progress_prefix: None,
             resource_plan: molt_backend::tir::pipeline_cache::tir_optimization_resource_plan(),
         },

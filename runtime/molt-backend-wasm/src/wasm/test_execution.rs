@@ -1,3 +1,5 @@
+//! Test-only execution of compiled WASM through real hosts and linkers.
+
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

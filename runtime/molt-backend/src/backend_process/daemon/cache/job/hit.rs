@@ -1,10 +1,10 @@
 use crate::backend_process::io_limits::write_cached_output;
 
 use super::super::super::protocol::{DaemonJobRequest, DaemonJobResponse};
-use super::super::state::DaemonCache;
+use super::super::shared::DaemonCache;
 
 pub(crate) fn try_write_cached_daemon_job_output(
-    cache: &mut DaemonCache,
+    cache: &DaemonCache,
     job: &DaemonJobRequest,
     cache_key: &str,
     function_cache_key: &str,
@@ -15,7 +15,7 @@ pub(crate) fn try_write_cached_daemon_job_output(
         return Some(cached_daemon_job_response(
             job,
             "module",
-            write_cached_output(&job.output, bytes, job.skip_module_output_if_synced),
+            write_cached_output(&job.output, &bytes, job.skip_module_output_if_synced),
         ));
     }
     if !function_cache_key.is_empty()
@@ -25,7 +25,7 @@ pub(crate) fn try_write_cached_daemon_job_output(
         return Some(cached_daemon_job_response(
             job,
             "function",
-            write_cached_output(&job.output, bytes, job.skip_function_output_if_synced),
+            write_cached_output(&job.output, &bytes, job.skip_function_output_if_synced),
         ));
     }
     None

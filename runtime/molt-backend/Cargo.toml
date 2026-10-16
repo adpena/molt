@@ -77,6 +77,10 @@ wasm-backend = [
 ]
 
 [[test]]
+name = "daemon_server"
+required-features = ["native-backend"]
+
+[[test]]
 name = "jumpful_malformed_control"
 required-features = ["wasm-backend"]
 

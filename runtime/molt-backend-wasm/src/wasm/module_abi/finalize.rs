@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::BTreeSet;
 
 use std::borrow::Cow;
@@ -71,7 +72,7 @@ impl WasmBackend {
     }
 
     fn emit_import_audit(&self) {
-        if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() != Ok("1") {
+        if backend_env::var(BackendEnv::MOLT_WASM_IMPORT_AUDIT).as_deref() != Ok("1") {
             return;
         }
 

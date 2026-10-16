@@ -189,7 +189,7 @@ This phase is **additive** — zero behavior change, all new fields are conserva
 Files changed:
 - `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/escape_analysis.rs` — change `analyze(func)` to `analyze(func, summaries: Option<&ModuleSummaries>)`; replace `OpCode::Call → GlobalEscape` (line 367-369) with the precise `does_not_capture_param` conditional
 - `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/alias_analysis.rs` — update `AliasAnalysisResult::compute(func)` (line 424) to pass `summaries` through; signature becomes `compute(func, summaries: Option<&ModuleSummaries>)`; `AliasAnalysis::compute` in the `Analysis` impl (line 724) needs the summaries source — this is where the `TargetInfo` field enters
-- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs` — add `pub ip_summaries: Option<Arc<ModuleSummaries>>` field; populate in `module_phase::run_module_pipeline` before the per-function pipeline runs (the rebuild at line 172-173 produces the final summaries; set them on `tti` before `compile_module_parallel` is called)
+- `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/target_info.rs` — add `pub ip_summaries: Option<Arc<ModuleSummaries>>` field; populate in `module_phase::run_module_pipeline` before the per-function pipeline runs (the rebuild at line 172-173 produces the final summaries; set them on `tti` before the per-function pipeline in `molt-tir/src/tir/pipeline_cache.rs` runs)
 - Migrate every current analysis consumer and its invalidation keys together.
   The escape transform and `run` adapter no longer exist; do not reintroduce them.
 

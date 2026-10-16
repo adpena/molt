@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 /// Single-source kind authority for [`handle_module_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -238,7 +239,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             });
             // Load attr name from stack slot if this is a const_str.
             let _has = hoisted_str_slot.contains_key(&args[1]);
-            if std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1") {
+            if backend_env::var(BackendEnv::MOLT_DEBUG_MODULE_GET_ATTR).as_deref() == Ok("1") {
                 let _ = crate::debug_artifacts::append_debug_artifact(
                     "native/module_get_attr_diag.txt",
                     format!(

@@ -2,6 +2,7 @@ use crate::tir::op_kinds_generated::kind_to_opcode_table;
 use crate::tir::ops::OpCode;
 use crate::tir::simple_def_use::visit_simple_ir_defined_names;
 use crate::{FunctionIR, OpIR};
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, HashSet};
 
 // ---------------------------------------------------------------------------
@@ -184,7 +185,7 @@ pub fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
 /// applied at codegen time.  Running it as an early pass shrinks the op stream
 /// for all downstream analyses and backends.
 pub fn rc_coalescing(func_ir: &mut FunctionIR) {
-    if std::env::var("MOLT_DISABLE_RC_COALESCE").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_DISABLE_RC_COALESCE).is_ok() {
         return;
     }
 

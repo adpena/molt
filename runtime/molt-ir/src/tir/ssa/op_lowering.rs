@@ -298,7 +298,12 @@ impl<'a> SsaContext<'a> {
             attrs.insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
         }
 
-        if std::env::var("MOLT_TRACE_SSA_IMPORT").as_deref() == Ok("1") && opcode == OpCode::Import
+        if crate::backend_environment::var(
+            crate::backend_environment::BackendEnv::MOLT_TRACE_SSA_IMPORT,
+        )
+        .as_deref()
+            == Ok("1")
+            && opcode == OpCode::Import
         {
             eprintln!(
                 "SSA import trace: func={} kind={} args={:?} var={:?} out={:?} operands={:?}",

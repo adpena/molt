@@ -13,9 +13,7 @@ pub(crate) fn try_reuse_existing_stdlib_cache(
     user_remaining: &mut Vec<molt_backend::FunctionIR>,
     stdlib_funcs: &mut Vec<molt_backend::FunctionIR>,
 ) -> io::Result<bool> {
-    if !request.have_entry_module
-        || molt_ir::backend_environment::compilation_diagnostics_requested()
-    {
+    if !request.can_reuse_stdlib_cache() {
         return Ok(false);
     }
     let mut admitted = admit_or_invalidate_shared_stdlib_cache(

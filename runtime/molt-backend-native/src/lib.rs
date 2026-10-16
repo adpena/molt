@@ -1,6 +1,11 @@
 #![allow(clippy::needless_range_loop)] // index vars used in mutation / skip-set patterns
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
-#![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
+#![allow(clippy::type_complexity)]
+// complex return types in TIR CFG helpers
+
+// Tests save, set and restore process settings around fixtures; production
+// code reads them through `molt_ir::backend_environment` (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 #[cfg(all(
     feature = "native-backend",
@@ -16,8 +21,8 @@ compile_error!("Molt's Cranelift native backend supports x86_64, aarch64, riscv6
 // Native and LLVM codegen authority lives here so Cranelift/LLVM edits do not
 // rebuild the backend composition crate.
 pub use molt_ir::{
-    MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,
-    repr, runtime_callable_symbols, stdlib_module_symbols,
+    MOLT_CLOSURE_PARAM_NAME, backend_environment, debug_artifacts, ir, ir_schema, json_boundary,
+    process_diagnostics, repr, runtime_callable_symbols, stdlib_module_symbols,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) use molt_tir::simpleir_debug::{dump_ir_matches, dump_ir_ops, should_dump_ir};
@@ -98,12 +103,12 @@ pub(crate) const fn native_task_runtime_kind_bits(
 /// drive with the proven `repr_by_value`.
 pub use molt_ir::repr::Repr;
 pub use molt_ir::stdlib_module_symbols::{
-    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
+    parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };
 
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
-pub(crate) fn env_setting(var: &str) -> Option<String> {
-    std::env::var(var)
+pub(crate) fn env_setting(key: backend_environment::BackendEnv) -> Option<String> {
+    backend_environment::var(key)
         .ok()
         .map(|raw| raw.trim().to_string())
         .filter(|raw| !raw.is_empty())
@@ -113,7 +118,8 @@ pub(crate) fn env_setting(var: &str) -> Option<String> {
 /// explicitly requested. Both native backends consume this policy.
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) fn native_codegen_portable() -> bool {
-    let setting = env_setting("MOLT_PORTABLE").map(|value| value.to_ascii_lowercase());
+    let setting = env_setting(backend_environment::BackendEnv::MOLT_PORTABLE)
+        .map(|value| value.to_ascii_lowercase());
     match setting.as_deref() {
         None | Some("1") | Some("true") => true,
         Some("0") | Some("false") => false,

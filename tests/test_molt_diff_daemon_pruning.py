@@ -374,3 +374,111 @@ def test_molt_diff_rss_threshold_skips_unverified_daemon(
     module._prune_backend_daemons()
 
     assert terminated == []
+
+
+def _oversized_daemon(tmp_path: Path, monkeypatch, *, retiring: bool = False):
+    """One verified session daemon over the RSS threshold, with fake custody."""
+    module = _load_diff_module()
+    daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+    socket_path = tmp_path / "owned.sock"
+    identity = dataclasses.replace(
+        _identity(tmp_path, pid=4321, socket_path=socket_path),
+        started_at_ns=1,
+        retiring=retiring,
+    )
+    identity_path = _write_session_identity(daemon_root, identity)
+    record = custody.BackendDaemonIdentityRecord(identity=identity, path=identity_path)
+    process = module._BackendDaemonProcess(
+        pid=identity.pid,
+        socket_path=socket_path,
+        command=f"{identity.backend_bin} --daemon --socket {socket_path}",
+    )
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
+    monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "1000")
+    monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
+    monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == identity.pid)
+    monkeypatch.setattr(module, "_pid_rss_age", lambda pid: (2_000_000, 60))
+    install_module_os_view(monkeypatch, module, name="posix")
+    monkeypatch.setattr(
+        module,
+        "_verified_backend_daemon_record",
+        lambda _process, _records_by_pid: record,
+    )
+
+    def no_kill(recorded_identity, **kwargs) -> bool:
+        raise AssertionError(f"daemon {recorded_identity.pid} must not be killed")
+
+    monkeypatch.setattr(
+        module.daemon_custody, "terminate_backend_daemon_identity", no_kill
+    )
+    return module, socket_path, identity_path
+
+
+def test_molt_diff_retires_an_idle_oversized_daemon_instead_of_killing_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from molt.cli import backend_execution
+
+    module, socket_path, identity_path = _oversized_daemon(tmp_path, monkeypatch)
+    socket_path.write_text("", encoding="utf-8")
+    retired: list[Path] = []
+    monkeypatch.setattr(
+        module, "_daemon_health", lambda path: {"active_jobs": 0, "pid": 4321}
+    )
+
+    def retire(path: Path, *, timeout: float | None) -> bool:
+        # The record says "retiring" before the daemon is asked.
+        recorded = custody.read_backend_daemon_identity(identity_path)
+        assert recorded is not None and recorded.retiring
+        retired.append(path)
+        return True
+
+    monkeypatch.setattr(backend_execution, "retire_backend_daemon", retire)
+
+    module._prune_backend_daemons()
+
+    assert retired == [socket_path]
+    recorded = custody.read_backend_daemon_identity(identity_path)
+    assert recorded is not None and recorded.retiring
+
+
+@pytest.mark.parametrize(
+    "health",
+    [
+        {"active_jobs": 2, "pid": 4321},  # a build is compiling
+        # The socket already belongs to a successor daemon.
+        {"active_jobs": 0, "pid": 9999},
+        {"cache_entries": 3},  # a daemon that does not report activity
+        None,  # no answer
+    ],
+)
+def test_molt_diff_leaves_a_busy_or_silent_oversized_daemon_running(
+    tmp_path: Path, monkeypatch, health
+) -> None:
+    from molt.cli import backend_execution
+
+    module, socket_path, identity_path = _oversized_daemon(tmp_path, monkeypatch)
+    socket_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(module, "_daemon_health", lambda path: health)
+    monkeypatch.setattr(
+        backend_execution,
+        "retire_backend_daemon",
+        lambda path, *, timeout: pytest.fail("a busy daemon must not be retired"),
+    )
+
+    module._prune_backend_daemons()
+
+    recorded = custody.read_backend_daemon_identity(identity_path)
+    assert recorded is not None and not recorded.retiring
+
+
+def test_molt_diff_never_stops_a_draining_daemon(tmp_path: Path, monkeypatch) -> None:
+    # Retirement unlinked the socket; the daemon exits once drained.
+    module, socket_path, _identity_path = _oversized_daemon(
+        tmp_path, monkeypatch, retiring=True
+    )
+    assert not socket_path.exists()
+
+    module._prune_backend_daemons()

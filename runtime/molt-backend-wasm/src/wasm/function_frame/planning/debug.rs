@@ -1,5 +1,6 @@
 use crate::FunctionIR;
 use crate::wasm::WasmFrameLocals;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::BTreeMap;
 
 pub(super) fn emit_seed_debug(
@@ -8,7 +9,11 @@ pub(super) fn emit_seed_debug(
     const_seed_locals: &[(u32, i64)],
     const_anchor_count: usize,
 ) {
-    if std::env::var("MOLT_DEBUG_WASM_SEEDS_FUNC").ok().as_deref() != Some(func_ir.name.as_str()) {
+    if backend_env::var(BackendEnv::MOLT_DEBUG_WASM_SEEDS_FUNC)
+        .ok()
+        .as_deref()
+        != Some(func_ir.name.as_str())
+    {
         return;
     }
     eprintln!(

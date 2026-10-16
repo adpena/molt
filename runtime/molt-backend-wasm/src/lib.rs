@@ -1,13 +1,18 @@
 #![allow(clippy::needless_range_loop)] // index vars used in mutation / skip-set patterns
 #![allow(clippy::too_many_arguments)] // refactoring signatures risks breaking callers
-#![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
+#![allow(clippy::type_complexity)]
+// complex return types in TIR CFG helpers
+
+// Tests save, set and restore process settings around fixtures; production
+// code reads them through `molt_ir::backend_environment` (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 pub use molt_ir::repr::Repr;
 pub use molt_ir::runtime_callable_symbols::{
     runtime_callable_symbols_from_env, runtime_callable_symbols_required,
 };
 pub use molt_ir::stdlib_module_symbols::{
-    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
+    parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };
 pub use molt_ir::{
     FunctionIR, MOLT_CLOSURE_PARAM_NAME, OpIR, PgoProfileIR, SimpleIR, debug_artifacts, ir,
@@ -58,8 +63,8 @@ mod wasm_table;
 mod wasm_values;
 
 #[cfg(feature = "wasm-backend")]
-pub(crate) fn env_setting(var: &str) -> Option<String> {
-    std::env::var(var)
+pub(crate) fn env_setting(key: molt_ir::backend_environment::BackendEnv) -> Option<String> {
+    molt_ir::backend_environment::var(key)
         .ok()
         .map(|raw| raw.trim().to_string())
         .filter(|raw| !raw.is_empty())

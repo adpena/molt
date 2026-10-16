@@ -106,6 +106,7 @@
 //! [`AliasAnalysisResult::region_of`]: super::alias_analysis::AliasAnalysisResult::region_of
 //! [`MemRegion::GenericHeap`]: super::alias_analysis::MemRegion::GenericHeap
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::HashMap;
 
 use super::PassStats;
@@ -187,7 +188,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let mut forwards: Vec<Forward> = Vec::new();
 
-    let diag = std::env::var("MOLT_MEMGVN_DIAG").as_deref() == Ok("1");
+    let diag = backend_env::var(BackendEnv::MOLT_MEMGVN_DIAG).as_deref() == Ok("1");
     if diag {
         let mut n_load = 0usize;
         let mut n_store = 0usize;
@@ -217,7 +218,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 kinds,
             );
         }
-        if std::env::var("MOLT_MEMGVN_DUMP")
+        if backend_env::var(BackendEnv::MOLT_MEMGVN_DUMP)
             .map(|p| func.name.contains(&p))
             .unwrap_or(false)
         {

@@ -15,7 +15,14 @@ impl DaemonJobRequest {
         if key.is_empty() {
             return String::new();
         }
-        format!("artifact-v1:{}:{key}", self.target.artifact_kind())
+        match self.config_namespace.as_deref() {
+            // Configurations share one daemon without evicting each other.
+            Some(namespace) => format!(
+                "artifact-v1:{namespace}:{}:{key}",
+                self.target.artifact_kind()
+            ),
+            None => format!("artifact-v1:{}:{key}", self.target.artifact_kind()),
+        }
     }
 
     pub(crate) fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
@@ -59,6 +66,7 @@ impl DaemonJobRequest {
             probe_cache_only: optional_bool(obj, "probe_cache_only", ctx)?.unwrap_or(false),
             ir,
             ir_path,
+            config_namespace: None,
         })
     }
 }

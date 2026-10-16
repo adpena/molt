@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The one input that places backend debug artifacts.
-pub const DEBUG_ARTIFACT_DIR_ENV: &str = "MOLT_DEBUG_ARTIFACT_DIR";
+use crate::backend_environment::{self as backend_env, BackendEnv};
+
 const DEFAULT_DIRNAME: &str = "molt-backend";
 
 static UNIQUE_ARTIFACT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -28,7 +28,7 @@ pub fn debug_artifact_root(explicit: Option<&OsStr>) -> PathBuf {
 }
 
 fn configured_debug_artifact_root() -> PathBuf {
-    debug_artifact_root(std::env::var_os(DEBUG_ARTIFACT_DIR_ENV).as_deref())
+    debug_artifact_root(backend_env::var_os(BackendEnv::MOLT_DEBUG_ARTIFACT_DIR).as_deref())
 }
 
 fn ensure_parent(path: &Path) -> io::Result<()> {

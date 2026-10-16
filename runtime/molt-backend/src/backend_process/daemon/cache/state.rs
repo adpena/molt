@@ -2,7 +2,8 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::Arc;
 
-pub(crate) struct DaemonCache {
+/// The daemon's byte-budgeted LRU of compiled outputs; `DaemonCache` shares it.
+pub(crate) struct DaemonLru {
     pub(crate) entries: HashMap<Arc<str>, CacheEntry>,
     pub(crate) order: BinaryHeap<Reverse<(u64, Arc<str>)>>,
     pub(crate) clock: u64,
@@ -15,7 +16,7 @@ pub(crate) struct CacheEntry {
     pub(crate) stamp: u64,
 }
 
-impl DaemonCache {
+impl DaemonLru {
     pub(crate) fn new(max_bytes: Option<usize>) -> Self {
         Self {
             entries: HashMap::new(),
@@ -26,14 +27,14 @@ impl DaemonCache {
         }
     }
 
-    pub(crate) fn get_bytes(&mut self, key: &str) -> Option<&[u8]> {
+    pub(crate) fn get_bytes(&mut self, key: &str) -> Option<Arc<[u8]>> {
         let key_ref = Arc::clone(self.entries.get_key_value(key)?.0);
         let entry = self.entries.get_mut(key)?;
         self.clock = self.clock.wrapping_add(1);
         let stamp = self.clock;
         entry.stamp = stamp;
         self.order.push(Reverse((stamp, key_ref)));
-        Some(entry.bytes.as_ref())
+        Some(Arc::clone(&entry.bytes))
     }
 
     pub(crate) fn insert(&mut self, key: String, value: Arc<[u8]>) {
@@ -85,12 +86,5 @@ impl DaemonCache {
             }
             self.order = compacted;
         }
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-        self.order.clear();
-        self.clock = 0;
-        self.bytes = 0;
     }
 }

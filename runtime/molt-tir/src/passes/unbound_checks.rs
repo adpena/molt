@@ -1,4 +1,5 @@
 use crate::{FunctionIR, OpIR};
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::HashSet;
 
 /// Eliminate `check_exception` ops that follow operations known to never
@@ -38,7 +39,7 @@ use std::collections::HashSet;
 /// This pass removes the entire sequence and any preceding nop,
 /// leaving only the final continuation label intact.
 pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
-    if std::env::var("MOLT_DISABLE_UNBOUND_ELIM").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_DISABLE_UNBOUND_ELIM).is_ok() {
         return;
     }
     let ops = &func_ir.ops;
@@ -288,7 +289,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         }
         func_ir.ops = new_ops;
     }
-    if std::env::var("MOLT_TRACE_UNBOUND_ELIM").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_TRACE_UNBOUND_ELIM).is_ok() {
         let surviving_missing = func_ir.ops.iter().filter(|op| op.kind == "missing").count();
         if surviving_missing > 0 {
             eprintln!(

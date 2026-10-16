@@ -9,6 +9,10 @@ pub(crate) use cleanup::remove_native_batch_temp_dir;
 
 /// Reserve one native compilation workspace outside evictable cache entries.
 /// Application and stdlib batches use the same scratch and cleanup authority.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the guard scratch root belongs to the process, never to a request"
+)]
 pub(crate) fn create_native_batch_temp_dir() -> std::io::Result<std::path::PathBuf> {
     // One-shot and non-exported daemons inherit their guard's allocation. A
     // suite-owned daemon removes that variable and binds its platform temp

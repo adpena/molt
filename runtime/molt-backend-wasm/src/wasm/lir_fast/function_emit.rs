@@ -2,6 +2,7 @@ use super::{WasmFunctionLoweringPlan, is_production_lir_wasm_fast_path_name};
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
 use crate::wasm::context::CompileFuncContext;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use wasm_encoder::Function;
 
 pub(in crate::wasm) fn try_emit_planned_lir_fast_body(
@@ -22,7 +23,9 @@ pub(in crate::wasm) fn try_emit_planned_lir_fast_body(
     };
     match plan {
         WasmFunctionLoweringPlan::LirFast(lir_output) => {
-            if std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref()
+            if backend_env::var(BackendEnv::MOLT_DEBUG_WASM_SIG_FUNC)
+                .ok()
+                .as_deref()
                 == Some(func_ir.name.as_str())
             {
                 eprintln!(
@@ -44,8 +47,10 @@ pub(in crate::wasm) fn try_emit_planned_lir_fast_body(
             true
         }
         WasmFunctionLoweringPlan::Generic { reason } => {
-            if std::env::var("MOLT_WASM_IMPORT_AUDIT").as_deref() == Ok("1")
-                || std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref()
+            if backend_env::var(BackendEnv::MOLT_WASM_IMPORT_AUDIT).as_deref() == Ok("1")
+                || backend_env::var(BackendEnv::MOLT_DEBUG_WASM_SIG_FUNC)
+                    .ok()
+                    .as_deref()
                     == Some(func_ir.name.as_str())
             {
                 eprintln!(

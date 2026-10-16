@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
@@ -34,7 +35,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         .into_iter()
         .map(|value| alias.root(value))
         .collect();
-    let report = std::env::var("MOLT_SROA_REPORT").as_deref() == Ok("1");
+    let report = backend_env::var(BackendEnv::MOLT_SROA_REPORT).as_deref() == Ok("1");
     let mut diag: Vec<String> = Vec::new();
 
     let mut candidate_roots = HashMap::new();

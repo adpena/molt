@@ -1,5 +1,6 @@
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::SimpleIR;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::tir::op_kinds_generated::simpleir_kind_references_defined_function;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,7 +31,7 @@ pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTre
     ir.functions.retain(|f| reachable.contains(&f.name));
     let eliminated = original_count - ir.functions.len();
 
-    if eliminated > 0 && std::env::var("MOLT_DEBUG_DEAD_FUNC_ELIM").is_ok() {
+    if eliminated > 0 && backend_env::var(BackendEnv::MOLT_DEBUG_DEAD_FUNC_ELIM).is_ok() {
         eprintln!(
             "dead-func-elim: removed {eliminated} of {original_count} functions ({} retained)",
             ir.functions.len()
@@ -44,7 +45,7 @@ pub fn reachable_function_names(
     functions: &[crate::FunctionIR],
     extra_roots: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    if std::env::var("MOLT_DISABLE_DEAD_FUNC_ELIM").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_DISABLE_DEAD_FUNC_ELIM).is_ok() {
         return functions
             .iter()
             .map(|function| function.name.clone())

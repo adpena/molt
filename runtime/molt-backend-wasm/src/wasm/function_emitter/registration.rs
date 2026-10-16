@@ -1,5 +1,6 @@
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use wasm_encoder::ExportKind;
 
 pub(super) fn register_function(
@@ -9,7 +10,11 @@ pub(super) fn register_function(
     reloc_enabled: bool,
 ) -> u32 {
     let func_index = backend.func_count;
-    if std::env::var("MOLT_DEBUG_WASM_SIG_FUNC").ok().as_deref() == Some(func_ir.name.as_str()) {
+    if backend_env::var(BackendEnv::MOLT_DEBUG_WASM_SIG_FUNC)
+        .ok()
+        .as_deref()
+        == Some(func_ir.name.as_str())
+    {
         eprintln!(
             "WASM_SIG_FUNC name={} type_idx={} params={:?} param_types={:?}",
             func_ir.name, type_idx, func_ir.params, func_ir.param_types

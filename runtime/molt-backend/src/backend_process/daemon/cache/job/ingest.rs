@@ -2,10 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::super::entries::insert_daemon_cache_entries;
-use super::super::state::DaemonCache;
+use super::super::shared::DaemonCache;
 
 pub(crate) fn maybe_cache_output_file(
-    cache: &mut DaemonCache,
+    cache: &DaemonCache,
     output_path: &Path,
     cache_key: &str,
     function_cache_key: &str,
@@ -28,7 +28,7 @@ pub(crate) fn maybe_cache_output_file(
     };
     let output_len = metadata.len();
     if cache
-        .max_bytes
+        .max_bytes()
         .is_some_and(|max_bytes| output_len > max_bytes as u64)
     {
         let warning = format!(

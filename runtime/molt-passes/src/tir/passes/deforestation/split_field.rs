@@ -4,6 +4,7 @@
 //! The replacement keeps the producer's observation edge, source site and runtime
 //! context, and assigns fresh SSA identities to its three property results.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{HashMap, HashSet};
 
 use super::super::PassStats;
@@ -63,7 +64,7 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
         name: "split_field_reads",
         ..Default::default()
     };
-    if std::env::var("MOLT_DISABLE_SPLIT_FIELD_DEFOREST").is_ok()
+    if backend_env::var(BackendEnv::MOLT_DISABLE_SPLIT_FIELD_DEFOREST).is_ok()
         || !func
             .blocks
             .values()

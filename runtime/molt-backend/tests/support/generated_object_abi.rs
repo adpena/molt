@@ -1,3 +1,6 @@
+// The support module reads Cargo's test artifact locations.
+#![allow(clippy::disallowed_methods)]
+
 use object::{Object, ObjectSymbol};
 
 mod cargo_test_artifacts {

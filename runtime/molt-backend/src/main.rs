@@ -1,3 +1,7 @@
+// Tests save, set and restore process settings around fixtures; production
+// code reads them through `molt_ir::backend_environment` (clippy.toml).
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 #[cfg(not(any(
     feature = "native-backend",
     feature = "wasm-backend",

@@ -1,10 +1,11 @@
 use crate::tir::function::TirFunction;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 fn drop_inner_stage_audit_enabled(func: &TirFunction) -> bool {
     if !molt_ir::stage_audit::stage_audit_enabled(molt_ir::stage_audit::AuditStage::Drop) {
         return false;
     }
-    match std::env::var("MOLT_DROP_STAGE_AUDIT_FUNC") {
+    match backend_env::var(BackendEnv::MOLT_DROP_STAGE_AUDIT_FUNC) {
         Ok(filter) if !filter.trim().is_empty() => func.name.contains(filter.trim()),
         _ => true,
     }

@@ -5,22 +5,24 @@
 //! The memory guard writes these values as fractional GB with six decimals,
 //! so every reader parses them as non-negative `f64` GB.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+
 const GIB_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Memory available to the backend, most specific first. The guard's
 /// process cap is the last fallback.
-const AVAILABLE_GB_ENV: [&str; 4] = [
-    "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
-    "MOLT_CLI_MEMORY_AVAILABLE_GB",
-    "MOLT_MEMORY_AVAILABLE_GB",
-    "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
+const AVAILABLE_GB_ENV: [BackendEnv; 4] = [
+    BackendEnv::MOLT_BACKEND_MEMORY_AVAILABLE_GB,
+    BackendEnv::MOLT_CLI_MEMORY_AVAILABLE_GB,
+    BackendEnv::MOLT_MEMORY_AVAILABLE_GB,
+    BackendEnv::MOLT_BACKEND_MAX_PROCESS_RSS_GB,
 ];
 
 /// Memory to leave untouched, most specific first.
-const RESERVE_GB_ENV: [&str; 3] = [
-    "MOLT_BACKEND_MEMORY_RESERVE_GB",
-    "MOLT_CLI_MEMORY_RESERVE_GB",
-    "MOLT_MEMORY_RESERVE_GB",
+const RESERVE_GB_ENV: [BackendEnv; 3] = [
+    BackendEnv::MOLT_BACKEND_MEMORY_RESERVE_GB,
+    BackendEnv::MOLT_CLI_MEMORY_RESERVE_GB,
+    BackendEnv::MOLT_MEMORY_RESERVE_GB,
 ];
 
 /// Parse a non-negative, possibly fractional GB value into bytes, saturating
@@ -34,9 +36,9 @@ pub fn parse_nonnegative_gb(raw: &str) -> Option<u64> {
     Some((gb * GIB_BYTES as f64).min(u64::MAX as f64) as u64)
 }
 
-fn first_gb_env(names: &[&str]) -> Option<u64> {
-    names.iter().find_map(|name| {
-        std::env::var(name)
+fn first_gb_env(keys: &[BackendEnv]) -> Option<u64> {
+    keys.iter().find_map(|key| {
+        backend_env::var(*key)
             .ok()
             .and_then(|raw| parse_nonnegative_gb(&raw))
     })

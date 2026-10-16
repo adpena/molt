@@ -1,4 +1,5 @@
 use super::super::*;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 /// Single-source kind authority for [`handle_ret_jump_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -363,7 +364,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     transport,
                     ssa_values,
                 );
-                if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref() == Ok(func_name) {
+                if backend_env::var(BackendEnv::MOLT_DEBUG_LABEL_BINDINGS).as_deref()
+                    == Ok(func_name)
+                {
                     eprintln!(
                         "LABEL_BIND {} label={} block={:?} params={:?}",
                         func_name,
@@ -385,7 +388,9 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     transport,
                     ssa_values,
                 );
-                if std::env::var("MOLT_DEBUG_LABEL_BINDINGS").as_deref() == Ok(func_name) {
+                if backend_env::var(BackendEnv::MOLT_DEBUG_LABEL_BINDINGS).as_deref()
+                    == Ok(func_name)
+                {
                     eprintln!(
                         "LABEL_BIND {} label={} block={:?} params={:?}",
                         func_name,

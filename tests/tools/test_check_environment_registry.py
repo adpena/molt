@@ -263,6 +263,26 @@ def test_rust_forms_are_classified(tree: Path) -> None:
     )
 
 
+def test_rust_typed_backend_keys_are_reads(tmp_path: Path) -> None:
+    source = tmp_path / "runtime" / "pass.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "fn run() -> bool {\n"
+        "    backend_env::var(BackendEnv::MOLT_TYPED_KEY).is_ok()\n"
+        "}\n"
+        "const OTHER: Other = Other::MOLT_NOT_A_BACKEND_KEY;\n",
+        encoding="utf-8",
+    )
+    scan = C._scan_rust_file(("runtime/pass.rs", str(tmp_path)))
+    assert scan is not None
+    typed = [s for s in scan.sites if s.name == "MOLT_TYPED_KEY"]
+    assert [(s.access, s.form, s.line) for s in typed] == [
+        (C.ACCESS_REFERENCE, C.FORM_TYPED_KEY, 2)
+    ]
+    # Only the backend key type names a setting.
+    assert not [s for s in scan.sites if s.name == "MOLT_NOT_A_BACKEND_KEY"]
+
+
 def test_text_forms_are_classified(tree: Path) -> None:
     scan = _scan(tree)
     accesses = {(s.access, s.form) for s in _sites(scan, "MOLT_CI_X")}

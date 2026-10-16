@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 pub(crate) const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
 const STANDALONE_DATA_BASE_DEFAULT: u64 = 1024 * 1024;
 
@@ -42,28 +43,36 @@ pub struct WasmCompileOptions {
 impl Default for WasmCompileOptions {
     fn default() -> Self {
         Self {
-            reloc_enabled: matches!(std::env::var("MOLT_WASM_RELOCATABLE").as_deref(), Ok("1")),
+            reloc_enabled: matches!(
+                backend_env::var(BackendEnv::MOLT_WASM_RELOCATABLE).as_deref(),
+                Ok("1")
+            ),
             data_base: {
-                let raw = std::env::var("MOLT_WASM_DATA_BASE")
+                let raw = backend_env::var(BackendEnv::MOLT_WASM_DATA_BASE)
                     .ok()
                     .and_then(|val| val.parse::<u64>().ok())
                     .unwrap_or(STANDALONE_DATA_BASE_DEFAULT);
                 let aligned = (raw + 7) & !7;
                 aligned.min(u64::from(u32::MAX)) as u32
             },
-            table_base: match std::env::var("MOLT_WASM_TABLE_BASE") {
+            table_base: match backend_env::var(BackendEnv::MOLT_WASM_TABLE_BASE) {
                 Ok(value) => value.parse::<u32>().unwrap_or(RELOC_TABLE_BASE_DEFAULT),
                 Err(_) => RELOC_TABLE_BASE_DEFAULT,
             },
-            split_runtime_app_table_base: std::env::var("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok()),
+            split_runtime_app_table_base: backend_env::var(
+                BackendEnv::MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE,
+            )
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok()),
             tail_call_enabled: matches!(
-                std::env::var("MOLT_WASM_TAIL_CALL").as_deref(),
+                backend_env::var(BackendEnv::MOLT_WASM_TAIL_CALL).as_deref(),
                 Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
             ),
-            native_eh_enabled: !matches!(std::env::var("MOLT_WASM_NATIVE_EH").as_deref(), Ok("0")),
-            wasm_profile: match std::env::var("MOLT_WASM_PROFILE").as_deref() {
+            native_eh_enabled: !matches!(
+                backend_env::var(BackendEnv::MOLT_WASM_NATIVE_EH).as_deref(),
+                Ok("0")
+            ),
+            wasm_profile: match backend_env::var(BackendEnv::MOLT_WASM_PROFILE).as_deref() {
                 Ok("auto") => WasmProfile::Auto,
                 Ok("pure") => WasmProfile::Pure,
                 Ok("full") => WasmProfile::Full,

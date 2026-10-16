@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 #[test]
 fn constant_integer_facts_require_one_canonical_producer() {
@@ -359,7 +360,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
 
 #[test]
 fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
-    let prior = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok();
+    let prior = backend_env::var(BackendEnv::MOLT_STDLIB_MODULE_SYMBOLS).ok();
     unsafe {
         std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
     }

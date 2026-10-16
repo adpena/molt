@@ -1,10 +1,7 @@
 use std::env;
-use std::time::Instant;
 
 use super::super::super::config::MIB;
-use super::super::super::config::{BACKEND_DAEMON_PROTOCOL_VERSION, detect_physical_memory_bytes};
-use super::super::protocol::DaemonHealthResponse;
-use super::state::DaemonCache;
+use super::super::super::config::detect_physical_memory_bytes;
 
 #[derive(Default)]
 pub(crate) struct DaemonStats {
@@ -21,6 +18,10 @@ pub(crate) fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u
     default.clamp(128 * MIB, 2 * 1024 * MIB)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the daemon's cache budget is fixed when it starts"
+)]
 pub(crate) fn daemon_cache_limit_bytes() -> usize {
     env::var("MOLT_BACKEND_DAEMON_CACHE_MB")
         .ok()
@@ -30,32 +31,4 @@ pub(crate) fn daemon_cache_limit_bytes() -> usize {
         .unwrap_or_else(|| {
             default_daemon_cache_bytes_from_physical_mem_bytes(detect_physical_memory_bytes())
         })
-}
-
-pub(crate) fn daemon_health(
-    cache: &DaemonCache,
-    stats: &DaemonStats,
-    spawn_config_digest: Option<&str>,
-    active_config_digest: Option<&str>,
-    start: Instant,
-    request_limit_bytes: usize,
-    max_jobs: usize,
-) -> DaemonHealthResponse {
-    let uptime_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    DaemonHealthResponse {
-        protocol_version: BACKEND_DAEMON_PROTOCOL_VERSION,
-        pid: std::process::id(),
-        spawn_config_digest: spawn_config_digest.map(str::to_string),
-        active_config_digest: active_config_digest.map(str::to_string),
-        uptime_ms,
-        cache_entries: cache.entries.len(),
-        cache_bytes: cache.bytes,
-        cache_max_bytes: cache.max_bytes,
-        request_limit_bytes: Some(request_limit_bytes),
-        max_jobs: Some(max_jobs),
-        requests_total: stats.requests_total,
-        jobs_total: stats.jobs_total,
-        cache_hits: stats.cache_hits,
-        cache_misses: stats.cache_misses,
-    }
 }
