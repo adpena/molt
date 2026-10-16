@@ -94,7 +94,7 @@ fn actual_wasi_runtime_lifecycle_cases_through_production_host() {
         .arg(&artifact)
         .args(["--", "--exact"])
         .args(CASES)
-        .args(["--test-threads=1", "--color", "never"])
+        .args(["--test-threads=1", "--color", "never", "--nocapture"])
         .stderr(Stdio::inherit())
         .output()
         .expect("execute the production host against the actual WASI libtest");

@@ -458,6 +458,8 @@ fn raise_vfs_error(py: &PyToken<'_>, error: crate::vfs::VfsError, path: &str) ->
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_arch = "wasm32")]
+    use crate::libc_compat as libc;
     use super::{file_remaining_bytes_hint, io_clear_runtime_state, molt_sys_stdout};
     use crate::{clear_exception, dec_ref_bits, obj_from_bits, runtime_state};
     use std::fs::{File, remove_file};
