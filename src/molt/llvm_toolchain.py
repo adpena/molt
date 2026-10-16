@@ -2742,6 +2742,32 @@ def verify_wasm_ci_toolchain(
     )
 
 
+def wasm_toolchain_environment_keys() -> tuple[str, ...]:
+    """Every variable ``project_wasm_toolchain_environment`` can set.
+
+    A test that selects its own SDK clears exactly these, so a shell that
+    carries the real SDK's projection (a DX shell, ``tools/toolchain_env.py``)
+    cannot leak a selector such as ``MOLT_LLVM_NM`` into it.
+    """
+
+    keys = [
+        "MOLT_WASI_SYSROOT",
+        "WASI_SYSROOT",
+        "WASI_SDK_PATH",
+        "MOLT_WASM_LD",
+        "MOLT_LLVM_NM",
+        WASI_C_ABI_PLAN_ENV,
+    ]
+    for target in SDK_CARGO_TARGETS:
+        cargo_target = target.upper().replace("-", "_")
+        keys += [f"CARGO_TARGET_{cargo_target}_LINKER"]
+        keys += [f"CARGO_TARGET_{cargo_target}_RUSTFLAGS"]
+        for spelling in (target, target.replace("-", "_")):
+            keys += [f"{role}_{spelling}" for role, _name in SDK_CARGO_TOOLS]
+            keys += [f"{role}_{spelling}" for role in ("CFLAGS", "CXXFLAGS")]
+    return tuple(dict.fromkeys(keys))
+
+
 def project_wasm_toolchain_environment(
     installation: WasiSdkInstallation,
     *,

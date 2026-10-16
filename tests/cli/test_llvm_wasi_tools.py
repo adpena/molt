@@ -10,6 +10,7 @@ import pytest
 from molt import llvm_toolchain
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
     runtime_wasi_c_abi_plan,
 )
@@ -40,7 +41,10 @@ _TOOL_FILE_NAMES = {
 
 
 @pytest.fixture(autouse=True)
-def _isolate_tool_candidate_cache():
+def _isolate_tool_selection(monkeypatch):
+    # These tests choose their own tools; a shell that carries the real SDK's
+    # projection (a DX shell, tools/toolchain_env.py) must not reach them.
+    clear_wasm_toolchain_selection(monkeypatch)
     llvm_wasi_tools.clear_llvm_tool_candidate_cache()
     yield
     llvm_wasi_tools.clear_llvm_tool_candidate_cache()
@@ -1682,8 +1686,6 @@ def test_managed_extension_family_uses_receipt_without_sdk_reads_or_probes(
 def test_managed_symbol_reader_uses_receipt_and_preserves_archive_custody(
     tmp_path, monkeypatch
 ):
-    from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
-
     installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
     monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
     monkeypatch.setenv("MOLT_LLVM_NM", str(installation.llvm_nm))

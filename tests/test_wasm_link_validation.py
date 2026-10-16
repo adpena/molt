@@ -29,6 +29,7 @@ from molt.cli.source_extension_link_requirements import (
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    clear_wasm_toolchain_selection,
     runtime_wasi_c_abi_plan,
     provisioned_wasi_sdk_fixture,
 )
@@ -11414,13 +11415,7 @@ def test_lazy_archive_compiler_rt_candidates_retain_lazy_selected_sdk_provider(
         encoding="utf-8",
         newline="",
     )
-    for key in (
-        "WASI_SDK_PREFIX",
-        "MOLT_WASI_SYSROOT",
-        "WASI_SYSROOT",
-        "MOLT_WASI_C_ABI_PLAN",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    clear_wasm_toolchain_selection(monkeypatch)
     monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
     # Native symbol inspection is independent of installation and file custody.
     # The actual selected-SDK readiness/plan readers remain in this operation.

@@ -16,6 +16,11 @@ for _path in (str(ROOT), str(ROOT / "src")):
         sys.path.insert(0, _path)
 
 from molt import llvm_toolchain, tool_releases, wasm_optimizer_identity  # noqa: E402
+from molt.wasi_sdk_identity import SDK_CARGO_TARGETS  # noqa: E402
+from tests.runtime_build_identity_helper import (  # noqa: E402
+    RuntimeFixtureRoot,
+    provisioned_wasi_sdk_fixture,
+)
 from tools import proof_plan, toolchain_env  # noqa: E402
 
 PLAN = proof_plan.ProofPlan.load()
@@ -168,3 +173,17 @@ def test_llvm_projection_matches_what_ci_exports(tmp_path: Path) -> None:
         PLAN, names, environ=dict(os.environ)
     )
     assert projected == exported
+
+
+@pytest.mark.parametrize("rust_target", SDK_CARGO_TARGETS)
+def test_wasm_projection_sets_only_the_keys_its_selection_clear_removes(
+    tmp_path: Path, rust_target: str
+) -> None:
+    # clear_wasm_toolchain_selection removes wasm_toolchain_environment_keys();
+    # a projected key outside that set would leak into tests that select
+    # their own SDK.
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    projected = llvm_toolchain.project_wasm_toolchain_environment(
+        install, environ={}, rust_target=rust_target
+    )
+    assert set(projected) <= set(llvm_toolchain.wasm_toolchain_environment_keys())

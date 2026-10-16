@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import sys
+
 import pytest
+
+from tests.cli.process_guard import run_cli_test_process
 
 from molt.cli.source_extension_compiler_inputs import (
     compiler_sysroot_arg_value,
@@ -12,7 +18,13 @@ from molt.cli.source_extension_compiler_inputs import (
 
 
 def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs():
-    sdk = {"INCLUDE": "sdk/include", "LIB": "sdk/lib", "PATH": "owned/bin"}
+    # An explicit SDKROOT is an SDK input the projection keeps as it is.
+    sdk = {
+        "INCLUDE": "sdk/include",
+        "LIB": "sdk/lib",
+        "PATH": "owned/bin",
+        "SDKROOT": "sdk/macos",
+    }
     overrides = {
         "CL": "/DUNRECORDED=1",
         "_cl_": "/Foother.obj",
@@ -25,6 +37,21 @@ def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs():
     captured = {**sdk, **overrides}
     assert source_extension_compiler_environment(captured) == sdk
     assert captured == {**sdk, **overrides}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS SDK projection")
+def test_compiler_environment_projects_the_selected_macos_sdk_when_none_is_named():
+    # HF-231: a managed LLVM clang has no implicit macOS SDK. The oracle is
+    # xcrun, independent of the product's Darwin selection.
+    expected = run_cli_test_process(
+        ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+        text=True,
+        timeout=30,
+        check=True,
+    ).stdout.strip()
+    projected = source_extension_compiler_environment({"PATH": os.environ["PATH"]})
+    assert Path(projected["SDKROOT"]).resolve() == Path(expected).resolve()
+    assert Path(projected["DEVELOPER_DIR"]).is_dir()
 
 
 def test_compiler_grammar_admits_matching_target_sysroot_and_codegen_flags() -> None:
