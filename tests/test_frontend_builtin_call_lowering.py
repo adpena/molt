@@ -198,7 +198,8 @@ def test_runtime_spelling_does_not_override_python_call_binding(name: str) -> No
 )
 def test_channel_spelling_does_not_create_a_suspension_point(expression: str) -> None:
     from molt.frontend._types import GEN_CONTROL_SIZE
-    from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
+    from molt.frontend.sema.funcmeta import stateful_function_frame_plan
+    from molt.compiler_analysis.python_function_kind import FunctionKind
 
     generator = SimpleTIRGenerator()
     plan = stateful_function_frame_plan(
@@ -2309,7 +2310,8 @@ def test_stateful_locals_register_publishes_one_typed_layout_for_every_kind() ->
 
 def test_stateful_locals_layout_is_the_constructor_payload_projection() -> None:
     from molt.frontend._types import GEN_CONTROL_SIZE
-    from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
+    from molt.frontend.sema.funcmeta import stateful_function_frame_plan
+    from molt.compiler_analysis.python_function_kind import FunctionKind
 
     plan = stateful_function_frame_plan(
         kind=FunctionKind.GENERATOR,
@@ -2345,7 +2347,8 @@ def test_stateful_locals_layout_is_the_constructor_payload_projection() -> None:
 
 def test_stateful_scope_and_alias_hints_use_frame_plan_not_symbol_spelling() -> None:
     from molt.frontend._types import GEN_CONTROL_SIZE
-    from molt.frontend.sema.funcmeta import FunctionKind, stateful_function_frame_plan
+    from molt.frontend.sema.funcmeta import stateful_function_frame_plan
+    from molt.compiler_analysis.python_function_kind import FunctionKind
 
     gen = SimpleTIRGenerator(module_name="opaque_scope")
     gen.start_function(

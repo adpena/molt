@@ -31,7 +31,8 @@ from molt.frontend._types import (
     TypeHint,
 )
 from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
-from molt.frontend.sema import FunctionKind, SemaResult
+from molt.frontend.sema import SemaResult
+from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.native_callable_exports import (
     NativeCallableExportError,
     normalize_native_callable_export,

@@ -4321,3 +4321,28 @@ def test_canonical_member_writes_of_a_computed_name_change_every_member() -> Non
     every = python_binding_flow.ALL_INVALID_MEMBERS
     assert python_binding_flow.python_canonical_member_writes("typing", None) == every
     assert python_binding_flow.python_canonical_member_writes(None, None) == every
+
+
+def test_binding_analysis_import_excludes_codegen_and_command_layers():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    script = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(source_root)!r})\n"
+        "import molt.compiler_analysis.python_binding_flow\n"
+        "from molt.compiler_analysis.python_function_kind import FunctionKind\n"
+        "assert {kind.value for kind in FunctionKind} == {'sync', 'async', 'gen', 'asyncgen'}\n"
+        "for name in sys.modules:\n"
+        "    assert not name.startswith(('molt.frontend', 'molt.cli', "
+        "'molt.compiler_analysis.backend_ir', 'molt.compiler_analysis.validation')), name\n"
+    )
+    child = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert child.returncode == 0, child.stderr

@@ -27,10 +27,10 @@ from molt.frontend._types import (
     MoltValue,
     _builtin_func_abi_arity,
 )
-from molt.frontend.sema import (
+from molt.frontend.sema import stateful_function_frame_plan
+from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
     normalize_function_kind,
-    stateful_function_frame_plan,
 )
 
 if TYPE_CHECKING:

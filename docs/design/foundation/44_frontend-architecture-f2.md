@@ -10,7 +10,7 @@
 
 # Frontend Architecture — the F2 Decomposition & Separation-of-Concerns End-State
 
-**Status:** Design doc plus live F2 routing note. F1 (move-only mixin split) is landed and has expanded beyond the original four-mixin snapshot into the current local-binding, midend-optimization, serialization, analysis, visitor, async/generator, and statement-family mixin shell. F2 is the semantic decomposition that F1 deliberately deferred. F2b has begun: `frontend.sema.funcmeta` now owns `FunctionKind`, canonical function-kind normalization, yield/signature classification, and async-generator legality predicates consumed by lowering; `frontend.sema.classgraph` now owns static class-graph construction, local class-member facts with dynamic/decorated-member opacity, C3/static-MRO/reachability facts, class-body block-exec facts consumed by lowering. This doc remains the program spec for the unfinished end-state: phase separation, single-authority facts, registry extension, explicit lowering contexts, and dissolution of the mixin-over-god-object shims.
+**Status:** Design doc plus live F2 routing note. F1 (move-only mixin split) is landed and has expanded beyond the original four-mixin snapshot into the current local-binding, midend-optimization, serialization, analysis, visitor, async/generator, and statement-family mixin shell. F2 is the semantic decomposition that F1 deliberately deferred. F2b has begun: `compiler_analysis.python_function_kind` owns the shared `FunctionKind` and normalization; `frontend.sema.funcmeta` owns yield/signature classification and async-generator legality predicates consumed by lowering; `frontend.sema.classgraph` now owns static class-graph construction, local class-member facts with dynamic/decorated-member opacity, C3/static-MRO/reachability facts, class-body block-exec facts consumed by lowering. This doc remains the program spec for the unfinished end-state: phase separation, single-authority facts, registry extension, explicit lowering contexts, and dissolution of the mixin-over-god-object shims.
 
 **Frame-elision update (2026-09-08):** The old static zero-argument `super()` fold and its sema method-set projection were deleted: visible-class MRO agreement does not prove immutable class-cell identity or executing-frame semantics. Method/constructor inline extraction now shares the generated effect authority through `python_inlining.py`; unknown callbacks, descriptors, operators, and scope references keep their real Python frame. Rejected candidates emit no speculative prefix.
 
@@ -59,6 +59,16 @@ in a keyed lookup; code names need not share an interned allocation.
 The metadata projection does not itself establish live-frame mutation,
 traceback retention, suspension, or teardown correctness; those are separate
 consumers of the frame ownership contract.
+
+### Analysis import boundary
+
+`compiler_analysis.python_function_kind` owns the four callable execution kinds
+and normalization shared by source analysis and lowering. It imports no frontend
+or command layer. The analysis package has no eager facade: callers import each
+analysis from its owning module. Loading binding analysis must not initialize
+backend IR inspection, validation, frontend codegen or CLI commands. The isolated
+import regression in `tests/test_python_binding_flow.py` enforces that boundary.
+`frontend.sema.funcmeta` retains the AST and frame-planning projections.
 
 ### Current source-ordered name authority (2026-09-05)
 

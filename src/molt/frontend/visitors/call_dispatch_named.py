@@ -18,9 +18,7 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-from molt.frontend.sema import (
-    FunctionKind,
-)
+from molt.compiler_analysis.python_function_kind import FunctionKind
 
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED

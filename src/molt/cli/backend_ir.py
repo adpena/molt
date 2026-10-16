@@ -16,7 +16,7 @@ from molt.frontend.module_publication import (
     consume_source_module_publication,
     inspect_source_module_publication,
 )
-from molt.frontend.sema import FunctionKind
+from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
     native_callable_uses_callargs,

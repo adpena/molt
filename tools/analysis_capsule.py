@@ -39,12 +39,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
 
-from molt.compiler_analysis import (  # noqa: E402
+from molt.compiler_analysis.validation import (  # noqa: E402
     check_compiler_analysis_against_closure,
     summarize_compiler_binary_image_analysis,
-    summarize_tir_fact_graph,
     validate_binary_image_closure_diagnostics,
 )
+from molt.compiler_analysis.tir_fact_graph import summarize_tir_fact_graph  # noqa: E402
 from tools import binary_size_analysis, fact_graph_dump  # noqa: E402
 
 SCHEMA_VERSION = 1

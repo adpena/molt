@@ -11,7 +11,10 @@ import ast
 
 from molt.python_private_names import python_definition_name
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend.sema import FunctionKind, STATEFUL_FUNCTION_KINDS
+from molt.compiler_analysis.python_function_kind import (
+    FunctionKind,
+    STATEFUL_FUNCTION_KINDS,
+)
 
 
 class SymbolNamingMixin(GeneratorMixinBase):

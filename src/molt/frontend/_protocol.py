@@ -73,7 +73,7 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.lowering.function_lifecycle import FrameRestoreScope
-    from molt.frontend.sema import FunctionKind
+    from molt.compiler_analysis.python_function_kind import FunctionKind
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.compiler_analysis.python_imports import ModuleImportContext
     from molt.compiler_analysis.python_imports import ModuleImportFlow

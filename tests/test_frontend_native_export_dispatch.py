@@ -6,7 +6,7 @@ import pytest
 
 from molt.frontend import BuiltinClass, ClassId, SimpleTIRGenerator
 from molt.frontend._types import OBJECT_CLASS
-from molt.frontend.sema import FunctionKind
+from molt.compiler_analysis.python_function_kind import FunctionKind
 
 OPS_ERROR = ClassId("nativepkg.ops", "OpsError")
 
