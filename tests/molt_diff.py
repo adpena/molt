@@ -189,9 +189,7 @@ def _run_metadata_probe(
     return result
 
 
-def _resolve_molt_cli_python(
-    *, budget: compat_backends.ItemBudget | None = None
-) -> str:
+def _resolve_molt_cli_python() -> str:
     override = os.environ.get("MOLT_DIFF_MOLT_PYTHON", "").strip()
     if override:
         command = python_interpreter.explicit_python_command(override)
@@ -200,33 +198,6 @@ def _resolve_molt_cli_python(
                 "MOLT_DIFF_MOLT_PYTHON must name one executable path"
             )
         return command[0]
-
-    repo_root = Path(__file__).resolve().parents[1]
-    if os.name == "nt":
-        candidates = [repo_root / ".venv" / "Scripts" / "python.exe"]
-    else:
-        candidates = [
-            repo_root / ".venv" / "bin" / "python3",
-            repo_root / ".venv" / "bin" / "python",
-        ]
-    candidates.append(Path(sys.executable))
-
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
-        probe = _run_metadata_probe(
-            [
-                str(candidate),
-                "-c",
-                "import packaging.markers, packaging.requirements",
-            ],
-            budget=budget,
-            build_failed=True,
-        )
-        if probe is None:
-            continue
-        if probe.returncode == 0:
-            return str(candidate)
 
     return sys.executable
 
@@ -742,60 +713,6 @@ def _parse_int_env(name: str, default: int) -> int:
     return value
 
 
-@lru_cache(maxsize=8)
-def _ps_supports_field(field: str) -> bool:
-    if os.name != "posix":
-        return False
-    try:
-        result = subprocess.run(
-            ["ps", "-o", f"{field}=", "-p", str(os.getpid())],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2.0,
-            encoding="utf-8",
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode != 0:
-        return False
-    stderr = (result.stderr or "").lower()
-    if "keyword not found" in stderr:
-        return False
-    return True
-
-
-def _parse_ps_elapsed(token: str) -> int | None:
-    raw = token.strip()
-    if not raw:
-        return None
-    if raw.isdigit():
-        return int(raw)
-    days = 0
-    if "-" in raw:
-        day_part, rest = raw.split("-", 1)
-        if not day_part.isdigit():
-            return None
-        days = int(day_part)
-        raw = rest
-    parts = raw.split(":")
-    if not parts or any(not part.isdigit() for part in parts):
-        return None
-    values = [int(part) for part in parts]
-    if len(values) == 3:
-        hours, minutes, seconds = values
-    elif len(values) == 2:
-        hours = 0
-        minutes, seconds = values
-    elif len(values) == 1:
-        hours = 0
-        minutes = 0
-        seconds = values[0]
-    else:
-        return None
-    return days * 86400 + hours * 3600 + minutes * 60 + seconds
-
-
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -820,40 +737,10 @@ def _daemon_health(socket_path: Path) -> dict[str, Any] | None:
     return backend_daemon_health(socket_path, timeout=_DAEMON_CONTROL_TIMEOUT_S)
 
 
-def _pid_rss_age(pid: int) -> tuple[int | None, int | None]:
-    if os.name != "posix" or pid <= 0:
-        return None, None
-    age_field = "etimes" if _ps_supports_field("etimes") else "etime"
-    try:
-        result = subprocess.run(
-            ["ps", "-o", f"rss=,{age_field}=", "-p", str(pid)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2.0,
-            encoding="utf-8",
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None, None
-    if result.returncode != 0:
-        return None, None
-    line = result.stdout.strip()
-    if not line:
-        return None, None
-    parts = line.split()
-    if len(parts) < 2:
-        return None, None
-    rss = int(parts[0]) if parts[0].isdigit() else None
-    age = _parse_ps_elapsed(parts[1])
-    return rss, age
-
-
 @dataclass(frozen=True)
 class _BackendDaemonProcess:
-    pid: int
+    sample: memory_guard.ProcessSample
     socket_path: Path
-    command: str
-    argv: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -868,14 +755,12 @@ def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
     return sorted(
         (
             _BackendDaemonProcess(
-                pid=sample.pid,
+                sample=sample,
                 socket_path=socket_path,
-                command=sample.command,
-                argv=sample.argv,
             )
             for sample, socket_path in daemon_custody.backend_daemon_process_observations()
         ),
-        key=lambda process: process.pid,
+        key=lambda process: process.sample.pid,
     )
 
 
@@ -898,14 +783,16 @@ def _verified_backend_daemon_record(
     process: _BackendDaemonProcess,
     records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
 ) -> daemon_custody.BackendDaemonIdentityRecord | None:
-    record = records_by_pid.get(process.pid)
+    record = records_by_pid.get(process.sample.pid)
     if record is None:
         return None
     identity = record.identity
     if identity.socket_path != process.socket_path:
         return None
     if not daemon_custody.backend_daemon_command_matches_identity(
-        process.argv if process.argv is not None else process.command,
+        process.sample.argv
+        if process.sample.argv is not None
+        else process.sample.command,
         backend_bin=identity.backend_bin,
         socket_path=identity.socket_path,
     ):
@@ -947,7 +834,7 @@ def _retire_idle_backend_daemon(
     # The socket may already belong to a successor; retire only this daemon.
     if (
         health is None
-        or health.get("pid") != process.pid
+        or health.get("pid") != process.sample.pid
         or health.get("active_jobs") != 0
     ):
         return False
@@ -1158,7 +1045,7 @@ def _prune_backend_daemons() -> None:
     )
     processes_by_socket: dict[Path, list[_BackendDaemonProcess]] = {}
     for process in _list_backend_daemon_processes():
-        if not _pid_alive(process.pid):
+        if not _pid_alive(process.sample.pid):
             continue
         processes_by_socket.setdefault(process.socket_path, []).append(process)
     records_by_pid = _current_session_backend_daemon_records_by_pid()
@@ -1175,7 +1062,7 @@ def _prune_backend_daemons() -> None:
         if max_rss_kb > 0:
             filtered: list[_BackendDaemonProcess] = []
             for process in verified:
-                rss_kb, _age_sec = _pid_rss_age(process.pid)
+                rss_kb = process.sample.rss_kb
                 if (
                     rss_kb is not None
                     and rss_kb > max_rss_kb
@@ -1183,7 +1070,7 @@ def _prune_backend_daemons() -> None:
                 ):
                     print(
                         "[INFO] Retired idle backend daemon pid="
-                        f"{process.pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
+                        f"{process.sample.pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
                     )
                     continue
                 filtered.append(process)
@@ -1201,12 +1088,12 @@ def _prune_backend_daemons() -> None:
             verified = verified[-1:]
         if _daemon_health(socket_path) is None:
             process = verified[0]
-            _rss_kb, age_sec = _pid_rss_age(process.pid)
+            age_sec = process.sample.elapsed_sec
             if age_sec is not None and age_sec >= unresponsive_stale_sec:
                 if _terminate_verified_backend_daemon(process, records_by_pid):
                     print(
                         "[INFO] Pruned stale unresponsive backend daemon pid="
-                        f"{process.pid} age={age_sec}s socket={socket_path}"
+                        f"{process.sample.pid} age={age_sec}s socket={socket_path}"
                     )
 
 
@@ -1297,9 +1184,16 @@ def _backend_execution_context(
 
 def _diff_measure_rss() -> bool:
     raw = os.environ.get("MOLT_DIFF_MEASURE_RSS", "").strip().lower()
+    threshold_requested = (_diff_fail_rss_kb() or 0) > 0
     if not raw:
-        return True
-    return raw not in {"0", "false", "no", "off"}
+        return threshold_requested
+    enabled = raw not in {"0", "false", "no", "off"}
+    if not enabled and threshold_requested:
+        raise ValueError(
+            "MOLT_DIFF_MAX_RSS_KB requires RSS profiling; unset "
+            "MOLT_DIFF_MEASURE_RSS or enable it with 1"
+        )
+    return enabled
 
 
 def _diff_glob() -> str:
@@ -2740,7 +2634,7 @@ class _BatchCompileServerClient(BatchCompileServerClient):
         self, env: dict[str, str], *, budget: compat_backends.ItemBudget
     ) -> None:
         cmd = [
-            _resolve_molt_cli_python(budget=budget),
+            _resolve_molt_cli_python(),
             "-m",
             "molt.cli",
             "internal-batch-build-server",
@@ -3533,7 +3427,7 @@ def _run_molt_owned(
 
     if not build_via_batch_server:
         build_cmd = [
-            _resolve_molt_cli_python(budget=budget),
+            _resolve_molt_cli_python(),
             "-m",
             "molt.cli",
             "build",

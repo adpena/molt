@@ -714,7 +714,7 @@ def test_cross_backend_build_command_binds_target_python(
     backend: str,
     stdlib_profile: str | None,
 ) -> None:
-    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda budget: "python")
+    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
     context = compat_backends.BackendExecutionContext(
         target_python=TargetPythonVersion(3, int(target_python.split(".")[1]), 0),
         build_profile="release",
@@ -1370,7 +1370,7 @@ def test_all_adapters_preserve_phase_failure(
         "_with_adapter_scratch",
         lambda _backend, _file, run, **_kwargs: run(tmp_path),
     )
-    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda budget: "python")
+    monkeypatch.setattr(compat_backends, "_molt_cli_python", lambda: "python")
     context = compat_backends.BackendExecutionContext(
         target_python=TargetPythonVersion(3, 12, 0),
         build_profile="dev",

@@ -70,7 +70,7 @@ This plan must advance and compose with the substantial parity machinery already
 - **Version derivation**: `_molt_sys_env_for_python_exe` (`:298`) stamps `MOLT_PYTHON_VERSION` + `MOLT_SYS_VERSION_INFO` from the CPython under test, so molt's version-gated messages align with the baseline (3.12/3.13/3.14).
 - **The honesty sink**: `MOLT_DIFF_RESULTS_JSONL` (`_diff_results_jsonl_path` at `:565`) writes one JSON line per test with its **RAW** status (before the xfail/xpass overlay), plus resolved status + reason tag (`_record_diff_result` at `:583`). This is the authoritative record of what molt actually did vs CPython.
 - **Profile dimension**: `--build-profile` (`_diff_build_profile` at `:1635`) — dev / release-fast etc.
-- **Host/memory discipline**: RSS measurement default-on, adaptive rlimit, daemon custody, build-lock pruning, dyld-quarantine retry pipeline (macOS), `harness_memory_guard` on every child.
+- **Host/memory discipline**: adaptive rlimit and `harness_memory_guard` on every child; native time-based RSS profiling is opt-in with `MOLT_DIFF_MEASURE_RSS=1`. Daemon custody, build-lock pruning and dyld-quarantine retry policy retain their own authorities.
 
 **THE CRITICAL STRUCTURAL GAP — `molt_diff.py` is single-backend (native).** It has `--build-profile` but **no `--target` flag**. Backend dimensioning is done by *separate, divergent harnesses*:
 - `tools/wasm_diff.py` (WASM, separate tool, produces `wasm_calibration.jsonl`),

@@ -33,6 +33,41 @@ def _load_diff_module():
     return module
 
 
+def _daemon_process(module, *, pid, socket_path, backend_bin, rss_kb=64, age=None):
+    sample = module.memory_guard.ProcessSample(
+        pid=pid,
+        ppid=1,
+        rss_kb=rss_kb,
+        command=f"{backend_bin} --daemon --socket {socket_path}",
+        argv=(str(backend_bin), "--daemon", "--socket", str(socket_path)),
+        elapsed_sec=age,
+        started_at_ns=1,
+    )
+    return module._BackendDaemonProcess(sample=sample, socket_path=socket_path)
+
+
+def test_molt_diff_daemon_observation_retains_native_resource_sample(
+    tmp_path, monkeypatch
+):
+    module = _load_diff_module()
+    expected = _daemon_process(
+        module,
+        pid=4321,
+        socket_path=tmp_path / "daemon.sock",
+        backend_bin=tmp_path / "molt-backend",
+        rss_kb=2048,
+        age=123,
+    )
+    monkeypatch.setattr(
+        module.daemon_custody,
+        "backend_daemon_process_observations",
+        lambda: [(expected.sample, expected.socket_path)],
+    )
+    observed = module._list_backend_daemon_processes()
+    assert observed == [expected]
+    assert observed[0].sample is expected.sample
+
+
 def _identity(
     tmp_path: Path,
     *,
@@ -141,10 +176,11 @@ def test_molt_diff_missing_socket_daemon_without_identity_is_not_killed(
     daemon_root.mkdir(parents=True)
     socket_path = tmp_path / "missing.sock"
     backend_bin = tmp_path / "target" / "debug" / "molt-backend"
-    process = module._BackendDaemonProcess(
+    process = _daemon_process(
+        module,
         pid=4321,
         socket_path=socket_path,
-        command=f"{backend_bin} --daemon --socket {socket_path}",
+        backend_bin=backend_bin,
     )
     terminated: list[int] = []
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
@@ -298,10 +334,11 @@ def test_molt_diff_verified_missing_socket_daemon_terminates_through_custody(
     identity = _identity(tmp_path, pid=4321, socket_path=socket_path)
     identity_path = _write_session_identity(daemon_root, identity)
     record = custody.BackendDaemonIdentityRecord(identity=identity, path=identity_path)
-    process = module._BackendDaemonProcess(
+    process = _daemon_process(
+        module,
         pid=identity.pid,
         socket_path=socket_path,
-        command=f"{identity.backend_bin} --daemon --socket {socket_path}",
+        backend_bin=identity.backend_bin,
     )
     terminated: list[int] = []
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
@@ -341,10 +378,11 @@ def test_molt_diff_rss_threshold_skips_unverified_daemon(
     socket_path = tmp_path / "owned.sock"
     socket_path.write_text("", encoding="utf-8")
     backend_bin = tmp_path / "target" / "debug" / "molt-backend"
-    process = module._BackendDaemonProcess(
+    process = _daemon_process(
+        module,
         pid=4321,
         socket_path=socket_path,
-        command=f"{backend_bin} --daemon --socket {socket_path}",
+        backend_bin=backend_bin,
     )
     terminated: list[int] = []
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
@@ -355,9 +393,9 @@ def test_molt_diff_rss_threshold_skips_unverified_daemon(
     install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
         module,
-        "_pid_rss_age",
-        lambda pid: (_ for _ in ()).throw(
-            AssertionError("unverified daemon RSS must not authorize inspection/kill")
+        "_retire_idle_backend_daemon",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("unverified daemon RSS must not authorize retirement")
         ),
     )
 
@@ -389,17 +427,26 @@ def _oversized_daemon(tmp_path: Path, monkeypatch, *, retiring: bool = False):
     )
     identity_path = _write_session_identity(daemon_root, identity)
     record = custody.BackendDaemonIdentityRecord(identity=identity, path=identity_path)
-    process = module._BackendDaemonProcess(
+    process = _daemon_process(
+        module,
         pid=identity.pid,
         socket_path=socket_path,
-        command=f"{identity.backend_bin} --daemon --socket {socket_path}",
+        backend_bin=identity.backend_bin,
+        rss_kb=2_000_000,
+        age=60,
     )
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
     monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "1000")
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
     monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == identity.pid)
-    monkeypatch.setattr(module, "_pid_rss_age", lambda pid: (2_000_000, 60))
+
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError("daemon resource pruning must reuse its native sample")
+
+    install_module_view(
+        monkeypatch, "subprocess", module.subprocess, module, run=no_subprocess
+    )
     install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
         module,
@@ -414,6 +461,33 @@ def _oversized_daemon(tmp_path: Path, monkeypatch, *, retiring: bool = False):
         module.daemon_custody, "terminate_backend_daemon_identity", no_kill
     )
     return module, socket_path, identity_path
+
+
+@pytest.mark.parametrize("age,expected", [(None, []), (30, []), (1000, [4321])])
+def test_molt_diff_stale_retirement_uses_observed_age(
+    tmp_path, monkeypatch, age, expected
+):
+    module, socket_path, _identity_path = _oversized_daemon(tmp_path, monkeypatch)
+    socket_path.write_text("", encoding="utf-8")
+    process = module._list_backend_daemon_processes()[0]
+    process = dataclasses.replace(
+        process, sample=dataclasses.replace(process.sample, elapsed_sec=age)
+    )
+    monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "0")
+    monkeypatch.setenv("MOLT_DIFF_DAEMON_STALE_SEC", "600")
+    monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
+    monkeypatch.setattr(module, "_daemon_health", lambda _socket: None)
+    terminated = []
+
+    def terminate(identity, **kwargs):
+        terminated.append(identity.pid)
+        return True
+
+    monkeypatch.setattr(
+        module.daemon_custody, "terminate_backend_daemon_identity", terminate
+    )
+    module._prune_backend_daemons()
+    assert terminated == expected
 
 
 def test_molt_diff_retires_an_idle_oversized_daemon_instead_of_killing_it(

@@ -1227,9 +1227,7 @@ def test_run_molt_build_only_uses_build_profile_flag(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     context = module.compat_backends.BackendExecutionContext(
         target_python=module.TargetPythonVersion(3, 14, 0),
@@ -1320,9 +1318,7 @@ def test_run_molt_preserves_explicit_runtime_diagnostics_file(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1372,9 +1368,7 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1426,9 +1420,7 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
         "parse_metadata",
         lambda file_path: test_policy.TestMetadata(stdlib_profile="full"),
     )
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/stringprep_semantics.py",
@@ -1522,9 +1514,7 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
@@ -1577,9 +1567,7 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
     monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: sys.executable
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
 
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",

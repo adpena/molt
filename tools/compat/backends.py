@@ -524,10 +524,10 @@ class NativeAdapter:
 # ---------------------------------------------------------------------------
 
 
-def _molt_cli_python(budget: ItemBudget) -> str:
+def _molt_cli_python() -> str:
     import molt_diff  # bootstrapped by the harness before adapters run
 
-    return molt_diff._resolve_molt_cli_python(budget=budget)
+    return molt_diff._resolve_molt_cli_python()
 
 
 def suite_trip_outcome(
@@ -708,7 +708,7 @@ def _build_cmd(
     extra_build_args: list[str] | None = None,
 ) -> list[str]:
     cmd = [
-        _molt_cli_python(context.budget),
+        _molt_cli_python(),
         "-m",
         "molt.cli",
         "build",
