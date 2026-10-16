@@ -118,7 +118,11 @@ pub extern "C" fn molt_lzma_compressor_flush(_error_class: u64, _handle_bits: u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_new(_format_bits: u64, _memlimit_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_new(
+    _error_class: u64,
+    _format_bits: u64,
+    _memlimit_bits: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
 }
 

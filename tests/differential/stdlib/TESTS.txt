@@ -206,6 +206,7 @@ tests/differential/stdlib/collections_deque_rotate.py
 tests/differential/stdlib/collections_parity.py
 tests/differential/stdlib/colorsys_basic.py
 tests/differential/stdlib/compileall_basic.py
+tests/differential/stdlib/compression_incremental_streams.py
 tests/differential/stdlib/concurrent_futures_cancel.py
 tests/differential/stdlib/concurrent_futures_processpool_surface.py
 tests/differential/stdlib/concurrent_futures_terminal_identity.py

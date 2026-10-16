@@ -110,12 +110,9 @@ class LZMADecompressor:
         memlimit: int | None = None,
         filters=None,
     ) -> None:
-        effective_memlimit = memlimit if memlimit is not None else 0
-        self._handle = _MOLT_LZMA_DECOMPRESSOR_NEW(format, effective_memlimit)
+        self._handle = _MOLT_LZMA_DECOMPRESSOR_NEW(_LZMA_ERROR, format, memlimit)
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
-        if self.eof:
-            raise EOFError("Already at end of stream")
         return bytes(_MOLT_LZMA_DECOMPRESSOR_DECOMPRESS(_LZMA_ERROR, self._handle, data, max_length))
 
     @property

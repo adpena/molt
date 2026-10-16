@@ -1,7 +1,7 @@
 use crate::bridge::*;
+use crate::compression_common::{CodecIndexRole, codec_index};
 use libz_rs_sys as zlib;
-use molt_cpython_abi as abi;
-use molt_cpython_abi::native_custody::{ByteInput, NativeObjectOwner, retire_native_reference};
+use molt_cpython_abi::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::borrow::Cow;
 use std::io::{self, BufRead, Read};
@@ -39,7 +39,7 @@ pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
         let level = if obj_from_bits(level_bits).is_none() {
             -1
         } else {
-            match zlib_index(_py, level_bits, ZlibIndexRole::CInt) {
+            match codec_index(_py, level_bits, CodecIndexRole::CInt) {
                 Ok(value) => value as i32,
                 Err(bits) => return bits,
             }
@@ -108,11 +108,11 @@ pub extern "C" fn molt_zlib_compress(
         ) {
             return MoltObject::none().bits();
         }
-        let level = match zlib_index(_py, level_bits, ZlibIndexRole::CInt) {
+        let level = match codec_index(_py, level_bits, CodecIndexRole::CInt) {
             Ok(value) => value as i32,
             Err(bits) => return bits,
         };
-        let wbits = match zlib_index(_py, wbits_bits, ZlibIndexRole::CInt) {
+        let wbits = match codec_index(_py, wbits_bits, CodecIndexRole::CInt) {
             Ok(value) => value as i32,
             Err(bits) => return bits,
         };
@@ -155,11 +155,11 @@ pub extern "C" fn molt_zlib_decompress(
         ) {
             return MoltObject::none().bits();
         }
-        let wbits = match zlib_index(_py, wbits_bits, ZlibIndexRole::CInt) {
+        let wbits = match codec_index(_py, wbits_bits, CodecIndexRole::CInt) {
             Ok(value) => value as i32,
             Err(bits) => return bits,
         };
-        let initial = match zlib_index(_py, bufsize_bits, ZlibIndexRole::OutputSize) {
+        let initial = match codec_index(_py, bufsize_bits, CodecIndexRole::OutputSize) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
@@ -649,7 +649,7 @@ pub extern "C" fn molt_zlib_compressobj_new(
             memlevel_bits,
             strategy_bits,
         ]) {
-            *value = match zlib_index(_py, bits, ZlibIndexRole::CInt) {
+            *value = match codec_index(_py, bits, CodecIndexRole::CInt) {
                 Ok(value) => value as i32,
                 Err(bits) => return bits,
             };
@@ -790,7 +790,7 @@ pub extern "C" fn molt_zlib_compressobj_flush(
                 "invalid compressor handle",
             );
         };
-        let mode = match zlib_index(_py, mode_bits, ZlibIndexRole::CInt) {
+        let mode = match codec_index(_py, mode_bits, CodecIndexRole::CInt) {
             Ok(value) => value as i32,
             Err(bits) => return bits,
         };
@@ -1124,40 +1124,6 @@ impl DecompressorHandle {
     }
 }
 
-enum ZlibIndexRole {
-    CInt,
-    OutputSize,
-}
-
-// Argument Clinic uses the existing C-API integer authority for these roles.
-// Integer callbacks happen before the stream mutex is acquired.
-fn zlib_index(py: &PyToken, bits: u64, role: ZlibIndexRole) -> Result<i64, u64> {
-    unsafe {
-        let object = NativeObjectOwner::from_owned(retire_native_reference(|| {
-            abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits)
-        }));
-        if object.as_ptr().is_null() {
-            return Err(MoltObject::none().bits());
-        }
-        let value = if matches!(role, ZlibIndexRole::CInt) {
-            retire_native_reference(|| abi::api::numbers::PyLong_AsInt(object.as_ptr())) as i64
-        } else {
-            let integer = NativeObjectOwner::from_owned(retire_native_reference(|| {
-                abi::api::abstract_number::PyNumber_Index(object.as_ptr())
-            }));
-            if integer.as_ptr().is_null() {
-                return Err(MoltObject::none().bits());
-            }
-            retire_native_reference(|| abi::api::numbers::PyLong_AsSsize_t(integer.as_ptr())) as i64
-        };
-        if exception_pending(py) {
-            Err(MoltObject::none().bits())
-        } else {
-            Ok(value)
-        }
-    }
-}
-
 fn snapshot_zlib_message(stream: &zlib::z_stream) -> Option<ZlibMessage> {
     if stream.msg.is_null() {
         return None;
@@ -1197,7 +1163,7 @@ fn decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<DecompressorHandle>>> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let wbits = match zlib_index(_py, wbits_bits, ZlibIndexRole::CInt) {
+        let wbits = match codec_index(_py, wbits_bits, CodecIndexRole::CInt) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
@@ -1267,7 +1233,7 @@ pub extern "C" fn molt_zlib_decompressobj_decompress(
         ) {
             return MoltObject::none().bits();
         }
-        let max_length = match zlib_index(_py, max_length_bits, ZlibIndexRole::OutputSize) {
+        let max_length = match codec_index(_py, max_length_bits, CodecIndexRole::OutputSize) {
             Ok(value) => value,
             Err(bits) => return bits,
         };
@@ -1328,7 +1294,7 @@ pub extern "C" fn molt_zlib_decompressobj_flush(
             );
         };
 
-        let length = match zlib_index(_py, _length_bits, ZlibIndexRole::OutputSize) {
+        let length = match codec_index(_py, _length_bits, CodecIndexRole::OutputSize) {
             Ok(value) => value,
             Err(bits) => return bits,
         };

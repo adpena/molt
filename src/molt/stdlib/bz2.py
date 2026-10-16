@@ -62,8 +62,6 @@ class BZ2Decompressor:
         self._handle = _MOLT_BZ2_DECOMPRESSOR_NEW()
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
-        if self.eof:
-            raise EOFError("End of stream already reached")
         return bytes(_MOLT_BZ2_DECOMPRESSOR_DECOMPRESS(self._handle, data, max_length))
 
     @property

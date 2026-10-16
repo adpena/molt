@@ -9336,7 +9336,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_lzma_decompressor_new",
         import: WasmRuntimeImport::LzmaDecompressorNew,
-        arity: 2,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_lzma_decompressor_unused_data",

@@ -11312,7 +11312,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompressorNew,
         name: "lzma_decompressor_new",
-        type_idx: 3,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LzmaDecompressorUnusedData,

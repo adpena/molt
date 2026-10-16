@@ -12036,7 +12036,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_lzma_decompressor_new",
         symbol: "molt_lzma_decompressor_new",
-        arity: 2,
+        arity: 3,
         defaults: &[],
         python_name: None,
     },

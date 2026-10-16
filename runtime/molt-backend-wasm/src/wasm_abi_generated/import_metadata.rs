@@ -7951,7 +7951,7 @@ impl WasmRuntimeImport {
             Self::LzmaDecompressorDecompress => 7,
             Self::LzmaDecompressorEof => 3,
             Self::LzmaDecompressorNeedsInput => 3,
-            Self::LzmaDecompressorNew => 3,
+            Self::LzmaDecompressorNew => 5,
             Self::LzmaDecompressorUnusedData => 3,
             Self::LzmaFormatAlone => 0,
             Self::LzmaFormatAuto => 0,
