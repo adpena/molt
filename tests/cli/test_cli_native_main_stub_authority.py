@@ -135,6 +135,11 @@ unsigned long long molt_set_app_callable_resolver(unsigned long long fn) {
 unsigned long long molt_module_registry_install(const unsigned char* blob) {
     (void)blob; return 0;
 }
+void molt_register_compiled_sources(
+    const char* const* paths, unsigned long long count
+) {
+    (void)paths; (void)count;
+}
 unsigned long long molt_runtime_init(void) { return 1; }
 void molt_runtime_ensure_gil(void) {}
 void molt_set_argv(int argc, const char** argv) {

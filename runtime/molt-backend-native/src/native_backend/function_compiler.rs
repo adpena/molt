@@ -783,6 +783,12 @@ impl SimpleBackend {
         // immediately below; module frames retain their IR-positioned binding
         // prologue because their trace_enter_slot is not the leading op.
         let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        // Code that runs in an active frame keeps that frame's line and columns
+        // current for tracebacks. Only `Local` code owns the frame's entry and
+        // exit; an `Inherited` body, such as a module chunk, updates the frame
+        // of the code that called it.
+        let frame_location_active =
+            func_ir.execution_context != crate::ir::ExecutionContextPolicy::None;
         let owned_frame_entered = has_frame_slot.then(|| {
             let entered = builder.declare_var(types::I8);
             let inactive = builder.ins().iconst(types::I8, 0);
@@ -1051,9 +1057,9 @@ impl SimpleBackend {
             // a filled block and panic.
             sync_block_filled(&builder, &mut is_block_filled);
             // Update frame stack column offsets for traceback carets when this
-            // function has a code-slot-backed frame. Skip inside active loops;
-            // line tracking follows the same hot-loop elision below.
-            if has_frame_slot
+            // function runs in an active frame. Skip inside active loops; line
+            // tracking follows the same hot-loop elision below.
+            if frame_location_active
                 && !is_block_filled
                 && loop_stack.is_empty()
                 && let (Some(col_offset), Some(end_col_offset)) = (op.col_offset, op.end_col_offset)
@@ -1640,7 +1646,7 @@ impl SimpleBackend {
                         owned_frame_entered,
                         frame_homes,
                         leading_frame_entry_op_idx,
-                        has_frame_slot,
+                        frame_location_active,
                         is_block_filled,
                         rc_authority,
                         !loop_stack.is_empty(),

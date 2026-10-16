@@ -96,13 +96,15 @@ def _module_source_projection(
         except SyntaxError:
             tree = None
     encoded_source = (source or "").encode("utf-8")
-    source_bytes = (
-        len(encoded_source)
-        if source is not None
-        else frontend_analysis.module_source_catalog.source_size(
+    if source is not None:
+        source_bytes = len(encoded_source)
+    elif module_path is None:
+        # Absent from the source graph (an external native module): no source.
+        source_bytes = 0
+    else:
+        source_bytes = frontend_analysis.module_source_catalog.source_size(
             module_name, module_path
         )
-    )
     metrics, identity = _source_site_module_projection(
         module_name=module_name,
         logical_path=_logical_source_path_for_module(

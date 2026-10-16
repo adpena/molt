@@ -92,10 +92,12 @@ _SINK: FactSink | None = None
 _REPORTED: set[str] = set()
 _REPORTED_LOCK = threading.Lock()
 
-# The audit hook sees every readable file this process opens, every directory
-# it lists and every program it starts. Worker processes log their facts to
+# The audit hook sees every file this process opens, every directory it lists
+# or creates and every program it starts. Worker processes log their facts to
 # a directory the recording process merges.
-_HOOK_EVENTS = frozenset({"open", "os.listdir", "os.scandir", "subprocess.Popen"})
+_HOOK_EVENTS = frozenset(
+    {"open", "os.listdir", "os.scandir", "os.mkdir", "subprocess.Popen"}
+)
 _HOOK_INSTALLED = False
 _HOOK_GUARD = threading.local()
 # Set in the recording process (for its workers) and in each worker (its own
@@ -121,13 +123,11 @@ def remove_sink() -> None:
     _WORKER_LOG_DIR = None
 
 
-def _reads_existing_content(mode: object, flags: object) -> bool:
-    if isinstance(flags, int):
-        return flags & (os.O_WRONLY | os.O_RDWR) != os.O_WRONLY or bool(
-            flags & os.O_APPEND
-        )
+def _is_read_only(mode: object, flags: object) -> bool:
     if isinstance(mode, str):
-        return "r" in mode or "+" in mode or "a" in mode
+        return not any(flag in mode for flag in "wax+")
+    if isinstance(flags, int):
+        return flags & (os.O_WRONLY | os.O_RDWR) == 0
     return False
 
 
@@ -167,10 +167,13 @@ def _audit_hook(event: str, args: tuple[Any, ...]) -> None:
     try:
         if event == "open":
             path, mode, flags = args
-            if isinstance(path, (str, bytes, os.PathLike)) and _reads_existing_content(
-                mode, flags
-            ):
-                _observe(("file", os.path.abspath(os.fsdecode(path))))
+            if isinstance(path, (str, bytes, os.PathLike)):
+                kind = "file" if _is_read_only(mode, flags) else "written"
+                _observe((kind, os.path.abspath(os.fsdecode(path))))
+        elif event == "os.mkdir":
+            path = args[0]
+            if isinstance(path, (str, bytes, os.PathLike)):
+                _observe(("written", os.path.abspath(os.fsdecode(path))))
         elif event in ("os.listdir", "os.scandir"):
             path = args[0]
             if path is None:
@@ -224,13 +227,10 @@ def _install_hook() -> None:
 def _after_fork_in_child() -> None:
     """A forked child copies the parent's sink and log handle. It drops both
     and logs its own facts to the same directory."""
-    global _SINK, _WORKER_LOG, _REPORTED, _REPORTED_LOCK
+    global _SINK, _WORKER_LOG, _REPORTED
     _SINK = None
     _WORKER_LOG = None
     _REPORTED = set()
-    # Another thread may have held this lock at fork; that thread does not
-    # exist in the child and can never release its inherited lock.
-    _REPORTED_LOCK = threading.Lock()
 
 
 if hasattr(os, "register_at_fork"):

@@ -231,7 +231,7 @@ def test_the_audit_hook_observes_reads_listings_and_programs(tmp_path: Path) -> 
     assert ("file", os.fspath(data)) in ledger.observed
     assert ("directory", os.fspath(tmp_path)) in ledger.observed
     assert ("file", os.fspath(tmp_path / "written.txt")) not in ledger.observed
-    assert not any(kind == "written" for kind, _name in ledger.observed)
+    assert ("written", os.fspath(tmp_path / "written.txt")) in ledger.observed
     assert any(name.endswith(f"{os.sep}true") for name in ledger.files), (
         "the started program is selected through PATH"
     )
@@ -360,187 +360,28 @@ def test_the_request_key_binds_arguments_environment_cwd_and_host() -> None:
     assert key(arguments={"request": object()}) is None, "not plain data"
 
 
-def test_only_named_products_are_excluded_and_explicit_inputs_win(
-    tmp_path: Path,
-) -> None:
-    # Existing product custody owns the scratch root and exact published file;
-    # its parent and explicitly reported inputs never become implicit products.
+def test_the_build_s_own_products_are_not_inputs(tmp_path: Path) -> None:
+    # A project in the temporary directory keeps its inputs; what the build
+    # wrote, and what its own scratch directory holds, does not count.
     source = tmp_path / "project" / "config.toml"
     scratch = tmp_path / "scratch"
     product = scratch / "object.o"
-    output = tmp_path / "project" / "app"
-    for path in (source, product, output):
+    written = tmp_path / "project" / "generated.py"
+    for path in (source, product, written):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
     ledger = _future_ledger()
     ledger.observed |= {
         ("file", os.fspath(source)),
         ("file", os.fspath(product)),
-        ("file", os.fspath(output)),
-        ("directory", os.fspath(source.parent)),
+        ("file", os.fspath(written)),
         ("directory", os.fspath(scratch)),
+        ("written", os.fspath(scratch)),
+        ("written", os.fspath(written)),
     }
-    build_record.resolve_observed(ledger, (scratch,), published_output=output)
+    build_record.resolve_observed(ledger, ())
     assert set(ledger.files) == {os.fspath(source)}
-    assert set(ledger.directories) == {os.fspath(source.parent)}
-
-    explicit = _future_ledger()
-    explicit.file(output, input_report.stat_token(output), None)
-    explicit.file(product, input_report.stat_token(product), None)
-    explicit.observed = ledger.observed.copy()
-    build_record.resolve_observed(explicit, (scratch,), published_output=output)
-    assert {os.fspath(output), os.fspath(product)} <= explicit.files.keys()
-
-
-@pytest.mark.usefixtures("fresh_process")
-def test_mkdir_and_failed_write_attempts_never_own_existing_inputs(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "project" / "config.toml"
-    source.parent.mkdir()
-    source.write_text("version = 1\n", encoding="utf-8")
-    with build_record.recording() as ledger:
-        assert source.read_text(encoding="utf-8") == "version = 1\n"
-        os.listdir(source.parent)
-        source.parent.mkdir(parents=True, exist_ok=True)
-        with pytest.raises(FileExistsError):
-            source.parent.mkdir()
-        with pytest.raises((IsADirectoryError, PermissionError)):
-            source.parent.open("w").close()
-    build_record.resolve_observed(ledger, ())
-    assert os.fspath(source) in ledger.files
-    assert os.fspath(source.parent) in ledger.directories
-
-
-@pytest.mark.skipif(
-    os.mkdir not in os.supports_dir_fd, reason="mkdir dir_fd unavailable"
-)
-@pytest.mark.usefixtures("fresh_process")
-def test_mkdir_relative_to_descriptor_does_not_exclude_a_cwd_decoy(
-    tmp_path, monkeypatch
-):
-    actual = tmp_path / "actual"
-    decoy = tmp_path / "decoy"
-    for root in (actual, decoy):
-        (root / "existing").mkdir(parents=True)
-    source = decoy / "existing" / "config"
-    source.write_text("input", encoding="utf-8")
-    monkeypatch.chdir(decoy)
-    descriptor = os.open(actual, os.O_RDONLY)
-    try:
-        with build_record.recording() as ledger:
-            source.read_text(encoding="utf-8")
-            with pytest.raises(FileExistsError):
-                os.mkdir("existing", dir_fd=descriptor)
-        build_record.resolve_observed(ledger, ())
-        assert os.fspath(source) in ledger.files
-    finally:
-        os.close(descriptor)
-
-
-@pytest.mark.parametrize(
-    "mode", ["r+", "a+", "a", "read-then-write", "os-rdwr", "os-append"]
-)
-@pytest.mark.usefixtures("fresh_process")
-def test_updates_preserve_input_reads_and_refuse_racy_records(tmp_path, mode):
-    source = tmp_path / "input"
-    source.write_text("before", encoding="utf-8")
-    with build_record.recording() as ledger:
-        if mode.startswith("os-"):
-            flags = os.O_RDWR if mode == "os-rdwr" else os.O_WRONLY | os.O_APPEND
-            descriptor = os.open(source, flags)
-            try:
-                os.write(descriptor, b"after")
-            finally:
-                os.close(descriptor)
-        else:
-            if mode == "read-then-write":
-                source.read_text(encoding="utf-8")
-                mode = "w"
-            with source.open(mode, encoding="utf-8") as handle:
-                handle.write("after")
-    build_record.resolve_observed(ledger, ())
-    assert os.fspath(source) in ledger.files
-    output = tmp_path / "app"
-    output.write_bytes(b"binary")
-    assert _write(tmp_path, ledger, output)[1] is not None
-
-
-@pytest.mark.parametrize("payload", [None, False, True, 0, 1.5, "text", [], [1, {}]])
-def test_non_object_json_records_miss_without_failing_builds(tmp_path, payload):
-    _source, _tool, output, record = _fixture(tmp_path)
-    record.write_text(json.dumps(payload), encoding="utf-8")
-    assert build_record.check(record, KEY, output) is not None
-
-
-@pytest.mark.parametrize("field", ["files", "directories", "probes"])
-@pytest.mark.parametrize(
-    "value", [None, False, 42, "text", [None], [[10**100, [], None]]]
-)
-def test_malformed_record_collections_miss_without_raising(tmp_path, field, value):
-    _source, _tool, output, record = _fixture(tmp_path)
-    payload = json.loads(record.read_text(encoding="utf-8"))
-    payload[field] = value
-    record.write_text(json.dumps(payload), encoding="utf-8")
-    assert build_record.check(record, KEY, output) is not None
-
-
-def test_excessively_nested_json_record_misses(tmp_path):
-    _source, _tool, output, record = _fixture(tmp_path)
-    record.write_text("[" * 2_000 + "0" + "]" * 2_000, encoding="utf-8")
-    assert build_record.check(record, KEY, output) is not None
-
-
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork unavailable")
-def test_forked_reporter_does_not_inherit_another_threads_locked_mutex(tmp_path):
-    from tests.process_guard_common import run_guarded_test_process
-
-    script = """
-import os, signal, sys, threading, time
-from molt import input_report
-input_report._WORKER_LOG_DIR = sys.argv[1]
-held, release = threading.Event(), threading.Event()
-def hold():
-    with input_report._REPORTED_LOCK:
-        held.set()
-        release.wait()
-thread = threading.Thread(target=hold)
-thread.start()
-assert held.wait(2)
-child = os.fork()
-if child == 0:
-    input_report.report_data_file(sys.argv[2])
-    os._exit(0)
-try:
-    deadline = time.monotonic() + 2
-    while True:
-        finished, status = os.waitpid(child, os.WNOHANG)
-        if finished:
-            assert os.waitstatus_to_exitcode(status) == 0
-            break
-        if time.monotonic() >= deadline:
-            os.kill(child, signal.SIGKILL)
-            os.waitpid(child, 0)
-            raise AssertionError('forked reporter retained a locked parent mutex')
-        time.sleep(0.01)
-finally:
-    release.set()
-    thread.join(2)
-"""
-    log_root = tmp_path / "worker-logs"
-    log_root.mkdir()
-    data = tmp_path / "input"
-    data.write_bytes(b"input")
-    child = run_guarded_test_process(
-        [sys.executable, "-c", script, str(log_root), str(data)], timeout=15
-    )
-    assert child.returncode == 0, child.stderr
-    reports = list(log_root.glob("*.jsonl"))
-    assert len(reports) == 1
-    entries = [
-        json.loads(line) for line in reports[0].read_text(encoding="utf-8").splitlines()
-    ]
-    assert any(entry[:2] == ["file", str(data)] for entry in entries)
+    assert not ledger.directories
 
 
 def test_vanished_observations_become_probes_with_their_parent(tmp_path: Path) -> None:

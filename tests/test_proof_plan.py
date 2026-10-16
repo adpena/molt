@@ -2041,7 +2041,10 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     monkeypatch.setenv("SCCACHE_DIR", str(tmp_path / "artifacts" / ".sccache"))
     for name in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.setenv(name, str(tmp_path / "run-scratch"))
-    server_temp = str(tmp_path / "artifacts" / ".sccache-tmp")
+    from molt.cargo_execution_policy import sccache_server_temp_dir
+
+    server_temp = str(sccache_server_temp_dir(dict(os.environ)))
+    assert server_temp != str(tmp_path / "run-scratch")
     rust_commands = [
         command
         for command in PLAN.commands

@@ -12,7 +12,10 @@ import pytest
 
 from molt import disk_capacity as DISK_CAPACITY
 from molt.cli.models import _RuntimeArtifactState
-from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
+from molt.cargo_execution_policy import (
+    CARGO_WRAPPER_ENV_NAMES,
+    sccache_server_temp_dir,
+)
 from molt.disk_capacity import DEFAULT_MINIMUM_HEADROOM_BYTES, DiskCapacityError
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 
@@ -184,7 +187,7 @@ def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
             # temporary directory: the durable one beside the selected cache.
             expected_environment.update(
                 dict.fromkeys(
-                    ("TMPDIR", "TMP", "TEMP"), str(tmp_path / "selected-cache-tmp")
+                    ("TMPDIR", "TMP", "TEMP"), str(sccache_server_temp_dir(environment))
                 )
             )
     terminal = _completed(
@@ -302,7 +305,7 @@ def test_retry_stats_preserves_wrapped_attempt_context_and_direct_retry_policy(
             **environment,
             "CARGO_INCREMENTAL": "0",
             **dict.fromkeys(
-                ("TMPDIR", "TMP", "TEMP"), str(tmp_path / "selected-cache-tmp")
+                ("TMPDIR", "TMP", "TEMP"), str(sccache_server_temp_dir(environment))
             ),
             endpoint[0]: endpoint[1],
         },

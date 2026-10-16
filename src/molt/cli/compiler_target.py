@@ -7,7 +7,7 @@ from pathlib import Path
 from enum import StrEnum
 from typing import Literal
 
-from molt.cli.native_link_plan import _normalize_arch
+from molt.cli.native_link_plan import _normalize_arch, is_zig_compiler_command
 from molt.llvm_linker_roles import executable_entrypoint_name
 
 
@@ -434,14 +434,6 @@ def _zig_target_query(target_triple: str) -> str:
     if abi:
         return f"{arch}-{os_name}-{abi}"
     return f"{arch}-{os_name}"
-
-
-def is_zig_compiler_command(command: Sequence[str]) -> bool:
-    return (
-        len(command) >= 2
-        and executable_entrypoint_name(Path(command[0])) == "zig"
-        and command[1] in {"cc", "c++"}
-    )
 
 
 def compiler_target_triple(command: Sequence[str], canonical_target: str) -> str:

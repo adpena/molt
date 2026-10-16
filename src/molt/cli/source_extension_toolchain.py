@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any
 
 from molt.file_hashing import _sha256_file
+from molt.cli.native_link_plan import is_zig_compiler_command
 from molt.cli.compiler_target import (
     common_compiler_arguments,
     compiler_target_triple,
-    is_zig_compiler_command,
     validate_compiler_target,
     source_extension_compiler_dialect,
     SourceExtensionCompilerDialect,

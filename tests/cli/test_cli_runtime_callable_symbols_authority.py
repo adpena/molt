@@ -837,6 +837,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
     result = backend_output_pipeline._emit_backend_pipeline_outputs(
         backend_output_destination=tmp_path / "output.o",
         validate_inputs=lambda: None,
+        compiled_source_paths=(),
         prepared_build_preamble=NS(
             diagnostics_enabled=False,
             phase_starts={},

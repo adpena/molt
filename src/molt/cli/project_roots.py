@@ -11,14 +11,6 @@ from molt.source_root import (
     resolve_path_override,
 )
 
-_PROJECT_MARKERS = ("pyproject.toml", ".git")
-_MOLT_REPO_MARKERS = (
-    "Cargo.toml",
-    "runtime/molt-runtime/Cargo.toml",
-    "runtime/molt-backend/Cargo.toml",
-    "src/molt/cli/__init__.py",
-)
-
 
 def _is_path_within(path: Path, container: Path) -> bool:
     """Return True when ``path`` is (resolves to) inside ``container``.
@@ -36,13 +28,23 @@ def _is_path_within(path: Path, container: Path) -> bool:
 
 
 def _has_molt_repo_markers(path: Path) -> bool:
-    return all((path / marker).is_file() for marker in _MOLT_REPO_MARKERS)
+    return all(
+        (path / marker).is_file()
+        for marker in (
+            "Cargo.toml",
+            "runtime/molt-runtime/Cargo.toml",
+            "runtime/molt-backend/Cargo.toml",
+            "src/molt/cli/__init__.py",
+        )
+    )
 
 
 def _has_project_markers(path: Path) -> bool:
-    return any(
-        (path / marker).exists() for marker in _PROJECT_MARKERS
-    ) or _has_molt_repo_markers(path)
+    return (
+        (path / "pyproject.toml").exists()
+        or (path / ".git").exists()
+        or _has_molt_repo_markers(path)
+    )
 
 
 def _find_project_root(start: Path) -> Path:
@@ -59,7 +61,13 @@ def _find_project_root(start: Path) -> Path:
     for parent in (directory, *directory.parents):
         found = _has_project_markers(parent)
         if _input_report.active():
-            for marker in (*_PROJECT_MARKERS, *_MOLT_REPO_MARKERS):
+            for marker in (
+                "pyproject.toml",
+                ".git",
+                "Cargo.toml",
+                "runtime/molt-runtime/Cargo.toml",
+                "runtime/molt-backend/Cargo.toml",
+            ):
                 _input_report.report_probe(parent / marker)
         if found:
             return parent

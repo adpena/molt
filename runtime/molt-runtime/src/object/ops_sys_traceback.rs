@@ -131,6 +131,48 @@ pub(crate) fn traceback_frames(
     }
     out
 }
+/// The source files of the modules compiled into this program: static C
+/// strings the native entry stub registers once, before the runtime starts.
+/// Tracebacks may show their lines without `fs.read`, because they are the
+/// program's own source; a second registration is ignored, so no code that
+/// runs later can extend the set.
+struct CompiledSources {
+    paths: *const *const std::ffi::c_char,
+    count: usize,
+}
+
+// SAFETY: the stub passes a static array of static, NUL-terminated strings;
+// the registry only reads them.
+unsafe impl Send for CompiledSources {}
+unsafe impl Sync for CompiledSources {}
+
+static COMPILED_SOURCES: std::sync::OnceLock<CompiledSources> = std::sync::OnceLock::new();
+
+/// Register the program's compiled source files (see `CompiledSources`).
+///
+/// # Safety
+/// `paths` must point to `count` NUL-terminated strings that live as long as
+/// the process, or be null with `count` zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_register_compiled_sources(
+    paths: *const *const std::ffi::c_char,
+    count: u64,
+) {
+    let count = if paths.is_null() { 0 } else { count as usize };
+    let _ = COMPILED_SOURCES.set(CompiledSources { paths, count });
+}
+
+fn is_compiled_source(filename: &str) -> bool {
+    let Some(sources) = COMPILED_SOURCES.get() else {
+        return false;
+    };
+    (0..sources.count).any(|index| {
+        // SAFETY: registration guarantees `count` live, NUL-terminated strings.
+        let path = unsafe { std::ffi::CStr::from_ptr(*sources.paths.add(index)) };
+        path.to_bytes() == filename.as_bytes()
+    })
+}
+
 pub(crate) fn traceback_source_line_native(
     _py: &PyToken<'_>,
     filename: &[u8],
@@ -151,10 +193,16 @@ fn traceback_source_span_native(
     let Ok(filename) = std::str::from_utf8(filename) else {
         return Vec::new();
     };
-    let allowed = has_capability(_py, "fs.read");
+    // The program's own compiled sources need no capability; any other file
+    // is a read the program must be granted.
+    let (capability, allowed) = if is_compiled_source(filename) {
+        ("compiled-source", true)
+    } else {
+        ("fs.read", has_capability(_py, "fs.read"))
+    };
     audit_capability_decision(
         "traceback.source_line",
-        "fs.read",
+        capability,
         AuditArgs::Path(filename.to_string()),
         allowed,
     );
