@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -137,7 +138,7 @@ def test_native_selection_payload_rejects_other_root_scope(
 ) -> None:
     path = native_support_source
     _analyze(path, native_support_function_roots=("later",))
-    payload = module_cache._read_artifact_sync_state(
+    payload = json.loads(
         module_cache._module_analysis_cache_path(
             path.parent,
             path,
@@ -145,7 +146,7 @@ def test_native_selection_payload_rejects_other_root_scope(
             is_package=False,
             import_scan_mode="full",
             native_support_function_roots=("later",),
-        )
+        ).read_text(encoding="utf-8")
     )
     assert payload is not None
     snapshot = PythonSourceSnapshot.capture(path)
