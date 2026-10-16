@@ -1075,12 +1075,13 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
     facts = cache._stdlib_intrinsic_source_facts(
         tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
-    read = cache._read_artifact_sync_state
+    read = cache._read_cached_json_object
     parse = cache._parse_source_for_target
     parses = []
 
-    def corrupt(path):
-        payload = copy.deepcopy(read(path))
+    def corrupt(path, **kwargs):
+        payload = copy.deepcopy(read(path, **kwargs))
+        assert payload is not None
         payload["facts"]["namespace_summary"][field] = invalid
         return payload
 
@@ -1088,7 +1089,7 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
         parses.append(1)
         return parse(*args, **kwargs)
 
-    monkeypatch.setattr(cache, "_read_artifact_sync_state", corrupt)
+    monkeypatch.setattr(cache, "_read_cached_json_object", corrupt)
     monkeypatch.setattr(cache, "_parse_source_for_target", counted)
     summary = cache._stdlib_intrinsic_namespace_summary(
         tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
@@ -1162,15 +1163,15 @@ def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
         premise,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
-    read = cache._read_artifact_sync_state
+    read = cache._read_cached_json_object
 
-    def corrupt(path):
-        payload = copy.deepcopy(read(path))
-        if payload is not None and "identity" in payload:
-            payload["identity"]["namespace_premise"]["member_writes"] = False
+    def corrupt(path, **kwargs):
+        payload = copy.deepcopy(read(path, **kwargs))
+        assert payload is not None
+        payload["identity"]["namespace_premise"]["member_writes"] = False
         return payload
 
-    monkeypatch.setattr(cache, "_read_artifact_sync_state", corrupt)
+    monkeypatch.setattr(cache, "_read_cached_json_object", corrupt)
     counts = {}
     assert (
         cache._stdlib_intrinsic_source_facts(
