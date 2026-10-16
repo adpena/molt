@@ -52,6 +52,7 @@ _JOINED_PATH_PREFIXES = (
     "-iquote",
     "-include",
     "--sysroot=",
+    "-isysroot",
     "/I",
     "/FI",
     "/Fa",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -379,8 +379,10 @@ def test_location_canonicalization_rewrites_quoted_generated_config_path(
     assert canonical == '"path": r"@python"'
 
 
-def test_location_canonicalization_rejects_collapsed_keys(tmp_path: Path) -> None:
-    build = tmp_path / "build"
+def test_location_canonicalization_rejects_collapsed_keys() -> None:
+    # Distinct Windows transport spellings stay distinct before the call on
+    # every host; native POSIX Path spellings had collapsed in the dict literal.
+    build = PureWindowsPath("C:/build")
     with pytest.raises(ValueError, match="collapses distinct metadata keys"):
         _canonicalize_locations(
             {

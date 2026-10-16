@@ -13,6 +13,7 @@ import pytest
 from molt import platform_toolchain as platform_tools
 from tests.process_guard_common import install_module_view
 import shutil
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -147,8 +148,8 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
         assert env["DEVELOPER_DIR"] == str(developer)
         if "--show-sdk-path" in argv:
             return str(sdk)
-        if "--show-sdk-version" in argv:
-            return "15.4"
+        assert "--show-sdk-version" not in argv
+        assert argv[argv.index("--sdk") + 1] == str(sdk)
         assert env["SDKROOT"] == str(sdk)
         return str(actual / argv[-1])
 
@@ -162,11 +163,130 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
     }
     assert selection.environment()["MACOSX_DEPLOYMENT_TARGET"] == "15.4"
     before = len([argv for argv, _ in calls if "--print-path" in argv])
-    assert selection == platform_tools.select_darwin_toolchain(
-        selection.environment(), developer_dir=developer
-    )
+    assert selection == platform_tools.select_darwin_toolchain(selection.environment())
     assert len([argv for argv, _ in calls if "--print-path" in argv]) == before
-    (sdk / "SDKSettings.json").write_bytes(b"changed SDK")
-    assert selection != platform_tools.select_darwin_toolchain(
-        selection.environment(), developer_dir=developer
+    (sdk / "SDKSettings.json").write_bytes(b'{"Version":"15.4","changed":true}')
+    assert selection != platform_tools.select_darwin_toolchain(selection.environment())
+
+
+@pytest.mark.parametrize("developer_override", [False, True])
+def test_explicit_darwin_sdk_is_authoritative_without_selector_queries(
+    tmp_path, monkeypatch, developer_override
+):
+    sdk = tmp_path / "Selected SDK"
+    sdk.mkdir()
+    settings = b'{"Version":"14.6"}'
+    (sdk / "SDKSettings.json").write_bytes(settings)
+    env = {"SDKROOT": str(sdk)}
+    if developer_override:
+        developer = tmp_path / "Selected Developer"
+        developer.mkdir()
+        env["DEVELOPER_DIR"] = str(developer)
+    monkeypatch.setattr(
+        platform_tools,
+        "resolve_executable",
+        lambda *_args, **_kwargs: pytest.fail("explicit SDK selection queried a tool"),
     )
+    selected = platform_tools.select_darwin_sdk(env)
+    assert selected.sdk_root == sdk
+    assert selected.sdk_version == "14.6"
+    assert selected.sdk_settings_sha256 == hashlib.sha256(settings).hexdigest()
+    assert selected.environment() == env
+    # Re-selection reads current metadata; it never serves a stale global memo.
+    (sdk / "SDKSettings.json").write_bytes(b'{"Version":"15.2"}')
+    assert platform_tools.select_darwin_sdk(env).sdk_version == "15.2"
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [b"not JSON", b"[]", b"{}", b'{"Version":true}', b'{"Version":"1;flags"}'],
+)
+def test_darwin_sdk_rejects_invalid_version_metadata(tmp_path, settings):
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_bytes(settings)
+    with pytest.raises(ValueError, match="Darwin SDK"):
+        platform_tools.select_darwin_sdk({"SDKROOT": str(sdk)})
+
+
+@pytest.mark.parametrize(
+    "arch,expected",
+    [("x86_64", "10.13"), ("amd64", "10.13"), ("arm64", "15.4"), (None, "15.4")],
+)
+def test_darwin_deployment_policy_retains_native_and_release_floors(arch, expected):
+    assert (
+        platform_tools.darwin_deployment_target({}, sdk_version="15.4", arch=arch)
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({"MACOSX_DEPLOYMENT_TARGET": "12.7"}, "12.7"),
+        (
+            {
+                "MOLT_MACOSX_DEPLOYMENT_TARGET": "13.3",
+                "MACOSX_DEPLOYMENT_TARGET": "12.7",
+            },
+            "13.3",
+        ),
+    ],
+)
+def test_darwin_deployment_policy_honors_explicit_build_selection(env, expected):
+    assert (
+        platform_tools.darwin_deployment_target(env, sdk_version="15.4", arch="arm64")
+        == expected
+    )
+
+
+def test_darwin_deployment_policy_rejects_malformed_override():
+    with pytest.raises(ValueError, match="deployment target"):
+        platform_tools.darwin_deployment_target(
+            {"MACOSX_DEPLOYMENT_TARGET": "13.0 -extra"}, sdk_version="15.4"
+        )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FileNotFoundError("missing selector"),
+        subprocess.CalledProcessError(2, ["selector"], stderr="selected-tool-failed"),
+        subprocess.TimeoutExpired(["selector"], 1),
+    ],
+)
+def test_selector_failures_stay_inside_platform_selection_diagnostics(
+    monkeypatch, error
+):
+    monkeypatch.setattr(
+        platform_tools,
+        "resolve_executable",
+        lambda *_args, **_kwargs: Path("/fixture/selector"),
+    )
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(platform_tools.process_guard, "run_completed_command", fail)
+    with pytest.raises(
+        ValueError, match="Platform toolchain selector.*failed"
+    ) as raised:
+        platform_tools.select_darwin_sdk({})
+    assert raised.value.__cause__ is error
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("15", "15.0"), ("15.0.0", "15.0"), ("15.2.0", "15.2"), ("15.2.1", "15.2.1")],
+)
+def test_darwin_versions_have_one_numeric_identity(value, expected):
+    assert platform_tools.normalize_darwin_version(value, label="test") == expected
+
+
+def test_darwin_sdk_metadata_budget_is_checked_before_json_read(tmp_path):
+    sdk = tmp_path / "SDK"
+    sdk.mkdir()
+    with (sdk / "SDKSettings.json").open("wb") as stream:
+        stream.truncate(8 * 1024 * 1024)
+    with pytest.raises(ValueError, match="metadata budget"):
+        platform_tools.select_darwin_sdk({"SDKROOT": str(sdk)})

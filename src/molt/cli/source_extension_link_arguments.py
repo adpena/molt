@@ -137,7 +137,7 @@ class SourceExtensionLinkScope:
             raise ValueError("source-extension whole-archive start has no end")
 
 
-def _linker_tokens(arguments: Sequence[str]) -> tuple[str, ...]:
+def linker_argument_tokens(arguments: Sequence[str]) -> tuple[str, ...]:
     tokens: list[str] = []
     iterator = iter(arguments)
     for argument in iterator:
@@ -163,7 +163,7 @@ def _linker_tokens(arguments: Sequence[str]) -> tuple[str, ...]:
 def source_extension_link_arguments(
     arguments: Sequence[str],
 ) -> tuple[SourceExtensionLinkArgument, ...]:
-    tokens = _linker_tokens(arguments)
+    tokens = linker_argument_tokens(arguments)
     result: list[SourceExtensionLinkArgument] = []
     index = 0
     while index < len(tokens):

@@ -3,6 +3,9 @@ from __future__ import annotations
 from molt.cli.native_link_plan import resolve_native_target_spec
 
 import json
+import os
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -288,52 +291,164 @@ def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
     assert "-framework" not in args
 
 
-def test_detect_macos_deployment_target_prefers_molt_env(monkeypatch) -> None:
-    monkeypatch.setenv("MOLT_MACOSX_DEPLOYMENT_TARGET", "13.3")
-    monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
-    assert NATIVE_TOOLCHAIN._detect_macos_deployment_target("arm64") == "13.3"
-
-
-def test_detect_macos_deployment_target_prefers_standard_env(monkeypatch) -> None:
-    monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
-    monkeypatch.setenv("MACOSX_DEPLOYMENT_TARGET", "12.7")
-    assert NATIVE_TOOLCHAIN._detect_macos_deployment_target("arm64") == "12.7"
-
-
-@pytest.mark.parametrize(
-    ("arch", "expected"),
-    [
-        ("x86_64", "10.13"),
-        ("amd64", "10.13"),
-    ],
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="actual Darwin compiler/linker oracle"
 )
-def test_detect_macos_deployment_target_uses_stable_arch_baseline(
-    monkeypatch, arch: str, expected: str
-) -> None:
+def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
+    from molt.platform_toolchain import select_darwin_sdk
+    from molt.cli.source_extension_compiler_inputs import (
+        source_extension_compiler_environment,
+        darwin_compiler_commands,
+    )
+    from molt.cli.source_extension_target import resolve_source_extension_target_plan
+
+    base_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {"SDKROOT", "MOLT_MACOSX_DEPLOYMENT_TARGET", "MACOSX_DEPLOYMENT_TARGET"}
+    }
+    installed = select_darwin_sdk(base_env)
+    sdk = tmp_path / "SDK with sentinel header"
+    (sdk / "usr/include").mkdir(parents=True)
+    shutil.copyfile(installed.sdk_root / "SDKSettings.json", sdk / "SDKSettings.json")
+    (sdk / "usr/lib").symlink_to(
+        installed.sdk_root / "usr/lib", target_is_directory=True
+    )
+    (sdk / "System").symlink_to(installed.sdk_root / "System", target_is_directory=True)
+    (sdk / "usr/include/molt_sdk_contract.h").write_text(
+        "#define MOLT_SDK_CONTRACT 73\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("SDKROOT", str(sdk))
+    monkeypatch.delenv("CFLAGS", raising=False)
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
     monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
-    assert NATIVE_TOOLCHAIN._detect_macos_deployment_target(arch) == expected
+    target = resolve_source_extension_target_plan("native")
+    assert target.native_target is not None
+    environment = source_extension_compiler_environment(os.environ)
+    command, _, _ = native_link_command._build_native_link_driver_command(
+        output_obj=None, target=target.native_target, sysroot_path=None, profile="dev"
+    )
+    assert command[command.index("-isysroot") + 1] == environment["SDKROOT"] == str(sdk)
+    source = tmp_path / "sdk_contract.c"
+    source.write_text(
+        "#include <molt_sdk_contract.h>\nint main(void) { return MOLT_SDK_CONTRACT != 73; }\n",
+        encoding="utf-8",
+    )
+    binary = tmp_path / "sdk_contract"
+    # Captured native/Meson compiler commands must retain the SDK even when
+    # their subprocess environment carries none of the selection variables.
+    compile_command = darwin_compiler_commands(
+        {"c": (command[0], "-Xclang", "-isysroot", "-Xclang", str(sdk))},
+        environment=environment,
+        arch=target.native_target.arch,
+    )["c"]
+    assert "-Xclang" not in compile_command
+    assert compile_command[compile_command.index("-isysroot") + 1] == str(sdk)
+    from molt.cli.source_extension_toolchain import _meson_native_text
+    import ast
 
-
-def test_detect_macos_deployment_target_arm64_uses_sdk_version(
-    monkeypatch,
-) -> None:
-    """arm64/aarch64/unknown arches use the SDK version (xcrun --show-sdk-version)."""
-    import subprocess
-
-    monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
-    monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
-    try:
-        result = run_cli_test_process(
-            ["xcrun", "--show-sdk-version"], text=True, timeout=5, check=True
+    native_file = _meson_native_text(commands={"c": compile_command})
+    captured_command = ast.literal_eval(
+        next(
+            line.removeprefix("c = ")
+            for line in native_file.splitlines()
+            if line.startswith("c = ")
         )
-        expected = (result.stdout or "").strip()
-    except (subprocess.SubprocessError, FileNotFoundError):
-        import platform
+    )
+    clean_environment = {
+        key: value
+        for key, value in environment.items()
+        if key
+        not in {
+            "SDKROOT",
+            "DEVELOPER_DIR",
+            "MACOSX_DEPLOYMENT_TARGET",
+            "MOLT_MACOSX_DEPLOYMENT_TARGET",
+        }
+    }
+    # Clang's JoinedOrSeparate -isysroot grammar keeps '=' in the operand;
+    # it is not an equals alias. Use actual header lookup as the oracle.
+    rejected = run_cli_test_process(
+        [
+            command[0],
+            f"-isysroot={sdk}",
+            "-c",
+            str(source),
+            "-o",
+            str(tmp_path / "wrong.o"),
+        ],
+        env=clean_environment,
+        check=False,
+        text=True,
+        timeout=60,
+    )
+    assert rejected.returncode != 0
+    assert (
+        "no such sysroot directory" in rejected.stderr
+        and "=" + str(sdk) in rejected.stderr
+    )
+    obj = tmp_path / "sdk_contract.o"
+    run_cli_test_process(
+        [*captured_command, "-c", str(source), "-o", str(obj)],
+        env=clean_environment,
+        check=True,
+        text=True,
+        timeout=60,
+    )
+    run_cli_test_process(
+        [*command, str(obj), "-o", str(binary)],
+        env=clean_environment,
+        check=True,
+        text=True,
+        timeout=60,
+    )
+    run_cli_test_process([str(binary)], check=True, timeout=10)
 
-        ver = platform.mac_ver()[0]
-        parts = ver.split(".")
-        expected = ".".join(parts[:2]) if len(parts) >= 2 else ver or "11.0"
-    for arch in ("arm64", "aarch64", "mystery"):
-        result = NATIVE_TOOLCHAIN._detect_macos_deployment_target(arch)
-        assert result == expected, f"arch={arch}: got {result}, expected {expected}"
+
+@pytest.mark.parametrize("selector", ["argument", "cflags"])
+@pytest.mark.parametrize("symlink", [False, True])
+def test_cross_darwin_search_paths_share_the_explicit_sysroot(
+    tmp_path, monkeypatch, selector, symlink
+):
+    sdk = tmp_path / "selected_sdk"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+    selected_sdk = sdk
+    if symlink:
+        selected_sdk = tmp_path / "SDK alias"
+        try:
+            selected_sdk.symlink_to(sdk, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlink capability unavailable: {exc}")
+    driver = tmp_path / "cross-clang"
+    driver.write_bytes(b"unexecuted command-plan fixture")
+    monkeypatch.setenv("MOLT_CROSS_CC", str(driver))
+    monkeypatch.setenv("SDKROOT", str(tmp_path / "wrong_ambient_sdk"))
+    monkeypatch.delenv("DEVELOPER_DIR", raising=False)
+    monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
+    monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
+    monkeypatch.setenv(
+        "CFLAGS", "" if selector == "argument" else f'-isysroot "{selected_sdk}"'
+    )
+    monkeypatch.setattr(
+        native_link_command, "validate_compiler_target", lambda *_: None
+    )
+    monkeypatch.setattr(
+        native_link_command, "_resolve_native_linker_hint", lambda **_: None
+    )
+    command, _, _ = native_link_command._build_native_link_driver_command(
+        output_obj=None,
+        target=resolve_native_target_spec(
+            "aarch64-apple-darwin", host_platform="linux", host_arch="x86_64"
+        ),
+        sysroot_path=selected_sdk if selector == "argument" else None,
+        profile="dev",
+        host_platform="linux",
+        host_arch="x86_64",
+    )
+    assert command[command.index("-isysroot") + 1] == str(sdk)
+    assert command[command.index("-F") + 1] == str(sdk / "System/Library/Frameworks")
+    assert command[command.index("-L") + 1] == str(sdk / "usr/lib")
+    assert "-mmacosx-version-min=15.4" in command
+    assert not any("wrong_ambient_sdk" in arg for arg in command)

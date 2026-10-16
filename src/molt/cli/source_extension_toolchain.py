@@ -43,6 +43,7 @@ from molt.cli.source_extension_target import (
 from molt.cli.source_extension_compiler_inputs import (
     source_extension_compiler_environment,
     compiler_sysroot_arguments,
+    darwin_compiler_commands,
     validate_source_extension_compiler_command,
 )
 from molt.cli.source_extension_link_inputs import (
@@ -819,6 +820,9 @@ def _resolve_source_extension_native_toolchain(
         c_command,
         role="c",
         target_triple=target_plan.target_triple,
+        sysroot_policy="optional"
+        if target_plan.native_target.os == "macos"
+        else "forbidden",
         require_explicit_target=cross_target is not None,
     )
     explicit_tools: dict[LlvmToolRole, tuple[str, ...]] = {"cc": c_command}
@@ -839,6 +843,9 @@ def _resolve_source_extension_native_toolchain(
             explicit_tools["cxx"],
             role="cpp",
             target_triple=target_plan.target_triple,
+            sysroot_policy="optional"
+            if target_plan.native_target.os == "macos"
+            else "forbidden",
             require_explicit_target=cross_target is not None,
         )
     elif (
@@ -890,12 +897,23 @@ def _resolve_source_extension_native_toolchain(
             "native source-extension tool family is incomplete; missing: "
             + ", ".join(missing)
         )
+    if target_plan.native_target.os == "macos":
+        commands.update(
+            darwin_compiler_commands(
+                {role: commands[role] for role in ("c", "cpp") if role in commands},
+                environment=environment,
+                arch=target_plan.native_target.arch,
+            )
+        )
     for role in ("c", "cpp"):
         if role in commands:
             validate_source_extension_compiler_command(
                 commands[role],
                 role=role,
                 target_triple=target_plan.target_triple,
+                sysroot_policy="required"
+                if target_plan.native_target.os == "macos"
+                else "forbidden",
                 require_explicit_target=cross_target is not None,
             )
     return _ResolvedSourceExtensionToolchain(

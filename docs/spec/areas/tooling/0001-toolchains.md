@@ -248,6 +248,37 @@ this owner rather than independent host-default temporary-directory lanes.
   targets below); do not combine a Homebrew `wasi-libc` sysroot with an
   independently installed linker.
 
+`molt.platform_toolchain.select_darwin_sdk` owns SDK selection for native C/C++
+compilation and final linking. An explicit argv sysroot wins over `SDKROOT`;
+`DEVELOPER_DIR` selects the developer installation when one is needed. SDK
+version and digest come from one stable read of `SDKSettings.json` (a 1 MiB
+metadata budget), following
+[Clang's SDK metadata boundary](https://clang.llvm.org/doxygen/DarwinSDKInfo_8cpp_source.html).
+The [Apple developer override](https://developer.apple.com/documentation/xcode/configuring-command-line-tools-settings)
+and [rustc's PATH-selected SDK discovery](https://github.com/rust-lang/rust/blob/master/compiler/rustc_codegen_ssa/src/back/apple.rs)
+guide selector precedence and portable cross-compilation shims. SDK-only users
+do not resolve unrelated native tools. Explicit SDK paths require no selector
+subprocesses; captured compiler commands carry that selection through compilation, Meson
+configuration, native generators and replay. Subprocess environment filtering
+never discovers an SDK.
+Non-Darwin targets and generic producer commands do not select an Apple SDK.
+
+Native compiler commands pin the physical SDK selection, including ordinary
+SDK symlinks and joined or cc1 operands, through one canonical driver sysroot.
+The driver root governs both header lookup and linker SDK selection. The native driver renders sysroot,
+framework and library search paths from that same SDK. Independent linker SDK
+overrides and unexpanded response/configuration files fail before execution. `MOLT_MACOSX_DEPLOYMENT_TARGET` takes precedence over
+`MACOSX_DEPLOYMENT_TARGET` for native C/C++ extensions and the final native link.
+Without an override, x86_64 retains its 10.13 floor and other architectures use
+the selected SDK version. Release toolchain capture retains its explicit SDK
+floor, removes ambient SDK/deployment overrides, and reselects fresh before
+publication. Full native tool capture uses `select_darwin_toolchain`; it shares
+SDK selection and adds the actual tools. No global SDK memo suppresses drift. Source-extension target metadata schema 6
+requires pinned SDK/deployment facts in both Darwin machine command families;
+readers validate portable command facts without probing the producer host.
+Earlier metadata must be regenerated.
+These operations run in the compiler and build tooling, not emitted binaries.
+
 ## Linux (Ubuntu/Debian)
 - `sudo apt-get install -y cmake ninja-build pkg-config llvm clang lld mlir`
 - WASM tools come from the same manifest-owned wasi-sdk provisioner as on

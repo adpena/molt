@@ -26,6 +26,7 @@ from molt.cli.source_extension_toolchain import (
     _meson_native_text,
     _source_extension_meson_cross_properties,
 )
+from molt.cli.source_extension_compiler_inputs import validate_darwin_compiler_commands
 from molt.exact_json import loads_exact
 from molt.file_hashing import _sha256_file
 
@@ -403,4 +404,20 @@ def _validated_toolchain_commands(
                 ) from exc
         validated_commands.append((command_role, arguments))
 
+    native_target = source_extension_recorded_target_plan(
+        target_triple, target_triple=target_triple
+    ).native_target
+    if native_target is not None and native_target.os == "macos":
+        try:
+            validate_darwin_compiler_commands(
+                {
+                    role: argv
+                    for role, argv in validated_commands
+                    if role in {"c", "cpp"}
+                }
+            )
+        except ValueError as exc:
+            raise SourceExtensionSetValidationError(
+                f"extension-set Darwin compiler command custody is invalid: {exc}"
+            ) from exc
     return tuple(sorted(validated_commands))

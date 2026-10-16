@@ -725,6 +725,11 @@ def test_canonical_native_resolver_uses_only_selected_environment(
         cc_key: '"' + str(resolved.tools.cc.path) + '"',
         cxx_key: '"' + str(resolved.tools.cxx.path) + '"',
     }
+    if resolved.target_plan.native_target.os == "macos":
+        sdk = tmp_path / "SDK"
+        sdk.mkdir()
+        (sdk / "SDKSettings.json").write_text('{"Version":"15.4"}', encoding="utf-8")
+        selected["SDKROOT"] = str(sdk)
     monkeypatch.setenv(cc_key, "ambient-must-not-be-selected")
     monkeypatch.setenv(cxx_key, "ambient-must-not-be-selected")
     seen = []

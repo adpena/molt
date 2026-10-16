@@ -83,6 +83,7 @@ from molt.cli.source_extension_reproducibility import (
 )
 from molt.cli.source_extension_compiler_inputs import (
     source_extension_compiler_environment,
+    compiler_sysroot_arg_value,
 )
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
@@ -1905,6 +1906,29 @@ def _producer_location_roots(
             for index, raw_path in enumerate(raw_include_dirs)
             if isinstance(raw_path, str) and raw_path
         )
+    # Captured target and build-machine Darwin commands own SDK operands.
+    # SDKs can live inside other producer roots, so neutralize them first.
+    for family, namespace in (
+        ("toolchain", "@llvm"),
+        ("build_toolchain", "@build-llvm"),
+    ):
+        toolchain = metadata_payload.get(family)
+        if not isinstance(toolchain, Mapping) or toolchain.get("wasi_sysroot"):
+            continue
+        commands = toolchain.get("commands")
+        if not isinstance(commands, Mapping):
+            continue
+        sdk_roots = {
+            sdk
+            for role in ("c", "cpp")
+            if isinstance(command := commands.get(role), (list, tuple))
+            and (sdk := compiler_sysroot_arg_value(command)) is not None
+        }
+        if len(sdk_roots) > 1:
+            raise SourceExtensionProducerError(
+                "compiler roles have conflicting SDK location roots"
+            )
+        roots.extend((Path(sdk), f"{namespace}-sdk") for sdk in sdk_roots)
     for scheme, token in (
         ("include", "@python-include"),
         ("platinclude", "@python-platform-include"),

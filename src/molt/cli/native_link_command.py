@@ -17,6 +17,10 @@ from molt.llvm_wasi_tools import (
     llvm_named_tool_candidates,
     llvm_tool_candidates,
 )
+from molt.cli.source_extension_compiler_inputs import (
+    compiler_sysroot_arg_value,
+    darwin_compiler_commands,
+)
 from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.llvm_linker_roles import (
     LlvmLinkerRole,
@@ -50,8 +54,6 @@ from molt.cli.source_extension_link_requirements import (
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _detect_macos_arch,
-    _detect_macos_deployment_target,
-    _resolve_macos_sdk_root,
 )
 
 
@@ -210,23 +212,39 @@ def _build_native_link_driver_command(
     cflags = os.environ.get("CFLAGS", "")
     if cflags:
         link_cmd.extend(shlex.split(cflags))
-    if target.is_host and target.os == "macos":
-        arch = (
-            os.environ.get("MOLT_ARCH")
-            or (None if output_obj is None else _detect_macos_arch(output_obj))
-            or host_arch
-        )
-        link_cmd.extend(["-arch", arch])
-        deployment_target = _detect_macos_deployment_target(arch)
-        if deployment_target:
-            link_cmd.append(f"-mmacosx-version-min={deployment_target}")
-        if sysroot_path is None:
-            # Apple's clang selects the active SDK through xcrun by itself; a
-            # managed LLVM clang has no implicit macOS SDK and cannot even find
-            # <stdio.h> for the main stub. Name the same SDK for both drivers.
-            sdk_root = _resolve_macos_sdk_root()
-            if sdk_root is not None:
-                link_cmd.extend(["-isysroot", sdk_root])
+    if target.os == "macos":
+        # One selected SDK supplies headers, libraries, framework search paths
+        # and the default version. An argv sysroot overrides ambient SDKROOT.
+        arch = target.arch
+        if target.is_host:
+            arch = (
+                os.environ.get("MOLT_ARCH")
+                or (None if output_obj is None else _detect_macos_arch(output_obj))
+                or host_arch
+            )
+        try:
+            link_cmd = list(
+                darwin_compiler_commands(
+                    {"link": tuple(link_cmd)},
+                    environment=os.environ,
+                    arch=arch,
+                )["link"]
+            )
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Darwin native link SDK selection: {exc}") from exc
+        if target.is_host:
+            link_cmd.extend(["-arch", arch])
+        if not target.is_host:
+            sdk_root = compiler_sysroot_arg_value(link_cmd)
+            assert sdk_root is not None
+            link_cmd.extend(
+                [
+                    "-F",
+                    str(Path(sdk_root) / "System/Library/Frameworks"),
+                    "-L",
+                    str(Path(sdk_root) / "usr/lib"),
+                ]
+            )
     try:
         validate_compiler_target(
             link_cmd,

@@ -4106,8 +4106,12 @@ def test_clippy_alias_requires_one_cross_platform_sibling_driver(
 
 
 @pytest.mark.parametrize("aliases", [False, True])
+@pytest.mark.parametrize("selector_names", [("xcode-select", "xcrun"), ("xcrun",)])
 def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omissions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, aliases: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    aliases: bool,
+    selector_names: tuple[str, ...],
 ) -> None:
     import copy
     from molt import llvm_toolchain
@@ -4158,7 +4162,7 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
     from molt import platform_toolchain
 
     selectors = {}
-    for name in ("xcode-select", "xcrun"):
+    for name in selector_names:
         selected = tmp_path / name
         selected.write_bytes(name.encode())
         selectors[name] = selected
