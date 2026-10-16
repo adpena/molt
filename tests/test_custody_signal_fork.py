@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
-from types import SimpleNamespace
 
 import pytest
 
@@ -58,7 +57,7 @@ def test_dead_or_reused_sentinel_leader_never_grants_group_signal(
 
 
 def test_posix_popen_audit_rejects_only_atomic_custody_scope(monkeypatch):
-    monkeypatch.setattr(locks, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(locks, "_POPEN_FORKS", True)
     locks._file_lock_fork_audit("subprocess.Popen", ())
     with locks._file_lock_atomic_mutation("descriptor publication"):
         with pytest.raises(RuntimeError, match="must be deferred"):
@@ -66,9 +65,8 @@ def test_posix_popen_audit_rejects_only_atomic_custody_scope(monkeypatch):
     locks._file_lock_fork_audit("subprocess.Popen", ())
 
 
-def test_windows_popen_remains_allowed_inside_atomic_scope():
-    if os.name != "nt":
-        pytest.skip("Windows spawn policy witness")
+def test_windows_popen_remains_allowed_inside_atomic_scope(monkeypatch):
+    monkeypatch.setattr(locks, "_POPEN_FORKS", False)
     with locks._file_lock_atomic_mutation("descriptor publication"):
         locks._file_lock_fork_audit("subprocess.Popen", ())
 

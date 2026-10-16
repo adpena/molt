@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Generator
 import contextlib
 from dataclasses import dataclass, field
 import errno
@@ -11,7 +12,7 @@ import sys
 from pathlib import Path
 import threading
 import time
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 from molt.default_paths import _default_molt_cache, shared_cache_lock_path
 
@@ -32,6 +33,10 @@ class _FileLockHandle:
     operation_owners: dict[int, int] = field(default_factory=dict, repr=False)
     release_requested: bool = False
 
+
+# subprocess.Popen forks this process only on POSIX; Windows spawns. The fork
+# audit reads this one fact, so a test can select either policy directly.
+_POPEN_FORKS = os.name == "posix"
 
 _IN_PROCESS_LOCK_REGISTRY: dict[str, _InProcessLockEntry] = {}
 _IN_PROCESS_LOCK_REGISTRY_GUARD = threading.Lock()
@@ -87,7 +92,7 @@ def _file_lock_fork_audit(event: str, _args: tuple[object, ...]) -> None:
         if len(_args) == 1 and _args[0] is _FILE_LOCK_AUDIT_INSTALL_TOKEN:
             _FILE_LOCK_AUDIT_INSTALL_VERIFIED = True
         return
-    if event == "subprocess.Popen" and os.name != "posix":
+    if event == "subprocess.Popen" and not _POPEN_FORKS:
         return
     if event not in ("os.fork", "os.forkpty", "subprocess.Popen"):
         return
@@ -254,17 +259,68 @@ def _file_lock_stream(fd: int) -> BinaryIO:
         raise
 
 
+class _MsvcrtLocking(Protocol):
+    LK_NBLCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, mode: int, nbytes: int, /) -> None: ...
+
+
+class _FcntlFlock(Protocol):
+    LOCK_EX: int
+    LOCK_NB: int
+    LOCK_UN: int
+
+    def flock(self, fd: int, operation: int, /) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _HandleLock:
+    """A host's advisory lock on an open descriptor.
+
+    `acquire_nonblocking` raises OSError when another holder has the lock.
+    """
+
+    acquire_nonblocking: Callable[[int], None]
+    release: Callable[[int], None]
+
+
+def _windows_handle_lock(msvcrt: _MsvcrtLocking) -> _HandleLock:
+    # msvcrt locks a byte range; byte 0 stands for the whole file.
+    return _HandleLock(
+        acquire_nonblocking=lambda fd: msvcrt.locking(fd, msvcrt.LK_NBLCK, 1),
+        release=lambda fd: msvcrt.locking(fd, msvcrt.LK_UNLCK, 1),
+    )
+
+
+def _posix_handle_lock(fcntl: _FcntlFlock) -> _HandleLock:
+    return _HandleLock(
+        acquire_nonblocking=lambda fd: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB),
+        release=lambda fd: fcntl.flock(fd, fcntl.LOCK_UN),
+    )
+
+
+# Selected once at import. A test drives another host's path by building its
+# lock from a stand-in module, never by replacing os or msvcrt under code that
+# other callers (the pytest phase record among them) share.
+if os.name == "nt":
+    import msvcrt
+
+    _HOST_HANDLE_LOCK = _windows_handle_lock(msvcrt)
+else:
+    import fcntl
+
+    _HOST_HANDLE_LOCK = _posix_handle_lock(fcntl)
+
+
 def _try_lock_file_handle(handle: BinaryIO) -> bool:
+    return _try_lock_handle_with(handle, _HOST_HANDLE_LOCK)
+
+
+def _try_lock_handle_with(handle: BinaryIO, lock: _HandleLock) -> bool:
     handle.seek(0)
     try:
-        if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock.acquire_nonblocking(handle.fileno())
     except OSError as exc:
         if exc.errno in (errno.EACCES, errno.EAGAIN):
             return False
@@ -273,16 +329,59 @@ def _try_lock_file_handle(handle: BinaryIO) -> bool:
 
 
 def _unlock_file_handle(handle: BinaryIO) -> None:
-    with contextlib.suppress(OSError, ImportError):
+    with contextlib.suppress(OSError):
         handle.seek(0)
-        if os.name == "nt":
-            import msvcrt
+        _HOST_HANDLE_LOCK.release(handle.fileno())
 
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+@contextlib.contextmanager
+def _exclusive_record_file(
+    path: Path,
+    lock: _HandleLock,
+    *,
+    timeout_s: float,
+    poll_s: float,
+    timeout_message: str,
+) -> Generator[BinaryIO, None, None]:
+    """Hold `lock` on the record file at `path` and yield it for rewriting.
+
+    For one writer per process, such as the pytest phase record. It uses only
+    `lock`, `os` and `time`, never this module's other helpers, so it keeps
+    working while a test replaces them. Readers in other processes take the
+    same host lock through `_try_acquire_file_lock`.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        record = os.fdopen(fd, "r+b", buffering=0)
+    except BaseException:
+        os.close(fd)
+        raise
+    with record:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            # msvcrt locks from the current offset; byte 0 is the lock region.
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                lock.acquire_nonblocking(fd)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+            if time.monotonic() >= deadline:
+                raise RuntimeError(timeout_message)
+            time.sleep(poll_s)
+        try:
+            opened, current = os.fstat(fd), os.stat(path)
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise RuntimeError(
+                    f"record file was replaced while it was locked: {path}"
+                )
+            yield record
+        finally:
+            with contextlib.suppress(OSError):
+                os.lseek(fd, 0, os.SEEK_SET)
+                lock.release(fd)
 
 
 def _try_acquire_file_lock(
