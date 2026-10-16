@@ -9,6 +9,7 @@ from pathlib import Path
 from molt.cli.models import _DiscoveredModuleGraph
 
 import pytest
+from tests.process_guard_common import run_guarded_test_process
 
 import molt.cli as cli
 from molt.cli import module_graph
@@ -196,7 +197,6 @@ def test_deferred_source_demand_closes_only_live_source_owners(
     tmp_path: Path, entry_source: str, expected: set[str]
 ) -> None:
     import json
-    import subprocess
     import sys
 
     (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
@@ -222,7 +222,7 @@ def test_deferred_source_demand_closes_only_live_source_owners(
         "deaddep",
         "callbackdep",
     }
-    executed = subprocess.run(
+    executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -397,7 +397,6 @@ def test_module_getattr_demands_lazy_returned_class(
     tmp_path: Path, monkeypatch, hook: str, entry_source: str, expected: set[str]
 ) -> None:
     import json
-    import subprocess
     import sys
     from molt.cli import module_resolution
 
@@ -436,7 +435,7 @@ def test_module_getattr_demands_lazy_returned_class(
     (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tmp_path / "unused_dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
     (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
-    executed = subprocess.run(
+    executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -997,7 +996,6 @@ def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
     tmp_path, monkeypatch, write_kind
 ):
     import json
-    import subprocess
     import sys
     import time
     from molt.cli import module_resolution
@@ -1036,7 +1034,7 @@ def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
         "raise AssertionError\n", encoding="utf-8"
     )
     script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps(sorted(set(sys.modules)&set(json.loads(sys.argv[2])))))\n"
-    executed = subprocess.run(
+    executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -1148,7 +1146,6 @@ def test_package_child_bindings_bound_callback_namespace_without_scanning_childr
     tmp_path,
 ):
     import json
-    import subprocess
     import sys
 
     package = tmp_path / "pkg"
@@ -1165,7 +1162,7 @@ def test_package_child_bindings_bound_callback_namespace_without_scanning_childr
     )
     (tmp_path / "late_leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
     script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps('late_leaf' in sys.modules))\n"
-    actual = subprocess.run(
+    actual = run_guarded_test_process(
         [sys.executable, "-I", "-B", "-c", script, str(tmp_path)],
         check=True,
         capture_output=True,
@@ -1193,7 +1190,6 @@ def test_package_child_bindings_bound_callback_namespace_without_scanning_childr
 
 def test_artifact_owned_source_gap_widens_namespace_without_interpreting_it(tmp_path):
     import json
-    import subprocess
     import sys
     from molt.cli.models import _ImportAdmissionPolicy
 
@@ -1207,7 +1203,7 @@ def test_artifact_owned_source_gap_widens_namespace_without_interpreting_it(tmp_
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
     script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps('late_leaf' in sys.modules))\n"
-    actual = subprocess.run(
+    actual = run_guarded_test_process(
         [sys.executable, "-I", "-B", "-c", script, str(tmp_path)],
         check=True,
         capture_output=True,
@@ -1236,7 +1232,6 @@ def test_artifact_owned_source_gap_widens_namespace_without_interpreting_it(tmp_
 
 def test_late_foreign_all_write_wakes_previously_excluded_star_reader(tmp_path):
     import json
-    import subprocess
     import sys
 
     sources = {
@@ -1250,7 +1245,7 @@ def test_late_foreign_all_write_wakes_previously_excluded_star_reader(tmp_path):
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
     script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps(sorted(set(sys.modules)&{'selected','unused_leaf'})))\n"
-    actual = subprocess.run(
+    actual = run_guarded_test_process(
         [sys.executable, "-I", "-B", "-c", script, str(tmp_path)],
         check=True,
         capture_output=True,
@@ -1457,7 +1452,6 @@ def test_foreign_namespace_writes_require_actual_source_body_custody(
     tmp_path, monkeypatch, activation
 ):
     import json
-    import subprocess
     import sys
     from molt.cli import module_resolution
     from molt.compiler_analysis.python_source_keys import python_node_source_key
@@ -1492,7 +1486,7 @@ def test_foreign_namespace_writes_require_actual_source_body_custody(
     }
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-    executed = subprocess.run(
+    executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -1576,7 +1570,6 @@ def test_star_custom_method_keeps_its_actual_hook_writer_provenance(
     tmp_path, monkeypatch, invoke, subclass
 ):
     import json
-    import subprocess
     import sys
     from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
 
@@ -1593,7 +1586,7 @@ def test_star_custom_method_keeps_its_actual_hook_writer_provenance(
         "hooks = Hooks()\n__all__ = ['hooks']\n",
         encoding="utf-8",
     )
-    executed = subprocess.run(
+    executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -1641,7 +1634,6 @@ def test_disjoint_import_cache_key_keeps_actual_format_callback_custody(
     tmp_path, monkeypatch, expression, method
 ):
     import json
-    import subprocess
     import sys
 
     sources = {
@@ -1671,7 +1663,7 @@ def test_disjoint_import_cache_key_keeps_actual_format_callback_custody(
     }
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-    executed = subprocess.run(
+    executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -1713,7 +1705,6 @@ def test_class_mapping_call_keeps_source_candidates_without_module_universe(
     tmp_path, monkeypatch, publication
 ):
     import json
-    import subprocess
     import sys
 
     sources = {
@@ -1737,7 +1728,7 @@ def test_class_mapping_call_keeps_source_candidates_without_module_universe(
     }
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-    executed = subprocess.run(
+    executed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -1784,7 +1775,6 @@ def test_current_namespace_read_keeps_imported_callable_source(
     tmp_path, monkeypatch, read
 ):
     import json
-    import subprocess
     import sys
 
     sources = {
@@ -1797,7 +1787,7 @@ def test_current_namespace_read_keeps_imported_callable_source(
     }
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-    observed = subprocess.run(
+    observed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -1835,7 +1825,6 @@ def test_named_source_writer_keeps_only_published_callable_availability(
     tmp_path, monkeypatch, publication
 ):
     import json
-    import subprocess
     import sys
 
     if publication == "container":
@@ -1871,7 +1860,7 @@ def test_named_source_writer_keeps_only_published_callable_availability(
     }
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-    observed = subprocess.run(
+    observed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -1908,7 +1897,6 @@ def test_named_source_writer_keeps_only_published_callable_availability(
 
 def test_starred_class_base_keeps_actual_subclass_hook_source(tmp_path, monkeypatch):
     import json
-    import subprocess
     import sys
 
     sources = {
@@ -1921,7 +1909,7 @@ def test_starred_class_base_keeps_actual_subclass_hook_source(tmp_path, monkeypa
     }
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-    observed = subprocess.run(
+    observed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
