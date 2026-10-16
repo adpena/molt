@@ -262,6 +262,33 @@ def test_wasm_micro_excludes_crypto_so_reached_hashlib_refuses() -> None:
     assert "molt_hash_new" in message
 
 
+@pytest.mark.parametrize("target", ["wasm", "wasm-freestanding", "wasm32-wasip1"])
+def test_backend_refusal_combines_missing_target_and_profile_requirements(
+    target: str,
+) -> None:
+    message = BACKEND_IR._reachability_feature_refusal(
+        {
+            "functions": _functions_reaching(
+                "molt_sqlite3_connect", "molt_hash_new", "molt_ast_parse"
+            )
+        },
+        stdlib_profile="micro",
+        target=target,
+    )
+
+    assert message is not None
+    assert "has no runtime provider" in message
+    assert "wasm32" in message
+    assert [line for line in message.splitlines() if ": reached " in line] == [
+        "  sqlite: reached intrinsic molt_sqlite3_connect",
+        "  stdlib_ast: reached intrinsic molt_ast_parse",
+        "  stdlib_crypto: reached intrinsic molt_hash_new",
+    ]
+    assert "--stdlib-profile full" in message
+    assert "MOLT_STDLIB_PROFILE=full" in message
+    assert "does not provide symbols unavailable on the selected target" in message
+
+
 # --- Phase 0: profile feature sets read the Cargo ladder, not a Python mirror -
 #
 # ``runtime_features.profile_link_features`` resolves "what link-affecting +

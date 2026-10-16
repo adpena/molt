@@ -15,6 +15,7 @@ elimination.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import re
 
 import pytest
@@ -383,6 +384,107 @@ def test_refusal_ignores_unreached_intrinsic_user() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize("target_triple", ["wasm32-wasip1", "x86_64-unknown-linux-gnu"])
+@pytest.mark.parametrize("exclude_features", [True, False])
+def test_refusal_reports_complete_independent_target_and_profile_requirements(
+    target_triple: str, exclude_features: bool
+) -> None:
+    # Explicit manifest-backed requirements exceed both former display limits:
+    # eight target symbols and six symbols per excluded feature. Expectations
+    # come from these retained references, not from the requirement scanner.
+    sqlite_symbols = (
+        "molt_sqlite3_close",
+        "molt_sqlite3_commit",
+        "molt_sqlite3_connect",
+        "molt_sqlite3_cursor",
+        "molt_sqlite3_cursor_close",
+        "molt_sqlite3_cursor_drop",
+        "molt_sqlite3_execute",
+        "molt_sqlite3_executemany",
+        "molt_sqlite3_executescript",
+        "molt_sqlite3_fetchall",
+    )
+    feature_symbols = {
+        "sqlite": sqlite_symbols,
+        "stdlib_ast": ("molt_ast_parse",),
+        "stdlib_regex": (
+            "molt_re_compile",
+            "molt_re_escape",
+            "molt_re_execute",
+            "molt_re_expand_replacement",
+            "molt_re_finditer_collect",
+            "molt_re_group_values",
+            "molt_re_match_group",
+            "molt_re_match_groupdict",
+        ),
+    }
+    symbols = (*sqlite_symbols, *feature_symbols["stdlib_regex"])
+    functions = [
+        {"name": "molt_main", "ops": [_call("retained")]},
+        {
+            "name": "retained",
+            "ops": [
+                _builtin_func(f"v{index}", symbol)
+                for index, symbol in enumerate(reversed(symbols))
+            ]
+            + [_const_str("duplicate", sqlite_symbols[0])],
+        },
+        {"name": "registry_root", "ops": [_const_str("ast", "molt_ast_parse")]},
+        {"name": "dead", "ops": [_builtin_func("zlib", "molt_zlib_compress")]},
+    ]
+    profile_features = frozenset() if exclude_features else frozenset(feature_symbols)
+
+    def refusal(ordered_functions: Sequence[Mapping[str, object]]) -> str | None:
+        return RF.reachability_profile_feature_refusal(
+            ordered_functions,
+            profile_name="selected",
+            profile_features=profile_features,
+            target_triple=target_triple,
+            extra_roots=iter(("registry_root",)),
+        )
+
+    message = refusal(functions)
+    assert (
+        refusal(
+            [
+                {**function, "ops": list(reversed(function["ops"]))}
+                for function in (functions[0], *reversed(functions[1:]))
+            ]
+        )
+        == message
+    )
+    unavailable_target = target_triple == "wasm32-wasip1"
+    if not (unavailable_target or exclude_features):
+        assert message is None
+        return
+
+    assert message is not None
+    assert "..." not in message
+    assert "molt_zlib_compress" not in message
+    assert ("has no runtime provider" in message) == unavailable_target
+    if unavailable_target:
+        target_section = message.split("\n\n", 1)[0]
+        assert re.findall(r"\bmolt_[a-z0-9_]+\b", target_section) == list(
+            sqlite_symbols
+        )
+        assert "choose a supported target or remove the reached operation" in message
+
+    assert ("Profile 'selected'" in message) == exclude_features
+    if exclude_features:
+        assert [line for line in message.splitlines() if ": reached " in line] == [
+            f"  {feature}: reached "
+            + ("intrinsic " if len(required) == 1 else "intrinsics ")
+            + ", ".join(required)
+            for feature, required in feature_symbols.items()
+        ]
+        assert "--stdlib-profile full" in message
+        assert "MOLT_STDLIB_PROFILE=full" in message
+        if unavailable_target:
+            assert (
+                "does not provide symbols unavailable on the selected target" in message
+            )
 
 
 # ---------------------------------------------------------------------------
