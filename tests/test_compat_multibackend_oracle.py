@@ -23,8 +23,12 @@ from __future__ import annotations
 import inspect
 from dataclasses import replace
 import hashlib
+import multiprocessing
 import os
+import signal
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +43,7 @@ for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "tests"), str(_REPO_ROOT / "src")):
 import molt_diff  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
+from tools import memory_guard  # noqa: E402
 
 
 @pytest.mark.parametrize("runner", ["native", "adapter"])
@@ -73,6 +78,70 @@ def test_guarded_capture_preserves_observable_bytes(runner, tmp_path, monkeypatc
     assert result.infrastructure_failure is None
     assert result.stdout.encode("utf-8", errors="surrogateescape") == stdout
     assert result.child_stderr.encode("utf-8", errors="surrogateescape") == stderr
+
+
+def _guarded_command(runner: str, command: list[str], environment: dict[str, str]):
+    if runner == "native":
+        return molt_diff._run_subprocess(command, env=environment, timeout=120)
+    return compat_backends._guarded_run(
+        command,
+        prefix="MOLT_COMPAT_WASM_RUN",
+        env=environment,
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment(
+                {"MOLT_TEST_PROCESS_TIMEOUT_SEC": str(120), **environment}
+            ),
+            None,
+        ),
+        backend="wasm",
+        phase="run",
+    )
+
+
+@pytest.mark.parametrize("runner", ["native", "adapter"])
+def test_suite_stop_ends_the_running_command_with_the_operator_signal(
+    runner, tmp_path, monkeypatch
+):
+    # HF-232: a suite stopped by the operator must end the commands its
+    # workers are running, not wait out their budgets, and start no more.
+    pid_file = tmp_path / "child.pid"
+    command = [
+        sys.executable,
+        "-c",
+        "import os, pathlib, time; "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+        "time.sleep(60)",
+    ]
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))
+    environment = dict(os.environ)
+    stop = multiprocessing.RawValue("i", 0)
+
+    def stop_once_started() -> None:
+        deadline = time.monotonic() + 60
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        stop.value = signal.SIGTERM
+
+    stopper = threading.Thread(target=stop_once_started)
+    compat_backends.bind_suite_stop(stop)
+    try:
+        stopper.start()
+        started = time.monotonic()
+        result = _guarded_command(runner, command, environment)
+        elapsed = time.monotonic() - started
+        stopper.join()
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        pid_file.unlink()
+        not_started = _guarded_command(runner, command, environment)
+    finally:
+        compat_backends.bind_suite_stop(None)
+
+    assert result.guard_signal == signal.SIGTERM
+    assert elapsed < 30, elapsed
+    assert child_pid not in memory_guard.sample_processes()
+    assert not pid_file.exists() and not_started.guard_signal == signal.SIGTERM
+    assert "was not started" in not_started.stderr
 
 
 def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):

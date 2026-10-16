@@ -278,6 +278,13 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INFRASTRUCTURE_RETURN_CODE = 125
+# An operator signal to the guard asks its tree to stop: the tree gets SIGTERM
+# and up to this long to write its own receipts before SIGKILL, the default of
+# `docker stop`. A molt_diff suite with two running cases measured 1.4 s when
+# signalled itself and 4.2 s through this guard, whose SIGTERM also reaches the
+# workers' own guards. Resource trips, timeouts and an owner's cancellation
+# still kill at once.
+OPERATOR_SIGNAL_GRACE_S = 10.0
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
 INTERNAL_WORKER_ENV = "MOLT_MEMORY_GUARD_INTERNAL"
 ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
@@ -1911,7 +1918,7 @@ def run_guarded(
                     reason="owner_cancellation" if cancelled else "guard_signal",
                     samples=samples,
                     watched=watched,
-                    grace=0.0,
+                    grace=0.0 if cancelled else OPERATOR_SIGNAL_GRACE_S,
                 )
                 try:
                     proc.wait(timeout=termination_wait_s)

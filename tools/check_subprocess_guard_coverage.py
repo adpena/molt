@@ -200,6 +200,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tests/test_memory_guard_tool.py",
+        "_signal_guard_parent",
+        "Popen",
+        "the guard parent is the subject: the test sends it the operator's "
+        "SIGTERM and checks the grace its guarded child receives",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_memory_guard_tool.py",
         "test_process_group_probe_observes_an_exited_group_until_its_reap",
         "Popen",
         "a `pass` session leader stays an unreaped zombie until the test's "

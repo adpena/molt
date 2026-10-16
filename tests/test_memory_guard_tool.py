@@ -3660,6 +3660,81 @@ def test_run_guarded_external_evidence_contract_rejects_ambiguous_paths(
         )
 
 
+_SIGTERM_CHILD = """
+import pathlib, signal, sys, time
+receipt, ready, mode = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+pathlib.Path(sys.argv[4]).write_text(str(__import__("os").getpid()))
+def drain(signum, frame):
+    time.sleep(0.5)
+    receipt.write_text("drained")
+    sys.exit(3)
+signal.signal(signal.SIGTERM, drain if mode == "drain" else signal.SIG_IGN)
+ready.write_text("ready")
+time.sleep(60)
+"""
+
+
+def _signal_guard_parent(tmp_path: Path, mode: str) -> tuple[int, float, Path, int]:
+    receipt, ready, pid_file = (tmp_path / n for n in ("receipt", "ready", "pid"))
+    guard = subprocess.Popen(
+        [
+            sys.executable,
+            str(memory_guard.ROOT / "tools" / "memory_guard.py"),
+            "--max-rss-gb",
+            "4",
+            "--max-total-rss-gb",
+            "8",
+            "--",
+            sys.executable,
+            "-c",
+            _SIGTERM_CHILD,
+            str(receipt),
+            str(ready),
+            mode,
+            str(pid_file),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 60
+    while not ready.exists():
+        assert guard.poll() is None and time.monotonic() < deadline
+        time.sleep(0.02)
+    started = time.monotonic()
+    guard.send_signal(signal.SIGTERM)
+    returncode = guard.wait(timeout=60)
+    return (
+        returncode,
+        time.monotonic() - started,
+        receipt,
+        int(pid_file.read_text(encoding="utf-8")),
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signal grace")
+def test_operator_signal_lets_the_guarded_tree_write_its_receipts(
+    tmp_path: Path,
+) -> None:
+    # HF-232: a suite under the guard gets SIGTERM and a bounded grace to write
+    # its summary; the guard still reports the operator's signal.
+    returncode, elapsed, receipt, child_pid = _signal_guard_parent(tmp_path, "drain")
+    assert returncode == 128 + signal.SIGTERM
+    assert receipt.read_text(encoding="utf-8") == "drained"
+    assert elapsed < memory_guard.OPERATOR_SIGNAL_GRACE_S + 10, elapsed
+    assert child_pid not in memory_guard.sample_processes()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signal grace")
+def test_operator_signal_grace_is_bounded_for_a_child_that_ignores_it(
+    tmp_path: Path,
+) -> None:
+    returncode, elapsed, receipt, child_pid = _signal_guard_parent(tmp_path, "ignore")
+    assert returncode == 128 + signal.SIGTERM
+    assert not receipt.exists()
+    assert elapsed < memory_guard.OPERATOR_SIGNAL_GRACE_S + 10, elapsed
+    assert child_pid not in memory_guard.sample_processes()
+
+
 def test_run_guarded_interrupt_during_sampling_terminates_child_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
