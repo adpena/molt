@@ -18,6 +18,10 @@ Two non-negotiable invariants:
 from __future__ import annotations
 
 import math
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +33,9 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 from tools import perf_authority as pa  # noqa: E402
 from tools import check_ratio_direction as crd  # noqa: E402
 from molt import metric_ratios  # noqa: E402
+from tests.process_guard_common import ModuleView, run_guarded_test_process  # noqa: E402
+from tools import git_identity  # noqa: E402
+from tools.git_identity import repository_source_paths  # noqa: E402
 
 
 # --- signed_ratio: a degenerate time can never become a ratio ----------------
@@ -342,3 +349,170 @@ def test_live_tree_has_no_unguarded_time_ratio() -> None:
         "unguarded time/time ratio(s) present outside metric_ratios.py:\n"
         + "\n".join(violations)
     )
+
+
+def _git(root: Path, *arguments: str) -> None:
+    run_guarded_test_process(["git", *arguments], cwd=root, check=True, timeout=30)
+
+
+def _ratio_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # The final whitespace is a literal path component, not Git's newline.
+    root = tmp_path / (
+        "source repository with spaces "
+        if os.name != "nt"
+        else "source repository with spaces"
+    )
+    root.mkdir()
+    root = root.resolve()
+    _git(root, "init", "--quiet")
+    monkeypatch.setattr(crd, "REPO_ROOT", root)
+    return root
+
+
+def test_git_inventory_checks_admitted_source_and_excludes_operational_trees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _ratio_repository(tmp_path, monkeypatch)
+    (root / ".gitignore").write_text(
+        "logs/\ngenerated/\nthird_party/\n", encoding="utf-8"
+    )
+    tracked = root / "tracked source.py"
+    tracked.write_text("answer = first_time / second_time\n", encoding="utf-8")
+    _git(root, "add", ".gitignore", tracked.name)
+    _git(
+        root,
+        "-c",
+        "user.name=Ratio Test",
+        "-c",
+        "user.email=ratio@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "source inventory fixture",
+    )
+    # Git, rather than a spelling blacklist, excludes this real nested worktree.
+    nested = root / "nested.py"
+    _git(root, "worktree", "add", "--quiet", "--detach", str(nested), "HEAD")
+    (nested / "nested violation.py").write_text(
+        "x = left_time / right_time\n", encoding="utf-8"
+    )
+    untracked = root / (
+        "untracked\nsource with spaces.py"
+        if os.name != "nt"
+        else "untracked source with spaces.py"
+    )
+    untracked.write_text("answer = first_time / second_time\n", encoding="utf-8")
+    for directory in ("logs", "generated", "third_party"):
+        excluded = root / directory
+        excluded.mkdir()
+        (excluded / "operation_probe.py").write_text(
+            "x = left_time / right_time\n", encoding="utf-8"
+        )
+        vanished = excluded / "vanished.py"
+        vanished.write_text("x = left_time / right_time\n", encoding="utf-8")
+        vanished.unlink()
+    forced = root / "logs" / "tracked source.py"
+    forced.write_text("x = left_time / right_time\n", encoding="utf-8")
+    _git(root, "add", "--force", "logs/tracked source.py")
+
+    assert crd._iter_py_files() == sorted(
+        [tracked, untracked, forced], key=lambda path: path.as_posix()
+    )
+    report = crd.run()
+    assert report["files_scanned"] == 3
+    assert {row["path"] for row in report["violations"]} == {
+        tracked.name,
+        untracked.name,
+        "logs/tracked source.py",
+    }
+
+
+def test_git_inventory_retains_missing_tracked_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _ratio_repository(tmp_path, monkeypatch)
+    source = root / "missing.py"
+    source.write_text("x = left_time / right_time\n", encoding="utf-8")
+    _git(root, "add", source.name)
+    source.unlink()
+    assert crd._iter_py_files() == [source]
+    with pytest.raises(FileNotFoundError):
+        crd.run()
+
+
+def test_git_inventory_failure_cannot_pass_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(crd, "REPO_ROOT", tmp_path)
+    with pytest.raises(subprocess.CalledProcessError):
+        crd.run()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows reserves backslash separators")
+def test_literal_backslash_source_cannot_impersonate_ratio_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _ratio_repository(tmp_path, monkeypatch)
+    source = root / r"src\molt\metric_ratios.py"
+    source.write_text("x = left_time / right_time\n", encoding="utf-8")
+    _git(root, "add", source.name)
+    report = crd.run()
+    assert [row["path"] for row in report["violations"]] == [source.name]
+
+
+@pytest.mark.parametrize(
+    "inventory,root_suffix,message",
+    [
+        (b"source.py", b"\n", "NUL terminated"),
+        (b"../escape.py\0", b"\n", "escaped its root"),
+        (b"source.py\0", b"", "newline terminated"),
+    ],
+)
+def test_git_inventory_rejects_malformed_or_unconfined_results(
+    tmp_path: Path, inventory: bytes, root_suffix: bytes, message: str
+) -> None:
+    def read_git(cwd: Path, arguments: list[str]) -> bytes:
+        assert cwd == tmp_path
+        return (
+            inventory
+            if arguments[0] == "ls-files"
+            else os.fsencode(tmp_path) + root_suffix
+        )
+
+    with pytest.raises(ValueError, match=message):
+        repository_source_paths(tmp_path, run_git=read_git, include_untracked=True)
+
+
+def test_git_source_root_accepts_windows_newline_protocol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(git_identity, "os", ModuleView(os, name="nt"))
+
+    def read_git(cwd: Path, arguments: list[str]) -> bytes:
+        return (
+            b"source with spaces.py\0"
+            if arguments[0] == "ls-files"
+            else os.fsencode(tmp_path) + b"\r\n"
+        )
+
+    assert repository_source_paths(tmp_path, run_git=read_git) == [
+        tmp_path / "source with spaces.py"
+    ]
+
+
+def test_ratio_gate_by_path_binds_its_source_root_from_foreign_cwd(
+    tmp_path: Path,
+) -> None:
+    foreign = tmp_path / "unrelated working directory with spaces"
+    foreign.mkdir()
+    result = run_guarded_test_process(
+        [sys.executable, str(REPO_ROOT / "tools/check_ratio_direction.py"), "--json"],
+        cwd=foreign,
+        check=True,
+        timeout=60,
+    )
+    report = json.loads(result.stdout)
+    assert report["violations"] == []
+    assert report["files_scanned"] > 0

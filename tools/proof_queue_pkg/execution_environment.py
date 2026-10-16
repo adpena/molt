@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ from molt.python_environment_identity import (
     validate_python_environment_location,
 )
 from tools import proof_plan
+from tools.git_identity import repository_source_paths
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import cargo_output_environment
 from tools.proof_queue_pkg import command_identity
@@ -1050,37 +1052,32 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
 
 
 def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
-    return [path for path in _git_source_paths(cwd, env) if path.is_file()]
+    return [
+        path
+        for path in repository_source_paths(
+            cwd, run_git=partial(_read_source_git, env=env)
+        )
+        if path.is_file()
+    ]
 
 
-def _git_source_paths(
-    cwd: Path, env: Mapping[str, str], *, include_untracked: bool = False
-) -> list[Path]:
-    options = ("--others", "--exclude-standard") if include_untracked else ()
+def _read_source_git(
+    cwd: Path, arguments: list[str], *, env: Mapping[str, str]
+) -> bytes:
     completed = command_identity._run_captured(
-        ("git", "ls-files", "--cached", *options, "--full-name", "-z"),
+        ("git", *arguments),
         cwd=cwd,
         env=env,
         text=False,
     )
     if completed.returncode != 0:
-        raise ValueError("proof source custody cannot enumerate tracked inputs")
-    root_result = command_identity._run_captured(
-        ("git", "rev-parse", "--show-toplevel"), cwd=cwd, env=env
-    )
-    if root_result.returncode != 0:
-        raise ValueError("proof source custody cannot resolve its Git root")
-    root = Path(root_result.stdout.strip()).resolve(strict=True)
-    paths: list[Path] = []
-    for raw in completed.stdout.split(b"\0"):
-        if not raw:
-            continue
-        relative = Path(os.fsdecode(raw))
-        candidate = Path(os.path.abspath(root / relative))
-        if not candidate.is_relative_to(root):
-            raise ValueError("Git source input escaped its root")
-        paths.append(candidate)
-    return sorted(set(paths), key=lambda path: path.as_posix())
+        operation = (
+            "resolve its Git root"
+            if arguments[0] == "rev-parse"
+            else "enumerate tracked inputs"
+        )
+        raise ValueError(f"proof source custody cannot {operation}")
+    return completed.stdout
 
 
 SOURCE_CONTENT_KIND = "molt.proof-source-content.v1"
@@ -1101,7 +1098,8 @@ def capture_source_content(
     started = time.perf_counter()
     capture = PythonFileCaptureContext(hash_workers=hash_workers)
     root = file_publication.resolve_owned_path(source_root)
-    selected = _git_source_paths(root, env, include_untracked=True)
+    read_git = partial(_read_source_git, env=env)
+    selected = repository_source_paths(root, run_git=read_git, include_untracked=True)
     paths = sorted(set(selected) | set(overlays), key=lambda path: path.as_posix())
     regular: list[tuple[Path, os.stat_result]] = []
     missing: list[Path] = []
@@ -1148,7 +1146,9 @@ def capture_source_content(
         raise ValueError("selected source is missing from the captured file inventory")
 
     def verify_selection() -> None:
-        if selected != _git_source_paths(root, env, include_untracked=True):
+        if selected != repository_source_paths(
+            root, run_git=read_git, include_untracked=True
+        ):
             raise ValueError("source content admission set changed during capture")
         if any(path.exists() for path in missing):
             raise ValueError("missing source input appeared during capture")
