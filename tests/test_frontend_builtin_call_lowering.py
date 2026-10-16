@@ -1107,6 +1107,32 @@ def _local_reads(
     return reads
 
 
+def _method_call(
+    ops: list[dict[str, object]],
+    attribute: str,
+    arity: int,
+    *,
+    receivers: set[str] | None = None,
+) -> tuple[dict, dict, list[str]]:
+    """CPython's method-form load of ``attribute`` and the one call that adopts
+    its (callable, self_or_null) pair: ``(load, call, positional arguments)``."""
+    (load,) = (
+        op
+        for op in ops
+        if op.get("kind") == "load_method"
+        and op.get("s_value") == attribute
+        and (receivers is None or op["args"][0] in receivers)
+    )
+    (call,) = (
+        op
+        for op in ops
+        if op.get("kind") == "call_loaded_method" and op["args"][0] == load["var"]
+    )
+    assert call["args"][1] == load["out"]
+    assert len(call["args"]) == arity + 2
+    return load, call, call["args"][2:]
+
+
 def _positional_call(
     ops: list[dict[str, object]],
     targets: list[str] | set[str],
@@ -1195,17 +1221,12 @@ def test_unknown_tobytes_with_order_stays_dynamic_method_call() -> None:
         if func["name"] == "numpy_format_probe__write"
     )
 
-    (attribute,) = (
-        op
-        for op in ops
-        if op.get("kind") == "get_attr_generic_obj" and op.get("s_value") == "tobytes"
-    )
+    attribute, _call, supplied = _method_call(ops, "tobytes", 1)
     assert attribute["args"][0] in _local_reads(ops, "chunk")
-    call = _positional_call(ops, {attribute["out"]}, 1)
     assert any(
         op.get("kind") == "const_str"
         and op.get("s_value") == "C"
-        and op.get("out") == call["args"][1]
+        and op.get("out") == supplied[0]
         for op in ops
     )
     assert not any(op["kind"].startswith("callargs_") for op in ops)
@@ -3350,11 +3371,17 @@ def test_stdlib_lowered_target_guards_the_actual_imported_callable() -> None:
 
 
 def _assert_stateful_callable_call(ops: list[dict], supplied_args: int) -> dict:
-    calls = [op for op in ops if op.get("kind") == "call_func"]
+    # A module attribute call is CPython's method-form load and the loaded call,
+    # which carries the pair's self_or_null before the arguments.
+    calls = [op for op in ops if op.get("kind") in {"call_func", "call_loaded_method"}]
     assert len(calls) == 1, ops
     call = calls[0]
-    assert len(call.get("args") or []) == supplied_args + 1, call
-    assert any(op.get("out") == call["args"][0] for op in ops), ops
+    leading = 2 if call["kind"] == "call_loaded_method" else 1
+    assert len(call.get("args") or []) == supplied_args + leading, call
+    assert any(
+        op.get("out") == call["args"][0] or op.get("var") == call["args"][0]
+        for op in ops
+    ), ops
     assert not any(
         op.get("kind") in {"alloc_task", "asyncgen_new", "function_closure_bits"}
         for op in ops
@@ -4834,15 +4861,9 @@ def test_globals_pop_specializes_only_with_live_builtin_identity() -> None:
     # The module may replace globals before the deferred function runs.
     live_globals = _module_attr_accesses(deferred_ops, "module_get_global", "globals")
     globals_call = _positional_call(deferred_ops, live_globals, 0)
-    (pop_attr,) = (
-        op
-        for op in deferred_ops
-        if op.get("kind") == "get_attr_generic_obj"
-        and op.get("s_value") == "pop"
-        and op["args"] == [globals_call["out"]]
+    _pop, _pop_call, supplied = _method_call(
+        deferred_ops, "pop", 2, receivers={globals_call["out"]}
     )
-    pop_call = _positional_call(deferred_ops, {pop_attr["out"]}, 2)
-    supplied = pop_call["args"][1:]
     producers = {op["out"]: op for op in deferred_ops if "out" in op}
     key = producers[supplied[0]]
     assert key["kind"] == "const_str" and key["s_value"] == "_require_intrinsic"
@@ -4878,17 +4899,12 @@ def test_shadowed_dictionary_constructor_does_not_bypass_method_dispatch(
         op["kind"] == "frame_home_store" and op["args"] == [constructor["out"]]
         for op in ops
     )
-    (attribute,) = (
-        op
-        for op in ops
-        if op.get("kind") == "get_attr_generic_obj" and op.get("s_value") == "pop"
-    )
+    attribute, _call, supplied = _method_call(ops, "pop", 2)
     assert attribute["args"][0] in _binding_reads(ops, {constructor["out"]})
-    call = _positional_call(ops, {attribute["out"]}, 2)
     producers = {op["out"]: op for op in ops if "out" in op}
-    key = producers[call["args"][1]]
+    key = producers[supplied[0]]
     assert key["kind"] == "const_str" and key["s_value"] == "key"
-    assert producers[call["args"][2]]["kind"] == "const_none"
+    assert producers[supplied[1]]["kind"] == "const_none"
     assert not any(op["kind"].startswith("callargs_") for op in ops)
 
 

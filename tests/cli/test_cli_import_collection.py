@@ -11077,13 +11077,17 @@ def test_frontend_from_import_known_child_module_does_not_authorize_python_direc
         },
     )
 
+    # A module attribute call is CPython's method-form load and the call that
+    # adopts its (callable, self_or_null) pair, then the one argument.
     calls = [
-        op for op in ops if op.get("kind") == "call_func" and op.get("source_line") == 3
+        op
+        for op in ops
+        if op.get("kind") == "call_loaded_method" and op.get("source_line") == 3
     ]
     assert len(calls) == 1
-    assert len(calls[0]["args"]) == 2
-    callee = next(op for op in ops if op.get("out") == calls[0]["args"][0])
-    assert callee["kind"] == "get_attr_generic_obj"
+    assert len(calls[0]["args"]) == 3
+    callee = next(op for op in ops if op.get("var") == calls[0]["args"][0])
+    assert callee["kind"] == "load_method"
     assert callee["s_value"] == "distance_transform_edt"
     assert all(
         not (
@@ -11403,11 +11407,22 @@ def test_frontend_native_python_export_without_callable_metadata_uses_object_dis
         export_calls = [
             op
             for op in ops
-            if op["kind"] in {"call_bind", "call_func", "call_indirect", "call_guarded"}
+            if op["kind"]
+            in {
+                "call_bind",
+                "call_func",
+                "call_indirect",
+                "call_guarded",
+                "call_loaded_method",
+            }
             and op.get("source_line") == 3
         ]
         assert len(export_calls) == 1, "the exported callable must use object dispatch"
+        # A method-form load names its callable in `var`.
         producers = {op["out"]: op for op in ops if "out" in op}
+        producers.update(
+            {op["var"]: op for op in ops if op.get("kind") == "load_method"}
+        )
         callee = producers[export_calls[0]["args"][0]]
         assert callee["kind"] not in {"func_ref", "const_str"}, (
             "Python export visibility cannot invent a machine callable"
