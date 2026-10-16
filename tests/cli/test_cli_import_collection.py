@@ -14788,28 +14788,37 @@ def test_module_analysis_cache_path_uses_cached_build_state_subdir(
     assert info.hits >= 1
 
 
-def test_resolved_module_cache_key_is_cached(tmp_path: Path) -> None:
+def test_module_cache_keys_resolve_each_path_once_per_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import cache_fingerprints
+
     module_path = tmp_path / "pkg" / "mod.py"
-    cli_module_graph_cache._resolved_module_cache_key.cache_clear()
+    resolved: list[Path] = []
+    original_resolve = Path.resolve
 
-    first = cli_module_graph_cache._resolved_module_cache_key(
-        str(module_path), "pkg.mod", "mod", "module_analysis_cache"
-    )
-    second = cli_module_graph_cache._resolved_module_cache_key(
-        str(module_path), "pkg.mod", "mod", "module_analysis_cache"
-    )
+    def counted(self: Path, strict: bool = False) -> Path:
+        if self == module_path:
+            resolved.append(self)
+        return original_resolve(self, strict=strict)
 
-    info = cli_module_graph_cache._resolved_module_cache_key.cache_info()
-    assert first == second
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    monkeypatch.setattr(Path, "resolve", counted)
+    key = cli_module_graph_cache._resolved_module_cache_key
+    contexts = [("pkg.mod", "mod", f"context-{index}") for index in range(5)]
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        keys = [key(str(module_path), *parts) for parts in contexts]
+        assert key(str(module_path), *contexts[0]) == keys[0]
+    assert len(set(keys)) == len(contexts), "contexts stay distinct keys"
+    assert len(resolved) == 1, "one resolution serves every context"
+    with cache_fingerprints._source_tree_fingerprint_transaction():
+        assert key(str(module_path), *contexts[0]) == keys[0]
+    assert len(resolved) == 2, "a new operation resolves afresh"
 
 
-def test_module_analysis_cache_path_uses_cached_module_key(
+def test_module_analysis_cache_path_uses_the_module_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg" / "mod.py"
-    cli_module_cache._resolved_module_cache_key.cache_clear()
 
     calls = 0
     original = cli_module_cache._resolved_module_cache_key
@@ -14838,10 +14847,8 @@ def test_module_analysis_cache_path_uses_cached_module_key(
         import_scan_mode="full",
     )
 
-    info = original.cache_info()
     assert first == second
     assert calls == 2
-    assert info.hits >= 1
 
 
 def test_module_analysis_cache_path_tracks_import_scan_mode(tmp_path: Path) -> None:

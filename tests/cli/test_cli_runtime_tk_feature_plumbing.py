@@ -431,6 +431,47 @@ def test_cargo_target_root_uses_dx_external_session_target_when_required(
         cli_runtime_paths._cargo_target_root(project_root)
 
 
+@pytest.mark.usefixtures("developer_host_context")
+def test_cargo_target_root_memo_tracks_every_environment_read_and_the_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    calls = 0
+    resolve = cli_runtime_paths.project_cargo_target_dir
+
+    def counted(root, environment):
+        nonlocal calls
+        calls += 1
+        return resolve(root, environment)
+
+    monkeypatch.setattr(cli_runtime_paths, "project_cargo_target_dir", counted)
+    monkeypatch.setattr(cli_runtime_paths, "_CARGO_TARGET_ROOTS", {})
+    for key in ("CARGO_TARGET_DIR", "MOLT_SESSION_ID", "MOLT_SESSION_ID_GENERATED"):
+        monkeypatch.delenv(key, raising=False)
+
+    def expect_direct() -> Path:
+        target = cli_runtime_paths._cargo_target_root(project_root)
+        assert target == resolve(project_root, os.environ)
+        return target
+
+    unscoped = expect_direct()
+    assert expect_direct() == unscoped and calls == 1, "an unchanged read set hits"
+    # A key read only on another path (the generated-session flag is read
+    # once a session id exists) is recorded when that path runs.
+    monkeypatch.setenv("MOLT_SESSION_ID", "agent-one")
+    scoped = expect_direct()
+    assert scoped != unscoped and calls == 2
+    monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    assert expect_direct() == unscoped and calls == 3
+    monkeypatch.setenv("CARGO_TARGET_DIR", "relative-target")
+    monkeypatch.chdir(tmp_path)
+    assert expect_direct() == tmp_path / "relative-target"
+    monkeypatch.chdir(project_root)
+    assert expect_direct() == project_root / "relative-target", "the cwd is a key"
+
+
 def test_cargo_build_env_preserves_public_cargo_defaults_without_dev_request(
     monkeypatch,
 ) -> None:

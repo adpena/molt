@@ -328,6 +328,9 @@ class _SourceTreeFingerprintTransaction:
     frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(
         default_factory=dict
     )
+    # Each module path resolves once per operation; a graph keys one module
+    # under many import contexts.
+    resolved_paths: dict[str, str] = field(default_factory=dict)
 
 
 _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
@@ -360,6 +363,18 @@ def _source_tree_fingerprint_transaction() -> Generator[None]:
             yield
     finally:
         _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
+
+
+def _operation_resolved_path(path_str: str) -> str:
+    """Resolve ``path_str`` once per frontend operation, never across them."""
+    transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+    if transaction is None:
+        return str(Path(path_str).resolve())
+    resolved = transaction.resolved_paths.get(path_str)
+    if resolved is None:
+        resolved = str(Path(path_str).resolve())
+        transaction.resolved_paths[path_str] = resolved
+    return resolved
 
 
 @contextmanager

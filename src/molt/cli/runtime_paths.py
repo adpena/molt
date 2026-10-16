@@ -78,9 +78,66 @@ def _cargo_profile_dir(cargo_profile: str) -> str:
     return "debug" if cargo_profile == "dev" else cargo_profile
 
 
+class _RecordingEnvironment(Mapping[str, str]):
+    """Read-through view of an environment that records the keys it serves."""
+
+    def __init__(self, environment: Mapping[str, str]) -> None:
+        self._environment = environment
+        self._read: dict[str, str | None] = {}
+        self.iterated = False
+
+    def __getitem__(self, key: str) -> str:
+        value = self._environment.get(key)
+        self._read[key] = value
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        value = self._environment.get(key)
+        self._read[key] = value
+        return value is not None
+
+    def __iter__(self):
+        self.iterated = True
+        return iter(self._environment)
+
+    def __len__(self) -> int:
+        self.iterated = True
+        return len(self._environment)
+
+    def observed(self) -> tuple[tuple[str, str | None], ...]:
+        return tuple(self._read.items())
+
+
+# (project root, cwd) -> (environment keys read with their values, target).
+_CARGO_TARGET_ROOTS: dict[
+    tuple[str, str], tuple[tuple[tuple[str, str | None], ...], Path]
+] = {}
+
+
 def _cargo_target_root(project_root: Path) -> Path:
-    """The Cargo target this process builds ``project_root`` into (molt.dx)."""
-    return project_cargo_target_dir(project_root, os.environ)
+    """The Cargo target this process builds ``project_root`` into (molt.dx).
+
+    Resolution costs about 0.15 ms and a build asks about 11,000 times, once
+    per import-scan record. The memo is keyed by the environment keys the
+    resolution actually read, so a changed value, or a key molt.dx starts to
+    read, recomputes. A resolution that enumerates the environment is not
+    memoized.
+    """
+    key = (os.fspath(project_root), os.getcwd())
+    cached = _CARGO_TARGET_ROOTS.get(key)
+    if cached is not None and all(
+        os.environ.get(name) == value for name, value in cached[0]
+    ):
+        return cached[1]
+    environment = _RecordingEnvironment(os.environ)
+    target = project_cargo_target_dir(project_root, environment)
+    if not environment.iterated:
+        _CARGO_TARGET_ROOTS[key] = (environment.observed(), target)
+    return target
 
 
 @functools.lru_cache(maxsize=256)

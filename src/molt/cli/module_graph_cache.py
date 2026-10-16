@@ -30,6 +30,7 @@ from molt.cli.json_cache import (
 )
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
+    _operation_resolved_path,
     _source_tree_fingerprint_transaction,
 )
 from molt.cli import module_source as _module_source
@@ -709,10 +710,9 @@ def warm_stdlib_intrinsic_source_facts(
             pass
 
 
-@functools.lru_cache(maxsize=4096)
 def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     return hashlib.sha256(
-        "|".join((str(Path(path_str).resolve()), *parts)).encode("utf-8")
+        "|".join((_operation_resolved_path(path_str), *parts)).encode("utf-8")
     ).hexdigest()[:24]
 
 
