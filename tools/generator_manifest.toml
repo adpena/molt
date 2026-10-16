@@ -670,3 +670,15 @@ enum_name = "CompatibilityError"
 owned_by = "tools/compatibility_error_protocol.py"
 source_table = "tools/compatibility_error_protocol.py"
 audited_defaults = []
+
+[[generator]]
+tool = "tools/gen_reconstructed_function_fixtures.py"
+outputs = []
+output_family = "Reconstructed-function physical target projects and entrypoint list"
+source = "tests/reconstructed_function_test_support.py + tools/generator_io.py"
+check_mode = true
+toolchains = []
+check_command = "tools/gen_reconstructed_function_fixtures.py --check"
+idempotent = true
+sync_test = "tests/test_check_stdlib_intrinsics.py"
+discovery_only = false

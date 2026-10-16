@@ -981,6 +981,81 @@ def test_synthetic_environment_preserves_declared_empty_import_roots(packages):
     assert environment["tree"]["file_count"] == 2 + len(packages)
 
 
+@pytest.mark.parametrize(
+    "kind,admitted",
+    [
+        ("copied", True),
+        ("hardlink", True),
+        ("same-root-symlink", True),
+        ("base-runtime-symlink", True),
+        ("different-content", False),
+        ("nonexecutable", False),
+        ("outside-scripts", False),
+    ],
+)
+def test_environment_projects_only_captured_interpreter_aliases(
+    tmp_path: Path, kind: str, admitted: bool
+) -> None:
+    from tests.python_environment_test_support import realized_environment_manifest
+
+    payload = realized_environment_manifest(runtime_identity_manifest(), [])
+    tree = payload["tree"]
+    selected = payload["selected_executable"]
+    selected_node = next(
+        node for node in tree["file_nodes"] if node["id"] == selected["node"]
+    )
+    # Match the independently captured base image. An alias is justified by
+    # captured content, not its filename or by a new walk of the live directory.
+    selected_node["sha256"] = "a" * 64
+    relative = (
+        "library-mirror.exe"
+        if kind == "outside-scripts"
+        else f"{payload['scripts_root']}/retained-interpreter.exe"
+    )
+    entry = {
+        "path": relative,
+        "kind": "hardlink" if kind == "hardlink" else "file",
+        "node": selected["node"],
+        "access": {"readable": True, "writable": False, "executable": True},
+    }
+    if kind in {"copied", "different-content", "nonexecutable", "outside-scripts"}:
+        node = {**selected_node, "id": f"file-node-{len(tree['file_nodes'])}"}
+        if kind == "different-content":
+            node["sha256"] = "b" * 64
+        tree["file_nodes"].append(node)
+        tree["node_ids"].append(node["id"])
+        entry["node"] = node["id"]
+    elif kind == "same-root-symlink":
+        entry.update(kind="symlink", target_owner="same-root", target=selected["path"])
+    elif kind == "base-runtime-symlink":
+        entry.pop("node")
+        entry.update(
+            kind="symlink", target_owner="base-runtime", target_role="base-executable"
+        )
+    if kind == "nonexecutable":
+        entry["access"]["executable"] = False
+    tree["entries"].append(entry)
+    tree["entries"].sort(key=lambda row: (row["path"].casefold(), row["path"]))
+    tree["file_count"] += 1
+    tree["manifest_sha256"] = canonical_json_sha256(tree["entries"])
+    payload["environment_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "environment_closure_sha256"
+        }
+    )
+    base = tmp_path / "base.exe"
+    base.write_bytes(b"synthetic base image; content is owned by the manifest")
+    projected = identity.python_environment_executable_files(
+        payload, tmp_path, base_executable=base
+    )
+    paths = {row["path"] for row in projected}
+    assert (str(tmp_path / relative) in paths) is admitted
+    assert str(tmp_path / selected["path"]) in paths
+    assert str(base.resolve()) in paths
+
+
 def test_capture_node_bindings_share_physical_custody_across_authorities(tmp_path):
     from molt.exact_json import canonical_json_sha256
     from tests.python_environment_test_support import realized_environment_manifest

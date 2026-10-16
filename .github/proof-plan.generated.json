@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f4a9bad2083d832404e8483017b9fb72ec7615f0c830ba8b7e9795bcf51684d4",
+  "authority_sha256": "e1388f8f4faeec53e3023647ded3b478b4ec74b7c8071e166695f213c28b6f44",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -450,7 +450,11 @@
         "tests/differential/basic/from_import_missing_name.py",
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py",
-        "tools/compat/**"
+        "tools/compat/**",
+        "tools/gen_reconstructed_function_fixtures.py",
+        "tests/fixtures/reconstructed_functions/**",
+        "tests/reconstructed_function_test_support.py",
+        "tests/differential/stdlib/json_encoder_hooks.py"
       ],
       "job": "wasm-build",
       "job_reserve_seconds": 180,
@@ -4398,10 +4402,13 @@
         "--jobs",
         "1",
         "--no-retry-oom",
+        "--files-from",
+        "tests/fixtures/reconstructed_functions/TESTS.txt",
         "--json-output",
         "proof-receipts/evidence/import-from-codec/summary.json",
         "--log-aggregate",
         "proof-receipts/evidence/import-from-codec/output.log",
+        "tests/differential/stdlib/json_encoder_hooks.py",
         "tests/differential/basic/from_import_missing_name.py",
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"
@@ -4414,13 +4421,10 @@
         ]
       },
       "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend",
-        "wasm.build.native-backend",
-        "wasm.build.shared-runtime"
-      ],
+      "dependencies": [],
       "env": {
         "MOLT_BACKEND_DAEMON": "0",
+        "MOLT_BACKEND_PROFILE": "dev",
         "MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC": "60",
         "MOLT_DIFF_RESULTS_JSONL": "proof-receipts/evidence/import-from-codec/results.jsonl",
         "MOLT_DIFF_TIMEOUT": "60"
@@ -4429,7 +4433,7 @@
         "proof-receipts/evidence/import-from-codec"
       ],
       "family": "wasm",
-      "id": "wasm.test.import-from-codec-parity",
+      "id": "wasm.test.runtime-import-conformance",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pr",

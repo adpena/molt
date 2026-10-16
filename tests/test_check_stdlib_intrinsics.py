@@ -6,6 +6,12 @@ from pathlib import Path
 
 import pytest
 from tests.process_guard_common import run_guarded_test_process
+from tests.reconstructed_function_test_support import (
+    ACTIVATION_TARGET_ROUTES,
+    _activation_context_sources,
+    _activation_publication_sources,
+    activation_target_sources,
+)
 
 from tools import check_stdlib_intrinsics
 
@@ -2636,81 +2642,6 @@ def test_inventory_rejects_source_namespace_change_during_classification(tmp_pat
         )
 
 
-def _activation_publication_sources(route, protected):
-    import textwrap
-
-    sources = {
-        "alternatives": (
-            "def replacement():\n    import replacement_provider\n"
-            "def give():\n    return replacement\n"
-        ),
-    }
-    consumer = (
-        "from alternatives import replacement, give\n"
-        "class Outer:\n"
-        "    def __enter__(self): return self\n"
-        "    def __exit__(self, *args): return True\n"
-        "def original():\n    import original_provider\n"
-        "selected = original\n"
-    )
-    if route.startswith("function-"):
-        consumer += "from types import FunctionType\n"
-        invocation = "selected()"
-        if protected:
-            invocation = "with Outer():\n    selected()"
-        consumer += "def template():\n" + textwrap.indent(invocation, "    ") + "\n"
-        if route == "function-dict":
-            namespace = (
-                "{'Outer': Outer, 'selected': replacement, "
-                "'__builtins__': __builtins__}"
-            )
-        else:
-            selection = (
-                "give()" if route == "function-helper-missing" else "replacement"
-            )
-            consumer += (
-                "class Activation(dict):\n"
-                "    def __missing__(self, key):\n"
-                "        if key == 'selected':\n"
-                f"            return {selection}\n"
-                "        raise KeyError(key)\n"
-            )
-            namespace = "Activation(Outer=Outer, __builtins__=__builtins__)"
-        consumer += (
-            "def entry():\n"
-            f"    activation = {namespace}\n"
-            "    rebound = FunctionType(template.__code__, activation)\n"
-            "    rebound()\n"
-        )
-        expected_provider = "replacement_provider"
-    else:
-        if route.endswith("foreign"):
-            sources["writer"] = (
-                "import consumer\n"
-                "from alternatives import replacement\n"
-                "def update():\n    consumer.selected = replacement\n"
-            )
-            consumer += "from writer import update\n"
-        else:
-            consumer += (
-                "def update():\n    global selected\n    selected = replacement\n"
-            )
-        alias = route.startswith("alias-")
-        invocation = "retained()" if alias else "selected()"
-        if protected:
-            invocation = "with Outer():\n    " + invocation
-        consumer += (
-            "def entry():\n"
-            + ("    retained = selected\n" if alias else "")
-            + "    update()\n"
-            + textwrap.indent(invocation, "    ")
-            + "\n"
-        )
-        expected_provider = "original_provider" if alias else "replacement_provider"
-    sources["consumer"] = consumer
-    return sources, expected_provider
-
-
 @pytest.mark.parametrize("protected", [False, True], ids=["propagates", "suppressed"])
 @pytest.mark.parametrize(
     "route",
@@ -2770,87 +2701,6 @@ def test_activation_publication_reference_observations_preserve_source_custody(
     classification = _source_inventory_fixture(tmp_path, sources)
     assert expected_provider in _inventory_owners(classification)
     assert expected_provider not in classification.statuses
-
-
-def _activation_context_sources(route):
-    if route == "code-read":
-        return {
-            "consumer": (
-                "def dormant():\n    import left_provider\n"
-                "seen = []\n"
-                "def entry():\n"
-                "    try:\n        return dormant.__code__\n"
-                "    except ImportError as error:\n"
-                "        seen.append(error)\n"
-            ),
-        }
-    alternatives = (
-        "def left():\n    import left_provider\n"
-        "def right():\n    import right_provider\n"
-        "selected = right\n"
-    )
-    consumer = (
-        "from types import FunctionType\n"
-        "from alternatives import left, right\n"
-        "selected = left\n"
-        "seen = []\n"
-    )
-    if route.startswith("replace-"):
-        alternatives += (
-            "def make_codes():\n"
-            "    retained = None\n"
-            "    def initial():\n        return retained\n"
-            "    def replacement():\n"
-            "        retained\n        return selected\n"
-            "    return initial.__code__, replacement.__code__, initial.__closure__\n"
-        )
-        consumer += (
-            "from alternatives import make_codes\n"
-            "first_code, replacement_code, retained_closure = make_codes()\n"
-        )
-        if route == "replace-builtins":
-            consumer += (
-                "left_builtins = {'selected': left}\n"
-                "right_builtins = {'selected': right}\n"
-                "left_namespace = {'__builtins__': left_builtins}\n"
-                "right_namespace = {'__builtins__': right_builtins}\n"
-            )
-        else:
-            consumer += (
-                "left_namespace = {'selected': left}\n"
-                "right_namespace = {'selected': right}\n"
-            )
-        consumer += (
-            "a = FunctionType(first_code, left_namespace, closure=retained_closure)\n"
-            "b = FunctionType(first_code, right_namespace, closure=retained_closure)\n"
-        )
-        if route == "replace-builtins":
-            consumer += (
-                "left_namespace['__builtins__'] = right_builtins\n"
-                "right_namespace['__builtins__'] = left_builtins\n"
-            )
-        consumer += "a.__code__ = replacement_code\nb.__code__ = replacement_code\n"
-    else:
-        body = {
-            "shared-return": "    return selected\n",
-            "nested-def": (
-                "    def nested():\n        return selected()\n    return nested\n"
-            ),
-            "nested-lambda": "    return lambda: selected()\n",
-        }[route]
-        consumer += (
-            "def template():\n" + body + "left_namespace = {'selected': left}\n"
-            "right_namespace = {'selected': right}\n"
-            "a = FunctionType(template.__code__, left_namespace)\n"
-            "b = FunctionType(template.__code__, right_namespace)\n"
-        )
-    consumer += (
-        "def entry():\n"
-        "    try:\n        a()()\n"
-        "    except ImportError as error:\n        seen.append(error)\n"
-        "    b()()\n"
-    )
-    return {"consumer": consumer, "alternatives": alternatives}
 
 
 @pytest.mark.parametrize(
@@ -2924,6 +2774,75 @@ def test_activation_context_reference_observations_preserve_source_custody(
         {"left_provider"} if route == "code-read" else set(markers)
     ) <= _inventory_owners(classification)
     assert not set(markers).intersection(classification.statuses)
+
+
+@pytest.mark.parametrize("route", ACTIVATION_TARGET_ROUTES)
+def test_activation_target_sources_preserve_physical_reference_observations(
+    tmp_path: Path, route: str
+) -> None:
+    # These expectations are independent of the source projection. Observe the
+    # real import machinery in a child, including failed-module execution and
+    # retained exception identities, rather than replacing its import hook.
+    expected_stdout = {
+        "function-dict": ("function-dict\n['replacement_provider']\nTrue\n"),
+        "function-missing": ("function-missing\n['replacement_provider']\nTrue\n"),
+        "function-helper-missing": (
+            "function-helper-missing\n['replacement_provider']\nTrue\n"
+        ),
+        "shared-return": (
+            "shared-return\n['left_provider', 'right_provider']\n"
+            "True\n[True]\n[True, True]\n"
+        ),
+        "nested-def": (
+            "nested-def\n['left_provider', 'right_provider']\n"
+            "True\n[True]\n[True, True]\n"
+        ),
+        "nested-lambda": (
+            "nested-lambda\n['left_provider', 'right_provider']\n"
+            "True\n[True]\n[True, True]\n"
+        ),
+        "replace-globals": (
+            "replace-globals\n['left_provider', 'right_provider']\n"
+            "True\n[True]\n[True, True, True, True, True, True, True]\n"
+        ),
+        "replace-builtins": (
+            "replace-builtins\n['left_provider', 'right_provider']\n"
+            "True\n[True]\n"
+            "[True, True, True, True, True, True, True, True, True, True, True]\n"
+        ),
+    }[route]
+    for module, source in activation_target_sources(route).items():
+        (tmp_path / f"{module}.py").write_text(source, encoding="utf-8")
+    observed = run_guarded_test_process(
+        [sys.executable, "-B", str(tmp_path / "main.py")],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert observed.returncode == 0, observed.stdout + observed.stderr
+    assert observed.stderr == ""
+    assert observed.stdout == expected_stdout
+
+
+def test_reconstructed_function_target_fixtures_are_current() -> None:
+    from tools.gen_reconstructed_function_fixtures import generated_outputs
+
+    for path, expected in generated_outputs().items():
+        assert path.read_bytes() == expected.encode("utf-8"), path
+
+
+def test_reconstructed_function_generator_rejects_obsolete_consumers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tools import gen_reconstructed_function_fixtures as generator
+
+    # Removing a route or module must not silently leave a runnable old lane.
+    monkeypatch.setattr(generator, "FIXTURES", tmp_path)
+    monkeypatch.setattr(generator, "ROOT", tmp_path)
+    (tmp_path / "obsolete.py").write_text("raise AssertionError\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="obsolete.py"):
+        generator.generated_outputs()
 
 
 @pytest.mark.parametrize(

@@ -1128,6 +1128,42 @@ def python_environment_executable_files(
     )
     console_scripts = cast(Mapping[str, list[str]], environment["console_scripts"])
     projected_paths: set[str] = {str(row["path"]) for row in projected}
+    selected_content = projected[0]
+    scripts_relative = str(environment["scripts_root"])
+    for entry in entries:
+        relative = str(entry["path"])
+        parent, _separator, name = relative.rpartition("/")
+        if parent != scripts_relative:
+            continue
+        absolute = str(canonical_root / Path(relative))
+        if absolute in projected_paths:
+            continue
+        access = entry.get("access")
+        if not isinstance(access, Mapping) or access.get("executable") is not True:
+            continue
+        content = (
+            runtime_base
+            if entry.get("kind") == "symlink"
+            and entry.get("target_owner") == "base-runtime"
+            else nodes_by_id.get(str(entry.get("node")))
+        )
+        if content is None or (
+            content["size"] != selected_content["size"]
+            or content["sha256"] != selected_content["sha256"]
+        ):
+            continue
+        # The complete environment already owns these lexical launchers and
+        # their bytes. Preserve copied, hardlinked and symlinked interpreter
+        # aliases without a new filesystem scan or name-based permission.
+        projected.append(
+            {
+                "role": f"interpreter-alias:{name}",
+                "path": absolute,
+                "size": content["size"],
+                "sha256": content["sha256"],
+            }
+        )
+        projected_paths.add(absolute)
     for name in sorted(console_scripts):
         for relative in console_scripts[name]:
             append(f"console-script:{name}", relative)
