@@ -259,7 +259,9 @@ impl PassManager {
                     function_op_count(func),
                 );
             }
+            let started = std::time::Instant::now();
             let mut stat = p.run(func, &mut am, &self.target_info);
+            stat.elapsed = started.elapsed();
             stat.name = p.name();
             if trace_this {
                 eprintln!(
@@ -328,7 +330,7 @@ impl PassManager {
 
         let total_changes: usize = stats.iter().map(PassStats::total_changes).sum();
         if total_changes == 0 {
-            *func = snapshot.clone();
+            *func = snapshot;
         }
 
         if has_loop_role && dump_tir {
@@ -373,8 +375,13 @@ impl PassManager {
         if backend_env::var(BackendEnv::TIR_OPT_STATS).as_deref() == Ok("1") {
             for s in &stats {
                 eprintln!(
-                    "[TIR] {}: {} values changed, {} ops removed, {} ops added, {} facts changed",
-                    s.name, s.values_changed, s.ops_removed, s.ops_added, s.facts_changed
+                    "[TIR] {}: {} values changed, {} ops removed, {} ops added, {} facts changed, {:?}",
+                    s.name,
+                    s.values_changed,
+                    s.ops_removed,
+                    s.ops_added,
+                    s.facts_changed,
+                    s.elapsed
                 );
             }
         }
