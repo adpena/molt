@@ -37,7 +37,6 @@ from molt.cli.external_link_providers import (
 )
 from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli.models import (
-    _BuildOutputLayout,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
@@ -47,6 +46,7 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
     _StagedExternalPackageNativeArtifact,
 )
+from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.module_resolution import _case_exact_file
 from molt.python_module_names import canonical_python_module_names
 from molt.cli.output import CliFailure as _CliFailure

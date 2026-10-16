@@ -19,7 +19,6 @@ from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.models import (
     BuildProfile,
-    _BuildOutputLayout,
     _ExternalPackageNativeArtifactPlan,
     _PreparedBackendCompile,
     _PreparedBackendRuntimeContext,
@@ -29,6 +28,7 @@ from molt.cli.models import (
     _PreparedBuildRoots,
     _ResolvedBuildEntry,
 )
+from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.native_toolchain import _run_bolt_post_link
 from molt.cli.output import fail as _fail
 from molt.cli.runtime_native_build import _ensure_native_runtime_lib_ready_before_link

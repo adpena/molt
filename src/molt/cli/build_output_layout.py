@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import functools
 import os
 from collections.abc import Mapping
@@ -12,8 +13,25 @@ from molt.default_paths import (
     _default_molt_cache,
     _default_molt_home,
 )
-from molt.cli.models import _BuildOutputLayout
 from molt.dx import configured_artifact_root, project_cargo_target_dir
+
+
+@dataclass(frozen=True)
+class _BuildOutputLayout:
+    is_wasm: bool
+    is_wasm_freestanding: bool
+    is_rust_transpile: bool
+    is_luau_transpile: bool
+    is_mlir_emit: bool
+    split_runtime: bool
+    linked: bool
+    target_triple: str | None
+    emit_mode: str
+    output_artifact: Path
+    output_binary: Path | None
+    linked_output_path: Path | None
+    emit_ir_path: Path | None
+
 
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # The default runtime WASM directory inside a project's Cargo target.
