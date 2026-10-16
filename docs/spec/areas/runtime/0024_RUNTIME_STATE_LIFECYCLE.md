@@ -595,8 +595,8 @@ or replacing a function's `__code__`, cannot rewrite the declaration or a
 sibling function's attributes. This follows
 [CPython 3.12](https://github.com/python/cpython/blob/v3.12.0/Objects/funcobject.c)
 and [3.15](https://github.com/python/cpython/blob/v3.15.0/Objects/funcobject.c).
-The code payload owns two additional words (16 bytes; the current allocation
-class grows from 208 to 224 bytes), with no function-payload growth, extra
+The code payload owns two additional words (16 bytes; the current 64-bit native
+allocation class grows from 208 to 224 bytes), with no function-payload growth, extra
 allocation or invocation-time lookup. Clone and heap traversal/retirement
 preserve both edges. Only exact immutable strings and a `None` docstring are
 admitted: native string subclasses can own mutable state and cannot enter this

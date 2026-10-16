@@ -253,15 +253,17 @@ def _bind_cargo_build_tool_environment(
         isinstance(closure, Mapping) and closure.get("descendants") == "forbidden"
     ):
         return selected, bound_contract
-    command = [str(value) for value in envelope["argv"]]
-    command = admission._nested_command(command) or command
+    outer_command = [str(value) for value in envelope["argv"]]
+    command = admission._nested_command(outer_command) or outer_command
     invocation = admission.cargo_invocation_for_envelope(envelope)
     if invocation is not None:
         # Cargo forwards CARGO to build scripts and external subcommands. An
         # explicit typed payload therefore owns this selector too, even when
         # the inherited environment points to another installation.
+        # Resolve in the outer Python/uv context; Cargo configuration below
+        # consumes only the nested payload.
         cargo = command_identity._cargo_executable_path(
-            envelope, command, cwd=cwd, env=selected, token=command[0]
+            envelope, outer_command, cwd=cwd, env=selected, token=command[0]
         )
         selected = {
             name: value
