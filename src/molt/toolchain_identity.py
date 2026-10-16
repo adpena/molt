@@ -265,9 +265,17 @@ def executable_search_directories(
 def executable_candidates(
     command: str, *, environment: Mapping[str, str], cwd: Path | None = None
 ) -> Iterator[Path]:
-    """Yield search-ordered executables without running or modifying any of them."""
+    """Yield search-ordered executables without running or modifying any of them.
+
+    While a build records its inputs, each searched directory and each yielded
+    executable is reported to the build record: a program added to an earlier
+    directory, or a retargeted link, selects another executable.
+    """
     if not command or "\x00" in command:
         return
+    from molt import input_report
+
+    recording = input_report.active()
     cwd = Path.cwd() if cwd is None else cwd
     candidate = expand_user_path(command, environment=environment)
     if candidate.is_absolute() or any(separator in command for separator in "/\\"):
@@ -278,10 +286,15 @@ def executable_candidates(
         directories = executable_search_directories(environment=environment, cwd=cwd)
     names = executable_name_candidates(command, environment=environment)
     for directory in directories:
+        if recording:
+            input_report.report_directory(directory)
         for name in names:
             candidate = directory / name
             if candidate.is_file() and os.access(candidate, os.F_OK | os.X_OK):
-                yield lexical_executable_path(candidate)
+                selected = lexical_executable_path(candidate)
+                if recording:
+                    input_report.report_data_file(selected)
+                yield selected
 
 
 def find_executable(

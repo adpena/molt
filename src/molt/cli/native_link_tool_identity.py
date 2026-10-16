@@ -19,7 +19,7 @@ from molt.llvm_linker_roles import (
     executable_selects_linker_role,
     lexical_executable_path,
 )
-from molt import process_guard
+from molt import input_report, process_guard
 
 
 @functools.lru_cache(maxsize=128)
@@ -59,6 +59,9 @@ def _native_link_tool_content_fact(path: Path) -> tuple[str | None, str]:
 def _native_link_tool_stat_fact(role: str, path: Path | None) -> dict[str, object]:
     if path is None:
         return {"role": role, "resolved": False, "path": None}
+    # The link reads these tools; a recording build reports them, including
+    # the linker that the driver selects in a child process.
+    input_report.report_data_file(path)
     stat = path.stat()
     return {
         "role": role,

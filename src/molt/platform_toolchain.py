@@ -8,13 +8,13 @@ import hashlib
 from pathlib import Path
 import platform
 import re
-import shutil
 import subprocess
 
 from molt import process_guard
 from molt.exact_json import loads_exact
 from molt.llvm_toolchain import llvm_host_architecture
 from molt.toolchain_identity import (
+    find_executable,
     resolve_executable,
     open_stable_regular_file,
 )
@@ -160,7 +160,7 @@ def activate_msvc_environment(
             raise ValueError(
                 f"Visual Studio activation did not bind {key} to {install}"
             )
-    if shutil.which("cl", path=env.get("PATH")) is None:
+    if find_executable("cl", environment=env) is None:
         raise ValueError("Visual Studio activation did not select cl.exe")
     return env
 

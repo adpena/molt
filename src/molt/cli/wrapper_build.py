@@ -31,6 +31,7 @@ from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
 from molt.backend_executable_names import CodegenBackend, backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
+    _load_molt_config,
     STATIC_IMPORT_MODULES_ENV,
     _resolve_build_config,
     _select_codegen_backend,
@@ -93,9 +94,7 @@ def _wrapper_target_python(
             return _parse_target_python_version(arg.split("=", 1)[1])
     return _resolve_target_python_version(
         explicit=None,
-        build_config=_resolve_build_config(
-            _build_inputs._load_molt_config(project_root)
-        ),
+        build_config=_resolve_build_config(_load_molt_config(project_root)),
         project_root=project_root,
     )
 
@@ -115,7 +114,7 @@ def _wrapper_stdlib_profile(
             flag = arg.split("=", 1)[1]
     profile, _source = resolve_stdlib_profile(
         flag=flag,
-        build_cfg=_resolve_build_config(_build_inputs._load_molt_config(project_root)),
+        build_cfg=_resolve_build_config(_load_molt_config(project_root)),
         env=env,
     )
     return profile

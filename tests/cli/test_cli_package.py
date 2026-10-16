@@ -73,6 +73,46 @@ def test_parser_imports_no_command_implementation() -> None:
     }
 
 
+_BUILD_STAGES = {
+    "molt.frontend",
+    "molt.cli.models",
+    "molt.cli.build_inputs",
+    "molt.cli.frontend_pipeline",
+    "molt.cli.module_graph_discovery",
+    "molt.cli.build_pipeline",
+}
+
+
+def test_build_reaches_its_build_function_without_other_commands() -> None:
+    # `molt build` checks its early-cutoff record before any build stage
+    # runs, so the path from `main` to the build function loads no build stage
+    # and no other command's implementation (HF-250).
+    loaded = _molt_modules_loaded_by(
+        "from molt.cli import entrypoint\n"
+        "sys.argv = ['molt', 'build', 'probe.py']\n"
+        "assert entrypoint.main(build_fn=lambda *args, **kwargs: 0) == 0"
+    )
+    assert "molt.cli.entrypoint_dispatch" in loaded
+    assert not loaded & _BUILD_STAGES
+    assert not loaded & {
+        "molt.cli.extension_commands",
+        "molt.cli.script_commands",
+        "molt.cli.quality_commands",
+        "molt.cli.wrapper_build",
+        "molt.cli.package_distribution",
+        "molt.cli.deps",
+        "molt.cli.setup_readiness",
+        "molt.cli.toolchain_validation",
+    }
+
+
+def test_build_command_imports_build_stages_only_when_it_builds() -> None:
+    # An early-cutoff hit returns from `build` before the first stage.
+    loaded = _molt_modules_loaded_by("import molt.cli.build_command")
+    assert "molt.build_record" in loaded
+    assert not loaded & _BUILD_STAGES
+
+
 def test_frontend_worker_imports_no_graph_discovery_or_backend() -> None:
     # A lowering worker needs the frontend and the module caches, not module
     # graph construction, source extensions or the backend (HF-228).
@@ -88,3 +128,11 @@ def test_frontend_worker_imports_no_graph_discovery_or_backend() -> None:
     }
     assert not loaded & forbidden
     assert not {name for name in loaded if name.startswith("molt.cli.source_extension")}
+
+
+def test_input_report_imports_no_other_molt_module() -> None:
+    # Lowering code reports its reads through this module, so it is part of
+    # the frontend's semantic fingerprint; it must stay a leaf (HF-250).
+    assert _molt_modules_loaded_by("import molt.input_report") - {"molt"} == {
+        "molt.input_report"
+    }

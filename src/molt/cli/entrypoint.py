@@ -71,8 +71,9 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
     # A parsed command needs the project configuration and the dispatcher;
     # `--version`, `--help` and usage errors exit inside parse_args without
     # importing them (HF-228).
-    from molt.cli import build_inputs, entrypoint_dispatch
+    from molt.cli import entrypoint_dispatch
     from molt.cli.config_resolution import (
+        _load_molt_config,
         _resolve_build_config,
         _resolve_capabilities_config,
         _resolve_command_config,
@@ -89,7 +90,7 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
             config_root = _find_project_root(Path(args.file).resolve())
         except OSError:
             config_root = _find_project_root(Path.cwd())
-    config = build_inputs._load_molt_config(config_root)
+    config = _load_molt_config(config_root)
     build_cfg = _resolve_build_config(config)
     run_cfg = _resolve_command_config(config, "run")
     compare_cfg = _resolve_command_config(config, "compare")

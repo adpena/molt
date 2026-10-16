@@ -2,22 +2,27 @@
 
 `build` checks the request, then runs the three build stages: input
 preparation (`build_inputs`), the frontend (`frontend_pipeline`) and the
-backend and link (`build_pipeline`). It imports all three, so only commands
-that build load it; `molt.cli` re-exports `build` lazily.
+backend and link (`build_pipeline`). It imports them only when it builds: a
+request whose recorded inputs are unchanged ends before any of them loads.
+`molt.cli` re-exports `build` lazily.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping
+import functools
+import inspect
+import os
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_executable_names import DEFAULT_CODEGEN_BACKEND
-from molt.cli import build_inputs as _build_inputs
-from molt.cli import build_pipeline as _build_pipeline
-from molt.cli import frontend_pipeline as _frontend_pipeline
-from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
-from molt.cli.config_resolution import _resolve_build_config, resolve_stdlib_profile
+from molt import build_record as _build_record
+from molt import input_report as _input_report
 from molt.cli.output import fail as _fail
+from molt.cli.output import success as _success
+from molt.default_paths import _default_molt_cache
 
 if TYPE_CHECKING:
     from molt.backend_executable_names import CodegenBackend
@@ -33,6 +38,220 @@ if TYPE_CHECKING:
     )
 
 
+# How much a build prints does not change what it builds. The output path and
+# the output directory do: the linker signs the binary under its file name and
+# its debug map names the object files under the output directory.
+_RECORD_PRESENTATION_ARGUMENTS = frozenset({"verbose"})
+
+
+def _host_identity(portable: bool) -> dict[str, str]:
+    """Machine facts a native artifact depends on.
+
+    A non-portable build targets the host CPU's features, so the CPU model
+    joins the key; a record never crosses hosts that would compile differently.
+    """
+    import platform
+
+    identity = {
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+    }
+    if not portable:
+        identity["cpu"] = _cpu_model()
+    return identity
+
+
+def _cpu_model() -> str:
+    if sys.platform == "darwin":
+        import ctypes
+
+        libc = ctypes.CDLL(None)
+        size = ctypes.c_size_t(256)
+        buffer = ctypes.create_string_buffer(size.value)
+        name = b"machdep.cpu.brand_string"
+        if libc.sysctlbyname(name, buffer, ctypes.byref(size), None, 0) == 0:
+            return buffer.value.decode("utf-8", "replace")
+        return "unknown-darwin-cpu"
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as handle:
+            lines = [
+                line
+                for line in handle
+                if line.startswith(("model name", "flags", "Features"))
+            ]
+        return "".join(sorted(set(lines)))
+    except OSError:
+        import platform
+
+        return platform.processor() or "unknown-cpu"
+
+
+def _early_cutoff_request(arguments: Mapping[str, Any]) -> tuple[str, Path] | None:
+    """(key, record path) when this request may reuse a recorded build.
+
+    Only a native binary build with an explicit absolute output file and the
+    cache enabled qualifies. A request that publishes anything beyond the
+    binary, or reads an input no authority reports to the build record, never
+    cuts off.
+    """
+    output = arguments["output"]
+    capabilities = arguments["capabilities"]
+    if (
+        arguments["target"] != "native"
+        or not arguments["cache"]
+        or arguments["json_output"]
+        or output is None
+        or not Path(output).is_absolute()
+        # A directory output names the binary after the entry module.
+        or output.endswith(("/", os.sep))
+        or Path(output).is_dir()
+        or arguments["emit"] not in (None, "bin")
+        or arguments["emit_ir"] is not None
+        or arguments["linked"]
+        or arguments["linked_output"] is not None
+        or arguments["split_runtime"]
+        or arguments["snapshot"]
+        or arguments["bolt"]
+        or arguments["fact_graph_request"] is not None
+        or arguments["diagnostics"]
+        or arguments["diagnostics_file"] is not None
+        or arguments["cache_report"]
+        or arguments["audit_log"] is not None
+        or arguments["codegen_backend"] != DEFAULT_CODEGEN_BACKEND
+        # Inputs named by path whose loaders do not yet report to the record.
+        or arguments["type_facts_path"] is not None
+        or arguments["pgo_profile"] is not None
+        or arguments["runtime_feedback"] is not None
+        or arguments["capability_manifest"] is not None
+        or arguments["sysroot"] is not None
+        or (isinstance(capabilities, str) and Path(capabilities).exists())
+        # `ty` under the trust policy is never cached as a compiler proof.
+        or arguments["type_hint_policy"] == "trust"
+        or os.environ.get("MOLT_BUILD_DIAGNOSTICS")
+        or os.environ.get("MOLT_BUILD_DIAGNOSTICS_FILE")
+        or os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES")
+    ):
+        return None
+    key = _build_record.request_key(
+        {
+            name: value
+            for name, value in arguments.items()
+            if name not in _RECORD_PRESENTATION_ARGUMENTS
+        },
+        environment=os.environ,
+        cwd=os.getcwd(),
+        interpreter=sys.executable,
+        interpreter_version=sys.version,
+        host=_host_identity(bool(arguments["portable"])),
+    )
+    if key is None:
+        return None
+    return key, _build_record.record_path(_default_molt_cache(), key)
+
+
+def _report_executed_code(ledger: _build_record.InputLedger) -> None:
+    """Every module this process executed is compiler code the build ran."""
+    for module in list(sys.modules.values()):
+        filename = getattr(module, "__file__", None)
+        if isinstance(filename, str):
+            ledger.file(filename, _input_report.stat_token(filename), None)
+
+
+def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
+    """Directories that hold only content-verified caches, scratch files and
+    build products, never inputs. Each is a named product root. A source
+    checkout, a user directory, the temporary directory and the shared scratch
+    root are never excluded: projects live there too, and the files a build
+    writes there are excluded as its own products."""
+    from molt import dx
+    from molt.cli import runtime_paths
+    from molt.cli.build_output_layout import _default_build_root
+    from molt.cli.project_roots import _find_project_root
+
+    entry = arguments["file_path"]
+    project_root = _find_project_root(Path(entry) if entry else Path.cwd())
+    roots = [
+        _default_molt_cache(),
+        dx.backend_daemon_socket_dir(project_root, os.environ),
+        runtime_paths._build_state_root(project_root),
+        runtime_paths._cargo_target_root(project_root),
+    ]
+    if os.environ.get("MOLT_CACHE"):
+        roots.append(Path(os.environ["MOLT_CACHE"]))
+    if arguments["cache_dir"]:
+        roots.append(Path(arguments["cache_dir"]).expanduser())
+    out_dir = arguments["out_dir"]
+    if out_dir:
+        roots.append(Path(out_dir).expanduser() / ".molt_build")
+    else:
+        # Every output's default artifact root shares this parent.
+        roots.append(_default_build_root("entry").parent)
+    return tuple(roots)
+
+
+def _record_build(
+    record: Path,
+    key: str,
+    ledger: _build_record.InputLedger,
+    arguments: Mapping[str, Any],
+    output: Path,
+) -> str | None:
+    """Write the record of a successful build; returns why none was written.
+    A record never fails the build it describes."""
+    try:
+        _report_executed_code(ledger)
+        capabilities = arguments["capabilities"]
+        if isinstance(capabilities, str):
+            # Inline capabilities name a file only when one exists there.
+            ledger.probe(capabilities, _input_report.resolved_probe(capabilities))
+        if sys.platform == "darwin":
+            # Apple's compiler shims resolve the developer directory in a
+            # child process the audit hook cannot see.
+            selection = "/var/db/xcode_select_link"
+            ledger.probe(selection, _input_report.resolved_probe(selection))
+        _build_record.resolve_observed(ledger, _excluded_read_roots(arguments))
+        return _build_record.write_record(record, key, ledger, output=output)
+    except Exception as error:  # noqa: BLE001 - the build already succeeded
+        return f"record failed: {type(error).__name__}: {error}"
+
+
+def _with_early_cutoff(build_function: Callable[..., int]) -> Callable[..., int]:
+    """Finish at once when the recorded build of this request is current;
+    otherwise build, recording what the build read."""
+    signature = inspect.signature(build_function)
+
+    @functools.wraps(build_function)
+    def build(*args: Any, **kwargs: Any) -> int:
+        first = _build_record.enter_build()
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        cutoff = _early_cutoff_request(bound.arguments)
+        if cutoff is None:
+            return build_function(*args, **kwargs)
+        key, record = cutoff
+        output = Path(bound.arguments["output"])
+        change = _build_record.check(record, key, output)
+        if change is None:
+            _success(f"Successfully built {output} (inputs unchanged)", file=sys.stderr)
+            return 0
+        verbose = bool(bound.arguments["verbose"])
+        if verbose:
+            print(f"Build record: {change}", file=sys.stderr)
+        if not first:
+            return build_function(*args, **kwargs)
+        with _build_record.recording() as ledger:
+            result = build_function(*args, **kwargs)
+        if result == 0:
+            reason = _record_build(record, key, ledger, bound.arguments, output)
+            if reason is not None and verbose:
+                print(f"Build record not written: {reason}", file=sys.stderr)
+        return result
+
+    return build
+
+
+@_with_early_cutoff
 def build(
     file_path: str | None,
     target: Target = "native",
@@ -85,6 +304,15 @@ def build(
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
     codegen_backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND,
 ) -> int:
+    from molt.cli import build_inputs as _build_inputs
+    from molt.cli import build_pipeline as _build_pipeline
+    from molt.cli import frontend_pipeline as _frontend_pipeline
+    from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+    from molt.cli.config_resolution import (
+        _resolve_build_config,
+        resolve_stdlib_profile,
+    )
+
     if isinstance(profile, bool):
         profile = "release"
     if profile not in {"dev", "release"}:

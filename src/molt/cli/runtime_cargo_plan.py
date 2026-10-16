@@ -10,7 +10,6 @@ import os
 import json
 import re
 import shlex
-import shutil
 import sys
 import stat
 import tempfile
@@ -24,6 +23,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
+from molt import input_report as _input_report
 from molt import process_guard
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from molt.cli.cargo_target_cfg import (
@@ -65,6 +65,7 @@ from molt.default_paths import _default_molt_cache, file_digest_cache_path
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.toolchain_identity import (
     ExecutableIdentity,
+    find_executable,
     StableRegularFileIdentity,
     capture_stable_regular_file,
     file_digest_cache,
@@ -326,10 +327,29 @@ class CargoResourceCustody:
             except ValueError:
                 _CAPTURED_RESOURCES.pop(roots, None)
             else:
+                cached._report_to_build_record()
                 return cached
         result = cls._capture(roots)
         _CAPTURED_RESOURCES[roots] = result
+        result._report_to_build_record()
         return result
+
+    def _report_to_build_record(self) -> None:
+        """Report this capture's files and listings to an active build record,
+        on every use: a process-reused capture is still this build's input."""
+        if not _input_report.active():
+            return
+        for root, walk in zip(self.roots, self.walks, strict=True):
+            if walk.racy:
+                _input_report.refuse(f"racy Cargo resource walk: {root.path}")
+            if walk.resolved_root is None:
+                _input_report.report_probe(root.path)
+            for path, _token in walk.directories:
+                _input_report.report_directory(path)
+        for item in self.files:
+            _input_report.report_file(item.entrypoint, item.identity.sha256)
+            if item.identity.path != item.entrypoint:
+                _input_report.report_file(item.identity.path, item.identity.sha256)
 
     @classmethod
     def _capture(
@@ -1420,7 +1440,7 @@ def runtime_c_tool_selection(
             (
                 name
                 for name in _target_tool_defaults(target)[role]
-                if shutil.which(name, path=env.get("PATH"))
+                if find_executable(name, environment=env) is not None
             ),
             None,
         )
@@ -2500,7 +2520,7 @@ def resolve_runtime_cargo_plan(
                 (
                     name
                     for name in defaults[role]
-                    if shutil.which(name, path=environment.get("PATH"))
+                    if find_executable(name, environment=environment) is not None
                 ),
                 None,
             )
