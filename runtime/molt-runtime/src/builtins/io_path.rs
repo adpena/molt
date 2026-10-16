@@ -109,8 +109,7 @@ fn descriptor_metadata(
     }
     #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
     {
-        use std::os::wasi::io::FromRawFd;
-        let fd = fd as u32; // checked nonnegative C-int above
+        use std::os::fd::FromRawFd;
         let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
         file.metadata()
             .map(|metadata| PathMetadata::from_host(&metadata))
