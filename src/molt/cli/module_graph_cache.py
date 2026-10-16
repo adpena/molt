@@ -282,6 +282,13 @@ def _encode_namespace_summary(summary: PythonNamespaceSummary) -> dict[str, Any]
     }
 
 
+def _validate_import_scan_namespace_summary(
+    summary: PythonNamespaceSummary | None, *, source_owner: PythonSourceKey | None
+) -> None:
+    if source_owner is None and summary is None:
+        raise ValueError("persisted module import scan requires a namespace summary")
+
+
 def _decode_namespace_summary(raw: Any) -> PythonNamespaceSummary:
     item = _source_cache_record(
         raw, {"schema", "own_names", "foreign_writes", "own_reflection_line"}
@@ -856,8 +863,9 @@ def _read_persisted_import_scan_record(
             if payload["namespace_summary"] is None
             else _decode_namespace_summary(payload["namespace_summary"])
         )
-        if source_owner is None and namespace_summary is None:
-            return None
+        _validate_import_scan_namespace_summary(
+            namespace_summary, source_owner=source_owner
+        )
         cached_premise = _decode_namespace_premise_cache_identity(
             payload["namespace_premise"]
         )
@@ -1117,6 +1125,9 @@ def _write_persisted_import_scan(
     snapshot: _module_source.PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
+    _validate_import_scan_namespace_summary(
+        scan.namespace_summary, source_owner=source_owner
+    )
     if snapshot.path != path:
         raise ValueError("source scan snapshot path mismatch")
     identity = {"size": len(snapshot.content), "source_sha256": snapshot.sha256}
