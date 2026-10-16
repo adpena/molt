@@ -162,8 +162,8 @@ def _excluded_read_roots(arguments: Mapping[str, Any]) -> tuple[Path, ...]:
     """Directories that hold only content-verified caches, scratch files and
     build products, never inputs. Each is a named product root. A source
     checkout, a user directory, the temporary directory and the shared scratch
-    root are never excluded: projects live there too, and the files a build
-    writes there are excluded as its own products."""
+    root are never excluded: projects live there too. The declared published
+    binary is projected separately as one product file."""
     from molt import dx
     from molt.cli import runtime_paths
     from molt.cli.build_output_layout import _default_build_root
@@ -210,7 +210,9 @@ def _record_build(
             # child process the audit hook cannot see.
             selection = "/var/db/xcode_select_link"
             ledger.probe(selection, _input_report.resolved_probe(selection))
-        _build_record.resolve_observed(ledger, _excluded_read_roots(arguments))
+        _build_record.resolve_observed(
+            ledger, _excluded_read_roots(arguments), published_output=output
+        )
         return _build_record.write_record(record, key, ledger, output=output)
     except Exception as error:  # noqa: BLE001 - the build already succeeded
         return f"record failed: {type(error).__name__}: {error}"
