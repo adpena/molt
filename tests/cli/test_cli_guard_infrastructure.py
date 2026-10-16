@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import io
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +24,6 @@ import pytest
 from molt import process_guard
 from molt.cli import command_runtime, entrypoint, entrypoint_dispatch, lockfiles
 from molt.process_guard import GuardInfrastructureError
-from tests.process_guard_common import install_module_view
 from tools import harness_memory_guard
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 
@@ -96,12 +94,10 @@ def _lock_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     # The lock-check memo lives under the Cargo target root; keep it private.
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
+    monkeypatch.setattr(
         lockfiles,
-        which=lambda name: f"/usr/bin/{name}",
+        "find_executable",
+        lambda name, **_kwargs: Path(f"/usr/bin/{name}"),
     )
     return project
 

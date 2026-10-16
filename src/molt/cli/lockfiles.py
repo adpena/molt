@@ -3,10 +3,11 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
+from molt import input_report as _input_report
+from molt.toolchain_identity import find_executable
 from molt.cargo_workspace import workspace_manifest_facts
 from molt.cli.compiler_identity import installed_compiler_admission
 from molt.file_hashing import _sha256_file_with_size
@@ -100,6 +101,7 @@ def _lock_check_inputs(
     project_root_resolved = project_root.resolve()
     payload: dict[str, dict[str, str | int]] = {}
     for path in paths:
+        _input_report.report_data_file(path)
         try:
             digest, size = _sha256_file_with_size(path)
             resolved = path.resolve()
@@ -154,7 +156,7 @@ def _write_lock_check_cache(
 
 
 def _verify_uv_lock(project_root: Path) -> str | None:
-    if shutil.which("uv") is None:
+    if find_executable("uv", environment=os.environ) is None:
         return "Deterministic builds require uv; install uv to validate uv.lock."
     inputs = _lock_check_inputs(
         project_root,
@@ -180,7 +182,7 @@ def _verify_uv_lock(project_root: Path) -> str | None:
 
 
 def _verify_cargo_lock(project_root: Path) -> str | None:
-    if shutil.which("cargo") is None:
+    if find_executable("cargo", environment=os.environ) is None:
         return "Deterministic builds require cargo; install Rust toolchain to validate Cargo.lock."
     try:
         cargo_inputs = [

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import tomllib
+from pathlib import Path
 from typing import Any, Mapping
 
 from molt.backend_executable_names import (
@@ -9,6 +11,31 @@ from molt.backend_executable_names import (
     CodegenBackend,
 )
 from molt.capability_policy import CapabilityInput
+
+
+def _load_molt_config(project_root: Path) -> dict[str, Any]:
+    """The project's `molt.toml` merged with `[tool.molt]` from
+    `pyproject.toml`; unreadable or malformed files contribute nothing."""
+    config: dict[str, Any] = {}
+    molt_toml = project_root / "molt.toml"
+    if molt_toml.exists():
+        try:
+            config.update(tomllib.loads(molt_toml.read_text(encoding="utf-8")))
+        except (OSError, tomllib.TOMLDecodeError):
+            pass
+    pyproject = project_root / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            data = {}
+        tool_cfg = data.get("tool", {}).get("molt", {})
+        if tool_cfg:
+            config.setdefault("tool", {})
+            config["tool"].setdefault("molt", {})
+            config["tool"]["molt"].update(tool_cfg)
+    return config
+
 
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"

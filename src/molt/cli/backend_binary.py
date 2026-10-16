@@ -56,7 +56,12 @@ from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.static_archive_identity import artifact_content_identity
 from molt.exact_json import canonical_json_sha256, read_exact
-from molt.file_hashing import _hash_source_tree_metadata, _hash_source_tree_paths
+from molt import input_report as _input_report
+from molt.file_hashing import (
+    _hash_source_tree_metadata,
+    _hash_source_tree_paths,
+    _iter_source_fingerprint_files,
+)
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
@@ -341,6 +346,14 @@ def _backend_fingerprint(
     source_paths, lock_digest = _backend_source_identity_inputs(
         project_root, _backend_source_paths(project_root, backend_features)
     )
+    if _input_report.active():
+        # Enumerate every backend source for the build record, whichever
+        # shortcut this fingerprint takes below.
+        for source in (*source_paths, project_root / "Cargo.lock"):
+            for path in _iter_source_fingerprint_files(
+                source, on_directory=_input_report.report_directory
+            ):
+                _input_report.report_file(path)
     meta = f"profile:{cargo_profile}\n"
     meta += f"cargo_build:{build_admission.fingerprint}\n"
     meta += f"features:{','.join(backend_features)}\n"

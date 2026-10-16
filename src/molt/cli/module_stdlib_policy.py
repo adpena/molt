@@ -4,6 +4,7 @@ import functools
 from collections.abc import Mapping
 from pathlib import Path
 
+from molt import input_report as _input_report
 from molt.cli.config_resolution import (
     AUTO_STDLIB_PROFILE,
     DEFAULT_STDLIB_PROFILE,
@@ -39,6 +40,7 @@ def _stdlib_allowlist() -> set[str]:
         compiler_source_root()
         / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
     )
+    _input_report.report_data_file(spec_path)
     if not spec_path.exists():
         return set()
     # Only parsing is cached. Root selection and policy bytes stay live,

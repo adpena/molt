@@ -11,8 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from tools import translation_validate
 from molt import python_interpreter
 from molt.target_python import _SUPPORTED_TARGET_PYTHON_BY_SHORT
-import shutil
-from tests.process_guard_common import install_module_view
+from molt import toolchain_identity
 
 
 def test_temp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:
@@ -121,8 +120,8 @@ def test_target_python_command_prefers_uv_python_find_path(monkeypatch) -> None:
     target = _SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
 
     monkeypatch.delenv("MOLT_TV_PYTHON", raising=False)
-    install_module_view(
-        monkeypatch, "shutil", shutil, python_interpreter, which=lambda name: "uv.exe"
+    monkeypatch.setattr(
+        toolchain_identity, "find_executable", lambda name, **_kwargs: Path("uv.exe")
     )
 
     def fake_run_command(cmd, **kwargs):

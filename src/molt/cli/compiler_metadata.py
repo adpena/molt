@@ -4,7 +4,6 @@ import functools
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 import tomllib
@@ -288,12 +287,14 @@ def _rustc_version_cache_identity() -> dict[str, Any]:
     compiler_root = _compiler_root()
     toolchain_file = compiler_root / "rust-toolchain.toml"
     channel = _rust_toolchain_channel(toolchain_file)
-    rustc_path = shutil.which("rustc")
+    from molt.toolchain_identity import find_executable
+
+    rustc_path = find_executable("rustc", environment=os.environ)
     identity: dict[str, Any] = {
         "schema_version": _RUSTC_VERSION_CACHE_SCHEMA_VERSION,
         "command": "rustc -Vv",
         "compiler_root": os.fspath(compiler_root),
-        "rustc_path": rustc_path or "rustc",
+        "rustc_path": os.fspath(rustc_path) if rustc_path else "rustc",
         "rustup_toolchain_env": os.environ.get("RUSTUP_TOOLCHAIN"),
         "rustup_home_env": os.environ.get("RUSTUP_HOME"),
         "cargo_home_env": os.environ.get("CARGO_HOME"),

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt import input_report as _input_report
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_binding_facts import (
     PythonElementProtocol,
@@ -698,7 +699,11 @@ def warm_stdlib_intrinsic_source_facts(
         return
     # One interleaved batch a worker spreads the large modules across workers.
     batches = [tuple(work[index::workers]) for index in range(workers)]
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_input_report.worker_initializer,
+        initargs=(_input_report.worker_log_dir(),),
+    ) as pool:
         for _ in pool.map(
             functools.partial(
                 _warm_stdlib_intrinsic_source_facts_batch,

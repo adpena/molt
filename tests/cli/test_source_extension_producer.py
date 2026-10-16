@@ -842,7 +842,7 @@ def test_produce_set_dispatches_complete_set(
 ) -> None:
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
-        entrypoint_dispatch,
+        producer,
         "produce_source_extension_set",
         lambda **kwargs: calls.append(kwargs) or 0,
     )

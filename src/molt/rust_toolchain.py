@@ -119,6 +119,19 @@ def resolve_rustup_proxy(
         if entrypoint is None:
             return path
         from molt import process_guard
+        from molt import input_report
+
+        if input_report.active():
+            # rustup selects by toolchain files from the root upward and by
+            # its settings; the record must see each lookup.
+            input_report.report_file(Path(entrypoint))
+            for directory in (root, *root.parents):
+                input_report.report_data_file(directory / "rust-toolchain.toml")
+                input_report.report_data_file(directory / "rust-toolchain")
+            rustup_home = Path(
+                env.get("RUSTUP_HOME") or Path(env.get("HOME", "~")) / ".rustup"
+            ).expanduser()
+            input_report.report_data_file(rustup_home / "settings.toml")
 
         result = process_guard.run_completed_command(
             [os.fspath(entrypoint), "which", role],
@@ -147,7 +160,13 @@ def resolve_rustup_proxy(
         value = result.stdout.strip()
         if not value or "\n" in value or "\r" in value or not Path(value).is_absolute():
             raise ValueError(f"rustup {role} selector must print one absolute path")
-        return resolve_executable(value, environment=env, label=f"selected Rust {role}")
+        selected = resolve_executable(
+            value, environment=env, label=f"selected Rust {role}"
+        )
+        from molt import input_report
+
+        input_report.report_file(selected)
+        return selected
 
 
 # dyld's search list when DYLD_FALLBACK_LIBRARY_PATH is unset.
@@ -330,8 +349,12 @@ def cargo_configuration_paths(root: Path, env: Mapping[str, str]) -> tuple[Path,
     """Cargo's conventional configuration files, in low-to-high priority order.
 
     Explicit --config files are separate invocation inputs. An empty CARGO_HOME
-    selects the default home, and Cargo does not expand a literal tilde.
+    selects the default home, and Cargo does not expand a literal tilde. Each
+    lookup is reported to a recording build: creating a configuration file
+    changes what Cargo builds.
     """
+    from molt import input_report
+
     home = cargo_home_path(root, env)
     locations = (home, *(path / ".cargo" for path in reversed((root, *root.parents))))
     paths: list[Path] = []
@@ -343,6 +366,7 @@ def cargo_configuration_paths(root: Path, env: Mapping[str, str]) -> tuple[Path,
         seen.add(location)
         for name in ("config", "config.toml"):
             candidate = location / name
+            input_report.report_data_file(candidate)
             if candidate.is_file():
                 paths.append(candidate)
                 break

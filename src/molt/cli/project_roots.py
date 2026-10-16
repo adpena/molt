@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from molt import input_report as _input_report
 from molt.cli.output import fail as _fail
 from molt.compiler_distribution import MANIFEST_NAME
 from molt.cli.compiler_identity import installed_compiler_admission
@@ -58,7 +59,17 @@ def _find_project_root(start: Path) -> Path:
     start = start.expanduser().resolve()
     directory = start if start.is_dir() else start.parent
     for parent in (directory, *directory.parents):
-        if _has_project_markers(parent):
+        found = _has_project_markers(parent)
+        if _input_report.active():
+            for marker in (
+                "pyproject.toml",
+                ".git",
+                "Cargo.toml",
+                "runtime/molt-runtime/Cargo.toml",
+                "runtime/molt-backend/Cargo.toml",
+            ):
+                _input_report.report_probe(parent / marker)
+        if found:
             return parent
     return directory
 

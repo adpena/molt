@@ -68,7 +68,6 @@ _SRC_DIR = _REPO_ROOT / "src"
 
 
 from molt import python_interpreter  # noqa: E402
-from molt.cli import build_inputs as cli_build_inputs  # noqa: E402
 from molt.dx import (  # noqa: E402
     artifact_root,
     cargo_target_dir_for_environment,
@@ -111,7 +110,7 @@ def _resolve_target_python(
     return molt_target_python._resolve_target_python_version(
         explicit=explicit,
         build_config=cli_config_resolution._resolve_build_config(
-            cli_build_inputs._load_molt_config(project_root)
+            cli_config_resolution._load_molt_config(project_root)
         ),
         project_root=project_root,
     )

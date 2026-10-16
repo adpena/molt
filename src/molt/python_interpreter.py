@@ -6,7 +6,6 @@ import json
 import os
 import platform
 import shlex
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -265,7 +264,10 @@ def resolve_target_python(
         except PythonInterpreterError as exc:
             failures.append(f"{sys.executable}: {exc}")
     if override is None or not override.strip():
-        uv = shutil.which("uv") if prefer_uv else None
+        from molt.toolchain_identity import find_executable
+
+        uv_path = find_executable("uv", environment=os.environ) if prefer_uv else None
+        uv = None if uv_path is None else os.fspath(uv_path)
         if uv is not None:
             stdout, stderr, rc = _run_command(
                 [uv, "python", "find", target_python.short],
