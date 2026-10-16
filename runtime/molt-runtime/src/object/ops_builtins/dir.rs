@@ -122,8 +122,14 @@ unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: b
             {
                 // Project the same role declarations as callable lookup. A
                 // type's own metadata does not become instance metadata.
-                for field in crate::object::function_metadata::FunctionMetadataField::ALL {
-                    if kind.metadata_fields().contains(&field) {
+                use crate::builtins::functions::native_callable::CallableMetadata;
+                let allowed = kind.metadata_fields();
+                let fields = crate::object::function_metadata::FunctionMetadataField::ALL
+                    .into_iter()
+                    .map(CallableMetadata::Stored)
+                    .chain(std::iter::once(CallableMetadata::Builtins));
+                for field in fields {
+                    if allowed.contains(&field) {
                         continue;
                     }
                     let name = std::ffi::CString::new(field.name()).unwrap();

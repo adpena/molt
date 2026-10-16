@@ -1428,7 +1428,7 @@ unsafe fn native_callable_attr(
         let name = obj_from_bits(attr_bits).as_ptr().unwrap();
         let name = std::slice::from_raw_parts(string_bytes(name), string_len(name));
         if let Some(field) =
-            crate::object::function_metadata::FunctionMetadataField::from_name(name)
+            crate::builtins::functions::native_callable::CallableMetadata::from_name(name)
             && !kind.metadata_fields().contains(&field)
         {
             // The class's own metadata must not widen this callable role.
@@ -1946,6 +1946,287 @@ mod tests {
             dec_ref_bits(_py, closure_name);
             dec_ref_bits(_py, code_name);
             dec_ref_bits(_py, builtin);
+        });
+    }
+
+    #[test]
+    fn function_type_builtins_member_preserves_capture_and_returns_owned_reference() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let name = string_bits(py, b"__builtins__");
+                let left = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+                let right = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+                let globals_ptr = alloc_dict_with_pairs(py, &[name, left]);
+                let globals = MoltObject::from_ptr(globals_ptr).bits();
+                let source_ptr =
+                    crate::alloc_function_obj(py, visibility_probe as *const () as usize as u64, 0);
+                assert!(!globals_ptr.is_null() && !source_ptr.is_null());
+                let source = MoltObject::from_ptr(source_ptr).bits();
+                crate::function_set_globals_bits(py, source_ptr, globals).unwrap();
+                assert!(
+                    crate::object::field_storage::current_dictionary(py, source_ptr)
+                        .unwrap()
+                        .is_none()
+                );
+                let before = refcount(left);
+                let retained = super::molt_get_attr_name(source, name);
+                assert_eq!(retained, left);
+                assert_eq!(refcount(left), before + 1);
+                assert!(!crate::exception_pending(py));
+                assert!(
+                    crate::object::field_storage::current_dictionary(py, source_ptr)
+                        .unwrap()
+                        .is_none()
+                );
+                let generic =
+                    super::molt_get_attr_generic(source_ptr, b"__builtins__".as_ptr(), 12);
+                assert_eq!(generic, left);
+                dec_ref_bits(py, generic);
+
+                let code_name = string_bits(py, b"__code__");
+                let code = super::molt_get_attr_name(source, code_name);
+                assert!(!obj_from_bits(code).is_none() && !crate::exception_pending(py));
+                assert!(crate::dict_set_in_place(py, globals_ptr, name, right));
+                let rebuilt =
+                    crate::builtins::functions::function_type_new_from_args(py, &[code, globals]);
+                assert!(!obj_from_bits(rebuilt).is_none() && !crate::exception_pending(py));
+                assert!(crate::dict_set_in_place(py, globals_ptr, name, left));
+                for (function, expected) in [(source, left), (rebuilt, right)] {
+                    let captured = super::molt_get_attr_name(function, name);
+                    assert_eq!(captured, expected);
+                    dec_ref_bits(py, captured);
+                }
+
+                let dictionary_name = string_bits(py, b"__dict__");
+                let dictionary = super::molt_get_attr_name(source, dictionary_name);
+                assert!(!crate::exception_pending(py));
+                assert!(crate::dict_set_in_place(
+                    py,
+                    obj_from_bits(dictionary).as_ptr().unwrap(),
+                    name,
+                    right
+                ));
+                let shadowed = super::molt_get_attr_name(source, name);
+                assert_eq!(shadowed, left, "the member precedes the public dictionary");
+                dec_ref_bits(py, shadowed);
+                dec_ref_bits(py, dictionary);
+                let method = crate::builtins::functions::molt_bound_method_new(
+                    source,
+                    MoltObject::from_int(7).bits(),
+                );
+                let delegated = super::molt_get_attr_name(method, name);
+                assert_eq!(
+                    delegated, left,
+                    "Python bound methods delegate to their function"
+                );
+                dec_ref_bits(py, delegated);
+                dec_ref_bits(py, method);
+
+                for value in [
+                    source,
+                    rebuilt,
+                    code,
+                    globals,
+                    left,
+                    right,
+                    code_name,
+                    dictionary_name,
+                    name,
+                ] {
+                    dec_ref_bits(py, value);
+                }
+                assert_eq!(
+                    refcount(retained),
+                    1,
+                    "the returned reference outlives both functions and globals"
+                );
+                dec_ref_bits(py, retained);
+            }
+        });
+    }
+
+    #[test]
+    fn function_type_builtins_member_is_readonly_and_role_specific() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let name = string_bits(py, b"__builtins__");
+                let none = MoltObject::none().bits();
+                let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[name, none])).bits();
+                let function_ptr =
+                    crate::alloc_function_obj(py, visibility_probe as *const () as usize as u64, 0);
+                assert!(!function_ptr.is_null());
+                let function = MoltObject::from_ptr(function_ptr).bits();
+                crate::function_set_globals_bits(py, function_ptr, globals).unwrap();
+                let owner = crate::builtin_classes(py).function;
+                let descriptor = super::molt_get_attr_name(owner, name);
+                assert!(!obj_from_bits(descriptor).is_none() && !crate::exception_pending(py));
+                assert_eq!(
+                    crate::object::layout::native_descriptor_flavor(
+                        obj_from_bits(descriptor).as_ptr().unwrap()
+                    ),
+                    Some(crate::object::layout::NativeDescriptorFlavor::CallableMember)
+                );
+                let class_access =
+                    crate::builtins::types::native_descriptors::native_descriptor_get(
+                        py,
+                        descriptor,
+                        None,
+                        Some(owner),
+                    )
+                    .unwrap();
+                assert_eq!(class_access, descriptor);
+                dec_ref_bits(py, class_access);
+                let captured = crate::builtins::types::native_descriptors::native_descriptor_get(
+                    py,
+                    descriptor,
+                    Some(function),
+                    Some(owner),
+                )
+                .unwrap();
+                assert_eq!(
+                    captured, none,
+                    "an explicitly captured None is a present value"
+                );
+                dec_ref_bits(py, captured);
+                for value in [Some(MoltObject::from_int(42).bits()), None] {
+                    assert!(
+                        crate::builtins::types::native_descriptors::native_descriptor_set(
+                            py, descriptor, function, value
+                        )
+                        .is_err()
+                    );
+                    let exception = crate::exception_last_bits_noinc(py).unwrap();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        exception,
+                        "AttributeError"
+                    ));
+                    crate::clear_exception(py);
+                }
+                for delete in [false, true] {
+                    let mutation = if delete {
+                        super::molt_del_attr_name(function, name)
+                    } else {
+                        super::molt_set_attr_name(function, name, MoltObject::from_int(42).bits())
+                    };
+                    assert!(obj_from_bits(mutation).is_none());
+                    assert!(crate::exception_pending(py));
+                    crate::clear_exception(py);
+                }
+                let still_none = super::molt_get_attr_name(function, name);
+                assert_eq!(still_none, none);
+                assert!(!crate::exception_pending(py));
+                dec_ref_bits(py, still_none);
+
+                let builtin = crate::builtins::methods::alloc_builtin_function(
+                    py,
+                    visibility_probe as *const () as usize as u64,
+                    0,
+                );
+                let wrapper_ptr = crate::alloc_staticmethod_obj(py, function);
+                assert!(!wrapper_ptr.is_null());
+                let wrapper = MoltObject::from_ptr(wrapper_ptr).bits();
+                for (object, expected) in [(function, true), (builtin, false), (wrapper, false)] {
+                    let directory = crate::molt_dir_builtin(object);
+                    assert!(!crate::exception_pending(py));
+                    let contains = crate::molt_contains(directory, name);
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(crate::is_truthy(py, obj_from_bits(contains)), expected);
+                    dec_ref_bits(py, contains);
+                    dec_ref_bits(py, directory);
+                }
+                for other in [builtin, wrapper] {
+                    let missing = super::molt_get_attr_name(other, name);
+                    assert!(obj_from_bits(missing).is_none());
+                    assert!(crate::exception_pending(py));
+                    crate::clear_exception(py);
+                    assert!(
+                        crate::builtins::types::native_descriptors::native_descriptor_get(
+                            py,
+                            descriptor,
+                            Some(other),
+                            Some(owner)
+                        )
+                        .is_err()
+                    );
+                    let exception = crate::exception_last_bits_noinc(py).unwrap();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        exception,
+                        "TypeError"
+                    ));
+                    crate::clear_exception(py);
+                }
+                for value in [builtin, wrapper, descriptor, function, globals, name] {
+                    dec_ref_bits(py, value);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn function_type_builtins_member_keeps_one_physical_gc_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                assert_eq!(crate::object::function_metadata::FUNCTION_PAYLOAD_WORDS, 28);
+                use crate::builtins::functions::native_callable::CallableMetadata as Declared;
+                use crate::object::function_metadata::FunctionMetadataField as Stored;
+                assert_eq!(Declared::Builtins.operation(), 15);
+                assert_eq!(
+                    Declared::from_operation(0),
+                    Some(Declared::Stored(Stored::Name))
+                );
+                assert_eq!(
+                    Declared::from_operation(14),
+                    Some(Declared::Stored(Stored::BindKind))
+                );
+                assert_eq!(Declared::from_operation(15), Some(Declared::Builtins));
+                assert!(Declared::from_operation(16).is_none());
+                assert!(
+                    Stored::from_operation(15).is_none(),
+                    "the projected attribute has no mutable storage operation"
+                );
+                let name = string_bits(py, b"__builtins__");
+                let captured = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+                let replacement = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+                let globals_ptr = alloc_dict_with_pairs(py, &[name, captured]);
+                let globals = MoltObject::from_ptr(globals_ptr).bits();
+                let function_ptr =
+                    crate::alloc_function_obj(py, visibility_probe as *const () as usize as u64, 0);
+                assert!(!function_ptr.is_null());
+                let function = MoltObject::from_ptr(function_ptr).bits();
+                crate::function_set_globals_bits(py, function_ptr, globals).unwrap();
+                assert!(crate::dict_set_in_place(py, globals_ptr, name, replacement));
+                let mut captured_visits = 0;
+                crate::object::heap_lifecycle::visit_payload_owned_values(
+                    py,
+                    function_ptr,
+                    &mut |value| {
+                        if value == captured {
+                            captured_visits += 1;
+                        }
+                    },
+                );
+                assert_eq!(
+                    captured_visits, 1,
+                    "the declared member borrows the prefix owner"
+                );
+                let before = refcount(captured);
+                crate::object::heap_lifecycle::clear_cycle_edges(py, function_ptr);
+                assert_eq!(refcount(captured), before - 1);
+                crate::object::heap_lifecycle::clear_cycle_edges(py, function_ptr);
+                assert_eq!(
+                    refcount(captured),
+                    before - 1,
+                    "repeated clear cannot detach the owner twice"
+                );
+                for value in [function, globals, captured, replacement, name] {
+                    dec_ref_bits(py, value);
+                }
+            }
         });
     }
 

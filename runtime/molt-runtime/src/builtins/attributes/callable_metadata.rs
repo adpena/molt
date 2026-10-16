@@ -1,14 +1,31 @@
 //! Declared callable members/getsets over existing private function/binding storage.
 use super::*;
-use crate::builtins::functions::native_callable::CallableMetadata as Field;
+use crate::builtins::functions::native_callable::CallableMetadata;
+use crate::object::function_metadata::FunctionMetadataField as Field;
 
 pub(crate) unsafe fn read(
     py: &PyToken<'_>,
     public: *mut u8,
-    field: Field,
+    declared: CallableMetadata,
 ) -> Result<Option<u64>, ()> {
     unsafe {
         let kind = NativeCallableKind::from_class(py, object_class_bits(public));
+        let field = match declared {
+            CallableMetadata::Stored(field) => field,
+            CallableMetadata::Builtins => {
+                if kind.is_some() || object_type_id(public) != TYPE_ID_FUNCTION {
+                    return Ok(None);
+                }
+                let value = crate::object::layout::function_builtins_bits(public);
+                let value = if value == 0 {
+                    MoltObject::none().bits()
+                } else {
+                    value
+                };
+                inc_ref_bits(py, value);
+                return Ok(Some(value));
+            }
+        };
         if kind.is_none() && object_type_id(public) == TYPE_ID_FUNCTION {
             let value = field.load(public).unwrap_or(MoltObject::none().bits());
             inc_ref_bits(py, value);
@@ -92,10 +109,14 @@ pub(crate) unsafe fn read(
 pub(crate) unsafe fn write(
     py: &PyToken<'_>,
     object: *mut u8,
-    field: Field,
+    declared: CallableMetadata,
     value: Option<u64>,
 ) -> Result<(), ()> {
     unsafe {
+        let CallableMetadata::Stored(field) = declared else {
+            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            return Err(());
+        };
         if object_type_id(object) == TYPE_ID_FUNCTION
             && NativeCallableKind::from_class(py, object_class_bits(object)).is_none()
         {
@@ -145,14 +166,18 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
                 return false;
             }
         }
-        if !publish_fields(py, builtin_classes(py).function, &Field::PUBLIC_FUNCTION) {
+        if !publish_fields(
+            py,
+            builtin_classes(py).function,
+            &CallableMetadata::PUBLIC_FUNCTION,
+        ) {
             return false;
         }
         true
     }
 }
 
-unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[Field]) -> bool {
+unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[CallableMetadata]) -> bool {
     unsafe {
         let class = obj_from_bits(owner).as_ptr().unwrap();
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
@@ -163,19 +188,22 @@ unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[Field]) -> bool
             };
             // CPython's methodobject/descrobject/funcobject declaration kind
             // is independent of this runtime's shared typed metadata storage.
-            let member = match kind {
-                Some(
-                    NativeCallableKind::Constructor
-                    | NativeCallableKind::Function
-                    | NativeCallableKind::CMethod,
-                ) => *field == Field::Module,
-                Some(
-                    NativeCallableKind::MethodDescriptor
-                    | NativeCallableKind::WrapperDescriptor
-                    | NativeCallableKind::ClassMethodDescriptor,
-                ) => matches!(field, Field::Name | Field::Owner),
-                Some(NativeCallableKind::MethodWrapper) => *field == Field::SelfValue,
-                None => matches!(field, Field::Doc | Field::Module),
+            let member = match (field, kind) {
+                (CallableMetadata::Builtins, _) => true,
+                (CallableMetadata::Stored(field), kind) => match kind {
+                    Some(
+                        NativeCallableKind::Constructor
+                        | NativeCallableKind::Function
+                        | NativeCallableKind::CMethod,
+                    ) => *field == Field::Module,
+                    Some(
+                        NativeCallableKind::MethodDescriptor
+                        | NativeCallableKind::WrapperDescriptor
+                        | NativeCallableKind::ClassMethodDescriptor,
+                    ) => matches!(field, Field::Name | Field::Owner),
+                    Some(NativeCallableKind::MethodWrapper) => *field == Field::SelfValue,
+                    None => matches!(field, Field::Doc | Field::Module),
+                },
             };
             let descriptor = crate::builtins::types::alloc_native_descriptor(
                 py,
@@ -185,7 +213,7 @@ unsafe fn publish_fields(py: &PyToken<'_>, owner: u64, fields: &[Field]) -> bool
                     } else {
                         crate::object::layout::NativeDescriptorFlavor::CallableGetSet
                     },
-                    operation: *field as u32,
+                    operation: field.operation(),
                     owner,
                     name,
                     doc: MoltObject::none().bits(),

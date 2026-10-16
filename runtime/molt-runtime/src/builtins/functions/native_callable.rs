@@ -4,7 +4,59 @@ use crate::object::object_replace_class_edge;
 use crate::*;
 use std::sync::atomic::AtomicU64;
 
-pub(crate) use crate::object::function_metadata::FunctionMetadataField as CallableMetadata;
+use crate::object::function_metadata::FunctionMetadataField as Field;
+
+/// Declared callable attributes: mutable tail fields or a read-only projection
+/// of an owner that already lives in the function prefix. Projected attributes
+/// cannot enter the physical metadata mutation or GC-storage APIs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CallableMetadata {
+    Stored(Field),
+    Builtins,
+}
+
+impl CallableMetadata {
+    const BUILTINS_OPERATION: u32 = Field::ALL.len() as u32;
+    pub(crate) const PUBLIC_FUNCTION: [Self; Field::PUBLIC_FUNCTION.len() + 1] = {
+        let mut fields = [Self::Builtins; Field::PUBLIC_FUNCTION.len() + 1];
+        let mut index = 0;
+        while index < Field::PUBLIC_FUNCTION.len() {
+            fields[index] = Self::Stored(Field::PUBLIC_FUNCTION[index]);
+            index += 1;
+        }
+        fields
+    };
+
+    pub(crate) fn from_operation(operation: u32) -> Option<Self> {
+        if operation == Self::BUILTINS_OPERATION {
+            Some(Self::Builtins)
+        } else {
+            Field::from_operation(operation).map(Self::Stored)
+        }
+    }
+
+    pub(crate) fn from_name(name: &[u8]) -> Option<Self> {
+        if name == Self::Builtins.name().as_bytes() {
+            Some(Self::Builtins)
+        } else {
+            Field::from_name(name).map(Self::Stored)
+        }
+    }
+
+    pub(crate) const fn operation(self) -> u32 {
+        match self {
+            Self::Stored(field) => field as u32,
+            Self::Builtins => Self::BUILTINS_OPERATION,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Stored(field) => field.name(),
+            Self::Builtins => "__builtins__",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeCallableKind {
@@ -71,27 +123,27 @@ impl NativeCallableKind {
     pub(crate) fn metadata_fields(self) -> &'static [CallableMetadata] {
         match self {
             Self::Constructor | Self::Function | Self::CMethod => &[
-                CallableMetadata::Name,
-                CallableMetadata::QualName,
-                CallableMetadata::Doc,
-                CallableMetadata::TextSignature,
-                CallableMetadata::Module,
-                CallableMetadata::SelfValue,
+                CallableMetadata::Stored(Field::Name),
+                CallableMetadata::Stored(Field::QualName),
+                CallableMetadata::Stored(Field::Doc),
+                CallableMetadata::Stored(Field::TextSignature),
+                CallableMetadata::Stored(Field::Module),
+                CallableMetadata::Stored(Field::SelfValue),
             ],
             Self::MethodDescriptor | Self::WrapperDescriptor | Self::ClassMethodDescriptor => &[
-                CallableMetadata::Name,
-                CallableMetadata::QualName,
-                CallableMetadata::Doc,
-                CallableMetadata::TextSignature,
-                CallableMetadata::Owner,
+                CallableMetadata::Stored(Field::Name),
+                CallableMetadata::Stored(Field::QualName),
+                CallableMetadata::Stored(Field::Doc),
+                CallableMetadata::Stored(Field::TextSignature),
+                CallableMetadata::Stored(Field::Owner),
             ],
             Self::MethodWrapper => &[
-                CallableMetadata::Name,
-                CallableMetadata::QualName,
-                CallableMetadata::Doc,
-                CallableMetadata::TextSignature,
-                CallableMetadata::Owner,
-                CallableMetadata::SelfValue,
+                CallableMetadata::Stored(Field::Name),
+                CallableMetadata::Stored(Field::QualName),
+                CallableMetadata::Stored(Field::Doc),
+                CallableMetadata::Stored(Field::TextSignature),
+                CallableMetadata::Stored(Field::Owner),
+                CallableMetadata::Stored(Field::SelfValue),
             ],
         }
     }
@@ -376,16 +428,13 @@ pub(crate) unsafe fn configure_native_callable(
         });
         let updates = [
             (
-                CallableMetadata::Owner,
+                Field::Owner,
                 spec.owner.filter(|_| spec.kind.is_descriptor()),
             ),
-            (CallableMetadata::Name, name.as_ref().map(|(bits, _)| *bits)),
-            (
-                CallableMetadata::QualName,
-                qualified.as_ref().map(|(bits, _)| *bits),
-            ),
-            (CallableMetadata::TextSignature, text_signature),
-            (CallableMetadata::SelfValue, spec.self_bits),
+            (Field::Name, name.as_ref().map(|(bits, _)| *bits)),
+            (Field::QualName, qualified.as_ref().map(|(bits, _)| *bits)),
+            (Field::TextSignature, text_signature),
+            (Field::SelfValue, spec.self_bits),
         ];
         let retired =
             updates.map(|(field, bits)| bits.map(|bits| field.replace_deferred(py, pointer, bits)));
@@ -444,7 +493,7 @@ pub(crate) enum NativeDescriptorContext {
 /// Public native identity is a typed field, not the qualified binder label.
 unsafe fn native_callable_name(pointer: *mut u8) -> Option<Vec<u8>> {
     unsafe {
-        CallableMetadata::Name
+        Field::Name
             .load(pointer)
             .and_then(|bits| crate::object::ops_format::string_obj_bytes(obj_from_bits(bits)))
     }
@@ -583,7 +632,7 @@ unsafe fn raise_descriptor_receiver_error(
             ]
             .concat()
         } else if kind == NativeCallableKind::MethodDescriptor {
-            let qualified = CallableMetadata::QualName
+            let qualified = Field::QualName
                 .load(pointer)
                 .and_then(|bits| crate::object::ops_format::string_obj_bytes(obj_from_bits(bits)))
                 .unwrap_or(name);
@@ -639,7 +688,7 @@ pub(crate) unsafe fn native_descriptor_receiver(
         } else {
             instance.map(NativeDescriptorReceiver::borrowed)
         };
-        let declaring = CallableMetadata::Owner
+        let declaring = Field::Owner
             .load(pointer)
             .unwrap_or(MoltObject::none().bits());
         let Some(receiver) = receiver else {
@@ -691,7 +740,7 @@ pub(crate) unsafe fn native_callable_repr(py: &PyToken<'_>, public: *mut u8) -> 
         };
         let name = native_callable_name(function).unwrap_or_default();
         if kind.is_descriptor() {
-            let declaring = CallableMetadata::Owner
+            let declaring = Field::Owner
                 .load(function)
                 .unwrap_or(MoltObject::none().bits());
             let owner = if obj_from_bits(declaring).is_none() {
