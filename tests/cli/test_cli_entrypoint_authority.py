@@ -11,6 +11,7 @@ import pytest
 import molt.cli as cli
 from molt.cli import arg_helpers
 from molt.cli import build_command
+from molt.cli import deps
 from molt.cli import entrypoint
 from molt.cli import entrypoint_dispatch
 from molt.cli import entrypoint_parser
@@ -169,8 +170,8 @@ def test_install_leading_literal_is_owned_by_the_selected_parser(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(entrypoint, "_build_entrypoint_parser", lambda: parser)
-    monkeypatch.setattr(entrypoint_dispatch, "install_add", persist)
-    monkeypatch.setattr(entrypoint_dispatch, "install", install)
+    monkeypatch.setattr(deps, "install_add", persist)
+    monkeypatch.setattr(deps, "install", install)
     monkeypatch.setattr(sys, "argv", ["molt", "install", "persist-probe", "demo>=1"])
     assert entrypoint.main() == 13
     monkeypatch.setattr(sys, "argv", ["molt", "install", "add", "other-package"])

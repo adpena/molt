@@ -1,5 +1,4 @@
 from __future__ import annotations
-import shutil
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 from dataclasses import asdict
@@ -312,15 +311,7 @@ def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
     prefix = tmp_path / "usr" / "lib" / "llvm-22"
     external_config = tmp_path / "usr" / "bin" / "llvm-config-22"
     _write(external_config, "")
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        llvm_toolchain,
-        which=lambda name, **_kwargs: (
-            str(external_config) if name == "llvm-config-22" else None
-        ),
-    )
+    external_config.chmod(0o755)
     monkeypatch.setattr(
         llvm_toolchain,
         "_llvm_config_version",
@@ -355,15 +346,7 @@ def test_discovery_rejects_unrelated_llvm_sys_search_root(
     other = tmp_path / "other"
     external_config = tmp_path / "bin" / "llvm-config-22"
     _write(external_config, "")
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        llvm_toolchain,
-        which=lambda name, **_kwargs: (
-            str(external_config) if name == "llvm-config-22" else None
-        ),
-    )
+    external_config.chmod(0o755)
     monkeypatch.setattr(
         llvm_toolchain,
         "_llvm_config_version",

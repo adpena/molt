@@ -35,7 +35,7 @@ import pytest
 
 import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
-from molt.cli import entrypoint_dispatch, entrypoint_parser
+from molt.cli import entrypoint_dispatch, entrypoint_parser, runtime_build
 from tests.cli.process_guard import run_cli_test_process
 from molt.cli import command_runtime as cli_command_runtime
 
@@ -232,7 +232,7 @@ def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(
         return 0
 
     monkeypatch.setattr(
-        entrypoint_dispatch._runtime_build,
+        runtime_build,
         "_prebuild_runtime_wasm",
         fake_prebuild_runtime_wasm,
         raising=True,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import shutil
 import signal
 import subprocess
 import sys
@@ -173,12 +172,14 @@ def _assert_native_binary_valid(binary: Path, target_triple: str | None) -> None
 def _darwin_binary_imports_validation_error(binary_path: Path) -> str | None:
     if sys.platform != "darwin":
         return None
-    dyld_info = shutil.which("dyld_info")
+    from molt.toolchain_identity import find_executable
+
+    dyld_info = find_executable("dyld_info", environment=os.environ)
     if dyld_info is None or not binary_path.exists():
         return None
     try:
         proc = _run_completed_command(
-            [dyld_info, str(binary_path)],
+            [os.fspath(dyld_info), str(binary_path)],
             capture_output=True,
             timeout=10.0,
             env=None,

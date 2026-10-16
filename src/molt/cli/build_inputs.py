@@ -5,7 +5,6 @@ import os
 from dataclasses import replace
 from pathlib import Path
 import time
-import tomllib
 import tracemalloc
 from typing import Any, cast
 
@@ -44,7 +43,11 @@ from molt.cli.cargo_profiles import (
     _resolve_cargo_profile_name,
 )
 from molt.cli.command_runtime import _resolve_timeout_env
-from molt.cli.config_resolution import _coerce_bool, _resolve_build_config
+from molt.cli.config_resolution import (
+    _coerce_bool,
+    _load_molt_config,
+    _resolve_build_config,
+)
 from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.models import (
     BinaryImageKind,
@@ -1180,28 +1183,6 @@ def _latest_mtime(paths: list[Path]) -> float:
         elif path.exists():
             latest = max(latest, path.stat().st_mtime)
     return latest
-
-
-def _load_molt_config(project_root: Path) -> dict[str, Any]:
-    config: dict[str, Any] = {}
-    molt_toml = project_root / "molt.toml"
-    if molt_toml.exists():
-        try:
-            config.update(tomllib.loads(molt_toml.read_text(encoding="utf-8")))
-        except (OSError, tomllib.TOMLDecodeError):
-            pass
-    pyproject = project_root / "pyproject.toml"
-    if pyproject.exists():
-        try:
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError):
-            data = {}
-        tool_cfg = data.get("tool", {}).get("molt", {})
-        if tool_cfg:
-            config.setdefault("tool", {})
-            config["tool"].setdefault("molt", {})
-            config["tool"]["molt"].update(tool_cfg)
-    return config
 
 
 def _parse_audit_log_flag(value: str) -> dict[str, str]:

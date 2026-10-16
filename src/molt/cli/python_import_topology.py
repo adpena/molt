@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple
 
+from molt import input_report as _input_report
 from molt.cli.module_source import PythonSourceChangedError
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS, content_change_time_ns
 
@@ -142,6 +143,8 @@ class PythonImportTopology:
             or max(state.token[3], change) >= started - DIGEST_RACY_WINDOW_NS,
         )
         self._directories[path] = observation
+        if state is not None:
+            _input_report.report_directory(path)
         # An absent parent is itself a negative lookup. Retain its existing
         # ancestor so creating or retargeting that path cannot grant old facts.
         if state is None and path.parent != path:
@@ -175,6 +178,7 @@ class PythonImportTopology:
             if before != _directory_state(path.parent):
                 self._changed(path)
             self._probes[path] = value
+            _input_report.report_probe(path)
             parent.probes.add(path)
             # A symlink target may change without changing the selector's
             # parent. Verify that binding at every fence, even on POSIX.

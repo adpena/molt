@@ -4,7 +4,7 @@ import hashlib
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 
 _SOURCE_FINGERPRINT_IGNORED_DIRS = frozenset({"__pycache__"})
@@ -189,15 +189,23 @@ def _source_fingerprint_should_skip(path: Path) -> bool:
     )
 
 
-def _iter_source_fingerprint_files(path: Path) -> Iterator[Path]:
+def _iter_source_fingerprint_files(
+    path: Path, *, on_directory: Callable[[Path], None] | None = None
+) -> Iterator[Path]:
+    """Yield the files a source fingerprint covers; report each listed
+    directory to ``on_directory`` (adding a file changes its directory)."""
     if path.is_dir():
-        yield from _iter_source_fingerprint_dir(path)
+        yield from _iter_source_fingerprint_dir(path, on_directory)
         return
     if path.exists() and path.is_file() and not _source_fingerprint_should_skip(path):
         yield path
 
 
-def _iter_source_fingerprint_dir(path: Path) -> Iterator[Path]:
+def _iter_source_fingerprint_dir(
+    path: Path, on_directory: Callable[[Path], None] | None = None
+) -> Iterator[Path]:
+    if on_directory is not None:
+        on_directory(path)
     try:
         with os.scandir(path) as iterator:
             entries = sorted(iterator, key=lambda entry: entry.name)
@@ -209,7 +217,7 @@ def _iter_source_fingerprint_dir(path: Path) -> Iterator[Path]:
             continue
         try:
             if entry.is_dir(follow_symlinks=False):
-                yield from _iter_source_fingerprint_dir(entry_path)
+                yield from _iter_source_fingerprint_dir(entry_path, on_directory)
             elif entry.is_file() and not _source_fingerprint_should_skip(entry_path):
                 yield entry_path
         except OSError:

@@ -1,0 +1,419 @@
+"""Early cutoff for unchanged builds (docs/design/build_early_cutoff.md).
+
+Each input authority reports what it reads through `molt.input_report` when it
+reads it; an audit hook observes the reads no authority reports. This module
+owns the ledger those facts reach, the request key and the record. A successful
+build whose ledger holds no refusal and no racy input records those facts with
+the token of the binary it published. The next build of the same request
+re-checks them by stat: when every input matches and the binary is untouched,
+the build is complete. A changed token on a file with a recorded digest falls
+back to a digest compare, so a `touch` costs one hash. Anything unproven means
+a full build.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import stat
+import threading
+import time
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from molt import file_publication, input_report
+from molt.file_hashing import DIGEST_RACY_WINDOW_NS
+from molt.input_report import ProbeOutcome, StatToken, resolved_probe, stat_token
+
+_SCHEMA = "molt-build-record-v4"
+# Keys that name the terminal or login session. No build step reads them for
+# its artifact (`TERM` only styles progress output); they change between
+# shells and would defeat every hit. Everything else is keyed, `PWD` included:
+# compilers may take the debug-info directory from it.
+_SESSION_ENVIRONMENT_KEYS = frozenset(
+    {
+        "_",
+        "COLORTERM",
+        "COLUMNS",
+        "ITERM_PROFILE",
+        "ITERM_SESSION_ID",
+        "LINES",
+        "OLDPWD",
+        "SECURITYSESSIONID",
+        "SHLVL",
+        "SSH_AGENT_PID",
+        "SSH_AUTH_SOCK",
+        "TERM",
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "TERM_SESSION_ID",
+        "TMUX",
+        "TMUX_PANE",
+        "__CFBundleIdentifier",
+        "__CF_USER_TEXT_ENCODING",
+    }
+)
+# Records unused this long are trimmed; a hit refreshes its record's mtime at
+# most once per interval, and trimming runs at most once per interval.
+_RECORD_UNUSED_LIMIT_NS = 7 * 24 * 3600 * 1_000_000_000
+_RECORD_REFRESH_INTERVAL_NS = 3600 * 1_000_000_000
+_TRIM_MARKER = ".trimmed"
+
+
+def _file_sha256(path: Path | str) -> str | None:
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.file_digest(handle, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
+@dataclass
+class InputLedger:
+    """What one build read, reported by each authority when it read it."""
+
+    # No input may have changed at or after this time minus the racy window:
+    # the start of the recording process, which may hold earlier reads.
+    started_ns: int
+    # path -> (token of the bytes read, their sha256 or None)
+    files: dict[str, tuple[StatToken, str | None]] = field(default_factory=dict)
+    # path -> token; adding, removing or renaming an entry changes it
+    directories: dict[str, StatToken] = field(default_factory=dict)
+    probes: dict[str, ProbeOutcome] = field(default_factory=dict)
+    refusals: list[str] = field(default_factory=list)
+    # ("file" | "directory", absolute path) seen by the audit
+    # hook; resolved against the excluded roots when the record is written.
+    observed: set[tuple[str, str]] = field(default_factory=set)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def file(
+        self, path: Path | str, token: StatToken | None, sha256: str | None
+    ) -> None:
+        name = os.fspath(path)
+        with self._lock:
+            if token is None:
+                self.refusals.append(f"unreportable file {name}")
+                return
+            prior = self.files.get(name)
+            if prior is not None and prior[0] != token:
+                self.refusals.append(f"file changed during the build: {name}")
+            self.files[name] = (token, sha256 or (prior[1] if prior else None))
+
+    def directory(self, path: Path | str, token: StatToken | None) -> None:
+        name = os.fspath(path)
+        with self._lock:
+            if token is None:
+                self.refusals.append(f"unreportable directory {name}")
+                return
+            self.directories[name] = token
+
+    def probe(self, path: Path | str, outcome: ProbeOutcome) -> None:
+        with self._lock:
+            self.probes[os.fspath(path)] = outcome
+
+    def refuse(self, reason: str) -> None:
+        with self._lock:
+            self.refusals.append(reason)
+
+    def observe(self, entry: tuple[str, str]) -> None:
+        with self._lock:
+            self.observed.add(entry)
+
+    def racy_inputs(self) -> list[str]:
+        """Inputs whose content changed within the racy window of the
+        recording process's start: their token cannot prove what it read."""
+        limit = self.started_ns - DIGEST_RACY_WINDOW_NS
+        racy = [name for name, (token, _) in self.files.items() if token[5] >= limit]
+        racy.extend(
+            name for name, token in self.directories.items() if token[5] >= limit
+        )
+        return racy
+
+
+_BUILDS_LOCK = threading.Lock()
+_BUILDS_ENTERED = 0
+
+
+def enter_build() -> bool:
+    """Count one build in this process; True for the first.
+
+    Only the first build of a process may record: process-global caches can
+    serve a later build without a read to report, whether or not the earlier
+    build was eligible for a record.
+    """
+    global _BUILDS_ENTERED
+    with _BUILDS_LOCK:
+        _BUILDS_ENTERED += 1
+        return _BUILDS_ENTERED == 1
+
+
+@contextmanager
+def recording() -> Generator[InputLedger]:
+    """Activate one ledger for the first build of this process.
+
+    The racy bound is the process's start: modules, caches and worker state may
+    hold bytes read before the build began.
+    """
+    import tempfile
+
+    from molt.process_birth import current_process_started_ns
+
+    started = current_process_started_ns()
+    ledger = InputLedger(started if started is not None else time.time_ns())
+    if started is None:
+        ledger.refuse("process start time unavailable")
+    with tempfile.TemporaryDirectory(prefix="molt-build-reads-") as log_dir:
+        input_report.install_sink(ledger, log_dir)
+        try:
+            yield ledger
+        finally:
+            input_report.remove_sink()
+            input_report.merge_worker_logs(ledger, log_dir)
+
+
+def request_key(
+    arguments: Mapping[str, Any],
+    *,
+    environment: Mapping[str, str],
+    cwd: str,
+    interpreter: str,
+    interpreter_version: str,
+    host: Mapping[str, str],
+) -> str | None:
+    """Identity of one build request, or None when it is not plain data."""
+    material = {
+        "schema": _SCHEMA,
+        "arguments": dict(arguments),
+        "cwd": cwd,
+        "interpreter": interpreter,
+        "interpreter_version": interpreter_version,
+        "host": dict(host),
+        "environment": {
+            key: value
+            for key, value in environment.items()
+            if key not in _SESSION_ENVIRONMENT_KEYS
+        },
+    }
+    try:
+        encoded = json.dumps(
+            material, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def record_path(state_root: Path, key: str) -> Path:
+    return state_root / "build_records" / key[:2] / f"{key}.json"
+
+
+def _executed_source(name: str) -> str:
+    """The source a bytecode read stands for; a bytecode file is derived."""
+    if name.endswith((".pyc", ".pyo")) and "__pycache__" in Path(name).parts:
+        try:
+            return importlib.util.source_from_cache(name)
+        except ValueError:
+            return name
+    return name
+
+
+def resolve_observed(
+    ledger: InputLedger,
+    excluded_roots: tuple[Path, ...],
+    *,
+    published_output: Path | None = None,
+) -> None:
+    """Turn the audit hook's observations into inputs.
+
+    Only named product roots and the successfully published output are products.
+    Pre-syscall audit events cannot prove write or directory-creation ownership.
+    Explicit input reports are never excluded, even for the published output.
+    """
+    output = None if published_output is None else os.path.realpath(published_output)
+    roots = tuple({os.path.realpath(root) + os.sep for root in excluded_roots})
+    for kind, observed in sorted(ledger.observed):
+        name = _executed_source(observed)
+        real = os.path.realpath(name)
+        if (kind == "file" and real == output) or (real + os.sep).startswith(roots):
+            continue
+        if real.startswith(("/dev/", "/proc/", "/sys/")):
+            continue
+        token = stat_token(name)
+        if token is None:
+            # A failed lookup, or a file the build removed. Record the outcome
+            # and the parent: a removal during the build changes the parent
+            # after the recording process started, which the racy rule refuses.
+            ledger.probe(name, resolved_probe(name))
+            parent = os.path.dirname(name)
+            if name not in ledger.files and parent not in ledger.directories:
+                ledger.directory(parent, stat_token(parent))
+            continue
+        if kind == "directory":
+            if name not in ledger.directories:
+                ledger.directory(name, token)
+        elif name not in ledger.files and stat.S_ISREG(token[2]):
+            ledger.file(name, token, None)
+
+
+def _first_change(
+    files: list[list[Any]],
+    directories: list[list[Any]],
+    probes: list[list[Any]],
+) -> str | None:
+    """The first recorded input that no longer matches, or None."""
+    for name, token in directories:
+        if stat_token(name) != tuple(token):
+            return f"directory {name}"
+    for name, outcome in probes:
+        expected = None if outcome is None else (outcome[0], outcome[1])
+        if resolved_probe(name) != expected:
+            return f"lookup {name}"
+    for name, token, sha256 in files:
+        current = stat_token(name)
+        if current == tuple(token):
+            continue
+        # A rewritten file with equal bytes (a touch, a checkout) is unchanged
+        # when its content digest was recorded.
+        if (
+            sha256 is None
+            or current is None
+            or current[3] != token[3]
+            or _file_sha256(name) != sha256
+        ):
+            return f"file {name}"
+    return None
+
+
+def write_record(
+    path: Path, key: str, ledger: InputLedger, *, output: Path
+) -> str | None:
+    """Publish the record of a build that produced ``output``.
+
+    Returns why no record was written: a ledger refusal, a racy input, an
+    input that no longer matches what the build read, or a failed write.
+    """
+    if ledger.refusals:
+        return ledger.refusals[0]
+    racy = ledger.racy_inputs()
+    if racy:
+        return f"input changed after the recording process started: {racy[0]}"
+    files = [
+        [name, list(token), sha256]
+        for name, (token, sha256) in sorted(ledger.files.items())
+    ]
+    directories = [
+        [name, list(token)] for name, token in sorted(ledger.directories.items())
+    ]
+    probes = [
+        [name, None if outcome is None else list(outcome)]
+        for name, outcome in sorted(ledger.probes.items())
+    ]
+    changed = _first_change(files, directories, probes)
+    if changed is not None:
+        return f"input changed during the build: {changed}"
+    output_token = stat_token(output)
+    if output_token is None or not stat.S_ISREG(output_token[2]):
+        return f"output {output} is not a regular file"
+    payload = {
+        "schema": _SCHEMA,
+        "key": key,
+        "output": [os.fspath(output), list(output_token)],
+        "files": files,
+        "directories": directories,
+        "probes": probes,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_publication.atomic_write_bytes(
+            path,
+            json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            durability=file_publication.PublicationDurability.RECONSTRUCTIBLE,
+        )
+    except OSError as error:
+        return f"record write failed: {error}"
+    trim_if_due(path.parent.parent)
+    return None
+
+
+def check(path: Path, key: str, output: Path) -> str | None:
+    """None when the recorded build is current, else the first difference.
+
+    Current means every recorded input matches and ``output`` still holds the
+    binary that build published. Never raises.
+    """
+    try:
+        metadata = os.stat(path)
+        with open(path, "rb") as handle:
+            payload = json.loads(handle.read())
+        if not isinstance(payload, dict):
+            return "unreadable record: expected a JSON object"
+        if payload.get("schema") != _SCHEMA or payload.get("key") != key:
+            return "no record for this request"
+        recorded_output, output_token = payload["output"]
+        if recorded_output != os.fspath(output) or stat_token(output) != tuple(
+            output_token
+        ):
+            return f"output {output} changed"
+        changed = _first_change(
+            payload["files"], payload["directories"], payload["probes"]
+        )
+        if changed is not None:
+            return changed
+        if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
+            os.utime(path)
+        return None
+    except FileNotFoundError:
+        return "no record for this request"
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        IndexError,
+        OverflowError,
+        RecursionError,
+    ) as error:
+        return f"unreadable record: {error}"
+
+
+def trim_if_due(records_root: Path) -> None:
+    """Delete records unused for a week, at most once an hour.
+
+    Concurrent trims are harmless: each deletion is idempotent, and a reader
+    that loses its record to a trim sees a miss.
+    """
+    marker = records_root / _TRIM_MARKER
+    now = time.time_ns()
+    try:
+        if now - os.stat(marker).st_mtime_ns < _RECORD_REFRESH_INTERVAL_NS:
+            return
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return
+    try:
+        marker.touch()
+        shards = list(os.scandir(records_root))
+    except OSError:
+        return
+    for shard in shards:
+        if not shard.is_dir(follow_symlinks=False):
+            continue
+        try:
+            entries = list(os.scandir(shard.path))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if (
+                    now - entry.stat(follow_symlinks=False).st_mtime_ns
+                    > _RECORD_UNUSED_LIMIT_NS
+                ):
+                    os.unlink(entry.path)
+            except OSError:
+                continue

@@ -527,7 +527,13 @@ def prewarm_rust_item_projections(texts: Iterable[str], *, workers: int) -> None
         return
     from concurrent.futures import ProcessPoolExecutor
 
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    from molt import input_report
+
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=input_report.worker_initializer,
+        initargs=(input_report.worker_log_dir(),),
+    ) as pool:
         results = pool.map(
             _compute_rust_item_projection_and_spans,
             missing,

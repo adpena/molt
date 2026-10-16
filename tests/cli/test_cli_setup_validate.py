@@ -25,6 +25,7 @@ from molt.cli import models as cli_models
 from molt.cli import debug_helpers as cli_debug_helpers
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import wrapper_build as cli_wrapper_build
+from molt import toolchain_identity
 
 # These cases build synthetic projects and assert developer-host roots and
 # guard limits; hosted custody has its own cases in
@@ -711,14 +712,13 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         fake_run_completed_command,
         raising=True,
     )
-    # Of the modules this test drives, only compiler_metadata looks tools up.
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        COMPILER_METADATA,
-        which=lambda name: (
-            f"/usr/bin/{name}"
+    # Of the modules this test drives, only compiler_metadata looks tools up,
+    # through the executable search authority.
+    monkeypatch.setattr(
+        toolchain_identity,
+        "find_executable",
+        lambda name, **_kwargs: (
+            Path(f"/usr/bin/{name}")
             if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
             else None
         ),

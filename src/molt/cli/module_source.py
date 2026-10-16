@@ -37,7 +37,19 @@ class PythonSourceSnapshot:
 
     @classmethod
     def capture(cls, path: Path) -> PythonSourceSnapshot:
-        return cls(path, path.read_bytes())
+        from molt import input_report
+
+        if not input_report.active():
+            return cls(path, path.read_bytes())
+        with open(path, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            content = handle.read()
+            after = os.fstat(handle.fileno())
+        snapshot = cls(path, content)
+        input_report.report_read(
+            path, sha256=snapshot.sha256, before=before, after=after
+        )
+        return snapshot
 
     @functools.cached_property
     def sha256(self) -> str:
