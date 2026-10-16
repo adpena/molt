@@ -296,7 +296,7 @@ This is the generated human projection of the canonical built-in host permission
 | `os.path.getmtime` | `fs.read` | all | all | all | all |
 | `os.path.getatime` | `fs.read` | all | all | all | all |
 | `os.path.getctime` | `fs.read` | all | all | all | all |
-| `os.path.samefile` | `fs.read` | `native` | all | all | all |
+| `os.path.samefile` | `fs.read` | all | all | all | all |
 | `os.dup2` | `fs.write` | `native` | all | all | all |
 | `os.lseek` | `fs.read` | `native` | all | all | all |
 | `os.ftruncate` | `fs.write` | `native` | `linux`, `macos` | all | all |

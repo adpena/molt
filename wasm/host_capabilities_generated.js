@@ -543,7 +543,6 @@ export const OPERATION_TARGETS = Object.freeze({
   ['os.getloadavg']: Object.freeze(['native']),
   ['os.uname']: Object.freeze(['native']),
   ['os.umask']: Object.freeze(['native']),
-  ['os.path.samefile']: Object.freeze(['native']),
   ['os.dup2']: Object.freeze(['native']),
   ['os.lseek']: Object.freeze(['native']),
   ['os.ftruncate']: Object.freeze(['native']),

@@ -1355,7 +1355,7 @@ impl OperationId {
             Self::OsPathGetmtime => &[],
             Self::OsPathGetatime => &[],
             Self::OsPathGetctime => &[],
-            Self::OsPathSamefile => &["native"],
+            Self::OsPathSamefile => &[],
             Self::OsDup2 => &["native"],
             Self::OsLseek => &["native"],
             Self::OsFtruncate => &["native"],
