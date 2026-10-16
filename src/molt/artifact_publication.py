@@ -19,7 +19,8 @@ from molt.file_publication import (
     durable_replace as _durable_replace,
     canonical_file_leaf,
     fsync_directory as _fsync_directory,
-    _flush_staged_file,
+    _validate_staged_file,
+    PublicationDurability,
     is_link_like as _is_link_like,
     is_owned_staged_file_path,
     is_staged_file_path,
@@ -252,7 +253,7 @@ def staged_copy_file(
 def fsync_file(path: Path) -> None:
     """Flush and verify a private staged artifact before consumer validation."""
 
-    _flush_staged_file(Path(path))
+    _validate_staged_file(Path(path), durability=PublicationDurability.DURABLE)
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

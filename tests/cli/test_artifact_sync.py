@@ -166,6 +166,8 @@ def test_publishing_payload_does_not_bind_callers_dict_to_a_peer_generation(
     tmp_path, monkeypatch
 ):
     receipt = tmp_path / "receipt.json"
+    artifact = tmp_path / "output.rs"
+    artifact.write_bytes(b"return 1\n")
     original_write = sync._atomic_write_json
 
     def publish_then_peer_replace(path, payload, **kwargs):
@@ -175,8 +177,11 @@ def test_publishing_payload_does_not_bind_callers_dict_to_a_peer_generation(
         )
 
     monkeypatch.setattr(sync, "_atomic_write_json", publish_then_peer_replace)
-    sync._write_artifact_sync_payload(receipt, {"source_key": "old"})
-    assert sync._read_artifact_sync_state(receipt) == {"source_key": "new"}
+    sync._write_artifact_sync_state(
+        receipt, source_key="old", tier="module", artifact=artifact
+    )
+    published = sync._read_artifact_sync_state(receipt)
+    assert published is not None and published["source_key"] == "new"
 
 
 def test_legacy_stat_receipt_is_a_miss_even_for_identical_bytes(tmp_path):

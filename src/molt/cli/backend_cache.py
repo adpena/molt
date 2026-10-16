@@ -178,8 +178,11 @@ def _read_shared_stdlib_partition_facts(
             label="shared stdlib partition manifest",
             max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
         )
-        payload = json.loads(raw)
     except (OSError, UnicodeError, ValueError):
+        return None
+    try:
+        payload = json.loads(raw)
+    except (ValueError, RecursionError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -1514,8 +1517,12 @@ def _shared_stdlib_symbol_contract_matches(
 ) -> bool:
     path = _stdlib_object_symbol_contract_sidecar_path(stdlib_object_path)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    try:
+        payload = json.loads(source)
+    except (ValueError, RecursionError):
         return False
     expected = _shared_stdlib_symbol_contract_payload(
         stdlib_object_cache_key=stdlib_object_cache_key,

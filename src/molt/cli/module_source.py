@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
 
+from molt import file_publication
 from molt.cli.atomic_io import _atomic_write_text
 from molt.default_paths import _default_molt_cache
 from molt.file_hashing import _sha256_file
@@ -302,8 +303,12 @@ def _source_hash_cache_path(
 
 def _read_source_hash_cache_payload(cache_path: Path) -> dict[str, Any] | None:
     try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        source = cache_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    try:
+        data = json.loads(source)
+    except (ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -313,7 +318,11 @@ def _write_source_hash_cache_payload(
     payload: dict[str, Any],
 ) -> None:
     try:
-        _atomic_write_text(cache_path, json.dumps(payload, sort_keys=True) + "\n")
+        _atomic_write_text(
+            cache_path,
+            json.dumps(payload, sort_keys=True) + "\n",
+            durability=file_publication.PublicationDurability.RECONSTRUCTIBLE,
+        )
     except OSError:
         return
 

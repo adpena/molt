@@ -68,9 +68,10 @@ def test_unchanged_request_cache_is_not_republished(tmp_path, monkeypatch):
     publications = []
     write = graph._atomic_write_text
 
-    def record(path, text):
+    def record(path, text, *, durability):
+        assert durability is graph.PublicationDurability.RECONSTRUCTIBLE
         publications.append(path)
-        write(path, text)
+        write(path, text, durability=durability)
 
     monkeypatch.setattr(graph, "_atomic_write_text", record)
     first = graph.local_python_import_closure(tmp_path, (seed,))
@@ -122,12 +123,16 @@ def test_cache_keys_do_not_resolve_or_grant_source_authority(tmp_path, monkeypat
 
 def test_resolver_does_not_canonicalize_missing_candidates(tmp_path, monkeypatch):
     resolver = LocalPythonModuleResolver((tmp_path,))
+    resolve = Path.resolve
 
-    def forbidden(*args, **kwargs):
-        raise AssertionError("missing import candidate must stop at stat")
+    def checked(path, *args, **kwargs):
+        # The topology owns the existing search directory. Absent child
+        # candidates must still stop before canonicalizing their paths.
+        assert path == tmp_path, "missing import candidate must stop at stat"
+        return resolve(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "resolve", current_thread_only(forbidden, Path.resolve))
+        patch.setattr(Path, "resolve", current_thread_only(checked, resolve))
         result = resolver.source_for_module("missing.child")
     assert result is None
 

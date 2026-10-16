@@ -653,14 +653,16 @@ def test_malformed_execution_projection_rejects_entire_scan(
             **options,
         )
         path = scans._import_scan_cache_path(tmp_path, source, **options)
-        payload = scans._read_artifact_sync_state(path)
+        payload = scans._read_cached_json_object(path)
         assert payload is not None
         malformed = dict(payload, source_executions=[{"module": "child", "path": 17}])
 
-        def read_malformed(_path: Path) -> dict[str, Any]:
+        def read_malformed(
+            _path: Path, *, max_bytes: int | None = None
+        ) -> dict[str, Any]:
             return malformed
 
-        monkeypatch.setattr(scans, "_read_artifact_sync_state", read_malformed)
+        monkeypatch.setattr(scans, "_read_cached_json_object", read_malformed)
         assert (
             scans._read_persisted_import_scan_record(tmp_path, source, **options)
             is None
@@ -740,7 +742,7 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
         published_fingerprints.append(fingerprint)
         raise OSError("publication interrupted")
 
-    monkeypatch.setattr(scans, "_write_artifact_sync_payload", fail_publication)
+    monkeypatch.setattr(scans, "_write_cached_json_object", fail_publication)
 
     def write() -> None:
         scans._write_persisted_import_scan(

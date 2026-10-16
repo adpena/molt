@@ -19,10 +19,6 @@ from molt.compiler_analysis.native_support_slice import canonical_native_support
 from molt.type_facts import TypeFacts
 
 from molt.cli.artifact_state import _build_state_subdir_cached
-from molt.cli.artifact_sync import (
-    _read_artifact_sync_state,
-    _write_artifact_sync_payload,
-)
 from molt.cli.cache_fingerprints import (
     _frontend_semantic_tooling_fingerprint,
     _source_tree_fingerprint_transaction,
@@ -37,7 +33,11 @@ from molt.cli.function_references import (
     format_function_reference_edges,
     missing_local_function_references,
 )
-from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
+from molt.cli.json_cache import (
+    SOURCE_ANALYSIS_CACHE_MAX_BYTES,
+    _read_cached_json_object,
+    _write_cached_json_object,
+)
 from molt.cli.models import (
     _RuntimeImportScanCustody,
     FallbackPolicy,
@@ -889,7 +889,7 @@ def _shared_module_lowering_cache_path_for(
 
 
 def _validate_persisted_module_analysis_payload(
-    payload: dict[str, Any] | None,
+    payload: Mapping[str, Any] | None,
     path: Path,
     *,
     import_scan_mode: ImportScanMode,
@@ -982,7 +982,7 @@ def _read_persisted_module_analysis(
         native_support_function_roots=native_support_function_roots,
     )
     result = _validate_persisted_module_analysis_payload(
-        _read_artifact_sync_state(cache_path),
+        _read_cached_json_object(cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES),
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
@@ -1008,7 +1008,7 @@ def _read_persisted_module_analysis(
     if observed is None:
         return None
     result = _validate_persisted_module_analysis_payload(
-        _read_artifact_sync_state(cache_path),
+        _read_cached_json_object(cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES),
         path,
         import_scan_mode=import_scan_mode,
         path_stat=path_stat,
@@ -1065,7 +1065,7 @@ def _write_persisted_module_analysis(
         "func_kinds": func_kinds,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_artifact_sync_payload(
+    _write_cached_json_object(
         cache_path, _cache_json_value(payload), default=_json_ir_default
     )
     # Publish the completed session-local entry to the shared, content-addressed
@@ -1107,8 +1107,16 @@ def _validate_module_func_default_payload(payload: dict[str, Any]) -> bool:
 
 
 def _decode_cached_json_value(value: Any) -> Any:
+    """Decode one cache value under the validators' malformed-value protocol."""
+    try:
+        return _decode_cached_json_value_inner(value)
+    except (TypeError, OverflowError, RecursionError) as exc:
+        raise ValueError("invalid cached JSON value") from exc
+
+
+def _decode_cached_json_value_inner(value: Any) -> Any:
     if isinstance(value, list):
-        return [_decode_cached_json_value(item) for item in value]
+        return [_decode_cached_json_value_inner(item) for item in value]
     if isinstance(value, dict):
         if "__dict__" in value and len(value) == 1:
             entries = value["__dict__"]
@@ -1118,14 +1126,11 @@ def _decode_cached_json_value(value: Any) -> Any:
                 raise ValueError("invalid cached dictionary entries")
             result = {}
             for raw_key, raw_value in entries:
-                key = _decode_cached_json_value(raw_key)
-                child = _decode_cached_json_value(raw_value)
-                try:
-                    if key in result:
-                        raise ValueError("duplicate cached dictionary key")
-                    result[key] = child
-                except TypeError as exc:
-                    raise ValueError("unhashable cached dictionary key") from exc
+                key = _decode_cached_json_value_inner(raw_key)
+                child = _decode_cached_json_value_inner(raw_value)
+                if key in result:
+                    raise ValueError("duplicate cached dictionary key")
+                result[key] = child
             return result
         if "__integer_bytes__" in value and len(value) == 1:
             raw = value["__integer_bytes__"]
@@ -1145,14 +1150,18 @@ def _decode_cached_json_value(value: Any) -> Any:
             if len(real_imag) == 2:
                 return complex(real_imag[0], real_imag[1])
         if "__tuple__" in value and isinstance(value["__tuple__"], list):
-            return tuple(_decode_cached_json_value(item) for item in value["__tuple__"])
+            return tuple(
+                _decode_cached_json_value_inner(item) for item in value["__tuple__"]
+            )
         if "__ast__" in value and isinstance(value["__ast__"], str):
             return value["__ast__"]
         if "__set__" in value and isinstance(value["__set__"], list):
-            return set(_decode_cached_json_value(item) for item in value["__set__"])
+            return set(
+                _decode_cached_json_value_inner(item) for item in value["__set__"]
+            )
         if "__frozenset__" in value and isinstance(value["__frozenset__"], list):
             return frozenset(
-                _decode_cached_json_value(item) for item in value["__frozenset__"]
+                _decode_cached_json_value_inner(item) for item in value["__frozenset__"]
             )
         class_identity = _decode_class_identity(value)
         if class_identity is not None:
@@ -1171,7 +1180,8 @@ def _decode_cached_json_value(value: Any) -> Any:
             ):
                 return MoltValue(name=name, type_hint=type_hint)
         return {
-            str(key): _decode_cached_json_value(item) for key, item in value.items()
+            str(key): _decode_cached_json_value_inner(item)
+            for key, item in value.items()
         }
     return value
 
@@ -1668,7 +1678,7 @@ def _module_lowering_context_digest_for_module(
 
 
 def _validate_persisted_module_lowering_payload(
-    payload: dict[str, Any] | None,
+    payload: Mapping[str, Any] | None,
     path: Path,
     *,
     source_lease: _ModuleSourceLease,

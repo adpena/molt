@@ -11856,6 +11856,107 @@ def test_cached_json_round_trips_molt_value_and_set() -> None:
     assert decoded["names"] == {"alpha", "beta"}
 
 
+@pytest.mark.parametrize(
+    "defect", ["set", "frozenset", "dictionary", "complex", "overflow", "depth"]
+)
+def test_malformed_cached_values_are_rejected_by_both_frontend_validators(
+    tmp_path: Path, defect: str
+) -> None:
+    from copy import deepcopy
+
+    if defect in {"set", "frozenset"}:
+        tag = "__set__" if defect == "set" else "__frozenset__"
+        malformed = json.loads(json.dumps({tag: [[]]}))
+        constructor = set if defect == "set" else frozenset
+        with pytest.raises(TypeError):
+            constructor(malformed[tag])
+        expected_error = TypeError
+    elif defect == "dictionary":
+        malformed = json.loads('{"__dict__":[[[],1]]}')
+        with pytest.raises(TypeError):
+            dict(malformed["__dict__"])
+        expected_error = TypeError
+    elif defect == "complex":
+        malformed = json.loads('{"__complex__":[[],[]]}')
+        with pytest.raises(TypeError):
+            complex(*malformed["__complex__"])
+        expected_error = TypeError
+    elif defect == "overflow":
+        malformed = json.loads(json.dumps({"__complex__": [10**400, 0]}))
+        with pytest.raises(OverflowError):
+            complex(*malformed["__complex__"])
+        expected_error = OverflowError
+    else:
+        # Isolate value-walk exhaustion from the JSON parser's separate limit.
+        # This remains a JSON-compatible value even when that parser rejects
+        # the same depth earlier on a different supported host Python.
+        malformed = 0
+        for _ in range(sys.getrecursionlimit() + 100):
+            malformed = [malformed]
+        with pytest.raises(RecursionError):
+            deepcopy(malformed)
+        expected_error = RecursionError
+    with pytest.raises(ValueError) as rejected:
+        cli_module_cache._decode_cached_json_value(malformed)
+    assert isinstance(rejected.value.__cause__, expected_error)
+
+    source = tmp_path / "pkg.py"
+    source.write_bytes(b"value = 1\n")
+    snapshot = cli_module_source.PythonSourceSnapshot.capture(source)
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(
+        source, snapshot=snapshot
+    )
+    analysis = {
+        "version": cli_module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
+        "compiler_fingerprint": CACHE_FINGERPRINTS._frontend_semantic_tooling_fingerprint(),
+        "import_scan_mode": "full",
+        "native_support_function_roots": [],
+        "size": len(snapshot.content),
+        "source_sha256": snapshot.sha256,
+        "func_defaults": {},
+        "func_kinds": {},
+    }
+
+    def validate_analysis(payload):
+        return cli_module_cache._validate_persisted_module_analysis_payload(
+            payload,
+            source,
+            import_scan_mode="full",
+            path_stat=None,
+            snapshot=snapshot,
+        )
+
+    assert validate_analysis(analysis) == ({}, {})
+    for field in ("func_defaults", "func_kinds"):
+        assert validate_analysis(dict(analysis, **{field: {"f": malformed}})) is None
+
+    context_digest = cli_module_cache._module_lowering_context_digest({"module": "pkg"})
+    assert context_digest is not None
+    lowering = {
+        "version": cli_module_cache._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
+        "context_digest": context_digest,
+        "size": source_lease.source_size,
+        "source_sha256": source_lease.source_sha256,
+        "source_kind": source_lease.source_kind,
+        "result": {"functions": []},
+    }
+
+    def validate_lowering(payload):
+        return cli_module_cache._validate_persisted_module_lowering_payload(
+            payload,
+            source,
+            source_lease=source_lease,
+            module_name="pkg",
+            context_digest=context_digest,
+        )
+
+    assert validate_lowering(lowering) == {"functions": []}
+    assert (
+        validate_lowering(dict(lowering, result={"functions": [], "extra": malformed}))
+        is None
+    )
+
+
 def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
     tree = ast.parse(
         "import importlib\n"
@@ -15714,7 +15815,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
         import_scan_mode="full",
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cli_artifact_sync._write_artifact_sync_payload(
+    cli_json_cache._write_cached_json_object(
         cache_path,
         {
             "version": cli_module_cache._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
@@ -16397,10 +16498,10 @@ def test_persisted_module_lowering_reuses_process_cache(
         context_digest=context_digest,
     )
 
-    def fail_read_text(*args: object, **kwargs: object) -> str:
+    def fail_capture(*args: object, **kwargs: object) -> str:
         raise AssertionError("unexpected persisted-lowering file read")
 
-    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    monkeypatch.setattr(cli_json_cache, "capture_stable_regular_file", fail_capture)
     second = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
@@ -30792,10 +30893,10 @@ def test_read_cached_json_object_reuses_same_payload_instance(
 
     first = cli_json_cache._read_cached_json_object(cache_path)
 
-    def fail_read_text(*args: object, **kwargs: object) -> str:
+    def fail_capture(*args: object, **kwargs: object) -> str:
         raise AssertionError("unexpected cached-json file read")
 
-    monkeypatch.setattr(Path, "read_text", fail_read_text)
+    monkeypatch.setattr(cli_json_cache, "capture_stable_regular_file", fail_capture)
     second = cli_json_cache._read_cached_json_object(cache_path)
 
     assert first == second
@@ -30815,6 +30916,163 @@ def test_write_cached_json_object_creates_parent_directories(tmp_path: Path) -> 
         "version": 1,
         "hash": "abc",
     }
+
+
+@pytest.mark.parametrize("raw", [b"not JSON", b"\xff", b"[]"])
+def test_malformed_cache_candidate_memo_avoids_repeated_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: bytes
+) -> None:
+    cache_path = tmp_path / "candidate.json"
+    cache_path.write_bytes(raw)
+    assert cli_json_cache._read_cached_json_object(cache_path) is None
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("unchanged malformed candidate must remain a memo miss")
+
+    monkeypatch.setattr(cli_json_cache, "capture_stable_regular_file", unexpected)
+    assert cli_json_cache._read_cached_json_object(cache_path) is None
+
+
+def test_cache_candidate_cap_applies_before_warm_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_path = tmp_path / "candidate.json"
+    cache_path.write_bytes(b'{"key":1}')
+    assert cli_json_cache._read_cached_json_object(cache_path) == {"key": 1}
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("warm cap refusal must not read the candidate")
+
+    monkeypatch.setattr(cli_json_cache, "capture_stable_regular_file", unexpected)
+    assert cli_json_cache._read_cached_json_object(cache_path, max_bytes=8) is None
+    assert cache_path not in cli_json_cache._PERSISTED_JSON_OBJECT_CACHE
+
+
+def test_cache_candidate_cap_uses_captured_size_under_stale_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_path = tmp_path / "candidate.json"
+    cache_path.write_bytes(b"{}")
+    hint = cache_path.lstat()
+    capture = cli_json_cache.capture_stable_regular_file
+
+    def grow_before_capture(path, **kwargs):
+        path.write_bytes(b'{"key":"larger captured generation"}')
+        return capture(path, **kwargs)
+
+    monkeypatch.setattr(
+        cli_json_cache, "capture_stable_regular_file", grow_before_capture
+    )
+    assert cli_json_cache._read_cached_json_object(cache_path) == {
+        "key": "larger captured generation"
+    }
+    lstat = Path.lstat
+
+    def stale_hint(path):
+        return hint if path == cache_path else lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", stale_hint)
+    assert cli_json_cache._read_cached_json_object(cache_path, max_bytes=2) is None
+
+
+def test_cache_publication_invalidates_own_payload_before_peer_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_path = tmp_path / "candidate.json"
+    cli_json_cache._write_cached_json_object(cache_path, {"owner": "old"})
+    assert cli_json_cache._read_cached_json_object(cache_path) == {"owner": "old"}
+    write = cli_json_cache._atomic_write_json
+
+    def peer_replaces_after_write(path, payload, **kwargs):
+        write(path, payload, **kwargs)
+        peer = path.with_suffix(".peer")
+        peer.write_bytes(b'{"owner":"peer"}')
+        peer.replace(path)
+
+    monkeypatch.setattr(cli_json_cache, "_atomic_write_json", peer_replaces_after_write)
+    cli_json_cache._write_cached_json_object(cache_path, {"owner": "ours"})
+    assert cache_path not in cli_json_cache._PERSISTED_JSON_OBJECT_CACHE
+    assert cli_json_cache._read_cached_json_object(cache_path) == {"owner": "peer"}
+
+
+def test_source_hash_cache_invalid_utf8_is_a_miss(tmp_path: Path) -> None:
+    cache_path = tmp_path / "source-hash.json"
+    cache_path.write_bytes(b"\xff")
+    assert cli_module_source._read_source_hash_cache_payload(cache_path) is None
+
+
+@pytest.mark.parametrize("malformation", ["utf8", "nesting", "integer-limit"])
+@pytest.mark.parametrize(
+    "reader", ["generic", "source-hash", "tooling", "receipt", "partition", "symbols"]
+)
+def test_optional_cache_json_decode_failures_are_misses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reader: str,
+    malformation: str,
+) -> None:
+    from molt.cli import python_source_closure as tooling
+
+    if malformation == "utf8":
+        raw = b"\xff"
+        error = UnicodeDecodeError
+    elif malformation == "nesting":
+        # CPython's C decoder limit need not equal Python's recursion limit.
+        depth = 10_000
+        raw = b'{"value":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+        error = RecursionError
+    else:
+        limit = sys.get_int_max_str_digits()
+        if limit == 0:
+            pytest.skip("host interpreter explicitly disables decimal decode limits")
+        raw = b'{"value":' + b"1" * (limit + 1) + b"}"
+        error = ValueError
+    # The independent parser establishes that these bytes actually exercise the
+    # exception family, rather than a cache schema or non-object rejection.
+    with pytest.raises(error):
+        json.loads(raw)
+
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    _clear_molt_home_caches()
+    object_path = tmp_path / "stdlib.a"
+    cache_path = (
+        tooling.python_source_closure_cache_path(tmp_path)
+        if reader == "tooling"
+        else BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path(object_path)
+        if reader == "partition"
+        else BACKEND_CACHE._stdlib_object_symbol_contract_sidecar_path(object_path)
+        if reader == "symbols"
+        else tmp_path / "candidate.json"
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(raw)
+    if reader == "generic":
+        assert cli_json_cache._read_cached_json_object(cache_path) is None
+
+        def unexpected(*_args, **_kwargs):
+            raise AssertionError("malformed candidate must reuse the memoized miss")
+
+        monkeypatch.setattr(cli_json_cache, "capture_stable_regular_file", unexpected)
+        assert cli_json_cache._read_cached_json_object(cache_path) is None
+    elif reader == "source-hash":
+        assert cli_module_source._read_source_hash_cache_payload(cache_path) is None
+    elif reader == "tooling":
+        assert tooling._read_graph_cache(tmp_path) == ({}, True)
+    elif reader == "receipt":
+        assert cli_artifact_sync._read_artifact_sync_state(cache_path) is None
+    elif reader == "partition":
+        assert BACKEND_CACHE._read_shared_stdlib_partition_facts(object_path) is None
+    else:
+        digest = hashlib.sha256(b"fixture").hexdigest()
+        assert not BACKEND_CACHE._shared_stdlib_symbol_contract_matches(
+            object_path,
+            stdlib_object_cache_key=digest,
+            stdlib_object_manifest="fixture-manifest",
+            stdlib_module_symbols=("molt_main",),
+            object_digest=digest,
+            partition_manifest_digest=digest,
+            target_triple="x86_64-unknown-linux-gnu",
+        )
 
 
 def test_atomic_write_text_failure_preserves_existing_destination(
@@ -30966,36 +31224,36 @@ def test_persisted_json_and_sync_writers_use_atomic_temp_siblings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cache_path = tmp_path / "cache" / "payload.json"
-    sync_path = tmp_path / "cache" / "sync.json"
     state_path = tmp_path / "cache" / "state.json"
     artifact_path = tmp_path / "cache" / "artifact.o"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_bytes(b"artifact")
-    original_replace = ATOMIC_IO.file_publication.durable_replace
+    original_replace = ATOMIC_IO.file_publication.atomic_replace
     replaced_paths: list[tuple[Path, Path]] = []
 
-    def record_replace(src: object, dst: object) -> None:
+    def record_replace(
+        src: object,
+        dst: object,
+        *,
+        durability=ATOMIC_IO.file_publication.PublicationDurability.DURABLE,
+    ) -> None:
         src_path = Path(src)
         dst_path = Path(dst)
-        if src_path in {cache_path, sync_path}:
+        if src_path in {cache_path, state_path}:
             raise AssertionError(f"direct destination replace source: {src_path}")
         replaced_paths.append((src_path, dst_path))
-        original_replace(src, dst)
+        original_replace(src, dst, durability=durability)
 
-    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "atomic_replace", record_replace)
 
     cli_json_cache._write_cached_json_object(cache_path, {"version": 1, "hash": "abc"})
-    cli_artifact_sync._write_artifact_sync_payload(
-        sync_path, {"version": 1, "source_key": "abc"}
-    )
     cli_artifact_sync._write_artifact_sync_state(
         state_path, source_key="abc", tier="module", artifact=artifact_path
     )
 
     assert json.loads(cache_path.read_text(encoding="utf-8"))["hash"] == "abc"
-    assert json.loads(sync_path.read_text(encoding="utf-8"))["source_key"] == "abc"
     assert json.loads(state_path.read_text(encoding="utf-8"))["source_key"] == "abc"
-    assert {dst for _src, dst in replaced_paths} == {cache_path, sync_path, state_path}
+    assert {dst for _src, dst in replaced_paths} == {cache_path, state_path}
     assert all(
         src.name.startswith(".") and src.name.endswith(".tmp")
         for src, _dst in replaced_paths
@@ -31007,15 +31265,19 @@ def test_source_hash_cache_write_uses_unique_atomic_temp_siblings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cache_path = tmp_path / "cache" / "source.json"
-    original_replace = ATOMIC_IO.file_publication.durable_replace
+    original_replace = ATOMIC_IO.file_publication.atomic_replace
     replaced_sources: list[Path] = []
 
-    def record_replace(src: object, dst: object) -> None:
+    def record_replace(src: object, dst: object, *, durability) -> None:
         assert Path(dst) == cache_path
+        assert (
+            durability
+            is ATOMIC_IO.file_publication.PublicationDurability.RECONSTRUCTIBLE
+        )
         replaced_sources.append(Path(src))
-        original_replace(src, dst)
+        original_replace(src, dst, durability=durability)
 
-    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
+    monkeypatch.setattr(ATOMIC_IO.file_publication, "atomic_replace", record_replace)
 
     cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "a"})
     cli_module_source._write_source_hash_cache_payload(cache_path, {"hash": "b"})
