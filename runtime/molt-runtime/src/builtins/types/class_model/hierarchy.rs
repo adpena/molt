@@ -15,6 +15,12 @@ fn compute_mro(class_bits: u64, bases: &[u64]) -> Option<Vec<u64>> {
     Some(out)
 }
 
+/// `__bases__` assignment is outside Molt's verified subset (spec 0216): class
+/// layouts, method resolution orders and devirtualized calls are compiled
+/// against the bases a class is created with.
+pub(crate) const BASES_REASSIGNMENT_ERROR: &str = "cannot assign __bases__ once a class's layout is fixed; \
+     Molt compiles layouts and method resolution against the bases given at class creation";
+
 /// Validate class-independent base layout facts before dynamic type allocation.
 /// The static base setter consumes this same authority; duplicate-base/MRO
 /// rejection remains a postallocation type-construction phase.
@@ -87,11 +93,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
         if crate::object::class_definition_is_finished(class_ptr)
             || crate::object::layout::class_slot_declaration_bits(class_ptr) != 0
         {
-            raise_exception::<()>(
-                _py,
-                "TypeError",
-                "class bases are immutable after slot admission",
-            );
+            raise_exception::<()>(_py, "TypeError", BASES_REASSIGNMENT_ERROR);
             return Err(());
         }
     }

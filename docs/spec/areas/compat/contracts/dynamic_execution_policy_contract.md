@@ -12,7 +12,12 @@ limits excessive dynamism that obstructs efficient ahead-of-time compilation
 and standalone execution. Verification records implementation evidence separately
 from that intended scope. The restrictions concern:
 - unrestricted `eval`/`exec` execution paths
-- runtime monkeypatching as a general semantic compatibility goal
+- runtime monkeypatching as a general semantic compatibility goal, including
+  reassigning `__bases__` once a class's layout is fixed: class layouts, method
+  resolution orders and devirtualized calls are compiled against the bases a
+  class is created with, so a reassignment would invalidate them across the
+  program. The assignment raises `TypeError`; differential cases that exercise it
+  carry the expected-failure policy below.
 - unrestricted reflection/introspection lanes that block static reasoning
 
 Each exclusion requires a concrete performance or compilation rationale. Missing

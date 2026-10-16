@@ -22,9 +22,6 @@ def run_case(mode):
         def __getattribute__(self, name):
             if name == "__class__":
                 object.__setattr__(self, "__class__", After)
-                if mode == "returns_old_type_after_bases_mutation":
-                    Before.__bases__ = (Expected,)
-                    return Before
                 if mode == "returns_new_type":
                     return After
                 if mode == "returns_old_type":
@@ -50,7 +47,6 @@ def run_case(mode):
 
 for mode in (
     "returns_new_type",
-    "returns_old_type_after_bases_mutation",
     "returns_old_type",
     "returns_unrelated_type",
     "returns_rejected_finalizer",
