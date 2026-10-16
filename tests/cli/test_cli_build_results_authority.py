@@ -25,6 +25,87 @@ _BUILD_RESULTS_NAMES = (
     "_post_link_strip",
 )
 
+
+@pytest.mark.parametrize("mutation", [None, "rewrite", "delete"])
+def test_native_finalization_fences_source_after_signing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str | None
+) -> None:
+    from molt.cli import atomic_io
+    from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+    from tests.native_artifact_fixtures import elf_header
+
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    catalog = _ModuleSourceCatalog({"app": _ModuleSourceLease.path_backed(source)})
+    candidate = tmp_path / "candidate"
+    program = bytes(elf_header(kind=2))
+    candidate.write_bytes(program)
+    output = tmp_path / "app"
+    output.write_bytes(b"previous program")
+
+    def sign(stage: Path, destination: Path) -> None:
+        assert stage != output and destination == output
+        assert output.read_bytes() == b"previous program"
+        if mutation == "rewrite":
+            source.write_text("value = 2\n", encoding="utf-8")
+        elif mutation == "delete":
+            source.unlink()
+
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
+    monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
+    monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
+    error = build_results._finalize_native_link_candidate(
+        candidate=candidate,
+        output_binary=output,
+        target_triple="x86_64-unknown-linux-gnu",
+        strip=False,
+        validate_inputs=catalog.validate,
+    )
+    if mutation is None:
+        assert error is None
+        assert output.read_bytes() == program
+    else:
+        assert error is not None and "source" in error
+        assert output.read_bytes() == b"previous program"
+    assert not candidate.exists()
+
+
+@pytest.mark.parametrize("kind", ["output_alias", "hardlink", "symlink"])
+def test_native_finalizer_does_not_reclaim_unadmitted_inputs(
+    tmp_path: Path, kind: str
+) -> None:
+    import os
+
+    output = tmp_path / "program"
+    output.write_bytes(b"previous public binary")
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"retained input")
+    candidate = tmp_path / "candidate"
+    if kind == "output_alias":
+        candidate = output
+    elif kind == "hardlink":
+        os.link(unrelated, candidate)
+    else:
+        try:
+            candidate.symlink_to(unrelated)
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                pytest.skip(
+                    "Windows symlink creation requires the owning host privilege"
+                )
+            raise
+    error = build_results._finalize_native_link_candidate(
+        candidate=candidate,
+        output_binary=output,
+        target_triple="x86_64-unknown-linux-gnu",
+        strip=False,
+    )
+    assert error is not None and "requires a private candidate" in error
+    assert candidate.exists()
+    assert output.read_bytes() == b"previous public binary"
+    assert unrelated.read_bytes() == b"retained input"
+
+
 _BUILD_RESULTS_DEFINITIONS = (
     "def _attach_build_metadata(",
     "def _attach_process_output(",

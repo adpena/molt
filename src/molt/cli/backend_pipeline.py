@@ -46,12 +46,12 @@ from molt.cli.output import (
 
 
 @contextlib.contextmanager
-def _staged_native_object_output(
+def _staged_backend_output(
     output_layout: _BuildOutputLayout, *, project_root: Path
 ) -> Generator[tuple[_BuildOutputLayout, Path | None]]:
-    """Keep native object candidates private through cache sync and admission."""
-    if (
-        output_layout.emit_mode != "obj"
+    """Keep requested backend artifacts private through source admission."""
+    if not (
+        output_layout.emit_mode == "obj"
         or output_layout.is_wasm
         or output_layout.is_rust_transpile
         or output_layout.is_luau_transpile
@@ -59,10 +59,10 @@ def _staged_native_object_output(
         yield output_layout, None
         return
     destination = file_publication.canonical_file_leaf(
-        output_layout.output_artifact, create_parent=True, role="native object output"
+        output_layout.output_artifact, create_parent=True, role="backend output"
     )
     candidate = file_publication.staged_file_path(
-        destination, purpose="native-object", suffix=destination.suffix or ".o"
+        destination, purpose="backend-output", suffix=destination.suffix or ".o"
     )
     sync_state = _artifact_sync_state_path(project_root, candidate)
     try:
@@ -164,6 +164,7 @@ def _run_backend_pipeline(
         pgo_profile_summary=prepared_build_config.pgo_profile_summary,
         runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
         emit_ir_path=output_layout.emit_ir_path,
+        validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
         target_python=prepared_build_config.target_python,
         stdlib_profile=stdlib_profile,
         target=target,
@@ -278,16 +279,22 @@ def _run_backend_pipeline(
         )
     with contextlib.ExitStack() as output_scope:
         build_python_admission = output_scope.enter_context(BuildPythonAdmission())
+
+        def finish_inputs() -> None:
+            prepared_frontend_pipeline_bundle.module_source_catalog.validate()
+            assert build_python_admission is not None
+            build_python_admission.close()
+
         try:
-            output_layout, native_object_destination = output_scope.enter_context(
-                _staged_native_object_output(
+            output_layout, backend_output_destination = output_scope.enter_context(
+                _staged_backend_output(
                     output_layout, project_root=prepared_build_roots.project_root
                 )
             )
         except (OSError, ValueError) as exc:
             return return_after_build_diagnostics(
                 _fail(
-                    f"Cannot stage native object output: {exc}",
+                    f"Cannot stage backend output: {exc}",
                     json_output,
                     command="build",
                 )
@@ -385,7 +392,7 @@ def _run_backend_pipeline(
                 emit_json=_emit_json,
                 json_payload=_json_payload,
                 entry_override_env=ENTRY_OVERRIDE_ENV,
-                finalize_inputs=build_python_admission.close,
+                finalize_inputs=finish_inputs,
             )
             return record_backend_result(result)
         try:
@@ -457,7 +464,8 @@ def _run_backend_pipeline(
             prepared_build_config=prepared_build_config,
             resolved_build_entry=resolved_build_entry,
             output_layout=output_layout,
-            native_object_destination=native_object_destination,
+            validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
+            backend_output_destination=backend_output_destination,
             prepared_backend_setup=prepared_backend_setup,
             prepared_backend_runtime_context=prepared_backend_runtime_context,
             prepared_backend_compile=prepared_backend_compile,

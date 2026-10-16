@@ -597,7 +597,7 @@ def test_prefixed_module_root_is_external_admission_root(
     assert vendor_package.resolve() in resolved.external_roots
 
 
-def test_module_resolution_cache_tracks_prefixed_root_env(
+def test_module_resolution_cache_snapshots_prefixed_root_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = tmp_path / "first" / "pkg"
@@ -608,10 +608,10 @@ def test_module_resolution_cache_tracks_prefixed_root_env(
     second_init = second / "__init__.py"
     first_init.write_text("VALUE = 1\n", encoding="utf-8")
     second_init.write_text("VALUE = 2\n", encoding="utf-8")
-    cache = cli_module_resolution._ModuleResolutionCache()
     stdlib_root = cli_module_resolution._stdlib_root_path()
 
     monkeypatch.setenv("MOLT_MODULE_ROOTS", f"upstream.pkg={first}")
+    cache = cli_module_resolution._ModuleResolutionCache()
     assert (
         cache.resolve_module("upstream.pkg", [tmp_path], stdlib_root, set())
         == first_init
@@ -622,6 +622,11 @@ def test_module_resolution_cache_tracks_prefixed_root_env(
     )
 
     monkeypatch.setenv("MOLT_MODULE_ROOTS", f"upstream.pkg={second}")
+    assert (
+        cache.resolve_module("upstream.pkg", [tmp_path], stdlib_root, set())
+        == first_init
+    )
+    cache = cli_module_resolution._ModuleResolutionCache()
     assert (
         cache.resolve_module("upstream.pkg", [tmp_path], stdlib_root, set())
         == second_init
@@ -3774,6 +3779,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
         runtime_feedback_summary=None,
         emit_ir_path=None,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        validate_inputs=lambda: None,
     )
 
     assert error is None
@@ -3854,6 +3860,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
         runtime_feedback_summary=None,
         emit_ir_path=None,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
+        validate_inputs=lambda: None,
     )
 
     assert error is None
@@ -3965,6 +3972,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         target="wasm",
         native_artifact_plan=native_artifact_plan,
+        validate_inputs=lambda: None,
     )
 
     assert error is None
@@ -4482,7 +4490,11 @@ def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
     cli_module_graph._collect_package_parents(
         module_graph, roots, stdlib_root, stdlib_allowlist
     )
-    cli_module_stdlib_policy._ensure_core_stdlib_modules(module_graph, stdlib_root)
+    cli_module_stdlib_policy._ensure_core_stdlib_modules(
+        module_graph,
+        stdlib_root,
+        import_topology=cli_module_resolution.PythonImportTopology(),
+    )
     core_paths = [
         path
         for name in (
@@ -13303,14 +13315,16 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     resolve_calls = 0
-    original = cli_module_resolution._resolve_module_path_parts
+    from molt.cli.python_import_resolution import LocalPythonModuleResolver
 
-    def wrapped(parts: tuple[str, ...], roots_arg: list[Path]) -> Path | None:
+    original = LocalPythonModuleResolver._probe_path
+
+    def wrapped(resolver, path):
         nonlocal resolve_calls
         resolve_calls += 1
-        return original(parts, roots_arg)
+        return original(resolver, path)
 
-    monkeypatch.setattr(cli_module_resolution, "_resolve_module_path_parts", wrapped)
+    monkeypatch.setattr(LocalPythonModuleResolver, "_probe_path", wrapped)
 
     shared_cache = cli_module_resolution._ModuleResolutionCache()
     cli_module_graph_discovery._discover_module_graph(
@@ -13514,41 +13528,60 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
     assert resolve_calls == first_resolve_calls
 
 
-def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_paths(
+def test_shared_module_resolution_cache_canonicalizes_absolute_alias_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    path = tmp_path / "module.py"
+    try:
+        path.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
     cache = cli_module_resolution._ModuleResolutionCache()
-    path = (tmp_path / "module.py").resolve()
+    original_resolve = Path.resolve
+    calls = 0
 
-    def fail_resolve(self: Path, *args: object, **kwargs: object) -> Path:
-        raise AssertionError(f"resolve() should not run for {self}")
+    def wrapped_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        nonlocal calls
+        calls += 1
+        return original_resolve(self, *args, **kwargs)
 
-    with monkeypatch.context() as scoped:
-        scoped.setattr(Path, "resolve", current_thread_only(fail_resolve, Path.resolve))
-        assert cache.resolved_path(path) == path
+    monkeypatch.setattr(
+        Path, "resolve", current_thread_only(wrapped_resolve, original_resolve)
+    )
+    assert cache.resolved_path(path) == target
+    first_calls = calls
+    assert first_calls > 0
+    assert cache.resolved_path(path) == target
+    assert calls == first_calls
 
 
 def test_shared_module_resolution_cache_resolves_relative_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cache = cli_module_resolution._ModuleResolutionCache()
+    monkeypatch.chdir(tmp_path)
     rel_path = Path("pkg") / "module.py"
-    resolved_path = (tmp_path / rel_path).resolve()
-    calls = 0
+    rel_path.parent.mkdir()
+    rel_path.write_text("VALUE = 1\n", encoding="utf-8")
+    resolved_path = rel_path.resolve()
+    cache = cli_module_resolution._ModuleResolutionCache()
     original_resolve = Path.resolve
+    calls = 0
 
     def wrapped_resolve(self: Path, *args: object, **kwargs: object) -> Path:
         nonlocal calls
         calls += 1
-        if self == rel_path:
-            return resolved_path
         return original_resolve(self, *args, **kwargs)
 
     monkeypatch.setattr(
         Path, "resolve", current_thread_only(wrapped_resolve, original_resolve)
     )
     assert cache.resolved_path(rel_path) == resolved_path
-    assert calls == 1
+    first_calls = calls
+    assert first_calls > 0
+    assert cache.resolved_path(rel_path) == resolved_path
+    assert calls == first_calls
 
 
 def test_shared_module_resolution_cache_reuses_graph_import_scans(
@@ -16072,6 +16105,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16081,6 +16115,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     cached = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16091,6 +16126,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     miss = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest="other",
@@ -16109,20 +16145,22 @@ def test_module_lowering_cache_key_ignores_generated_output_path(
     first.write_text(source, encoding="utf-8")
     second.write_text(source, encoding="utf-8")
 
-    first_key = cli_module_cache._module_lowering_cache_key(
+    first_slot = cli_module_cache._module_lowering_cache_path(
+        tmp_path,
         first,
         module_name="pkg",
         is_package=False,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
-    second_key = cli_module_cache._module_lowering_cache_key(
+    second_slot = cli_module_cache._module_lowering_cache_path(
+        tmp_path,
         second,
         module_name="pkg",
         is_package=False,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
 
-    assert second_key == first_key
+    assert second_slot == first_slot
 
 
 def test_persisted_module_lowering_rejects_missing_local_function_reference(
@@ -16186,6 +16224,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16196,6 +16235,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
         cli_module_cache._read_persisted_module_lowering(
             tmp_path,
             module_path,
+            source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
             module_name="pkg",
             is_package=False,
             context_digest=context_digest,
@@ -16292,6 +16332,7 @@ def test_persisted_module_lowering_tracks_source_content(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16311,6 +16352,7 @@ def test_persisted_module_lowering_tracks_source_content(
         cli_module_cache._read_persisted_module_lowering(
             tmp_path,
             module_path,
+            source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
             module_name="pkg",
             is_package=False,
             context_digest=context_digest,
@@ -16332,6 +16374,7 @@ def test_persisted_module_lowering_reuses_process_cache(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16348,6 +16391,7 @@ def test_persisted_module_lowering_reuses_process_cache(
     first = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16360,6 +16404,7 @@ def test_persisted_module_lowering_reuses_process_cache(
     second = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16382,6 +16427,7 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16410,6 +16456,7 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     first = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16417,6 +16464,7 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     second = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16463,6 +16511,7 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16487,6 +16536,7 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
     cached = cli_module_cache._read_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="pkg",
         is_package=False,
         context_digest=context_digest,
@@ -16506,11 +16556,18 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     context_payload_calls = 0
 
     def fake_context_payload(
-        *args: object, **kwargs: object
+        *args: object,
+        source_lease: cli_module_source._ModuleSourceLease,
+        **kwargs: object,
     ) -> dict[str, object] | None:
         del args, kwargs
         nonlocal context_payload_calls
         context_payload_calls += 1
+        source_lease.validate_path(module_path)
+        assert (
+            source_lease.source_sha256
+            == hashlib.sha256(module_path.read_bytes()).hexdigest()
+        )
         return {"module": "alpha"}
 
     monkeypatch.setattr(
@@ -16524,19 +16581,20 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         root: Path,
         path: Path,
         *,
+        source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
         is_package: bool,
         context_digest: str,
-        path_stat: os.stat_result | None = None,
         target_python: TARGET_PYTHON.TargetPythonVersion = TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
         assert root == project_root
         assert path == module_path
+        source_lease.validate_path(path)
+        source_lease.validate()
         assert module_name == "alpha"
         assert is_package is False
         assert context_digest == "digest"
-        assert path_stat is not None
         assert target_python == TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION
         assert known_modules == {"alpha"}
         return {"module": module_name, "kind": "cached"}
@@ -16554,10 +16612,11 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         cli_frontend_worker._prepare_frontend_parallel_batch(
             ["alpha"],
             module_graph={"alpha": module_path},
-            module_sources={},
+            module_source_catalog=cli_module_source._build_module_source_catalog(
+                {"alpha": module_path}, module_sources={}
+            ),
             project_root=project_root,
             known_classes_snapshot={},
-            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="ignore",
             fallback_policy="error",
@@ -16584,7 +16643,13 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
 
     assert batch_error is None
     assert worker_payloads == []
-    assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
+    assert cached_results == {
+        "alpha": {
+            "module": "alpha",
+            "kind": "cached",
+            "source_sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
+        }
+    }
     assert context_digest_by_module == {"alpha": "digest"}
     assert context_payload_calls == 1
 
@@ -16610,19 +16675,20 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         root: Path,
         path: Path,
         *,
+        source_lease: cli_module_source._ModuleSourceLease,
         module_name: str,
         is_package: bool,
         context_digest: str,
-        path_stat: os.stat_result | None = None,
         target_python: TARGET_PYTHON.TargetPythonVersion = TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         known_modules: Collection[str] | None = None,
     ) -> dict[str, object] | None:
         assert root == project_root
         assert path == module_path
+        source_lease.validate_path(path)
+        source_lease.validate()
         assert module_name == "alpha"
         assert is_package is False
         assert context_digest == "digest"
-        assert path_stat is not None
         assert target_python == TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION
         assert known_modules == {"alpha"}
         reads.append(module_name)
@@ -16641,10 +16707,11 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         cli_frontend_worker._prepare_frontend_parallel_batch(
             ["alpha"],
             module_graph={"alpha": module_path},
-            module_sources={},
+            module_source_catalog=cli_module_source._build_module_source_catalog(
+                {"alpha": module_path}, module_sources={}
+            ),
             project_root=project_root,
             known_classes_snapshot={},
-            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="ignore",
             fallback_policy="error",
@@ -16671,7 +16738,13 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
 
     assert batch_error is None
     assert worker_payloads == []
-    assert cached_results == {"alpha": {"module": "alpha", "kind": "cached"}}
+    assert cached_results == {
+        "alpha": {
+            "module": "alpha",
+            "kind": "cached",
+            "source_sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
+        }
+    }
     assert context_digest_by_module == {"alpha": "digest"}
     assert reads == ["alpha"]
 
@@ -16715,7 +16788,7 @@ def test_frontend_lowering_cache_summary_attests_hits_and_relowered_work() -> No
     }
 
 
-def test_load_cached_module_lowering_result_reuses_single_module_stat(
+def test_load_cached_module_lowering_result_needs_no_module_stat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "alpha.py"
@@ -16729,6 +16802,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="alpha",
         is_package=False,
         context_digest=context_digest,
@@ -16756,6 +16830,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
         tmp_path,
         "alpha",
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         logical_source_path=str(module_path),
         entry_override=None,
         module_execution_kind="imported",
@@ -16780,12 +16855,11 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
         context_digest=context_digest,
-        resolution_cache=cache,
     )
 
     assert result is not None
     assert result["functions"] == []
-    assert calls == 1
+    assert calls == 0
 
 
 def test_reverse_module_dependencies_maps_dependents_once() -> None:
@@ -16918,10 +16992,16 @@ def test_frontend_analysis_resolves_known_native_artifact_dependencies(
     assert analysis.module_deps["field_solve"] == {"scipy", "scipy.ndimage"}
 
 
-def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> None:
+def test_module_lowering_context_payload_ignores_unrelated_func_defaults(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     payload = cli_module_cache._module_lowering_context_payload(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_execution_kind="imported",
@@ -16952,7 +17032,6 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
         known_modules_sorted=("alpha", "beta", "main"),
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     assert payload is not None
@@ -16963,11 +17042,15 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
 
 
 def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     kwargs = dict(
         module_name="main",
-        module_path=Path("/tmp/main.py"),
+        module_path=module_path,
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_execution_kind="imported",
@@ -16987,17 +17070,20 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         module_chunk_max_ops=0,
         optimization_profile="dev",
         pgo_hot_function_names=set(),
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     monkeypatch.setattr(
         cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
-    payload_a = cli_module_cache._module_lowering_context_payload(**kwargs)
+    payload_a = cli_module_cache._module_lowering_context_payload(
+        source_lease=source_lease, **kwargs
+    )
     monkeypatch.setattr(
         cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
     )
-    payload_b = cli_module_cache._module_lowering_context_payload(**kwargs)
+    payload_b = cli_module_cache._module_lowering_context_payload(
+        source_lease=source_lease, **kwargs
+    )
 
     assert payload_a is not None
     assert payload_b is not None
@@ -17008,12 +17094,16 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
     ) != cli_module_cache._module_lowering_context_digest(payload_b)
 
 
-def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions() -> (
-    None
-):
+def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     payload = cli_module_cache._module_lowering_context_payload(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_execution_kind="imported",
@@ -17047,7 +17137,6 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
             "unrelated::nope",
         ),
         module_dep_closures={"main": frozenset({"main", "alpha", "beta"})},
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     assert payload is not None
@@ -17055,10 +17144,14 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
     assert tuple(payload["pgo_hot_functions"]) == ("main.hot_attr", "main::hot_func")
 
 
-def test_module_lowering_context_payload_scopes_known_classes() -> None:
+def test_module_lowering_context_payload_scopes_known_classes(tmp_path: Path) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     payload = cli_module_cache._module_lowering_context_payload(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_execution_kind="imported",
@@ -17086,7 +17179,6 @@ def test_module_lowering_context_payload_scopes_known_classes() -> None:
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     assert payload is not None
@@ -17102,7 +17194,9 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
         "main",
         module_path=Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
-        source="import alpha\n",
+        source_lease=cli_module_source._ModuleSourceLease.inline(
+            Path("/tmp/main.py"), "import alpha\n"
+        ),
         parse_codec="json",
         type_hint_policy="ignore",
         fallback_policy="error",
@@ -17154,7 +17248,9 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
         "main",
         module_path=Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
-        source="VALUE = 1\n",
+        source_lease=cli_module_source._ModuleSourceLease.inline(
+            Path("/tmp/main.py"), "VALUE = 1\n"
+        ),
         parse_codec="json",
         type_hint_policy="ignore",
         fallback_policy="error",
@@ -17271,14 +17367,15 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         cli_frontend_worker._prepare_frontend_parallel_batch(
             ["main", "alpha"],
             module_graph=module_graph,
-            module_sources=module_sources,
+            module_source_catalog=cli_module_source._build_module_source_catalog(
+                module_graph, module_sources=module_sources
+            ),
             project_root=tmp_path,
             known_classes_snapshot={
                 ClassId("main", "MainClass"): {"fields": {}},
                 ClassId("alpha", "DepClass"): {"fields": {}},
                 ClassId("unrelated", "UnrelatedClass"): {"fields": {}},
             },
-            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="ignore",
             fallback_policy="error",
@@ -17342,7 +17439,6 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
             module_source_catalog=module_source_catalog,
             project_root=tmp_path,
             known_classes_snapshot={},
-            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="ignore",
             fallback_policy="error",
@@ -17364,9 +17460,6 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
                 "alpha": frozenset({"alpha"}),
             },
             module_graph_metadata=module_graph_metadata,
-            path_stat_by_module={
-                name: path.stat() for name, path in module_graph.items()
-            },
             module_chunking=False,
             target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
             target_sys_platform=None,
@@ -17420,10 +17513,13 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
     )
 
     assert result["ok"] is False
-    assert "Source lease" in result["error"]
+    assert "source generation changed" in result["error"]
 
 
-def test_module_lowering_context_payload_scopes_type_facts() -> None:
+def test_module_lowering_context_payload_scopes_type_facts(tmp_path: Path) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     type_facts = TypeFacts(
         modules={
             "main": ModuleFacts(
@@ -17445,7 +17541,8 @@ def test_module_lowering_context_payload_scopes_type_facts() -> None:
 
     payload = cli_module_cache._module_lowering_context_payload(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_execution_kind="imported",
@@ -17469,7 +17566,6 @@ def test_module_lowering_context_payload_scopes_type_facts() -> None:
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     assert payload is not None
@@ -17493,7 +17589,9 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         "main",
         module_path=Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
-        source="import alpha\n",
+        source_lease=cli_module_source._ModuleSourceLease.inline(
+            Path("/tmp/main.py"), "import alpha\n"
+        ),
         parse_codec="json",
         type_hint_policy="trust",
         fallback_policy="error",
@@ -17772,8 +17870,12 @@ def test_scoped_lowering_input_view_carries_native_python_exports() -> None:
 
 
 def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     scoped_inputs = cli_models._ScopedLoweringInputView(
         known_modules=("alpha", "main"),
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
@@ -17792,7 +17894,8 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
 
     payload = cli_module_cache._module_lowering_context_payload(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_execution_kind="imported",
@@ -17814,7 +17917,6 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_inputs=scoped_inputs,
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     assert payload is not None
@@ -17848,7 +17950,9 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         "main",
         module_path=Path("/tmp/main.py"),
         logical_source_path="/tmp/main.py",
-        source="import alpha\n",
+        source_lease=cli_module_source._ModuleSourceLease.inline(
+            Path("/tmp/main.py"), "import alpha\n"
+        ),
         parse_codec="json",
         type_hint_policy="ignore",
         fallback_policy="error",
@@ -17883,7 +17987,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
 ) -> None:
     module_path = tmp_path / "alpha.py"
     module_path.write_text("VALUE = 1\n", encoding="utf-8")
-    cache = cli_module_resolution._ModuleResolutionCache()
     context_digest = cli_module_cache._module_lowering_context_digest(
         {"module": "alpha", "v": 1}
     )
@@ -17892,6 +17995,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
     cli_module_cache._write_persisted_module_lowering(
         tmp_path,
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         module_name="alpha",
         is_package=False,
         context_digest=context_digest,
@@ -17917,6 +18021,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         tmp_path,
         "alpha",
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         logical_source_path=str(module_path),
         entry_override=None,
         module_execution_kind="imported",
@@ -17946,7 +18051,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
             type_facts=None,
         ),
         scoped_known_classes={},
-        resolution_cache=cache,
     )
 
     assert result is not None
@@ -17993,10 +18097,16 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     assert gen.classes == {ClassId("main", "MainClass"): {"fields": {}}}
 
 
-def test_module_lowering_context_digest_for_module_reuses_precomputed_views() -> None:
+def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     digest = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override=None,
         module_execution_kind="imported",
@@ -18025,14 +18135,18 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views() ->
             type_facts=None,
         ),
         scoped_known_classes={},
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     assert isinstance(digest, str)
     assert digest
 
 
-def test_module_lowering_context_digest_includes_native_callable_exports() -> None:
+def test_module_lowering_context_digest_includes_native_callable_exports(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
         "entry_override": None,
@@ -18058,7 +18172,6 @@ def test_module_lowering_context_digest_includes_native_callable_exports() -> No
             "main": frozenset({"main", "nativepkg.ndimage"}),
             "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
         },
-        "path_stat": os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     }
     export_a = {
         "nativepkg.ndimage.distance_transform_edt": {
@@ -18081,13 +18194,15 @@ def test_module_lowering_context_digest_includes_native_callable_exports() -> No
 
     digest_a = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         native_callable_exports=export_a,
         **common,
     )
     digest_b = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         native_callable_exports=export_b,
         **common,
     )
@@ -18097,7 +18212,12 @@ def test_module_lowering_context_digest_includes_native_callable_exports() -> No
     assert digest_a != digest_b
 
 
-def test_module_lowering_context_digest_includes_native_python_exports() -> None:
+def test_module_lowering_context_digest_includes_native_python_exports(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
         "entry_override": None,
@@ -18123,18 +18243,19 @@ def test_module_lowering_context_digest_includes_native_python_exports() -> None
             "main": frozenset({"main", "nativepkg.ndimage"}),
             "nativepkg.ndimage": frozenset({"nativepkg.ndimage"}),
         },
-        "path_stat": os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     }
 
     digest_a = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         native_python_exports={"nativepkg.ndimage.distance_transform_edt"},
         **common,
     )
     digest_b = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         native_python_exports={"nativepkg.ndimage.gaussian_filter"},
         **common,
     )
@@ -18144,7 +18265,12 @@ def test_module_lowering_context_digest_includes_native_python_exports() -> None
     assert digest_a != digest_b
 
 
-def test_module_lowering_context_digest_includes_target_sys_platform() -> None:
+def test_module_lowering_context_digest_includes_target_sys_platform(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     common: dict[str, object] = {
         "logical_source_path": "/tmp/main.py",
         "entry_override": None,
@@ -18170,18 +18296,19 @@ def test_module_lowering_context_digest_includes_target_sys_platform() -> None:
             "main": frozenset({"main", "sys"}),
             "sys": frozenset({"sys"}),
         },
-        "path_stat": os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     }
 
     digest_wasm = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         target_sys_platform="wasm",
         **common,
     )
     digest_darwin = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         target_sys_platform="darwin",
         **common,
     )
@@ -18221,18 +18348,19 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
         "optimization_profile": "dev",
         "pgo_hot_function_names": set(),
         "module_dep_closures": {"main": frozenset({"main", "helpers"})},
-        "path_stat": module_path.stat(),
     }
 
     sync_digest = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         known_func_kinds={"helpers": {"cpu_profile": "sync"}},
         **common,
     )
     gen_digest = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
         module_path,
+        source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         known_func_kinds={"helpers": {"cpu_profile": "gen"}},
         **common,
     )
@@ -18242,7 +18370,12 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
     assert sync_digest != gen_digest
 
 
-def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> None:
+def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("pass\n", encoding="utf-8")
+    source_lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
     facts_a = TypeFacts(
         created_at="2026-04-09T00:00:00Z",
         tool="facts-a",
@@ -18266,7 +18399,8 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
 
     digest_a = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override="main",
         module_execution_kind="imported",
@@ -18295,11 +18429,11 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
             type_facts=facts_a,
         ),
         scoped_known_classes={},
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
     digest_b = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
-        Path("/tmp/main.py"),
+        module_path,
+        source_lease=source_lease,
         logical_source_path="/tmp/main.py",
         entry_override="main",
         module_execution_kind="imported",
@@ -18328,7 +18462,6 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
             type_facts=facts_b,
         ),
         scoped_known_classes={},
-        path_stat=os.stat_result((0, 0, 0, 0, 0, 0, 1, 1, 1, 0)),
     )
 
     assert isinstance(digest_a, str)
@@ -19096,7 +19229,7 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
     assert main_lease.path_backed_source is True
     assert main_lease.source_size == main_path.stat().st_size
     assert (
-        analysis.module_source_catalog.read_source("main", main_path, resolution_cache)
+        analysis.module_source_catalog.read_source("main", main_path)
         == "import dep\nVALUE = dep.VALUE\n"
     )
     assert resolution_cache.source_cache == {}
@@ -19426,7 +19559,11 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     cli_module_graph._collect_package_parents(
         module_graph, roots, stdlib_root, stdlib_allowlist
     )
-    cli_module_stdlib_policy._ensure_core_stdlib_modules(module_graph, stdlib_root)
+    cli_module_stdlib_policy._ensure_core_stdlib_modules(
+        module_graph,
+        stdlib_root,
+        import_topology=cli_module_resolution.PythonImportTopology(),
+    )
     core_paths = [
         path
         for name in (
@@ -20164,13 +20301,10 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
         entry_execution_kind="module",
         namespace_module_names=set(),
     )
-    path_stat = module_path.stat()
 
     view = cli_module_cache._module_lowering_metadata_view(
         "pkg",
-        module_path=module_path,
         module_graph_metadata=metadata,
-        path_stat_by_module={"pkg": path_stat},
     )
 
     assert view.logical_source_path == "generated/pkg.py"
@@ -20178,7 +20312,6 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
     assert view.module_is_namespace is False
     assert view.is_package is False
     assert view.module_execution_kind == "module"
-    assert view.path_stat is path_stat
 
 
 def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
@@ -20195,7 +20328,6 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
     )
     execution_view = cli_module_cache._module_lowering_execution_view(
         "main",
-        module_path=module_path,
         module_graph_metadata=metadata,
         module_deps={"main": {"alpha"}, "alpha": set()},
         known_modules={"main", "alpha"},
@@ -20205,13 +20337,11 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
         type_facts=None,
         known_classes_snapshot={ClassId("main", "MainClass"): {"fields": {}}},
         module_dep_closures={"main": frozenset({"main", "alpha"})},
-        path_stat_by_module={"main": module_path.stat()},
         known_modules_sorted=("alpha", "main"),
         pgo_hot_function_names_sorted=("main::hot",),
     )
 
     assert execution_view.metadata.logical_source_path == "generated/main.py"
-    assert execution_view.metadata.path_stat is not None
     assert execution_view.scoped_inputs.known_modules == ("alpha", "main")
     assert execution_view.scoped_inputs.known_func_kinds == {"main": {"run": "sync"}}
     assert execution_view.scoped_inputs.pgo_hot_function_names == ("main::hot",)
@@ -22698,7 +22828,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}
     first, first_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs, phase_starts=first_phase_starts
+        validate_inputs=lambda: None, **common_kwargs, phase_starts=first_phase_starts
     )
     assert first_err is None
     assert first is not None
@@ -22737,7 +22867,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     second_phase_starts: dict[str, float] = {}
     second, second_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs, phase_starts=second_phase_starts
+        validate_inputs=lambda: None, **common_kwargs, phase_starts=second_phase_starts
     )
     assert second_err is None
     assert second is not None
@@ -22753,14 +22883,16 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         current.write_bytes(previous.read_bytes())
         setattr(runtime_state, field, current)
     republished, republished_err = (
-        cli_non_native_output._prepare_non_native_build_result(**common_kwargs)
+        cli_non_native_output._prepare_non_native_build_result(
+            validate_inputs=lambda: None, **common_kwargs
+        )
     )
     assert republished_err is None and republished is not None
     assert len(link_calls) == 1
     assert len(admission_calls) == prior_admissions + 1
     admission_ok = False
     rejected, rejected_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        validate_inputs=lambda: None, **common_kwargs
     )
     assert rejected is None and rejected_err is not None
     assert len(admission_calls) == prior_admissions + 2
@@ -22787,7 +22919,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns + 1_000_000_000),
     )
     touched, touched_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        validate_inputs=lambda: None, **common_kwargs
     )
     assert touched_err is None and touched is not None
     assert len(link_calls) == 1
@@ -22803,7 +22935,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         ns=(linked_stat.st_atime_ns, linked_stat.st_mtime_ns),
     )
     tampered, tampered_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        validate_inputs=lambda: None, **common_kwargs
     )
     assert tampered_err is None and tampered is not None
     assert len(link_calls) == 1
@@ -22813,7 +22945,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     # cannot reuse a link built by different captured compiler tooling.
     closure_digest[0] = "captured-tooling-generation-two"
     third, third_err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        validate_inputs=lambda: None, **common_kwargs
     )
     assert third_err is None and third is not None
     assert len(link_calls) == 2
@@ -22829,7 +22961,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         member.write_bytes(old_bytes[:-1] + bytes([old_bytes[-1] ^ 1]))
         os.utime(member, ns=(saved.st_atime_ns, saved.st_mtime_ns))
         changed, changed_err = cli_non_native_output._prepare_non_native_build_result(
-            **common_kwargs
+            validate_inputs=lambda: None, **common_kwargs
         )
         assert changed_err is None and changed is not None
         assert len(link_calls) == count
@@ -22839,11 +22971,12 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     relocated_output.parent.mkdir()
     relocated_output.write_bytes(output_wasm.read_bytes())
     relocated, relocated_err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         **{
             **common_kwargs,
             "output_artifact": relocated_output,
             "linked_output_path": relocated_output.with_name(linked_wasm.name),
-        }
+        },
     )
     assert relocated_err is None and relocated is not None
     assert len(link_calls) == 4
@@ -22929,7 +23062,9 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
                 )
                 prepared, error = (
                     cli_non_native_output._prepare_non_native_build_result(
-                        **common, resolved_capability_policy=policy_b
+                        validate_inputs=lambda: None,
+                        **common,
+                        resolved_capability_policy=policy_b,
                     )
                 )
                 assert error is None and prepared is not None
@@ -22968,7 +23103,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
     monkeypatch.setattr(cli_non_native_output, "_app_export_manifest", derive_exports)
     monkeypatch.setattr(cli_non_native_output, "_atomic_write_bytes", write_asset)
     prepared, error = cli_non_native_output._prepare_non_native_build_result(
-        **common, resolved_capability_policy=policy_a
+        validate_inputs=lambda: None, **common, resolved_capability_policy=policy_a
     )
     assert rival_published
     if fail_after_rival or change_source:
@@ -23062,6 +23197,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -23268,7 +23404,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         native_artifact_plan=native_artifact_plan,
     )
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
-        **common_kwargs
+        validate_inputs=lambda: None, **common_kwargs
     )
 
     assert err is None
@@ -23433,7 +23569,7 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
 
     def repeat_build() -> None:
         result, failure = cli_non_native_output._prepare_non_native_build_result(
-            **common_kwargs
+            validate_inputs=lambda: None, **common_kwargs
         )
         assert failure is None and result is not None
 
@@ -23598,6 +23734,7 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -23796,6 +23933,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -23942,6 +24080,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -24216,6 +24355,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -24301,6 +24441,7 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     assert not hasattr(cli_non_native_output, "_export_wasm_table_refs")
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
@@ -24627,7 +24768,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             module_graph={},
             module_source_catalog=cli_module_source._ModuleSourceCatalog(leases={}),
             project_root=tmp_path,
-            module_resolution_cache=cli_module_resolution._ModuleResolutionCache(),
             parse_codec="json",
             type_hint_policy="check",
             fallback_policy="error",
@@ -24650,7 +24790,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             pgo_hot_function_names_sorted=(),
             module_dep_closures={},
             module_graph_metadata=empty_module_graph_metadata,
-            path_stat_by_module={},
             module_chunking=False,
             scoped_lowering_inputs=None,
             frontend_module_costs={},
@@ -24675,6 +24814,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     frontend_bundle = cli_frontend_pipeline._PreparedFrontendPipelineBundle(
         prepared_frontend_run_ticket=frontend_run_ticket,
         module_graph={},
+        module_source_catalog=cli_module_source._ModuleSourceCatalog({}),
         runtime_import_dispatch_roots=set(),
         stdlib_allowlist=set(),
         spawn_enabled=False,
@@ -30745,7 +30885,9 @@ def test_emitted_ir_preserves_exact_backend_control_flow(tmp_path: Path) -> None
     }
     original = json.loads(json.dumps(ir))
     output = tmp_path / "backend-input.json"
-    assert BACKEND_IR._write_emitted_ir(output, ir) is None
+    assert (
+        BACKEND_IR._write_emitted_ir(output, ir, validate_inputs=lambda: None) is None
+    )
     assert json.loads(output.read_text(encoding="utf-8")) == original
     assert ir == original
 
@@ -30782,6 +30924,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
         BACKEND_IR._write_emitted_ir(
             emitted_ir_path,
             {"functions": [{"name": "main", "return_abi": "value", "ops": []}]},
+            validate_inputs=lambda: None,
         )
         is None
     )
@@ -33637,6 +33780,7 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
 
     monkeypatch.setattr(cli_non_native_output, "_run_completed_command", rejected_link)
     prepared, error = cli_non_native_output._prepare_non_native_build_result(
+        validate_inputs=lambda: None,
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,

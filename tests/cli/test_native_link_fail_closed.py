@@ -147,8 +147,92 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
         "strip": True,
         "receipt": None,
         "link_selection": selection,
+        "validate_inputs": None,
     }
     assert binary.read_bytes() == b"finalized"
+
+
+@pytest.mark.parametrize("mutation", ["rewrite", "delete"])
+@pytest.mark.parametrize("owned_input", [False, True])
+def test_bolt_source_rejection_reclaims_admitted_private_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str, owned_input: bool
+) -> None:
+    from molt import file_publication
+    from molt.cli import atomic_io
+    from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+    from tests.native_artifact_fixtures import elf_header
+
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    catalog = _ModuleSourceCatalog({"app": _ModuleSourceLease.path_backed(source)})
+    output = tmp_path / "program"
+    output.write_bytes(b"previous public binary")
+    original = (
+        file_publication.staged_file_path(output, purpose="native-link", suffix=".tmp")
+        if owned_input
+        else output
+    )
+    if owned_input:
+        original.write_bytes(b"private unoptimized binary")
+    bolt_binary = Path(f"{original}.bolt")
+    selection_output = tmp_path / "selection.json"
+    selection_output.write_bytes(b"previous public selection")
+    selection = file_publication.staged_file_path(
+        selection_output, purpose="native-link"
+    )
+    selection.write_bytes(b"private selection")
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"retained")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "bolt_optimize.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
+    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
+    install_module_view(
+        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+    )
+    monkeypatch.setenv("MOLT_KEEP_SYMBOLS", "1")
+    monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
+    signed: list[Path] = []
+
+    def optimize(command, **kwargs):
+        assert command[2] == str(original)
+        bolt_binary.write_bytes(bytes(elf_header(kind=2)))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def sign(stage: Path, destination: Path) -> None:
+        signed.append(stage)
+        assert destination == output
+        assert output.read_bytes() == b"previous public binary"
+        if mutation == "rewrite":
+            source.write_text("value = 2\n", encoding="utf-8")
+        else:
+            source.unlink()
+
+    monkeypatch.setattr(native_toolchain, "_run_completed_command", optimize)
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
+    assert (
+        native_toolchain._run_bolt_post_link(
+            bolt_requested=True,
+            bolt_training_cmd=None,
+            target="x86_64-unknown-linux-gnu",
+            input_binary=str(original) if owned_input else None,
+            output=str(output),
+            out_dir=None,
+            build_rc=0,
+            json_output=True,
+            link_selection=(selection, selection_output),
+            validate_inputs=catalog.validate,
+        )
+        == 1
+    )
+    assert output.read_bytes() == b"previous public binary"
+    assert selection_output.read_bytes() == b"previous public selection"
+    assert not bolt_binary.exists() and not selection.exists()
+    assert signed and all(not stage.exists() for stage in signed)
+    assert not original.exists() if owned_input else original == output
+    assert unrelated.read_bytes() == b"retained"
 
 
 def test_bolt_helper_never_emits_json_outside_build_result_authority(

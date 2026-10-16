@@ -34,6 +34,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from molt.cli import module_registry as authority  # noqa: E402
+from molt.cli.models import _FrontendIntegrationState  # noqa: E402
+from molt.cli.output import fail  # noqa: E402
+from molt.frontend import SimpleTIRGenerator  # noqa: E402
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION  # noqa: E402
 from molt.cli.module_registry import (  # noqa: E402
     ModuleRegistryEntry,
     build_module_registry,
@@ -335,7 +339,6 @@ def _prepare_binary_ir(
     builtins_ops: list[dict] | None = None,
     dispatch_roots: set[str] | None = None,
 ):
-    cli = pytest.importorskip("molt.cli")
     from molt.cli import backend_ir as BACKEND_IR
 
     entry_path = tmp_path / "demo.py"
@@ -356,10 +359,10 @@ def _prepare_binary_ir(
         "unrelated": unrelated_path,
     }
     module_order = ["sys", "builtins", "gc", "importlib.machinery", "unrelated", "demo"]
-    integration_state = cli._FrontendIntegrationState(
+    integration_state = _FrontendIntegrationState(
         functions=[
             {
-                "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
+                "name": SimpleTIRGenerator.module_init_symbol(module_name),
                 "params": [],
                 "return_abi": "void",
                 "ops": (
@@ -375,12 +378,13 @@ def _prepare_binary_ir(
         known_classes={},
     )
     prepared, error = BACKEND_IR._prepare_backend_ir(
+        validate_inputs=lambda: None,
         entry_module="demo",
         module_graph=module_graph,
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
-        fail=cli._fail,
+        fail=fail,
         json_output=True,
         module_order=module_order,
         runtime_import_dispatch_roots={"gc"}
@@ -390,13 +394,13 @@ def _prepare_binary_ir(
         pgo_profile_summary=None,
         runtime_feedback_summary=None,
         emit_ir_path=None,
-        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="full",
         target=target,
     )
     assert error is None, error
     assert prepared is not None
-    return cli, prepared
+    return prepared
 
 
 def _ensure_call_module_name(ops: list, ensure_call: dict) -> str | None:
@@ -419,7 +423,7 @@ def _ensure_call_module_name(ops: list, ensure_call: dict) -> str | None:
 
 
 def test_init_reachable_only_via_table(tmp_path: Path) -> None:
-    cli, prepared = _prepare_binary_ir(tmp_path)
+    prepared = _prepare_binary_ir(tmp_path)
     ir = prepared.ir
     function_names = {func["name"] for func in ir["functions"]}
     # The string_eq dispatch chain is deleted on the native lane.
@@ -461,7 +465,7 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
     assert set(ir["module_registry"]["init_symbols"]) == set(registry.init_symbols())
 
     # No trampoline: __main__ and the entry module share one init body.
-    assert cli.SimpleTIRGenerator.module_init_symbol("__main__") not in function_names
+    assert SimpleTIRGenerator.module_init_symbol("__main__") not in function_names
     demo_row = registry.row_of("demo")
     main_row = registry.row_of("__main__")
     assert demo_row is not None and main_row is not None
@@ -469,7 +473,7 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
 
 
 def test_table_only_init_root_closes_required_runtime_features(tmp_path: Path) -> None:
-    _, prepared = _prepare_binary_ir(
+    prepared = _prepare_binary_ir(
         tmp_path,
         gc_ops=[
             {
@@ -486,7 +490,7 @@ def test_table_only_init_root_closes_required_runtime_features(tmp_path: Path) -
 def test_runtime_builtin_initializers_do_not_require_explicit_import_roots(
     tmp_path: Path, target: str
 ) -> None:
-    cli, prepared = _prepare_binary_ir(
+    prepared = _prepare_binary_ir(
         tmp_path,
         target=target,
         dispatch_roots=set(),
@@ -502,7 +506,7 @@ def test_runtime_builtin_initializers_do_not_require_explicit_import_roots(
         assert row is not None and row.kind == "runtime_builtin"
         assert row.flags & authority.MODULE_FLAG_HAS_BODY
         assert registry.ensure_lane_id(name) == row.id
-        symbol = cli.SimpleTIRGenerator.module_init_symbol(name)
+        symbol = SimpleTIRGenerator.module_init_symbol(name)
         assert row.init_symbol == symbol
         assert symbol in payload["init_symbols"]
         assert payload["rows"][row.id] == {"name": row.name, "init_symbol": symbol}

@@ -33,6 +33,7 @@ from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.backend_environment import CodegenSelection
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.rust_cpu_policy import RustCpuPolicy
+from molt.cli.python_import_topology import PythonImportTopology
 from molt.native_callable_exports import (
     NativeCallableExport as _ExternalNativeCallableExport,
     NativeCallableExportError,
@@ -648,7 +649,6 @@ class _ModuleLoweringMetadataView:
     module_is_namespace: bool
     is_package: bool
     module_execution_kind: ModuleExecutionKind
-    path_stat: os.stat_result | None
 
 
 @dataclass(frozen=True)
@@ -759,7 +759,6 @@ class _FrontendLayerExecutionContext:
     module_graph: Mapping[str, Path]
     module_source_catalog: _ModuleSourceCatalog
     project_root: Path | None
-    module_resolution_cache: "_ModuleResolutionCache"
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
     fallback_policy: "FallbackPolicy"
@@ -782,7 +781,6 @@ class _FrontendLayerExecutionContext:
     pgo_hot_function_names_sorted: tuple[str, ...]
     module_dep_closures: dict[str, frozenset[str]]
     module_graph_metadata: "_ModuleGraphMetadata"
-    path_stat_by_module: Mapping[str, os.stat_result | None] | None
     module_chunking: bool
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
     frontend_module_costs: Mapping[str, float]
@@ -817,10 +815,8 @@ class _FrontendLayerRuntimeHooks:
 @dataclass(frozen=True)
 class _SerialFrontendLoweringContext:
     syntax_error_modules: Mapping[str, Any]
-    module_trees: Mapping[str, ast.AST]
     module_source_catalog: _ModuleSourceCatalog
     generated_module_source_paths: Mapping[str, str]
-    module_resolution_cache: "_ModuleResolutionCache"
     project_root: Path | None
     parse_codec: "ParseCodec"
     type_hint_policy: "TypeHintPolicy"
@@ -846,7 +842,6 @@ class _SerialFrontendLoweringContext:
     module_dep_closures: dict[str, frozenset[str]]
     scoped_lowering_inputs: "_ScopedLoweringInputs | None"
     module_graph_metadata: "_ModuleGraphMetadata"
-    module_path_stats: Mapping[str, os.stat_result | None] | None
     known_classes: Mapping[ClassId, ClassInfo]
     frontend_phase_timeout: float | None
     target_python: TargetPythonVersion
@@ -875,32 +870,6 @@ class _FrontendIntegrationState:
 class _MidendDiagnosticsState:
     policy_outcomes_by_function: dict[str, dict[str, Any]]
     pass_stats_by_function: dict[str, dict[str, dict[str, Any]]]
-
-
-@dataclass(frozen=True)
-class _EntryFrontendLoweringContext:
-    entry_module: str
-    entry_path: Path
-    parse_codec: "ParseCodec"
-    type_hint_policy: "TypeHintPolicy"
-    fallback_policy: "FallbackPolicy"
-    type_facts: TypeFacts | None
-    enable_phi: bool
-    known_modules: Collection[str]
-    direct_call_modules: Collection[str]
-    known_classes: Mapping[ClassId, ClassInfo]
-    stdlib_allowlist: Collection[str]
-    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
-    known_func_kinds: dict[str, dict[str, str]]
-    native_callable_exports: Mapping[str, Mapping[str, Any]]
-    native_python_exports: Collection[str]
-    module_chunking: bool
-    module_chunk_max_ops: int
-    optimization_profile: str
-    pgo_hot_function_names: Collection[str]
-    frontend_phase_timeout: float | None
-    target_python: TargetPythonVersion
-    target_sys_platform: str | None
 
 
 @dataclass
@@ -1165,6 +1134,7 @@ class _ModuleRootResolution:
     # into an unattributable downstream custody failure, so callers fail
     # closed on any missing entry.
     missing_env_roots: tuple[str, ...] = ()
+    module_root_aliases: tuple[tuple[str, Path], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2021,6 +1991,8 @@ class _ResolvedBuildEntry:
     entry_tree: ast.Module
     target_python: TargetPythonVersion
     entry_snapshot: PythonSourceSnapshot | None = None
+    import_topology: PythonImportTopology = field(default_factory=PythonImportTopology)
+    module_root_aliases: tuple[tuple[str, Path], ...] = ()
     external_module_roots: tuple[Path, ...] = ()
     image_scope: _BinaryImageScope | None = None
 

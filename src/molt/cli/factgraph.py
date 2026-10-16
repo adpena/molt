@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any
+from molt import file_publication
+from molt.artifact_publication import discard_staged_output
 from molt.cli.config_resolution import _select_codegen_backend
 from molt.cli.native_link_plan import NativeArtifactKind
 
@@ -158,6 +160,7 @@ def execute_backend_fact_graph(
     subprocess_output_text: Callable[[str | bytes | None], str],
     fail: Callable[..., int],
     entry_override_env: str,
+    finalize_inputs: Callable[[], None] | None = None,
 ) -> int | None:
     if is_rust_transpile:
         return fail(
@@ -165,75 +168,100 @@ def execute_backend_fact_graph(
             json_output,
             command="factgraph",
         )
-    backend_env = {**backend_env, entry_override_env: entry_module}
-    request.output_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = backend_command_prefix(
-        backend_bin=backend_bin,
-        is_luau_transpile=is_luau_transpile,
-        is_rust_transpile=is_rust_transpile,
-        is_wasm=is_wasm,
-        target_triple=target_triple,
-    )
     try:
-        ir_file_path = ensure_backend_ir_file_path()
-    except OSError as exc:
-        return fail(
-            f"Backend IR lease write failed: {exc}",
-            json_output,
-            command="factgraph",
+        destination = file_publication.canonical_file_leaf(
+            request.output_path, create_parent=True, role="TIR fact graph output"
         )
-    cmd.extend(
-        [
-            "--ir-file",
-            str(ir_file_path),
-            "--fact-graph-output",
-            str(request.output_path),
-            "--fact-graph-function",
-            request.function_name,
-        ]
-    )
+        candidate = file_publication.staged_file_path(
+            destination, purpose="factgraph", suffix=destination.suffix
+        )
+    except (OSError, ValueError) as exc:
+        return fail(
+            f"Cannot stage TIR fact graph: {exc}", json_output, command="factgraph"
+        )
     try:
-        backend_process = run_subprocess_captured_to_tempfiles(
-            cmd,
-            env=backend_env,
-            timeout=backend_timeout,
-            progress_label=None if json_output else "TIR fact graph emission",
+        backend_env = {**backend_env, entry_override_env: entry_module}
+        cmd = backend_command_prefix(
+            backend_bin=backend_bin,
+            is_luau_transpile=is_luau_transpile,
+            is_rust_transpile=is_rust_transpile,
+            is_wasm=is_wasm,
+            target_triple=target_triple,
         )
-    except subprocess.TimeoutExpired:
-        return fail(
-            "TIR fact graph emission timed out",
-            json_output,
-            command="factgraph",
+        try:
+            ir_file_path = ensure_backend_ir_file_path()
+        except OSError as exc:
+            return fail(
+                f"Backend IR lease write failed: {exc}",
+                json_output,
+                command="factgraph",
+            )
+        cmd.extend(
+            [
+                "--ir-file",
+                str(ir_file_path),
+                "--fact-graph-output",
+                str(candidate),
+                "--fact-graph-function",
+                request.function_name,
+            ]
         )
-    backend_stderr = subprocess_output_text(backend_process.stderr)
-    backend_stdout = subprocess_output_text(backend_process.stdout)
-    if verbose and not json_output:
-        if backend_stdout:
-            print(backend_stdout, end="")
-        if backend_stderr:
-            print(backend_stderr, end="", file=sys.stderr)
-    if backend_process.returncode != 0:
-        detail = backend_stderr.strip() or backend_stdout.strip()
-        message = (
-            f"TIR fact graph emission failed (exit code {backend_process.returncode})"
-        )
-        if detail:
-            message = f"{message}:\n{detail}"
-        return fail(
-            message,
-            json_output,
-            backend_process.returncode or 1,
-            command="factgraph",
-        )
-    if not request.output_path.is_file():
-        return fail(
-            f"TIR fact graph output missing: {request.output_path}",
-            json_output,
-            command="factgraph",
-        )
-    if not json_output:
-        print(f"Wrote TIR fact graph: {request.output_path}", file=sys.stderr)
-    return None
+        try:
+            backend_process = run_subprocess_captured_to_tempfiles(
+                cmd,
+                env=backend_env,
+                timeout=backend_timeout,
+                progress_label=None if json_output else "TIR fact graph emission",
+            )
+        except subprocess.TimeoutExpired:
+            return fail(
+                "TIR fact graph emission timed out",
+                json_output,
+                command="factgraph",
+            )
+        backend_stderr = subprocess_output_text(backend_process.stderr)
+        backend_stdout = subprocess_output_text(backend_process.stdout)
+        if verbose and not json_output:
+            if backend_stdout:
+                print(backend_stdout, end="")
+            if backend_stderr:
+                print(backend_stderr, end="", file=sys.stderr)
+        if backend_process.returncode != 0:
+            detail = backend_stderr.strip() or backend_stdout.strip()
+            message = f"TIR fact graph emission failed (exit code {backend_process.returncode})"
+            if detail:
+                message = f"{message}:\n{detail}"
+            return fail(
+                message,
+                json_output,
+                backend_process.returncode or 1,
+                command="factgraph",
+            )
+        if not candidate.is_file():
+            return fail(
+                f"TIR fact graph output missing: {request.output_path}",
+                json_output,
+                command="factgraph",
+            )
+        from molt.cli.command_runtime import _finish_build_input_custody
+
+        custody_error = _finish_build_input_custody(finalize_inputs)
+        if custody_error is not None:
+            return fail(custody_error, json_output, command="factgraph")
+        try:
+            file_publication.durable_replace(candidate, destination)
+        except (OSError, ValueError) as exc:
+            return fail(
+                f"Cannot publish TIR fact graph: {exc}",
+                json_output,
+                command="factgraph",
+            )
+        if not json_output:
+            print(f"Wrote TIR fact graph: {request.output_path}", file=sys.stderr)
+        return None
+
+    finally:
+        discard_staged_output(candidate)
 
 
 def resolve_request_output_path(
@@ -334,16 +362,10 @@ def emit_pipeline_fact_graph(
             subprocess_output_text=subprocess_output_text,
             fail=fail,
             entry_override_env=entry_override_env,
+            finalize_inputs=finalize_inputs,
         )
         if fact_graph_error is not None:
             return fact_graph_error
-        # The parser imports this module for its argument definitions; build
-        # custody (and the process guard) loads only when a graph is emitted.
-        from molt.cli.command_runtime import _finish_build_input_custody
-
-        custody_error = _finish_build_input_custody(finalize_inputs)
-        if custody_error is not None:
-            return fail(custody_error, json_output, command="build")
         if json_output:
             emit_json(
                 json_payload(

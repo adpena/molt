@@ -936,9 +936,9 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
         )
         == "unsupported target relocation"
     )
-    assert set(phase_times) == {"strip_wall_ns"}
+    assert set(phase_times) == {"strip_wall_ns", "cleanup_wall_ns"}
     assert output.read_bytes() == b"previous"
-    assert candidate.read_bytes() == b"linked"
+    assert not candidate.exists()
 
 
 @pytest.mark.parametrize(

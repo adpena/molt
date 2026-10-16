@@ -1595,11 +1595,11 @@ def test_relative_inventory_keeps_manifest_and_invalid_operand_errors(tmp_path):
 def test_inventory_failure_and_directory_cycle_never_publish_partial_coverage(
     tmp_path, monkeypatch
 ):
-    from molt.cli import python_import_resolution as resolution
+    from molt.cli import python_import_topology as topology
 
     seed = tmp_path / "entry.py"
     seed.write_text("__package__ = unknown\nfrom . import child\n", encoding="utf-8")
-    real_scandir = resolution.os.scandir
+    real_scandir = topology.os.scandir
 
     def denied(path):
         if Path(path) == tmp_path:
@@ -1607,7 +1607,7 @@ def test_inventory_failure_and_directory_cycle_never_publish_partial_coverage(
         return real_scandir(path)
 
     with monkeypatch.context() as patch:
-        patch.setattr(resolution.os, "scandir", denied)
+        patch.setattr(topology.os, "scandir", denied)
         with pytest.raises(
             ValueError, match="cannot enumerate local Python source domain"
         ):
@@ -1625,7 +1625,7 @@ def test_inventory_failure_and_directory_cycle_never_publish_partial_coverage(
 def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import python_import_resolution as resolution
+    from molt.cli import python_import_topology as topology
 
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -1652,13 +1652,13 @@ def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
         'source_roots = ["src", "tools"]\nsource = []\n',
         encoding="utf-8",
     )
-    real_scandir = resolution.os.scandir
+    real_scandir = topology.os.scandir
 
     def admitted_scandir(path):
         assert not Path(path).is_relative_to(tmp_path / "tmp")
         return real_scandir(path)
 
-    install_module_view(monkeypatch, "os", os, resolution, scandir=admitted_scandir)
+    install_module_view(monkeypatch, "os", os, topology, scandir=admitted_scandir)
     before = local_python_import_closure(tmp_path, (seed,))
     assert set(before.paths) == {seed, helper, initializer, leaf, manifest}
     assert before.topology_digest

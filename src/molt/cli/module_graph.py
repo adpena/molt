@@ -160,14 +160,19 @@ def _collect_namespace_parents(
     return namespace_parents
 
 
-def _namespace_paths(name: str, roots: list[Path]) -> list[str]:
-    rel = Path(*name.split("."))
-    paths: list[str] = []
-    for root in roots:
-        candidate = root / rel
-        if candidate.exists() and candidate.is_dir():
-            paths.append(str(candidate))
-    return list(dict.fromkeys(paths))
+def _namespace_paths(
+    name: str,
+    roots: list[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    resolver_cache: "_module_resolution._ModuleResolutionCache",
+) -> list[str]:
+    return [
+        str(path)
+        for path in resolver_cache.package_locations(
+            name, roots, stdlib_root, stdlib_allowlist
+        )
+    ]
 
 
 def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Path:
@@ -450,9 +455,10 @@ def _augment_support_modules(
             continue
         paths = _namespace_paths(
             name,
-            _module_resolution._roots_for_module(
-                name, roots, stdlib_root, stdlib_allowlist
-            ),
+            roots,
+            stdlib_root,
+            stdlib_allowlist,
+            resolver_cache,
         )
         if not paths:
             continue
@@ -1379,7 +1385,11 @@ def _finalize_runtime_import_closure(
         )
         owners: dict[str, Path] = {}
         for name in _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES:
-            path = _module_resolution._resolve_module_path(name, [stdlib_root])
+            path = _module_resolution._resolve_module_path(
+                name,
+                [stdlib_root],
+                import_topology=module_resolution_cache.import_topology,
+            )
             if path is None:
                 raise ValueError(f"Missing required stdlib support module: {name}")
             path = path.resolve()
@@ -1908,6 +1918,8 @@ def _prepare_entry_module_graph(
     project_root: Path | None,
     entry_tree: ast.AST,
     entry_snapshot: _module_source.PythonSourceSnapshot | None = None,
+    import_topology: _module_resolution.PythonImportTopology | None = None,
+    module_root_aliases: _module_resolution._ModuleRootAliases | None = None,
     diagnostics_enabled: bool,
     module_reasons: MutableMapping[str, set[str]],
     json_output: bool,
@@ -1920,7 +1932,14 @@ def _prepare_entry_module_graph(
     """``stdlib_profile`` is the build's resolved intent (resolve_stdlib_profile)."""
     stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
     roots = module_roots + [stdlib_root]
-    module_resolution_cache = _module_resolution._ModuleResolutionCache()
+    module_resolution_cache = _module_resolution._ModuleResolutionCache(
+        import_topology=import_topology or _module_resolution.PythonImportTopology(),
+        module_root_aliases=module_root_aliases,
+    )
+    try:
+        module_resolution_cache.import_topology.validate()
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command="build")
     discovery = _graph_discovery._ModuleGraphDiscovery(
         module_resolution_cache, target_python
     )
@@ -2058,7 +2077,10 @@ def _prepare_entry_module_graph(
         )
     core_before = set(module_graph)
     _module_stdlib_policy._ensure_core_stdlib_modules(
-        module_graph, stdlib_root, stdlib_profile
+        module_graph,
+        stdlib_root,
+        stdlib_profile,
+        import_topology=module_resolution_cache.import_topology,
     )
     _graph_discovery._record_new_module_reasons(
         module_graph,

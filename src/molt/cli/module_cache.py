@@ -68,7 +68,6 @@ from molt.cli.module_source import (
     PythonSourceSnapshot,
     _ModuleSourceLease,
     _payload_source_matches,
-    _source_content_sha256,
 )
 from molt.cli.runtime_paths import _build_state_root
 from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
@@ -666,9 +665,7 @@ def _scoped_pgo_hot_function_names(
 def _module_lowering_metadata_view(
     module_name: str,
     *,
-    module_path: Path,
     module_graph_metadata: _ModuleGraphMetadata,
-    path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
 ) -> _ModuleLoweringMetadataView:
     return _ModuleLoweringMetadataView(
         logical_source_path=module_graph_metadata.logical_source_path_by_module[
@@ -682,18 +679,12 @@ def _module_lowering_metadata_view(
         module_execution_kind=module_graph_metadata.module_execution_kind_by_module[
             module_name
         ],
-        path_stat=(
-            path_stat_by_module[module_name]
-            if path_stat_by_module is not None
-            else None
-        ),
     )
 
 
 def _module_lowering_execution_view(
     module_name: str,
     *,
-    module_path: Path,
     module_graph_metadata: _ModuleGraphMetadata,
     module_deps: dict[str, set[str]],
     known_modules: Collection[str],
@@ -703,7 +694,6 @@ def _module_lowering_execution_view(
     type_facts: TypeFacts | None,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     module_dep_closures: dict[str, frozenset[str]],
-    path_stat_by_module: Mapping[str, os.stat_result | None] | None = None,
     scoped_lowering_inputs: _ScopedLoweringInputs | None = None,
     known_modules_sorted: tuple[str, ...] | None = None,
     pgo_hot_function_names_sorted: tuple[str, ...] | None = None,
@@ -716,9 +706,7 @@ def _module_lowering_execution_view(
 ) -> _ModuleLoweringExecutionView:
     metadata = _module_lowering_metadata_view(
         module_name,
-        module_path=module_path,
         module_graph_metadata=module_graph_metadata,
-        path_stat_by_module=path_stat_by_module,
     )
     scoped_inputs = _scoped_lowering_input_view(
         module_name,
@@ -754,7 +742,7 @@ def _module_lowering_execution_view(
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 12
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 5
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 6
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -845,28 +833,19 @@ def _shared_module_analysis_cache_path_for(
 
 
 def _module_lowering_cache_key(
-    path: Path,
     *,
     module_name: str,
     is_package: bool,
     target_python: TargetPythonVersion,
 ) -> str:
-    """Content-addressed key for one module-lowering slot.
+    """Stable slot identity; the context owns captured source-byte identity.
 
-    The physical source path is provenance, not semantics: generated namespace
-    modules are recreated under each build's output directory. Key on source bytes
-    plus module/package/target identity so identical generated source reuses the
-    same slot across runs. ``context_digest`` remains the full lowering-context
-    correctness authority and the payload source hash is revalidated on read.
+    Locating a cache slot must neither reopen nor replace the admitted source.
+    The shared slot additionally includes the full content-addressed context;
+    the local slot may replace its previous context without retaining history.
     """
-    try:
-        path_stat = path.stat()
-    except OSError:
-        source_identity = os.fspath(path)
-    else:
-        source_identity = _source_content_sha256(path, path_stat) or os.fspath(path)
     return _resolved_module_cache_key(
-        source_identity,
+        "lowering",
         module_name,
         "pkg" if is_package else "mod",
         target_python.tag,
@@ -886,7 +865,6 @@ def _module_lowering_cache_path(
         "module_lowering_cache",
     )
     cache_key = _module_lowering_cache_key(
-        path,
         module_name=module_name,
         is_package=is_package,
         target_python=target_python,
@@ -903,7 +881,6 @@ def _shared_module_lowering_cache_path_for(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path | None:
     cache_key = _module_lowering_cache_key(
-        path,
         module_name=module_name,
         is_package=is_package,
         target_python=target_python,
@@ -1217,6 +1194,7 @@ def _load_module_analysis(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     source: str | None,
+    source_snapshot: PythonSourceSnapshot | None = None,
     logical_source_path: str,
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
@@ -1266,6 +1244,7 @@ def _load_module_analysis(
         resolution_cache=resolution_cache,
         project_root=project_root,
         source=source,
+        source_snapshot=source_snapshot,
         source_filename=logical_source_path,
         retain_source=retain_source,
         retain_tree=retain_tree,
@@ -1410,6 +1389,7 @@ def _module_lowering_context_payload(
     module_name: str,
     module_path: Path,
     *,
+    source_lease: _ModuleSourceLease,
     logical_source_path: str,
     entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
@@ -1444,15 +1424,10 @@ def _module_lowering_context_payload(
     | None = None,
     scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
     is_package: bool | None = None,
-    path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
 ) -> dict[str, Any] | None:
-    if path_stat is None:
-        try:
-            path_stat = module_path.stat()
-        except OSError:
-            return None
+    source_lease.validate_path(module_path)
     if scoped_inputs is None:
         scoped_inputs = _scoped_lowering_input_view(
             module_name,
@@ -1496,14 +1471,9 @@ def _module_lowering_context_payload(
     if is_package is None:
         is_package = module_path.name == "__init__.py"
     return {
-        # v2 dropped ``mtime_ns`` from the content-addressed lowering key: it is
-        # content-invariant metadata that a re-checkout / copy / reinstall resets
-        # even for byte-identical source, so embedding it forced a cold
-        # cross-session/worktree re-lower (build-dedup doctrine 74 law 1). ``size``
-        # is kept (content-correlated); the per-read source sha256 gate
-        # (_payload_source_matches) remains the content authority. Bumping the
-        # version is the intentional one-time invalidation of pre-fix entries.
-        "version": 3,
+        # The context owns the captured bytes, not a later file stat/hash.
+        # Inline text and raw path bytes are distinct source generations.
+        "version": 4,
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
@@ -1513,7 +1483,9 @@ def _module_lowering_context_payload(
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
-        "size": path_stat.st_size,
+        "size": source_lease.source_size,
+        "source_sha256": source_lease.source_sha256,
+        "source_kind": source_lease.source_kind,
         "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "fallback_policy": fallback_policy,
@@ -1610,6 +1582,7 @@ def _module_lowering_context_digest_for_module(
     module_name: str,
     module_path: Path,
     *,
+    source_lease: _ModuleSourceLease,
     logical_source_path: str,
     entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
@@ -1644,13 +1617,13 @@ def _module_lowering_context_digest_for_module(
     | None = None,
     scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
     is_package: bool | None = None,
-    path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
 ) -> str | None:
     context_payload = _module_lowering_context_payload(
         module_name,
         module_path,
+        source_lease=source_lease,
         logical_source_path=logical_source_path,
         entry_override=entry_override,
         module_execution_kind=module_execution_kind,
@@ -1686,7 +1659,6 @@ def _module_lowering_context_digest_for_module(
         scoped_known_classes_by_module=scoped_known_classes_by_module,
         scoped_known_classes=scoped_known_classes,
         is_package=is_package,
-        path_stat=path_stat,
         target_python=target_python,
         target_sys_platform=target_sys_platform,
     )
@@ -1699,9 +1671,9 @@ def _validate_persisted_module_lowering_payload(
     payload: dict[str, Any] | None,
     path: Path,
     *,
+    source_lease: _ModuleSourceLease,
     module_name: str,
     context_digest: str,
-    path_stat: os.stat_result | None,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Validate one lowering payload; the single correctness gate for both tiers.
@@ -1719,12 +1691,12 @@ def _validate_persisted_module_lowering_payload(
         return None
     if payload.get("context_digest") != context_digest:
         return None
-    if path_stat is None:
-        try:
-            path_stat = path.stat()
-        except OSError:
-            return None
-    if not _payload_source_matches(payload, path, path_stat):
+    source_lease.validate_path(path)
+    if (
+        payload.get("source_sha256") != source_lease.source_sha256
+        or payload.get("size") != source_lease.source_size
+        or payload.get("source_kind") != source_lease.source_kind
+    ):
         return None
     raw_result = payload.get("result")
     if not isinstance(raw_result, dict):
@@ -1747,6 +1719,7 @@ def _validate_persisted_module_lowering_payload(
             is not None
         ):
             return None
+    source_lease.validate()
     return result
 
 
@@ -1754,10 +1727,10 @@ def _read_persisted_module_lowering(
     project_root: Path,
     path: Path,
     *,
+    source_lease: _ModuleSourceLease,
     module_name: str,
     is_package: bool,
     context_digest: str,
-    path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     known_modules: Iterable[str] = (),
 ) -> dict[str, Any] | None:
@@ -1774,9 +1747,9 @@ def _read_persisted_module_lowering(
     result = _validate_persisted_module_lowering_payload(
         _read_cached_json_object(cache_path),
         path,
+        source_lease=source_lease,
         module_name=module_name,
         context_digest=context_digest,
-        path_stat=path_stat,
         known_modules=known_modules,
     )
     if result is not None:
@@ -1800,9 +1773,9 @@ def _read_persisted_module_lowering(
     result = _validate_persisted_module_lowering_payload(
         _read_cached_json_object(cache_path),
         path,
+        source_lease=source_lease,
         module_name=module_name,
         context_digest=context_digest,
-        path_stat=path_stat,
         known_modules=known_modules,
     )
     if result is not None and shared_path is not None:
@@ -1816,6 +1789,7 @@ def _write_persisted_module_lowering(
     project_root: Path,
     path: Path,
     *,
+    source_lease: _ModuleSourceLease,
     module_name: str,
     is_package: bool,
     context_digest: str,
@@ -1829,17 +1803,15 @@ def _write_persisted_module_lowering(
         is_package=is_package,
         target_python=target_python,
     )
-    stat = path.stat()
-    source_sha256 = _source_content_sha256(path, stat)
-    if source_sha256 is None:
-        return
+    source_lease.validate_path(path)
+    source_lease.validate()
     payload = {
         "version": _MODULE_LOWERING_CACHE_SCHEMA_VERSION,
         "context_digest": context_digest,
         "target_python": target_python.tag,
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-        "source_sha256": source_sha256,
+        "size": source_lease.source_size,
+        "source_sha256": source_lease.source_sha256,
+        "source_kind": source_lease.source_kind,
         "result": result,
     }
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1867,6 +1839,7 @@ def _load_cached_module_lowering_result(
     module_name: str,
     module_path: Path,
     *,
+    source_lease: _ModuleSourceLease,
     logical_source_path: str,
     entry_override: str | None,
     module_execution_kind: ModuleExecutionKind,
@@ -1901,21 +1874,17 @@ def _load_cached_module_lowering_result(
     | None = None,
     scoped_known_classes: dict[ClassId, ClassInfo] | None = None,
     context_digest: str | None = None,
-    resolution_cache: _ModuleResolutionCache | None = None,
     source_modules: Collection[str] | None = None,
-    path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     target_sys_platform: str | None = None,
 ) -> dict[str, Any] | None:
     if project_root is None:
         return None
-    if path_stat is None and resolution_cache is not None:
-        with contextlib.suppress(OSError):
-            path_stat = resolution_cache.path_stat(module_path)
     if context_digest is None:
         context_digest = _module_lowering_context_digest_for_module(
             module_name,
             module_path,
+            source_lease=source_lease,
             logical_source_path=logical_source_path,
             entry_override=entry_override,
             module_execution_kind=module_execution_kind,
@@ -1951,7 +1920,6 @@ def _load_cached_module_lowering_result(
             scoped_known_classes_by_module=scoped_known_classes_by_module,
             scoped_known_classes=scoped_known_classes,
             is_package=is_package,
-            path_stat=path_stat,
             target_python=target_python,
             target_sys_platform=target_sys_platform,
         )
@@ -1960,10 +1928,10 @@ def _load_cached_module_lowering_result(
     return _read_persisted_module_lowering(
         project_root,
         module_path,
+        source_lease=source_lease,
         module_name=module_name,
         is_package=is_package,
         context_digest=context_digest,
-        path_stat=path_stat,
         target_python=target_python,
         known_modules=known_modules,
     )
@@ -1974,8 +1942,7 @@ def _module_worker_payload(
     *,
     module_path: Path,
     logical_source_path: str,
-    source_lease: _ModuleSourceLease | None = None,
-    source: str | None = None,
+    source_lease: _ModuleSourceLease,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -2010,10 +1977,7 @@ def _module_worker_payload(
     target_sys_platform: str | None = None,
     frontend_phase_timeout: float | None = None,
 ) -> dict[str, Any]:
-    if source_lease is None:
-        if source is None:
-            raise ValueError("module worker payload requires a source lease")
-        source_lease = _ModuleSourceLease.inline(module_path, source)
+    source_lease.validate_path(module_path)
     if scoped_inputs is None:
         scoped_inputs = _scoped_lowering_input_view(
             module_name,

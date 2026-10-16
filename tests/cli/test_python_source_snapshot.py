@@ -95,3 +95,70 @@ def test_snapshot_host_parse_preserves_diagnostic_path() -> None:
     snapshot = PythonSourceSnapshot(Path("broken.py"), b"def broken(:\n")
     with pytest.raises(ValueError, match="cannot parse local Python source broken.py"):
         _ = snapshot.tree
+
+
+@pytest.mark.parametrize("operation", ["read", "validate"])
+@pytest.mark.parametrize("change", ["same-stat", "remove"])
+def test_source_lease_never_adopts_a_later_generation(
+    tmp_path: Path, operation: str, change: str
+) -> None:
+    import os
+    from molt.cli.module_source import _ModuleSourceLease, PythonSourceChangedError
+
+    path = tmp_path / "source.py"
+    content = b"VALUE = 1\n"
+    path.write_bytes(content)
+    metadata = path.stat()
+    lease = _ModuleSourceLease.path_backed(path)
+    if change == "remove":
+        path.unlink()
+    else:
+        path.write_bytes(b"VALUE = 2\n")
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    with pytest.raises(PythonSourceChangedError, match="during compile"):
+        getattr(lease, operation)()
+    assert lease.source_sha256 == hashlib.sha256(content).hexdigest()
+
+
+def test_inline_and_raw_source_leases_keep_distinct_generation_kinds(
+    tmp_path: Path,
+) -> None:
+    from molt.cli.module_source import _ModuleSourceLease
+
+    path = tmp_path / "source.py"
+    path.write_bytes(b"# coding: latin-1\r\nVALUE = '\xe9'\r\n")
+    raw = _ModuleSourceLease.path_backed(path)
+    inline = _ModuleSourceLease.inline(path, PythonSourceSnapshot.capture(path).text)
+    assert raw.source_kind == "path"
+    assert inline.source_kind == "inline"
+    assert raw.source_sha256 != inline.source_sha256
+    for lease in (raw, inline):
+        decoded = _ModuleSourceLease.from_worker_payload(lease.worker_payload())
+        assert decoded == lease
+        assert decoded.read() == "# coding: latin-1\nVALUE = 'é'\n"
+    path.unlink()
+    assert inline.read().endswith("'é'\n")
+    inline.validate()
+
+
+@pytest.mark.parametrize("field", ["source_sha256", "source_size", "kind", "path"])
+def test_worker_source_lease_rejects_missing_generation_identity(
+    tmp_path: Path, field: str
+) -> None:
+    from molt.cli.module_source import _ModuleSourceLease
+
+    lease = _ModuleSourceLease.inline(tmp_path / "source.py", "VALUE = 1\n")
+    payload = lease.worker_payload()
+    del payload[field]
+    with pytest.raises(ValueError):
+        _ModuleSourceLease.from_worker_payload(payload)
+
+
+def test_source_catalog_requires_admitted_rows(tmp_path: Path) -> None:
+    from molt.cli.module_source import _ModuleSourceCatalog
+
+    path = tmp_path / "source.py"
+    path.write_text("VALUE = 1\n")
+    catalog = _ModuleSourceCatalog({})
+    with pytest.raises(ValueError, match="lacks captured source lease"):
+        catalog.read_source("new_module", path)

@@ -120,9 +120,9 @@ def _shared_module_lowering_cache_path(
 ) -> Path | None:
     """Shared slot for one lowering identity, or ``None`` for a bad key.
 
-    The lowering filename key (``content_key``) captures source bytes plus module,
-    package, and target-Python identity. The slot name additionally embeds the
-    ``context_digest``: two distinct lowering identities (e.g. a
+    The lowering filename key (``content_key``) captures module, package and
+    target-Python slot identity. The slot name additionally embeds the full
+    ``context_digest``, including the captured source bytes and source kind: two distinct lowering identities (e.g. a
     different tooling fingerprint, type-facts, or scoped inputs) then occupy
     distinct slots and can neither clobber nor be mis-served for one another.
     """

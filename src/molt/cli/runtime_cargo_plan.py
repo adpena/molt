@@ -61,10 +61,10 @@ from molt.source_root import compiler_source_root
 from molt.wasi_sdk_identity import WasiCAbiProjection, wasi_c_abi_projection
 from molt.cache_eviction import resolve_budget
 from molt.default_paths import _default_molt_cache, file_digest_cache_path
+from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
-    DIGEST_RACY_WINDOW_NS,
     capture_stable_regular_file,
     file_digest_cache,
     verify_stable_regular_file_metadata,

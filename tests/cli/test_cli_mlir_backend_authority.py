@@ -160,3 +160,52 @@ def test_mlir_backend_executable_name_is_host_specific() -> None:
         mlir_backend._mlir_backend_executable_name(os_name="posix")
         == "molt-backend-mlir"
     )
+
+
+@pytest.mark.parametrize("mutation", [None, "rewrite", "delete"])
+def test_mlir_publication_closes_source_generation_after_backend_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str | None
+) -> None:
+    from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+
+    source = tmp_path / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    catalog = _ModuleSourceCatalog({"app": _ModuleSourceLease.path_backed(source)})
+    output = tmp_path / "out.mlir"
+    output.write_bytes(b"previous MLIR")
+    stages: list[Path] = []
+    monkeypatch.setattr(
+        mlir_backend,
+        "_ensure_mlir_backend_binary",
+        lambda _: (tmp_path / "backend", None),
+    )
+    monkeypatch.setattr(mlir_backend, "mlir_toolchain_environment", lambda *_, **__: {})
+
+    def compile_ir(command, **kwargs):
+        candidate = Path(command[command.index("--output") + 1])
+        assert candidate != output
+        assert output.read_bytes() == b"previous MLIR"
+        candidate.write_bytes(b"module {}\n")
+        stages.append(candidate)
+        if mutation == "rewrite":
+            source.write_text("value = 2\n", encoding="utf-8")
+        elif mutation == "delete":
+            source.unlink()
+        return mlir_backend.subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(
+        mlir_backend, "_run_subprocess_captured_to_tempfiles", compile_ir
+    )
+    result = mlir_backend._run_mlir_backend_pipeline(
+        ir={"functions": []},
+        output_artifact=output,
+        project_root=tmp_path,
+        json_output=True,
+        verbose=False,
+        validate_inputs=catalog.validate,
+    )
+    assert result == (0 if mutation is None else 2)
+    assert output.read_bytes() == (
+        b"module {}\n" if mutation is None else b"previous MLIR"
+    )
+    assert len(stages) == 1 and not stages[0].exists()

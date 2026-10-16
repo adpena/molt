@@ -62,6 +62,7 @@ from molt.cli.models import (
 )
 from molt.cli.module_graph_discovery import _record_module_reason
 from molt.cli.module_resolution import (
+    _ModuleRootAliases,
     _entry_module_root_for_path,
     _is_stdlib_resolved_path,
     _module_name_from_path,
@@ -70,6 +71,7 @@ from molt.cli.module_resolution import (
     _stdlib_root_path,
 )
 from molt.cli.module_source import PythonSourceSnapshot
+from molt.cli.python_import_topology import PythonImportTopology
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.profile_feedback import _load_pgo_profile, _load_runtime_feedback
 from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
@@ -106,16 +108,30 @@ def _collect_env_overrides(file_path: str) -> dict[str, str]:
 
 
 def _resolve_entry_module(
-    module_name: str, roots: list[Path]
+    module_name: str,
+    roots: list[Path],
+    *,
+    import_topology: PythonImportTopology,
+    module_root_aliases: _ModuleRootAliases,
 ) -> tuple[str, Path] | None:
     stripped = module_name.strip()
     if not stripped:
         return None
     main_name = f"{stripped}.__main__"
-    main_path = _resolve_module_path(main_name, roots)
+    main_path = _resolve_module_path(
+        main_name,
+        roots,
+        import_topology=import_topology,
+        module_root_aliases=module_root_aliases,
+    )
     if main_path is not None:
         return main_name, main_path
-    mod_path = _resolve_module_path(stripped, roots)
+    mod_path = _resolve_module_path(
+        stripped,
+        roots,
+        import_topology=import_topology,
+        module_root_aliases=module_root_aliases,
+    )
     if mod_path is not None:
         return stripped, mod_path
     return None
@@ -324,6 +340,7 @@ def _resolve_build_entry(
     env: Mapping[str, str] | None = None,
     source_cwd: Path | None = None,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
+    import_topology = PythonImportTopology()
     selector, selector_error = _resolve_build_entry_selector(
         file_path=file_path,
         module=module,
@@ -342,6 +359,7 @@ def _resolve_build_entry(
         lib_paths=lib_paths or [],
         env=env,
         source_cwd=source_cwd,
+        import_topology=import_topology,
     )
     if module_root_resolution.missing_env_roots:
         missing = ", ".join(module_root_resolution.missing_env_roots)
@@ -358,15 +376,24 @@ def _resolve_build_entry(
     source_path: Path | None = None
     entry_module: str | None = None
     if file_path:
-        source_path = ((source_cwd or Path.cwd()) / Path(file_path)).resolve()
-        if not source_path.exists():
+        selector_path = (source_cwd or Path.cwd()) / Path(file_path)
+        selected_source = import_topology.probe(selector_path)
+        if selected_source is None:
             return None, _fail(
-                f"File not found: {source_path}", json_output, command=command
+                f"File not found: {selector_path}", json_output, command=command
             )
-        module_roots.append(_entry_module_root_for_path(source_path))
+        source_path = selected_source.path
+        module_roots.append(
+            _entry_module_root_for_path(source_path, import_topology=import_topology)
+        )
         module_roots = list(dict.fromkeys(root.resolve() for root in module_roots))
     if module:
-        resolved = _resolve_entry_module(module, module_roots)
+        resolved = _resolve_entry_module(
+            module,
+            module_roots,
+            import_topology=import_topology,
+            module_root_aliases=module_root_resolution.module_root_aliases,
+        )
         if resolved is None:
             return None, _fail(
                 f"Entry module not found: {module}",
@@ -377,7 +404,12 @@ def _resolve_build_entry(
         module_roots.append(source_path.parent.resolve())
         module_roots = list(dict.fromkeys(module_roots))
     elif source_path is not None:
-        entry_module = _module_name_from_path(source_path, module_roots, stdlib_root)
+        entry_module = _module_name_from_path(
+            source_path,
+            module_roots,
+            stdlib_root,
+            module_root_aliases=module_root_resolution.module_root_aliases,
+        )
     if source_path is None or entry_module is None:
         return None, _fail(
             "No entry point found. Provide a Python file path or use --module to specify a package entry point.",
@@ -418,6 +450,8 @@ def _resolve_build_entry(
         entry_source=entry_source,
         entry_tree=entry_tree,
         entry_snapshot=entry_snapshot,
+        import_topology=import_topology,
+        module_root_aliases=module_root_resolution.module_root_aliases,
         target_python=target_python,
         external_module_roots=external_module_roots,
         image_scope=_BinaryImageScope.from_entry(
@@ -925,7 +959,9 @@ def _resolve_module_root_resolution(
     lib_paths: list[str] | None = None,
     env: Mapping[str, str] | None = None,
     source_cwd: Path | None = None,
+    import_topology: PythonImportTopology | None = None,
 ) -> _ModuleRootResolution:
+    topology = import_topology or PythonImportTopology()
     request_env = os.environ if env is None else env
     request_cwd = Path.cwd() if source_cwd is None else source_cwd
     module_roots: list[Path] = []
@@ -933,7 +969,8 @@ def _resolve_module_root_resolution(
     internal_roots: set[Path] = set()
 
     def add_root(path: Path, *, external: bool) -> None:
-        resolved = path.resolve()
+        selected = topology.probe(path)
+        resolved = selected.path if selected is not None else path.resolve()
         module_roots.append(resolved)
         if external and resolved not in internal_roots:
             external_roots.append(resolved)
@@ -949,17 +986,22 @@ def _resolve_module_root_resolution(
         "on",
     }
     missing_env_roots: list[str] = []
+    module_root_aliases: list[tuple[str, Path]] = []
     extra_roots = request_env.get("MOLT_MODULE_ROOTS", "")
     if extra_roots:
         for entry in extra_roots.split(os.pathsep):
             if not entry:
                 continue
-            alias_entry = _parse_module_root_alias_entry(entry)
+            alias_entry = _parse_module_root_alias_entry(
+                entry, import_topology=topology, source_cwd=request_cwd
+            )
+            if alias_entry is not None:
+                module_root_aliases.append(alias_entry)
             entry_path = (
                 alias_entry[1] if alias_entry is not None else Path(entry).expanduser()
             )
             entry_path = request_cwd / entry_path
-            if entry_path.exists():
+            if topology.probe(entry_path) is not None:
                 add_root(entry_path, external=True)
             else:
                 missing_env_roots.append(entry)
@@ -969,15 +1011,19 @@ def _resolve_module_root_resolution(
     # cycle only in the molt-build order; the isolated import is fine). These
     # leaf path-utilities are needed only at call time, so importing them here
     # rather than at module top keeps build_inputs import-order-independent.
-    from molt.cli.env_paths import _molt_venv_site_packages, _vendor_roots
+    from molt.cli.env_paths import (
+        _molt_venv_site_packages,
+        _vendor_roots,
+        _venv_site_packages,
+    )
 
     for root in (project_root, cwd_root):
-        if root.exists():
+        if topology.probe(root) is not None:
             add_root(root, external=False)
         src_root = root / "src"
-        if src_root.exists():
+        if topology.probe(src_root) is not None:
             add_root(src_root, external=False)
-        for vendor_root in _vendor_roots(root):
+        for vendor_root in _vendor_roots(root, import_topology=topology):
             add_root(vendor_root, external=False)
     if respect_pythonpath:
         pythonpath = request_env.get("PYTHONPATH", "")
@@ -986,23 +1032,20 @@ def _resolve_module_root_resolution(
                 if not entry:
                     continue
                 entry_path = request_cwd / Path(entry).expanduser()
-                if entry_path.exists():
+                if topology.probe(entry_path) is not None:
                     add_root(entry_path, external=True)
     # --lib-path / [tool.molt] lib-paths: explicit third-party package roots
     for lp in lib_paths or []:
         lp_path = request_cwd / Path(lp).expanduser()
-        if lp_path.exists():
+        if topology.probe(lp_path) is not None:
             add_root(lp_path, external=True)
     # Auto-detect active venv site-packages when no explicit lib paths given
     if not lib_paths and not hermetic_module_roots:
-        venv_path = project_root / ".venv"
-        if venv_path.exists():
-            for sp in sorted(venv_path.glob("lib/python*/site-packages")):
-                if sp.is_dir():
-                    add_root(sp, external=True)
+        for sp in _venv_site_packages(project_root / ".venv", import_topology=topology):
+            add_root(sp, external=True)
     # Auto-detect .molt-venv site-packages (UV-managed venv)
     if not hermetic_module_roots:
-        for sp in _molt_venv_site_packages(project_root):
+        for sp in _molt_venv_site_packages(project_root, import_topology=topology):
             add_root(sp, external=True)
     roots = tuple(dict.fromkeys(module_roots))
     external = tuple(
@@ -1014,6 +1057,7 @@ def _resolve_module_root_resolution(
         roots=roots,
         external_roots=external,
         missing_env_roots=tuple(missing_env_roots),
+        module_root_aliases=tuple(dict.fromkeys(module_root_aliases)),
     )
 
 

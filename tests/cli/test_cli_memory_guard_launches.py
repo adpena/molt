@@ -207,7 +207,7 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
     ) -> subprocess.CompletedProcess[bytes]:
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
-        output.write_text("module {}\n", encoding="utf-8")
+        Path(cmd[cmd.index("--output") + 1]).write_text("module {}\n", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -223,6 +223,7 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
 
     rc = MLIR_BACKEND._run_mlir_backend_pipeline(
         ir={"functions": []},
+        validate_inputs=lambda: None,
         output_artifact=output,
         project_root=tmp_path,
         json_output=False,
@@ -230,7 +231,11 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
     )
 
     assert rc == 0
-    assert captured["cmd"] == [str(backend), "--output", str(output)]
+    command = captured["cmd"]
+    assert command[:2] == [str(backend), "--output"]
+    assert Path(command[2]) != output
+    assert not Path(command[2]).exists()
+    assert output.read_text(encoding="utf-8") == "module {}\n"
     assert captured["kwargs"]["cwd"] == tmp_path
     assert captured["kwargs"]["timeout"] == 120
     assert captured["kwargs"]["progress_label"] == "MLIR backend"
@@ -311,6 +316,9 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     # the CLI refuses persistent daemon paths (tests/test_backend_daemon_argv.py
     # owns that refusal). This test spawns from paths outside any scratch.
     monkeypatch.delenv("MOLT_GUARD_SCRATCH_ROOT", raising=False)
+    # This synthetic Popen exercises command guard wiring. A real suite lease
+    # requires an observed live daemon, which the fake process does not create.
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", raising=False)
     backend = tmp_path / "molt-backend"
     backend.write_text("backend", encoding="utf-8")
     socket_path = tmp_path / "daemon.sock"

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from molt.cli.module_source import _ModuleSourceCatalog
 
 from molt.backend_environment import CodegenSelection
 
@@ -196,6 +197,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         frontend_layer_execution_context=SimpleNamespace(module_graph_metadata=metadata)
     )
     bundle = frontend_pipeline._PreparedFrontendPipelineBundle(
+        module_source_catalog=_ModuleSourceCatalog({}),
         prepared_frontend_run_ticket=ticket,
         module_graph={},
         runtime_import_dispatch_roots=set(),

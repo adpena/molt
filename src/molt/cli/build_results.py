@@ -376,6 +376,7 @@ def _finalize_native_link_candidate(
     phase_times: MutableMapping[str, int] | None = None,
     receipt: link_fingerprints.FinalLinkReceiptRequest | None = None,
     link_selection: tuple[Path, Path] | None = None,
+    validate_inputs: Callable[[], None] | None = None,
 ) -> str | None:
     """Finalize and validate a private candidate before atomic publication."""
     try:
@@ -424,6 +425,8 @@ def _finalize_native_link_candidate(
                     if phase_times is not None:
                         validate_elapsed = time.perf_counter_ns() - validate_started
                         phase_times["validate_wall_ns"] = validate_elapsed
+                if validate_inputs is not None:
+                    validate_inputs()
                 link_fingerprints.publish_link_outputs(
                     {
                         "binary": (signed, output_binary),
@@ -445,14 +448,14 @@ def _finalize_native_link_candidate(
                 phase_times["publish_wall_ns"] = (
                     time.perf_counter_ns() - publish_started - validate_elapsed
                 )
-        cleanup_started = time.perf_counter_ns() if phase_times is not None else 0
-        discard_staged_output(candidate)
-        if phase_times is not None:
-            phase_times["cleanup_wall_ns"] = time.perf_counter_ns() - cleanup_started
         return None
     finally:
+        cleanup_started = time.perf_counter_ns() if phase_times is not None else 0
+        discard_staged_output(candidate)
         if link_selection is not None:
             discard_staged_output(link_selection[0])
+        if phase_times is not None:
+            phase_times["cleanup_wall_ns"] = time.perf_counter_ns() - cleanup_started
 
 
 def _emit_native_link_result(
@@ -502,6 +505,7 @@ def _emit_native_link_result(
     backend_bin: Path | None = None,
     selected_profiles: Mapping[str, str] | None = None,
     finalize_inputs: Callable[[], None] | None = None,
+    validate_inputs: Callable[[], None] | None = None,
 ) -> int:
     def emit_finalization_failure(message: str) -> int:
         diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
@@ -547,6 +551,7 @@ def _emit_native_link_result(
                 output_binary=output_binary,
                 target_triple=target_triple,
                 strip=strip_after_link,
+                validate_inputs=validate_inputs,
                 link_selection=link_selection,
                 receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
                     link_fingerprint_path, link_fingerprint

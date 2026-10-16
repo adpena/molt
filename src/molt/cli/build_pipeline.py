@@ -154,6 +154,7 @@ def _run_build_pipeline(
                 pgo_profile_summary=prepared_build_config.pgo_profile_summary,
                 runtime_feedback_summary=prepared_build_config.runtime_feedback_summary,
                 emit_ir_path=output_layout.emit_ir_path,
+                validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
                 target_python=prepared_build_config.target_python,
                 stdlib_profile=stdlib_profile,
                 target=target,
@@ -186,6 +187,7 @@ def _run_build_pipeline(
             project_root=prepared_build_roots.project_root,
             json_output=json_output,
             verbose=verbose,
+            validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
         )
 
     return _backend_pipeline._run_backend_pipeline(

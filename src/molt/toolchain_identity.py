@@ -20,6 +20,7 @@ from typing import BinaryIO
 from molt.default_paths import executable_environment_value, expand_user_path
 
 from molt.file_hashing import (
+    DIGEST_RACY_WINDOW_NS,
     content_change_time_ns,
     content_change_time_ns_from_fd,
     open_stable_read_descriptor,
@@ -786,11 +787,6 @@ def stable_regular_file_identity(
     if digest is None:
         raise RuntimeError("stable regular-file identity omitted its content digest")
     return _regular_file_identity(lexical, file_stat, change_time_ns, digest)
-
-
-# A digest recorded within this window of a timestamp tick could miss a write
-# landing in the same tick (the racy-git rule), so such files are rehashed.
-DIGEST_RACY_WINDOW_NS = 2_000_000_000
 
 
 class FileDigestCache:

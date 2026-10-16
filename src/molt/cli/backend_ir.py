@@ -23,7 +23,7 @@ from molt.native_callable_abi import (
 )
 from molt.native_callable_exports import NativeCallableExport
 
-from molt.cli.atomic_io import _atomic_write_json
+from molt import file_publication
 from molt.cli.backend_cache import (
     _emitted_name_matches_module_symbol,
     _module_symbol_name,
@@ -1805,15 +1805,27 @@ def _finalize_backend_ir(
     return ir
 
 
-def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str | None:
+def _write_emitted_ir(
+    emit_ir_path: Path | None,
+    ir: Mapping[str, Any],
+    *,
+    validate_inputs: Callable[[], None],
+) -> str | None:
     if emit_ir_path is None:
         return None
     try:
         # Emit exactly the backend input. Label, handler and saved-state IDs
         # share typed cross-references; a diagnostic-only partial renumbering
         # corrupts replay and can make evidence describe a different program.
-        _atomic_write_json(emit_ir_path, ir, indent=2, default=_json_ir_default)
-    except OSError as exc:
+        def publish(staged: Path, destination: Path) -> None:
+            validate_inputs()
+            file_publication.durable_replace(staged, destination)
+
+        payload = json.dumps(ir, indent=2, default=_json_ir_default, allow_nan=False)
+        file_publication.atomic_write_bytes(
+            emit_ir_path, (payload + "\n").encode("utf-8"), replace=publish
+        )
+    except (OSError, ValueError) as exc:
         return f"Failed to write IR: {exc}"
     return None
 
@@ -2057,6 +2069,7 @@ def _prepare_backend_ir(
     pgo_profile_summary: Any | None,
     runtime_feedback_summary: Any | None,
     emit_ir_path: Path | None,
+    validate_inputs: Callable[[], None],
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     target: str = "native",
@@ -2347,7 +2360,7 @@ def _prepare_backend_ir(
         if isinstance(functions_for_features, list)
         else frozenset()
     )
-    emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
+    emit_ir_error = _write_emitted_ir(emit_ir_path, ir, validate_inputs=validate_inputs)
     if emit_ir_error is not None:
         return None, fail(emit_ir_error, json_output, command="build")
     return _PreparedBackendIR(

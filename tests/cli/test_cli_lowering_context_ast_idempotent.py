@@ -39,6 +39,8 @@ import json
 from pathlib import Path
 import sys
 
+from molt.cli.module_source import _ModuleSourceLease
+
 from molt.frontend import ClassId
 
 CK = importlib.import_module("molt.cli.cache_keys")
@@ -168,6 +170,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
 ) -> None:
     source = tmp_path / "mod.py"
     source.write_text("def f(value=0x100):\n    return value\n", encoding="utf-8")
+    source_lease = _ModuleSourceLease.path_backed(source)
     source_metadata = {
         "size": source.stat().st_size,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -207,6 +210,7 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
             lowering = {
                 **source_metadata,
                 "version": MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
+                "source_kind": "path",
                 "context_digest": "context",
                 "result": {"functions": [], "constant_metadata": raw},
             }
@@ -220,9 +224,9 @@ def test_persisted_cache_admission_rejects_noncanonical_integer_metadata(
             lowering_result = MC._validate_persisted_module_lowering_payload(
                 json.loads(json.dumps(lowering)),
                 source,
+                source_lease=source_lease,
                 module_name="mod",
                 context_digest="context",
-                path_stat=source.stat(),
             )
             if raw is valid:
                 assert analysis_result is not None
@@ -257,6 +261,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
     )
     source = tmp_path / "mod.py"
     source.write_text(text, encoding="utf-8")
+    source_lease = _ModuleSourceLease.path_backed(source)
     source_metadata = {
         "size": source.stat().st_size,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -287,7 +292,12 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         generator.visit(tree)
         ir = generator.to_json()
         result = _module_frontend_payload(
-            generator, ir, visit_s=0.0, lower_s=0.0, total_s=0.0
+            generator,
+            ir,
+            source_sha256=source_lease.source_sha256,
+            visit_s=0.0,
+            lower_s=0.0,
+            total_s=0.0,
         )
         tag_named_class = ClassId("__main__", "__dict__")
         assert tag_named_class in result["local_classes"]
@@ -300,6 +310,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         lowering = {
             **source_metadata,
             "version": MC._MODULE_LOWERING_CACHE_SCHEMA_VERSION,
+            "source_kind": "path",
             "context_digest": "context",
             "result": result,
         }
@@ -319,9 +330,9 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         lowering_result = MC._validate_persisted_module_lowering_payload(
             persisted(lowering),
             source,
+            source_lease=source_lease,
             module_name="__main__",
             context_digest="context",
-            path_stat=source.stat(),
         )
         assert lowering_result is not None
         assert list(lowering_result["local_classes"]) == [tag_named_class]

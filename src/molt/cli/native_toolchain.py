@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+from molt import file_publication
 from molt.artifact_publication import discard_staged_output
 import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
+from collections.abc import Callable
 
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import _coerce_bool
@@ -59,6 +61,7 @@ def _run_bolt_post_link(
     json_output: bool,
     receipt: FinalLinkReceiptRequest | None = None,
     link_selection: tuple[Path, Path] | None = None,
+    validate_inputs: Callable[[], None] | None = None,
 ) -> int:
     """Run BOLT post-link optimization after a successful native build.
 
@@ -70,7 +73,74 @@ def _run_bolt_post_link(
     if build_rc != 0:
         return 0  # build already failed — skip BOLT
 
+    owned_input: Path | None = None
+    owned_selection: Path | None = None
     try:
+        # Determine the output binary path.  When --output is given we can
+        # resolve it directly; otherwise BOLT requires it explicitly because
+        # the default output path lives inside internal build state.
+        if output:
+            output_path = Path(output).expanduser()
+            binary_path = (
+                Path(input_binary).expanduser() if input_binary else output_path
+            )
+            if not binary_path.is_absolute():
+                base = Path(out_dir) if out_dir else Path.cwd()
+                binary_path = base / binary_path
+            if not output_path.is_absolute():
+                base = Path(out_dir) if out_dir else Path.cwd()
+                output_path = base / output_path
+        else:
+            if not json_output:
+                print(
+                    "Error: --bolt requires an explicit --output path so BOLT "
+                    "can locate the binary.",
+                    file=sys.stderr,
+                )
+            return 1
+
+        if not binary_path.exists():
+            msg = f"BOLT: output binary not found at {binary_path}"
+            if not json_output:
+                print(msg, file=sys.stderr)
+            return 1
+
+        try:
+            binary_path = file_publication.canonical_file_leaf(
+                binary_path, create_parent=False, role="BOLT input"
+            )
+            output_path = file_publication.canonical_file_leaf(
+                output_path, create_parent=False, role="BOLT output"
+            )
+            if (
+                file_publication.is_owned_staged_file_path(
+                    binary_path,
+                    output_path,
+                    purpose="native-link",
+                    suffix=output_path.suffix or ".tmp",
+                )
+                and binary_path.stat().st_nlink == 1
+            ):
+                owned_input = binary_path
+            if link_selection is not None:
+                selection = file_publication.canonical_file_leaf(
+                    link_selection[0], create_parent=False, role="BOLT link selection"
+                )
+                destination = file_publication.canonical_file_leaf(
+                    link_selection[1], create_parent=False, role="BOLT selection output"
+                )
+                if (
+                    file_publication.is_owned_staged_file_path(
+                        selection, destination, purpose="native-link"
+                    )
+                    and selection.stat().st_nlink == 1
+                ):
+                    owned_selection = selection
+        except (OSError, ValueError) as exc:
+            if not json_output:
+                print(f"BOLT: {exc}", file=sys.stderr)
+            return 1
+
         target_triple = None if target == "native" else target
         try:
             target_spec = resolve_native_target_spec(
@@ -106,35 +176,6 @@ def _run_bolt_post_link(
         bolt_script = _compiler_root() / "tools" / "bolt_optimize.sh"
         if not bolt_script.exists():
             msg = f"BOLT script not found: {bolt_script}"
-            if not json_output:
-                print(msg, file=sys.stderr)
-            return 1
-
-        # Determine the output binary path.  When --output is given we can
-        # resolve it directly; otherwise BOLT requires it explicitly because
-        # the default output path lives inside internal build state.
-        if output:
-            output_path = Path(output).expanduser()
-            binary_path = (
-                Path(input_binary).expanduser() if input_binary else output_path
-            )
-            if not binary_path.is_absolute():
-                base = Path(out_dir) if out_dir else Path.cwd()
-                binary_path = base / binary_path
-            if not output_path.is_absolute():
-                base = Path(out_dir) if out_dir else Path.cwd()
-                output_path = base / output_path
-        else:
-            if not json_output:
-                print(
-                    "Error: --bolt requires an explicit --output path so BOLT "
-                    "can locate the binary.",
-                    file=sys.stderr,
-                )
-            return 1
-
-        if not binary_path.exists():
-            msg = f"BOLT: output binary not found at {binary_path}"
             if not json_output:
                 print(msg, file=sys.stderr)
             return 1
@@ -202,14 +243,12 @@ def _run_bolt_post_link(
             strip=os.environ.get("MOLT_KEEP_SYMBOLS") != "1",
             receipt=receipt,
             link_selection=link_selection,
+            validate_inputs=validate_inputs,
         )
         if finalize_error is not None:
             if not json_output:
                 print(f"BOLT: {finalize_error}", file=sys.stderr)
             return 1
-        if binary_path != output_path:
-            with contextlib.suppress(OSError):
-                binary_path.unlink()
         if not json_output:
             print(
                 f"==> BOLT-optimized binary installed: {output_path}",
@@ -218,8 +257,19 @@ def _run_bolt_post_link(
 
         return 0
     finally:
-        if link_selection is not None:
-            discard_staged_output(link_selection[0])
+        if owned_input is not None:
+            # The native-link producer issued this destination-bound private
+            # input. Its derived optimizer output shares that private lifetime.
+            bolt_output = Path(f"{owned_input}.bolt")
+            with contextlib.suppress(OSError, ValueError):
+                bolt_output = file_publication.canonical_file_leaf(
+                    bolt_output, create_parent=False, role="BOLT candidate"
+                )
+                if bolt_output.is_file() and bolt_output.stat().st_nlink == 1:
+                    discard_staged_output(bolt_output)
+            discard_staged_output(owned_input)
+        if owned_selection is not None:
+            discard_staged_output(owned_selection)
 
 
 def _detect_macos_arch(obj_path: Path) -> str | None:

@@ -1,7 +1,8 @@
 # Verified namespace premises
 
 Status: implemented for tooling source closures and user-program discovery (2026-10-16);
-materialized-graph writer convergence and frontend premise adoption remain open.
+operation-wide materialized-graph convergence and source/topology custody are implemented;
+frontend premise adoption and target qualification remain open.
 Owner finding HF-226.
 
 ## Problem
@@ -160,6 +161,13 @@ receiver behavior.
    admitted roots for one build operation. A root change requires fresh admission,
    never reuse of an older precise premise. This host-side topology work adds no
    analysis to emitted binaries.
+   The same operation now retains raw-source leases and semantic filesystem
+   observations through frontend cache/worker transport and artifact publication.
+   Entry selectors, root discovery and graph lookups share the topology owner;
+   byte changes, new shadows or changed package portions require fresh admission.
+   The [source custody contract](../internals/source_scan_authority.md) defines
+   the cache generations, worker receipts and prepublication fences. This is a
+   prerequisite for precise frontend premises, not evidence of their adoption.
 5. **Dead relative imports are lexical edges.** When the import flow proves a relative import never
    runs (a statically false `TYPE_CHECKING` branch), the full lexical graph resolves it from the
    module's identity, as it keeps a dead absolute import. Before this, such a statement failed the
@@ -236,8 +244,8 @@ This follows the dependency identity principle in
 [rustc incremental compilation](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)
 and [LLVM content addressing](https://llvm.org/docs/ContentAddressableStorage.html).
 It reuses the current snapshot and file-hash owners rather than adding another
-source store or AST pass. Frontend lease/cache/output generation fences still
-belong to the uncompleted frontend migration; a runtime-policy fence alone does
+source store or AST pass. The frontend now carries the same raw-source lease
+through cache/worker transport and prepublication fences; a runtime-policy fence alone does
 not qualify that boundary. Guarded function dispatch candidates remain distinct
 from immutable binding facts.
 

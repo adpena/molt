@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import time
 from typing import Any, Callable
 
@@ -42,7 +43,8 @@ def _emit_backend_pipeline_outputs(
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
     output_layout: _BuildOutputLayout,
-    native_object_destination: Path | None,
+    backend_output_destination: Path | None,
+    validate_inputs: Callable[[], None],
     prepared_backend_setup: _PreparedBackendSetup,
     prepared_backend_runtime_context: _PreparedBackendRuntimeContext,
     prepared_backend_compile: _PreparedBackendCompile,
@@ -99,7 +101,11 @@ def _emit_backend_pipeline_outputs(
     input_admission = (
         prepared_backend_runtime_context.runtime_state.build_python_admission
     )
-    finalize_inputs = input_admission.close if input_admission is not None else None
+
+    def finalize_inputs() -> None:
+        validate_inputs()
+        if input_admission is not None:
+            input_admission.close()
 
     def snapshot_build_diagnostics() -> tuple[dict[str, Any] | None, Path | None]:
         if not prepared_build_preamble.diagnostics_enabled:
@@ -132,6 +138,32 @@ def _emit_backend_pipeline_outputs(
         or output_layout.is_luau_transpile
         or output_layout.is_wasm
     ):
+        try:
+            if (
+                backend_output_destination is None
+                or not file_publication.is_owned_staged_file_path(
+                    output_layout.output_artifact,
+                    backend_output_destination,
+                    purpose="backend-output",
+                    suffix=backend_output_destination.suffix or ".o",
+                )
+            ):
+                raise ValueError("backend output has no publication stage")
+            validate_inputs()
+            file_publication.durable_replace(
+                output_layout.output_artifact, backend_output_destination
+            )
+        except (OSError, ValueError) as exc:
+            return return_after_build_diagnostics(
+                _fail(
+                    f"Cannot publish backend output: {exc}",
+                    json_output,
+                    command="build",
+                )
+            )
+        output_layout = replace(
+            output_layout, output_artifact=backend_output_destination
+        )
         prepared_non_native_result, prepared_non_native_result_error = (
             _non_native_output._prepare_non_native_build_result(
                 is_rust_transpile=output_layout.is_rust_transpile,
@@ -163,6 +195,7 @@ def _emit_backend_pipeline_outputs(
                 phase_starts=prepared_build_preamble.phase_starts,
                 wasm_facts_scanner=prepared_backend_setup.backend_bin,
                 app_export_contract_path=app_export_contract_path,
+                validate_inputs=validate_inputs,
             )
         )
         if prepared_non_native_result_error is not None:
@@ -275,12 +308,12 @@ def _emit_backend_pipeline_outputs(
         if prepared_build_preamble.diagnostics_enabled:
             prepared_build_preamble.phase_starts["seal"] = time.perf_counter()
         if (
-            native_object_destination is None
+            backend_output_destination is None
             or not file_publication.is_owned_staged_file_path(
                 output_layout.output_artifact,
-                native_object_destination,
-                purpose="native-object",
-                suffix=native_object_destination.suffix or ".o",
+                backend_output_destination,
+                purpose="backend-output",
+                suffix=backend_output_destination.suffix or ".o",
             )
         ):
             return return_after_build_diagnostics(
@@ -320,8 +353,9 @@ def _emit_backend_pipeline_outputs(
                 )
             )
         try:
+            validate_inputs()
             file_publication.durable_replace(
-                prepared_object_output, native_object_destination
+                prepared_object_output, backend_output_destination
             )
         except (OSError, ValueError) as exc:
             return return_after_build_diagnostics(
@@ -331,7 +365,7 @@ def _emit_backend_pipeline_outputs(
                     command="build",
                 )
             )
-        prepared_object_output = native_object_destination
+        prepared_object_output = backend_output_destination
         return _emit_non_native_build_result(
             output=prepared_object_output,
             consumer_output=prepared_object_output,
@@ -431,6 +465,7 @@ def _emit_backend_pipeline_outputs(
                 prepared_native_link.link_fingerprint,
             ),
             link_selection=prepared_native_link.link_selection,
+            validate_inputs=validate_inputs,
         )
         if bolt_rc != 0:
             return return_after_build_diagnostics(
@@ -492,4 +527,5 @@ def _emit_backend_pipeline_outputs(
         strip_after_link=prepared_native_link.strip_after_link,
         link_selection=prepared_native_link.link_selection,
         finalize_inputs=finalize_inputs,
+        validate_inputs=validate_inputs,
     )

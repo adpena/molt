@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import os
 from molt.python_private_names import python_source_field
 import stat
 import sys
@@ -14,6 +13,7 @@ from typing import Literal
 from collections.abc import Iterable
 
 from molt.cli.module_source import PythonSourceSnapshot
+from molt.cli.python_import_topology import PythonImportPath, PythonImportTopology
 from molt.compiler_analysis import python_binding_flow, python_namespace_writes
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_binding_flow import (
@@ -41,27 +41,15 @@ from molt.compiler_analysis.python_imports import (
 from molt.compiler_analysis.python_lexical_scope import python_eager_nodes
 
 
-# PEP 3147's bytecode cache directory; Python writes it, sources never live there.
-_BYTECODE_CACHE_DIR = "__pycache__"
-
-
-def python_package_child_names(package_paths: Iterable[Path]) -> frozenset[str]:
-    """All names an import can bind on a package, independent of reachability."""
-    names: set[str] = set()
-    for package_path in package_paths:
-        try:
-            with os.scandir(package_path) as entries:
-                for entry in entries:
-                    name = (
-                        entry.name if entry.is_dir() else entry.name.partition(".")[0]
-                    )
-                    if name.isidentifier() and name != "__init__":
-                        names.add(name)
-        except OSError as exc:
-            raise ValueError(
-                f"cannot list Python package {package_path}: {exc}"
-            ) from exc
-    return frozenset(names)
+def python_package_child_names(
+    package_paths: Iterable[Path], *, import_topology: PythonImportTopology
+) -> frozenset[str]:
+    """All import-bindable names, under this operation's directory custody."""
+    return frozenset(
+        name
+        for package_path in package_paths
+        for name in import_topology.package_child_names(package_path)
+    )
 
 
 @dataclass(frozen=True)
@@ -222,16 +210,15 @@ class _ResolvedLocalModule:
     parent_initializers: tuple[LocalPythonModuleSource, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class _LocalPathProbe:
-    path: Path
-    mode: int
-
-
 @dataclass(frozen=True)
 class LocalPythonModuleResolver:
     search_roots: tuple[Path, ...]
     source_roots: tuple[Path, ...] | None = None
+    case_exact: bool = False
+    restrict_sources: bool = True
+    import_topology: PythonImportTopology = field(
+        default_factory=PythonImportTopology, compare=False, repr=False
+    )
     _resolution_cache: dict[str, _ResolvedLocalModule | None] = field(
         default_factory=dict,
         compare=False,
@@ -243,10 +230,15 @@ class LocalPythonModuleResolver:
     )
 
     def __post_init__(self) -> None:
+        for root in self.search_roots:
+            self.import_topology.probe(root)
         resolved = tuple(root.resolve() for root in self.search_roots)
         if not resolved:
             raise ValueError("local Python module resolver requires a search root")
         object.__setattr__(self, "search_roots", resolved)
+        if self.source_roots is not None:
+            for root in self.source_roots:
+                self.import_topology.probe(root)
         sources = (
             resolved
             if self.source_roots is None
@@ -289,6 +281,11 @@ class LocalPythonModuleResolver:
             if resolution is not None and resolution.source is not None
             else None
         )
+
+    def package_locations(self, module: str) -> tuple[Path, ...]:
+        """Selected package portions after regular-package/module shadowing."""
+        result = self._resolve_module(module)
+        return result.package_locations if result is not None else ()
 
     def source_inventory(
         self, *, allowed_prefix: str | None, include_parent_packages: bool
@@ -337,19 +334,9 @@ class LocalPythonModuleResolver:
                 children: set[str] = set()
                 for location in locations:
                     try:
-                        with os.scandir(location) as entries:
-                            for entry in entries:
-                                name = entry.name
-                                if entry.is_file() and name.endswith(".py"):
-                                    name = name[:-3]
-                                elif not entry.is_dir() or name == _BYTECODE_CACHE_DIR:
-                                    # Python creates its bytecode cache on first
-                                    # import; as a namespace member it would
-                                    # change the domain identity mid-run.
-                                    continue
-                                # A dotted filename is not one PathFinder segment.
-                                if name and "." not in name:
-                                    children.add(name)
+                        children.update(
+                            self.import_topology.source_child_names(location)
+                        )
                     except OSError as exc:
                         raise ValueError(
                             f"cannot enumerate local Python source domain {location}: {exc}"
@@ -370,18 +357,21 @@ class LocalPythonModuleResolver:
             self._inventory_cache[key] = result
             return result
 
-    def _probe_path(self, path: Path) -> _LocalPathProbe | None:
-        """Admit existing candidates once, retaining kind and canonical ownership."""
-
-        try:
-            mode = path.stat().st_mode
-            resolved = path.resolve()
-        except OSError:
-            return None
-        if self._owns_source(resolved) and any(
-            resolved.is_relative_to(root) for root in self.search_roots
+    def _probe_path(self, path: Path) -> PythonImportPath | None:
+        """Admit each lexical candidate under the shared operation topology."""
+        if self.case_exact and not self.import_topology.contains_exact(
+            path.parent, path.name
         ):
-            return _LocalPathProbe(resolved, mode)
+            return None
+        result = self.import_topology.probe(path)
+        if result is not None and not self.restrict_sources:
+            return result
+        if (
+            result is not None
+            and self._owns_source(result.path)
+            and any(result.path.is_relative_to(root) for root in self.search_roots)
+        ):
+            return result
         return None
 
     def _resolve_module(self, module: str) -> _ResolvedLocalModule | None:
