@@ -91,7 +91,11 @@ class ModuleSyntaxErrorInfo:
 
 @dataclass(frozen=True)
 class _ModuleSourceScanAuthority:
-    """The source identity and depth of a closure scan, never source/AST storage."""
+    """A scan's source path, captured bytes and depth, never source/AST storage.
+
+    An absent SHA makes no byte-generation claim. A captured SHA alone does
+    not establish a complete namespace-writer or target-execution proof.
+    """
 
     module_name: str
     source_path: Path
@@ -100,10 +104,17 @@ class _ModuleSourceScanAuthority:
     requires_runtime_package_anchor: bool = False
     deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
     namespace_premise: PythonNamespacePremise | None = None
+    source_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in {"module_init", "full"}:
             raise ValueError(f"invalid module scan mode: {self.mode!r}")
+        if self.source_sha256 is not None and (
+            not isinstance(self.source_sha256, str)
+            or len(self.source_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in self.source_sha256)
+        ):
+            raise ValueError("invalid source scan byte identity")
         object.__setattr__(self, "source_path", self.source_path.resolve())
         if self.is_package is None:
             object.__setattr__(
@@ -113,6 +124,15 @@ class _ModuleSourceScanAuthority:
     def validate(self, module_name: str, source_path: Path) -> None:
         if self.module_name != module_name or self.source_path != source_path.resolve():
             raise ValueError(f"module scan lost source authority: {module_name!r}")
+
+    def validate_generation(self, source_sha256: str | None) -> None:
+        if self.source_sha256 is not None and source_sha256 != self.source_sha256:
+            from molt.cli.module_source import PythonSourceChangedError
+
+            raise PythonSourceChangedError(
+                f"source scan generation changed: {self.module_name!r}; "
+                f"source changed or became unavailable: {self.source_path}"
+            )
 
 
 @dataclass(frozen=True)
@@ -153,6 +173,9 @@ class _ModuleGraphScanAuthority:
                     raise ValueError(
                         f"module package scan authority changed: {source.module_name!r}"
                     )
+                if prior.source_sha256 is not None and source.source_sha256 is not None:
+                    prior.validate_generation(source.source_sha256)
+                source_sha256 = prior.source_sha256 or source.source_sha256
                 requires_runtime_package_anchor = (
                     prior.requires_runtime_package_anchor
                     or source.requires_runtime_package_anchor
@@ -168,12 +191,14 @@ class _ModuleGraphScanAuthority:
                     or requires_runtime_package_anchor
                     != source.requires_runtime_package_anchor
                     or namespace_premise != source.namespace_premise
+                    or source_sha256 != source.source_sha256
                 ):
                     source = replace(
                         source,
                         requires_runtime_package_anchor=requires_runtime_package_anchor,
                         deferred_owners=deferred_owners,
                         namespace_premise=namespace_premise,
+                        source_sha256=source_sha256,
                     )
             sources[source.module_name] = source
         return _ModuleGraphScanAuthority(
@@ -193,6 +218,14 @@ class _ModuleGraphScanAuthority:
         if {source.module_name for source in self.sources} != set(graph):
             raise ValueError("source graph and scan authority differ")
 
+    def validate_source_generations(self) -> None:
+        """Fence all admitted bytes, including foreign namespace writers."""
+        from molt.cli.module_source import _source_content_sha256
+
+        for source in self.sources:
+            if source.source_sha256 is not None:
+                source.validate_generation(_source_content_sha256(source.source_path))
+
     def payload(
         self, logical_paths: Mapping[str, str] | None = None
     ) -> list[dict[str, Any]]:
@@ -203,6 +236,7 @@ class _ModuleGraphScanAuthority:
                     source.module_name, os.fspath(source.source_path)
                 ),
                 "mode": source.mode,
+                "source_sha256": source.source_sha256,
                 "deferred_bodies": [
                     {"source": list(owner), "arguments": list(arguments)}
                     for owner, arguments in sorted(source.deferred_owners)
@@ -239,9 +273,12 @@ class _PrecomputedModuleImportScan:
     """Both projections from one identified source and one scan mode."""
 
     authority: _ModuleSourceScanAuthority
-    source_sha256: str
     target_python_tag: str
     scan: _CompleteImportScan
+
+    def __post_init__(self) -> None:
+        if self.authority.source_sha256 is None:
+            raise ValueError("precomputed source scan requires captured byte identity")
 
 
 @dataclass(frozen=True)

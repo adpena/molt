@@ -475,6 +475,23 @@ def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
     # Source/AST retention is operation-scoped: changing an owner after discovery
     # must not combine the new custody generation with the old retained parse.
     owner.write_text("OWNER_REVISION = 2\n", encoding="utf-8")
+    from molt.cli.module_source import PythonSourceChangedError
+
+    with pytest.raises(PythonSourceChangedError, match="generation changed"):
+        graphs._finalize_runtime_import_closure(
+            **common,
+            explicit_imports={"leaf", "late"},
+            dispatch_roots=second.dispatch_roots,
+            previous_custody=second.custody,
+        )
+    # A fresh source admission is an explicit generation replacement. Catalog
+    # refresh cannot silently carry an older graph's namespace assumptions.
+    discovery._merge_discovered_module_graph(
+        graph,
+        roles,
+        _discover(owner, tmp_path, full=True),
+        source_replacements={"runtime_owner": roles["runtime_owner"]},
+    )
     refreshed = graphs._finalize_runtime_import_closure(
         **common,
         explicit_imports={"leaf", "late"},

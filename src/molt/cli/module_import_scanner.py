@@ -453,46 +453,51 @@ def _module_graph_needs_runtime_import_support(
     entry_tree: ast.AST | None,
     target_python: TargetPythonVersion,
 ) -> _RuntimeImportSupportPolicy:
-    needs_generated_importer = _explicit_imports_reference_generated_importer(
-        explicit_imports
-    )
-    if needs_generated_importer:
+    scan_authority.validate_graph(module_graph)
+    scan_authority.validate_source_generations()
+    try:
+        needs_generated_importer = _explicit_imports_reference_generated_importer(
+            explicit_imports
+        )
+        if needs_generated_importer:
+            return _RuntimeImportSupportPolicy(
+                needs_generated_importer=True,
+                needs_runtime_import_support=True,
+            )
+        for module_name, module_path in sorted(module_graph.items()):
+            tree = (
+                entry_tree
+                if module_name == entry_module and module_path == entry_path
+                else None
+            )
+            import_scan_mode = scan_authority.mode_for(module_name, module_path)
+            owners = (
+                ()
+                if import_scan_mode == "full"
+                else sorted(scan_authority.by_module[module_name].deferred_owners)
+            )
+            for source_owner, source_arguments in ((None, ()), *owners):
+                if _module_uses_runtime_import_protocol(
+                    module_name=module_name,
+                    module_path=module_path,
+                    module_resolution_cache=module_resolution_cache,
+                    target_python=target_python,
+                    import_scan_mode=import_scan_mode,
+                    source_owner=source_owner,
+                    source_arguments=source_arguments,
+                    tree=tree,
+                    is_package=scan_authority.by_module[module_name].is_package,
+                    namespace_premise=scan_authority.by_module[
+                        module_name
+                    ].namespace_premise,
+                ):
+                    return _RuntimeImportSupportPolicy(
+                        needs_generated_importer=False,
+                        needs_runtime_import_support=True,
+                    )
         return _RuntimeImportSupportPolicy(
-            needs_generated_importer=True,
-            needs_runtime_import_support=True,
+            needs_generated_importer=False,
+            needs_runtime_import_support=False,
         )
-    for module_name, module_path in sorted(module_graph.items()):
-        tree = (
-            entry_tree
-            if module_name == entry_module and module_path == entry_path
-            else None
-        )
-        import_scan_mode = scan_authority.mode_for(module_name, module_path)
-        owners = (
-            ()
-            if import_scan_mode == "full"
-            else sorted(scan_authority.by_module[module_name].deferred_owners)
-        )
-        for source_owner, source_arguments in ((None, ()), *owners):
-            if _module_uses_runtime_import_protocol(
-                module_name=module_name,
-                module_path=module_path,
-                module_resolution_cache=module_resolution_cache,
-                target_python=target_python,
-                import_scan_mode=import_scan_mode,
-                source_owner=source_owner,
-                source_arguments=source_arguments,
-                tree=tree,
-                is_package=scan_authority.by_module[module_name].is_package,
-                namespace_premise=scan_authority.by_module[
-                    module_name
-                ].namespace_premise,
-            ):
-                return _RuntimeImportSupportPolicy(
-                    needs_generated_importer=False,
-                    needs_runtime_import_support=True,
-                )
-    return _RuntimeImportSupportPolicy(
-        needs_generated_importer=False,
-        needs_runtime_import_support=False,
-    )
+    finally:
+        scan_authority.validate_source_generations()

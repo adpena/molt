@@ -1447,7 +1447,6 @@ def _finalize_runtime_import_closure(
     operations; generated target admission owns that separate contract.
     """
     authority = _ModuleGraphScanAuthority(tuple(scan_authorities.values()))
-    authority.validate_graph(module_graph)
     policy = _module_import_scanner._module_graph_needs_runtime_import_support(
         module_graph=module_graph,
         scan_authority=authority,

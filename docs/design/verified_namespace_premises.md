@@ -1,7 +1,8 @@
 # Verified namespace premises
 
 Status: implemented for tooling source closures and user-program discovery (2026-10-16);
-frontend premise adoption remains open. Owner finding HF-226.
+materialized-graph writer convergence and frontend premise adoption remain open.
+Owner finding HF-226.
 
 ## Problem
 
@@ -162,8 +163,30 @@ An edit outside the 242 files no longer invalidates the persisted lowering cache
 
 ## Remaining consumers
 
+- **Materialized graph**: generated namespace/importer sources and added native-support
+  closures must join the same operation-wide writer authority and wake earlier
+  affected modules. A fresh support-only discovery cannot establish that an
+  older precise premise includes its writers. Namespace package identity and
+  child paths must come from actual namespace roots, including generated stubs.
 - **Frontend codegen**: pass the build graph's premise to the per-module lowering analysis, so codegen
   facts and `_module_stable_funcs` share one premise.
+
+Source scan authority retains the raw SHA from its existing byte snapshot;
+precomputed scans reference that same field. Ordinary joins reject conflicting
+generations; the existing explicit source-replacement transaction remains the
+only generation-transfer path. Runtime-import policy fences every identified
+source, including foreign writers, before and after its cached or fresh query.
+Neither a matching path nor unchanged size/mtime proves unchanged bytes.
+Unknown/uninspected records grant no captured-generation proof.
+
+This follows the dependency identity principle in
+[rustc incremental compilation](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)
+and [LLVM content addressing](https://llvm.org/docs/ContentAddressableStorage.html).
+It reuses the current snapshot and file-hash owners rather than adding another
+source store or AST pass. Frontend lease/cache/output generation fences still
+belong to the uncompleted frontend migration; a runtime-policy fence alone does
+not qualify that boundary. Guarded function dispatch candidates remain distinct
+from immutable binding facts.
 
 Standalone source scans without a closed graph remain conservative; they cannot invent an empty
 foreign-writer premise. Their type-checking and reentrant-import controls continue to test that
