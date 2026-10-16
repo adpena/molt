@@ -2638,6 +2638,9 @@ def _capture_runtime_gate_rust_operations(
     args = command_admission.runtime_gate_arguments(envelope)
     if args is None or cargo is None:
         raise ValueError("runtime Cargo operations require their registered driver")
+    # RuntimeCargoPlan pins the physical Cargo selected by rustup. Bind that
+    # same component before constructing child operations, as for rustc.
+    cargo = resolve_rustup_proxy(cargo, role="cargo", root=cwd, env=env)
     if rustc_version is None:
         result = _run_rust_link_probe(
             [str(rustc), "-vV"],
@@ -3733,9 +3736,9 @@ def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rus
     tools, wrappers = projection["tools"], projection["wrappers"]
     if not isinstance(tools, Mapping) or not isinstance(wrappers, Mapping):
         raise ValueError("runtime Cargo tool projection is malformed")
-    if tools.get("cargo") != cargo or (
-        rustc is not None and tools.get("rustc") != rustc
-    ):
+    if tools.get("cargo") != cargo:
+        raise ValueError("runtime Cargo projection selected another Cargo executable")
+    if rustc is not None and tools.get("rustc") != rustc:
         raise ValueError("runtime Cargo projection selected another Rust compiler")
     for role, sdk_role in {
         "cc": "clang",
