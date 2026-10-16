@@ -19,6 +19,12 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
         let spec = NativeCallableSpec::constructor(class_bits);
         if class_bits == builtins.generic_alias {
             Some(builtin_func_bits(py, spec, fn_addr!(molt_generic_alias_type_new), 3))
+        } else if class_bits == builtins.function {
+            Some(crate::builtins::methods::builtin_variadic_func_bits(
+                py,
+                spec.with_text_signature("($type, *args, **kwargs)"),
+                fn_addr!(crate::builtins::types::native_constructors::function_new),
+            ))
         } else if class_bits == builtins.reference_type {
             Some(crate::builtins::methods::builtin_variadic_func_bits(py, spec, fn_addr!(crate::builtins::weakref_type::weakref_new_method)))
         } else { io_constructor_bits(py, class_bits, true) }

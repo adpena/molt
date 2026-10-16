@@ -8,7 +8,7 @@ first_code, replacement_code, retained_closure = make_codes()
 left_namespace = {'selected': left}
 right_namespace = {'selected': right}
 a = FunctionType(first_code, left_namespace, closure=retained_closure)
-b = FunctionType(first_code, right_namespace, closure=retained_closure)
+b = FunctionType.__new__(FunctionType, first_code, right_namespace, closure=retained_closure)
 a.__code__ = replacement_code
 b.__code__ = replacement_code
 def entry():

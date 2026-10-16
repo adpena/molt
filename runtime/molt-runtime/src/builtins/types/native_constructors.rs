@@ -70,6 +70,27 @@ fn pointer_bits(ptr: *mut u8) -> u64 {
     }
 }
 
+pub(crate) extern "C" fn function_new(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(call) = Arguments::read(py, "function.__new__", args, kwargs) else {
+            return MoltObject::none().bits();
+        };
+        if call
+            .new_receiver(py, builtin_classes(py).function)
+            .is_none()
+        {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            crate::builtins::functions::function_type_new_from_call(
+                py,
+                call.values(),
+                call.keyword_view(),
+            )
+        }
+    })
+}
+
 fn codec_arguments(py: &PyToken<'_>, label: &str, bound: &[Option<u64>; 3]) -> bool {
     for (index, name) in [(1, "encoding"), (2, "errors")] {
         let Some(bits) = bound[index] else { continue };

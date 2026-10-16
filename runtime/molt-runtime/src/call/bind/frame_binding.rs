@@ -204,16 +204,24 @@ unsafe fn function_kwdefault_owned(
                 "call expects function object",
             ));
         };
-        if object_type_id(defaults_ptr) != TYPE_ID_DICT {
-            return Err(raise_exception::<_>(
-                py,
-                "TypeError",
-                "call expects function object",
-            ));
-        }
         inc_ref_bits(py, defaults_bits);
         let _owner = PtrDropGuard::new(defaults_ptr);
-        let value = dict_get_in_place(py, defaults_ptr, name_bits);
+        let backing_bits = crate::object::ops::dict_backing_bits(py, defaults_bits)
+            .map_err(|()| MoltObject::none().bits())?
+            .ok_or_else(|| raise_exception::<_>(py, "TypeError", "call expects function object"))?;
+        let backing_ptr = obj_from_bits(backing_bits)
+            .as_ptr()
+            .expect("dictionary admission returned backing storage");
+        // The public mapping stays visible as __kwdefaults__. Rich key lookup
+        // may replace that metadata or its subclass state, so own a distinct
+        // backing dictionary through the callback as well.
+        let _backing_owner = if backing_ptr != defaults_ptr {
+            inc_ref_bits(py, backing_bits);
+            Some(PtrDropGuard::new(backing_ptr))
+        } else {
+            None
+        };
+        let value = dict_get_in_place(py, backing_ptr, name_bits);
         let value = match value {
             Ok(value) => value,
             Err(()) => {

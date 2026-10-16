@@ -31,7 +31,7 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
     crate::with_gil_entry_nopanic!(py, {
         let state = crate::runtime_state(py);
         let saved_version = state.sys_version_info.lock().unwrap().clone();
-        for minor in [12, 13, 14] {
+        for minor in [12, 13, 14, 15] {
             *state.sys_version_info.lock().unwrap() =
                 Some(crate::state::runtime_state::PythonVersionInfo {
                     major: 3,
@@ -73,6 +73,15 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 .bits();
                 let namespace = dict(py);
                 let namespace_ptr = obj_from_bits(namespace).as_ptr().unwrap();
+                // A real module entry captures an admitted builtins namespace.
+                // This test publishes its own empty namespace, independent of
+                // any interpreter state another runtime test left behind.
+                let builtins_key =
+                    MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
+                let builtins = dict(py);
+                unsafe {
+                    assert!(dict_set_in_place(py, namespace_ptr, builtins_key, builtins));
+                }
                 unsafe {
                     assert!(dict_set_in_place(
                         py,
@@ -137,12 +146,118 @@ fn locals_identity_and_snapshot_contents_follow_runtime_target_version() {
                 }
                 assert!(!crate::exception_pending(py));
                 crate::molt_trace_exit();
-                for bits in [first, second, key, namespace, code, varnames, empty, name] {
+                for bits in [
+                    first,
+                    second,
+                    key,
+                    namespace,
+                    code,
+                    varnames,
+                    empty,
+                    name,
+                    builtins_key,
+                    builtins,
+                ] {
                     dec_ref_bits(py, bits);
                 }
             }
         }
         *state.sys_version_info.lock().unwrap() = saved_version;
+    });
+}
+
+#[test]
+fn module_entry_prepares_builtins_once_without_changing_captured_or_explicit_values() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let namespace = dict(py);
+        let namespace_ptr = obj_from_bits(namespace).as_ptr().unwrap();
+        let captured = dict(py);
+        let replacement = dict(py);
+        let module_name = MoltObject::from_ptr(crate::alloc_string(py, b"frame_builtins")).bits();
+        let module =
+            MoltObject::from_ptr(crate::object::builders::alloc_module_obj(py, module_name)).bits();
+        let key = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
+        for bits in [namespace, captured] {
+            inc_ref_bits(py, bits);
+        }
+        frame_stack_push_owned(py, 0, namespace, captured, 0);
+        let get = || unsafe { crate::dict_get_in_place(py, namespace_ptr, key) }.unwrap();
+        assert_eq!(get(), None);
+        assert_eq!(
+            molt_frame_locals_set(namespace),
+            MoltObject::from_bool(true).bits()
+        );
+        assert_eq!(get(), Some(captured));
+        assert_eq!(frame_stack_active_builtins_bits(), captured);
+        assert_eq!(refs(captured), 3); // caller, frame, module dictionary
+        molt_frame_locals_set(namespace);
+        assert_eq!(
+            refs(captured),
+            3,
+            "repeated publication retains no extra edge"
+        );
+
+        for explicit in [MoltObject::none().bits(), replacement, module, namespace] {
+            unsafe { assert!(dict_set_in_place(py, namespace_ptr, key, explicit)) };
+            molt_frame_locals_set(namespace);
+            assert_eq!(
+                get(),
+                Some(explicit),
+                "present entries are never normalized or replaced"
+            );
+            assert_eq!(frame_stack_active_builtins_bits(), captured);
+        }
+        assert!(unsafe { crate::dict_del_in_place(py, namespace_ptr, key) }.unwrap());
+        assert_eq!(get(), None);
+        assert_eq!(frame_effective_builtins_bits(py, namespace), Ok(captured));
+        assert_eq!(
+            get(),
+            None,
+            "ordinary capture must not restore a deleted key"
+        );
+        frame_stack_pop(py);
+
+        // A new execution prepares a missing key again, as reload/runpy do.
+        for bits in [namespace, captured] {
+            inc_ref_bits(py, bits);
+        }
+        frame_stack_push_owned(py, 0, namespace, captured, 0);
+        molt_frame_locals_set(namespace);
+        assert_eq!(get(), Some(captured));
+        assert!(!crate::exception_pending(py));
+        frame_stack_pop(py);
+        for bits in [namespace, captured, replacement, module, module_name, key] {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn module_entry_cannot_publish_an_unset_builtins_sentinel() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let namespace = dict(py);
+        let key = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
+        inc_ref_bits(py, namespace);
+        frame_stack_push_owned(py, 0, namespace, 0, 0);
+        assert!(obj_from_bits(molt_frame_locals_set(namespace)).is_none());
+        assert!(crate::exception_pending(py));
+        assert_eq!(
+            FRAME_STACK.with(|stack| stack.borrow().last().unwrap().locals_bits),
+            0
+        );
+        assert_eq!(
+            unsafe {
+                crate::dict_get_in_place(py, obj_from_bits(namespace).as_ptr().unwrap(), key)
+            }
+            .unwrap(),
+            None
+        );
+        crate::clear_exception(py);
+        frame_stack_pop(py);
+        dec_ref_bits(py, key);
+        dec_ref_bits(py, namespace);
     });
 }
 

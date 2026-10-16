@@ -126,7 +126,8 @@ def _activation_context_sources(route):
             )
         consumer += (
             "a = FunctionType(first_code, left_namespace, closure=retained_closure)\n"
-            "b = FunctionType(first_code, right_namespace, closure=retained_closure)\n"
+            "b = FunctionType.__new__(FunctionType, first_code, right_namespace, "
+            "closure=retained_closure)\n"
         )
         if route == "replace-builtins":
             consumer += (

@@ -10,7 +10,7 @@ right_builtins = {'selected': right}
 left_namespace = {'__builtins__': left_builtins}
 right_namespace = {'__builtins__': right_builtins}
 a = FunctionType(first_code, left_namespace, closure=retained_closure)
-b = FunctionType(first_code, right_namespace, closure=retained_closure)
+b = FunctionType.__new__(FunctionType, first_code, right_namespace, closure=retained_closure)
 left_namespace['__builtins__'] = right_builtins
 right_namespace['__builtins__'] = left_builtins
 a.__code__ = replacement_code

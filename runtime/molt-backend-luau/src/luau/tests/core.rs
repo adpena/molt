@@ -1932,10 +1932,7 @@ fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn execution_frame_runtime_is_coroutine_local_fail_closed_and_allocation_stable() {
-    let source = format!(
-        "--!strict\n{}\n{}",
-        frame_runtime::FRAME_RUNTIME,
-        r#"
+    let oracle = r#"
 local outer_code = {co_filename="frame_oracle.py", co_name="outer", co_firstlineno=10}
 local inner_code = {co_filename="frame_oracle.py", co_name="inner", co_firstlineno=20}
 local module_code = {co_filename="module_oracle.py", co_name="<module>", co_firstlineno=1}
@@ -1946,10 +1943,12 @@ local outer_slot = {code=outer_code, globals=outer_globals}
 local inner_slot = {code=inner_code, globals=inner_globals}
 local module_slot = {code=module_code, globals=module_globals}
 
-local module_context, module_depth, module_identity, module_owner = molt_frame_enter(module_slot)
+local module_builtins = molt_frame_effective_builtins(module_globals)
+local module_context, module_depth, module_identity, module_owner = molt_frame_enter(module_slot, module_builtins)
 molt_frame_locals_set(module_context, module_globals)
 assert(module_context.globals[module_depth] == module_globals)
 assert(module_context.locals[module_depth] == module_globals)
+assert(module_globals.__builtins__ == module_builtins)
 molt_frame_exit(module_context, module_depth, module_identity, module_owner)
 
 local outer_context, outer_depth, outer_identity, outer_owner = molt_frame_enter(outer_slot)
@@ -2230,8 +2229,12 @@ assert(
 local weak_mode = getmetatable(molt_frame_contexts).__mode
 assert(weak_mode == "kv", "frame_registry_is_not_non_owning_kv")
 print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 completed_held=2000 live_allocations_after_warm=0 contexts_baseline=%d contexts_after_abandonment=%d contexts_after_completed=%d baseline_elapsed=%.6f framed_elapsed=%.6f added_elapsed=%.6f heap_delta_kib=%.1f", context_baseline, contexts_after_abandonment, contexts_after_completed, baseline_elapsed, elapsed, elapsed - baseline_elapsed, heap_delta_kib))
-"#
-    );
+"#;
+    let source = runtime_prelude::library()
+        .expect("canonical runtime library")
+        .emit(oracle, true)
+        .expect("execution-frame oracle dependencies")
+        .source;
     // The shared context also owns explicit exception state; keep its complete
     // runtime bounded without excluding that protocol from the size budget.
     assert!(frame_runtime::FRAME_RUNTIME.len() < 19_000);
@@ -2260,6 +2263,87 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
     eprintln!(
         "luau-execution-frame-source-bytes={} {stdout}",
         frame_runtime::FRAME_RUNTIME.len()
+    );
+}
+
+#[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn module_frame_publication_preserves_builtins_presence_and_capture() {
+    let oracle = r#"
+local code = {co_filename="module_builtins.py", co_name="<module>", co_firstlineno=1}
+local captured = molt_module_cache["builtins"]
+local initial_len = molt_dict_getitem(captured, "len")
+assert(not molt_dict_contains(captured, "__builtins__"))
+local replacement = molt_dict_new()
+molt_dict_set(replacement, "len", "replacement")
+local globals = {__name__="module_builtins"}
+local context, depth, identity, owner = molt_frame_enter({code=code, globals=globals}, captured)
+-- Cache mutation cannot replace the namespace this frame already captured.
+molt_module_cache["builtins"] = replacement
+molt_frame_locals_set(context, globals)
+assert(globals.__builtins__ == captured and context.locals[depth] == globals)
+molt_frame_locals_set(context, globals)
+assert(globals.__builtins__ == captured and context.builtins[depth] == captured)
+globals.__builtins__ = replacement
+molt_frame_locals_set(context, globals)
+assert(globals.__builtins__ == replacement)
+assert(molt_module_get_global(globals, "len") == initial_len)
+globals.__builtins__ = nil
+local ok, failure = pcall(function() return molt_module_get_global(globals, "__builtins__") end)
+assert(not ok and failure.__type == "NameError")
+assert(globals.__builtins__ == nil and context.builtins[depth] == captured)
+molt_frame_exit(context, depth, identity, owner)
+
+for _, selected in {replacement, {}, false, 7} do
+	local namespace = molt_dict_new()
+	molt_dict_set(namespace, "__builtins__", selected)
+	local active, index, selected_code, selected_owner = molt_frame_enter({code=code, globals=namespace}, selected)
+	molt_frame_locals_set(active, namespace)
+	assert(molt_dict_contains(namespace, "__builtins__"))
+	assert(molt_dict_getitem(namespace, "__builtins__") == selected)
+	assert(active.locals[index] == namespace)
+	molt_frame_exit(active, index, selected_code, selected_owner)
+end
+-- Ordered dictionaries distinguish a present Python None from absence.
+local explicit_none = molt_dict_new()
+molt_dict_set(explicit_none, "__builtins__", nil)
+context, depth, identity, owner = molt_frame_enter({code=code, globals=explicit_none}, nil)
+molt_frame_locals_set(context, explicit_none)
+assert(molt_dict_contains(explicit_none, "__builtins__"))
+assert(molt_dict_getitem(explicit_none, "__builtins__") == nil)
+assert(context.locals[depth] == explicit_none)
+molt_frame_exit(context, depth, identity, owner)
+
+local ordered = molt_dict_new()
+context, depth, identity, owner = molt_frame_enter({code=code, globals=ordered}, captured)
+molt_frame_locals_set(context, ordered)
+assert(molt_dict_getitem(ordered, "__builtins__") == captured)
+molt_frame_exit(context, depth, identity, owner)
+
+for _, missing in {{}, molt_dict_new()} do
+	context, depth, identity, owner = molt_frame_enter({code=code, globals=missing}, nil)
+	ok, failure = pcall(function() molt_frame_locals_set(context, missing) end)
+	assert(not ok and failure.__type == "RuntimeError")
+	assert(string.find(failure.__msg, "no captured builtins", 1, true) ~= nil)
+	local present = molt_frame_namespace_get(missing, "__builtins__")
+	assert(not present and context.locals[depth] == nil)
+	molt_frame_exit(context, depth, identity, owner)
+end
+-- This target publishes its builtins before guest frames, not by running a
+-- compiled Python builtins body. Ordinary publication must not add a builtin.
+assert(not molt_dict_contains(captured, "__builtins__"))
+assert(context.depth == 0)
+print("luau-module-builtins-publication-ok")
+"#;
+    let source = runtime_prelude::library()
+        .expect("canonical runtime library")
+        .emit(oracle, true)
+        .expect("module builtins oracle dependencies")
+        .source;
+    validate_luau_source(&source).expect("module builtins oracle source");
+    let output = execute_lune_oracle("module_builtins_publication", &source);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("luau-module-builtins-publication-ok")
     );
 }
 

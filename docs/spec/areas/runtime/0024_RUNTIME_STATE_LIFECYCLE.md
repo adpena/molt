@@ -527,6 +527,22 @@ when allocation fails or the task was constructed inside a non-entry block.
 
 When a compiled builtins body is admitted, its canonical module transaction
 publishes the builtins namespace before a user frame captures its default.
+Executable source modules prepare a missing `__builtins__` entry once at the
+checked frame-locals publication boundary, using that frame's captured builtins.
+An existing value, including `None`, remains unchanged; deletion after entry
+stays visible. Ordinary lookup and `FunctionType` construction never refill the
+mapping. The source-backed builtins facade preserves CPython's native builtins
+namespace without adding a self-referential public key: this exception requires
+the exact ModuleTable namespace and its active initialization owner. The rule
+follows CPython's [module execution preparation](https://github.com/python/cpython/blob/v3.15.0/Python/import.c)
+and [builtins capture](https://github.com/python/cpython/blob/v3.15.0/Python/ceval.c).
+Preparation uses the existing module-entry call; it adds no check to global
+reads or ordinary function entries.
+Luau's admitted ordinary module frames use their prelude-owned builtins
+namespace. Its source-builtin initialization, loader/reload transactions and
+inherited `None` in plain module tables remain unqualified coordinates; a
+mutable cache entry does not grant bootstrap ownership. The Rust source
+backend's cloned namespace model is also a separate unqualified coordinate.
 Builtin callable metadata (including defining module and binding policy) comes
 from `BuiltinFuncSpec` for both frontend materialization and generated runtime
 publication. The Python facade must not reacquire optional providers merely to
@@ -561,6 +577,16 @@ Task execution kind belongs to the code object (direct, generator, coroutine,
 or async generator). Generated trampolines alone own callable task allocation
 and closure layout. Reconstructing `FunctionType` retains that code-owned kind;
 runtime marker truth and cached task flags are not competing dispatch facts.
+`FunctionType`, its `LambdaType` alias and direct `function.__new__` use one
+versioned constructor signature and allocation body. CPython 3.12 accepts
+`code`, `globals`, `name`, `argdefs` and `closure`; 3.13 and later also accept
+`kwdefaults`. All accept positional or keyword arguments, while the direct
+`__new__` receiver is positional-only. The existing native argument binder owns
+missing, duplicate and unknown-keyword precedence. Valid positional calls keep
+their direct argument path. Defaults and closure metadata retain the supplied
+objects; invocation reads the admitted dictionary backing of a `kwdefaults`
+subclass without replacing its visible identity. These rules follow
+[CPython's constructor](https://github.com/python/cpython/blob/v3.15.0/Objects/funcobject.c).
 The packed function metadata tuple contains fourteen fields; field 11 (zero-based)
 is the typed execution-kind integer (0 through 3 in the order above), and fields
 12 and 13 are ordered free-variable and cell-variable name tuples. Publication
