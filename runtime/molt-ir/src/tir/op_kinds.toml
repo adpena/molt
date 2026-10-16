@@ -4329,6 +4329,8 @@ mapper_opcode = "Pos"
 
 [[kind]]
 canonical = "eq"
+# The CLI isolate import dispatcher emits this wire alias directly. Its former
+# frontend MoltOp producer was retired with startup environment string checks.
 aliases = ["string_eq"]
 mapper_opcode = "Eq"
 
@@ -5358,10 +5360,6 @@ kind = "EQ"
 opcode = "Eq"
 
 [[frontend_raising_kind]]
-kind = "STRING_EQ"
-opcode = "Eq"
-
-[[frontend_raising_kind]]
 kind = "NE"
 opcode = "Ne"
 
@@ -5525,32 +5523,37 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAtt
 # ---------------------------------------------------------------------------
 
 [[frontend_lowering_kind]]
-kind = "DELATTR_GENERIC_OBJ"
+kinds = ["DELATTR_GENERIC_OBJ"]
 wire_kind = "del_attr_generic_obj"
 
 [[frontend_lowering_kind]]
-kind = "DELATTR_GENERIC_PTR"
+kinds = ["DELATTR_GENERIC_PTR"]
 wire_kind = "del_attr_generic_ptr"
 
 [[frontend_lowering_kind]]
-kind = "ITER_NEW"
+kinds = ["ITER_NEW"]
 wire_kind = "iter"
 
 [[frontend_lowering_kind]]
-kind = "LOAD_CLOSURE"
+kinds = ["LOAD_CLOSURE"]
 wire_kind = "closure_load"
 
 [[frontend_lowering_kind]]
-kind = "STORE_CLOSURE"
+kinds = ["STORE_CLOSURE"]
 wire_kind = "closure_store"
 
 [[frontend_lowering_kind]]
-kind = "ret"
+kinds = ["ret"]
 wire_kind = "ret"
 
 [[frontend_lowering_kind]]
-kind = "ret_void"
+kinds = ["ret_void"]
 wire_kind = "ret_void"
+
+# Direct wire production does not imply a frontend MoltOp identity.
+[[frontend_lowering_kind]]
+kinds = []
+wire_kind = "string_eq"
 
 [[frontend_effect_kind]]
 kind = "CONST_ELLIPSIS"

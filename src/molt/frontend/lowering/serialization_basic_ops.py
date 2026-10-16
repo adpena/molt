@@ -375,14 +375,6 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
             elif self._should_fast_float(op):
                 ne_entry["fast_float"] = True
             ctx.json_ops.append(ne_entry)
-        elif op.kind == "STRING_EQ":
-            ctx.json_ops.append(
-                {
-                    "kind": "string_eq",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "IS":
             ctx.json_ops.append(
                 {

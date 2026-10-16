@@ -1379,7 +1379,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "STRING_COUNT_SLICE",
         "STRING_ENDSWITH",
         "STRING_ENDSWITH_SLICE",
-        "STRING_EQ",
         "STRING_FIND",
         "STRING_FIND_SLICE",
         "STRING_FORMAT",
@@ -1464,6 +1463,7 @@ FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {
     'iter': ('ITER_NEW',),
     'ret': ('ret',),
     'ret_void': ('ret_void',),
+    'string_eq': (),
 }
 
 SIMPLEIR_STRUCTURAL_KINDS: frozenset[str] = frozenset(
@@ -1549,7 +1549,6 @@ FRONTEND_CALLBACK_OPERATOR_KINDS: frozenset[str] = frozenset(
         "RSHIFT",
         "SHL",
         "SHR",
-        "STRING_EQ",
         "SUB",
         "UNARY_NEG",
         "UNARY_POS",
@@ -1569,7 +1568,6 @@ FRONTEND_PREDICATE_SEMANTICS: dict[str, str] = {
     'NE': 'equality',
     'NOT': 'truth',
     'NOT_IN': 'containment',
-    'STRING_EQ': 'equality',
 }
 
 COMPARISON_SCALAR_DOMAINS: dict[str, tuple[int, bool]] = {
@@ -1601,7 +1599,7 @@ def frontend_predicate_facts(kind: str, *operands: str | None) -> tuple[bool, bo
         return False, False
     return True, category == 'equality' or (lhs == rhs and lhs[1])
 
-FRONTEND_COMMUTATIVE_DOMAINS: dict[str, str] = {'ADD': 'numeric', 'BIT_AND': 'i64', 'BIT_OR': 'i64', 'BIT_XOR': 'i64', 'EQ': 'unboxed_scalar', 'MUL': 'numeric', 'NE': 'unboxed_scalar', 'STRING_EQ': 'unboxed_scalar'}
+FRONTEND_COMMUTATIVE_DOMAINS: dict[str, str] = {'ADD': 'numeric', 'BIT_AND': 'i64', 'BIT_OR': 'i64', 'BIT_XOR': 'i64', 'EQ': 'unboxed_scalar', 'MUL': 'numeric', 'NE': 'unboxed_scalar'}
 
 def frontend_can_reorder_commutative(kind: str, *operands: str | None) -> bool:
     if len(operands) != 2:
@@ -2064,7 +2062,6 @@ RAISING_KIND_NAMES: frozenset[str] = frozenset(
         "INPLACE_SUB",
         "INPLACE_MUL",
         "EQ",
-        "STRING_EQ",
         "NE",
         "LT",
         "LE",
@@ -2444,7 +2441,6 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "STORE_CLOSURE": "writes_heap",
     "STORE_INDEX": "writes_heap",
     "STORE_VAR": "writes_heap",
-    "STRING_EQ": "writes_heap",
     "SUB": "writes_heap",
     "TASK_WAIT": "writes_heap",
     "TRY_END": "control",
@@ -2734,7 +2730,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "STORE_CLOSURE": True,
     "STORE_INDEX": True,
     "STORE_VAR": True,
-    "STRING_EQ": True,
     "SUB": True,
     "TASK_WAIT": True,
     "TRY_END": True,
@@ -3628,7 +3623,6 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
         "STORE_CLOSURE",
         "STORE_INDEX",
         "STORE_VAR",
-        "STRING_EQ",
         "SUB",
         "TASK_WAIT",
         "UNARY_NEG",
