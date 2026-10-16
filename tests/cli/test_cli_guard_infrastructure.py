@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from molt import process_guard
-from molt.cli import command_runtime, entrypoint, lockfiles
+from molt.cli import command_runtime, entrypoint, entrypoint_dispatch, lockfiles
 from molt.process_guard import GuardInfrastructureError
 from tests.process_guard_common import install_module_view
 from tools import harness_memory_guard
@@ -258,7 +258,7 @@ def test_entrypoint_reports_a_guard_failure_with_the_guard_exit_code(
     entry.write_text("print(1)\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(entrypoint, "check_process_environment", lambda: None)
-    monkeypatch.setattr(entrypoint, "_dispatch_entrypoint_command", dispatch)
+    monkeypatch.setattr(entrypoint_dispatch, "_dispatch_entrypoint_command", dispatch)
     argv = ["molt", "build", *(["--json"] if json_output else []), str(entry)]
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
@@ -289,7 +289,9 @@ def test_cli_profile_writes_one_stats_file_per_process(
     entry.write_text("print(1)\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(entrypoint, "check_process_environment", lambda: None)
-    monkeypatch.setattr(entrypoint, "_dispatch_entrypoint_command", profiled_dispatch)
+    monkeypatch.setattr(
+        entrypoint_dispatch, "_dispatch_entrypoint_command", profiled_dispatch
+    )
     monkeypatch.setattr(sys, "argv", ["molt", "build", str(entry)])
     monkeypatch.setenv("MOLT_CLI_PROFILE", str(tmp_path / "profiles" / "{pid}.prof"))
 

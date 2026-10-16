@@ -8,7 +8,6 @@ import subprocess
 import sys
 from typing import Any
 from molt.cli.config_resolution import _select_codegen_backend
-from molt.cli.command_runtime import _finish_build_input_custody
 from molt.cli.native_link_plan import NativeArtifactKind
 
 
@@ -338,6 +337,10 @@ def emit_pipeline_fact_graph(
         )
         if fact_graph_error is not None:
             return fact_graph_error
+        # The parser imports this module for its argument definitions; build
+        # custody (and the process guard) loads only when a graph is emitted.
+        from molt.cli.command_runtime import _finish_build_input_custody
+
         custody_error = _finish_build_input_custody(finalize_inputs)
         if custody_error is not None:
             return fail(custody_error, json_output, command="build")

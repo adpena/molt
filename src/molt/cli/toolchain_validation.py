@@ -45,14 +45,6 @@ _VALIDATE_PROOF_BYPASS_ENV = frozenset(
         "MOLT_SKIP_CARGO_LOCK",
     }
 )
-_VALIDATE_SUITE_CHOICES = (
-    "full",
-    "smoke",
-    "commands",
-    "conformance",
-    "bench",
-    "custody-proof",
-)
 
 
 def _admitted_cargo_refusal(

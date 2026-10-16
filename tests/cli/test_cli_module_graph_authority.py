@@ -7,7 +7,6 @@ from molt.cli import module_graph
 from molt.cli import wrapper_build
 
 _MODULE_GRAPH_CORE_NAMES = (
-    "ModuleSyntaxErrorInfo",
     "_build_module_graph_metadata",
     "_collect_package_parents",
     "_materialize_import_plan",
@@ -15,7 +14,6 @@ _MODULE_GRAPH_CORE_NAMES = (
 )
 
 _MODULE_GRAPH_CORE_DEFINITIONS = (
-    "class ModuleSyntaxErrorInfo",
     "def _build_module_graph_metadata(",
     "def _collect_package_parents(",
     "def _materialize_import_plan(",

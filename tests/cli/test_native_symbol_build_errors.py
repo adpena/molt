@@ -21,7 +21,6 @@ from molt.cli import (
 )
 from molt.cli.models import (
     _BackendCacheSetup,
-    _BuildOutputLayout,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _FrontendIntegrationState,
     _ModuleGraphMetadata,
@@ -29,6 +28,7 @@ from molt.cli.models import (
     _PreparedBackendRuntimeContext,
     _RuntimeArtifactState,
 )
+from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import JSON_SCHEMA_VERSION
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.cli.rust_cpu_policy import RustCpuPolicy

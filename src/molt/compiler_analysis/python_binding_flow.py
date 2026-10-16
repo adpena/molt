@@ -235,6 +235,8 @@ _CALLEE_RETENTION_FORBIDDEN_EFFECTS: Final[EffectMask] = (
     _CALLEE_ELISION_FORBIDDEN_EFFECTS
     & ~(READS_FRAME_STATE | READS_GLOBAL_NAMESPACE | REFLECTS_NAMESPACE)
 )
+
+
 def _canonical_member_declarations(
     base: IdentityMask, member: str
 ) -> Iterator[tuple[PythonIdentity, PythonIdentity, PythonMember]]:

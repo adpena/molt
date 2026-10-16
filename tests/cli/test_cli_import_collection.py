@@ -10770,7 +10770,7 @@ def test_external_native_artifact_output_custody_accepts_native_binary(
     )
     assert error is None
     assert policy is not None
-    output_layout = cli_models._BuildOutputLayout(
+    output_layout = cli_build_output_layout._BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
         is_rust_transpile=False,
@@ -10815,7 +10815,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
     unsupported_layouts = [
         (
             "native",
-            cli_models._BuildOutputLayout(
+            cli_build_output_layout._BuildOutputLayout(
                 is_wasm=False,
                 is_wasm_freestanding=False,
                 is_rust_transpile=False,
@@ -10836,7 +10836,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
         ),
         (
             "wasm",
-            cli_models._BuildOutputLayout(
+            cli_build_output_layout._BuildOutputLayout(
                 is_wasm=True,
                 is_wasm_freestanding=False,
                 is_rust_transpile=False,
@@ -10860,7 +10860,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
         ),
         (
             "rust",
-            cli_models._BuildOutputLayout(
+            cli_build_output_layout._BuildOutputLayout(
                 is_wasm=False,
                 is_wasm_freestanding=False,
                 is_rust_transpile=True,
@@ -10881,7 +10881,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
         ),
         (
             "luau",
-            cli_models._BuildOutputLayout(
+            cli_build_output_layout._BuildOutputLayout(
                 is_wasm=False,
                 is_wasm_freestanding=False,
                 is_rust_transpile=True,
@@ -10902,7 +10902,7 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
         ),
         (
             "mlir",
-            cli_models._BuildOutputLayout(
+            cli_build_output_layout._BuildOutputLayout(
                 is_wasm=False,
                 is_wasm_freestanding=False,
                 is_rust_transpile=False,
@@ -24461,7 +24461,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         entry_tree=ast.parse("print('hi')\n"),
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
     )
-    output_layout = cli_models._BuildOutputLayout(
+    output_layout = cli_build_output_layout._BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
         is_rust_transpile=False,

@@ -9118,7 +9118,8 @@ def test_xdist_current_records_reject_symlinks_outside_canonical_custody(
                 "nodeid": "must-not-read-outside",
                 "phase": "call",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     try:
         if link_kind == "directory":
