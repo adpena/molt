@@ -184,6 +184,69 @@ def test_rebuild_disabled_still_admits_backend_identity_and_features(
         assert "requested backend feature is absent" in result.message
 
 
+# A never-seen backend binary's first run measured 11.4 s on macOS at load 7
+# (the operating system checks a new executable once), then 0.2 s (HF-233).
+_SLOW_FIRST_RUN_S = 11.4
+
+
+@pytest.mark.parametrize("cargo_timeout", [None, 600.0, 5.0])
+def test_slow_first_probe_run_shares_the_build_budget_and_never_rebuilds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cargo_timeout: float | None
+) -> None:
+    write_compiler_source(tmp_path)
+    stub_compiler_admission(monkeypatch)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
+    features = ("native-backend",)
+    selected = cli_backend_execution._backend_bin_path(tmp_path, "dev-fast", features)
+    selected.parent.mkdir(parents=True, exist_ok=True)
+    selected.write_bytes(b"attested compiler bytes")
+    selected.chmod(0o755)
+    fingerprint = _fingerprint()
+    cli_runtime_fingerprints._write_runtime_fingerprint(
+        cli_backend_binary._backend_fingerprint_path(tmp_path, selected, "dev-fast"),
+        fingerprint,
+        artifact=selected,
+    )
+    monkeypatch.setattr(
+        cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
+    )
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_maybe_hydrate_artifact_from_canonical_target",
+        lambda **_k: False,
+    )
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_resolved_cargo_plan",
+        lambda *_a, **_k: pytest.fail("a slow probe run rebuilt the backend"),
+    )
+
+    def first_run(cmd: list[str], **kwargs: object):
+        limit = kwargs["timeout"]
+        if limit is not None and float(limit) < _SLOW_FIRST_RUN_S:
+            raise subprocess.TimeoutExpired(cmd, limit)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(
+        cli_backend_binary, "_run_subprocess_captured_to_tempfiles", first_run
+    )
+    result = cli_backend_binary._ensure_backend_binary(
+        selected,
+        cargo_timeout=cargo_timeout,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        backend_features=features,
+        rust_cpu=RustCpuPolicy.BASELINE,
+    )
+    if cargo_timeout is None or cargo_timeout >= _SLOW_FIRST_RUN_S:
+        assert result, result.message
+    else:
+        # A timeout is its own failure class, not a capability refusal.
+        assert not result and result.phase == "backend_feature_probe_timeout"
+        assert "within 5.0s (MOLT_CARGO_TIMEOUT)" in result.message
+
+
 def test_backend_compiler_cache_fingerprint_covers_backend_fingerprint_fields() -> None:
     fingerprint = _fingerprint()
     binary_identity = {
@@ -743,14 +806,19 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
         )
         assert bool(result) == (probe_outcome == "pass")
         if not result:
-            assert result.phase == "backend_feature_probe"
+            # A timeout is its own failure class, distinct from a refusal.
+            assert result.phase == (
+                "backend_feature_probe_timeout"
+                if probe_outcome == "timeout"
+                else "backend_feature_probe"
+            )
             assert result.command == probe_commands[-1]
             assert result.cache_compiler_fingerprint is None
             if probe_outcome == "reject":
                 assert result.returncode == 17
                 assert "original feature rejection" in result.message
             else:
-                assert "timed out" in result.message
+                assert "did not finish within" in result.message
                 assert "partial probe output" in result.message
                 assert "partial probe error" in result.message
     assert calls == 1
