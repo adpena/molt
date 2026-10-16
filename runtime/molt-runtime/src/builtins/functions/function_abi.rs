@@ -8,6 +8,7 @@ use super::*;
 use crate::ClassEdgeOwnership;
 use crate::object::layout::function_call_abi;
 use crate::object::object_init_class_edge_unpublished;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 #[derive(Copy, Clone)]
 struct NativeCallableTarget(*const ());
@@ -426,10 +427,7 @@ pub extern "C" fn molt_func_new(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fn_key = canonicalize_runtime_callable_key(fn_ptr);
-        let trace = matches!(
-            std::env::var("MOLT_TRACE_FUNC_NEW").ok().as_deref(),
-            Some("1")
-        );
+        let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_FUNC_NEW);
         if trace {
             eprintln!(
                 "molt func new: fn_ptr={fn_ptr} fn_key={fn_key} tramp_ptr={trampoline_ptr} arity={arity} entry_custody={entry_custody}"
@@ -465,10 +463,7 @@ fn molt_func_new_builtin_raw_impl(
     if let Some(raw_target) = crate::provenance::abi::function_ptr(fn_key) {
         register_address_target(fn_key, raw_target);
     }
-    let trace = matches!(
-        std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
-        Some("1")
-    );
+    let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BUILTIN_FUNC);
     let trace_enter_ptr = fn_addr!(molt_trace_enter_slot);
     if trace {
         eprintln!(
@@ -780,10 +775,7 @@ pub extern "C" fn molt_func_new_builtin_named(
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let trace = matches!(
-            std::env::var("MOLT_TRACE_BUILTIN_FUNC").ok().as_deref(),
-            Some("1")
-        );
+        let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BUILTIN_FUNC);
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, "TypeError", "builtin name must be str");
         };
@@ -834,10 +826,7 @@ pub extern "C" fn molt_func_new_closure(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fn_key = canonicalize_runtime_callable_key(fn_ptr);
-        let trace = matches!(
-            std::env::var("MOLT_TRACE_FUNC_NEW").ok().as_deref(),
-            Some("1")
-        );
+        let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_FUNC_NEW);
         if trace {
             eprintln!(
                 "molt func new closure: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} closure_bits={closure_bits} entry_custody={entry_custody}"

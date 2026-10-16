@@ -1,3 +1,4 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::alloc::Layout;
 #[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
@@ -132,54 +133,35 @@ use crate::{
     zip_iters_ptr,
 };
 fn debug_alloc_list_builder() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_DEBUG_ALLOC_LIST_BUILDER")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ALLOC_LIST_BUILDER)
 }
 
 fn debug_alloc_object() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_DEBUG_ALLOC_OBJECT").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ALLOC_OBJECT)
 }
 
 fn debug_oom() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| matches!(std::env::var("MOLT_DEBUG_OOM").ok().as_deref(), Some("1")))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_OOM)
 }
 
 #[inline]
 fn debug_rc_object() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_RC_OBJECT").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_RC_OBJECT)
 }
 
 #[inline]
 fn debug_dec_ref_zero() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_DECREF_ZERO").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_DECREF_ZERO)
 }
 
 #[inline]
 fn debug_file_rc() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_FILE_RC").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_FILE_RC)
 }
 
 #[inline]
 fn trace_object_state() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_OBJECT_STATE").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_OBJECT_STATE)
 }
 
 /// Cached debug flag for tracing BigInt refcount inc/dec on the hot path.
@@ -188,14 +170,12 @@ fn trace_object_state() -> bool {
 /// when the var is unset. Cache once at first use.
 #[inline]
 fn debug_bigint_rc() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_BIGINT_RC").is_ok())
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_BIGINT_RC)
 }
 
 #[inline]
 fn debug_object_rc() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_OBJECT_RC").is_ok())
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_OBJECT_RC)
 }
 
 /// Cached `MOLT_TRACE_EXC_RC` flag for tracing exception-object refcount
@@ -209,8 +189,7 @@ fn debug_object_rc() -> bool {
 /// so cache it once at first use — the diagnostic is exactly zero-cost when off.
 #[inline]
 fn trace_exception_rc() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_EXC_RC").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_EXC_RC)
 }
 
 /// Cached physical-type filter for refcount ownership transitions. Paired with
@@ -230,15 +209,7 @@ fn trace_rc_type_filter() -> Option<u32> {
 
 #[inline]
 fn trace_decref_zero_function_all() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL)
 }
 
 /// Whether any per-transition refcount knob above is set. Derived once from
@@ -4036,7 +4007,7 @@ fn fatal_invalid_dec_ref_header(ptr: *mut u8, type_id: u32) -> ! {
          (use-after-free or corrupted header)",
         ptr as usize, type_id
     );
-    if std::env::var("MOLT_TRACE_INVALID_DECREF").as_deref() == Ok("1") {
+    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_INVALID_DECREF) {
         eprintln!(
             "molt invalid dec_ref backtrace:\n{}",
             std::backtrace::Backtrace::force_capture()
@@ -4116,10 +4087,7 @@ unsafe fn dec_ref_ptr_terminal(
             }
         }
         if type_id == TYPE_ID_FUNCTION && {
-            static TRACE: OnceLock<bool> = OnceLock::new();
-            *TRACE.get_or_init(|| {
-                std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION").as_deref() == Ok("1")
-            })
+            runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_DECREF_ZERO_FUNCTION)
         } {
             // Debug-only: cached builtin function objects must not be freed while still cached.
             // When they do hit zero, capture a backtrace to identify the incorrect owner.

@@ -7,6 +7,7 @@ use crate::const_data_cache::{
 use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::ops::{as_float_extended, float_result_bits};
 use crate::object::ops_format::{format_bytes, format_string_repr_bytes};
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_obj_model::float_literal::{format_hex_float, parse_hex_float};
@@ -1635,14 +1636,8 @@ pub extern "C" fn molt_not(val: u64) -> u64 {
     })
 }
 
-pub(crate) fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|val| !val.is_empty() && val != "0")
-        .unwrap_or(false)
-}
-
 pub(crate) fn maybe_emit_runtime_feedback_file(payload: &serde_json::Value) {
-    if !env_flag_enabled("MOLT_RUNTIME_FEEDBACK") {
+    if !runtime_flags::enabled(RuntimeFlag::MOLT_RUNTIME_FEEDBACK) {
         return;
     }
     let out_path = std::env::var("MOLT_RUNTIME_FEEDBACK_FILE")

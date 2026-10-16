@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 use super::*;
 use crate::TYPE_ID_FUNCTION;
@@ -227,16 +227,14 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
 /// libc environ lock and heap-allocates).
 #[inline]
 fn trace_builtin_type_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_BUILTIN_TYPE").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BUILTIN_TYPE)
 }
 
 /// Cached `MOLT_TRACE_ISINSTANCE` flag. `molt_isinstance` runs on every
 /// `isinstance()` call; read the env var once rather than per call.
 #[inline]
 fn trace_isinstance_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_ISINSTANCE").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ISINSTANCE)
 }
 
 #[unsafe(no_mangle)]

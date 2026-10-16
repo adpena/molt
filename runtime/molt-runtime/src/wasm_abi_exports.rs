@@ -327,6 +327,7 @@ pub extern "C" fn molt_scratch_free(ptr: u64, size: u64) {
 #[cfg(test)]
 mod tests {
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    use crate::runtime_flags::{self, RuntimeFlag};
     use std::process::Command;
 
     struct TrackerReset;
@@ -374,8 +375,8 @@ mod tests {
 
     #[test]
     fn scratch_alloc_cold_resource_denial_is_null_and_nounwind() {
-        const CHILD: &str = "MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD";
-        if std::env::var_os(CHILD).is_some() {
+        const CHILD: RuntimeFlag = RuntimeFlag::MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD;
+        if runtime_flags::enabled(CHILD) {
             use crate::state::runtime_state::{runtime_is_initialized, runtime_state_for_gil};
 
             assert!(!runtime_is_initialized());
@@ -413,7 +414,7 @@ mod tests {
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env(CHILD, "1");
+            .env(CHILD.name(), "1");
         let output = crate::test_support::captured_runtime_children::capture(
             &mut command,
             "cold-resource-denial",

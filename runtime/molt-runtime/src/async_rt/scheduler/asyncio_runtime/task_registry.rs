@@ -1,3 +1,4 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -134,12 +135,7 @@ fn asyncio_task_last_exception_clear_impl(_py: &PyToken<'_>, task_bits: u64) -> 
     let Some(task_ptr) = resolve_task_ptr(task_bits) else {
         return raise_exception::<u64>(_py, "TypeError", "object is not awaitable");
     };
-    if matches!(
-        std::env::var("MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR")
-            .ok()
-            .as_deref(),
-        Some("1")
-    ) {
+    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR) {
         eprintln!(
             "molt asyncio task_last_exception_clear task=0x{:x}",
             task_ptr as usize

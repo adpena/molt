@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 use memchr::memchr;
 
 #[unsafe(no_mangle)]
@@ -1771,13 +1772,7 @@ pub extern "C" fn molt_bytes_rsplit_max(
 }
 
 fn trace_bytes_strip() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_BYTES_STRIP").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BYTES_STRIP)
 }
 
 fn bytes_strip_impl<F>(

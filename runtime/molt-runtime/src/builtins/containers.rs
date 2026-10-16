@@ -1,4 +1,5 @@
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     BIND_KIND_PACKED_BUILTIN, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
     TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_SET,
@@ -82,7 +83,7 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
         )),
         "get" => {
             if cfg!(target_arch = "wasm32")
-                && std::env::var("MOLT_WASM_DICT_METHOD_DEBUG").as_deref() == Ok("1")
+                && runtime_flags::enabled(RuntimeFlag::MOLT_WASM_DICT_METHOD_DEBUG)
             {
                 eprintln!(
                     "molt wasm dict_method:get fn=0x{:x}",
@@ -128,7 +129,7 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
         )),
         "setdefault" => {
             if cfg!(target_arch = "wasm32")
-                && std::env::var("MOLT_WASM_DICT_METHOD_DEBUG").as_deref() == Ok("1")
+                && runtime_flags::enabled(RuntimeFlag::MOLT_WASM_DICT_METHOD_DEBUG)
             {
                 eprintln!(
                     "molt wasm dict_method:setdefault fn=0x{:x}",
@@ -156,7 +157,7 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
         },
         "fromkeys" => {
             if cfg!(target_arch = "wasm32")
-                && std::env::var("MOLT_WASM_DICT_METHOD_DEBUG").as_deref() == Ok("1")
+                && runtime_flags::enabled(RuntimeFlag::MOLT_WASM_DICT_METHOD_DEBUG)
             {
                 eprintln!(
                     "molt wasm dict_method:fromkeys fn=0x{:x}",

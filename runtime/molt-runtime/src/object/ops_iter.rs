@@ -9,6 +9,7 @@ use crate::object::{
     ObjectAuxPreselection, dec_ref_ptr, inc_ref_ptr, object_init_poll_fn_unpublished,
     object_init_state_unpublished,
 };
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -721,13 +722,7 @@ pub(crate) unsafe fn enumerate_new_impl(
 
 #[inline]
 fn trace_iter_arg_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_ITER_ARG").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ITER_ARG)
 }
 
 #[unsafe(no_mangle)]
@@ -946,7 +941,7 @@ pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
             if exception_pending(_py) {
                 return res;
             }
-            if std::env::var("MOLT_DEBUG_ITER").as_deref() == Ok("1") {
+            if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ITER) {
                 let iter_obj = obj_from_bits(iter_bits);
                 eprintln!(
                     "molt_iter_checked: non-iterable type={} bits=0x{:x}",

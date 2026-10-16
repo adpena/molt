@@ -1,3 +1,4 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 // On wasm32 we still support logical runtime counters when MOLT_PROFILE=1, but
 // RSS sampling remains unavailable in the host-agnostic wasm runtime.
 
@@ -7,20 +8,14 @@
 /// without `MOLT_PROFILE`), and a process-exit assertion fires if more than
 /// `EXPECTED_LIVE_OBJECTS` objects survive. The single source of truth consulted
 /// by both the wasm and native `profile_env_enabled`.
-fn profile_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|val| !val.is_empty() && val != "0")
-        .unwrap_or(false)
-}
-
 pub(crate) fn leak_assertion_enabled() -> bool {
-    profile_flag_enabled("MOLT_ASSERT_NO_LEAK")
+    runtime_flags::enabled(RuntimeFlag::MOLT_ASSERT_NO_LEAK)
 }
 
 /// Sole target-independent authority for enabling runtime counters. WASM and
 /// native must not grow separate environment interpretations.
 fn profile_env_enabled() -> bool {
-    profile_flag_enabled("MOLT_PROFILE") || leak_assertion_enabled()
+    runtime_flags::enabled(RuntimeFlag::MOLT_PROFILE) || leak_assertion_enabled()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +229,13 @@ mod native {
         );
     }
 
+    /// Turns the counters on for a test that reads them; the process
+    /// environment is read once, so a test cannot enable them through it.
+    #[cfg(test)]
+    pub(crate) fn enable_profile_for_test() {
+        PROFILE_ENABLED.store(1, AtomicOrdering::Relaxed);
+    }
+
     pub(crate) fn profile_enabled_unchecked() -> bool {
         match PROFILE_ENABLED.load(AtomicOrdering::Relaxed) {
             0 => false,
@@ -429,6 +431,8 @@ mod native {
     }
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use native::enable_profile_for_test;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{
     init_profile_enabled_from_env, molt_profile_enabled, molt_profile_handle_resolve,

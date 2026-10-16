@@ -837,7 +837,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_ASSERT_NO_LEAK",
       "owner": "runtime/molt-runtime/src/state/metrics.rs",
-      "summary": "Enables the runtime leak assertion: any non-empty value other than 0 force-enables the alloc/dealloc counters and exits with status 137 when live objects exceed EXPECTED_LIVE_OBJECTS before teardown or exceed the post-teardown floor plus MOLT_LEAK_TOLERANCE; tools/perf_scoreboard_measure.py sets it to 0 for timing runs.",
+      "summary": "Enables the runtime leak assertion: exactly 1 force-enables the alloc/dealloc counters and exits with status 137 when live objects exceed EXPECTED_LIVE_OBJECTS before teardown or exceed the post-teardown floor plus MOLT_LEAK_TOLERANCE; tools/perf_scoreboard_measure.py sets it to 0 for timing runs.",
       "values": []
     },
     {
@@ -873,7 +873,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_ASYNC_TRACE",
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/diagnostics.rs",
-      "summary": "Prints async scheduler trace lines (worker start, task events) to stderr; any non-empty value other than 0 or false, compared lowercase, enables it.",
+      "summary": "Prints async scheduler trace lines (worker start, task events) to stderr when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -1941,7 +1941,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_ALLOC_LIST_BUILDER",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Prints the requested and expected size of every list-builder object allocation to stderr when set to exactly 1; read once at first allocation, default off.",
+      "summary": "Prints the requested and expected size of every list-builder object allocation to stderr when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -1950,7 +1950,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_ALLOC_OBJECT",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Prints type id, size and GIL state for every object allocation to stderr when set to exactly 1, filtered by MOLT_DEBUG_ALLOC_OBJECT_TYPE when that is set; read once at first allocation, default off.",
+      "summary": "Prints type id, size and GIL state for every object allocation to stderr when set to exactly 1, filtered by MOLT_DEBUG_ALLOC_OBJECT_TYPE when that is set; read once per process, default off.",
       "values": []
     },
     {
@@ -1977,7 +1977,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_AWAITABLE",
       "owner": "runtime/molt-runtime/src/async_rt/generators_async_future.rs",
-      "summary": "Prints the bits, type and class of objects that fail the awaitable check, plus every new future, to stderr while the variable is present with any value; default off.",
+      "summary": "Prints the bits, type and class of objects that fail the awaitable check, plus every new future, to stderr when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -1986,7 +1986,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_BIGINT_RC",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Traces every BigInt refcount increment and decrement to stderr while the variable is present with any value, which also switches on the slow refcount tracing path; read once at first use, default off.",
+      "summary": "Traces every BigInt refcount increment and decrement to stderr when set to exactly 1, which also switches on the slow refcount tracing path; read once per process, default off.",
       "values": []
     },
     {
@@ -1995,7 +1995,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_BIND",
       "owner": "runtime/molt-runtime/src/call/bind/builtin_args.rs",
-      "summary": "Prints the function name, positional count and missing parameters to stderr when argument binding fails, while the variable is present with any value; the CLI also streams backend stderr when it is truthy, default off.",
+      "summary": "Prints the function name, positional count and missing parameters to stderr when argument binding fails, when set to exactly 1, read once per process; the CLI also streams backend stderr when it is truthy, default off.",
       "values": []
     },
     {
@@ -2013,7 +2013,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_BOUND_METHOD",
       "owner": "runtime/molt-runtime/src/builtins/attributes/state.rs",
-      "summary": "Prints the function bits, self type and last attribute name to stderr when bound-method creation receives a non-function object, while the variable is present with any value; read once per process, default off.",
+      "summary": "Prints the function bits, self type and last attribute name to stderr when bound-method creation receives a non-function object, when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -2067,7 +2067,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_CONTEXT_STACK",
       "owner": "runtime/molt-runtime/src/builtins/context.rs",
-      "summary": "Logs generator context-stack operations to stderr when set to any non-empty value other than 0; read once per process, default off.",
+      "summary": "Logs generator context-stack operations to stderr when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -2121,7 +2121,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_DEBUG_DECREF_ZERO",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Prints the pointer and type id of every object whose refcount reaches zero, plus code-object names, to stderr when set to exactly 1; read once at first use, default off.",
+      "summary": "Prints the pointer and type id of every object whose refcount reaches zero, plus code-object names, to stderr when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -2256,11 +2256,11 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
+      "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_FIELD",
       "owner": "runtime/molt-runtime/src/object/field_storage_debug.rs",
-      "summary": "Any set value, even 0, enables instance field and dictionary storage observations ([field_lookup], [field_dictionary], and [field_dictionary_entry] lines on stderr); read once per process, and unset disables the whole family.",
+      "summary": "Set to exactly 1 to enable instance field and dictionary storage observations ([field_lookup], [field_dictionary], and [field_dictionary_entry] lines on stderr); read once per process, and unset or any other value disables the whole family.",
       "values": []
     },
     {
@@ -2310,11 +2310,11 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
+      "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_GUARD",
       "owner": "runtime/molt-runtime/src/object/accessors.rs",
-      "summary": "Any set value enables a '[guard]' line on stderr with pointer, type id, and class bits for each class layout guard check; read once per process, and unset disables it.",
+      "summary": "Set to exactly 1 to print a '[guard]' line on stderr with pointer, type id, and class bits for each class layout guard check; read once per process, and unset or any other value disables it.",
       "values": []
     },
     {
@@ -2409,11 +2409,11 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
+      "default": "0",
       "kind": "bool",
       "name": "MOLT_DEBUG_OBJECT_RC",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Any set value enables '[OBJECT DEC]' lines on stderr for every dec_ref of a plain object instance, including the final free; read once per process, and unset disables it.",
+      "summary": "Set to exactly 1 to print '[OBJECT DEC]' lines on stderr for every dec_ref of a plain object instance, including the final free; read once per process, and unset or any other value disables it.",
       "values": []
     },
     {
@@ -4785,7 +4785,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_PROFILE",
       "owner": "runtime/molt-runtime/src/state/metrics.rs",
-      "summary": "Enables the runtime profiling counters (allocation, dispatch, GC, and epoch metrics) and the profile dump on native and WASM; any non-empty value other than 0 enables it, and MOLT_ASSERT_NO_LEAK also turns the counters on; default off.",
+      "summary": "Enables the runtime profiling counters (allocation, dispatch, GC, and epoch metrics) and the profile dump on native and WASM; exactly 1 enables it, read once per process, and MOLT_ASSERT_NO_LEAK also turns the counters on; default off.",
       "values": []
     },
     {
@@ -5325,7 +5325,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_RUNTIME_FEEDBACK",
       "owner": "runtime/molt-runtime/src/object/ops_convert.rs",
-      "summary": "Enables writing the runtime profile JSON payload to a feedback file at profile dump when runtime profiling (MOLT_PROFILE) is active; any non-empty value other than 0 enables it; default off.",
+      "summary": "Enables writing the runtime profile JSON payload to a feedback file at profile dump when runtime profiling (MOLT_PROFILE) is active; exactly 1 enables it, read once per process; default off.",
       "values": []
     },
     {
@@ -5823,11 +5823,11 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "internal",
-      "default": "",
+      "default": "0",
       "kind": "bool",
       "name": "MOLT_TEST_COLD_SCRATCH_ALLOC_CHILD",
       "owner": "runtime/molt-runtime/src/wasm_abi_exports.rs",
-      "summary": "A cargo unit test in wasm_abi_exports.rs sets it to 1 when it re-executes its own test binary, and the child reads its presence (any value) to run the cold resource-denial scratch allocation path; a person never sets it.",
+      "summary": "A cargo unit test in wasm_abi_exports.rs sets it to 1 when it re-executes its own test binary, and the child, seeing exactly 1, runs the cold resource-denial scratch allocation path; a person never sets it.",
       "values": []
     },
     {
@@ -5854,7 +5854,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_THREAD_ISOLATED",
       "owner": "runtime/molt-runtime/src/concurrency/isolates.rs",
-      "summary": "Makes thread spawn use the isolated-heap ThreadSpawnIsolated operation and makes shared-thread calls raise RuntimeError when set to 1, true, yes, or on (case-insensitive); default off.",
+      "summary": "Makes thread spawn use the isolated-heap ThreadSpawnIsolated operation and makes shared-thread calls raise RuntimeError when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -5926,7 +5926,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_ASYNCIO_CONNECT",
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
-      "summary": "Prints molt async connect lines (errno and socket) to stderr during asyncio socket connect handling; any non-empty value other than 0 or false (case-insensitive) enables it, read once per process; default off.",
+      "summary": "Prints molt async connect lines (errno and socket) to stderr during asyncio socket connect handling when set to exactly 1; read once per process, default off.",
       "values": []
     },
     {
@@ -5998,7 +5998,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_BLOCK_ON_EPILOGUE",
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/mod.rs",
-      "summary": "Set to 1 to print one stderr line per labelled step of the block_on epilogue (exception-stack restore, task_mark_done, wake_await_waiters and the other steps) each time block_on finishes; read once per block_on, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print one stderr line per labelled step of the block_on epilogue (exception-stack restore, task_mark_done, wake_await_waiters and the other steps) each time block_on finishes; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6007,7 +6007,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_BLOCK_ON_RESULT",
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/mod.rs",
-      "summary": "Set to 1 to print molt block_on poll result=<bits> pending_kind=<exception name or none> on stderr after every scheduled poll inside block_on; read on every poll, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt block_on poll result=<bits> pending_kind=<exception name or none> on stderr after every scheduled poll inside block_on; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6016,7 +6016,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_BUILTIN_FUNC",
       "owner": "runtime/molt-runtime/src/builtins/functions/function_abi.rs",
-      "summary": "Set to 1 to print molt builtin_func new: lines with the function pointer, trampoline pointer and arity on stderr each time the runtime creates a builtin function object; read on every creation, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt builtin_func new: lines with the function pointer, trampoline pointer and arity on stderr each time the runtime creates a builtin function object; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6025,7 +6025,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_BUILTIN_TYPE",
       "owner": "runtime/molt-runtime/src/builtins/types/class_model.rs",
-      "summary": "Set to 1 to print molt builtin_type tag=<tag> bits=<bits> on stderr each time molt_builtin_type resolves a builtin type object; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt builtin_type tag=<tag> bits=<bits> on stderr each time molt_builtin_type resolves a builtin type object; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6034,7 +6034,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_BYTES_FROM_BYTES",
       "owner": "runtime/molt-runtime/src/builtins/strings.rs",
-      "summary": "Set to 1 to print [molt bytes_from_bytes] lines (length, pointer, type id, flags, and the empty and cache-hit cases) on stderr each time the runtime builds a bytes object from a raw buffer; read on every call, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt bytes_from_bytes] lines (length, pointer, type id, flags, and the empty and cache-hit cases) on stderr each time the runtime builds a bytes object from a raw buffer; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6043,7 +6043,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_BYTES_STRIP",
       "owner": "runtime/molt-runtime/src/object/ops_bytes/sequence_methods.rs",
-      "summary": "Set to 1 to print stderr diagnostics about the haystack and chars operands of bytes strip, lstrip and rstrip calls; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print stderr diagnostics about the haystack and chars operands of bytes strip, lstrip and rstrip calls; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6052,7 +6052,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALLARGS",
       "owner": "runtime/molt-runtime/src/call/bind/arguments.rs",
-      "summary": "Set to 1 to print [molt callargs] lifecycle lines (new, push_pos, expand_star, free, guard_drop, invalid_builder) on stderr for every call-argument builder; the molt debug trace callargs family sets it to 1 for the child run, it is read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt callargs] lifecycle lines (new, push_pos, expand_star, free, guard_drop, invalid_builder) on stderr for every call-argument builder; the molt debug trace callargs family sets it to 1 for the child run, it is read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6074,7 +6074,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_BIND_IC",
       "owner": "runtime/molt-runtime/src/call/bind/inline_cache.rs",
-      "summary": "Set to 1 to print [molt call_bind_ic] hit and bypass lines with site, kind, arity and reason on stderr for the direct-function inline cache; the molt debug trace call_bind_ic family sets it to 1 for the child run, it is read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt call_bind_ic] hit and bypass lines with site, kind, arity and reason on stderr for the direct-function inline cache; the molt debug trace call_bind_ic family sets it to 1 for the child run, it is read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6083,7 +6083,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_BIND_MISSING",
       "owner": "runtime/molt-runtime/src/call/bind/frame_binding.rs",
-      "summary": "Set to 1 to print molt call_bind: missing required arg func=<name> arg=<name> pos=<n> on stderr just before binding raises TypeError for a missing argument; read on every such failure, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt call_bind: missing required arg func=<name> arg=<name> pos=<n> on stderr just before binding raises TypeError for a missing argument; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6092,7 +6092,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_DISPATCH",
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
-      "summary": "Set to 1 to print [molt dispatch] call_func_dispatch with the callable type, argument count and code id on stderr for every dispatched call; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt dispatch] call_func_dispatch with the callable type, argument count and code id on stderr for every dispatched call; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6101,7 +6101,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_DISPATCH_ARGS",
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
-      "summary": "Set to 1 to add one [molt dispatch arg] line per argument (index, type, bits) under each MOLT_TRACE_CALL_DISPATCH line; it has no effect unless MOLT_TRACE_CALL_DISPATCH=1, is read once per process and cached, and unset or any other value adds nothing.",
+      "summary": "Set to 1 to add one [molt dispatch arg] line per argument (index, type, bits) under each MOLT_TRACE_CALL_DISPATCH line; it has no effect unless MOLT_TRACE_CALL_DISPATCH=1, is read once per process, and unset or any other value adds nothing.",
       "values": []
     },
     {
@@ -6110,7 +6110,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_OBJ0",
       "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr before call_function_obj0 enters a trampoline; the read is compiled only for wasm32, happens on every call, and unset or any other value prints nothing.",
+      "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr before call_function_obj0 enters a trampoline; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6119,7 +6119,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_OBJ1",
       "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr when call_function_obj1 dispatches a one-argument call; the read is compiled only for wasm32, happens on every call, and unset or any other value prints nothing.",
+      "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr when call_function_obj1 dispatches a one-argument call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6128,7 +6128,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE",
       "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to 1 on the wasm32 runtime to print the function name and result on stderr after each trampoline call returns; the read is compiled only for wasm32, happens on every call, and unset or any other value prints nothing.",
+      "summary": "Set to 1 on the wasm32 runtime to print the function name and result on stderr after each trampoline call returns; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6137,7 +6137,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_VEC",
       "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to 1 to print [molt call_function_vec] with lane, name, fn_ptr, trampoline pointer, closure bits, arity, argc and one line per argument on stderr for every vector-argument function call; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt call_function_vec] with lane, name, fn_ptr, trampoline pointer, closure bits, arity, argc and one line per argument on stderr for every vector-argument function call; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6146,7 +6146,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_RETURN",
       "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to 1 to print [molt call_return0] name=<function> type=<result type> bits=<bits> on stderr after every call_function_obj0 return; read on every call, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt call_return0] name=<function> type=<result type> bits=<bits> on stderr after every call_function_obj0 return; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6155,7 +6155,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CALL_TYPE_BUILDER",
       "owner": "runtime/molt-runtime/src/call/bind/constructors.rs",
-      "summary": "Set to 1 to print [DEBUG] call_type_with_arguments with the class name, bits and exception-subclass flag on stderr for every type call that goes through the constructor builder; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [DEBUG] call_type_with_arguments with the class name, bits and exception-subclass flag on stderr for every type call that goes through the constructor builder; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6164,7 +6164,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CANCEL_MSG",
       "owner": "runtime/molt-runtime/src/async_rt/cancellation.rs",
-      "summary": "Set to 1 to print molt cancel msg set task=<ptr> msg=<text> on stderr when a task cancel message is stored and when CancelledError arguments are built from it; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt cancel msg set task=<ptr> msg=<text> on stderr when a task cancel message is stored and when CancelledError arguments are built from it; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6173,7 +6173,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_CANCEL_TOKEN",
       "owner": "runtime/molt-runtime/src/async_rt/cancellation.rs",
-      "summary": "Set to 1 to print molt cancel token new, register and set_current lines (token id, parent, task) on stderr for every cancel-token transition; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt cancel token new, register and set_current lines (token id, parent, task) on stderr for every cancel-token transition; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6209,7 +6209,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_DECREF_ZERO_FUNCTION",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Set to 1 to print molt dec_ref_zero function with the function pointer and a captured backtrace on stderr when the refcount of the cached molt_object_init_subclass or molt_type_init builtin function object reaches zero; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt dec_ref_zero function with the function pointer and a captured backtrace on stderr when the refcount of the cached molt_object_init_subclass or molt_type_init builtin function object reaches zero; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6218,7 +6218,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Set to 1 to print molt dec_ref_zero function name=<name> fn_ptr=<ptr> obj_ptr=<ptr> followed by a captured backtrace on stderr every time any function object is freed; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt dec_ref_zero function name=<name> fn_ptr=<ptr> obj_ptr=<ptr> followed by a captured backtrace on stderr every time any function object is freed; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6236,7 +6236,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_EXCEPTION_STACK",
       "owner": "runtime/molt-runtime/src/builtins/exceptions/state.rs",
-      "summary": "Set to 1 to print molt exc stack push and pop lines with task, depth, baseline, frame and line on stderr for every exception-handler stack transition; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt exc stack push and pop lines with task, depth, baseline, frame and line on stderr for every exception-handler stack transition; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6245,7 +6245,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_EXC_RC",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Set to 1 to print EXC_RC_INC and EXC_RC_DEC lines with the pointer and the old and new refcount on stderr for every refcount transition of an exception object; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print EXC_RC_INC and EXC_RC_DEC lines with the pointer and the old and new refcount on stderr for every refcount transition of an exception object; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6254,7 +6254,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_EXC_VALID",
       "owner": "runtime/molt-runtime/src/builtins/exceptions.rs",
-      "summary": "Set to 1 to print [EXC_VALID] lines on stderr when an exception slot holds a non-pointer or an object that is not an exception instance; read on every validity check, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [EXC_VALID] lines on stderr when an exception slot holds a non-pointer or an object that is not an exception instance; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6272,7 +6272,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_FUNCTION_BIND_META",
       "owner": "runtime/molt-runtime/src/call/bind/frame_binding.rs",
-      "summary": "Set to 1 to print [molt bind_meta] name=<function> total_pos=<n> posonly=<n> kwonly=<n> has_vararg=<bool> has_varkw=<bool> on stderr for every function binding; the molt debug trace function_bind_meta family sets it to 1 for the child run, it is read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt bind_meta] name=<function> total_pos=<n> posonly=<n> kwonly=<n> has_vararg=<bool> has_varkw=<bool> on stderr for every function binding; the molt debug trace function_bind_meta family sets it to 1 for the child run, it is read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6281,7 +6281,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_FUNC_NEW",
       "owner": "runtime/molt-runtime/src/builtins/functions/function_abi.rs",
-      "summary": "Set to 1 to print molt func new: and molt func new closure: lines with fn_ptr, trampoline pointer, arity, closure bits and entry custody on stderr each time the runtime creates a function object; read on every creation, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt func new: and molt func new closure: lines with fn_ptr, trampoline pointer, arity, closure bits and entry custody on stderr each time the runtime creates a function object; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6290,7 +6290,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_GC",
       "owner": "runtime/molt-runtime/src/object/gc.rs",
-      "summary": "Set to 1 to print molt gc: lines with the generation, candidate count, unreachable count and collected count on stderr for every cycle collection; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt gc: lines with the generation, candidate count, unreachable count and collected count on stderr for every cycle collection; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6308,7 +6308,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_GENERATOR_ALLOC",
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
-      "summary": "Set to 1 to print molt_task_new enter and molt_task_new ok lines with poll function, closure size, kind, pointer and type id on stderr for every generator, coroutine or task allocation; read on every allocation, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt_task_new enter and molt_task_new ok lines with poll function, closure size, kind, pointer and type id on stderr for every generator, coroutine or task allocation; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6317,7 +6317,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_GENERATOR_STATE",
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
-      "summary": "Set to 1 to print [molt generator_send] state_before=<n> state_after=<n> result_type=<type> result_bits=<bits> on stderr for every generator send; read on every send, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt generator_send] state_before=<n> state_after=<n> result_type=<type> result_bits=<bits> on stderr for every generator send; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6326,7 +6326,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_GET_ATTR",
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Any set value, even an empty string, makes the runtime print module_get_attr: mod=<bits> attr=<bits> name=<attr> on stderr for every module attribute lookup (MOLT_TRACE_MODULE_ATTRS=all or verbose prints the same line); read once per process and cached, and unset prints nothing.",
+      "summary": "Set to exactly 1 to make the runtime print module_get_attr: mod=<bits> attr=<bits> name=<attr> on stderr for every module attribute lookup (MOLT_TRACE_MODULE_ATTRS=all or verbose prints the same line); read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6407,7 +6407,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_IMPORT_TRANSACTION",
       "owner": "runtime/molt-runtime/src/builtins/platform_importlib_ffi/import_transaction.rs",
-      "summary": "Set to 1 to print [molt import_transaction] name=<name> level=<n> resolved=<name> fromlist=<list> on stderr for every importlib import transaction; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt import_transaction] name=<name> level=<n> resolved=<name> fromlist=<list> on stderr for every importlib import transaction; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6416,7 +6416,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_INIT_SUBCLASS",
       "owner": "runtime/molt-runtime/src/builtins/attributes/class_lookup.rs",
-      "summary": "Set to 1 to print molt init_subclass lines on stderr that describe each lookup of the __init_subclass__ attribute (found value, allow_missing result, class and builtin status); read on every lookup, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt init_subclass lines on stderr that describe each lookup of the __init_subclass__ attribute (found value, allow_missing result, class and builtin status); read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6425,7 +6425,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_INVALID_DECREF",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Set to 1 to print a captured backtrace after the molt fatal: invalid object header message when dec_ref meets a corrupted or freed object, just before the process aborts; read only on that failure, and unset or any other value prints no backtrace.",
+      "summary": "Set to 1 to print a captured backtrace after the molt fatal: invalid object header message when dec_ref meets a corrupted or freed object, just before the process aborts; read once per process, and unset or any other value prints no backtrace.",
       "values": []
     },
     {
@@ -6434,7 +6434,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_IO_POLLER",
       "owner": "runtime/molt-runtime/src/async_rt/io_poller.rs",
-      "summary": "Set to 1 to print molt io poller: register, event and ready lines with future, socket, fd, event mask and waiter count on stderr for the socket I/O poller; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt io poller: register, event and ready lines with future, socket, fd, event mask and waiter count on stderr for the socket I/O poller; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6443,7 +6443,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_IO_WAIT_ERRORS",
       "owner": "runtime/molt-runtime/src/async_rt/io_poller.rs",
-      "summary": "Set to 1 to print molt io_wait error: lines on stderr when an I/O wait sees an invalid socket or register_wait fails; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt io_wait error: lines on stderr when an I/O wait sees an invalid socket or register_wait fails; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6452,7 +6452,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_ISINSTANCE",
       "owner": "runtime/molt-runtime/src/builtins/types/class_model.rs",
-      "summary": "Set to 1 to print molt isinstance val_type=<type> class_type=<type> result=<bool> on stderr for every isinstance call; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt isinstance val_type=<type> class_type=<type> result=<bool> on stderr for every isinstance call; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6473,7 +6473,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_ITER_ARG",
       "owner": "runtime/molt-runtime/src/object/ops_iter.rs",
-      "summary": "Set to 1 to print [molt iter arg] frame=<code name> line=<n> type=<type> bits=<bits> on stderr for every molt_iter call; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt iter arg] frame=<code name> line=<n> type=<type> bits=<bits> on stderr for every molt_iter call; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6482,7 +6482,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_LEN",
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Set to 1 to print molt_len arg_type=<type> bits=<bits> pending=<bool> on stderr for every len() call; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt_len arg_type=<type> bits=<bits> pending=<bool> on stderr for every len() call; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6491,7 +6491,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_LINE",
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
-      "summary": "Set to 1 to print MOLT_TRACE_LINE <line> on stderr every time the compiled program records a new source line in its frame; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print MOLT_TRACE_LINE <line> on stderr every time the compiled program records a new source line in its frame; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6500,7 +6500,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_LINE_PENDING",
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
-      "summary": "Set to 1 to print MOLT_TRACE_LINE_PENDING <line> <kind> <detail> on stderr when a source line is recorded while an exception is pending; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print MOLT_TRACE_LINE_PENDING <line> <kind> <detail> on stderr when a source line is recorded while an exception is pending; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6531,7 +6531,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_MODULE_CACHE",
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Set to 1 to print module cache hit, miss, set and SKIPPED lines with the module name and bits on stderr for the runtime module cache; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print module cache hit, miss, set and SKIPPED lines with the module name and bits on stderr for the runtime module cache; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6540,7 +6540,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_MODULE_ENSURE",
       "owner": "runtime/molt-runtime/src/builtins/module_table.rs",
-      "summary": "Set to 1 to print module ensure init: id=<n> name=<name> init_ptr=<ptr> pending_before=<bool> on stderr for every module initialization transaction; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print module ensure init: id=<n> name=<name> init_ptr=<ptr> pending_before=<bool> on stderr for every module initialization transaction; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6562,7 +6562,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_NAME_ERROR",
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Set to 1 to print molt name error lines with module, name, globals pointer and pending state on stderr when a NameError is raised or a global is deleted; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt name error lines with module, name, globals pointer and pending state on stderr when a NameError is raised or a global is deleted; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6580,7 +6580,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_NOT_CALLABLE",
       "owner": "runtime/molt-runtime/src/call/class_init.rs",
-      "summary": "Set to 1 to print the current frame's code name and file on stderr when the runtime raises TypeError for a call on a non-callable object; read on every such failure, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print the current frame's code name and file on stderr when the runtime raises TypeError for a call on a non-callable object; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6589,7 +6589,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_OBJECT_STATE",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
-      "summary": "Set to 1 to print molt object_state get and set lines with the pointer and state on stderr for every generator or coroutine state read and write; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt object_state get and set lines with the pointer and state on stderr for every generator or coroutine state read and write; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6616,7 +6616,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_OP_SIGTRAP",
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Set to 1 on Unix to install a SIGTRAP handler at the first molt_debug_trace call that writes molt trace last op=<index> to stderr and exits with status 128 plus the signal number; read once per process and cached, there is no handler on Windows, and unset or any other value installs nothing.",
+      "summary": "Set to 1 on Unix to install a SIGTRAP handler at the first molt_debug_trace call that writes molt trace last op=<index> to stderr and exits with status 128 plus the signal number; read once per process, there is no handler on Windows, and unset or any other value installs nothing.",
       "values": []
     },
     {
@@ -6625,7 +6625,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_OP_SILENT",
       "owner": "runtime/molt-runtime/src/builtins/modules.rs",
-      "summary": "Set to 1 to suppress the trace <function> op=<index> stderr line that MOLT_TRACE_OP_PROGRESS instrumentation prints, while the last op index is still recorded for the SIGTRAP handler; read once per process and cached, and unset or any other value keeps the line.",
+      "summary": "Set to 1 to suppress the trace <function> op=<index> stderr line that MOLT_TRACE_OP_PROGRESS instrumentation prints, while the last op index is still recorded for the SIGTRAP handler; read once per process, and unset or any other value keeps the line.",
       "values": []
     },
     {
@@ -6634,7 +6634,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_POLL_RETURN",
       "owner": "runtime/molt-runtime/src/async_rt/poll.rs",
-      "summary": "Set to 1 on the wasm32 runtime to print the poll function kind (async_sleep, promise, the asyncio watchers and others) and result on stderr after every indirect poll call; the read is compiled only for wasm32, happens on every poll, and unset or any other value prints nothing.",
+      "summary": "Set to 1 on the wasm32 runtime to print the poll function kind (async_sleep, promise, the asyncio watchers and others) and result on stderr after every indirect poll call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6643,7 +6643,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_PROCESS_IO",
       "owner": "runtime/molt-runtime/src/async_rt/process/native_io.rs",
-      "summary": "Set to 1 to print a byte preview of every read from and write to a child process pipe on stderr; read once per process and cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print a byte preview of every read from and write to a child process pipe on stderr; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6652,7 +6652,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_PROCESS_SPAWN",
       "owner": "runtime/molt-runtime/src/async_rt/process.rs",
-      "summary": "Set to 1 to print the first three argv entries on stderr each time the runtime spawns a child process; the read is compiled only for non-wasm32 targets, happens once per process and is cached, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print the first three argv entries on stderr each time the runtime spawns a child process; the read is compiled only for non-wasm32 targets, happens once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6661,7 +6661,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_PROMISE",
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
-      "summary": "Set to 1 to print molt async trace: promise_new, promise_poll, promise_set_result_enter, await_register_promise and await_clear_promise lines on stderr for promise futures (MOLT_ASYNC_TRACE enables some of the same lines); read on each event, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt async trace: promise_new, promise_poll, promise_set_result_enter, await_register_promise and await_clear_promise lines on stderr for promise futures (MOLT_ASYNC_TRACE enables some of the same lines); read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6688,7 +6688,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_REQUIRE_INTRINSIC",
       "owner": "runtime/molt-runtime/src/intrinsics/registry.rs",
-      "summary": "Set to 1 to print molt intrinsic_resolve: and molt require_intrinsic: lines with the requested name, argument type and resolution status on stderr for every runtime intrinsic lookup; read on every lookup, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print molt intrinsic_resolve: and molt require_intrinsic: lines with the requested name, argument type and resolution status on stderr for every runtime intrinsic lookup; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6697,7 +6697,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_RUNTIME_INIT",
       "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
-      "summary": "Set to 1 to print [molt runtime_init] +<total>us (d<delta>us) <stage> on stderr for every runtime initialization stage (enter, state_allocated, intrinsics_registered, capabilities, ok and the others); tools/cold_start_decompose.py and tools/startup_bench.py set it to 1 to collect per-stage medians, it is read on every stage, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print [molt runtime_init] +<total>us (d<delta>us) <stage> on stderr for every runtime initialization stage (enter, state_allocated, intrinsics_registered, capabilities, ok and the others); tools/cold_start_decompose.py and tools/startup_bench.py set it to 1 to collect per-stage medians, it is read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6706,7 +6706,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_SET_NAME",
       "owner": "runtime/molt-runtime/src/builtins/types/class_model/hierarchy.rs",
-      "summary": "Set to 1 to print the class name, attribute key and descriptor on stderr for every __set_name__ applied while a class is created; read once per class creation, and unset or any other value prints nothing.",
+      "summary": "Set to 1 to print the class name, attribute key and descriptor on stderr for every __set_name__ applied while a class is created; read once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -6715,7 +6715,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_SHUTDOWN",
       "owner": "runtime/molt-runtime/src/state/lifecycle.rs",
-      "summary": "Set to exactly 1 to print each runtime shutdown step to stderr; the value is read once at first use and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to print each runtime shutdown step to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6733,7 +6733,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_SLEEP",
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
-      "summary": "Set to exactly 1 to trace asyncio sleep handling to stderr; the value is read once and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace asyncio sleep handling to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6742,7 +6742,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_SOCKET_RECV",
       "owner": "runtime/molt-runtime/src/async_rt/sockets/state.rs",
-      "summary": "Set to exactly 1 to trace socket receive calls to stderr on runtimes built with native network I/O; the value is read once and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace socket receive calls to stderr on runtimes built with native network I/O; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6751,7 +6751,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_SOCKET_SEND",
       "owner": "runtime/molt-runtime/src/async_rt/sockets/state.rs",
-      "summary": "Set to exactly 1 to trace socket send calls to stderr on runtimes built with native network I/O; the value is read once and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace socket send calls to stderr on runtimes built with native network I/O; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6769,7 +6769,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_STDIO_BUILD",
       "owner": "runtime/molt-runtime/src/builtins/io/open.rs",
-      "summary": "Set to exactly 1 to report pending exceptions to stderr while the runtime builds and caches the sys.stdin, sys.stdout and sys.stderr handles; the value is read on each handle build; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to report pending exceptions to stderr while the runtime builds and caches the sys.stdin, sys.stdout and sys.stderr handles; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6778,7 +6778,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_STRING_FROM_BYTES",
       "owner": "runtime/molt-runtime/src/builtins/strings.rs",
-      "summary": "Set to exactly 1 to trace the string-from-bytes FFI path to stderr; the value is read once and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace the string-from-bytes FFI path to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6796,7 +6796,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_SYS_VERSION",
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Set to exactly 1 to print the raw MOLT_SYS_VERSION_INFO value and sys.version resolution to stderr; the value is read once and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to print the raw MOLT_SYS_VERSION_INFO value and sys.version resolution to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6814,7 +6814,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_TASK_RESULT",
       "owner": "runtime/molt-runtime/src/async_rt/scheduler/diagnostics.rs",
-      "summary": "Set to exactly 1 to trace asyncio task result delivery to stderr; the value is read once and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace asyncio task result delivery to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6832,7 +6832,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_TRACE_ENTER_SLOT",
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
-      "summary": "Set to exactly 1 to trace the trace-enter slot path of builtin call dispatch to stderr; the value is read once at first use and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace the trace-enter slot path of builtin call dispatch to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6841,7 +6841,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_TRACE_EXIT_PENDING",
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
-      "summary": "Set to exactly 1 to trace exceptions left pending at the trace-exit slot of builtin call dispatch to stderr; the value is read once at first use and cached; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace exceptions left pending at the trace-exit slot of builtin call dispatch to stderr; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {
@@ -6850,7 +6850,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_TRACE_TRAMPOLINE_POLICY",
       "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to exactly 1 to print the fixed-arity trampoline decision (fn_ptr, tramp_ptr, nargs, reserved_info, force_trampoline) to stderr on every function-object call; the value is read on each call; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to print the fixed-arity trampoline decision (fn_ptr, tramp_ptr, nargs, reserved_info, force_trampoline) to stderr on every function-object call; the value is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {

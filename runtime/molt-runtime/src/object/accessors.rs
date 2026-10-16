@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crate::object_payload_size;
+use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
-use std::sync::OnceLock;
 
 use super::field_storage::{self, FieldStorage};
 use super::layout::{ClassDefinition, class_definition};
@@ -19,18 +19,11 @@ use crate::{
 };
 
 fn debug_field_bounds_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_DEBUG_FIELD_BOUNDS").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_FIELD_BOUNDS)
 }
 
 fn debug_guard_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_GUARD").is_ok())
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_GUARD)
 }
 
 pub(crate) fn resolve_obj_ptr(bits: u64) -> Option<*mut u8> {

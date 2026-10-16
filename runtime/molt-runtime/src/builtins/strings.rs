@@ -2,6 +2,7 @@ use crate::PyToken;
 use crate::object::ops::unicode_space_table;
 use crate::object::ops_bytes::bytes_ascii_space;
 use crate::object::ops_string::wtf8_step;
+use crate::runtime_flags::{self, RuntimeFlag};
 use memchr::{memchr, memchr2, memmem};
 use molt_obj_model::MoltObject;
 
@@ -1703,11 +1704,8 @@ fn is_wtf8(bytes: &[u8]) -> bool {
 
 // --- String/bytes FFI ---
 
-use std::sync::OnceLock;
-
 fn trace_string_from_bytes() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_STRING_FROM_BYTES").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_STRING_FROM_BYTES)
 }
 
 #[inline]
@@ -1847,10 +1845,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
             write_bits_out(out, MoltObject::none().bits());
         }
         crate::with_gil_entry_nopanic!(_py, {
-            let trace = matches!(
-                std::env::var("MOLT_TRACE_BYTES_FROM_BYTES").ok().as_deref(),
-                Some("1")
-            );
+            let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BYTES_FROM_BYTES);
             let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
             else {
                 crate::raise_exception::<()>(

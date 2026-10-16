@@ -8,6 +8,7 @@ use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
     resolved_new_is_default_object_new,
 };
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use molt_obj_model::ExceptionTypedField;
 
@@ -639,10 +640,7 @@ pub(crate) unsafe fn construct_regular_class(
 }
 
 pub(crate) fn raise_not_callable(_py: &PyToken<'_>, obj: MoltObject) -> u64 {
-    let trace_not_callable = matches!(
-        std::env::var("MOLT_TRACE_NOT_CALLABLE").ok().as_deref(),
-        Some("1")
-    );
+    let trace_not_callable = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_NOT_CALLABLE);
     if trace_not_callable {
         if let Some(frame) =
             crate::state::tls::FRAME_STACK.with(|stack| stack.borrow().last().copied())

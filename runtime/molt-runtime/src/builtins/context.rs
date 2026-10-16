@@ -2,25 +2,20 @@ use crate::builtins::attr::lookup_special_method_bits;
 use crate::builtins::exceptions::{
     ExceptionValue, exception_class, exception_is_instance, exception_traceback,
 };
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, alloc_object,
     call_callable0, call_callable3, dec_ref_bits, exception_pending, inc_ref_bits,
     intern_static_name, obj_from_bits, object_type_id, raise_exception, runtime_state, to_i64,
 };
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 static GENERATOR_CONTEXT_STACKS: LazyLock<Mutex<HashMap<usize, Vec<u64>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn context_debug_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("MOLT_DEBUG_CONTEXT_STACK")
-            .ok()
-            .map(|val| !val.is_empty() && val != "0")
-            .unwrap_or(false)
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_CONTEXT_STACK)
 }
 
 fn context_debug_log(msg: &str) {

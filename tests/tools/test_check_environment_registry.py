@@ -404,6 +404,72 @@ def test_owner_must_exist_and_hold_a_site(tree: Path) -> None:
     assert ("owner-mismatch", "MOLT_RUST") in rules
 
 
+def test_runtime_flags_are_named_only_by_the_typed_key(tmp_path: Path) -> None:
+    flags = "runtime/molt-runtime/src"
+    _write(
+        tmp_path,
+        f"{flags}/typed.rs",
+        """
+fn traced() -> bool {
+    // Set MOLT_TRACE_TYPED to 1 to trace.
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TYPED)
+}
+""",
+    )
+    _write(
+        tmp_path,
+        f"{flags}/spelled.rs",
+        """
+fn traced() -> bool {
+    std::env::var("MOLT_TRACE_SPELLED").as_deref() == Ok("1")
+}
+
+fn overlay(key: &str) -> bool {
+    key == "MOLT_TRACE_TYPED"
+}
+""",
+    )
+    _write(
+        tmp_path,
+        f"{flags}/runtime_flags_generated.rs",
+        'const NAMES: [&str; 2] = ["MOLT_TRACE_SPELLED", "MOLT_TRACE_TYPED"];\n',
+    )
+    _write(
+        tmp_path,
+        "runtime/molt-backend/src/lib.rs",
+        'fn other() -> bool {\n    std::env::var("MOLT_TRACE_OTHER_CRATE").is_ok()\n}\n',
+    )
+    registry = registry_from_payload(
+        _payload(
+            variables=[
+                _variable(
+                    "MOLT_TRACE_OTHER_CRATE",
+                    "runtime/molt-backend/src/lib.rs",
+                    kind="bool",
+                ),
+                _variable("MOLT_TRACE_SPELLED", f"{flags}/spelled.rs", kind="bool"),
+                _variable("MOLT_TRACE_TYPED", f"{flags}/typed.rs", kind="bool"),
+                _variable("MOLT_TRACE_WIDTH", f"{flags}/typed.rs", kind="int"),
+            ]
+        )
+    )
+    # Membership: bool variables owned in molt-runtime, not other crates or kinds.
+    assert registry.runtime_flag_names == ("MOLT_TRACE_SPELLED", "MOLT_TRACE_TYPED")
+    scan = _scan(tmp_path)
+    typed = [s for s in _sites(scan, "MOLT_TRACE_TYPED") if s.form == C.FORM_TYPED_KEY]
+    assert [s.path for s in typed] == [f"{flags}/typed.rs"]
+    assert typed[0].access in C.READER_ACCESSES
+    assert not [s for s in scan.sites if s.path == C.RUNTIME_FLAG_PROJECTION]
+    violations = C.check(registry, scan, root=tmp_path)
+    spelled = {(v.name, v.path) for v in violations if v.rule == "runtime-flag-spelled"}
+    # A raw read and a spelled comparison key both fail; the comment, the
+    # typed key, the generated projection and the other crate do not.
+    assert spelled == {
+        ("MOLT_TRACE_SPELLED", f"{flags}/spelled.rs"),
+        ("MOLT_TRACE_TYPED", f"{flags}/spelled.rs"),
+    }
+
+
 def test_family_and_stem_need_composed_evidence(tree: Path) -> None:
     payload = _payload(
         stems=[

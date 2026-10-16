@@ -6,12 +6,12 @@ use crate::builtins::frames::{
 };
 use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::state::recursion::RecursionGuard;
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_integer::Integer;
 use num_traits::{Signed, Zero};
-use std::sync::OnceLock;
 
 use super::ops::float_result_bits;
 use super::ops_sys::{decode_slice_bound, slice_error};
@@ -42,50 +42,22 @@ pub use ops_builtins_constructors::{
 
 #[inline]
 fn trace_enter_slot_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_TRACE_ENTER_SLOT").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TRACE_ENTER_SLOT)
 }
 
 #[inline]
 fn trace_exit_pending_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_TRACE_EXIT_PENDING")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TRACE_EXIT_PENDING)
 }
 
 #[inline]
 fn trace_call_dispatch_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_CALL_DISPATCH").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_DISPATCH)
 }
 
 #[inline]
 fn trace_call_dispatch_args_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_CALL_DISPATCH_ARGS")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_DISPATCH_ARGS)
 }
 
 #[unsafe(no_mangle)]
@@ -1520,13 +1492,11 @@ pub extern "C" fn molt_trace_set_line(line_bits: u64) -> u64 {
 }
 
 fn trace_line_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_LINE").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_LINE)
 }
 
 fn trace_line_pending_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_LINE_PENDING").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_LINE_PENDING)
 }
 
 #[unsafe(no_mangle)]
@@ -2297,10 +2267,7 @@ pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
                 return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
             }
-            if matches!(
-                std::env::var("MOLT_TRACE_TYPE_CALL").ok().as_deref(),
-                Some("1")
-            ) {
+            if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TYPE_CALL) {
                 let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(cls_ptr)))
                     .unwrap_or_default();
                 let builtins = builtin_classes(_py);

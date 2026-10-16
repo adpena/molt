@@ -233,6 +233,8 @@ mod abi_return;
 mod intrinsics;
 mod object;
 mod provenance;
+mod runtime_flags;
+mod runtime_flags_generated;
 mod runtime_profile_schema_generated;
 pub use molt_runtime_audit::refcount_verify;
 pub use molt_runtime_resource as resource;

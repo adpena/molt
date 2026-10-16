@@ -2,14 +2,6 @@ use super::*;
 use crate::object::builders::alloc_list;
 
 #[test]
-fn trace_call_type_builder_gate_requires_explicit_opt_in() {
-    assert!(!trace_call_type_builder_enabled_raw(None));
-    assert!(!trace_call_type_builder_enabled_raw(Some("0")));
-    assert!(!trace_call_type_builder_enabled_raw(Some("true")));
-    assert!(trace_call_type_builder_enabled_raw(Some("1")));
-}
-
-#[test]
 fn resolve_construct_after_init_no_pending_returns_instance_unchanged() {
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {

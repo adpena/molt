@@ -3,6 +3,7 @@
 //! State stays with its existing owner; calls preserve transaction and drop order.
 
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 pub(crate) unsafe fn dispatch_init_subclass_hooks(
     _py: &PyToken<'_>,
@@ -48,19 +49,8 @@ pub(crate) unsafe fn dispatch_init_subclass_hooks(
     }
 }
 
-fn trace_call_type_builder_enabled_raw(raw: Option<&str>) -> bool {
-    raw == Some("1")
-}
-
 fn trace_call_type_builder_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        trace_call_type_builder_enabled_raw(
-            std::env::var("MOLT_TRACE_CALL_TYPE_BUILDER")
-                .ok()
-                .as_deref(),
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_TYPE_BUILDER)
 }
 
 pub(super) unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> bool {

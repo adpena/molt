@@ -1,4 +1,5 @@
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -543,7 +544,7 @@ pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
 }
 
 fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
-    let debug_bootstrap = std::env::var("MOLT_DEBUG_TYPES_BOOTSTRAP").as_deref() == Ok("1");
+    let debug_bootstrap = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_TYPES_BOOTSTRAP);
     let trace_stage = |stage: &str| {
         if debug_bootstrap {
             eprintln!("molt types bootstrap stage={stage}");

@@ -9,10 +9,10 @@ use super::frame_binding::{
 };
 use super::*;
 use crate::object::layout::function_mutation_version;
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{attr_name_bits_from_bytes, molt_super_new};
 fn trace_call_bind_ic_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALL_BIND_IC").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_BIND_IC)
 }
 
 #[inline]
@@ -35,8 +35,7 @@ fn trace_call_bind_ic_epoch_stage(recorded: u64, stage: &str) {
 }
 
 fn disable_call_bind_ic_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DISABLE_CALL_BIND_IC").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DISABLE_CALL_BIND_IC)
 }
 
 #[inline(always)]

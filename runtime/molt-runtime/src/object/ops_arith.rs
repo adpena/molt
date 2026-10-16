@@ -2,6 +2,7 @@
 // Split from ops.rs for compilation-unit size reduction.
 #![allow(clippy::items_after_test_module)]
 
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_runtime_core::numeric_error_policy_generated::{
@@ -2818,8 +2819,7 @@ pub extern "C" fn molt_inplace_bit_xor(a: u64, b: u64) -> u64 {
 
 #[inline]
 fn trace_bigint_shift_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_BIGINT_SHIFT").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BIGINT_SHIFT)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

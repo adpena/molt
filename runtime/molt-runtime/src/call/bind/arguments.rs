@@ -3,6 +3,7 @@
 //! State stays with its existing owner; calls preserve transaction and drop order.
 
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 /// CPython's two call instructions, fixed by the compiler at each call site.
 /// A `Stack` call (CALL) passes value-stack entries that an inlined Python
@@ -954,8 +955,7 @@ impl Drop for CallArguments<'_, '_> {
 }
 
 fn trace_callargs_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALLARGS").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALLARGS)
 }
 
 #[derive(Copy, Clone)]

@@ -7,7 +7,6 @@ use crate::object::buffer_exports::bytearray_mutate;
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_traits::{Signed, ToPrimitive};
-use std::sync::OnceLock;
 
 mod sequence_methods;
 

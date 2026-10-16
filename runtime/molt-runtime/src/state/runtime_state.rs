@@ -1,3 +1,4 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{
@@ -70,15 +71,7 @@ static DEBUG_SIGTRAP_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(unix)]
 fn debug_sigtrap_backtrace_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_DEBUG_SIGTRAP_BACKTRACE")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_SIGTRAP_BACKTRACE)
 }
 
 #[cfg(unix)]
@@ -1629,10 +1622,7 @@ static CORE_GIL_VT: molt_runtime_core::GilVtable = molt_runtime_core::GilVtable 
 
 #[inline]
 fn trace_runtime_init_enabled() -> bool {
-    matches!(
-        std::env::var("MOLT_TRACE_RUNTIME_INIT").ok().as_deref(),
-        Some("1")
-    )
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_RUNTIME_INIT)
 }
 
 thread_local! {
@@ -1823,6 +1813,8 @@ fn runtime_init() -> u64 {
     if runtime_ready_ptr().is_some() {
         return 1;
     }
+    // The first flag query reads every runtime flag (`runtime_flags`), so
+    // user code cannot change them through `os.environ`.
     trace_runtime_init("enter");
     super::metrics::init_profile_enabled_from_env();
     #[cfg(not(target_arch = "wasm32"))]

@@ -6,6 +6,7 @@ use super::ancillary::AncillaryItem;
 #[cfg(molt_has_net_io)]
 use super::raw::NativeSocketDescriptor;
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 #[cfg(molt_has_net_io)]
 use socket2::Socket;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -18,8 +19,6 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::windows::io::{AsRawSocket, RawSocket};
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use std::sync::Mutex;
-#[cfg(molt_has_net_io)]
-use std::sync::OnceLock;
 #[cfg(molt_has_net_io)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -260,14 +259,12 @@ pub(crate) fn socket_runtime_state_clear(state: &crate::state::runtime_state::Ru
 
 #[cfg(molt_has_net_io)]
 pub(super) fn trace_socket_recv() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SOCKET_RECV").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SOCKET_RECV)
 }
 
 #[cfg(molt_has_net_io)]
 pub(super) fn trace_socket_send() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SOCKET_SEND").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SOCKET_SEND)
 }
 
 #[cfg(molt_has_net_io)]
