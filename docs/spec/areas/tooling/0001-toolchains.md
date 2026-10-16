@@ -376,6 +376,12 @@ making it absolute for a different child working directory. Resolving a virtual
 environment's interpreter symlink to its base executable changes its import
 environment. Guarded commands and benchmark interpreter selection share the
 lexical executable-path authority; content identity remains a separate check.
+Captured environment launchers include executable interpreter aliases in its
+scripts directory when their captured content matches the selected interpreter.
+Copied files, hardlinks and same-root or base-runtime symlinks retain their
+lexical paths; projection adds no directory scan, subprocess or hash. An unowned
+path, different content or non-executable entry gains no interpreter-alias
+permission.
 
 Optimized linked WASM builds require Binaryen. Managed installations come from
 `config/binaryen_releases.toml`, provisioned by `tools/provision_binaryen.py`.

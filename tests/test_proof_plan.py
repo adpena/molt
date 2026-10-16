@@ -1504,7 +1504,7 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     }
 
 
-def test_native_backend_prewarm_precedes_every_native_consumer() -> None:
+def test_native_backend_prewarm_precedes_finally_observer_native_consumer() -> None:
     by_id = {command.id: command for command in PLAN.commands}
     prewarm = by_id["wasm.build.native-backend"]
     wasm_prewarm = by_id["wasm.build.backend"]
@@ -1523,17 +1523,12 @@ def test_native_backend_prewarm_precedes_every_native_consumer() -> None:
         1200,
     )
     assert not prewarm.dependencies
-    for consumer_id in (
-        "wasm.test.finally-pending-observer-parity.native",
-        "wasm.test.import-from-codec-parity",
-    ):
-        order = [
-            command.id
-            for command in proof_plan._topological_commands(
-                PLAN, command_id=consumer_id
-            )
-        ]
-        assert order.index(prewarm.id) < order.index(consumer_id)
+    consumer_id = "wasm.test.finally-pending-observer-parity.native"
+    order = [
+        command.id
+        for command in proof_plan._topological_commands(PLAN, command_id=consumer_id)
+    ]
+    assert order.index(prewarm.id) < order.index(consumer_id)
     # The WASM leg compiles no native program, so it waits on no native build.
     assert prewarm.id not in {
         command.id
@@ -1591,11 +1586,11 @@ def test_finally_pending_parity_runs_each_target_in_its_own_budget() -> None:
     assert "wasm.test.finally-pending-observer-parity" not in by_id
 
 
-def test_import_from_codec_receivers_execute_both_targets() -> None:
+def test_runtime_import_conformance_receivers_execute_both_targets() -> None:
     from tools.compat import test_policy
 
     row = next(
-        row for row in PLAN.commands if row.id == "wasm.test.import-from-codec-parity"
+        row for row in PLAN.commands if row.id == "wasm.test.runtime-import-conformance"
     )
     receivers = (
         "tests/differential/basic/from_import_missing_name.py",
@@ -1609,6 +1604,25 @@ def test_import_from_codec_receivers_execute_both_targets() -> None:
         "tests/molt_diff.py",
     )
     assert row.argv[-3:] == receivers
+    json_receiver = "tests/differential/stdlib/json_encoder_hooks.py"
+    assert row.argv[-4] == json_receiver
+    fixture_list = "tests/fixtures/reconstructed_functions/TESTS.txt"
+    assert row.argv[row.argv.index("--files-from") + 1] == fixture_list
+    root = Path(__file__).resolve().parents[1]
+    fixture_receivers = test_policy.read_test_list(root / fixture_list)
+    assert fixture_receivers == tuple(
+        f"tests/fixtures/reconstructed_functions/{route}/main.py"
+        for route in (
+            "function-dict",
+            "function-missing",
+            "function-helper-missing",
+            "shared-return",
+            "nested-def",
+            "nested-lambda",
+            "replace-globals",
+            "replace-builtins",
+        )
+    )
     assert row.evidence_outputs == ("proof-receipts/evidence/import-from-codec",)
     for option, value in (
         ("--target", "native,wasm"),
@@ -1617,15 +1631,17 @@ def test_import_from_codec_receivers_execute_both_targets() -> None:
         ("--stdlib-profile", "full"),
         ("--python-version", "3.12"),
         ("--molt-target-python", "3.12"),
+        ("--json-output", "proof-receipts/evidence/import-from-codec/summary.json"),
+        ("--log-aggregate", "proof-receipts/evidence/import-from-codec/output.log"),
     ):
         assert row.argv[row.argv.index(option) + 1] == value
     assert "--no-retry-oom" in row.argv
     assert "--warm-cache" not in row.argv
-    assert set(row.dependencies) == {
-        "wasm.build.backend",
-        "wasm.build.native-backend",
-        "wasm.build.shared-runtime",
-    }
+    assert not row.dependencies
+    assert [
+        command.id
+        for command in proof_plan._topological_commands(PLAN, command_id=row.id)
+    ] == [row.id]
     assert {"node", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"} <= set(
         PLAN.required_toolchains(row)
     )
@@ -1633,12 +1649,11 @@ def test_import_from_codec_receivers_execute_both_targets() -> None:
     assert row.data["resource_class"] == "compiler-build-resource"
     assert row.data["timeout_budget"] == "cold"
     family = next(family for family in PLAN.families if family.name == "wasm")
-    for receiver in receivers:
-        assert receiver in family.inputs
+    assert {*receivers, json_receiver} <= set(family.inputs)
+    assert "wasm" in {family.name for family in PLAN.select([fixture_list]).selected}
+    for receiver in (*receivers, json_receiver, *fixture_receivers):
         assert "wasm" in {family.name for family in PLAN.select([receiver]).selected}
-        metadata = test_policy.parse_metadata(
-            Path(__file__).resolve().parents[1] / receiver
-        )
+        metadata = test_policy.parse_metadata(root / receiver)
         # The runner's ordinary expectation policy cannot turn one of these
         # required semantic failures into xfail, skip, or approximate stdout.
         assert not metadata.expect_molt_fail
@@ -5654,7 +5669,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "nightly.verification-t3.reproducibility",
         "nightly.verification-t3.fuzz-compiler",
         "nightly.verification-t3.translation",
-        "wasm.test.import-from-codec-parity",
+        "wasm.test.runtime-import-conformance",
     }
     # Actual wrapper/alloca/native-micro producers use C only. Full-capable
     # runtime operations additionally compile simdutf; TableGen is host C++.

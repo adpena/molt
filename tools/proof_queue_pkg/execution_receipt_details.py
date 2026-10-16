@@ -25,6 +25,7 @@ _DETAIL_PATHS = (
     ("execution_environment", "prelaunch", "omitted_names"),
     ("execution_environment", "prelaunch", "override_names"),
     ("execution_environment", "prelaunch", "cargo_policies"),
+    ("execution_environment", "executable_inputs", "prelaunch"),
     ("custody_authorities", "prelaunch"),
 )
 

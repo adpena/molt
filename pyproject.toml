@@ -46,6 +46,7 @@ extend-exclude = [
     "src/molt/frontend/lowering/op_kinds_generated.py",
     "src/molt/stdlib",
     "tests/differential",
+    "tests/fixtures/reconstructed_functions",
     "tests/harness/corpus",
     "third_party",
 ]
