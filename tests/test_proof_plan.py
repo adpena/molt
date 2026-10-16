@@ -719,16 +719,14 @@ def test_docs_architecture_local_gate_uses_project_python() -> None:
 
     gates, matched = molt_dev.GateConfig.load(PLAN.path).select(["docs/spec/STATUS.md"])
     assert any(rule.name == "docs-architecture" for rule in matched)
-    # The Markdown parser is a project dependency. Integration supplies MOLT_VENV
-    # to the existing wrapper; bare host Python cannot import that dependency.
+    # The driver activates the project environment for every local gate. The
+    # Markdown parser is a project dependency; this needs no per-gate wrapper.
     assert [
         gate.split()
         for gate in gates
         if "tools/check_docs_architecture.py" in gate.split()
     ] == [
         [
-            "python3",
-            "tools/venv_exec.py",
             "python",
             "tools/check_docs_architecture.py",
         ]

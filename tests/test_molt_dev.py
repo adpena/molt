@@ -52,6 +52,8 @@ import shlex
 import os
 import sys
 import sysconfig
+import subprocess
+import venv
 from pathlib import Path
 from tests.process_guard_common import install_module_os_view
 
@@ -138,6 +140,223 @@ def origin_and_clone(tmp_path):
     _git(work, "config", "user.email", "dev@molt.test")
     _git(work, "config", "user.name", "Molt Dev")
     return origin, work
+
+
+def _make_gate_venv(path: Path, token: str | None) -> Path:
+    venv.EnvBuilder(with_pip=False).create(path)
+    python = path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    result = _run_fast_captured_command(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        cwd=path.parent,
+    )
+    assert result.returncode == 0, result.stderr
+    site = Path(result.stdout.strip())
+    if token is not None:
+        (site / "molt_gate_selection_marker.py").write_text(
+            f"TOKEN = {token!r}\n", encoding="utf-8"
+        )
+    return site
+
+
+def _gate_shell_command(*argv: str) -> str:
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
+def _gate_caller_env(hostile: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+        env.pop(key, None)
+    env.update(
+        PATH=str(hostile / ("Scripts" if os.name == "nt" else "bin"))
+        + os.pathsep
+        + env.get("PATH", ""),
+        VIRTUAL_ENV=str(hostile),
+        PYTHONUTF8="0",
+        PYTHONIOENCODING="ascii",
+        MOLT_GATE_CALLER_VALUE="retained λ",
+    )
+    return env
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "checkout",
+        "MOLT_VENV",
+        "UV_PROJECT_ENVIRONMENT",
+        "worktree-main",
+        "worktree-own",
+    ],
+)
+def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
+    repo = tmp_path / "main"
+    repo.mkdir()
+    main_repo = repo
+    if selection.startswith("worktree-"):
+        _init_repo(repo)
+        _commit_file(repo, "README.md", "fixture\n", "fixture")
+        main_repo = repo
+        repo = tmp_path / "worktree"
+        _git(main_repo, "worktree", "add", "-q", "-b", "gate-test", str(repo))
+    selected = (
+        main_repo / ".venv"
+        if selection == "worktree-main"
+        else tmp_path / "explicit environment"
+        if selection in {"MOLT_VENV", "UV_PROJECT_ENVIRONMENT"}
+        else repo / ".venv"
+    )
+    hostile = tmp_path / "hostile"
+    _make_gate_venv(selected, "selected λ")
+    _make_gate_venv(hostile, None)
+    if selection == "worktree-own":
+        _make_gate_venv(main_repo / ".venv", None)
+    env = _gate_caller_env(hostile)
+    if selection in {"MOLT_VENV", "UV_PROJECT_ENVIRONMENT"}:
+        env[selection] = os.path.relpath(selected, repo)
+    if selection == "MOLT_VENV":
+        # The canonical explicit selector outranks both uv and checkout defaults.
+        env["UV_PROJECT_ENVIRONMENT"] = str(hostile)
+        _make_gate_venv(repo / ".venv", None)
+    script = tmp_path / "observe.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "from molt_gate_selection_marker import TOKEN\n"
+        "Path(sys.argv[1]).write_text(json.dumps({\n"
+        " 'token': TOKEN, 'prefix': sys.prefix,\n"
+        " 'virtual_env': os.environ['VIRTUAL_ENV'],\n"
+        " 'molt_venv': os.environ['MOLT_VENV'],\n"
+        " 'caller': os.environ['MOLT_GATE_CALLER_VALUE'],\n"
+        " 'utf8': sys.flags.utf8_mode, 'encoding': sys.stdout.encoding,\n"
+        "}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    outputs = [tmp_path / "first.json", tmp_path / "second.json"]
+    command = " && ".join(
+        _gate_shell_command("python", str(script), str(output)) for output in outputs
+    )
+    before = dict(env)
+    assert drv.run_gate(command, repo, env) == 0
+    assert env == before
+    expected = {
+        "token": "selected λ",
+        "prefix": str(selected.resolve()),
+        "virtual_env": str(selected.resolve()),
+        "molt_venv": str(selected.resolve()),
+        "caller": "retained λ",
+        "utf8": 1,
+        "encoding": "utf-8",
+    }
+    assert [json.loads(path.read_text(encoding="utf-8")) for path in outputs] == [
+        expected,
+        expected,
+    ]
+    assert drv.run_gate('python -c "raise SystemExit(23)"', repo, env) == 23
+
+
+@pytest.mark.parametrize("selector", ["MOLT_VENV", "UV_PROJECT_ENVIRONMENT"])
+def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, selector):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _make_gate_venv(repo / ".venv", "valid fallback must not run")
+    env = _gate_caller_env(repo / ".venv")
+    env[selector] = "missing-environment"
+    if selector == "MOLT_VENV":
+        env["UV_PROJECT_ENVIRONMENT"] = str(repo / ".venv")
+    before = dict(env)
+    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+        drv.run_gate("echo should-not-run > launched.txt", repo, env)
+    assert not (repo / "launched.txt").exists()
+    assert env == before
+
+
+def test_run_gate_invalid_worktree_venv_does_not_fall_back_to_main(drv, tmp_path):
+    main = tmp_path / "main"
+    _init_repo(main)
+    _commit_file(main, "README.md", "fixture\n", "fixture")
+    _make_gate_venv(main / ".venv", "main must not run")
+    work = tmp_path / "work"
+    _git(main, "worktree", "add", "-q", "-b", "gate-test", str(work))
+    (work / ".venv").mkdir()
+    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+        drv.run_gate(
+            "echo should-not-run > launched.txt", work, _gate_caller_env(main / ".venv")
+        )
+    assert not (work / "launched.txt").exists()
+
+
+def test_run_gate_missing_project_venv_refuses_python_but_allows_generic_shell(
+    drv, tmp_path
+):
+    env = _gate_caller_env(tmp_path / "absent")
+    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+        drv.run_gate('python -c "raise SystemExit(0)"', tmp_path, env)
+    assert drv.run_gate("echo generic > observed.txt", tmp_path, env) == 0
+    assert (tmp_path / "observed.txt").read_text(encoding="utf-8").strip() == "generic"
+    if os.name != "nt":
+        # POSIX sh reports unmatched quotes; cmd.exe accepts that spelling.
+        assert drv.run_gate('echo "unterminated', tmp_path, env) != 0
+
+
+def test_run_gate_missing_selected_python_alias_never_uses_host_path(drv, tmp_path):
+    selected = tmp_path / ".venv"
+    _make_gate_venv(selected, "selected")
+    alias = selected / ("Scripts/python3.exe" if os.name == "nt" else "bin/python3")
+    alias.unlink(missing_ok=True)
+    env = _gate_caller_env(tmp_path / "unused")
+    with pytest.raises(
+        drv.DriverError, match="virtualenv command 'python3' not executable"
+    ):
+        drv.run_gate('python3 -c "raise SystemExit(0)"', tmp_path, env)
+
+
+@pytest.mark.parametrize("head", ['"python"', '"python3"', '"python.exe"'])
+def test_run_gate_quoted_windows_python_requires_project_environment(
+    drv, tmp_path, monkeypatch, head
+):
+    install_module_os_view(monkeypatch, drv, name="nt")
+    monkeypatch.setattr(
+        drv,
+        "_run_live_gate",
+        lambda *args, **kwargs: pytest.fail("host shell launched"),
+    )
+    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+        drv.run_gate(
+            f'{head} -c "raise SystemExit(0)"',
+            tmp_path,
+            _gate_caller_env(tmp_path / "absent"),
+        )
+
+
+def test_cmd_fix_uses_the_selected_environment_without_per_command_wrappers(
+    drv, tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    selected = tmp_path / "explicit environment"
+    site = _make_gate_venv(selected, "selected")
+    events = tmp_path / "events.jsonl"
+    recorder = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        f"with Path({str(events)!r}).open('a', encoding='utf-8') as stream:\n"
+        " stream.write(json.dumps([sys.prefix, sys.argv[1:]]) + '\\n')\n"
+    )
+    (repo / "tools").mkdir()
+    for name in ("encoding_gate.py", "generators.py"):
+        (repo / "tools" / name).write_text(recorder, encoding="utf-8")
+    (site / "ruff.py").write_text(recorder, encoding="utf-8")
+    monkeypatch.setenv("MOLT_VENV", str(selected))
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "wrong uv"))
+    assert drv.cmd_fix(_ns(drv, repo=str(repo))) == 0
+    assert [
+        json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()
+    ] == [
+        [str(selected), ["--fix"]],
+        [str(selected), ["format", "."]],
+        [str(selected), ["write"]],
+        [str(selected), ["check"]],
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -258,13 +477,13 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     gates, matched = cfg.select(["tools/op_kinds/render_rust.py"])
 
     assert [r.name for r in matched] == ["op-kind-registry"]
-    assert "python3 tools/gen_op_kinds.py --check" in gates
-    assert "python3 tools/audit_op_kinds.py --check" in gates
+    assert "python tools/gen_op_kinds.py --check" in gates
+    assert "python tools/audit_op_kinds.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-ir/src/tir/op_kinds.toml"])
     assert [r.name for r in matched] == ["op-kind-registry", "tir-midend"]
-    assert "python3 tools/gen_op_kinds.py --check" in gates
-    assert "python3 tools/audit_op_kinds.py --check" in gates
+    assert "python tools/gen_op_kinds.py --check" in gates
+    assert "python tools/audit_op_kinds.py --check" in gates
 
 
 def test_committed_gate_manifest_selects_backend_native_llvm(drv):
@@ -284,7 +503,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
         "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib"
         in gates
     )
-    assert "python3 tools/audit_op_kinds.py --check" in gates
+    assert "python tools/audit_op_kinds.py --check" in gates
 
 
 def test_committed_gate_manifest_selects_codec_table_registry(drv):
@@ -292,29 +511,29 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     gates, matched = cfg.select(["runtime/molt-stdlib-text/src/codec_registry.rs"])
 
     assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
-    assert "python3 tools/gen_codecs.py --check" in gates
-    assert "uv run python -m pytest -q tests/test_gen_codecs.py" in gates
+    assert "python tools/gen_codecs.py --check" in gates
+    assert "python -m pytest -q tests/test_gen_codecs.py" in gates
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     assert "codec-tables" in {r.name for r in matched}
-    assert "python3 tools/gen_codecs.py --check" in gates
+    assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/codec_aliases_generated.rs"]
     )
     assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
-    assert "python3 tools/gen_codecs.py --check" in gates
+    assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(
         ["runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"]
     )
     assert [r.name for r in matched] == ["codec-tables", "rust-ffi-blocks"]
-    assert "python3 tools/gen_codecs.py --check" in gates
+    assert "python tools/gen_codecs.py --check" in gates
 
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
     assert "codec-tables" in {r.name for r in matched}
-    assert "python3 tools/gen_codecs.py --check" in gates
-    assert "uv run python -m pytest -q tests/test_gen_codecs.py" in gates
+    assert "python tools/gen_codecs.py --check" in gates
+    assert "python -m pytest -q tests/test_gen_codecs.py" in gates
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
