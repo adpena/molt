@@ -1746,11 +1746,32 @@ def test_git_toolchain_declares_lossless_process_image_probe() -> None:
     assert git.data["process_image_probes"] == [["--version"]]
 
 
+def test_uv_toolchain_declares_platform_process_image_probe() -> None:
+    uv = next(policy for policy in PLAN.toolchain_policies if policy.name == "uv")
+
+    assert uv.data["version_args"] == ["--version"]
+    # Catalogue-only listing detects the host platform without discovering or
+    # installing an interpreter, selecting a minor, or enabling network access.
+    assert uv.data["process_image_probes"] == [
+        [
+            "--offline",
+            "--no-config",
+            "--managed-python",
+            "python",
+            "list",
+            "--only-downloads",
+        ]
+    ]
+
+
+@pytest.mark.parametrize("toolchain", ["git", "uv"])
 @pytest.mark.parametrize("probes", [[], [[]], [[""]], [["--version"], ["--version"]]])
-def test_toolchain_process_image_probes_fail_closed(probes: list[list[str]]) -> None:
+def test_toolchain_process_image_probes_fail_closed(
+    probes: list[list[str]], toolchain: str
+) -> None:
     policies = tuple(
         replace(policy, data={**policy.data, "process_image_probes": probes})
-        if policy.name == "git"
+        if policy.name == toolchain
         else policy
         for policy in PLAN.toolchain_policies
     )

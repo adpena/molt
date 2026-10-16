@@ -1191,6 +1191,12 @@ the native supervisor runs each exact probe in non-evidence inventory mode and
 records every kernel-observed executable by path, size, and SHA-256. That sealed
 image set is the single authority consumed by both pre-spawn child custody and
 the proof supervisor; no install-directory or basename allowlist is inferred.
+The pinned uv probe lists only downloadable Python versions in managed, offline,
+config-disabled mode. Its [catalogue-only branch](https://github.com/astral-sh/uv/blob/0.13.1/crates/uv-python-commands/src/list.rs)
+detects the host platform while skipping installed-interpreter discovery.
+On Linux, uv's [libc detection](https://github.com/astral-sh/uv/blob/0.13.1/crates/uv-platform/src/libc.rs)
+executes the selected system loader explicitly, even when uv itself is static;
+the inventory captures that exact image instead of granting loader-directory access.
 Inventory is lossless only under qualified native process/image custody. The
 current native backend refuses every macOS mode as `ineligible`: the former
 Seatbelt/ptrace leaf implementation was retired after blocked SIGTRAP hid a
