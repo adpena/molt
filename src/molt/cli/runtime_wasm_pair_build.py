@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.cli import progress as _progress
+from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
 from molt.cli.runtime_build_python import build_python_scope
 
 import contextlib
@@ -231,7 +232,9 @@ def _publish_combined_runtime_wasm_target(
             fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
             assert fingerprint is not None
             _write_runtime_fingerprint(fingerprint_path, fingerprint, artifact=artifact)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # StaticArchiveIdentityError (a ValueError) reports an archive that
+        # changed while its identity was read; it is a failed stage, not a crash.
         return ctx.fail(
             "combined-target-fingerprint-publication",
             f"Runtime wasm combined build failed to record target fingerprints: {exc}",
@@ -971,13 +974,31 @@ def _ensure_runtime_wasm_both(
                     "satisfies its emitted import contract: "
                     + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
                 )
-            outcome = _materialize_runtime_wasm_pair(ctx)
-            if outcome is _PairBuildOutcome.FAILED:
-                return False
-            if outcome is _PairBuildOutcome.BUILT and not _publish_runtime_wasm_pair(
-                ctx
-            ):
-                return False
+            # One builder at a time runs the combined Cargo transaction for a
+            # target and publishes its pair: another builder's Cargo run must
+            # not rewrite the archives while this one fingerprints them, and a
+            # builder that waited accepts the published generation instead of
+            # building again (HF-F227).
+            try:
+                with _build_lock(
+                    ctx.project_root,
+                    f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair",
+                    default_timeout_s=ctx.cargo_timeout
+                    if ctx.cargo_timeout is not None
+                    else 300.0,
+                ):
+                    outcome = _materialize_runtime_wasm_pair(ctx)
+                    if outcome is _PairBuildOutcome.FAILED:
+                        return False
+                    if (
+                        outcome is _PairBuildOutcome.BUILT
+                        and not _publish_runtime_wasm_pair(ctx)
+                    ):
+                        return False
+            except BuildLockAcquisitionError as exc:
+                return ctx.fail(
+                    "pair-build-lock", f"Runtime WASM pair build lock: {exc}"
+                )
             if bind_for_codegen:
                 assert ctx.pre_identity is not None
                 generation = ctx.accepted_generation

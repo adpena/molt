@@ -304,6 +304,112 @@ def test_codegen_pair_retains_public_abi_without_enabling_unrequested_domains(
     assert "stdlib_crypto" not in reloc.fingerprint_features
 
 
+def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Two builds of one target ran their Cargo transactions and publications
+    # concurrently, so one fingerprinted libmolt_runtime.a while the other's
+    # Cargo run rewrote it (HF-F227). The pair is built and published under one
+    # lock; the builder that waited accepts the published generation.
+    import threading
+    import time
+
+    shared_spec, reloc_spec = _specs(tmp_path)
+    identity = runtime_wasm_pair_build._RuntimeWasmPairIdentity(
+        make_runtime_build_identity("shared", "race").toolchain_manifest,
+        make_runtime_build_identity("shared", "race"),
+        make_runtime_build_identity("reloc", "race"),
+    )
+
+    def prepare(runtime_state, **kwargs):
+        return runtime_wasm_pair_build._RuntimeWasmPairBuild(
+            runtime_state=runtime_state,
+            json_output=True,
+            cargo_profile="release",
+            cargo_timeout=30,
+            project_root=tmp_path,
+            simd_enabled=True,
+            freestanding=False,
+            stdlib_profile="micro",
+            resolved_modules=None,
+            required_link_features=frozenset(),
+            required_exports=kwargs["required_exports"],
+            runtime_wasm=tmp_path / "molt_runtime.wasm",
+            runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
+            shared_spec=shared_spec,
+            reloc_spec=reloc_spec,
+            toolchain_manifest_path=tmp_path / "toolchain.json",
+            generation_manifest=tmp_path / "molt_runtime.generation.json",
+            pre_identity=identity,
+        )
+
+    guard = threading.Lock()
+    inside = [0]
+    peak = [0]
+    builds: list[str] = []
+    published = threading.Event()
+
+    def materialize(ctx):
+        with guard:
+            inside[0] += 1
+            peak[0] = max(peak[0], inside[0])
+        try:
+            if published.is_set():
+                return runtime_wasm_pair_build._PairBuildOutcome.ACCEPTED
+            # The window between Cargo writing the archives and publication.
+            time.sleep(0.3)
+            builds.append(threading.current_thread().name)
+            return runtime_wasm_pair_build._PairBuildOutcome.BUILT
+        finally:
+            with guard:
+                inside[0] -= 1
+
+    def publish(ctx):
+        published.set()
+        return True
+
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", prepare
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "_materialize_runtime_wasm_pair", materialize
+    )
+    monkeypatch.setattr(runtime_wasm_pair_build, "_publish_runtime_wasm_pair", publish)
+    results: dict[str, object] = {}
+
+    def build(name: str) -> None:
+        try:
+            results[name] = _ensure(name)
+        except BaseException as exc:  # surfaced by the assertion below
+            results[name] = exc
+
+    def _ensure(name: str) -> bool:
+        return runtime_wasm_pair_build._ensure_runtime_wasm_both(
+            _RuntimeArtifactState(
+                runtime_wasm=tmp_path / "molt_runtime.wasm",
+                runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
+            ),
+            json_output=True,
+            cargo_profile="release",
+            cargo_timeout=30,
+            project_root=tmp_path,
+            simd_enabled=True,
+            freestanding=False,
+        )
+
+    threads = [
+        threading.Thread(target=build, args=(f"b{i}",), name=f"b{i}") for i in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert results == {"b0": True, "b1": True}
+    assert peak[0] == 1, "two builders were inside the pair transaction at once"
+    assert len(builds) == 1, builds
+
+
 @pytest.mark.parametrize(
     "outcome",
     ["stable", "source-drift", "missing-export", "member-corrupt", "pointer-replaced"],
