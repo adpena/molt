@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn checked_singletons_preserve_repr_alias_identity_and_versioned_truth() {
+fn lune_oracle_checked_singletons_preserve_repr_alias_identity_and_versioned_truth() {
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".into(),
@@ -116,17 +116,18 @@ assert(molt_bool(molt_ellipsis))
 print("singleton values preserved")
 "#,
     );
-    let output = execute_lune_oracle("singleton_values", &source);
-    let stdout = String::from_utf8(output.stdout).expect("UTF-8 singleton witness");
-    assert!(
-        stdout.contains("NotImplemented NotImplemented Ellipsis True"),
-        "{stdout}"
+    execute_lune_oracle(
+        "singleton_values",
+        &source,
+        LuneStdout::Contains(&[
+            "NotImplemented NotImplemented Ellipsis True",
+            "singleton values preserved",
+        ]),
     );
-    assert!(stdout.contains("singleton values preserved"), "{stdout}");
 }
 
 #[test]
-fn checked_integer_alias_uses_the_same_bounded_literal_admission() {
+fn lune_oracle_checked_integer_alias_uses_the_same_bounded_literal_admission() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".into(),
@@ -155,6 +156,5 @@ fn checked_integer_alias_uses_the_same_bounded_literal_admission() {
     let source = LuauBackend::new()
         .compile_checked(&ir)
         .expect("bounded canonical integer alias");
-    let output = execute_lune_oracle("literal_alias", &source);
-    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "7");
+    execute_lune_oracle("literal_alias", &source, LuneStdout::TrimmedExact("7"));
 }
