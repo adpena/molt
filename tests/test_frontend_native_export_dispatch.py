@@ -68,7 +68,14 @@ def assert_bound(source: str, name: str = "run") -> None:
     assert not any("nativepkg_ops__" in str(op) for op in operations)
     call_line = len(source.splitlines())
     assert any(
-        op["kind"] in {"call_bind", "call_func", "call_indirect", "call_guarded"}
+        op["kind"]
+        in {
+            "call_bind",
+            "call_func",
+            "call_indirect",
+            "call_guarded",
+            "call_loaded_method",
+        }
         and op.get("source_line") == call_line
         for op in operations
     ), "the source call must dispatch an actual callable, not only import helpers"
@@ -426,7 +433,13 @@ def _assert_callback_and_callee_once(operations: list[dict], source: str) -> Non
     )
     callback = callback_argument(outer)
     assert callback is not None
-    call_kinds = {"call_func", "call_bind", "call_indirect", "call_guarded"}
+    call_kinds = {
+        "call_func",
+        "call_bind",
+        "call_indirect",
+        "call_guarded",
+        "call_loaded_method",
+    }
 
     def emitted_calls(node: ast.Call) -> list[int]:
         return [
@@ -443,8 +456,12 @@ def _assert_callback_and_callee_once(operations: list[dict], source: str) -> Non
         "each source call executes once; import initialization is a different operation"
     )
     call = operations[outer_calls[0]]
+    # load_method defines the callable in `var` and self_or_null in `out`.
     callee = next(
-        i for i, op in enumerate(operations) if op.get("out") == call["args"][0]
+        i
+        for i, op in enumerate(operations)
+        if op.get("out") == call["args"][0]
+        or (op["kind"] == "load_method" and op.get("var") == call["args"][0])
     )
     assert operations[callee]["kind"] not in {"func_ref", "const_str"}
     assert callee < callback_calls[0] < outer_calls[0], (
@@ -506,13 +523,21 @@ def test_untyped_receiver_is_retained_and_argument_evaluated_once(
     calls = [
         i
         for i, op in enumerate(operations)
-        if op["kind"] in {"call_func", "call_bind", "call_indirect", "call_guarded"}
+        if op["kind"]
+        in {
+            "call_func",
+            "call_bind",
+            "call_indirect",
+            "call_guarded",
+            "call_loaded_method",
+        }
     ]
     assert len(calls) == 2 + int(factory)
+    assert operations[calls[-1]]["kind"] == "call_loaded_method"
     loads = [
         i
         for i, op in enumerate(operations)
-        if op["kind"] == "get_attr_generic_obj" and op.get("s_value") == method
+        if op["kind"] == "load_method" and op.get("s_value") == method
     ]
     assert len(loads) == 1
     assert loads[0] < calls[-2] < calls[-1]
@@ -533,10 +558,11 @@ def test_published_callable_does_not_inherit_string_method_arity(
         ast.parse(f"import nativepkg.ops as ops\nops.{method}({arguments})\n")
     )
     assert any(
-        op["kind"] in {"call_func", "call_bind", "call_indirect"}
+        op["kind"] in {"call_func", "call_bind", "call_indirect", "call_loaded_method"}
+        and op.get("source_line") == 2
         for f in generator.to_json()["functions"]
         for op in f["ops"]
-    )
+    ), "the source call dispatches the published callable"
 
 
 @pytest.mark.parametrize(
