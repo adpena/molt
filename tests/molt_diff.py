@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import multiprocessing
 import os
 import re
 import socket
@@ -2045,6 +2046,12 @@ def _diff_worker(
     }
 
 
+def _install_worker_state(suite_stop: object) -> None:
+    """Pool initializer: bind the suite's stop and the orphan guard."""
+    compat_backends.bind_suite_stop(suite_stop)
+    _install_worker_orphan_guard()
+
+
 def _install_worker_orphan_guard() -> None:
     global _WORKER_ORPHAN_GUARD_INSTALLED
     if _WORKER_ORPHAN_GUARD_INSTALLED:
@@ -2575,6 +2582,9 @@ def _run_subprocess(
     trip = _memory_guard_trip_outcome(environment=env)
     if trip is not None:
         return trip
+    stopped_by = compat_backends.suite_stop_signal()
+    if stopped_by is not None:
+        return compat_backends.suite_stop_outcome(stopped_by)
 
     guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
         "MOLT_DIFF",
@@ -2591,9 +2601,12 @@ def _run_subprocess(
         timeout=timeout,
         capture_output=True,
         text=False,
+        cancellation_requested=compat_backends.suite_stop_requested,
     )
     outcome = compat_backends.merge_suite_trip_result(
-        compat_backends.BackendResult.from_process(result),
+        compat_backends.with_suite_stop(
+            compat_backends.BackendResult.from_process(result), result
+        ),
         result,
         harness_outcomes.read_suite_trip(env),
     )
@@ -4818,8 +4831,10 @@ def _parallel_diff_results(
             yield result
         stopped |= trip_outcome() is not None
         if stopped:
-            # Cancellation never kills running children: their complete results
-            # are drained above and persist through the normal receipt/log path.
+            # Cancelling a future never kills a running child; their results
+            # drain above through the normal receipt/log path. An operator
+            # signal also ends the running commands through the suite stop
+            # (compat_backends.suite_stop_signal), so that drain is prompt.
             for future in list(pending):
                 if future.cancel():
                     del pending[future]
@@ -4916,11 +4931,17 @@ def run_diff(
     guard_signal: int | None = None
     signal_by_path: dict[str, int] = {}
     previous_handlers: dict[int, object] = {}
+    # Stopping the suite also stops the commands already running, here and in
+    # every worker, so they return interrupted receipts at once and the suite
+    # writes its summary instead of waiting out their budgets (HF-232).
+    suite_stop = multiprocessing.RawValue("i", 0)
+    compat_backends.bind_suite_stop(suite_stop)
 
     def defer_suite_signal(signum: int, _frame: object) -> None:
         nonlocal guard_signal
         if guard_signal is None:
             guard_signal = signum
+            suite_stop.value = signum
 
     def suite_trip_outcome() -> compat_backends.BackendResult | None:
         trip = _memory_guard_trip_outcome(suite_sentinel)
@@ -5099,7 +5120,8 @@ def run_diff(
                     if max_tasks_per_child is not None:
                         executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
                     executor_params = {
-                        "initializer": _install_worker_orphan_guard,
+                        "initializer": _install_worker_state,
+                        "initargs": (suite_stop,),
                     }
                     try:
                         executor_ctx = concurrent.futures.ProcessPoolExecutor(
@@ -5413,6 +5435,7 @@ def run_diff(
         try:
             close_suite_sentinel()
         finally:
+            compat_backends.bind_suite_stop(None)
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
 

@@ -44,6 +44,7 @@ import math
 import time
 import re
 import shutil
+import signal
 import subprocess
 import hashlib
 from collections.abc import Mapping, Sequence
@@ -54,6 +55,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 if TYPE_CHECKING:
+    import ctypes
+
     from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 
 from molt.llvm_toolchain import (
@@ -592,6 +595,55 @@ def merge_suite_trip_result(
     )
 
 
+# The operator's stop of a running suite: one shared integer, 0 while the
+# suite runs, else the signal that stopped it. The suite creates it, binds it in
+# its own process and hands it to every worker through the pool initializer, so
+# a guarded command that is running when the operator stops the suite ends at
+# once, with that signal as its outcome, instead of finishing its item budget
+# (HF-232). A shared integer needs no lock, so a signal handler may write it.
+_suite_stop: ctypes.c_int | None = None
+
+
+def bind_suite_stop(stop: ctypes.c_int | None) -> None:
+    """Bind this process's suite stop; ``None`` unbinds it."""
+    global _suite_stop
+    _suite_stop = stop
+
+
+def suite_stop_signal() -> int | None:
+    """The signal that stopped the suite, or ``None`` while it runs."""
+    stop = _suite_stop
+    if stop is None or stop.value == 0:
+        return None
+    return stop.value
+
+
+def suite_stop_requested() -> bool:
+    return suite_stop_signal() is not None
+
+
+def suite_stop_outcome(signum: int) -> BackendResult:
+    """A command the stopped suite does not start."""
+    return BackendResult(
+        None,
+        f"Operator stopped the suite with {signal.Signals(signum).name}; "
+        "the command was not started.\n",
+        128 + signum,
+        guard_signal=signum,
+        child_stderr="",
+    )
+
+
+def with_suite_stop(result: BackendResult, process: object) -> BackendResult:
+    """Report a command that the suite stop cancelled as stopped by its signal."""
+    if result.guard_signal is not None or not getattr(process, "cancelled", False):
+        return result
+    signum = suite_stop_signal()
+    if signum is None:
+        return result
+    return replace(result, guard_signal=signum)
+
+
 def _guarded_run(
     cmd: list[str],
     *,
@@ -608,6 +660,9 @@ def _guarded_run(
     trip = suite_trip_outcome(harness_outcomes.read_suite_trip(env))
     if trip is not None:
         return trip
+    stopped_by = suite_stop_signal()
+    if stopped_by is not None:
+        return suite_stop_outcome(stopped_by)
     timeout = budget.limit(budget.policy.phase(backend, phase))
     if timeout == 0:
         return budget.exhausted_result(build_failed=phase == "build")
@@ -619,9 +674,12 @@ def _guarded_run(
         capture_output=True,
         text=False,
         timeout=timeout,
+        cancellation_requested=suite_stop_requested,
     )
     return merge_suite_trip_result(
-        BackendResult.from_process(proc), proc, harness_outcomes.read_suite_trip(env)
+        with_suite_stop(BackendResult.from_process(proc), proc),
+        proc,
+        harness_outcomes.read_suite_trip(env),
     )
 
 

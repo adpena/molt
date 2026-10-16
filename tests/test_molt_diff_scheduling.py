@@ -118,6 +118,7 @@ def suite(tmp_path, monkeypatch):
     class Executor:
         def __init__(self, **kwargs):
             self.max_workers = kwargs["max_workers"]
+            state.executor_kwargs = kwargs
 
         def __enter__(self):
             return self
@@ -718,6 +719,14 @@ def test_between_commands_signal_defers_exit_until_running_results_drained(
     assert summary["not_run"] == len(summary["item_results"]) - jobs
     assert len(guarded_suite.exits) == 1
     assert signal.getsignal(signal.SIGTERM) is previous
+    if jobs > 1:
+        # Every worker receives the suite stop, and the signal sets it, so the
+        # commands those workers are running end at once (HF-232).
+        kwargs = guarded_suite.executor_kwargs
+        assert kwargs["initializer"] is molt_diff._install_worker_state
+        (stop,) = kwargs["initargs"]
+        assert stop.value == signal.SIGTERM
+    assert molt_diff.compat_backends.suite_stop_signal() is None
 
 
 def test_signal_during_warmup_stops_case_and_further_warmup_admission(
