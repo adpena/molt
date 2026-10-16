@@ -269,11 +269,12 @@ def _raw_function_ops(source: str, **kwargs: object) -> list[MoltOp]:
 
 
 def _raw_attribute_loads(ops: list[MoltOp], name: str) -> list[MoltOp]:
+    """Attribute loads of ``name``, the method form before a call included."""
     constants = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
     return [
         op
         for op in ops
-        if (op.kind == "GETATTR_GENERIC_OBJ" and op.args[1] == name)
+        if (op.kind in {"GETATTR_GENERIC_OBJ", "LOAD_METHOD"} and op.args[1] == name)
         or (op.kind == "MODULE_GET_ATTR" and constants.get(op.args[1].name) == name)
     ]
 
@@ -376,7 +377,8 @@ def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
     call = next(
         op
         for op in fallback
-        if op.kind == "CALL_FUNC" and op.args[0].name == gets[0].result.name
+        if op.kind in {"CALL_FUNC", "CALL_LOADED_METHOD"}
+        and op.args[0].name == gets[0].result.name
     )
     addition = next(
         op
@@ -816,25 +818,36 @@ def _assert_live_global_call(
     assert reads, f"missing live global read for {name}"
     chain = reads
     values = {op["out"] for op in reads}
-    for attribute in attributes:
+    for position, attribute in enumerate(attributes):
+        # The called attribute is CPython's method-form load: its callable is
+        # the op's `var`, and the call adopts that (callable, self_or_null).
+        called = position == len(attributes) - 1
         loads = [
             op
             for op in ops
-            if op.get("kind") == "get_attr_generic_obj"
+            if (
+                op.get("kind") == "get_attr_generic_obj"
+                or (called and op.get("kind") == "load_method")
+            )
             and op.get("s_value") == attribute
             and (op.get("args") or [None])[0] in values
         ]
         assert loads, f"{attribute} must be loaded from the live receiver"
         chain.extend(loads)
-        values = {op["out"] for op in loads}
+        values = {
+            op["var"] if op["kind"] == "load_method" else op["out"] for op in loads
+        }
     calls = [
         op
         for op in ops
-        if op.get("kind") == "call_func" and (op.get("args") or [None])[0] in values
+        if op.get("kind") in {"call_func", "call_loaded_method"}
+        and (op.get("args") or [None])[0] in values
     ]
     assert len(calls) == 1
     call = calls[0]
-    assert len(call["args"]) == (1 if argument is None else 2)
+    # call_loaded_method carries the loaded self_or_null before the arguments.
+    leading = 2 if call["kind"] == "call_loaded_method" else 1
+    assert len(call["args"]) == (leading if argument is None else leading + 1)
     if argument is not None:
         argument_reads = {
             op["out"]
@@ -842,7 +855,7 @@ def _assert_live_global_call(
             if op.get("kind") == "module_get_global"
             and consts.get((op.get("args") or [None, None])[1]) == argument
         }
-        assert call["args"][1] in argument_reads
+        assert call["args"][leading] in argument_reads
     for consumer in [*chain, call]:
         assert set(consumer.get("args", ())) <= _defined_before(
             ops, ops.index(consumer)
@@ -927,9 +940,11 @@ def _defined_before(ops: list[dict], target_index: int) -> set[str]:
             depth += 1
         elif kind == "end_if":
             depth = max(0, depth - 1)
-        out = op.get("out")
-        if depth == 0 and isinstance(out, str) and out != "none":
-            defined.add(out)
+        # A method load also defines its callable, the op's second result.
+        results = [op.get("out"), op.get("var") if kind == "load_method" else None]
+        for result in results:
+            if depth == 0 and isinstance(result, str) and result != "none":
+                defined.add(result)
     return defined
 
 
