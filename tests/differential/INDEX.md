@@ -18,9 +18,9 @@ checkout:
 
 ```bash
 eval "$(python3 tools/run_context_env.py --format posix)"
-# RSS measurement and adaptive memory limits are default-on; set
-# MOLT_DIFF_MEASURE_RSS=0 or MOLT_DIFF_CHILD_RLIMIT_GB=0 only for explicit local
-# investigations.
+# The mandatory memory guard and adaptive memory limits are default-on.
+# Optional native /usr/bin/time RSS profiling uses MOLT_DIFF_MEASURE_RSS=1;
+# see docs/OPERATIONS.md for metric scope and proof-custody limits.
 ```
 
 Example targeted run:

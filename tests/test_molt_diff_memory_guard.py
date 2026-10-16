@@ -559,14 +559,183 @@ def test_diff_rlimit_defaults_to_adaptive_process_budget(monkeypatch) -> None:
     assert module._memory_limit_bytes() == config.max_process_kb * 1024
 
 
-def test_diff_measure_rss_is_enabled_by_default(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "value,threshold,expected",
+    [
+        (None, None, False),
+        ("", None, False),
+        ("0", None, False),
+        ("off", None, False),
+        ("1", None, True),
+        (None, "1024", True),
+        ("", "1024", True),
+        ("1", "1024", True),
+        (None, "0", False),
+        (None, "-1", False),
+        (None, "invalid", False),
+    ],
+)
+def test_diff_measure_rss_requires_explicit_profiling(
+    monkeypatch, value, threshold, expected
+):
+    module = _load_diff_module()
+    if value is None:
+        monkeypatch.delenv("MOLT_DIFF_MEASURE_RSS", raising=False)
+    else:
+        monkeypatch.setenv("MOLT_DIFF_MEASURE_RSS", value)
+    if threshold is None:
+        monkeypatch.delenv("MOLT_DIFF_MAX_RSS_KB", raising=False)
+    else:
+        monkeypatch.setenv("MOLT_DIFF_MAX_RSS_KB", threshold)
+    assert module._diff_measure_rss() is expected
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off"])
+def test_diff_measure_rss_rejects_threshold_with_explicit_profiling_off(
+    monkeypatch, value
+):
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_MEASURE_RSS", value)
+    monkeypatch.setenv("MOLT_DIFF_MAX_RSS_KB", "1024")
+    with pytest.raises(ValueError, match="MOLT_DIFF_MAX_RSS_KB requires RSS profiling"):
+        module._diff_measure_rss()
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_molt_cli_python_reuses_selected_interpreter_without_probes(
+    tmp_path, monkeypatch, platform
+):
+    module = _load_diff_module()
+    monkeypatch.delenv("MOLT_DIFF_MOLT_PYTHON", raising=False)
+    selected = str(tmp_path / "selected-python")
+    install_module_view(
+        monkeypatch, "sys", sys, module, executable=selected, platform=platform
+    )
+
+    def no_probe(*args, **kwargs):
+        raise AssertionError("CLI interpreter selection must not probe candidates")
+
+    monkeypatch.setattr(module, "_run_metadata_probe", no_probe)
+    assert module._resolve_molt_cli_python() == selected
+
+
+def test_molt_cli_python_explicit_override_preserves_path_and_rejects_commands(
+    tmp_path, monkeypatch
+):
+    module = _load_diff_module()
+    executable = tmp_path / "explicit python"
+    executable.write_bytes(b"selected interpreter")
+    monkeypatch.setenv("MOLT_DIFF_MOLT_PYTHON", str(executable))
+    monkeypatch.setattr(
+        module,
+        "_run_metadata_probe",
+        lambda *a, **k: pytest.fail("explicit CLI interpreter must not be probed"),
+    )
+    assert module._resolve_molt_cli_python() == str(executable)
+    monkeypatch.setenv("MOLT_DIFF_MOLT_PYTHON", '"' + str(executable) + '" -I')
+    with pytest.raises(
+        module.python_interpreter.PythonInterpreterError,
+        match="must name one executable path",
+    ):
+        module._resolve_molt_cli_python()
+
+
+@pytest.mark.parametrize(
+    "platform,measure",
+    [
+        ("linux", False),
+        ("darwin", False),
+        ("win32", False),
+        ("linux", True),
+        ("darwin", True),
+        ("linux", None),
+    ],
+)
+def test_native_profiling_wraps_guarded_commands_only_when_requested(
+    tmp_path, monkeypatch, platform, measure
+):
     module = _load_diff_module()
     monkeypatch.delenv("MOLT_DIFF_MEASURE_RSS", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_RSS_KB", raising=False)
+    if measure:
+        monkeypatch.setenv("MOLT_DIFF_MEASURE_RSS", "1")
+    elif measure is None:
+        monkeypatch.setenv("MOLT_DIFF_MAX_RSS_KB", "1024")
+    install_module_view(monkeypatch, "sys", sys, module, platform=platform)
+    source = tmp_path / "program.py"
+    source.write_text("print('guest')\n", encoding="utf-8")
+    layout = SimpleNamespace(
+        repo_root=tmp_path,
+        cargo_target_root=tmp_path / "target",
+        diff_root=tmp_path / "diff",
+        cache_root=tmp_path / "cache",
+    )
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda **k: None)
+    monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
+    looked_up = []
 
-    assert module._diff_measure_rss() is True
+    def time_tool():
+        looked_up.append(True)
+        return "/fixture/time"
 
-    monkeypatch.setenv("MOLT_DIFF_MEASURE_RSS", "0")
-    assert module._diff_measure_rss() is False
+    monkeypatch.setattr(module, "_time_tool", time_tool)
+    calls = []
+
+    def observe(command, **kwargs):
+        calls.append(command)
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            0,
+            b"guest\n",
+            b"",
+            elapsed_s=0.1,
+            child_returncode=0,
+            child_stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *a, **k: SimpleNamespace(run=observe),
+    )
+    outcome = module._run_molt_owned(
+        str(source),
+        build_only=False,
+        build_profile="dev",
+        daemon_enabled=False,
+        no_cache=False,
+        rebuild=False,
+        extra_env=None,
+        execution_context=None,
+        output_root=tmp_path,
+        environment={},
+        budget=module.compat_backends.ItemBudget(
+            module.compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
+    )
+    binary = str(tmp_path / "program_molt")
+    assert outcome.returncode == 0 and outcome.stdout == "guest\n"
+    assert len(calls) == 2  # Both phases still pass through the mandatory guard.
+    if measure is not False:
+        option = "-l" if platform == "darwin" else "-v"
+        for command, phase in zip(calls, ("build", "run"), strict=True):
+            assert command[:4] == [
+                "/fixture/time",
+                option,
+                "-o",
+                str(tmp_path / "metrics" / f"{phase}.time"),
+            ]
+        assert calls[0][4] == "fixture-python" and calls[1][4:] == [binary]
+        assert looked_up == [True, True]
+    else:
+        assert calls[0][0] == "fixture-python" and calls[1] == [binary]
+        assert looked_up == []
+        assert not (tmp_path / "metrics").exists()
 
 
 def test_popen_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
@@ -1133,9 +1302,9 @@ def test_terminal_batch_result_survives_deadline_during_cleanup(
     metadata_calls = []
     resolve = module._resolve_molt_cli_python
 
-    def metadata(*, budget=None):
+    def metadata():
         metadata_calls.append("cli_python")
-        return resolve(budget=budget)
+        return resolve()
 
     def batch(**kwargs):
         assert kwargs["budget"] is budget
@@ -1188,9 +1357,7 @@ def test_native_resource_evidence_survives_build_and_run(
         module, "_diff_batch_compile_server_enabled", lambda: source == "batch"
     )
     monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: False)
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: "fixture-python"
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -1274,9 +1441,7 @@ def test_native_timeout_preserves_guard_outcome_and_raw_streams(
     monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
     monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
     monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
-    monkeypatch.setattr(
-        module, "_resolve_molt_cli_python", lambda *, budget=None: "fixture-python"
-    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
     monkeypatch.setattr(module, "_dyld_preflight_error", lambda output, *, budget: None)
     monkeypatch.setattr(
         module, "_memory_guard_trip_outcome", lambda *, environment=None: None

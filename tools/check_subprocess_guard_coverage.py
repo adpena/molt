@@ -735,18 +735,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tests/molt_diff.py",
-        "_ps_supports_field",
-        "run",
-        "differential harness platform ps capability probe",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_pid_rss_age",
-        "run",
-        "differential harness process RSS/age sampler",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
         "_dyld_preflight_error",
         "run",
         "differential harness bounded dyld preflight compile probe",

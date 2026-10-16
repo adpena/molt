@@ -3029,7 +3029,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_DIFF_MAX_RSS_KB",
       "owner": "tests/molt_diff.py",
-      "summary": "Fallback spelling of MOLT_DIFF_FAIL_RSS_KB, read only when that name is empty: a peak RSS threshold in kilobytes that fails a differential test's build or run phase, with unset, non-numeric or non-positive values disabling the check.",
+      "summary": "Positive native differential time-metric RSS threshold in kilobytes that fails the build or run phase above the threshold. A positive value also requests RSS profiling when MOLT_DIFF_MEASURE_RSS is unset or empty; explicit profiling-off conflicts and raises a configuration error. Unset, non-numeric or non-positive values disable this threshold, independently of the mandatory sampled memory guard.",
       "values": []
     },
     {
@@ -3043,11 +3043,11 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "1",
+      "default": "0",
       "kind": "bool",
       "name": "MOLT_DIFF_MEASURE_RSS",
       "owner": "tests/molt_diff.py",
-      "summary": "Collects per-test RSS metrics under <output root>/metrics in differential runs unless set to 0, false, no, or off; unset or any other value measures, and nightly CI and throughput_matrix set it to 1.",
+      "summary": "Opts into /usr/bin/time RSS metrics for native differential build/run phases under <output root>/metrics. Unset or empty enables profiling only for a positive MOLT_DIFF_MAX_RSS_KB threshold; 0, false, no, or off disables profiling and rejects an active threshold. Nightly CI and throughput_matrix explicitly set it to 1. The mandatory sampled process-tree memory guard remains active for every target.",
       "values": []
     },
     {
@@ -3153,7 +3153,7 @@ _REGISTRY_JSON = r"""{
       "kind": "float",
       "name": "MOLT_DIFF_METADATA_PROBE_TIMEOUT_SEC",
       "owner": "tests/molt_diff.py",
-      "summary": "Seconds tests/molt_diff.py allows each interpreter metadata probe, such as the packaging import check that picks the molt CLI Python; non-numeric or non-positive values fall back to 5.",
+      "summary": "Seconds tests/molt_diff.py allows each interpreter metadata probe; non-numeric or non-positive values fall back to 5. CLI interpreter selection reuses the selected interpreter without a dependency probe.",
       "values": []
     },
     {
@@ -3162,7 +3162,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_DIFF_MOLT_PYTHON",
       "owner": "tests/molt_diff.py",
-      "summary": "Executable path of the Python interpreter tests/molt_diff.py uses to run the molt CLI and the batch compile server; it must name exactly one executable or the harness raises PythonInterpreterError, and when unset the harness probes .venv/bin/python3 and .venv/bin/python (.venv/Scripts/python.exe on Windows) and then sys.executable for the first one that imports packaging.",
+      "summary": "Executable path of the Python interpreter tests/molt_diff.py uses to run the molt CLI and batch compile server; it must name exactly one executable or the harness raises PythonInterpreterError. When unset or empty, the already-selected sys.executable is reused directly without repository-venv discovery or dependency subprocess probes.",
       "values": []
     },
     {

@@ -28,7 +28,7 @@ exact termination, completion and mode-specific proof marker through
 must fail verification. These controls belong to development test binaries and
 receipt tooling, not emitted programs.
 
-Rust unit-test bodies live in separate files behind `#[cfg(test)] mod tests;`,
+Place Rust unit-test bodies in separate files behind `#[cfg(test)] mod tests;`,
 with an explicit `#[path]` where needed. This keeps test-only edits outside the
 production crate's inputs and avoids rebuilding its dependents. Preserve module
 paths so existing proof rosters keep owning the same cases. This follows the
