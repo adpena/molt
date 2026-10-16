@@ -579,6 +579,112 @@ def test_star_may_shadow_an_explicit_receiver_import(monkeypatch) -> None:
     assert (None, "value", "attribute") in _writes(source)
 
 
+@pytest.mark.parametrize(
+    "body,changed",
+    [
+        ("def f(target):\n    target.value = 1\nf(Local())\n", False),
+        ("(lambda target: setattr(target, 'value', 1))(Local())\n", False),
+        (
+            "def f():\n    target = Local()\n    target.value = 1\nf()\n",
+            False,
+        ),
+        (
+            "def outer(target):\n"
+            "    def inner():\n        target.value = 1\n"
+            "    inner()\nouter(Local())\n",
+            False,
+        ),
+        (
+            "def outer():\n    target = Local()\n"
+            "    def inner():\n        nonlocal target\n        target.value = 1\n"
+            "    inner()\nouter()\n",
+            False,
+        ),
+        (
+            "def outer(target):\n    class C:\n        global target\n"
+            "        def inner(self):\n            target.value = 1\n"
+            "    C().inner()\nouter(Local())\n",
+            False,
+        ),
+        (
+            "def f():\n    try:\n        raise ValueError()\n"
+            "    except ValueError as target:\n        target.value = 1\nf()\n",
+            False,
+        ),
+        (
+            "def f():\n    match Local():\n        case target:\n"
+            "            target.value = 1\nf()\n",
+            False,
+        ),
+        ("[setattr(target, 'value', 1) for target in [Local()]]\n", False),
+        ("list(setattr(target, 'value', 1) for target in [Local()])\n", False),
+        ("def f():\n    global target\n    target.value = 1\nf()\n", True),
+        ("class C:\n    target.value = 1\n", True),
+        ("class C:\n    target.value = 1\n    target = Local()\n", True),
+        ("def f(target=setattr(target, 'value', 1)):\n    pass\n", True),
+        (
+            "[None for target in (setattr(target, 'value', 1),)]\n",
+            True,
+        ),
+    ],
+)
+def test_star_receiver_lookup_keeps_lexical_storage_custody(
+    monkeypatch, body: str, changed: bool
+) -> None:
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    target = ModuleType("namespace_scope_target")
+    target.value = 0
+    exports = ModuleType("namespace_scope_exports")
+    exports.__dict__.update(__all__=("target",), target=target)
+    monkeypatch.setitem(sys.modules, exports.__name__, exports)
+    source = "from namespace_scope_exports import *\n" + body
+    exec(
+        compile(source, "<star-lexical-storage-oracle>", "exec"),
+        {"Local": SimpleNamespace},
+    )
+    assert target.value == int(changed)
+    writes = _writes(source)
+    assert bool(writes) is changed
+    if changed:
+        assert any(module is None and name == "value" for module, name, _ in writes)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["hooks.append(1)", "hooks[0] = 1", "del hooks[0]", "hooks += [1]"]
+)
+@pytest.mark.parametrize("argument", ["local", "hooks"])
+@pytest.mark.parametrize("closure", [False, True])
+def test_star_hook_values_retain_mutation_custody_through_lexical_bindings(
+    monkeypatch, mutation: str, argument: str, closure: bool
+) -> None:
+    import sys
+    from types import ModuleType
+
+    hooks = [0]
+    exports = ModuleType("namespace_local_hook_exports")
+    exports.__dict__.update(__all__=("hooks",), hooks=hooks)
+    monkeypatch.setitem(sys.modules, exports.__name__, exports)
+    body = (
+        f"    def inner():\n        nonlocal hooks\n        {mutation}\n    inner()\n"
+        if closure
+        else f"    {mutation}\n"
+    )
+    source = (
+        "from namespace_local_hook_exports import *\n"
+        f"def mutate(hooks):\n{body}"
+        f"local = [0]\nmutate({argument})\n"
+    )
+    namespace = {}
+    exec(compile(source, "<star-local-hook-oracle>", "exec"), namespace)
+    assert (namespace["local"] != [0]) is (argument == "local")
+    assert (hooks != [0]) is (argument == "hooks")
+    # Lexical lookup cannot rule out a carried hook object. Keep the native
+    # receiver mutation conservative until its actual value is proved.
+    assert ("sys", None, "import_hooks") in _writes(source)
+
+
 def test_explicit_hook_alias_inplace_mutation_is_a_write() -> None:
     assert _writes("from sys import meta_path as hooks\nhooks += [finder]\n") == {
         ("sys", "meta_path", "import_hooks")

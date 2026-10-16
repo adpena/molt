@@ -188,15 +188,183 @@ def test_import_aliases_update_the_shared_metadata_state(form: str, name: str) -
         assert getattr(state, field).kind == "unknown"
 
 
+def _closed_class_import_flow(
+    tmp_path: Path, source: str, provider_source: str
+) -> tuple[ast.Module, python_imports.ModuleImportFlow]:
+    from molt.compiler_analysis.python_binding_flow import (
+        PythonBindingPolicy,
+        analyze_python_source_bindings,
+    )
+
+    sources = {
+        "pkg": (tmp_path / "pkg" / "__init__.py", ""),
+        "pkg.entry": (tmp_path / "pkg" / "entry.py", source),
+        "pkg.child": (tmp_path / "pkg" / "child.py", "value = 'child'\n"),
+        "owner": (tmp_path / "owner.py", provider_source),
+    }
+    for path, text in sources.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    inventory = stdlib_intrinsic_policy.stdlib_namespace_inventory(
+        {name: path for name, (path, _text) in sources.items()},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    premise = inventory.premises["pkg.entry"]
+    index = analyze_python_source_bindings(
+        source,
+        filename=str(sources["pkg.entry"][0]),
+        policy=PythonBindingPolicy(
+            module_name="pkg.entry",
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION.feature_version,
+            foreign_namespace_writes=premise.foreign_writes,
+            callback_member_writes=premise.member_writes,
+            entry_invalid_members=premise.member_writes,
+        ),
+    )
+    return ast.parse(source), index.module_import_flow
+
+
+def _execute_class_import_prefix(
+    prefix: str, provider_source: str
+) -> tuple[dict[str, object], object]:
+    import builtins
+    from types import ModuleType
+
+    provider = ModuleType("owner")
+    exec(compile(provider_source, "owner.py", "exec"), provider.__dict__)
+
+    def source_import(name, globals=None, locals=None, fromlist=(), level=0):
+        assert (name, level) == ("owner", 0)
+        return provider
+
+    namespace = {
+        "__name__": "pkg.entry",
+        "__package__": "pkg",
+        "__builtins__": {**vars(builtins), "__import__": source_import},
+    }
+    exec(compile(prefix, "pkg/entry.py", "exec"), namespace)
+    return namespace, provider
+
+
+@pytest.mark.parametrize(
+    ("statement", "member"),
+    [
+        ("import owner as __package__", None),
+        ("from owner import value as __package__", "value"),
+    ],
+)
 @pytest.mark.parametrize("global_binding", [False, True])
-def test_class_import_alias_obeys_its_binding_scope(global_binding: bool) -> None:
+def test_class_import_alias_obeys_its_binding_scope(
+    tmp_path: Path, global_binding: bool, statement: str, member: str | None
+) -> None:
     declaration = "    global __package__\n" if global_binding else ""
-    tree, _, flow = _contexts_for(
-        "class Holder:\n" + declaration + "    import owner as __package__\n"
-        "from .child import value\n"
+    prefix = "class Holder:\n" + declaration + f"    {statement}\n"
+    provider_source = "value = 'other.pkg'\n"
+    namespace, provider = _execute_class_import_prefix(prefix, provider_source)
+    imported_value = provider if member is None else getattr(provider, member)
+    if global_binding:
+        assert namespace["__package__"] is imported_value
+        assert "__package__" not in vars(namespace["Holder"])
+    else:
+        assert namespace["__package__"] == "pkg"
+        assert vars(namespace["Holder"])["__package__"] is imported_value
+
+    # The claim is about binding scope with these actual passive sources. A
+    # standalone unknown importer can mutate metadata through the class frame.
+    tree, flow = _closed_class_import_flow(
+        tmp_path, prefix + "from .child import value\n", provider_source
     )
     state = flow.states_for(tree.body[-1])[0]
     assert state.package.kind == ("unknown" if global_binding else "known")
+    if not global_binding:
+        assert state.package.value == namespace["__package__"]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ["import owner as __package__", "from owner import value as __package__"],
+)
+def test_unbounded_class_import_can_release_a_callback_installed_in_its_frame(
+    statement: str,
+) -> None:
+    import builtins
+    from types import ModuleType
+
+    provider = ModuleType("owner")
+    provider.value = "imported value"
+    events: list[str] = []
+    namespace = {"__name__": "pkg.entry", "__package__": "pkg"}
+
+    class OnRelease:
+        def __del__(self):
+            events.append("released")
+            namespace["__package__"] = "other.pkg"
+
+    def source_import(name, globals=None, locals=None, fromlist=(), level=0):
+        assert (name, level) == ("owner", 0)
+        frame = inspect.currentframe()
+        assert frame is not None and frame.f_back is not None
+        assert frame.f_back.f_locals is locals
+        assert globals is namespace
+        del frame
+        # IMPORT_NAME supplies the active class mapping to the importer. Its
+        # following STORE_NAME releases the old value, even for an exact dict.
+        locals["__package__"] = OnRelease()
+        return provider
+
+    namespace["__builtins__"] = {**vars(builtins), "__import__": source_import}
+    prefix = f"class Holder:\n    {statement}\n"
+    exec(compile(prefix, "pkg/entry.py", "exec"), namespace)
+    assert events == ["released"]
+    assert namespace["__package__"] == "other.pkg"
+    assert vars(namespace["Holder"])["__package__"] is (
+        provider if statement.startswith("import ") else provider.value
+    )
+
+    tree, _context, flow = _contexts_for(prefix + "from .child import value\n")
+    states = flow.states_for(tree.body[-1])
+    assert states and all(state.package.kind == "unknown" for state in states)
+
+
+@pytest.mark.parametrize("passed_value", ["writer", "globals()"])
+def test_imported_class_mapping_retains_actual_own_metadata_writers(
+    tmp_path: Path, passed_value: str
+) -> None:
+    provider_source = (
+        "class Namespace(dict):\n"
+        "    def __setitem__(self, name, value):\n"
+        "        if name == 'trigger':\n"
+        + (
+            "            value()\n"
+            if passed_value == "writer"
+            else "            value['__package__'] = 'other.pkg'\n"
+        )
+        + "        super().__setitem__(name, value)\n"
+        "class Meta(type):\n"
+        "    @classmethod\n"
+        "    def __prepare__(meta, name, bases):\n"
+        "        return Namespace()\n"
+    )
+    prefix = (
+        "from owner import Meta\n"
+        + (
+            "def writer():\n    global __package__\n    __package__ = 'other.pkg'\n"
+            if passed_value == "writer"
+            else ""
+        )
+        + "class Holder(metaclass=Meta):\n"
+        f"    trigger = {passed_value}\n"
+    )
+    namespace, _provider = _execute_class_import_prefix(prefix, provider_source)
+    assert namespace["__package__"] == "other.pkg"
+    assert vars(namespace["Holder"])["trigger"] is (
+        namespace["writer"] if passed_value == "writer" else namespace
+    )
+    tree, flow = _closed_class_import_flow(
+        tmp_path, prefix + "from .child import value\n", provider_source
+    )
+    states = flow.states_for(tree.body[-1])
+    assert states and any(state.package.kind == "unknown" for state in states)
 
 
 def test_import_failure_preserves_partially_bound_metadata_for_handlers() -> None:
