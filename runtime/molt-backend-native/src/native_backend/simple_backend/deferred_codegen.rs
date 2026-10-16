@@ -57,51 +57,62 @@ impl SimpleBackend {
             unsafe impl Sync for SendIsa {}
 
             let compile_isa = SendIsa(compile_isa);
-            let mut indexed: Vec<(usize, CompiledFunc)> = deferred
-                .into_par_iter()
-                .enumerate()
-                .map(|(idx, item)| {
-                    let DeferredDefine {
-                        func_id,
-                        func,
-                        name,
-                    } = item;
-                    let isa = compile_isa.clone().0;
-                    let mut ctx = Context::for_function(func);
-                    let mut ctrl = ControlPlane::default();
-                    if let Err(err) = ctx.compile(&*isa, &mut ctrl) {
-                        let message = format!("Cranelift compilation failed for `{name}`: {err:?}");
-                        let _ = crate::debug_artifacts::append_debug_artifact(
-                            "native/cranelift_errors.txt",
-                            format!("{message}\n"),
-                        );
-                        panic!("{message}");
-                    }
-                    let compiled = ctx.compiled_code().unwrap_or_else(|| {
-                        panic!("Cranelift produced no compiled code for `{name}`")
-                    });
-                    let alignment = compiled.buffer.alignment as u64;
-                    let code = compiled.buffer.data().to_vec();
-                    let relocs: Vec<cranelift_module::ModuleReloc> = compiled
-                        .buffer
-                        .relocs()
-                        .iter()
-                        .map(|r| {
-                            cranelift_module::ModuleReloc::from_mach_reloc(r, &ctx.func, func_id)
+            let request = crate::backend_environment::carry();
+            // The request's pool honors its CPU limit and keeps concurrent
+            // compiles within one shared set of threads.
+            let pool = molt_tir::tir::pipeline_cache::request_thread_pool();
+            let mut indexed: Vec<(usize, CompiledFunc)> = pool.install(|| {
+                deferred
+                    .into_par_iter()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        request.enter(|| {
+                            let DeferredDefine {
+                                func_id,
+                                func,
+                                name,
+                            } = item;
+                            let isa = compile_isa.clone().0;
+                            let mut ctx = Context::for_function(func);
+                            let mut ctrl = ControlPlane::default();
+                            if let Err(err) = ctx.compile(&*isa, &mut ctrl) {
+                                let message =
+                                    format!("Cranelift compilation failed for `{name}`: {err:?}");
+                                let _ = crate::debug_artifacts::append_debug_artifact(
+                                    "native/cranelift_errors.txt",
+                                    format!("{message}\n"),
+                                );
+                                panic!("{message}");
+                            }
+                            let compiled = ctx.compiled_code().unwrap_or_else(|| {
+                                panic!("Cranelift produced no compiled code for `{name}`")
+                            });
+                            let alignment = compiled.buffer.alignment as u64;
+                            let code = compiled.buffer.data().to_vec();
+                            let relocs: Vec<cranelift_module::ModuleReloc> = compiled
+                                .buffer
+                                .relocs()
+                                .iter()
+                                .map(|r| {
+                                    cranelift_module::ModuleReloc::from_mach_reloc(
+                                        r, &ctx.func, func_id,
+                                    )
+                                })
+                                .collect();
+                            (
+                                idx,
+                                CompiledFunc {
+                                    func_id,
+                                    name,
+                                    alignment,
+                                    code,
+                                    relocs,
+                                },
+                            )
                         })
-                        .collect();
-                    (
-                        idx,
-                        CompiledFunc {
-                            func_id,
-                            name,
-                            alignment,
-                            code,
-                            relocs,
-                        },
-                    )
-                })
-                .collect();
+                    })
+                    .collect()
+            });
             indexed.sort_by_key(|(idx, _)| *idx);
             indexed.into_iter().map(|(_, result)| result).collect()
         };

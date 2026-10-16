@@ -21,8 +21,8 @@ use super::run_luau_tir_module_pipeline;
 use super::rust_source_for_ir;
 #[cfg(molt_backend_daemon)]
 use super::{
-    BACKEND_DAEMON_PROTOCOL_VERSION, DAEMON_REQUEST_ENV_KEYS, DaemonCache, DaemonJobRequest,
-    DaemonJobResponse, DaemonJobTarget, DaemonRequest, DaemonResponse, MIB, compile_single_job,
+    BACKEND_DAEMON_PROTOCOL_VERSION, DaemonCache, DaemonJobRequest, DaemonJobResponse,
+    DaemonJobTarget, DaemonLru, DaemonRequest, DaemonResponse, MIB, compile_single_job,
     daemon_response_payload, default_daemon_cache_bytes_from_physical_mem_bytes,
     read_daemon_request_bytes, write_cached_output,
 };
@@ -53,6 +53,15 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+/// Every variable a daemon request carries, for tests that isolate them.
+#[cfg(molt_backend_daemon)]
+static DAEMON_REQUEST_ENV_KEYS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        molt_ir::backend_environment::daemon_request_env_keys()
+            .map(molt_ir::backend_environment::BackendEnv::name)
+            .collect()
+    });
 
 struct TestEnvGuard {
     // Fields drop in declaration order: restore while the mutex is still held.

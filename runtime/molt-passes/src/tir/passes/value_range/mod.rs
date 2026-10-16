@@ -31,6 +31,7 @@
 //!   * [`fits_inline_int47`] returns `true` only when the *entire* proven range
 //!     lies within the signed 47-bit inline window `[-2^46, 2^46 - 1]`.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 mod lengths;
 mod loops;
 mod propagation;
@@ -218,7 +219,7 @@ pub(crate) fn compute_value_range_with_loop_forest(
     // debug-artifact channel. The sibling of `MOLT_SROA_REPORT`/`MOLT_MEMGVN_REPORT`
     // — used to verify the IV-range seed and transfer-function precision fire on
     // real code (a `fits_inline_int47=false` here explains a refused SROA there).
-    if std::env::var("MOLT_VRANGE_REPORT").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_VRANGE_REPORT).as_deref() == Ok("1") {
         emit_vrange_report(func, scev, loop_bodies, &result);
     }
 

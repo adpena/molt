@@ -90,6 +90,8 @@ impl DaemonHealthResponse {
             "cache_misses".to_string(),
             JsonValue::from(self.cache_misses),
         );
+        obj.insert("active_jobs".to_string(), JsonValue::from(self.active_jobs));
+        obj.insert("retiring".to_string(), JsonValue::Bool(self.retiring));
         JsonValue::Object(obj)
     }
 }

@@ -15,3 +15,12 @@ pub(crate) struct NativeStdlibCachePrepare<'a> {
     /// application-object compile for blob emission.
     pub(crate) module_registry: Option<molt_backend::ModuleRegistryIR>,
 }
+
+impl NativeStdlibCachePrepare<'_> {
+    /// Whether a published stdlib archive can serve this build. A build
+    /// without an entry module, or one that asks for compilation diagnostics,
+    /// always compiles its stdlib.
+    pub(crate) fn can_reuse_stdlib_cache(&self) -> bool {
+        self.have_entry_module && !molt_ir::backend_environment::compilation_diagnostics_requested()
+    }
+}

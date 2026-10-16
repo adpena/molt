@@ -1,4 +1,5 @@
 use molt_backend::SimpleIR;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::io;
 use std::path::Path;
 
@@ -18,11 +19,12 @@ pub(super) fn emit_native_target(
     let stdlib_archive_path = super::super::shared_stdlib_archive_path_from_env()?;
     let cache_archive_path =
         super::super::native_artifact::shared_stdlib_cache_entry_path_from_env()?;
-    let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
-    let expected_stdlib_cache_manifest = std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
-    let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
+    let expected_stdlib_cache_key = backend_env::var(BackendEnv::MOLT_STDLIB_CACHE_KEY).ok();
+    let expected_stdlib_cache_manifest =
+        backend_env::var(BackendEnv::MOLT_STDLIB_CACHE_MANIFEST).ok();
+    let have_entry_module = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE).is_ok();
     let entry_module =
-        std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
+        backend_env::var(BackendEnv::MOLT_ENTRY_MODULE).unwrap_or_else(|_| "__main__".to_string());
     let explicit_stdlib_module_symbols = molt_backend::stdlib_module_symbols_from_env()
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let compile_options = prepare_native_application_artifact(

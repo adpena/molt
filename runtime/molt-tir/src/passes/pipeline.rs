@@ -149,12 +149,19 @@ pub fn run_simple_ir_pipeline(ir: &mut SimpleIR, target: &TargetInfo) {
         .filter(|pass| pass.applies_to(target))
         .map(|pass| pass.run)
         .collect();
-    ir.functions
-        .par_iter_mut()
-        .filter(|function| !function.is_extern)
-        .for_each(|function| {
-            for run in &passes {
-                run(function);
-            }
-        });
+    // The request's pool honors its CPU limit and keeps concurrent compiles
+    // within one shared set of threads.
+    let request = molt_ir::backend_environment::carry();
+    crate::tir::pipeline_cache::request_thread_pool().install(|| {
+        ir.functions
+            .par_iter_mut()
+            .filter(|function| !function.is_extern)
+            .for_each(|function| {
+                request.enter(|| {
+                    for run in &passes {
+                        run(function);
+                    }
+                })
+            })
+    });
 }

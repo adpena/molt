@@ -18,6 +18,10 @@ serde_json = { workspace = true }
 rmp-serde = "1"
 sha2 = "0.11"
 
+[build-dependencies]
+# Generates the closed backend environment key set (build.rs).
+serde_json = { workspace = true }
+
 [features]
 default = []
 native-backend = []

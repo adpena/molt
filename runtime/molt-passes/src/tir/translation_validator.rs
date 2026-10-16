@@ -6,6 +6,7 @@
 //! semantic carrier order; it is the validation order that allows passes to add
 //! raw-carrier proof while forbidding carrier-widening drift.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -50,7 +51,7 @@ impl TranslationValidation {
 }
 
 pub fn enabled() -> bool {
-    std::env::var("MOLT_CHECK_TIR_TRANSLATION").as_deref() == Ok("1")
+    backend_env::var(BackendEnv::MOLT_CHECK_TIR_TRANSLATION).as_deref() == Ok("1")
 }
 
 pub fn validate_repr_lattice_monotonic(

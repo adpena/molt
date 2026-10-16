@@ -1,4 +1,6 @@
 #![cfg(feature = "wasm-backend")]
+// This test reads process settings to gate and isolate its fixtures.
+#![allow(clippy::disallowed_methods)]
 
 //! Tests for basic IR compilation: empty modules, single functions,
 //! string constants, arithmetic, function calls, and exception handling.

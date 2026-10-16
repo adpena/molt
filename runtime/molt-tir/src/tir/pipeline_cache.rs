@@ -8,6 +8,7 @@
 //! optimized [`TirFunction`] afterward, but it must not open `CompilationCache`
 //! directly for this pipeline.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use rayon::prelude::*;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -408,15 +409,63 @@ pub fn partition_tir_optimization_work_items(
     )
 }
 
-pub fn parse_positive_usize_env(name: &str) -> Option<usize> {
-    std::env::var(name)
+/// Stack for compiler worker and daemon request threads: deep pass recursion
+/// needs more than Rust's 2 MiB thread default. Only touched pages are
+/// committed.
+pub const COMPILE_THREAD_STACK_BYTES: usize = 64 << 20;
+
+/// Pools this process keeps. Each pool has one width; widths differ only when
+/// concurrent requests plan different thread counts.
+const MAX_COMPILE_THREAD_POOLS: usize = 4;
+
+/// The compiler pool with exactly `threads` workers, shared by every compile
+/// in this process. A daemon running several compiles at once then keeps one
+/// thread per planned worker instead of one pool per compile: the bound that
+/// the make/Cargo jobserver gives concurrent rustc processes. The least
+/// recently used pool leaves when a new width needs a slot; its threads exit
+/// once the compiles that hold it finish.
+pub fn compile_thread_pool(threads: usize) -> std::sync::Arc<rayon::ThreadPool> {
+    static POOLS: std::sync::Mutex<Vec<(usize, std::sync::Arc<rayon::ThreadPool>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let threads = threads.max(1);
+    let mut pools = POOLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pool = match pools.iter().position(|(width, _)| *width == threads) {
+        Some(index) => pools.remove(index).1,
+        None => {
+            if pools.len() == MAX_COMPILE_THREAD_POOLS {
+                pools.remove(0);
+            }
+            std::sync::Arc::new(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .stack_size(COMPILE_THREAD_STACK_BYTES)
+                    .thread_name(|index| format!("molt-compile-{index}"))
+                    .build()
+                    .expect("Failed to build compiler thread pool"),
+            )
+        }
+    };
+    pools.push((threads, std::sync::Arc::clone(&pool)));
+    pool
+}
+
+/// The compiler pool for the current request's CPU limit
+/// (`RAYON_NUM_THREADS`, else the core count).
+pub fn request_thread_pool() -> std::sync::Arc<rayon::ThreadPool> {
+    compile_thread_pool(tir_optimization_cpu_thread_limit())
+}
+
+fn parse_positive_usize_env(key: molt_ir::backend_environment::BackendEnv) -> Option<usize> {
+    molt_ir::backend_environment::var(key)
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
 }
 
 pub fn tir_optimization_cpu_thread_limit() -> usize {
-    parse_positive_usize_env("RAYON_NUM_THREADS")
+    parse_positive_usize_env(molt_ir::backend_environment::BackendEnv::RAYON_NUM_THREADS)
         .or_else(|| std::thread::available_parallelism().ok().map(usize::from))
         .unwrap_or(1)
         .max(1)
@@ -459,7 +508,7 @@ pub fn tir_optimization_resource_plan() -> TirOptimizationResourcePlan {
 }
 
 pub fn trace_tir_function_enabled(name: &str) -> bool {
-    std::env::var("MOLT_TIR_TRACE_FUNC")
+    backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
         .ok()
         .is_some_and(|filter| filter == "1" || name.contains(&filter))
 }
@@ -506,23 +555,24 @@ where
         );
         let batch_count = work_batches.len();
         let tir_start = std::time::Instant::now();
-        let tir_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(options.resource_plan.threads)
-            .stack_size(64 * 1024 * 1024)
-            .build()
-            .expect("Failed to build TIR thread pool");
+        // Pool workers serve concurrent compiles, so each work item runs
+        // under its own compile's backend request scope.
+        let request = backend_env::carry();
+        let tir_pool = compile_thread_pool(options.resource_plan.threads);
         for (batch_idx, batch_items) in work_batches.into_iter().enumerate() {
             let inputs: Vec<TirOptimizationInput> = tir_pool.install(|| {
                 batch_items
                     .par_iter()
-                    .map(|work_item| TirOptimizationInput {
-                        index: work_item.index,
-                        prepared_function: PreparedTirFunction::new(
-                            &input.functions()[work_item.index],
-                            options.cache_flavor,
-                            &options.target_info,
-                            &preprocess_before_lowering,
-                        ),
+                    .map(|work_item| {
+                        request.enter(|| TirOptimizationInput {
+                            index: work_item.index,
+                            prepared_function: PreparedTirFunction::new(
+                                &input.functions()[work_item.index],
+                                options.cache_flavor,
+                                &options.target_info,
+                                &preprocess_before_lowering,
+                            ),
+                        })
                     })
                     .collect()
             });
@@ -589,14 +639,16 @@ where
                 misses
                     .into_par_iter()
                     .map(|input| {
-                        optimize_tir_input(
-                            input,
-                            &options.target_info,
-                            options.tir_dump,
-                            options.tir_stats,
-                            options.verify_lir,
-                            project_simple_ir,
-                        )
+                        request.enter(|| {
+                            optimize_tir_input(
+                                input,
+                                &options.target_info,
+                                options.tir_dump,
+                                options.tir_stats,
+                                options.verify_lir,
+                                project_simple_ir,
+                            )
+                        })
                     })
                     .collect()
             });

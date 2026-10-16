@@ -11,11 +11,30 @@ use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileE
 #[cfg(windows)]
 use windows_sys::Win32::System::IO::OVERLAPPED;
 
-use super::paths::stdlib_cache_publish_lock_path;
+use super::paths::{stdlib_cache_producer_lock_path, stdlib_cache_publish_lock_path};
+
+pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
+    stdlib_path: &Path,
+    body: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    with_exclusive_file_lock(stdlib_cache_publish_lock_path(stdlib_path)?, body)
+}
+
+/// Runs `body` as the only producer of a shared stdlib cache entry. Concurrent
+/// builds wait here, then find the leader's published archive. The producer
+/// lock is taken before the publication stripe, never after it.
+pub(crate) fn with_shared_stdlib_cache_producer_lock<T>(
+    cache_entry: &Path,
+    body: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    match stdlib_cache_producer_lock_path(cache_entry)? {
+        Some(lock_path) => with_exclusive_file_lock(lock_path, body),
+        None => body(),
+    }
+}
 
 #[cfg(any(unix, windows))]
-fn open_publication_lock(stdlib_path: &Path) -> io::Result<(PathBuf, File)> {
-    let lock_path = stdlib_cache_publish_lock_path(stdlib_path)?;
+fn open_lock_file(lock_path: PathBuf) -> io::Result<(PathBuf, File)> {
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -29,11 +48,11 @@ fn open_publication_lock(stdlib_path: &Path) -> io::Result<(PathBuf, File)> {
 }
 
 #[cfg(unix)]
-pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
-    stdlib_path: &Path,
+fn with_exclusive_file_lock<T>(
+    lock_path: PathBuf,
     body: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    let (lock_path, file) = open_publication_lock(stdlib_path)?;
+    let (lock_path, file) = open_lock_file(lock_path)?;
     let lock_rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if lock_rc != 0 {
         return Err(io::Error::last_os_error());
@@ -49,11 +68,11 @@ pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
 }
 
 #[cfg(windows)]
-pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
-    stdlib_path: &Path,
+fn with_exclusive_file_lock<T>(
+    lock_path: PathBuf,
     body: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    let (lock_path, file) = open_publication_lock(stdlib_path)?;
+    let (lock_path, file) = open_lock_file(lock_path)?;
     let mut overlapped = OVERLAPPED::default();
     let lock_rc = unsafe {
         LockFileEx(
@@ -79,8 +98,8 @@ pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(crate) fn with_shared_stdlib_cache_publish_lock<T>(
-    _stdlib_path: &Path,
+fn with_exclusive_file_lock<T>(
+    _lock_path: PathBuf,
     body: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
     body()

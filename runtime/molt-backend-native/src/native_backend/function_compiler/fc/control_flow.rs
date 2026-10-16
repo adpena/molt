@@ -1,4 +1,5 @@
 use super::super::*;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 /// Single-source kind authority for [`handle_control_flow_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -328,7 +329,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         .append_block_param(merge_block, merge_rebind_storage_clif_type(*storage))
                 })
                 .collect();
-            if std::env::var("MOLT_DEBUG_IF_MERGE_SLOTS").as_deref() == Ok(func_name) {
+            if backend_env::var(BackendEnv::MOLT_DEBUG_IF_MERGE_SLOTS).as_deref() == Ok(func_name) {
                 let current_block = builder.current_block();
                 let current_filled = current_block
                     .map(|block| crate::block_has_terminator(&*builder, block))
@@ -351,7 +352,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         .get(name)
                         .copied()
                         .is_some_and(|first| first <= op_idx);
-                    if std::env::var("MOLT_DEBUG_IF_MERGE_SLOTS").as_deref() == Ok(func_name) {
+                    if backend_env::var(BackendEnv::MOLT_DEBUG_IF_MERGE_SLOTS).as_deref()
+                        == Ok(func_name)
+                    {
                         eprintln!(
                             "IF_MERGE_INIT func={} op={} name={} reaching_def={}",
                             func_name, op_idx, name, has_reaching_def
@@ -377,7 +380,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     MergeRebindSlot { slot, storage }
                 })
                 .collect();
-            if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+            if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref() == Ok(func_name) {
                 let _ = crate::debug_artifacts::append_debug_artifact(
                     "native/ifmerge_debug.txt",
                     format!("MERGE_INIT {} names={:?}\n", func_name, merge_rebind_names),
@@ -504,7 +507,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         builder.ins().stack_store(val, rebind_slot.slot, 0);
                         merge_rebind_args.push(val);
                     }
-                    if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+                    if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref() == Ok(func_name)
+                    {
                         eprintln!(
                             "MERGE_REBIND {} else_op names={:?} args={:?}",
                             func_name, frame.merge_rebind_names, merge_rebind_args
@@ -565,7 +569,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     }
                     ensure_block_in_layout(&mut *builder, frame.merge_block);
                     reachable_blocks.insert(frame.merge_block);
-                    if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+                    if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref() == Ok(func_name)
+                    {
                         eprintln!(
                             "PHI_ARGS {} else_op block={:?} merge={:?} args={:?} phi_ops={:?}",
                             func_name,
@@ -729,7 +734,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
                         ensure_block_in_layout(&mut *builder, frame.merge_block);
                         reachable_blocks.insert(frame.merge_block);
-                        if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+                        if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref()
+                            == Ok(func_name)
+                        {
                             eprintln!(
                                 "PHI_ARGS {} end_if_else block={:?} merge={:?} args={:?} phi_ops={:?}",
                                 func_name,
@@ -861,7 +868,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
                         ensure_block_in_layout(&mut *builder, frame.merge_block);
                         reachable_blocks.insert(frame.merge_block);
-                        if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+                        if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref()
+                            == Ok(func_name)
+                        {
                             eprintln!(
                                 "PHI_ARGS {} end_if_then block={:?} merge={:?} args={:?} phi_ops={:?}",
                                 func_name,
@@ -952,7 +961,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             builder.ins().stack_store(else_val, rebind_slot.slot, 0);
                             merge_rebind_args.push(else_val);
                         }
-                        if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+                        if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref()
+                            == Ok(func_name)
+                        {
                             eprintln!(
                                 "MERGE_REBIND {} end_if_else names={:?} args={:?}",
                                 func_name, frame.merge_rebind_names, merge_rebind_args
@@ -1005,7 +1016,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     }
                     ensure_block_in_layout(&mut *builder, frame.merge_block);
                     reachable_blocks.insert(frame.merge_block);
-                    if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+                    if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref() == Ok(func_name)
+                    {
                         eprintln!(
                             "PHI_ARGS {} synthetic_else block={:?} merge={:?} args={:?} phi_ops={:?}",
                             func_name,
@@ -1067,7 +1079,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             rebind_slot.storage,
                         );
                     }
-                    if std::env::var("MOLT_DEBUG_PHI_ARGS").as_deref() == Ok(func_name) {
+                    if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref() == Ok(func_name)
+                    {
                         eprintln!(
                             "MERGE_REBIND {} merge names={:?} params={:?}",
                             func_name, frame.merge_rebind_names, frame.merge_rebind_params

@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ir::{FunctionIR, OpIR};
@@ -255,7 +256,7 @@ impl ScalarRepresentationPlan {
         func_ir: &FunctionIR,
         target_info: &crate::tir::target_info::TargetInfo,
     ) -> Self {
-        let trace = std::env::var("MOLT_TIR_TRACE_FUNC")
+        let trace = backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
             .ok()
             .is_some_and(|filter| filter == "1" || func_ir.name.contains(&filter));
         let trace_stage = |stage: &str| {
@@ -346,7 +347,7 @@ impl ScalarRepresentationPlan {
         optimized_names: Option<&SimpleValueNames>,
         final_emission: bool,
     ) -> Self {
-        let trace = std::env::var("MOLT_TIR_TRACE_FUNC")
+        let trace = backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
             .ok()
             .is_some_and(|filter| filter == "1" || func_ir.name.contains(&filter));
         let trace_stage = |stage: &str| {

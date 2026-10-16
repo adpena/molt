@@ -100,6 +100,10 @@ pub(crate) fn resolved_archive_path(path: &Path) -> io::Result<PathBuf> {
     Ok(resolved)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "MOLT_CACHE roots every Molt cache; it is process configuration"
+)]
 pub(crate) fn validate_required_stdlib_output(
     output: &Path,
     source: Option<&Path>,
@@ -142,6 +146,31 @@ pub(crate) fn validate_required_stdlib_output(
         }
     }
     Ok(())
+}
+
+/// The producer stripe for a canonical shared stdlib cache entry
+/// (`<root>/shared-stdlib/<key>/stdlib.a`). Builds that need one entry take it
+/// before they compile, so one compiles and the rest hydrate its archive.
+/// Another path has no cross-build identity and no producer. Like the
+/// publication lock, it stripes by the key's first byte: at most 256 lock
+/// files, and concurrent misses of two different entries share a stripe one
+/// time in 256.
+pub(super) fn stdlib_cache_producer_lock_path(path: &Path) -> io::Result<Option<PathBuf>> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let namespace = parent.parent();
+    let shared = path.file_name() == Some(OsStr::new("stdlib.a"))
+        && namespace.and_then(Path::file_name) == Some(OsStr::new("shared-stdlib"));
+    if !shared {
+        return Ok(None);
+    }
+    let key = exact_cache_key(parent)?;
+    let cache_root = namespace
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("."));
+    Ok(Some(cache_root.join("locks").join(format!(
+        "shared-stdlib-producer.{}.lock",
+        &key[..2]
+    ))))
 }
 
 pub(super) fn stdlib_cache_publish_lock_path(path: &Path) -> io::Result<PathBuf> {

@@ -2,6 +2,7 @@ use crate::SimpleIR;
 use crate::wasm_plan::{
     WasmStageAudit, emit_wasm_stage_audit, simple_ir_stage_shape, tir_module_stage_shape,
 };
+use molt_ir::backend_environment::BackendEnv;
 
 pub(super) fn run_tir_pipeline(
     ir: &mut SimpleIR,
@@ -21,8 +22,8 @@ pub(super) fn run_tir_pipeline(
     // TIR is mandatory for backend-facing functions; bypassing it would let
     // SimpleIR transport metadata become a hidden representation authority.
     let mut cached_tir = {
-        let tir_dump = crate::env_setting("TIR_DUMP").as_deref() == Some("1");
-        let tir_stats = crate::env_setting("TIR_OPT_STATS").as_deref() == Some("1");
+        let tir_dump = crate::env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1");
+        let tir_stats = crate::env_setting(BackendEnv::TIR_OPT_STATS).as_deref() == Some("1");
         let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
             crate::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut ir.functions),
             crate::tir::pipeline_cache::TirPipelineRunOptions {

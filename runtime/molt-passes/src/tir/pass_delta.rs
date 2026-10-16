@@ -5,6 +5,7 @@
 //! one JSONL record per pass. Product IR, pass order, analysis invalidation, and
 //! verification behavior are unchanged when the observer is disabled or enabled.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -27,7 +28,7 @@ use crate::repr::Repr;
 pub(crate) const PASS_DELTA_SCHEMA_VERSION: u32 = 2;
 
 pub(crate) fn emit_enabled() -> bool {
-    std::env::var("MOLT_EMIT_PASS_DELTA").as_deref() == Ok("1")
+    backend_env::var(BackendEnv::MOLT_EMIT_PASS_DELTA).as_deref() == Ok("1")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -381,7 +382,7 @@ pub(crate) fn emit_pass_delta(
 }
 
 fn append_delta_line(line: &[u8]) -> io::Result<()> {
-    if let Some(path) = std::env::var_os("MOLT_PASS_DELTA_PATH") {
+    if let Some(path) = backend_env::var_os(BackendEnv::MOLT_PASS_DELTA_PATH) {
         let path = PathBuf::from(path);
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()

@@ -1,3 +1,6 @@
+// This test reads process settings to gate and isolate its fixtures.
+#![allow(clippy::disallowed_methods)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

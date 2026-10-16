@@ -3,6 +3,7 @@ use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::runtime_import_abi::{MOLT_DEC_REF, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ};
 use crate::tir::simple_def_use::simple_ir_binding;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 // Per-op-family Cranelift codegen handlers lifted out of `compile_func_inner`
 // (decomposition program M1). Scalar carrier/boxing helpers live in
@@ -36,7 +37,7 @@ impl SimpleBackend {
         function_has_ret: &BTreeMap<String, bool>,
     ) {
         let func_ir = function.function();
-        let trace_compile = env_setting("MOLT_TRACE_COMPILE_FUNC")
+        let trace_compile = env_setting(BackendEnv::MOLT_TRACE_COMPILE_FUNC)
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
@@ -57,7 +58,7 @@ impl SimpleBackend {
                 ),
             );
         }
-        if let Some(pattern) = env_setting("MOLT_DUMP_FINAL_FUNC_IR")
+        if let Some(pattern) = env_setting(BackendEnv::MOLT_DUMP_FINAL_FUNC_IR)
             && func_ir.name.contains(pattern.as_str())
         {
             let sanitized: String = func_ir
@@ -152,7 +153,7 @@ impl SimpleBackend {
                     )
                 })
                 .count();
-            if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok()
+            if backend_env::var(BackendEnv::MOLT_DEBUG_CHECK_EXC).is_ok()
                 && (ce_count > 0
                     || func_ir.name.contains("molt_main")
                     || func_ir.name.contains("test_try"))
@@ -272,13 +273,14 @@ impl SimpleBackend {
         }
         let trace_ops = should_trace_ops(&func_ir.name);
         let trace_stride = trace_ops.as_ref().map(|cfg| cfg.stride);
-        let debug_loop_cfg = std::env::var("MOLT_DEBUG_LOOP_CFG")
+        let debug_loop_cfg = backend_env::var(BackendEnv::MOLT_DEBUG_LOOP_CFG)
             .ok()
             .filter(|raw| raw == "1" || func_ir.name.contains(raw));
-        let debug_block_origins = std::env::var("MOLT_DEBUG_BLOCK_ORIGINS")
+        let debug_block_origins = backend_env::var(BackendEnv::MOLT_DEBUG_BLOCK_ORIGINS)
             .ok()
             .filter(|raw| raw == "1" || raw.as_str() == func_ir.name || func_ir.name.contains(raw));
-        let debug_seal = std::env::var("MOLT_DEBUG_SEAL").as_deref() == Ok(func_ir.name.as_str());
+        let debug_seal =
+            backend_env::var(BackendEnv::MOLT_DEBUG_SEAL).as_deref() == Ok(func_ir.name.as_str());
         let maybe_debug_seal = |tag: &str, op_idx: usize, block: Block| {
             if debug_seal {
                 let line = format!(
@@ -286,7 +288,7 @@ impl SimpleBackend {
                     func_ir.name, tag, op_idx, block
                 );
                 eprint!("{line}");
-                if let Ok(path) = std::env::var("MOLT_DEBUG_SEAL_FILE")
+                if let Ok(path) = backend_env::var(BackendEnv::MOLT_DEBUG_SEAL_FILE)
                     && let Ok(mut file) = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
@@ -378,7 +380,8 @@ impl SimpleBackend {
         // garbage (e.g., set subtraction returning an int).
         let int_store_target_names = if scalar_fast_paths_enabled {
             let int_store_targets = representation_plan.scalar_store_targets(ScalarKind::Int);
-            if std::env::var("MOLT_DUMP_INT_STORE_TARGETS").as_deref() == Ok(func_ir.name.as_str())
+            if backend_env::var(BackendEnv::MOLT_DUMP_INT_STORE_TARGETS).as_deref()
+                == Ok(func_ir.name.as_str())
             {
                 eprintln!("INT_STORE_TARGETS {} {:?}", func_ir.name, int_store_targets);
             }
@@ -498,7 +501,7 @@ impl SimpleBackend {
         // Generated async-work polls bypass this pure-exception lane in
         // `handle_exception_control_op` and call the eval-breaker observer.
         let has_exc_handling = function_exception_label_id.is_some();
-        let inline_exc_disabled = env_setting("MOLT_BACKEND_INLINE_EXC_DISABLED")
+        let inline_exc_disabled = env_setting(BackendEnv::MOLT_BACKEND_INLINE_EXC_DISABLED)
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
@@ -991,7 +994,7 @@ impl SimpleBackend {
         // `len`/`index` can fold without touching the runtime. The tuple
         // object itself must still use the canonical runtime layout.
         let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        if std::env::var("MOLT_DUMP_IR").as_deref() == Ok("ALL_OPS")
+        if backend_env::var(BackendEnv::MOLT_DUMP_IR).as_deref() == Ok("ALL_OPS")
             && ops.iter().any(|o| o.kind == "not")
         {
             eprintln!("[FUNC] {} ({} ops)", func_ir.name, ops.len());
@@ -1110,7 +1113,8 @@ impl SimpleBackend {
                 && let Some(stride) = trace_stride
                 && op_idx % stride == 0
             {
-                if std::env::var("MOLT_TRACE_OP_PROGRESS_STDERR").as_deref() == Ok("1") {
+                if backend_env::var(BackendEnv::MOLT_TRACE_OP_PROGRESS_STDERR).as_deref() == Ok("1")
+                {
                     eprintln!(
                         "[molt-native-op] func={} op={} kind={} block={:?} filled={}",
                         func_ir.name,
@@ -2156,8 +2160,8 @@ impl SimpleBackend {
             // We therefore only drain entry-tracked cleanup while still emitting the entry block.
             // Values whose "last use" happens exclusively in a non-entry block remain live until
             // the function-level return cleanup, which is emitted on all paths.
-            if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
-                && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+            if backend_env::var(BackendEnv::MOLT_DEBUG_TRACKED_CLEANUP).as_deref() == Ok("1")
+                && backend_env::var(BackendEnv::MOLT_DEBUG_FUNC_FILTER)
                     .ok()
                     .is_none_or(|f| func_ir.name.contains(&f))
             {
@@ -2170,7 +2174,7 @@ impl SimpleBackend {
                     .and_then(|b| block_tracked_ptr.get(&b))
                     .cloned()
                     .unwrap_or_default();
-                let write_enabled = std::env::var("MOLT_DEBUG_OP_INDEX")
+                let write_enabled = backend_env::var(BackendEnv::MOLT_DEBUG_OP_INDEX)
                     .ok()
                     .and_then(|s| s.parse::<usize>().ok())
                     .is_none_or(|target| target == op_idx);
@@ -2377,7 +2381,7 @@ impl SimpleBackend {
 
         // Zero-predecessor blocks are harmless dead code that Cranelift
         // skips during compilation.  Only log them when debugging.
-        if std::env::var_os("MOLT_DUMP_CLIF_ON_CFG_ERROR").is_some() {
+        if backend_env::var_os(BackendEnv::MOLT_DUMP_CLIF_ON_CFG_ERROR).is_some() {
             let zero_pred_blocks = find_zero_pred_blocks(builder.func);
             if !zero_pred_blocks.is_empty() {
                 eprintln!(
@@ -2387,13 +2391,13 @@ impl SimpleBackend {
                 eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
             }
         }
-        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF_FUNC")
+        if let Ok(filter) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF_FUNC)
             && (func_ir.name == filter || func_ir.name.contains(&filter))
         {
             eprintln!("CLIF {}:\n{}", func_ir.name, builder.func.display());
         }
-        if let Ok(path) = std::env::var("MOLT_DUMP_CLIF_FILE")
-            && let Ok(clif_filter) = std::env::var("MOLT_DUMP_CLIF_FILE_FILTER")
+        if let Ok(path) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF_FILE)
+            && let Ok(clif_filter) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF_FILE_FILTER)
             && func_ir.name.contains(&clif_filter)
         {
             let clif_text = format!("CLIF {}:\n{}", func_ir.name, builder.func.display());
@@ -2495,13 +2499,13 @@ impl SimpleBackend {
             dump_ir_ops(&func_ir, &config.mode);
         }
 
-        if std::env::var("MOLT_DEBUG_COMPILED_FUNCS").as_deref() == Ok("1") {
+        if backend_env::var(BackendEnv::MOLT_DEBUG_COMPILED_FUNCS).as_deref() == Ok("1") {
             let _ = crate::debug_artifacts::append_debug_artifact(
                 "native/compiled_funcs.txt",
                 format!("compiled: {}\n", func_ir.name),
             );
         }
-        if let Ok(filter) = std::env::var("MOLT_DUMP_CLIF")
+        if let Ok(filter) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF)
             && (filter == "1" || filter == func_ir.name || func_ir.name.contains(&filter))
         {
             let clif = format!("{}", self.ctx.func.display());

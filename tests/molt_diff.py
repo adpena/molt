@@ -7,7 +7,6 @@ import json
 import multiprocessing
 import os
 import re
-import socket
 import shutil
 import signal
 import subprocess
@@ -19,6 +18,7 @@ from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequenc
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 # Make the repository root importable so the `tools` / `tests` packages resolve
 # regardless of the current working directory or how this harness is launched.
@@ -766,31 +766,16 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _daemon_ping(socket_path: Path, *, timeout: float = 0.75) -> bool:
-    if os.name != "posix":
-        return False
-    if not socket_path.exists():
-        return False
-    payload = {"version": 1, "ping": True}
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            sock.connect(str(socket_path))
-            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            sock.shutdown(socket.SHUT_WR)
-            chunks: list[bytes] = []
-            while True:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-    except OSError:
-        return False
-    try:
-        response = json.loads(b"".join(chunks).decode("utf-8", "replace").strip())
-    except json.JSONDecodeError:
-        return False
-    return bool(response.get("ok")) and bool(response.get("pong"))
+_DAEMON_CONTROL_TIMEOUT_S = 0.75
+
+
+def _daemon_health(socket_path: Path) -> dict[str, Any] | None:
+    """The daemon's health report through the CLI's daemon client."""
+    if os.name != "posix" or not socket_path.exists():
+        return None
+    from molt.cli.backend_execution import backend_daemon_health
+
+    return backend_daemon_health(socket_path, timeout=_DAEMON_CONTROL_TIMEOUT_S)
 
 
 def _pid_rss_age(pid: int) -> tuple[int | None, int | None]:
@@ -904,6 +889,34 @@ def _terminate_verified_backend_daemon(
         return False
     daemon_custody.remove_backend_daemon_identity(record.path)
     return True
+
+
+def _retire_idle_backend_daemon(
+    process: _BackendDaemonProcess,
+    records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
+) -> bool:
+    """Retire a daemon that reports no admitted jobs. A busy daemon keeps
+    running: its builds would otherwise fail mid-compile. Retirement drains,
+    so a build that connects after the health check still completes."""
+    record = _verified_backend_daemon_record(process, records_by_pid)
+    if record is None:
+        return False
+    health = _daemon_health(process.socket_path)
+    # The socket may already belong to a successor; retire only this daemon.
+    if (
+        health is None
+        or health.get("pid") != process.pid
+        or health.get("active_jobs") != 0
+    ):
+        return False
+    from molt.cli.backend_execution import retire_backend_daemon
+
+    # Record retirement first, so no pruner stops the daemon while it drains.
+    daemon_custody.mark_backend_daemon_retiring(record)
+    if retire_backend_daemon(process.socket_path, timeout=_DAEMON_CONTROL_TIMEOUT_S):
+        return True
+    daemon_custody.write_backend_daemon_identity(record.path, record.identity)
+    return False
 
 
 def _prune_custody_event_path() -> Path:
@@ -1108,28 +1121,33 @@ def _prune_backend_daemons() -> None:
         processes_by_socket.setdefault(process.socket_path, []).append(process)
     records_by_pid = _current_session_backend_daemon_records_by_pid()
     for socket_path, processes in processes_by_socket.items():
+        # A retiring daemon has unlinked its socket and exits once drained,
+        # so no rule below may stop it.
         verified = [
             process
             for process in processes
-            if _verified_backend_daemon_record(process, records_by_pid) is not None
+            if (record := _verified_backend_daemon_record(process, records_by_pid))
+            is not None
+            and not record.identity.retiring
         ]
-        if not verified:
-            continue
         if max_rss_kb > 0:
             filtered: list[_BackendDaemonProcess] = []
             for process in verified:
                 rss_kb, _age_sec = _pid_rss_age(process.pid)
-                if rss_kb is not None and rss_kb > max_rss_kb:
-                    if _terminate_verified_backend_daemon(process, records_by_pid):
-                        print(
-                            "[INFO] Pruned backend daemon pid="
-                            f"{process.pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
-                        )
+                if (
+                    rss_kb is not None
+                    and rss_kb > max_rss_kb
+                    and _retire_idle_backend_daemon(process, records_by_pid)
+                ):
+                    print(
+                        "[INFO] Retired idle backend daemon pid="
+                        f"{process.pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
+                    )
                     continue
                 filtered.append(process)
-            verified = [process for process in filtered if _pid_alive(process.pid)]
-            if not verified:
-                continue
+            verified = filtered
+        if not verified:
+            continue
         if not socket_path.exists():
             for process in verified:
                 _terminate_verified_backend_daemon(process, records_by_pid)
@@ -1139,8 +1157,7 @@ def _prune_backend_daemons() -> None:
             for process in verified[:-1]:
                 _terminate_verified_backend_daemon(process, records_by_pid)
             verified = verified[-1:]
-        ping_ok = _daemon_ping(socket_path)
-        if not ping_ok:
+        if _daemon_health(socket_path) is None:
             process = verified[0]
             _rss_kb, age_sec = _pid_rss_age(process.pid)
             if age_sec is not None and age_sec >= unresponsive_stale_sec:

@@ -13,7 +13,7 @@ use super::target::DaemonCompiledOutput;
 /// Publish a compiled artifact at `output` and, where the job's cache policy
 /// allows it, keep it in memory. Returns the warnings the job reports.
 pub(super) fn write_daemon_compiled_output(
-    cache: &mut DaemonCache,
+    cache: &DaemonCache,
     output: &str,
     cache_key: &str,
     function_cache_key: &str,

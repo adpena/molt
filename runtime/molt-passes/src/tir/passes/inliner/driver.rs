@@ -78,6 +78,7 @@
 //!    **all four** maps (plus `label_id_map`) with every key remapped to the
 //!    fresh block ids.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{HashMap, HashSet};
 
 use crate::tir::call_graph::CallGraph;
@@ -173,7 +174,7 @@ pub fn run_inliner(
         .map(|(idx, f)| (f.name.clone(), idx))
         .collect();
 
-    if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1") {
         let mut candidates: Vec<String> = numeric_raw_lane_enabled.iter().cloned().collect();
         candidates.sort();
         let mut details: Vec<String> = candidates

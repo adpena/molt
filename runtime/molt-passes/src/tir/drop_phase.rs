@@ -60,6 +60,7 @@ use super::function::{TirFunction, TirModule};
 use super::ops::AttrValue;
 use super::passes::drop_insertion::DROP_INSERTED_ATTR;
 use super::target_info::TargetInfo;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::time::Instant;
 
 fn drop_stage_audit_enabled() -> bool {
@@ -77,7 +78,7 @@ fn emit_drop_function_audit(
     if !drop_stage_audit_enabled() {
         return;
     }
-    if let Ok(filter) = std::env::var("MOLT_DROP_STAGE_AUDIT_FUNC")
+    if let Ok(filter) = backend_env::var(BackendEnv::MOLT_DROP_STAGE_AUDIT_FUNC)
         && !filter.trim().is_empty()
         && !func.name.contains(filter.trim())
     {

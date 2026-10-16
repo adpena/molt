@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 /// Single-source kind authority for [`handle_exception_control_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -117,7 +118,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     func_name, op_idx
                 )
             });
-            if std::env::var("MOLT_DEBUG_CHECK_EXC").is_ok() {
+            if backend_env::var(BackendEnv::MOLT_DEBUG_CHECK_EXC).is_ok() {
                 eprintln!(
                     "[CHECK_EXC] func={} op={} target_id={} found_in_label_blocks={}",
                     func_name,
@@ -154,8 +155,8 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     tracked_obj_vars_set.clear();
                     tracked_vars_set.clear();
                 }
-                if std::env::var("MOLT_DEBUG_CHECK_EXCEPTION").as_deref() == Ok("1")
-                    && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                if backend_env::var(BackendEnv::MOLT_DEBUG_CHECK_EXCEPTION).as_deref() == Ok("1")
+                    && backend_env::var(BackendEnv::MOLT_DEBUG_FUNC_FILTER)
                         .ok()
                         .is_none_or(|f| func_name.contains(&f))
                 {
@@ -165,11 +166,11 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             if !carry_obj.is_empty() {
                 let cleanup =
                     drain_cleanup_candidates(rc_authority, &mut carry_obj, last_use, op_idx, None);
-                if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
-                    && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                if backend_env::var(BackendEnv::MOLT_DEBUG_TRACKED_CLEANUP).as_deref() == Ok("1")
+                    && backend_env::var(BackendEnv::MOLT_DEBUG_FUNC_FILTER)
                         .ok()
                         .is_none_or(|f| func_name.contains(&f))
-                    && std::env::var("MOLT_DEBUG_OP_INDEX")
+                    && backend_env::var(BackendEnv::MOLT_DEBUG_OP_INDEX)
                         .ok()
                         .and_then(|s| s.parse::<usize>().ok())
                         .is_none_or(|target| target == op_idx)
@@ -194,11 +195,11 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             if !carry_ptr.is_empty() {
                 let cleanup =
                     drain_cleanup_candidates(rc_authority, &mut carry_ptr, last_use, op_idx, None);
-                if std::env::var("MOLT_DEBUG_TRACKED_CLEANUP").as_deref() == Ok("1")
-                    && std::env::var("MOLT_DEBUG_FUNC_FILTER")
+                if backend_env::var(BackendEnv::MOLT_DEBUG_TRACKED_CLEANUP).as_deref() == Ok("1")
+                    && backend_env::var(BackendEnv::MOLT_DEBUG_FUNC_FILTER)
                         .ok()
                         .is_none_or(|f| func_name.contains(&f))
-                    && std::env::var("MOLT_DEBUG_OP_INDEX")
+                    && backend_env::var(BackendEnv::MOLT_DEBUG_OP_INDEX)
                         .ok()
                         .and_then(|s| s.parse::<usize>().ok())
                         .is_none_or(|target| target == op_idx)

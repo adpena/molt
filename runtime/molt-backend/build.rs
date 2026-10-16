@@ -1,5 +1,10 @@
 //! Derive the backend's capability cfg aliases, so each predicate has one owner.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "Cargo hands a build script its target and features through the environment"
+)]
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 

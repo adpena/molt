@@ -4,9 +4,10 @@ use crate::tir::op_kinds_generated::{
     simpleir_kind_is_block_leader, simpleir_kind_is_exception_check,
 };
 use crate::tir::{IntRange, OpCode};
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 pub fn elide_safe_exception_checks(func_ir: &mut FunctionIR) {
-    if std::env::var("MOLT_DISABLE_EXC_ELIDE").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_DISABLE_EXC_ELIDE).is_ok() {
         return;
     }
     // Only an executed check establishes a clean fallthrough. A non-throwing

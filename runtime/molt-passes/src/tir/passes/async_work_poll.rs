@@ -5,6 +5,7 @@
 //! existing authority at every generated call-return site and every canonical
 //! loop backedge. `check_exception_elim` must preserve marked observations.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ir::{FunctionIR, OpIR};
@@ -89,7 +90,9 @@ fn latch_check_site(
 }
 
 fn dump_lexical_custody_failure(func: &TirFunction, position: ExceptionOpPosition) {
-    if std::env::var_os("MOLT_DUMP_IR").is_none() && std::env::var_os("TIR_DUMP").is_none() {
+    if backend_env::var_os(BackendEnv::MOLT_DUMP_IR).is_none()
+        && backend_env::var_os(BackendEnv::TIR_DUMP).is_none()
+    {
         return;
     }
     eprintln!(

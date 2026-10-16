@@ -40,6 +40,7 @@ of truth when a claim drifts.
 - [design/foundation/generational_gc_authority.md](design/foundation/generational_gc_authority.md)
 - [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
 - [design/parallel_build_architecture.md](design/parallel_build_architecture.md)
+- [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - [architecture/compilation-model.md](architecture/compilation-model.md)
 - [architecture/gpu-primitive-stack.md](architecture/gpu-primitive-stack.md)
 - [spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)

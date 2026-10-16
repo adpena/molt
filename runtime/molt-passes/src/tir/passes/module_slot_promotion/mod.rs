@@ -56,6 +56,7 @@
 use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with, compute_idoms_with};
 use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::op_kinds_generated::{ModuleSlotAccessRole, opcode_module_slot_access_role_table};
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 use super::alias_analysis::AliasAnalysisResult;
 
@@ -116,7 +117,8 @@ pub(super) struct DebugLog {
 impl DebugLog {
     pub(super) fn from_env() -> Self {
         Self {
-            lines: (std::env::var("MOLT_PROMOTE_DEBUG").as_deref() == Ok("1")).then(Vec::new),
+            lines: (backend_env::var(BackendEnv::MOLT_PROMOTE_DEBUG).as_deref() == Ok("1"))
+                .then(Vec::new),
         }
     }
     pub(super) fn note(&mut self, msg: impl Into<String>) {

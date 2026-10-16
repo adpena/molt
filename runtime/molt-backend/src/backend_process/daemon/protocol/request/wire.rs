@@ -1,7 +1,9 @@
 use molt_backend::json_boundary::{expect_object, optional_bool, optional_string};
 use serde_json::Value as JsonValue;
 
-use super::env::apply_daemon_request_env;
+use std::sync::Arc;
+
+use super::env::daemon_request_environment;
 use super::model::{DaemonJobRequest, DaemonRequest};
 
 impl DaemonRequest {
@@ -11,13 +13,15 @@ impl DaemonRequest {
         let obj = expect_object(&value, "request")?;
         let version = daemon_request_version(obj)?;
         let jobs = daemon_request_jobs(obj)?;
-        apply_daemon_request_env(obj)?;
+        let environment = Arc::new(daemon_request_environment(obj)?);
         Ok(Self {
             version,
             ping: optional_bool(obj, "ping", "request")?,
+            retire: optional_bool(obj, "retire", "request")?,
             include_health: optional_bool(obj, "include_health", "request")?,
             config_digest: optional_string(obj, "config_digest", "request")?,
             jobs,
+            environment,
         })
     }
 }

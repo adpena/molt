@@ -225,10 +225,12 @@ impl<'a> SsaContext<'a> {
         if self.cfg.blocks.is_empty() {
             return;
         }
-        let traced_name = std::env::var("MOLT_TIR_TRACE_FUNC")
-            .ok()
-            .is_some_and(|filter| filter == "1" || self.func_name.contains(&filter))
-            .then(|| self.func_name.clone());
+        let traced_name = crate::backend_environment::var(
+            crate::backend_environment::BackendEnv::MOLT_TIR_TRACE_FUNC,
+        )
+        .ok()
+        .is_some_and(|filter| filter == "1" || self.func_name.contains(&filter))
+        .then(|| self.func_name.clone());
         let trace_stage = |stage: &str| {
             if let Some(name) = traced_name.as_ref() {
                 eprintln!("[TIR-SSA] {name} {stage}");

@@ -1,7 +1,9 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 /// Backend request paths are Unicode strings. An unrepresentable environment
 /// path is an admission error, never an absent extraction request.
 pub(crate) fn shared_stdlib_archive_path_from_env() -> std::io::Result<Option<String>> {
-    let output = decode_shared_stdlib_archive_path(std::env::var_os("MOLT_STDLIB_OBJ"))?;
+    let output =
+        decode_shared_stdlib_archive_path(backend_env::var_os(BackendEnv::MOLT_STDLIB_OBJ))?;
     let cache = shared_stdlib_cache_entry_path_from_env()?;
     validate_shared_stdlib_cache_output(output.as_deref(), cache.as_deref())?;
     Ok(output)
@@ -60,7 +62,7 @@ impl NativeArtifactKind {
 
 /// Optional cache destination is independent of the required archive output.
 pub(crate) fn shared_stdlib_cache_entry_path_from_env() -> std::io::Result<Option<String>> {
-    match std::env::var("MOLT_STDLIB_CACHE_ENTRY") {
+    match backend_env::var(BackendEnv::MOLT_STDLIB_CACHE_ENTRY) {
         Ok(path) if path.is_empty() => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "MOLT_STDLIB_CACHE_ENTRY must not be empty",

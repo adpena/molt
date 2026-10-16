@@ -9,7 +9,6 @@ pub mod fact_graph;
 pub mod lower_from_simple;
 pub mod lower_to_simple;
 pub mod module_phase;
-pub mod parallel;
 pub mod pass_delta;
 pub mod pass_manager;
 pub mod passes;

@@ -45,9 +45,10 @@ use super::function::TirFunction;
 use super::op_kinds_generated::SimpleIrRuntimeRequirements;
 use super::passes::{self, PassStats};
 use super::target_info::TargetInfo;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 fn trace_func_enabled(name: &str) -> bool {
-    std::env::var("MOLT_TIR_TRACE_FUNC")
+    backend_env::var(BackendEnv::MOLT_TIR_TRACE_FUNC)
         .ok()
         .is_some_and(|filter| filter == "1" || name.contains(&filter))
 }
@@ -198,7 +199,8 @@ impl PassManager {
     /// dump pre/post TIR when requested, and panic if post-pipeline
     /// verification fails.
     pub fn run(&self, func: &mut TirFunction) -> Vec<PassStats> {
-        let verify_analysis = std::env::var("MOLT_VERIFY_ANALYSIS").as_deref() == Ok("1");
+        let verify_analysis =
+            backend_env::var(BackendEnv::MOLT_VERIFY_ANALYSIS).as_deref() == Ok("1");
         self.run_inner(func, verify_analysis)
     }
 
@@ -230,7 +232,8 @@ impl PassManager {
         let mut stats = Vec::with_capacity(passes::PIPELINE_PASS_CAPACITY_HINT);
 
         let has_loop_role = !func.loop_roles.is_empty();
-        let dump_tir = std::env::var("MOLT_DUMP_IR").is_ok() || std::env::var("TIR_DUMP").is_ok();
+        let dump_tir = backend_env::var(BackendEnv::MOLT_DUMP_IR).is_ok()
+            || backend_env::var(BackendEnv::TIR_DUMP).is_ok();
         if has_loop_role && dump_tir {
             dump_tir_artifact(func, "pre", &[]);
         }
@@ -367,7 +370,7 @@ impl PassManager {
             eprintln!("[TIR-VERIFY] {} after verify_exception_regions", func.name);
         }
 
-        if std::env::var("TIR_OPT_STATS").as_deref() == Ok("1") {
+        if backend_env::var(BackendEnv::TIR_OPT_STATS).as_deref() == Ok("1") {
             for s in &stats {
                 eprintln!(
                     "[TIR] {}: {} values changed, {} ops removed, {} ops added, {} facts changed",

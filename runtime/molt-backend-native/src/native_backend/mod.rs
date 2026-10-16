@@ -23,7 +23,6 @@ use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 const _: () = assert!(
     molt_codegen_abi::MOLT_FLAGS_ATOMIC == cfg!(not(target_arch = "wasm32"))

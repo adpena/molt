@@ -14,6 +14,7 @@ use super::call_graph::CallGraph;
 use super::function::TirModule;
 use super::passes::ip_summary::ModuleSummaries;
 use super::target_info::TargetInfo;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::BTreeSet;
 use std::time::Instant;
 
@@ -131,7 +132,7 @@ pub fn run_module_pipeline(
     );
     // Observability (mirrors TIR_OPT_STATS): the per-module inliner outcome, so
     // an unexpectedly-inert activation is visible instead of silently zero.
-    if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1") {
         eprintln!(
             "[E1] module '{}': {} call sites inlined into {} functions {:?}",
             module.name,
@@ -157,7 +158,7 @@ pub fn run_module_pipeline(
         Some(fusion_stats.changed_functions.len()),
         audit_start.elapsed().as_millis(),
     );
-    if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1") {
         eprintln!(
             "[Tier-B] module '{}': generator fusion elided {} frame(s), spliced {} yield site(s)",
             module.name, fusion_stats.frames_elided, fusion_stats.yield_sites_spliced,
@@ -177,7 +178,7 @@ pub fn run_module_pipeline(
         Some(promo_changed.len()),
         audit_start.elapsed().as_millis(),
     );
-    if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1") {
         eprintln!(
             "[E1] module '{}': slot-promotion {} slots / {} ops eliminated in {} functions {:?}",
             module.name,
@@ -255,7 +256,7 @@ pub fn run_module_pipeline(
     // MemGVN-forwardable typed-slot load pair (two loads with the same reaching
     // memory version, object root, and field offset). Gated on
     // `MOLT_MEMGVN_REPORT=1` so it never costs a production build.
-    if std::env::var("MOLT_MEMGVN_REPORT").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_MEMGVN_REPORT).as_deref() == Ok("1") {
         report_memgvn_producer_effect(module);
     }
 

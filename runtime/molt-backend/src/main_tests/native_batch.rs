@@ -84,15 +84,16 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
             },
         }),
         ir_path: None,
+        config_namespace: None,
     };
-    let mut cache = DaemonCache::new(Some(1));
+    let cache = DaemonCache::new(Some(1));
 
-    let result = compile_single_job(job, &mut cache);
+    let result = compile_single_job(job, &cache);
 
     assert!(result.ok, "daemon compile failed: {:?}", result.message);
     assert!(output.exists(), "path-written daemon output missing");
     assert!(
-        cache.entries.is_empty(),
+        cache.is_empty(),
         "oversized object must not enter daemon memory cache"
     );
     assert!(
@@ -276,8 +277,11 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
     )
     .expect("parse daemon request");
     let job = request.jobs.expect("jobs").into_iter().next().expect("job");
-    let mut cache = DaemonCache::new(None);
-    let result = compile_single_job(job, &mut cache);
+    let cache = DaemonCache::new(None);
+    let result = {
+        let _scope = molt_ir::backend_environment::enter(request.environment);
+        compile_single_job(job, &cache)
+    };
 
     assert!(result.ok, "daemon compile failed: {:?}", result.message);
     assert!(output.exists(), "application archive missing");

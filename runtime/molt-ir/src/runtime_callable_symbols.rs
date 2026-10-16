@@ -6,8 +6,11 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::Path;
 
-pub const RUNTIME_CALLABLE_SYMBOLS_ENV: &str = "MOLT_RUNTIME_CALLABLE_SYMBOLS";
-pub const RUNTIME_CALLABLE_SYMBOLS_SHA256_ENV: &str = "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256";
+use crate::backend_environment::{self as backend_env, BackendEnv};
+
+const RUNTIME_CALLABLE_SYMBOLS_ENV: &str = BackendEnv::MOLT_RUNTIME_CALLABLE_SYMBOLS.name();
+const RUNTIME_CALLABLE_SYMBOLS_SHA256_ENV: &str =
+    BackendEnv::MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256.name();
 
 fn parse_admitted_callable_symbols(
     contents: &[u8],
@@ -76,8 +79,8 @@ fn load_runtime_callable_symbols(
 /// an empty set. `None` means neither input was supplied, allowing standalone
 /// codegen probes that do not need any runtime callable.
 pub fn runtime_callable_symbols_from_env() -> Option<BTreeSet<String>> {
-    let path = std::env::var_os(RUNTIME_CALLABLE_SYMBOLS_ENV);
-    let digest = std::env::var_os(RUNTIME_CALLABLE_SYMBOLS_SHA256_ENV);
+    let path = backend_env::var_os(BackendEnv::MOLT_RUNTIME_CALLABLE_SYMBOLS);
+    let digest = backend_env::var_os(BackendEnv::MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256);
     load_runtime_callable_symbols(path.as_deref(), digest.as_deref())
         .unwrap_or_else(|err| panic!("native runtime callable admission failed: {err}"))
 }

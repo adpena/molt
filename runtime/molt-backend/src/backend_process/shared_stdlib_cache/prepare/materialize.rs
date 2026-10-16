@@ -7,6 +7,11 @@ use super::super::super::native_batch::write_native_archive_objects;
 use super::super::{compile_stdlib_cache_archive, publish_shared_stdlib_cache_archive};
 use super::request::NativeStdlibCachePrepare;
 
+/// Materializations per cache key, so tests can prove single production.
+#[cfg(test)]
+pub(crate) static MATERIALIZED: std::sync::Mutex<std::collections::BTreeMap<String, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 pub(crate) fn materialize_stdlib_cache(
     ir: &mut SimpleIR,
     stdlib_path: &Path,
@@ -17,6 +22,15 @@ pub(crate) fn materialize_stdlib_cache(
     module_context: &molt_backend::NativeBackendModuleContext,
 ) -> io::Result<()> {
     let stdlib_count = stdlib_funcs.len();
+    #[cfg(test)]
+    {
+        let key = request.expected_cache_key.unwrap_or_default().to_string();
+        *MATERIALIZED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_default() += 1;
+    }
     eprintln!(
         "{}: materializing {} stdlib functions to {}",
         request.log_prefix,

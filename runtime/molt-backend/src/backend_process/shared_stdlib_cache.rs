@@ -10,12 +10,15 @@ pub(crate) use partition::{
     prune_and_partition_native_stdlib, shared_stdlib_partition_manifest,
     shared_stdlib_split_function_names, validate_shared_stdlib_partition,
 };
+#[cfg(test)]
+pub(crate) use prepare::MATERIALIZED as STDLIB_MATERIALIZED;
 pub(crate) use prepare::{NativeStdlibCachePrepare, prepare_native_application_artifact};
 #[cfg(any(unix, test))]
 pub(crate) use publish::shared_stdlib_cache_matches;
 pub(crate) use publish::{
     admit_or_invalidate_shared_stdlib_cache, canonical_stdlib_cache_root,
     publish_shared_stdlib_cache_archive, resolved_archive_path, validate_required_stdlib_output,
+    with_shared_stdlib_cache_producer_lock,
 };
 #[cfg(test)]
 pub(crate) use publish::{

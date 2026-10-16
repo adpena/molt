@@ -3,6 +3,7 @@
 //! Chains together CFG extraction, SSA conversion, and TIR function assembly
 //! into a single `lower_to_tir` entry point.
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 mod loop_structure;
 mod pre_ssa;
 mod type_inference;
@@ -83,7 +84,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     if ir.is_extern {
         return lower_prepared_function(ir);
     }
-    if std::env::var("MOLT_TRACE_SIMPLE_IMPORT").as_deref() == Ok("1") {
+    if backend_env::var(BackendEnv::MOLT_TRACE_SIMPLE_IMPORT).as_deref() == Ok("1") {
         for op in &ir.ops {
             if op.kind.contains("import") {
                 eprintln!(

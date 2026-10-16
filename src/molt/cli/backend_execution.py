@@ -89,8 +89,8 @@ _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 7
 _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 9
 
 
-# Catalog projections, not independent knob lists. Every request control is
-# reset by the daemon from the same catalog before applying the request.
+# Catalog projections, not independent knob lists. The daemon admits each
+# request's controls against the same catalog and scopes them to that request.
 _BACKEND_CODEGEN_REQUEST_ENV_KNOBS = environment_keys(
     "common", "native", "wasm", "runtime_identity", "diagnostic", "observation"
 )
@@ -555,6 +555,10 @@ def _sweep_orphaned_backend_daemon_locks(
                 continue
             _remove_backend_daemon_identity(identity_file)
             cleaned += 1
+            if identity.retiring:
+                # A retired daemon removed its own socket; any socket at that
+                # path now belongs to the daemon that succeeded it.
+                continue
             try:
                 if identity.socket_path.exists():
                     identity.socket_path.unlink()
@@ -1097,6 +1101,7 @@ def _backend_daemon_health_from_response(
         "jobs_total",
         "cache_hits",
         "cache_misses",
+        "active_jobs",
     }
     for field_name in int_fields:
         value = raw.get(field_name)
@@ -1110,6 +1115,9 @@ def _backend_daemon_health_from_response(
         value = raw.get(field_name)
         if isinstance(value, str) and value:
             health[field_name] = value
+    retiring = raw.get("retiring")
+    if isinstance(retiring, bool):
+        health["retiring"] = retiring
     return health or None
 
 
@@ -1166,6 +1174,26 @@ def _backend_daemon_ping_health(
 def _backend_daemon_ping(socket_path: Path, *, timeout: float | None) -> bool:
     ready, _ = _backend_daemon_ping_health(socket_path, timeout=timeout)
     return ready
+
+
+def backend_daemon_health(
+    socket_path: Path, *, timeout: float | None
+) -> dict[str, Any] | None:
+    """The daemon's health report, or ``None`` when it does not answer."""
+    ready, health = _backend_daemon_ping_health(socket_path, timeout=timeout)
+    return health if ready else None
+
+
+def retire_backend_daemon(socket_path: Path, *, timeout: float | None) -> bool:
+    """Ask the daemon to retire: it unlinks its socket, so the next build starts
+    a fresh daemon, finishes the connections it accepted, and exits. Work in
+    flight completes; nothing is killed."""
+    payload = {"version": _BACKEND_DAEMON_PROTOCOL_VERSION, "retire": True}
+    response, err = _backend_daemon_request(socket_path, payload, timeout=timeout)
+    if err is not None or response is None or not response.get("ok"):
+        return False
+    health = _backend_daemon_health_from_response(response)
+    return health is not None and health.get("retiring") is True
 
 
 def _backend_daemon_wait_until_ready(
@@ -1297,6 +1325,11 @@ def _start_backend_daemon(
                 # queue on that socket; restarting here can orphan a busy
                 # daemon and submit the same heavy full-IR request twice.
                 return publish_ready_custody()
+            elif existing_identity.retiring:
+                # A retiring daemon unlinked its socket and is finishing the
+                # connections it accepted. Start its successor, whose identity
+                # replaces this record; never stop the draining daemon.
+                existing_identity = None
             else:
                 _terminate_backend_daemon_identity(
                     existing_identity,

@@ -312,7 +312,7 @@ audience = "internal"
 kind = "int"
 default = ""
 owner = "runtime/molt-backend/src/backend_process/memory_guard.rs"
-summary = "Gigabyte cap on the backend compiler process's committed memory; tools/memory_guard_core/process_custody.py sets it in the child environment from the guard RSS budget and the CLI forwards it in backend daemon requests, the backend process reads it as a whole number to install RLIMIT_DATA on Linux or a job-object memory limit on Windows, molt-tir reads it as a float memory-budget hint, and when unset the backend computes 16, 12, 8 or 4 from physical RAM of at least 64, 32, 16 or fewer GiB."
+summary = "Gigabyte cap on the backend compiler process's committed memory; tools/memory_guard_core/process_custody.py sets it in the child environment from the guard RSS budget and the CLI forwards it in backend daemon requests, the backend parses it as fractional GB and installs it as the soft RLIMIT_DATA on Linux (keeping the inherited hard limit; the daemon widens it to its compile slots times this budget) or a job-object memory limit on Windows, the TIR resource plan reads it per request as a memory budget, and when unset the backend computes 16, 12, 8 or 4 from physical RAM of at least 64, 32, 16 or fewer GiB."
 
 [[variable]]
 name = "MOLT_BACKEND_MEMORY_AVAILABLE_GB"
@@ -1843,7 +1843,7 @@ audience = "developer"
 kind = "int"
 default = "2500000"
 owner = "tests/molt_diff.py"
-summary = "RSS threshold in kilobytes above which tests/molt_diff.py terminates a verified backend daemon it owns during its pruning passes on POSIX hosts; 0 or a negative value disables RSS-based pruning, non-numeric values fall back to 2500000."
+summary = "RSS threshold in kilobytes above which tests/molt_diff.py retires a verified backend daemon it owns during its pruning passes on POSIX hosts, once the daemon reports no admitted jobs; retirement unlinks the socket and lets accepted work finish, and a busy daemon keeps running. 0 or a negative value disables RSS-based retirement, non-numeric values fall back to 2500000."
 
 [[variable]]
 name = "MOLT_DIFF_DAEMON_STALE_SEC"

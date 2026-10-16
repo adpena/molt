@@ -1,5 +1,6 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::*;
+use molt_ir::backend_environment::BackendEnv;
 
 type ExternFunctionSignatures = BTreeMap<String, crate::ir::ExternFunctionSignature>;
 
@@ -35,7 +36,7 @@ impl SimpleBackend {
         // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
         // missing LLVM feature must fail closed instead of substituting a
         // different backend and producing misleading validation evidence.
-        let backend_setting = env_setting("MOLT_BACKEND");
+        let backend_setting = env_setting(BackendEnv::MOLT_BACKEND);
         let backend = select_native_codegen_backend(backend_setting.as_deref());
         self.compile_selected_checked(ir, backend)
     }
@@ -77,7 +78,7 @@ impl SimpleBackend {
 
     fn compile_selected(mut self, ir: SimpleIR, backend: NativeCodegenBackend) -> CompileOutput {
         let use_llvm = backend.uses_llvm();
-        let timing = env_setting("MOLT_BACKEND_TIMING")
+        let timing = env_setting(BackendEnv::MOLT_BACKEND_TIMING)
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
@@ -179,8 +180,8 @@ impl SimpleBackend {
                     cache_dir: None,
                     process_externs: false,
                     verify_lir: false,
-                    tir_dump: env_setting("TIR_DUMP").as_deref() == Some("1"),
-                    tir_stats: env_setting("TIR_OPT_STATS").as_deref() == Some("1"),
+                    tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),
+                    tir_stats: env_setting(BackendEnv::TIR_OPT_STATS).as_deref() == Some("1"),
                     progress_prefix: Some("MOLT_BACKEND(llvm)"),
                     resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
                 },
@@ -300,7 +301,7 @@ impl SimpleBackend {
                 if is_extern {
                     continue;
                 }
-                if env_setting("MOLT_TIR_DUMP").as_deref() == Some("1") {
+                if env_setting(BackendEnv::MOLT_TIR_DUMP).as_deref() == Some("1") {
                     eprintln!(
                         "[LLVM] TIR for '{}':\n{}",
                         tir_func.name,
@@ -339,7 +340,7 @@ impl SimpleBackend {
 
             // Dump LLVM IR under the repo-local debug artifact root when
             // MOLT_LLVM_DUMP_IR=1.
-            let dump_ir = env_setting("MOLT_LLVM_DUMP_IR").as_deref() == Some("1");
+            let dump_ir = env_setting(BackendEnv::MOLT_LLVM_DUMP_IR).as_deref() == Some("1");
             if dump_ir {
                 let _ = crate::debug_artifacts::write_debug_artifact(
                     "llvm/before_opt.ll",

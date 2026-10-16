@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::backend_environment::BackendEnv;
 
 #[cfg(feature = "native-backend")]
 impl Default for SimpleBackend {
@@ -72,12 +73,12 @@ impl SimpleBackend {
         // MOLT_BACKEND_OPT_LEVEL=none for fast dev-loop compilation (~3-5x
         // faster compile times at the cost of ~30-50% slower generated code).
         let opt_level =
-            env_setting("MOLT_BACKEND_OPT_LEVEL").unwrap_or_else(|| "speed".to_string());
+            env_setting(BackendEnv::MOLT_BACKEND_OPT_LEVEL).unwrap_or_else(|| "speed".to_string());
         flag_builder
             .set("opt_level", &opt_level)
             .unwrap_or_else(|err| panic!("invalid MOLT_BACKEND_OPT_LEVEL={opt_level:?}: {err:?}"));
-        let regalloc_algorithm =
-            env_setting("MOLT_BACKEND_REGALLOC_ALGORITHM").unwrap_or_else(|| {
+        let regalloc_algorithm = env_setting(BackendEnv::MOLT_BACKEND_REGALLOC_ALGORITHM)
+            .unwrap_or_else(|| {
                 // When opt_level=none, default to the fast single-pass
                 // allocator regardless of build profile  the user has
                 // explicitly asked for compile-time speed.
@@ -95,7 +96,7 @@ impl SimpleBackend {
         // Cranelift 0.128 adds explicit minimum function alignment tuning.
         // Default to 16-byte release alignment for better i-cache/branch
         // behavior on hot call-heavy kernels; keep debug/dev unchanged.
-        let min_alignment_log2 = env_setting("MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2")
+        let min_alignment_log2 = env_setting(BackendEnv::MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2)
             .unwrap_or_else(|| {
                 if cfg!(debug_assertions) {
                     "0".to_string()
@@ -110,7 +111,7 @@ impl SimpleBackend {
                     "invalid MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2={min_alignment_log2:?}: {err:?}"
                 )
             });
-        if let Some(libcall_call_conv) = env_setting("MOLT_BACKEND_LIBCALL_CALL_CONV") {
+        if let Some(libcall_call_conv) = env_setting(BackendEnv::MOLT_BACKEND_LIBCALL_CALL_CONV) {
             flag_builder
                 .set("libcall_call_conv", &libcall_call_conv)
                 .unwrap_or_else(|err| {
@@ -121,7 +122,7 @@ impl SimpleBackend {
         // dominator tree bugs). Enable in debug builds; disable in release for
         // speed. Override with MOLT_BACKEND_ENABLE_VERIFIER=0|1.
         let default_enable_verifier = cfg!(debug_assertions);
-        let enable_verifier = env_setting("MOLT_BACKEND_ENABLE_VERIFIER")
+        let enable_verifier = env_setting(BackendEnv::MOLT_BACKEND_ENABLE_VERIFIER)
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(default_enable_verifier);
@@ -249,7 +250,7 @@ impl SimpleBackend {
             "shared_flags": flags,
             "isa_flags": isa_flags,
             "tir_simd": [simd.avx, simd.avx2, simd.avx512f],
-            "backend": env_setting("MOLT_BACKEND"),
+            "backend": env_setting(BackendEnv::MOLT_BACKEND),
         });
         #[cfg(feature = "llvm")]
         let identity = {

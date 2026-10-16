@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::HashSet;
 
 use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
@@ -33,7 +34,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
 ) -> Option<CountedLoop> {
     macro_rules! trace {
         ($($a:tt)*) => {
-            if std::env::var("MOLT_DEBUG_COUNTED_LOOP").is_ok() {
+            if backend_env::var(BackendEnv::MOLT_DEBUG_COUNTED_LOOP).is_ok() {
                 let _ = crate::debug_artifacts::append_debug_artifact(
                     "counted_loop_trace.txt",
                     format!("[counted_loop {:?} fn={}] {}\n", header, func.name, format!($($a)*)),

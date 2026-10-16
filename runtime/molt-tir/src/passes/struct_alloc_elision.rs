@@ -1,8 +1,9 @@
 use crate::FunctionIR;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::BTreeMap;
 
 pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
-    if std::env::var("MOLT_DISABLE_STRUCT_ELIDE").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_DISABLE_STRUCT_ELIDE).is_ok() {
         return;
     }
     let mut remove = vec![false; func_ir.ops.len()];

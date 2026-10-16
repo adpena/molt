@@ -10,19 +10,21 @@ pub(super) fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io
             "failed to resolve current backend executable for batch worker: {err}"
         ))
     })?;
-    let status = std::process::Command::new(&exe)
+    let mut command = std::process::Command::new(&exe);
+    command
         .arg("--native-batch-job-file")
         .arg(job_path)
         .arg("--output")
-        .arg(object_path)
-        .status()
-        .map_err(|err| {
-            io::Error::other(format!(
-                "failed to spawn native batch worker '{}' for '{}': {err}",
-                exe.display(),
-                job_path.display()
-            ))
-        })?;
+        .arg(object_path);
+    // A daemon worker gets its request's settings, not the daemon's.
+    molt_backend::backend_environment::configure_child(&mut command);
+    let status = command.status().map_err(|err| {
+        io::Error::other(format!(
+            "failed to spawn native batch worker '{}' for '{}': {err}",
+            exe.display(),
+            job_path.display()
+        ))
+    })?;
     if status.success() {
         return Ok(());
     }

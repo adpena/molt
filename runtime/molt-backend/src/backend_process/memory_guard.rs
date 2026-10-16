@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 #[cfg(unix)]
 use std::env;
 
@@ -16,7 +17,7 @@ pub(crate) fn install_process_memory_guard() {
 #[cfg(any(unix, windows))]
 fn backend_max_rss_bytes() -> u64 {
     backend_max_rss_bytes_from(
-        std::env::var("MOLT_BACKEND_MAX_PROCESS_RSS_GB")
+        backend_env::var(BackendEnv::MOLT_BACKEND_MAX_PROCESS_RSS_GB)
             .ok()
             .as_deref(),
         default_backend_max_rss_gb(),
@@ -32,7 +33,25 @@ fn backend_max_rss_bytes_from(raw_gb: Option<&str>, default_gb: u64) -> u64 {
 
 #[cfg(unix)]
 fn install_unix_memory_guard() {
-    let max_bytes = backend_max_rss_bytes();
+    install_unix_memory_limit(backend_max_rss_bytes());
+}
+
+/// A daemon runs up to `compiles` builds' backend work at once, so it takes
+/// the envelope of that many one-shot backends; each compile still plans
+/// within its own request's budget. Call before the daemon serves requests:
+/// the budget comes from the spawning build's environment.
+#[cfg(molt_backend_daemon)]
+pub(crate) fn widen_process_memory_guard(compiles: usize) {
+    let compiles = u64::try_from(compiles.max(1)).unwrap_or(u64::MAX);
+    install_unix_memory_limit(backend_max_rss_bytes().saturating_mul(compiles));
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "rlimit diagnostics are process configuration"
+)]
+fn install_unix_memory_limit(max_bytes: u64) {
     if let Err(reason) = install_committed_memory_rlimit(max_bytes)
         && env::var("MOLT_DEBUG_RLIMIT").as_deref() == Ok("1")
     {
@@ -44,12 +63,27 @@ fn install_unix_memory_guard() {
 /// committed-memory counterpart of the Windows job memory limit below.
 /// `RLIMIT_AS` would also charge sparse reservations (allocator arenas, the
 /// mapped executable, guard regions) that are not memory.
+///
+/// The guard sets only the soft limit and keeps the inherited hard limit, so
+/// a daemon can widen its own envelope when it serves several builds.
 #[cfg(target_os = "linux")]
 fn install_committed_memory_rlimit(max_bytes: u64) -> Result<(), String> {
-    let rlim = libc::rlimit {
-        rlim_cur: max_bytes,
-        rlim_max: max_bytes,
+    let mut current = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
     };
+    // SAFETY: `getrlimit` writes only into the `rlimit` it is handed.
+    if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut current) } != 0 {
+        return Err(format!(
+            "getrlimit(RLIMIT_DATA) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let rlim = libc::rlimit {
+        rlim_cur: max_bytes.min(current.rlim_max),
+        rlim_max: current.rlim_max,
+    };
+    // SAFETY: `setrlimit` reads only the `rlimit` it is handed.
     if unsafe { libc::setrlimit(libc::RLIMIT_DATA, &rlim) } != 0 {
         return Err(format!(
             "setrlimit(RLIMIT_DATA) failed: {}",

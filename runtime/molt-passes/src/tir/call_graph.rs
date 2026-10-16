@@ -12,8 +12,8 @@
 //!
 //! The [`CallGraph`] is built once per module by
 //! [`crate::tir::module_phase::run_module_pipeline`], before the per-function
-//! [`crate::tir::pass_manager::PassManager`] pipeline runs (via
-//! [`crate::tir::parallel::compile_module_parallel`]). It is a *read-only*
+//! [`crate::tir::pass_manager::PassManager`] pipeline runs (in parallel, on
+//! `molt_tir::tir::pipeline_cache`'s compiler pool). It is a *read-only*
 //! analysis of the lifted [`TirModule`] — it does not mutate the functions.
 //!
 //! ## Callee resolution: static-direct vs dynamic/opaque

@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
@@ -87,7 +88,7 @@ fn run_planned(
     // Skip a function whose full RC is already TIR-managed; for functions that
     // only carry the exception-region pre-bail marker, skip just that pre-bail
     // slice below and still attempt the full drop pass when the CFG permits it.
-    let debug_this = std::env::var("MOLT_DEBUG_DROP")
+    let debug_this = backend_env::var(BackendEnv::MOLT_DEBUG_DROP)
         .map(|p| p == "ALL" || func.name.contains(&p))
         .unwrap_or(false);
     if attr_is_true(func, DROP_INSERTED_ATTR) {

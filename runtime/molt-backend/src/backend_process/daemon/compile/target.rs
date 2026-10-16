@@ -1,4 +1,6 @@
 #[cfg(feature = "native-backend")]
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+#[cfg(feature = "native-backend")]
 use std::path::Path;
 #[cfg(feature = "wasm-backend")]
 use std::sync::Arc;
@@ -83,8 +85,12 @@ impl ResolvedJobTarget {
                 ..
             } => shared_stdlib_cache_matches(
                 Path::new(stdlib_archive_path),
-                std::env::var("MOLT_STDLIB_CACHE_KEY").ok().as_deref(),
-                std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok().as_deref(),
+                backend_env::var(BackendEnv::MOLT_STDLIB_CACHE_KEY)
+                    .ok()
+                    .as_deref(),
+                backend_env::var(BackendEnv::MOLT_STDLIB_CACHE_MANIFEST)
+                    .ok()
+                    .as_deref(),
                 None,
             ),
             #[cfg(feature = "native-backend")]
@@ -125,12 +131,13 @@ impl ResolvedJobTarget {
                 output_path,
             } => {
                 let mut ir = ir;
-                let expected_stdlib_cache_key = std::env::var("MOLT_STDLIB_CACHE_KEY").ok();
+                let expected_stdlib_cache_key =
+                    backend_env::var(BackendEnv::MOLT_STDLIB_CACHE_KEY).ok();
                 let expected_stdlib_cache_manifest =
-                    std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok();
-                let entry_module =
-                    std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
-                let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
+                    backend_env::var(BackendEnv::MOLT_STDLIB_CACHE_MANIFEST).ok();
+                let entry_module = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE)
+                    .unwrap_or_else(|_| "__main__".to_string());
+                let have_entry_module = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE).is_ok();
                 let explicit_stdlib_module_symbols =
                     molt_backend::stdlib_module_symbols_from_env()?;
                 let compile_options = prepare_native_application_artifact(

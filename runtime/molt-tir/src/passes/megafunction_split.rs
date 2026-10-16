@@ -1,3 +1,4 @@
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 mod name_index;
 mod partition;
 use name_index::SplitNameIndex;
@@ -1134,7 +1135,7 @@ pub fn split_megafunctions_with_filter(
     ir: &mut SimpleIR,
     should_split: impl Fn(&FunctionIR) -> bool,
 ) -> BTreeMap<String, String> {
-    let max_ops: usize = std::env::var("MOLT_MAX_FUNCTION_OPS")
+    let max_ops: usize = backend_env::var(BackendEnv::MOLT_MAX_FUNCTION_OPS)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_FUNCTION_OPS);

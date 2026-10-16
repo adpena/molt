@@ -206,9 +206,12 @@ let verify_analysis_filter: Option<String> = std::env::var("MOLT_VERIFY_ANALYSIS
 
 The post-pass check at line 382 becomes `if verify_analysis_filter.as_ref().map_or(false, |f| f.is_empty() || pass.name().contains(f.as_str()))`.
 
-**`/Users/adpena/Projects/molt/runtime/molt-backend/src/main.rs`**
+**Daemon request settings**
 
-Add `MOLT_TIR_DUMP` and `MOLT_VERIFY_ANALYSIS` to `DAEMON_REQUEST_ENV_KEYS` at line 42 (currently `TIR_DUMP` is listed at line 47 but `MOLT_VERIFY_ANALYSIS` is missing).
+`MOLT_TIR_DUMP` and `MOLT_VERIFY_ANALYSIS` are in the backend environment catalog
+(`src/molt/backend_environment.json`), which generates the closed `BackendEnv` key set; every
+catalog variable outside the build-identity group travels with each daemon request. See
+[../backend_compile_daemon.md](../backend_compile_daemon.md).
 
 ## 4. Soundness Argument
 
@@ -434,7 +437,7 @@ Each phase is a complete structural piece that can land independently and leave 
 - [ ] Add `.sccache/` to `/Users/adpena/Projects/molt/.gitignore`.
 - [ ] Create `/Users/adpena/Projects/molt/.cargo/config-fast-link-macos.toml` with `[target.aarch64-apple-darwin]` using a measured `ld64.lld` path, not a hardcoded LLVM backend keg.
 - [ ] Document in `.cargo/config.toml` comment block that `config-fast-link-macos.toml` is the macOS fast-linker opt-in.
-- [ ] Add `MOLT_VERIFY_ANALYSIS` and `MOLT_TIR_DUMP` to `DAEMON_REQUEST_ENV_KEYS` in `main.rs` (currently `MOLT_VERIFY_ANALYSIS` is missing from the list at line 42).
+- [x] `MOLT_VERIFY_ANALYSIS` and `MOLT_TIR_DUMP` travel with daemon requests: both are in the backend environment catalog (`src/molt/backend_environment.json`).
 - [ ] Test: two-agent sccache hit rate measurement (BX-3).
 - [ ] `git add src/molt/cli.py .cargo/config-fast-link-macos.toml .gitignore runtime/molt-backend/src/main.rs && git commit -m "build: shared sccache dir + macOS fast linker opt-in — Phase 1b DX arc"`.
 

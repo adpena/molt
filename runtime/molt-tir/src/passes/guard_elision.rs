@@ -4,6 +4,7 @@ use crate::tir::simple_def_use::{
     SimpleDefinitionFacts, SimpleDefinitionSite, simple_ir_out_result,
 };
 use crate::{FunctionIR, OpIR};
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::literal_payload::SimpleLiteral;
 use molt_ir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::collections::HashSet;
@@ -248,7 +249,7 @@ pub(super) fn statically_satisfied_guards(func: &FunctionIR) -> HashSet<usize> {
 }
 
 pub fn eliminate_redundant_guard_tags(func_ir: &mut FunctionIR) {
-    if std::env::var("MOLT_DISABLE_GUARD_ELIM").is_ok() {
+    if backend_env::var(BackendEnv::MOLT_DISABLE_GUARD_ELIM).is_ok() {
         return;
     }
     let satisfied = statically_satisfied_guards(func_ir);
