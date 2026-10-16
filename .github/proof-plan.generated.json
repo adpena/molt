@@ -140,6 +140,7 @@
     "tests/tools/test_runtime_descendant_receipts.py",
     "tests/runtime_descendant_test_support.py",
     "tools/run_runtime_test_gate.py",
+    "tools/runtime_test_gate_plan.py",
     "tools/runtime_descendant_receipts.py",
     ".gitattributes",
     ".github/actions/setup-lean/action.yml",
@@ -364,7 +365,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3fa77776cd0270b17ad1b9fa47d61716790dd89a4205b2c774e4ea6d6b3e3945",
+  "authority_sha256": "27db4e37007dc7f870fc78911916216d60ab108f9c77266958a4dbe8c9499034",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -639,6 +640,7 @@
         "tools/check_cargo_test_truth.py",
         "tests/tools/test_cargo_test_truth.py",
         "tools/run_runtime_test_gate.py",
+        "tools/runtime_test_gate_plan.py",
         "tests/tools/test_runtime_test_gate.py",
         "tests/tools/test_cargo_test_binary_discovery.py",
         "tools/runtime_descendant_receipts.py",
@@ -658,7 +660,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 318,
+      "timeout_minutes": 328,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -847,6 +849,7 @@
         "tools/ci_resource_env.py",
         "tools/libtest_results.py",
         "tools/run_runtime_test_gate.py",
+        "tools/runtime_test_gate_plan.py",
         "tools/runtime_descendant_receipts.py",
         "tests/tools/test_runtime_test_gate.py",
         "config/source_extension_package_sets.toml",
@@ -6793,6 +6796,43 @@
     },
     {
       "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
+        "dev-fast",
+        "--manifest-path",
+        "runtime/molt-cpython-abi/Cargo.toml",
+        "--lib",
+        "--no-fail-fast",
+        "--",
+        "--test-threads=1"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.test.cpython-abi-authorities",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
         "uv",
         "run",
         "--active",
@@ -8034,14 +8074,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 19080,
+        "budget_seconds": 19680,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 18840,
-        "required_job_seconds": 19080,
+        "projected_makespan_seconds": 19440,
+        "required_job_seconds": 19680,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 18840
+          "compiler-build-resource": 19440
         }
       },
       "rust_security": {
@@ -8400,6 +8440,7 @@
       "local.ci-wiring.1": "python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.0": "python tools/gen_codecs.py --check",
       "local.codec-tables.1": "python -m pytest -q tests/test_gen_codecs.py",
+      "local.cpython-abi-authorities.0": "cargo test --locked --profile dev-fast --manifest-path runtime/molt-cpython-abi/Cargo.toml --lib --no-fail-fast -- --test-threads=1",
       "local.dev-tooling.0": "python -m pytest -q tests/tools/test_setup_project_inputs.py",
       "local.dev-tooling.1": "python -m pytest -q tests/test_molt_dev.py",
       "local.dev-tooling.2": "python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
@@ -9468,6 +9509,7 @@
         "globs": [
           "vendor/rust/zlib-rs/**",
           "tools/run_runtime_test_gate.py",
+          "tools/runtime_test_gate_plan.py",
           "tests/tools/test_runtime_test_gate.py",
           "src/molt/node_runtime.py",
           "rust-toolchain.toml",
@@ -9797,6 +9839,25 @@
           "runtime/molt-runtime-stringprep/Cargo.toml"
         ],
         "name": "stringprep-leaf",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.cpython-abi-authorities.0"
+        ],
+        "description": "C-API crate standalone link and unit contracts.",
+        "gates": [
+          "cargo test --locked --profile dev-fast --manifest-path runtime/molt-cpython-abi/Cargo.toml --lib --no-fail-fast -- --test-threads=1"
+        ],
+        "globs": [
+          "runtime/molt-cpython-abi/**",
+          "runtime/molt-cpython-abi-test-support/**"
+        ],
+        "name": "cpython-abi-authorities",
         "toolchains": [
           "python",
           "rustc",
@@ -10180,6 +10241,12 @@
         "python",
         "uv",
         "rustfmt"
+      ],
+      "local.cpython-abi-authorities.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.dev-tooling.0": [
         "python",

@@ -2209,6 +2209,7 @@ def _native_build_capture_fixture(
     armed=True,
     operation="c",
     registered_command=None,
+    environment_updates=None,
 ):
     """Real capture boundary with independent C/C++ driver transcripts."""
     from tools import proof_plan
@@ -2230,10 +2231,19 @@ def _native_build_capture_fixture(
         )
         directory.mkdir(exist_ok=True)
         path = directory / (name + (".exe" if os.name == "nt" else ""))
-        path.write_bytes(name.encode())
+        path.write_bytes(
+            Path(sys.executable).read_bytes()
+            if registered_command is not None and "wasi-lifecycle" in registered_command
+            else name.encode()
+        )
         path.chmod(0o755)
         tools[name] = path
     calls = []
+    bundled = tmp_path / "lib/rustlib/x86_64-unknown-linux-gnu/bin" / "rust-lld"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"compiler-owned WASI linker")
+    bundled.chmod(0o755)
+    tools["rust-lld"] = bundled
 
     def run(command, **kwargs):
         calls.append(list(command))
@@ -2255,6 +2265,31 @@ def _native_build_capture_fixture(
             if language in {"c", "c++"}:
                 transcript += " " + json.dumps(tools["as"].name) + ' "-o" "unit.o"\n'
             return subprocess.CompletedProcess(command, 0, "", transcript)
+        if (
+            Path(command[0]).name
+            in {native_executable_name("clang"), native_executable_name("clang++")}
+            and "-###" in command
+        ):
+            return subprocess.CompletedProcess(
+                command, 0, "", " " + json.dumps(str(command[0])) + ' "-cc1"\n'
+            )
+        host_macro = (
+            "--manifest-path" in command
+            and (
+                Path(command[command.index("--manifest-path") + 1]).parent / "host.rs"
+            ).exists()
+        )
+        if (
+            not host_macro
+            and "--target" in command
+            and command[command.index("--target") + 1] == "wasm32-wasip1"
+        ):
+            selected = kwargs["env"].get(
+                "CARGO_TARGET_WASM32_WASIP1_LINKER", "rust-lld"
+            )
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(selected) + ' "probe.o"\n', ""
+            )
         # rustc archive creation has no linker command to print. Inspect the
         # actual compiler argv rather than the production artifact projection;
         # Cargo's host proc-macro has no staticlib override and still links.
@@ -2300,6 +2335,72 @@ def _native_build_capture_fixture(
         "CXX": str(tools["selected-g++"]),
         "AR": str(tools["selected-ar"]),
     }
+    if (
+        registered_command is not None
+        and command_admission.runtime_gate_arguments(envelope) is not None
+    ):
+        # Preserve the real RuntimeCargoPlan SDK/ABI/resource projection. Its
+        # expensive compiler discovery uses the existing pytest-owned plan.
+        from dataclasses import replace
+        from types import MappingProxyType
+        from molt.cli import runtime_cargo_plan as plans
+        from tests.runtime_build_identity_helper import (
+            RuntimeFixtureRoot,
+            runtime_cargo_plan,
+        )
+
+        def plan(root, *, env, cargo_command, **kwargs):
+            selected = runtime_cargo_plan(
+                root,
+                fixture_root=RuntimeFixtureRoot(tmp_path),
+                env=env,
+                cargo_command=cargo_command,
+                **kwargs,
+            )
+            tool_paths = {
+                **selected.tools,
+                "cargo": tools["cargo"],
+                "rustc": tools["rustc"],
+            }
+            projected_env = {**selected.environment, "RUSTC": str(tools["rustc"])}
+            custody = tuple(
+                plans.CargoExecutableCustody.capture(
+                    row.label, tool_paths[row.label.removeprefix("tool/")]
+                )
+                if row.label in {"tool/cargo", "tool/rustc"}
+                else row
+                for row in selected.executable_custody
+            )
+            selected = replace(
+                selected,
+                command=plans._pin_cargo_command(
+                    cargo_command,
+                    tool_paths,
+                    selected.wrappers,
+                    selected.target,
+                    selected.forced_environment,
+                ),
+                tools=MappingProxyType(tool_paths),
+                rustc=tools["rustc"],
+                environment=MappingProxyType(projected_env),
+                executable_custody=custody,
+            )
+            selected.verify()
+            return selected
+
+        monkeypatch.setattr(plans, "resolve_runtime_cargo_plan", plan)
+    if environment_updates:
+        environment.update(environment_updates)
+    captured_target = None
+    if environment_updates:
+        from tools.proof_queue_pkg.command_identity import _rust_target
+        from tools.proof_queue_pkg import command_admission
+
+        captured_target = _rust_target(
+            command_admission.envelope_for_command(admitted_command),
+            environment,
+            cwd=tmp_path,
+        )
     if resources:
         includes = tmp_path / "include"
         includes.mkdir()
@@ -2313,7 +2414,7 @@ def _native_build_capture_fixture(
         cargo=tools["cargo"],
         cwd=tmp_path,
         env=environment,
-        target=None,
+        target=captured_target,
         rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
         command_argv=command,
         admitted_command=admitted_command,
@@ -2322,7 +2423,7 @@ def _native_build_capture_fixture(
     if armed:
         _, selection = toolchain_capture.revalidate_rust_link_process_images(
             {"process_images": images, "link_selection": selection},
-            target=None,
+            target=captured_target,
             command_argv=command,
             required_native_units=requirements,
         )
@@ -3896,9 +3997,41 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
     selection = toolchain_capture.validate_rust_link_selection(
         identity, command_argv=command, full_capture=True
     )
-    assert [row["unit"] for row in selection["units"]] == ["target", "host-proc-macro"]
-    assert all(row["artifact_selection"]["link_required"] for row in selection["units"])
-    assert all("documenter" not in row["flag_context"] for row in selection["units"])
+    for member in toolchain_capture.rust_link_selections(selection):
+        assert [row["unit"] for row in member["units"]] == ["target", "host-proc-macro"]
+        assert all(
+            row["artifact_selection"]["link_required"] for row in member["units"]
+        )
+        assert all("documenter" not in row["flag_context"] for row in member["units"])
+    args = command_admission.runtime_gate_arguments(
+        command_admission.envelope_for_command(registered_command)
+    )
+    if args is not None:
+        expected = (
+            ["runtime", "host"]
+            if args.policy == "wasi-lifecycle"
+            else ["provider"]
+            if args.policy == "zlib-wasi"
+            else ["runtime"]
+        )
+        assert [row["role"] for row in selection["operations"]] == expected
+        if args.policy == "wasi-lifecycle":
+            assert [row["selection"]["target"] for row in selection["operations"]] == [
+                "wasm32-wasip1",
+                "x86_64-unknown-linux-gnu",
+            ]
+            assert [
+                row["selection"]["target"] for row in selection["native_build"]
+            ] == ["wasm32-wasip1", "x86_64-unknown-linux-gnu"]
+        elif args.policy == "zlib-wasi":
+            assert selection["operations"][0]["selection"]["target"] == "wasm32-wasip1"
+            assert selection["native_build"] == []
+            assert str(_tools["rust-lld"]) in {
+                row["path"] for row in identity["process_images"]
+            }
+            assert str(_tools["linker"]) in {
+                row["path"] for row in identity["process_images"]
+            }
     assert selection["admitted_command"] == registered_command
     assert selection["producer_command"] == command
     before = list(calls)
@@ -4335,3 +4468,244 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
     changed = capture()
     assert changed != captured and telemetry[-1]["state"] == "miss"
     assert len(version_calls) == 3 and len(calls) == 8
+
+
+def _runtime_gate_registered_command(policy):
+    from tools import proof_plan
+    from tools.proof_queue_pkg import command_admission
+
+    for row in proof_plan.ProofPlan.load().commands:
+        if "cargo" not in row.toolchains:
+            continue
+        args = command_admission.runtime_gate_arguments(
+            command_admission.envelope_for_command(row.argv)
+        )
+        if args is not None and args.policy == policy:
+            return list(row.argv)
+    raise AssertionError(f"missing runtime gate policy: {policy}")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "extra",
+        "role",
+        "source-target",
+        "source-profile",
+        "source-features",
+        "child-target",
+        "child-schema",
+        "units-missing",
+        "units-empty",
+        "units-scalar",
+        "units-None-first",
+        "extra-field",
+        "C-declaration",
+        "linker-image",
+        "stale-scalar",
+    ],
+)
+def test_runtime_gate_rust_operation_receiver_rejects_incomplete_or_mutated_plan(
+    tmp_path, monkeypatch, mutation
+):
+    from copy import deepcopy
+
+    from tools import proof_plan
+    from tools.proof_queue_pkg import command_admission, command_identity
+
+    registered = _runtime_gate_registered_command("zlib-wasi")
+    identity, tools, env, command, calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, registered_command=registered
+    )
+    requirements = command_admission.envelope_for_command(registered)[
+        "cargo_native_units"
+    ]
+    monkeypatch.setattr(
+        command_identity, "_tool_configuration_identities", lambda *args, **kwargs: []
+    )
+
+    def reuses(candidate):
+        return command_identity._reused_identity_is_current(
+            proof_plan.ToolchainPolicy("rustc", {}),
+            candidate,
+            cwd=tmp_path,
+            env=env,
+            command_argv=command,
+            native_units=requirements,
+        )
+
+    before = list(calls)
+    assert reuses(identity)
+    changed = deepcopy(identity)
+    raw = changed["link_selection"]
+    operation = raw["operations"][0]
+    if mutation == "missing":
+        raw["operations"].clear()
+    elif mutation == "extra":
+        raw["operations"].append(deepcopy(operation))
+    elif mutation == "role":
+        operation["role"] = "host-proc-macro"
+    elif mutation in {"source-target", "source-profile", "source-features"}:
+        option = {
+            "source-target": "--target",
+            "source-profile": "--profile",
+            "source-features": "--features",
+        }[mutation]
+        operation["source_command"][operation["source_command"].index(option) + 1] = (
+            "foreign"
+        )
+    elif mutation == "child-target":
+        operation["selection"]["target"] = "x86_64-unknown-linux-gnu"
+    elif mutation == "child-schema":
+        operation["selection"]["schema"] = "unknown"
+    elif mutation == "units-missing":
+        del operation["selection"]["units"]
+    elif mutation == "units-empty":
+        operation["selection"]["units"] = []
+    elif mutation == "units-scalar":
+        operation["selection"]["units"] = 1
+    elif mutation == "units-None-first":
+        operation["selection"]["units"][0] = None
+    elif mutation == "extra-field":
+        operation["undeclared"] = True
+    elif mutation == "C-declaration":
+        operation["native_required"] = {"target": ["c"]}
+    elif mutation == "linker-image":
+        changed["process_images"] = [
+            image
+            for image in changed["process_images"]
+            if image["path"] != str(tools["rust-lld"])
+        ]
+    elif mutation == "stale-scalar":
+        changed["link_selection"] = operation["selection"]
+        changed["link_selection"].update(
+            admitted_command=registered,
+            producer_command=command,
+            command_semantics_sha256=canonical_json_sha256(command),
+        )
+    with pytest.raises(ValueError):
+        toolchain_capture.validate_rust_link_selection(
+            changed, command_argv=command, full_capture=True
+        )
+    changed.pop("identity_sha256")
+    changed["identity_sha256"] = canonical_json_sha256(changed)
+    assert not reuses(changed)
+    assert calls == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "missing-C",
+        "host-as-proc-macro",
+        "managed-as-native",
+        "missing-SDK",
+        "foreign-compiler",
+        "missing-C-ABI",
+        "missing-export-table",
+    ],
+)
+def test_runtime_gate_lifecycle_retains_both_real_targets_and_their_C_custody(
+    tmp_path, monkeypatch, mutation
+):
+    from copy import deepcopy
+
+    registered = _runtime_gate_registered_command("wasi-lifecycle")
+    identity, _tools, env, command, calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, registered_command=registered
+    )
+    raw = identity["link_selection"]
+    assert [operation["selection"]["target"] for operation in raw["operations"]] == [
+        "wasm32-wasip1",
+        "x86_64-unknown-linux-gnu",
+    ]
+    assert [row["selection"]["units"] for row in raw["native_build"]] == [
+        {"target": ["c"]},
+        {"target": ["c"]},
+    ]
+    wasi, host = raw["native_build"]
+    assert "--target=wasm32-wasip1" in wasi["selection"]["compilers"]["c"]
+    assert host["selection"]["target"] == "x86_64-unknown-linux-gnu"
+    assert not any(
+        "--target=wasm" in arg for arg in host["selection"]["compilers"]["c"]
+    )
+    assert raw["operations"][1]["selection"]["units"][0]["unit"] == "target"
+    before = len(calls)
+    assert toolchain_capture.rust_native_selection_is_current(
+        raw, cwd=tmp_path, env=env
+    )
+    if mutation is None:
+        toolchain_capture.validate_rust_link_selection(
+            identity, command_argv=command, full_capture=True
+        )
+        toolchain_capture.revalidate_rust_selection_sources(raw)
+        assert len(calls) == before
+        return
+    changed = deepcopy(identity)
+    raw = changed["link_selection"]
+    projection = raw["operations"][0]["projection"]
+    if mutation == "missing-C":
+        raw["native_build"].pop()
+    elif mutation == "host-as-proc-macro":
+        raw["operations"][1]["selection"]["units"].pop(0)
+    elif mutation == "managed-as-native":
+        raw["operations"][0]["c_units"] = "native"
+    elif mutation == "missing-SDK":
+        raw["operations"][0]["projection"] = None
+    elif mutation == "foreign-compiler":
+        projection["tools"]["cc"] = str(tmp_path / "foreign-clang")
+    elif mutation == "missing-C-ABI":
+        projection["c_abi"] = ""
+    elif mutation == "missing-export-table":
+        i = projection["rustflags"].index("link-arg=--export-table")
+        del projection["rustflags"][i - 1 : i + 1]
+    with pytest.raises(ValueError):
+        toolchain_capture.validate_rust_link_selection(
+            changed, command_argv=command, full_capture=True
+        )
+
+
+def test_runtime_gate_native_operation_uses_Cargo_environment_target_and_reuses_exact_inputs(
+    tmp_path, monkeypatch
+):
+    registered = _runtime_gate_registered_command("semantic")
+    identity, tools, _env, command, calls = _native_build_capture_fixture(
+        tmp_path,
+        monkeypatch,
+        registered_command=registered,
+        environment_updates={"CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu"},
+    )
+    (operation,) = identity["link_selection"]["operations"]
+    assert operation["selection"]["target"] == "x86_64-unknown-linux-gnu"
+    assert "--target" not in operation["source_command"]
+    assert [
+        row["selection"]["target"] for row in identity["link_selection"]["native_build"]
+    ] == ["x86_64-unknown-linux-gnu"]
+    assert calls.count([str(tools["rustc"]), "--print", "sysroot"]) == 1
+    assert calls.count([str(tools["cargo"]), "--version", "--verbose"]) == 1
+    toolchain_capture.validate_rust_link_selection(
+        identity, command_argv=command, full_capture=True
+    )
+
+
+def test_runtime_gate_lifecycle_hashes_shared_linker_only_once_at_capture(
+    tmp_path, monkeypatch
+):
+    from collections import Counter
+
+    captured = Counter()
+    real_capture = toolchain_capture.capture_image
+
+    def capture(role, path, *args, **kwargs):
+        captured[str(path.resolve())] += 1
+        return real_capture(role, path, *args, **kwargs)
+
+    monkeypatch.setattr(toolchain_capture, "capture_image", capture)
+    _identity, tools, _env, _command, _calls = _native_build_capture_fixture(
+        tmp_path,
+        monkeypatch,
+        registered_command=_runtime_gate_registered_command("wasi-lifecycle"),
+    )
+    assert captured[str(tools["linker"].resolve())] == 1

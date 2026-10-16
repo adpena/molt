@@ -8,7 +8,6 @@
 mod app_resolver;
 pub mod lowering;
 mod module_registry;
-pub mod pgo;
 mod program_slots;
 pub mod runtime_imports;
 pub mod types;

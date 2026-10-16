@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import TYPE_CHECKING, Iterable, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence, cast
 
 from molt.default_paths import executable_environment_value
 from molt.exact_json import canonical_json_sha256
@@ -1193,8 +1193,35 @@ def _cargo_artifact_crate_types(
     return _rust_crate_types(",".join(expected["sources"][0]["crate_types"]))
 
 
-def revalidate_rust_selection_sources(selection: Mapping[str, object]) -> None:
+def revalidate_rust_selection_sources(
+    selection: Mapping[str, object], *, _verified=None
+) -> None:
     """Reuse checks finite inputs; armed custody checks these frozen files."""
+    verified = {} if _verified is None else _verified
+
+    def unchanged(path, digest, size, label):
+        key = _image_path_key(Path(path))
+        if key not in verified:
+            actual = stable_regular_file_identity(Path(path), label=label)
+            verified[key] = (actual.sha256, actual.size)
+        return verified[key] == (digest, size)
+
+    if selection.get("schema") == RUNTIME_GATE_RUST_SELECTION_SCHEMA:
+        for operation in cast(Sequence[Mapping[str, Any]], selection["operations"]):
+            revalidate_rust_selection_sources(
+                operation["selection"], _verified=verified
+            )
+            projection = operation["projection"]
+            if projection is not None:
+                receipt = projection["sdk"]["receipt"]
+                if not unchanged(
+                    receipt["path"],
+                    receipt["sha256"],
+                    receipt["size_bytes"],
+                    "managed WASI receipt",
+                ):
+                    raise ValueError("managed WASI SDK changed since Cargo selection")
+        return
     for unit in selection["units"]:
         flags = unit.get("flag_context")
         contexts = (
@@ -1204,10 +1231,12 @@ def revalidate_rust_selection_sources(selection: Mapping[str, object]) -> None:
         )
         for flag_context in contexts:
             for source in flag_context["sources"]:
-                actual = stable_regular_file_identity(
-                    Path(source["path"]), label="Cargo flag source " + source["label"]
-                )
-                if actual.sha256 != source["sha256"] or actual.size != source["size"]:
+                if not unchanged(
+                    source["path"],
+                    source["sha256"],
+                    source["size"],
+                    "Cargo flag source " + source["label"],
+                ):
                     raise ValueError(
                         f"Cargo flag source changed: {source['label']} ({source['path']})"
                     )
@@ -1216,13 +1245,44 @@ def revalidate_rust_selection_sources(selection: Mapping[str, object]) -> None:
             continue
         _cargo_artifact_crate_types(context, selection["producer_command"])
         for expected in context["input_files"]:
-            actual = stable_regular_file_identity(
-                Path(expected["path"]), label="Cargo artifact input"
-            )
-            if actual.sha256 != expected["sha256"] or actual.size != expected["size"]:
+            if not unchanged(
+                expected["path"],
+                expected["sha256"],
+                expected["size"],
+                "Cargo artifact input",
+            ):
                 raise ValueError(
                     "Cargo artifact manifest/source changed since selection"
                 )
+
+
+def _managed_wasi_c_command(command, abi):
+    """Expose cc-rs's pinned Clang target/sysroot before querying its phases."""
+    from molt.cli.compiler_target import (
+        compiler_argument_spans,
+        validate_compiler_target,
+    )
+    from molt.wasi_sdk_identity import WASI_C_ABI_TARGET
+
+    # cc 1.6.0 adds these defaults before CFLAGS (lib.rs2599,2777). Other
+    # optimization/default flags cannot add compiler images or resource roots.
+    validate_compiler_target(command, WASI_C_ABI_TARGET)
+    for span in compiler_argument_spans(command[1:]):
+        if span.context not in {"driver", "cc1"}:
+            continue
+        sysroot = None
+        if span.option in {"--sysroot", "-isysroot"}:
+            sysroot = span.arguments[1]
+        elif span.option.startswith("--sysroot="):
+            sysroot = span.option.partition("=")[2]
+        if sysroot is not None and sysroot != str(abi.sysroot):
+            raise ValueError("managed C flags select another WASI sysroot")
+    return [
+        command[0],
+        f"--sysroot={abi.sysroot}",
+        f"--target={WASI_C_ABI_TARGET}",
+        *command[1:],
+    ]
 
 
 def select_cargo_native_units(
@@ -1232,6 +1292,7 @@ def select_cargo_native_units(
     host: str,
     cwd: Path,
     env: Mapping[str, str],
+    managed_wasi_sdk: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Resolve declared role/language pairs without compiler probes or hashing."""
     from tools.proof_plan import cargo_native_units
@@ -1252,13 +1313,38 @@ def select_cargo_native_units(
     by_target: dict[str, dict[str, list[str]]] = {}
     for unit, languages in requirements.items():
         triple = (target or host) if unit == "target" else host
-        if triple.startswith("wasm"):
+        if triple.startswith("wasm") and managed_wasi_sdk is None:
             raise ValueError("managed WASI tools are not native C/C++ build units")
         by_target.setdefault(triple, {})[unit] = languages
 
     selected_env = _CargoEnvironment(env)
     result: list[dict[str, object]] = []
     for triple, units in by_target.items():
+        sdk_root = None
+        expected_abi = None
+        sdk = None
+        if triple.startswith("wasm"):
+            from molt.wasi_sdk_identity import (
+                WASI_C_ABI_TARGET,
+                WasiCAbiProjection,
+                wasi_c_abi_projection,
+            )
+
+            sdk = validate_wasi_sdk_selection(managed_wasi_sdk)
+            generation = sdk["generation"]
+            sdk_root = Path(sdk["sdk"])
+            expected_abi = WasiCAbiProjection.from_facts(
+                sdk_root,
+                sdk_version=generation["asset"]["sdk_version"],
+                llvm_version=generation["asset"]["llvm_version"],
+                tree_sha256=generation["tree"]["sha256"],
+                facts=generation["facts"],
+            )
+            if (
+                triple != WASI_C_ABI_TARGET
+                or wasi_c_abi_projection(env) != expected_abi
+            ):
+                raise ValueError("managed C units differ from the admitted WASI C ABI")
         languages = [
             language
             for language in ("c", "c++")
@@ -1289,6 +1375,15 @@ def select_cargo_native_units(
                     f"native build unit {triple} requires an explicit {role}"
                 )
             tools[role] = str(path)
+            if sdk_root is not None and sdk is not None:
+                sdk_role = {"cc": "clang", "cxx": "clang++", "ar": "llvm-ar"}[role]
+                expected_path = (
+                    sdk_root / sdk["generation"]["facts"]["tools"][sdk_role]["path"]
+                )
+                if path != expected_path:
+                    raise ValueError(
+                        "managed WASI C unit selects a foreign compiler tool"
+                    )
         # The canonical Cargo resource grammar owns flags and search inputs for
         # both languages; shared roots have one armed inventory per target.
         resources = _resolve_c_build_resources(
@@ -1316,7 +1411,12 @@ def select_cargo_native_units(
                     selected_env.get(name, ""), shell_escaped=shell
                 )
             ]
-            compilers[language] = [tools[role], *flags]
+            command = [tools[role], *flags]
+            compilers[language] = (
+                command
+                if expected_abi is None
+                else _managed_wasi_c_command(command, expected_abi)
+            )
         if selected_env.get("CC_KNOWN_WRAPPER_CUSTOM") or Path(
             selected_env.get("RUSTC_WRAPPER", "")
         ).stem in {
@@ -1337,7 +1437,13 @@ def select_cargo_native_units(
                 "target": triple,
                 "compilers": compilers,
                 "archiver": tools["ar"],
-                "resource_roots": sorted({str(root.path) for root in resources.roots}),
+                "resource_roots": sorted(
+                    {
+                        str(root.path)
+                        for root in resources.roots
+                        if sdk_root is None or not root.path.is_relative_to(sdk_root)
+                    }
+                ),
             }
         )
     return result
@@ -1356,6 +1462,44 @@ def native_build_environment(selection: Mapping[str, object]) -> dict[str, str]:
             for form in (triple, triple.replace("-", "_").replace(".", "_")):
                 updates[f"{role}_{form}"] = value
     return updates
+
+
+def rust_native_selection_is_current(selection, *, cwd, env):
+    """Reselect ordinary C units; managed units retain their admitted SDK plan."""
+    if selection.get("schema") != RUNTIME_GATE_RUST_SELECTION_SCHEMA:
+        current = select_cargo_native_units(
+            required=selection["native_required"],
+            target=selection["target"],
+            host=selection["compiler_host"],
+            cwd=cwd,
+            env=env,
+        )
+    else:
+        current = []
+        managed_targets = set()
+        for operation in selection["operations"]:
+            child = operation["selection"]
+            if operation["c_units"] == "managed-wasi":
+                managed_targets.add(child["target"])
+            elif operation["c_units"] == "native":
+                current.extend(
+                    select_cargo_native_units(
+                        required=operation["native_required"],
+                        target=child["target"],
+                        host=selection["compiler_host"],
+                        cwd=cwd,
+                        env=env,
+                    )
+                )
+        current.extend(
+            row["selection"]
+            for row in selection["native_build"]
+            if row["selection"]["target"] in managed_targets
+        )
+    expected = [row["selection"] for row in selection["native_build"]]
+    return sorted(current, key=canonical_json_sha256) == sorted(
+        expected, key=canonical_json_sha256
+    )
 
 
 def _native_compiler_role(language: str, target: str) -> str:
@@ -1956,6 +2100,7 @@ def _cargo_flag_context(
     probes: list[dict[str, object]],
     flag_kind: str = "rustflags",
     compiler_context: Mapping[str, object] | None = None,
+    capture_inputs=None,
 ) -> tuple[dict[str, object], dict[str, str]]:
     from molt.cli.runtime_cargo_plan import (
         capture_cargo_configuration_inputs,
@@ -1968,18 +2113,71 @@ def _cargo_flag_context(
         parse_rustc_target_metadata,
     )
 
+    key = (str(cwd), tuple(command), tuple(sorted(env.items())))
+    cached = None if capture_inputs is None else capture_inputs.get(key)
+    if cached is None:
+        (
+            _root,
+            configured_env,
+            paths,
+            inputs,
+            configuration,
+            profiles,
+            command_target,
+            cli,
+            _forced,
+            _resources,
+        ) = capture_cargo_configuration_inputs(cwd, env=env, cargo_command=command)
+        sources = []
+        for item in inputs:
+            raw = item.identity.path.read_bytes()
+            verify_stable_regular_file_identity(item.identity, label=item.label)
+            if hashlib.sha256(raw).hexdigest() != item.identity.sha256:
+                raise ValueError("Cargo flag source changed during capture")
+            sources.append(
+                {
+                    "label": item.label,
+                    "path": str(item.identity.path),
+                    "text": raw.decode("utf-8"),
+                    "sha256": item.identity.sha256,
+                    "size": item.identity.size,
+                }
+            )
+        cached = (
+            (
+                _root,
+                configured_env,
+                paths,
+                inputs,
+                configuration,
+                profiles,
+                command_target,
+                cli,
+                _forced,
+                _resources,
+            ),
+            sources,
+        )
+        if capture_inputs is not None:
+            capture_inputs[key] = cached
+    else:
+        for item in cached[0][3]:
+            verify_stable_regular_file_identity(item.identity, label=item.label)
     (
-        _root,
-        configured_env,
-        paths,
-        inputs,
-        configuration,
-        profiles,
-        command_target,
-        cli,
-        _forced,
-        _resources,
-    ) = capture_cargo_configuration_inputs(cwd, env=env, cargo_command=command)
+        (
+            _root,
+            configured_env,
+            paths,
+            inputs,
+            configuration,
+            profiles,
+            command_target,
+            cli,
+            _forced,
+            _resources,
+        ),
+        sources,
+    ) = cached
     wrappers = {}
     for variable, key in (
         ("RUSTC_WRAPPER", "rustc-wrapper"),
@@ -1997,21 +2195,6 @@ def _cargo_flag_context(
             wrappers[variable] = _tool_path(
                 value, root=cwd, env=configured_env, role=variable
             )
-    sources = []
-    for item in inputs:
-        raw = item.identity.path.read_bytes()
-        verify_stable_regular_file_identity(item.identity, label=item.label)
-        if hashlib.sha256(raw).hexdigest() != item.identity.sha256:
-            raise ValueError("Cargo flag source changed during capture")
-        sources.append(
-            {
-                "label": item.label,
-                "path": str(item.identity.path),
-                "text": raw.decode("utf-8"),
-                "sha256": item.identity.sha256,
-                "size": item.identity.size,
-            }
-        )
     context = {
         "schema": "molt.proof-cargo-flag-inputs.v1",
         "command": list(command),
@@ -2102,7 +2285,7 @@ def _cargo_flag_context(
 
 
 def _resolve_cargo_flag_context(
-    context: Mapping[str, object], *, probe=None
+    context: Mapping[str, object], *, probe=None, selected_target=None
 ) -> tuple[str, ...]:
     """Replay the shared Cargo input authority from source bytes, never live files."""
     from molt.cli.runtime_cargo_plan import (
@@ -2110,6 +2293,7 @@ def _resolve_cargo_flag_context(
         capture_cargo_configuration_inputs,
         cargo_configuration_document,
         cargo_flag_inputs,
+        cargo_requested_target,
         _flags,
     )
     from molt.cli.cargo_target_cfg import (
@@ -2270,6 +2454,10 @@ def _resolve_cargo_flag_context(
             "unstable Cargo environment selection requires an explicit capability authority"
         )
     _require_stable_cargo_environment(env)
+    if selected_target is not None:
+        selected_target.append(
+            cargo_requested_target(configuration, cli, env, command_target)
+        )
     explicit_target = (
         command_target is not None
         or configuration.get("build", {}).get("target") is not None
@@ -2359,6 +2547,231 @@ def _require_stable_cargo_version(version: object) -> None:
         )
 
 
+RUNTIME_GATE_RUST_SELECTION_SCHEMA = "molt.proof-runtime-gate-rust-selection.v1"
+
+
+def resolve_runtime_gate_cargo_operation(operation, *, cwd, env, compiler_host):
+    """Resolve the one declared runtime-CABI operation through its existing owner."""
+    if operation.environment != "runtime-wasi":
+        return list(operation.command), dict(env), None
+    from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+    from tools.runtime_test_gate_plan import WASI_TARGET
+
+    plan = resolve_runtime_cargo_plan(
+        cwd,
+        env=env,
+        cargo_command=operation.command,
+        requested_target=WASI_TARGET,
+        host_target=compiler_host,
+        rustflags_transform=lambda flags: (*flags, "-C", "link-arg=--export-table"),
+    )
+    plan.verify()
+    return list(plan.command), dict(plan.environment), plan
+
+
+def rust_link_selections(
+    selection: Mapping[str, object],
+) -> tuple[Mapping[str, Any], ...]:
+    """Iterate the canonical scalar selections in a direct or planned operation."""
+    if selection.get("schema") == RUNTIME_GATE_RUST_SELECTION_SCHEMA:
+        return tuple(
+            row["selection"]
+            for row in cast(Sequence[Mapping[str, Any]], selection["operations"])
+        )
+    if selection.get("schema") != "molt.proof-rust-link-selection-telemetry.v5":
+        raise ValueError("unknown Rust compilation selection schema")
+    return (selection,)
+
+
+def _runtime_gate_projection(plan, *, cwd, env):
+    if plan is None:
+        return None
+    from molt.llvm_toolchain import capture_wasi_sdk_selection
+    from molt.source_root import compiler_source_root
+
+    sdk = capture_wasi_sdk_selection(root=compiler_source_root(), cwd=cwd, env=env)
+    if plan.wasi_sdk is None or str(plan.wasi_sdk.sdk) != sdk["sdk"]:
+        raise ValueError("runtime Cargo plan selected another managed SDK")
+    return {
+        "sdk": sdk,
+        "c_abi": plan.wasi_c_abi.encode(),
+        "c_environment": {
+            key: list(value) for key, value in plan.c_environment.items()
+        },
+        "rustflags": list(plan.rustflags),
+        "tools": {key: str(value) for key, value in plan.tools.items()},
+        "wrappers": {key: str(value) for key, value in plan.wrappers.items()},
+        "forced_environment": list(plan.forced_environment),
+    }
+
+
+def _capture_runtime_gate_rust_operations(
+    *,
+    rustc,
+    cargo,
+    cwd,
+    env,
+    target,
+    command_argv,
+    admitted_command,
+    native_units,
+    linker_process_helpers,
+    linker_build_tools,
+    rustc_version,
+):
+    from tools.proof_queue_pkg import command_admission
+    from tools.proof_queue_pkg.command_identity import _rust_target
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    envelope = command_admission.envelope_for_command(admitted_command)
+    args = command_admission.runtime_gate_arguments(envelope)
+    if args is None or cargo is None:
+        raise ValueError("runtime Cargo operations require their registered driver")
+    if rustc_version is None:
+        result = _run_rust_link_probe(
+            [str(rustc), "-vV"],
+            phase="compiler-metadata",
+            unit="compiler",
+            cwd=cwd,
+            compiler_cwd=cwd,
+            env=env,
+            timeout=30.0,
+            probes=[],
+        )
+        if result.returncode:
+            raise ValueError("runtime Cargo compiler metadata failed")
+        rustc_version = result.stdout
+    host = rustc_host(rustc_version)
+    from tools.proof_plan import cargo_native_units
+
+    declared = cargo_native_units(envelope)
+    if dict(native_units or {}) != declared:
+        raise ValueError("runtime native requirements differ from admission")
+    operations, images, native_selections = [], [], []
+    capture_cache = {}
+    for operation in cargo_operations(
+        args.policy, args.profile, cargo=str(cargo), compiler_host=host
+    ):
+        if not operation.admits_native_requirements(declared):
+            raise ValueError(
+                "runtime Cargo operation C declaration differs from its source plan"
+            )
+        command, operation_env, plan = resolve_runtime_gate_cargo_operation(
+            operation, cwd=cwd, env=env, compiler_host=host
+        )
+        projection = _runtime_gate_projection(plan, cwd=cwd, env=operation_env)
+        if projection is not None and not {"wasi-clang", "wasm-ld"} <= set(
+            cast(Sequence[str], envelope["toolchains"])
+        ):
+            raise ValueError(
+                "managed WASI C operation lacks its SDK toolchain declaration"
+            )
+        child_admitted = ["cargo", *command[1:]]
+        child_envelope = command_admission.envelope_for_command(child_admitted)
+        child_target = _rust_target(child_envelope, operation_env, cwd=cwd)
+        child_images, selection = _capture_rust_compilation(
+            rustc=rustc,
+            cargo=cargo,
+            cwd=cwd,
+            env=operation_env,
+            target=child_target,
+            command_argv=command,
+            admitted=child_admitted,
+            declared={},
+            cargo_invocation=command_admission.parse_cargo_invocation(child_admitted),
+            native_units={},
+            linker_process_helpers=linker_process_helpers,
+            linker_build_tools=linker_build_tools,
+            rustc_version=rustc_version,
+            _capture_cache=capture_cache,
+            _captured_images=images,
+        )
+        images.extend(child_images)
+        requirements = declared
+        selected_native = select_cargo_native_units(
+            required=requirements,
+            target=child_target,
+            host=host,
+            cwd=cwd,
+            env=operation_env,
+            managed_wasi_sdk=None if projection is None else projection["sdk"],
+        )
+        native_selections.extend((row, operation_env) for row in selected_native)
+        operations.append(
+            {
+                "role": operation.role,
+                "source_command": list(operation.command),
+                "environment": operation.environment,
+                "c_units": operation.c_units,
+                "native_required": requirements,
+                "projection": projection,
+                "selection": selection,
+                "process_image_refs": [
+                    {"role": image["role"], "path": image["path"]}
+                    for image in child_images
+                ],
+            }
+        )
+    native_build = []
+    seen_native = set()
+    for native, operation_env in native_selections:
+        key = canonical_json_sha256(native)
+        if key not in seen_native:
+            native_build.extend(
+                _capture_rust_native_build([native], images, cwd=cwd, env=operation_env)
+            )
+            seen_native.add(key)
+    images = canonical_images(images)
+    return images, {
+        "schema": RUNTIME_GATE_RUST_SELECTION_SCHEMA,
+        "producer_command": list(command_argv),
+        "admitted_command": list(admitted_command),
+        "command_semantics_sha256": canonical_json_sha256(list(command_argv)),
+        "compiler_host": host,
+        "cargo": str(cargo),
+        "target": target,
+        "native_required": declared,
+        "native_build": native_build,
+        "operations": operations,
+        "selected_process_count": len(images),
+    }
+
+
+def _capture_rust_native_build(
+    native_selections: Sequence[Mapping[str, object]],
+    images: list[dict[str, object]],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> list[dict[str, object]]:
+    native_build: list[dict[str, object]] = []
+    for selection in native_selections:
+        compilers = {}
+        for language, command in selection["compilers"].items():
+            role = _native_compiler_role(language, selection["target"])
+            selected_images, compiler = capture_native_compiler_process_images(
+                command,
+                role=role,
+                language=language,
+                target=selection["target"],
+                cwd=cwd,
+                env=env,
+                captured_images=images,
+            )
+            images.extend(selected_images)
+            compilers[language] = compiler
+        archiver = capture_image(
+            "rust-build-native-archiver-" + selection["target"],
+            Path(selection["archiver"]),
+            preserve_path=True,
+        )
+        images.append(archiver)
+        native_build.append(
+            {"selection": selection, "compilers": compilers, "resources": None}
+        )
+    return native_build
+
+
 def capture_rust_link_process_images(
     *,
     rustc: Path,
@@ -2372,6 +2785,8 @@ def capture_rust_link_process_images(
     rustc_version: str | None = None,
     native_units: Mapping[str, Sequence[str]] | None = None,
     admitted_command: Sequence[str] | None = None,
+    _capture_cache=None,
+    _captured_images: Sequence[Mapping[str, object]] = (),
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Capture both Cargo target and host-unit linker families exactly once."""
     if not command_argv:
@@ -2380,6 +2795,20 @@ def capture_rust_link_process_images(
 
     admitted = list(command_argv if admitted_command is None else admitted_command)
     admitted_envelope = command_admission.envelope_for_command(admitted)
+    if command_admission.runtime_gate_arguments(admitted_envelope) is not None:
+        return _capture_runtime_gate_rust_operations(
+            rustc=rustc,
+            cargo=cargo,
+            cwd=cwd,
+            env=env,
+            target=target,
+            command_argv=command_argv,
+            admitted_command=admitted,
+            native_units=native_units,
+            linker_process_helpers=linker_process_helpers,
+            linker_build_tools=linker_build_tools,
+            rustc_version=rustc_version,
+        )
     declared = admitted_envelope["cargo_native_units"]
     if ({} if native_units is None else native_units) != declared:
         raise ValueError("native build requirements differ from admitted command")
@@ -2388,12 +2817,63 @@ def capture_rust_link_process_images(
         if "cargo" in admitted_envelope["toolchains"]
         else None
     )
-    compiler_probes: list[dict[str, object]] = []
+    return _capture_rust_compilation(
+        rustc=rustc,
+        cargo=cargo,
+        cwd=cwd,
+        env=env,
+        target=target,
+        command_argv=command_argv,
+        admitted=admitted,
+        declared=declared,
+        cargo_invocation=cargo_invocation,
+        native_units=native_units,
+        linker_process_helpers=linker_process_helpers,
+        linker_build_tools=linker_build_tools,
+        rustc_version=rustc_version,
+        _capture_cache=_capture_cache,
+        _captured_images=_captured_images,
+    )
 
-    def metadata(arguments: list[str]) -> str:
+
+def _capture_rust_compilation(
+    *,
+    rustc,
+    cargo,
+    cwd,
+    env,
+    target,
+    command_argv,
+    admitted,
+    declared,
+    cargo_invocation,
+    native_units,
+    linker_process_helpers,
+    linker_build_tools,
+    rustc_version,
+    _capture_cache=None,
+    _captured_images=(),
+):
+    """One actual Rust/Cargo operation; its caller owns source admission."""
+    from tools.proof_queue_pkg import command_admission
+
+    compiler_probes: list[dict[str, object]] = []
+    capture_cache = {} if _capture_cache is None else _capture_cache
+    metadata_cache = capture_cache.setdefault("metadata", {})
+    configuration_cache = capture_cache.setdefault("configuration", {})
+
+    def metadata(
+        arguments: list[str], *, executable=rustc, phase="compiler-metadata"
+    ) -> str:
+        key = (str(executable), tuple(arguments), str(cwd), tuple(sorted(env.items())))
+        if key in metadata_cache:
+            stdout, records = metadata_cache[key]
+            compiler_probes.extend(dict(record) for record in records)
+            return stdout
+        before = len(compiler_probes)
         result = _run_rust_link_probe(
-            [str(rustc), *arguments],
-            phase="compiler-metadata",
+            [str(executable), *arguments],
+            phase=phase,
             unit="compiler",
             cwd=cwd,
             compiler_cwd=cwd,
@@ -2407,6 +2887,7 @@ def capture_rust_link_process_images(
                 unit="compiler",
                 probes=compiler_probes,
             )
+        metadata_cache[key] = (result.stdout, compiler_probes[before:])
         return result.stdout
 
     try:
@@ -2421,19 +2902,9 @@ def capture_rust_link_process_images(
             cargo_invocation and cargo_invocation.is_cargo_query
         ):
             _require_stable_cargo_environment(env)
-            cargo_metadata = _run_rust_link_probe(
-                [str(cargo), "--version", "--verbose"],
-                phase="cargo-metadata",
-                unit="compiler",
-                cwd=cwd,
-                compiler_cwd=cwd,
-                env=env,
-                timeout=30.0,
-                probes=compiler_probes,
-            )
-            if cargo_metadata.returncode:
-                raise ValueError("selected Cargo version metadata command failed")
-            cargo_version = cargo_metadata.stdout.strip()
+            cargo_version = metadata(
+                ["--version", "--verbose"], executable=cargo, phase="cargo-metadata"
+            ).strip()
             _require_stable_cargo_version(cargo_version)
     except RustLinkCaptureError:
         raise
@@ -2467,6 +2938,8 @@ def capture_rust_link_process_images(
                 unit=unit,
                 host=host,
                 compiler_sysroot=compiler_sysroot,
+                captured_images=(*_captured_images, *images),
+                capture_inputs=configuration_cache,
                 probes=probes,
                 compiler_flag_context=(
                     selections[0]["flag_context"]
@@ -2489,31 +2962,9 @@ def capture_rust_link_process_images(
             )
             if command_admission.rust_documenter_required(cargo_invocation, doc_flags):
                 units.append("target-documenter")
-    native_build = []
-    for selection in native_selections:
-        compilers = {}
-        for language, command in selection["compilers"].items():
-            role = _native_compiler_role(language, selection["target"])
-            selected_images, compiler = capture_native_compiler_process_images(
-                command,
-                role=role,
-                language=language,
-                target=selection["target"],
-                cwd=cwd,
-                env=env,
-                captured_images=images,
-            )
-            images.extend(selected_images)
-            compilers[language] = compiler
-        archiver = capture_image(
-            "rust-build-native-archiver-" + selection["target"],
-            Path(selection["archiver"]),
-            preserve_path=True,
-        )
-        images.append(archiver)
-        native_build.append(
-            {"selection": selection, "compilers": compilers, "resources": None}
-        )
+    native_build = _capture_rust_native_build(
+        native_selections, images, cwd=cwd, env=env
+    )
     images = canonical_images(images)
     return images, {
         "schema": "molt.proof-rust-link-selection-telemetry.v5",
@@ -2547,6 +2998,8 @@ def _capture_rust_link_unit(
     unit: str,
     host: str,
     compiler_sysroot: Path,
+    captured_images: Sequence[Mapping[str, object]],
+    capture_inputs,
     probes: list[dict[str, object]],
     compiler_flag_context: Mapping[str, object] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
@@ -2560,6 +3013,33 @@ def _capture_rust_link_unit(
     from tools.proof_queue_pkg import command_admission
 
     started = time.perf_counter()
+    captured_by_path = {
+        _image_path_key(Path(str(row["path"]))): row for row in captured_images
+    }
+
+    def image(role, path, root_exit_disposition="require-exit", *, preserve_path=False):
+        selected = custody_path(path)
+        resolved = (
+            selected if preserve_path else custody_path(selected.resolve(strict=True))
+        )
+        prior = captured_by_path.get(_image_path_key(resolved))
+        if prior is None:
+            prior = capture_image(
+                role, path, root_exit_disposition, preserve_path=preserve_path
+            )
+            captured_by_path[_image_path_key(resolved)] = prior
+        result = {
+            key: value
+            for key, value in prior.items()
+            if key not in {"role", "root_exit_disposition", "path_kind"}
+        }
+        result["role"] = role
+        if root_exit_disposition != "require-exit":
+            result["root_exit_disposition"] = root_exit_disposition
+        if preserve_path:
+            result["path_kind"] = "selection"
+        return result
+
     probe_env = dict(env)
     # Cargo's synthetic and forwarded-context probes must use the same retained
     # compiler as metadata and payload, never select another Rustup component.
@@ -2589,6 +3069,7 @@ def _capture_rust_link_unit(
             probes=probes,
             flag_kind="rustdocflags" if unit == "target-documenter" else "rustflags",
             compiler_context=compiler_flag_context,
+            capture_inputs=capture_inputs,
         )
         configured_flags = tuple(flag_context["selected_flags"])
         if (
@@ -2606,6 +3087,7 @@ def _capture_rust_link_unit(
                 probes=probes,
                 flag_kind="rustdocflags",
                 compiler_context=flag_context,
+                capture_inputs=capture_inputs,
             )
             flag_context["documenter"] = documenter_context
             documenter_flags = tuple(documenter_context["selected_flags"])
@@ -3052,7 +3534,7 @@ def _capture_rust_link_unit(
         images = []
         auxiliary_keys = {_image_path_key(path) for path in selected_helpers}
         for index, path in enumerate(unique_paths):
-            image = capture_image(
+            captured = image(
                 "rust-linker" if index == 0 else "rust-link-helper",
                 path,
                 root_exit_disposition=(
@@ -3061,14 +3543,14 @@ def _capture_rust_link_unit(
                     else "require-exit"
                 ),
             )
-            images.append(image)
-            if str(path.absolute()) != image["path"]:
+            images.append(captured)
+            if str(path.absolute()) != captured["path"]:
                 images.append(
-                    capture_image(
-                        str(image["role"]),
+                    image(
+                        str(captured["role"]),
                         path,
                         root_exit_disposition=str(
-                            image.get("root_exit_disposition", "require-exit")
+                            captured.get("root_exit_disposition", "require-exit")
                         ),
                         preserve_path=True,
                     )
@@ -3094,10 +3576,10 @@ def _capture_rust_link_unit(
                     f"selected Rust linker has no declared build tool {tool_name!r}"
                 )
             selected_build_tools.append(tool.absolute())
-            image = capture_image(role, tool, root_exit_disposition="require-exit")
-            images.append(image)
-            if _image_path_key(tool) != image["path"]:
-                images.append(capture_image(role, tool, preserve_path=True))
+            captured = image(role, tool, root_exit_disposition="require-exit")
+            images.append(captured)
+            if _image_path_key(tool) != captured["path"]:
+                images.append(image(role, tool, preserve_path=True))
         images = canonical_images(images)
         telemetry = {
             "schema": "molt.proof-rust-link-unit.v2",
@@ -3152,6 +3634,456 @@ def _capture_rust_link_unit(
         return images, telemetry
 
 
+def _validate_runtime_gate_projection(operation, projection, *, host, cargo, rustc):
+    if operation.environment != "runtime-wasi":
+        if projection is not None:
+            raise ValueError("ordinary Cargo operation has a managed C projection")
+        return list(operation.command)
+    from molt.cli.runtime_cargo_plan import _pin_cargo_command
+    from molt.wasi_sdk_identity import WasiCAbiProjection
+    from molt.rust_toolchain import rust_flag_spans
+    from tools.runtime_test_gate_plan import WASI_TARGET
+
+    if not isinstance(projection, Mapping) or set(projection) != {
+        "sdk",
+        "c_abi",
+        "c_environment",
+        "rustflags",
+        "tools",
+        "wrappers",
+        "forced_environment",
+    }:
+        raise ValueError("runtime WASI operation lacks its complete C projection")
+    sdk = validate_wasi_sdk_selection(projection["sdk"])
+    generation = sdk["generation"]
+    abi = WasiCAbiProjection.from_facts(
+        Path(sdk["sdk"]),
+        sdk_version=generation["asset"]["sdk_version"],
+        llvm_version=generation["asset"]["llvm_version"],
+        tree_sha256=generation["tree"]["sha256"],
+        facts=generation["facts"],
+    )
+    if WasiCAbiProjection.decode(projection["c_abi"]) != abi:
+        raise ValueError("managed C operation differs from its SDK ABI identity")
+    tools, wrappers = projection["tools"], projection["wrappers"]
+    if not isinstance(tools, Mapping) or not isinstance(wrappers, Mapping):
+        raise ValueError("runtime Cargo tool projection is malformed")
+    if tools.get("cargo") != cargo or (
+        rustc is not None and tools.get("rustc") != rustc
+    ):
+        raise ValueError("runtime Cargo projection selected another Rust compiler")
+    for role, sdk_role in {
+        "cc": "clang",
+        "cxx": "clang++",
+        "ar": "llvm-ar",
+        "ranlib": "llvm-ranlib",
+        "linker": "wasm-ld",
+        "final_linker": "wasm-ld",
+    }.items():
+        if role == "final_linker" and role not in tools:
+            continue
+        expected = str(
+            Path(sdk["sdk"]) / generation["facts"]["tools"][sdk_role]["path"]
+        )
+        if tools.get(role) != expected:
+            raise ValueError("managed C operation selected a foreign SDK tool")
+    if not isinstance(projection["c_environment"], Mapping) or any(
+        not isinstance(name, str)
+        or not isinstance(values, list)
+        or any(not isinstance(value, str) for value in values)
+        for name, values in projection["c_environment"].items()
+    ):
+        raise ValueError("managed C flag projection is malformed")
+    flags = projection["rustflags"]
+    if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
+        raise ValueError("managed Rust flag projection is malformed")
+    if tuple(flags) != abi.rustflags(flags) or not any(
+        span.codegen == "link-arg=--export-table" for span in rust_flag_spans(flags)
+    ):
+        raise ValueError("runtime WASI operation lost its C ABI or table-export flags")
+    forced = projection["forced_environment"]
+    if not isinstance(forced, list) or any(
+        not isinstance(name, str) for name in forced
+    ):
+        raise ValueError("runtime Cargo forced environment is malformed")
+    return list(
+        _pin_cargo_command(
+            operation.command,
+            {name: Path(value) for name, value in tools.items()},
+            {name: Path(value) for name, value in wrappers.items()},
+            WASI_TARGET,
+            tuple(forced),
+        )
+    )
+
+
+def _validate_runtime_gate_rust_selection(
+    identity,
+    raw,
+    *,
+    required_native_units,
+    full_capture,
+    command_argv,
+):
+    from tools.proof_queue_pkg import command_admission
+    from tools.runtime_test_gate_plan import cargo_operations
+
+    if set(raw) != {
+        "schema",
+        "producer_command",
+        "admitted_command",
+        "command_semantics_sha256",
+        "compiler_host",
+        "cargo",
+        "target",
+        "native_required",
+        "native_build",
+        "operations",
+        "selected_process_count",
+    }:
+        raise ValueError("runtime Cargo selection fields differ from their schema")
+    envelope = command_admission.envelope_for_command(raw["admitted_command"])
+    args = command_admission.runtime_gate_arguments(envelope)
+    if args is None:
+        raise ValueError("runtime Cargo selection has no registered producer")
+    host, cargo = raw["compiler_host"], raw["cargo"]
+    if (
+        not isinstance(host, str)
+        or not host
+        or not isinstance(cargo, str)
+        or not Path(cargo).is_absolute()
+    ):
+        raise ValueError("runtime Cargo selection has invalid compiler coordinates")
+    if raw["native_required"] != envelope["cargo_native_units"] or (
+        required_native_units is not None
+        and dict(required_native_units) != raw["native_required"]
+    ):
+        raise ValueError("runtime Cargo native requirements differ from admission")
+    producer = raw["producer_command"]
+    if raw["command_semantics_sha256"] != canonical_json_sha256(producer) or (
+        command_argv is not None and list(command_argv) != producer
+    ):
+        raise ValueError("runtime Cargo producer differs from actual admission")
+    python = cast(Mapping[str, object], envelope["python"])
+    if (
+        command_admission._python_invocation_argv(
+            cast(Sequence[str], envelope["argv"]), python
+        )[1:]
+        != (command_admission._python_invocation_argv(producer, python)[1:])
+    ):
+        raise ValueError("runtime Cargo producer differs from its submitted payload")
+    planned = cargo_operations(
+        args.policy, args.profile, cargo=cargo, compiler_host=host
+    )
+    rows = raw["operations"]
+    if not isinstance(rows, list) or len(rows) != len(planned):
+        raise ValueError("runtime Cargo operation inventory is incomplete")
+    images = canonical_images(identity["process_images"])
+    image_map = {
+        (row["role"], _image_path_key(Path(str(row["path"])))): row for row in images
+    }
+    operation_keys = set()
+    native_expected = {}
+    managed = {}
+    for operation, row in zip(planned, rows, strict=True):
+        if (
+            not isinstance(row, Mapping)
+            or set(row)
+            != {
+                "role",
+                "source_command",
+                "environment",
+                "c_units",
+                "native_required",
+                "projection",
+                "selection",
+                "process_image_refs",
+            }
+            or (row["role"], row["source_command"], row["environment"], row["c_units"])
+            != (
+                operation.role,
+                list(operation.command),
+                operation.environment,
+                operation.c_units,
+            )
+        ):
+            raise ValueError("runtime Cargo operation differs from its source plan")
+        if operation.c_units == "managed-wasi" and not {"wasi-clang", "wasm-ld"} <= set(
+            cast(Sequence[str], envelope["toolchains"])
+        ):
+            raise ValueError("managed WASI operation lacks its SDK declaration")
+        expected_command = _validate_runtime_gate_projection(
+            operation,
+            row["projection"],
+            host=host,
+            cargo=cargo,
+            rustc=identity.get("content_path"),
+        )
+        selection = row["selection"]
+        if (
+            not isinstance(selection, Mapping)
+            or selection.get("producer_command") != expected_command
+        ):
+            raise ValueError("runtime Cargo child command differs from its operation")
+        invocation = command_admission.parse_cargo_invocation(
+            ["cargo", *expected_command[1:]]
+        )
+        targets = [
+            value for name, value in invocation.option_values if name == "--target"
+        ]
+        if selection.get("compiler_host") != host:
+            raise ValueError("runtime Cargo child selected another compiler host")
+        refs = row["process_image_refs"]
+        if not isinstance(refs, list) or any(
+            not isinstance(ref, Mapping) or set(ref) != {"role", "path"} for ref in refs
+        ):
+            raise ValueError("runtime Cargo child image references are malformed")
+        keys = {(ref["role"], _image_path_key(Path(ref["path"]))) for ref in refs}
+        if len(keys) != len(refs) or not keys <= image_map.keys():
+            raise ValueError("runtime Cargo child image membership is incomplete")
+        if selection.get("admitted_command") != ["cargo", *expected_command[1:]]:
+            raise ValueError(
+                "runtime Cargo child source argv differs from its operation"
+            )
+        _validate_rust_compilation_selection(
+            {"process_images": [image_map[key] for key in keys]},
+            selection,
+            invocation=invocation,
+            cargo=True,
+            declared={},
+            submitted=["cargo", *expected_command[1:]],
+            python=None,
+            required_native_units={},
+            full_capture=full_capture,
+            command_argv=expected_command,
+        )
+        target_context = selection["units"][0]["flag_context"]
+        captured_target = []
+        _resolve_cargo_flag_context(target_context, selected_target=captured_target)
+        if captured_target != [selection["target"]] or (
+            targets and selection["target"] != targets[-1]
+        ):
+            raise ValueError("runtime Cargo child target differs from its operation")
+        operation_keys.update(keys)
+        requirements = raw["native_required"]
+        if row[
+            "native_required"
+        ] != requirements or not operation.admits_native_requirements(requirements):
+            raise ValueError("runtime Cargo operation lost its C source declaration")
+        target = selection["target"] or host
+        for unit, languages in requirements.items():
+            triple = target if unit == "target" else host
+            native_expected.setdefault(triple, {})[unit] = languages
+            if triple != host:
+                if operation.c_units != "managed-wasi" or row["projection"] is None:
+                    raise ValueError(
+                        "cross-target C operation lacks managed SDK custody"
+                    )
+                managed[triple] = row["projection"]
+    native = raw["native_build"]
+    if not isinstance(native, list):
+        raise ValueError("runtime Cargo C source custody is missing")
+    _validate_rust_native_build(
+        native, native_expected, images, full_capture=full_capture
+    )
+    for row in native:
+        target = row["selection"]["target"]
+        if target in managed:
+            projection = managed[target]
+            from molt.cli.runtime_cargo_plan import _c_tool_environment_names
+            from molt.wasi_sdk_identity import WasiCAbiProjection
+
+            abi = WasiCAbiProjection.decode(projection["c_abi"])
+
+            for language, command in row["selection"]["compilers"].items():
+                tool, flags = (
+                    ("cc", "cflags") if language == "c" else ("cxx", "cxxflags")
+                )
+                expected = [projection["tools"][tool]]
+                expected.extend(
+                    token
+                    for name in reversed(
+                        _c_tool_environment_names(
+                            flags, target=target, host_target=host
+                        )
+                    )
+                    for token in projection["c_environment"].get(name, [])
+                )
+                if (
+                    command != _managed_wasi_c_command(expected, abi)
+                    or row["selection"]["archiver"] != projection["tools"]["ar"]
+                ):
+                    raise ValueError(
+                        "managed C compiler/flags differ from the runtime plan"
+                    )
+    selected = {
+        key
+        for key in image_map
+        if key[0] in {"rust-linker", "rust-link-helper"}
+        or str(key[0]).startswith("rust-build-")
+    }
+    non_native = {
+        key for key in selected if not str(key[0]).startswith("rust-build-native-")
+    }
+    if non_native != operation_keys or raw["selected_process_count"] != len(selected):
+        raise ValueError("runtime Cargo process closure differs from its operations")
+    return dict(raw)
+
+
+def _validate_rust_native_build(
+    native: Sequence[Mapping[str, object]],
+    expected: Mapping[str, Mapping[str, Sequence[str]]],
+    images: Sequence[Mapping[str, object]],
+    *,
+    full_capture: bool,
+) -> None:
+    seen: dict[str, dict[str, list[str]]] = {}
+    for row in native:
+        if not isinstance(row, Mapping) or set(row) != {
+            "selection",
+            "compilers",
+            "resources",
+        }:
+            raise ValueError("native build unit record is malformed")
+        selection = row["selection"]
+        if not isinstance(selection, Mapping) or set(selection) != {
+            "units",
+            "target",
+            "compilers",
+            "archiver",
+            "resource_roots",
+        }:
+            raise ValueError("native build unit selection is malformed")
+        triple = selection["target"]
+        if not isinstance(triple, str) or triple in seen or triple not in expected:
+            raise ValueError("native build units must select each declared target once")
+        if selection["units"] != expected[triple]:
+            raise ValueError(
+                "native build role/language custody differs from admission"
+            )
+        seen[triple] = selection["units"]
+        languages = {
+            language for values in expected[triple].values() for language in values
+        }
+        commands, compilers = selection["compilers"], row["compilers"]
+        if (
+            not isinstance(commands, Mapping)
+            or set(commands) != languages
+            or not isinstance(compilers, Mapping)
+            or set(compilers) != languages
+        ):
+            raise ValueError("native build language custody is incomplete")
+        for language, command in commands.items():
+            if (
+                not isinstance(command, list)
+                or not command
+                or any(not isinstance(value, str) or not value for value in command)
+                or not Path(command[0]).is_absolute()
+            ):
+                raise ValueError("native compiler selection is malformed")
+            role = _native_compiler_role(language, triple)
+            validate_native_compiler_capture(
+                compilers[language],
+                images,
+                command=command,
+                language=language,
+                target=triple,
+                role=role,
+            )
+        archiver_role = "rust-build-native-archiver-" + triple
+        archivers = [image for image in images if image["role"] == archiver_role]
+        if (
+            len(archivers) != 1
+            or not isinstance(selection["archiver"], str)
+            or not Path(selection["archiver"]).is_absolute()
+            or _image_path_key(Path(archivers[0]["path"]))
+            != _image_path_key(Path(selection["archiver"]))
+        ):
+            raise _image_membership_error(
+                "native independent archiver custody is incomplete",
+                unit=triple,
+                role=archiver_role,
+                selected=selection["archiver"],
+                images=((image["role"], image["path"]) for image in archivers),
+            )
+        resources = row["resources"]
+        roots = selection["resource_roots"]
+        if (
+            not isinstance(roots, list)
+            or any(
+                not isinstance(path, str) or not Path(path).is_absolute()
+                for path in roots
+            )
+            or roots != sorted(set(roots))
+        ):
+            raise ValueError("native build resource roots are malformed")
+        if resources is None and not full_capture:
+            continue
+        if (
+            not isinstance(resources, list)
+            or not isinstance(selection["resource_roots"], list)
+            or [
+                resource.get("selected_root")
+                for resource in resources
+                if isinstance(resource, Mapping)
+            ]
+            != selection["resource_roots"]
+            or any(
+                not isinstance(resource, Mapping)
+                or not isinstance(resource.get("root", resource.get("path")), str)
+                for resource in resources
+            )
+        ):
+            raise ValueError("native build resource custody is incomplete")
+        from tools.proof_queue_pkg.command_identity import (
+            _validate_directory_manifest_identity,
+        )
+
+        for resource in resources:
+            selected_root = resource["selected_root"]
+            if (
+                not isinstance(selected_root, str)
+                or not Path(selected_root).is_absolute()
+            ):
+                raise ValueError("native build resource selection is not absolute")
+            if "root" in resource:
+                _validate_directory_manifest_identity(
+                    {
+                        key: value
+                        for key, value in resource.items()
+                        if key != "selected_root"
+                    },
+                    selected_root=Path(selected_root),
+                )
+            elif (
+                set(resource) != {"selected_root", "path", "size_bytes", "sha256"}
+                or resource["path"] != selected_root
+                or type(resource["size_bytes"]) is not int
+                or resource["size_bytes"] < 0
+                or not isinstance(resource["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", resource["sha256"]) is None
+            ):
+                raise ValueError(
+                    "native build file resource lacks bound content custody"
+                )
+    if seen != expected:
+        raise ValueError("native build-unit custody is incomplete")
+    native_roles = {
+        _native_compiler_role(language, triple)
+        for triple, requirements in expected.items()
+        for languages in requirements.values()
+        for language in languages
+    } | {"rust-build-native-archiver-" + triple for triple in expected}
+    if {
+        row["role"]
+        for row in images
+        if str(row["role"]).startswith("rust-build-native-")
+    } != native_roles:
+        raise ValueError(
+            "native compiler process roles differ from declared build units"
+        )
+
+
 def validate_rust_link_selection(
     identity: Mapping[str, object],
     *,
@@ -3163,6 +4095,72 @@ def validate_rust_link_selection(
     from tools.proof_queue_pkg import command_admission
 
     raw = identity.get("link_selection")
+    if (
+        isinstance(raw, Mapping)
+        and raw.get("schema") == RUNTIME_GATE_RUST_SELECTION_SCHEMA
+    ):
+        return _validate_runtime_gate_rust_selection(
+            identity,
+            raw,
+            required_native_units=required_native_units,
+            full_capture=full_capture,
+            command_argv=command_argv,
+        )
+    if (
+        not isinstance(raw, Mapping)
+        or raw.get("schema") != "molt.proof-rust-link-selection-telemetry.v5"
+    ):
+        raise ValueError("Rust linker selection telemetry schema mismatch")
+    admitted = raw.get("admitted_command")
+    if (
+        not isinstance(admitted, list)
+        or not admitted
+        or any(not isinstance(value, str) or not value for value in admitted)
+    ):
+        raise ValueError("Rust linker capture has no admitted command")
+    admitted_envelope = command_admission.envelope_for_command(admitted)
+    if command_admission.runtime_gate_arguments(admitted_envelope) is not None:
+        raise ValueError("runtime gate requires its complete Cargo operation selection")
+    invocation = (
+        command_admission.cargo_invocation_for_envelope(admitted_envelope)
+        if "cargo" in admitted_envelope["toolchains"]
+        else None
+    )
+    declared = admitted_envelope["cargo_native_units"]
+    cargo = "cargo" in admitted_envelope["toolchains"]
+    payload = cast(
+        Mapping[str, Any], admitted_envelope.get("delegated") or admitted_envelope
+    )
+    return _validate_rust_compilation_selection(
+        identity,
+        raw,
+        invocation=invocation,
+        cargo=cargo,
+        declared=declared,
+        submitted=payload["argv"],
+        python=payload.get("python"),
+        required_native_units=required_native_units,
+        full_capture=full_capture,
+        command_argv=command_argv,
+    )
+
+
+def _validate_rust_compilation_selection(
+    identity,
+    raw,
+    *,
+    invocation,
+    cargo,
+    declared,
+    submitted,
+    python,
+    required_native_units,
+    full_capture,
+    command_argv,
+):
+    """Validate one compilation using its already admitted operation contract."""
+    from tools.proof_queue_pkg import command_admission
+
     if (
         not isinstance(raw, Mapping)
         or raw.get("schema") != "molt.proof-rust-link-selection-telemetry.v5"
@@ -3191,14 +4189,6 @@ def validate_rust_link_selection(
         or any(not isinstance(value, str) or not value for value in admitted)
     ):
         raise ValueError("Rust linker capture has no admitted command")
-    admitted_envelope = command_admission.envelope_for_command(admitted)
-    invocation = (
-        command_admission.cargo_invocation_for_envelope(admitted_envelope)
-        if "cargo" in admitted_envelope["toolchains"]
-        else None
-    )
-    declared = admitted_envelope["cargo_native_units"]
-    cargo = "cargo" in admitted_envelope["toolchains"]
     if cargo and not (invocation and invocation.is_cargo_query):
         _require_stable_cargo_version(telemetry.get("cargo_version"))
     elif telemetry.get("cargo_version") is not None:
@@ -3219,9 +4209,6 @@ def validate_rust_link_selection(
         command_argv is not None and producer != list(command_argv)
     ):
         raise ValueError("Rust linker producer command differs from actual admission")
-    payload_envelope = admitted_envelope.get("delegated") or admitted_envelope
-    submitted = payload_envelope["argv"]
-    python = payload_envelope.get("python")
     compared_producer = producer
     if isinstance(python, Mapping):
         # Exact execution resolves wrappers, uv prefixes and interpreter paths.
@@ -3482,151 +4469,7 @@ def validate_rust_link_selection(
         elif refs or resolutions:
             raise ValueError("archive-only Rust unit has process images")
         unit_keys.update(keys)
-    seen: dict[str, dict[str, list[str]]] = {}
-    for row in native:
-        if not isinstance(row, Mapping) or set(row) != {
-            "selection",
-            "compilers",
-            "resources",
-        }:
-            raise ValueError("native build unit record is malformed")
-        selection = row["selection"]
-        if not isinstance(selection, Mapping) or set(selection) != {
-            "units",
-            "target",
-            "compilers",
-            "archiver",
-            "resource_roots",
-        }:
-            raise ValueError("native build unit selection is malformed")
-        triple = selection["target"]
-        if not isinstance(triple, str) or triple in seen or triple not in expected:
-            raise ValueError("native build units must select each declared target once")
-        if selection["units"] != expected[triple]:
-            raise ValueError(
-                "native build role/language custody differs from admission"
-            )
-        seen[triple] = selection["units"]
-        languages = {
-            language for values in expected[triple].values() for language in values
-        }
-        commands, compilers = selection["compilers"], row["compilers"]
-        if (
-            not isinstance(commands, Mapping)
-            or set(commands) != languages
-            or not isinstance(compilers, Mapping)
-            or set(compilers) != languages
-        ):
-            raise ValueError("native build language custody is incomplete")
-        for language, command in commands.items():
-            if (
-                not isinstance(command, list)
-                or not command
-                or any(not isinstance(value, str) or not value for value in command)
-                or not Path(command[0]).is_absolute()
-            ):
-                raise ValueError("native compiler selection is malformed")
-            role = _native_compiler_role(language, triple)
-            validate_native_compiler_capture(
-                compilers[language],
-                images,
-                command=command,
-                language=language,
-                target=triple,
-                role=role,
-            )
-        archiver_role = "rust-build-native-archiver-" + triple
-        archivers = [image for image in images if image["role"] == archiver_role]
-        if (
-            len(archivers) != 1
-            or not isinstance(selection["archiver"], str)
-            or not Path(selection["archiver"]).is_absolute()
-            or _image_path_key(Path(archivers[0]["path"]))
-            != _image_path_key(Path(selection["archiver"]))
-        ):
-            raise _image_membership_error(
-                "native independent archiver custody is incomplete",
-                unit=triple,
-                role=archiver_role,
-                selected=selection["archiver"],
-                images=((image["role"], image["path"]) for image in archivers),
-            )
-        resources = row["resources"]
-        roots = selection["resource_roots"]
-        if (
-            not isinstance(roots, list)
-            or any(
-                not isinstance(path, str) or not Path(path).is_absolute()
-                for path in roots
-            )
-            or roots != sorted(set(roots))
-        ):
-            raise ValueError("native build resource roots are malformed")
-        if resources is None and not full_capture:
-            continue
-        if (
-            not isinstance(resources, list)
-            or not isinstance(selection["resource_roots"], list)
-            or [
-                resource.get("selected_root")
-                for resource in resources
-                if isinstance(resource, Mapping)
-            ]
-            != selection["resource_roots"]
-            or any(
-                not isinstance(resource, Mapping)
-                or not isinstance(resource.get("root", resource.get("path")), str)
-                for resource in resources
-            )
-        ):
-            raise ValueError("native build resource custody is incomplete")
-        from tools.proof_queue_pkg.command_identity import (
-            _validate_directory_manifest_identity,
-        )
-
-        for resource in resources:
-            selected_root = resource["selected_root"]
-            if (
-                not isinstance(selected_root, str)
-                or not Path(selected_root).is_absolute()
-            ):
-                raise ValueError("native build resource selection is not absolute")
-            if "root" in resource:
-                _validate_directory_manifest_identity(
-                    {
-                        key: value
-                        for key, value in resource.items()
-                        if key != "selected_root"
-                    },
-                    selected_root=Path(selected_root),
-                )
-            elif (
-                set(resource) != {"selected_root", "path", "size_bytes", "sha256"}
-                or resource["path"] != selected_root
-                or type(resource["size_bytes"]) is not int
-                or resource["size_bytes"] < 0
-                or not isinstance(resource["sha256"], str)
-                or re.fullmatch(r"[0-9a-f]{64}", resource["sha256"]) is None
-            ):
-                raise ValueError(
-                    "native build file resource lacks bound content custody"
-                )
-    if seen != expected:
-        raise ValueError("native build-unit custody is incomplete")
-    native_roles = {
-        _native_compiler_role(language, triple)
-        for triple, requirements in expected.items()
-        for languages in requirements.values()
-        for language in languages
-    } | {"rust-build-native-archiver-" + triple for triple in expected}
-    if {
-        row["role"]
-        for row in images
-        if str(row["role"]).startswith("rust-build-native-")
-    } != native_roles:
-        raise ValueError(
-            "native compiler process roles differ from declared build units"
-        )
+    _validate_rust_native_build(native, expected, images, full_capture=full_capture)
     selected = [
         row
         for row in images
@@ -3725,7 +4568,9 @@ def revalidate_rust_link_process_images(
         full_capture=True,
     )
     revalidate_rust_selection_sources(telemetry)
-    for unit in telemetry["units"]:
+    for unit in (
+        unit for member in rust_link_selections(telemetry) for unit in member["units"]
+    ):
         for config in unit.get("configuration_files", []):
             path = Path(config["path"])
             if (

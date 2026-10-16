@@ -1413,14 +1413,9 @@ def _reused_identity_is_current(
             toolchain_capture.revalidate_rust_selection_sources(selection)
             if any(row["resources"] is not None for row in selection["native_build"]):
                 return False  # Reuse stores selections; each armed operation captures contents.
-            current = toolchain_capture.select_cargo_native_units(
-                required=native_units,
-                target=selection["target"],
-                host=selection["compiler_host"],
-                cwd=cwd,
-                env=env,
-            )
-            if current != [row["selection"] for row in selection["native_build"]]:
+            if not toolchain_capture.rust_native_selection_is_current(
+                selection, cwd=cwd, env=env
+            ):
                 return False
             for row in selection["native_build"]:
                 if any(

@@ -4,6 +4,14 @@
 
 ## 1. Precise Problem Statement
 
+The inventory below is the original 2026-06-04 design snapshot, not a current
+implementation or release-support claim. On 2026-10-16 the unused LLVM `pgo.rs`
+prototype was removed: all six tests called only its own helpers, no production
+caller inserted its IR snippets or consumed its profile parser, and its sole
+external-tool test invoked `llvm-profdata` for a nonexistent input. The real
+profile transport and end-to-end optimization obligations remain open in the
+compiler foundation roadmap; removing this prototype does not complete them.
+
 **What exists (dead code, not a working system):**
 
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/pgo.rs` — `instrument_function` produces string snippets never inserted anywhere; `load_profile` parses `.profdata` text but is never called; `branch_weight_metadata` returns a string that `lowering.rs:5144` explicitly drops with `let _ = (branch_inst, true_weight, false_weight)`.
@@ -330,7 +338,7 @@ The pass is `ReadOnly` because it only adds `pgo_weight` attrs to terminators; i
 
 **The dead comment block in `lowering.rs:5128-5144`:** After W1-c executes the `llvm-sys` unsafe call, the 16-line TODO comment is replaced with working code. The `let _ = (branch_inst, true_weight, false_weight)` no-op becomes the real metadata attachment.
 
-**`pgo.rs:instrument_function` string-snippet API:** After W1-d lands a real TIR-level counter-insertion pass and a runtime counter table, `instrument_function` (which returns a `Vec<String>` of LLVM IR snippets that are never inserted anywhere) is deleted. The instrumented-build mode goes through the TIR pass, not string manipulation.
+**Unused LLVM `pgo.rs` prototype:** Removed in full on 2026-10-16 after confirming that its APIs had no production consumers. Keeping an unconnected helper until W1-d added proof and toolchain work without providing instrumentation. W1-d must implement instrumentation through typed TIR and the runtime counter table; it does not restore string-snippet lowering or the prototype parser.
 
 ---
 
@@ -640,4 +648,4 @@ This is the only phase that must ship as one atomic change. It includes:
 | `block_order_hint` field | `/Users/adpena/Projects/molt/runtime/molt-ir/src/tir/function.rs` | Extend struct (W1-b) |
 | LLVM `!prof` metadata | `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/lowering.rs:5144` | Replace no-op with llvm-sys call (W1-c) |
 | `Cargo.toml` llvm-sys dep | `/Users/adpena/Projects/molt/runtime/molt-backend/Cargo.toml` | Add dependency (W1-c) |
-| `pgo.rs` cleanup | `/Users/adpena/Projects/molt/runtime/molt-backend/src/llvm_backend/pgo.rs` | Delete `instrument_function` string API (W1-d) |
+| LLVM PGO prototype | Removed 2026-10-16 | No production consumers; typed instrumentation remains a separate open obligation |

@@ -149,6 +149,7 @@ authority_inputs = [
   "tests/tools/test_runtime_descendant_receipts.py",
   "tests/runtime_descendant_test_support.py",
   "tools/run_runtime_test_gate.py",
+  "tools/runtime_test_gate_plan.py",
   "tools/runtime_descendant_receipts.py",
   ".gitattributes",
   ".github/actions/setup-lean/action.yml",
@@ -1195,7 +1196,7 @@ dependencies = []
 [[ci_family]]
 name = "rust"
 description = "Rust workspace build, target checks, test truth, and non-overlapping lint proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py", "tools/runtime_descendant_receipts.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/runtime_descendant_test_support.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**", "vendor/rust/zlib-rs/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tools/runtime_test_gate_plan.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py", "tools/runtime_descendant_receipts.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/runtime_descendant_test_support.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**", "vendor/rust/zlib-rs/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "rust-build-unit-smoke"
@@ -1204,12 +1205,10 @@ admission_job = "rust-build-unit-smoke"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-# Full parallel runtime plus every gate-declared fresh-process witness is mandatory.
-# The full resource-serialized DAG, including the focused extension witness,
-# includes the actual WASI lifecycle producer/consumer and has a separate
-# operational allowance inside the job backstop. The maintained-provider WASI
-# row adds its existing 600-second integration deadline: 18840 + 240 seconds.
-timeout_minutes = 318
+# Cover the resource-serialized DAG, including runtime fresh-process witnesses,
+# both WASI consumers and the independently linked C-API unit image, plus setup.
+# This backstop changes no individual command deadline.
+timeout_minutes = 328
 # Observed setup/post-proof total 218s, rounded up to whole minutes.
 job_reserve_seconds = 240
 resource_class = "compiler-build-resource"
@@ -1306,6 +1305,7 @@ inputs = ["src/molt/cli/completion.py", "src/molt/cli/arg_helpers.py", "src/molt
   "tools/ci_resource_env.py",
   "tools/libtest_results.py",
   "tools/run_runtime_test_gate.py",
+  "tools/runtime_test_gate_plan.py",
   "tools/runtime_descendant_receipts.py",
   "tests/tools/test_runtime_test_gate.py",
   "config/source_extension_package_sets.toml",
@@ -3303,6 +3303,20 @@ argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--co
 toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 
 [[command]]
+id = "rust.test.cpython-abi-authorities"
+cargo_native_units = { target = ["c"] }
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+cache_domain = "cargo-workspace"
+dependencies = []
+# The C-API owner must link and execute independently of the embedding runtime.
+argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "--manifest-path", "runtime/molt-cpython-abi/Cargo.toml", "--lib", "--no-fail-fast", "--", "--test-threads=1"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
 id = "rust.test.runtime-cold-lifecycle"
 cargo_native_units = { target = ["c", "c++"] }
 family = "rust"
@@ -4499,6 +4513,7 @@ require_fresh_toolchain = true
 globs = [
   "vendor/rust/zlib-rs/**",
   "tools/run_runtime_test_gate.py",
+  "tools/runtime_test_gate_plan.py",
   "tests/tools/test_runtime_test_gate.py",
   "src/molt/node_runtime.py",
   "rust-toolchain.toml",
@@ -5147,3 +5162,14 @@ dependencies = []
 evidence_outputs = ["proof-receipts/evidence/candidate-runtime-costs"]
 argv = ["uv", "run", "--frozen", "python", "tools/run_candidate_runtime_costs.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "ld.lld"]
+
+# Standalone C-API ownership and its C shims are a distinct link consumer.
+[[rule]]
+name = "cpython-abi-authorities"
+toolchains = ["python", "rustc", "cargo"]
+description = "C-API crate standalone link and unit contracts."
+globs = [
+  "runtime/molt-cpython-abi/**",
+  "runtime/molt-cpython-abi-test-support/**",
+]
+gates = ["cargo test --locked --profile dev-fast --manifest-path runtime/molt-cpython-abi/Cargo.toml --lib --no-fail-fast -- --test-threads=1"]
