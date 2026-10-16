@@ -14,18 +14,14 @@
 use crate::abi_types::{
     Py_buffer, PyBUF_ANY_CONTIGUOUS, PyBUF_C_CONTIGUOUS, PyBUF_F_CONTIGUOUS, PyBUF_FORMAT,
     PyBUF_ND, PyBUF_STRIDES, PyBUF_WRITABLE, PyExc_BufferError, PyExc_TypeError, PyObject,
+    PyTypeObject,
 };
 use crate::api::typeobj::{type_bf_getbuffer, type_bf_releasebuffer};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::{MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, MoltBufferView, hooks_or_stubs};
 use std::alloc::Layout;
-use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-
-const PYBUF_C_CONTIGUOUS_BIT: c_int = PyBUF_C_CONTIGUOUS & !PyBUF_STRIDES;
-const PYBUF_F_CONTIGUOUS_BIT: c_int = PyBUF_F_CONTIGUOUS & !PyBUF_STRIDES;
-const PYBUF_ANY_CONTIGUOUS_BIT: c_int = PyBUF_ANY_CONTIGUOUS & !PyBUF_STRIDES;
 
 unsafe fn set_buffer_error(message: &'static [u8]) {
     unsafe {
@@ -356,21 +352,39 @@ unsafe fn pybuffer_is_f_contiguous(view: *const Py_buffer) -> bool {
     true
 }
 
-fn descriptor_is_c_contiguous(descriptor: &MoltBufferView) -> bool {
-    if descriptor.ndim == 0 {
+/// Memoryview export geometry, shared with the runtime's typed-strided owner.
+/// CPython memoryobject.c::init_flags intentionally differs from the generic
+/// PyBuffer_IsContiguous query for empty rank-one strided views. No descriptor
+/// conversion or allocation is needed to answer either C or Fortran order.
+#[inline]
+pub fn memoryview_layout_is_contiguous(
+    shape: &[isize],
+    strides: &[isize],
+    itemsize: usize,
+    fortran: bool,
+) -> bool {
+    if shape.len() != strides.len() || itemsize == 0 || shape.iter().any(|&dim| dim < 0) {
+        return false;
+    }
+    // CPython keeps the rank-one stride flag even for an empty slice, whereas
+    // multidimensional empty buffers are contiguous regardless of strides.
+    if shape.len() > 1 && shape.contains(&0) {
         return true;
     }
-    let ndim = descriptor.ndim as usize;
-    if ndim > MOLT_BUFFER_MAX_NDIM {
-        return false;
-    }
-    let Ok(mut expected) = isize::try_from(descriptor.itemsize.max(1)) else {
+    let Ok(mut expected) = isize::try_from(itemsize) else {
         return false;
     };
-    for i in (0..ndim).rev() {
-        let dim = descriptor.shape[i];
-        let stride = descriptor.strides[i];
-        if dim > 1 && stride != expected {
+    for step in 0..shape.len() {
+        let idx = if fortran {
+            step
+        } else {
+            shape.len() - 1 - step
+        };
+        let dim = shape[idx];
+        let stride = strides[idx];
+        // A singleton axis has no second element whose stride can matter.
+        // An empty strided view still retains its non-contiguous layout.
+        if dim < 0 || (dim != 1 && stride != expected) {
             return false;
         }
         let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
@@ -381,62 +395,47 @@ fn descriptor_is_c_contiguous(descriptor: &MoltBufferView) -> bool {
     true
 }
 
-fn descriptor_is_f_contiguous(descriptor: &MoltBufferView) -> bool {
-    if descriptor.ndim == 0 {
-        return true;
-    }
+pub fn descriptor_request_error(
+    descriptor: &MoltBufferView,
+    flags: c_int,
+) -> Option<&'static [u8]> {
     let ndim = descriptor.ndim as usize;
     if ndim > MOLT_BUFFER_MAX_NDIM {
-        return false;
+        return Some(b"buffer descriptor exceeds the supported dimension cap\0");
     }
-    let Ok(mut expected) = isize::try_from(descriptor.itemsize.max(1)) else {
-        return false;
+    let Ok(itemsize) = usize::try_from(descriptor.itemsize) else {
+        return Some(b"buffer itemsize exceeds the active address space\0");
     };
-    for i in 0..ndim {
-        let dim = descriptor.shape[i];
-        let stride = descriptor.strides[i];
-        if dim > 1 && stride != expected {
-            return false;
-        }
-        let Some(next_expected) = expected.checked_mul(dim.max(1)) else {
-            return false;
-        };
-        expected = next_expected;
+    let shape = &descriptor.shape[..ndim];
+    let strides = &descriptor.strides[..ndim];
+    let c_contiguous = memoryview_layout_is_contiguous(shape, strides, itemsize, false);
+    if (flags & PyBUF_C_CONTIGUOUS) == PyBUF_C_CONTIGUOUS && !c_contiguous {
+        return Some(b"memoryview: underlying buffer is not C-contiguous\0");
     }
-    true
-}
-
-fn descriptor_satisfies_flags(descriptor: &MoltBufferView, flags: c_int) -> bool {
-    if (flags & PyBUF_STRIDES) == 0 && !descriptor_is_c_contiguous(descriptor) {
-        return false;
-    }
-    if (flags & PYBUF_C_CONTIGUOUS_BIT) != 0 && !descriptor_is_c_contiguous(descriptor) {
-        return false;
-    }
-    if (flags & PYBUF_F_CONTIGUOUS_BIT) != 0 && !descriptor_is_f_contiguous(descriptor) {
-        return false;
-    }
-    if (flags & PYBUF_ANY_CONTIGUOUS_BIT) != 0
-        && !descriptor_is_c_contiguous(descriptor)
-        && !descriptor_is_f_contiguous(descriptor)
+    let requires_fortran = (flags & PyBUF_F_CONTIGUOUS) == PyBUF_F_CONTIGUOUS;
+    let requires_any = (flags & PyBUF_ANY_CONTIGUOUS) == PyBUF_ANY_CONTIGUOUS;
+    if (requires_fortran || (requires_any && !c_contiguous))
+        && !memoryview_layout_is_contiguous(shape, strides, itemsize, true)
     {
-        return false;
+        return Some(if requires_fortran {
+            b"memoryview: underlying buffer is not Fortran contiguous\0"
+        } else {
+            b"memoryview: underlying buffer is not contiguous\0"
+        });
     }
-    true
+    // PyBUF_STRIDES includes PyBUF_ND: requesting shape alone still requires
+    // contiguous storage and must not expose a strides array.
+    if (flags & PyBUF_STRIDES) != PyBUF_STRIDES && !c_contiguous {
+        return Some(b"memoryview: underlying buffer is not C-contiguous\0");
+    }
+    None
 }
 
 /// CPython's no-buffer-slot failure: PyErr_Format(TypeError,
 /// "a bytes-like object is required, not '%.100s'").
-unsafe fn raise_bytes_like_type_error(obj: *mut PyObject) {
-    let tp = unsafe { (*obj).ob_type };
-    let name = if tp.is_null() || unsafe { (*tp).tp_name }.is_null() {
-        "object".to_string()
-    } else {
-        unsafe { CStr::from_ptr((*tp).tp_name) }
-            .to_string_lossy()
-            .into_owned()
-    };
-    let msg = format!("a bytes-like object is required, not '{:.100}'", name);
+unsafe fn raise_bytes_like_type_error(tp: *mut PyTypeObject) {
+    let name = unsafe { crate::api::typeobj::type_name_with_precision(tp, 100) };
+    let msg = format!("a bytes-like object is required, not '{name}'");
     if let Ok(c) = std::ffi::CString::new(msg) {
         unsafe {
             crate::api::errors::PyErr_SetString(
@@ -468,21 +467,33 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
     let Some(resolved) = crate::bridge::observe_pyobject(obj) else {
         return -1;
     };
-    let bits = match resolved {
-        crate::bridge::ResolvedPyObject::ManagedMolt(bits) => bits,
-        crate::bridge::ResolvedPyObject::Foreign => {
-            // Foreign C object: CPython Objects/abstract.c dispatches
-            // `(*pb->bf_getbuffer)(obj, view, flags)` — the slot installed by
-            // PyType_FromSpec was previously DEAD (no call site), so a
-            // C-extension type (numpy's PyArray_Type) could never export a
-            // buffer through the standard protocol.
-            if let Some(getbuffer) = unsafe { type_bf_getbuffer((*obj).ob_type) } {
-                return unsafe { getbuffer(obj, view, flags) };
-            }
-            // No buffer slot: TypeError with CPython's message (was BufferError).
-            unsafe { raise_bytes_like_type_error(obj) };
-            return -1;
-        }
+    let tp = unsafe { crate::bridge::semantic_type_for_resolved(obj, resolved) };
+    if tp.is_null() {
+        return -1;
+    }
+    if let Some(getbuffer) = unsafe { type_bf_getbuffer(tp) } {
+        return unsafe { getbuffer(obj, view, flags) };
+    }
+    unsafe { raise_bytes_like_type_error(tp) };
+    -1
+}
+
+/// Physical managed-storage exporter installed by builtin buffer slots. Public
+/// acquisition dispatches the semantic type; this leaf never dispatches again.
+/// Its paired release slot alone may interpret ExportInternal.
+pub unsafe extern "C" fn managed_storage_getbuffer(
+    obj: *mut PyObject,
+    view: *mut Py_buffer,
+    flags: c_int,
+) -> c_int {
+    if view.is_null() {
+        unsafe { set_type_error(b"buffer view must not be NULL\0") };
+        return -1;
+    }
+    unsafe { reset_pybuffer(view) };
+    let Some(bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
     };
     let hooks = hooks_or_stubs();
     let mut descriptor = MoltBufferView::default();
@@ -513,10 +524,24 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
     // did was strictly weaker: it read back the same values through the
     // freshly published pointers, or vacuously passed where flags left them
     // NULL.)
-    if !descriptor_satisfies_flags(&descriptor, flags) {
+    if let Some(message) = descriptor_request_error(&descriptor, flags) {
         unsafe {
             let _ = (hooks.buffer_release)(&mut descriptor as *mut MoltBufferView);
-            set_buffer_error(b"non-contiguous buffers require PyBUF_STRIDES\0");
+            set_buffer_error(message);
+        }
+        return -1;
+    }
+    // memory_getbuf refuses FORMAT without shape, whereas ordinary byte
+    // exporters (PyBuffer_FillInfo) permit it. Keep that exporter distinction.
+    if (flags & PyBUF_ND) == 0
+        && (flags & PyBUF_FORMAT) != 0
+        && unsafe { crate::api::memory::PyMemoryView_Check(obj) } != 0
+    {
+        unsafe {
+            let _ = (hooks.buffer_release)(&mut descriptor as *mut MoltBufferView);
+            set_buffer_error(
+                b"memoryview: cannot cast to unsigned bytes if the format flag is present\0",
+            );
         }
         return -1;
     }
@@ -539,19 +564,23 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         (*view).len = descriptor.len as isize;
         (*view).itemsize = descriptor.itemsize as isize;
         (*view).readonly = descriptor.readonly as c_int;
-        (*view).ndim = descriptor.ndim as c_int;
+        (*view).ndim = if (flags & PyBUF_ND) == PyBUF_ND {
+            descriptor.ndim as c_int
+        } else {
+            1
+        };
         let dims = export_internal_dims(internal, ndim);
         (*view).format = if (flags & PyBUF_FORMAT) != 0 {
             (&raw mut (*internal).format).cast::<c_char>()
         } else {
             ptr::null_mut()
         };
-        (*view).shape = if (flags & (PyBUF_ND | PyBUF_STRIDES)) != 0 {
+        (*view).shape = if ndim != 0 && (flags & PyBUF_ND) == PyBUF_ND {
             dims
         } else {
             ptr::null_mut()
         };
-        (*view).strides = if (flags & PyBUF_STRIDES) != 0 {
+        (*view).strides = if ndim != 0 && (flags & PyBUF_STRIDES) == PyBUF_STRIDES {
             dims.add(ndim)
         } else {
             ptr::null_mut()
@@ -585,6 +614,13 @@ pub(crate) unsafe fn release_managed_export(view: *mut Py_buffer) {
     }
 }
 
+pub unsafe extern "C" fn managed_storage_releasebuffer(
+    _object: *mut PyObject,
+    view: *mut Py_buffer,
+) {
+    unsafe { release_managed_export(view) };
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
     if view.is_null() {
@@ -602,22 +638,12 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
             reset_pybuffer(view);
             return;
         }
-        // Discriminate the release path by the NATURE OF THE EXPORTER OBJECT —
-        // CPython's model (dispatch on `Py_TYPE(obj)->tp_as_buffer`) — never a
-        // registry, and never a dereference of `view.internal` (for a foreign
-        // exporter it is a private cookie that may be unmapped memory or a
-        // small integer). `obj` is always dereferenceable here: the view holds
-        // a strong reference from export until the DECREF below, which also
-        // pins the bridge identity entry, so this classification cannot drift
-        // from the one `PyObject_GetBuffer` made at export time.
-        let is_molt_native = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj).is_some();
-        if is_molt_native {
-            // Only managed acquisition publishes this internal layout.
-            release_managed_export(view);
-        } else if let Some(releasebuffer) = type_bf_releasebuffer((*obj).ob_type) {
-            // View filled by a C-extension bf_getbuffer: CPython calls
-            // `pb->bf_releasebuffer(obj, view)` when present, BEFORE the obj
-            // DECREF — skipping it imbalances the exporter's refcount/resources.
+        // The exporter owns the cookie. Its actual buffer slot retires it;
+        // managed identity alone says nothing about the cookie's layout.
+        let tp = crate::bridge::semantic_type(obj);
+        if !tp.is_null()
+            && let Some(releasebuffer) = type_bf_releasebuffer(tp)
+        {
             releasebuffer(obj, view);
         }
         (*view).internal = ptr::null_mut();
@@ -645,17 +671,10 @@ pub unsafe extern "C" fn PyObject_CheckBuffer(obj: *mut PyObject) -> c_int {
     let Some(resolved) = crate::bridge::resolve_pyobject(obj) else {
         return 0;
     };
-    match resolved {
-        crate::bridge::ResolvedPyObject::Foreign => {
-            // Foreign object: honest slot test.
-            (unsafe { type_bf_getbuffer((*obj).ob_type) }).is_some() as c_int
-        }
-        crate::bridge::ResolvedPyObject::ManagedMolt(bits) => {
-            // Runtime metadata owns managed exporter eligibility. This is a
-            // slot/support query, never an acquisition probe or callback.
-            unsafe { (hooks_or_stubs().buffer_supports)(bits.bits()) }
-        }
-    }
+    crate::api::errors::with_preserved_error(|| unsafe {
+        let tp = crate::bridge::semantic_type_for_resolved(obj, resolved);
+        (!tp.is_null() && type_bf_getbuffer(tp).is_some()) as c_int
+    })
 }
 
 #[unsafe(no_mangle)]

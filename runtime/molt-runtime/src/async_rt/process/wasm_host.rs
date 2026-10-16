@@ -235,7 +235,11 @@ pub unsafe extern "C" fn molt_process_spawn(
             Ok(val) => val,
             Err(bits) => return bits,
         };
-        super::child_resources::enforce_child_resource_env_entries(&mut env_entries, &mut overlay);
+        super::child_resources::enforce_child_resource_env_entries(
+            &mut env_entries,
+            &mut overlay,
+            runtime_state(_py).policy().resources.as_ref(),
+        );
         let cwd = match cwd_from_bits_wasm(_py, cwd_bits) {
             Ok(val) => val,
             Err(bits) => return bits,

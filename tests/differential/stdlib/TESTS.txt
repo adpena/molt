@@ -1318,6 +1318,7 @@ tests/differential/stdlib/inspect_signature_posonly.py
 tests/differential/stdlib/inspect_unwrap.py
 tests/differential/stdlib/intrinsics_module_import_no_print.py
 tests/differential/stdlib/intrinsics_module_import_runtime_call.py
+tests/differential/stdlib/io_buffer_ingress.py
 tests/differential/stdlib/io_buffered_peek.py
 tests/differential/stdlib/io_buffered_textio.py
 tests/differential/stdlib/io_bufferedreader_readinto.py

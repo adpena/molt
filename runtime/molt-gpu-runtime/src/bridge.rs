@@ -90,12 +90,6 @@ pub(super) fn alloc_tuple(_py: &PyToken, values: &[u64]) -> *mut u8 {
     ptr_from_owned_bits(molt_runtime_core::rt_tuple(values))
 }
 
-#[inline]
-pub(super) fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
-    molt_runtime_core::rt_string_as_bytes(obj.bits())
-        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-}
-
 unsafe extern "C" {
     #[cfg(any(
         target_arch = "wasm32",

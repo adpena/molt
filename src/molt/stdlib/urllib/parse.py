@@ -275,3 +275,21 @@ def urlencode(query: Iterable, doseq: bool = False, safe: str = "") -> str:
 
 
 globals().pop("_require_intrinsic", None)
+
+
+_portprog = None
+
+
+def _splitport(host):
+    """Split an optional ASCII decimal port, preserving CPython empty-port behavior."""
+    global _portprog
+    if _portprog is None:
+        import re
+
+        _portprog = re.compile("(.*):([0-9]*)", re.DOTALL)
+    match = _portprog.fullmatch(host)
+    if match:
+        host, port = match.groups()
+        if port:
+            return host, port
+    return host, None

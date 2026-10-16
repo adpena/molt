@@ -579,19 +579,9 @@ where
             return Err(format!("{name} must be valid UTF-8"));
         }
     };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(format!(
-            "{name} must be a positive integer, got an empty value"
-        ));
-    }
-    let parsed = trimmed
-        .parse::<T>()
-        .map_err(|_| format!("{name} must be a positive integer, got {raw:?}"))?;
-    if parsed == T::default() {
-        return Err(format!("{name} must be a positive integer, got 0"));
-    }
-    Ok(Some(parsed))
+    crate::resource::parse_positive_integer(&raw)
+        .map(Some)
+        .map_err(|message| format!("{name} {message}"))
 }
 
 /// Resolve the memory limit from the two coherent env sources.
@@ -681,8 +671,10 @@ fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>,
 /// anything that bypasses the tracker. The
 /// backstop never replaces the tracker; it only converts a runaway into a clean
 /// failure instead of an OOM-kill of the host.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_runtime_init_resources() {
+///
+/// Return the very same parsed immutable policy installed in the tracker.
+/// RuntimeState retains it for child inheritance; no consumer reparses getenv.
+pub(crate) fn initialize_runtime_resources() -> Option<crate::resource::ResourceLimits> {
     use crate::resource::{install_global_limited_tracker, install_memory_backstop};
 
     match resource_limits_from_env() {
@@ -693,9 +685,10 @@ pub extern "C" fn molt_runtime_init_resources() {
             if let Some(max_memory) = limits.max_memory {
                 install_memory_backstop(max_memory);
             }
-            install_global_limited_tracker(limits);
+            install_global_limited_tracker(limits.clone());
+            Some(limits)
         }
-        Ok(None) => {}
+        Ok(None) => None,
         Err(message) => {
             eprintln!("molt runtime resource configuration error: {message}");
             std::process::abort();
@@ -2214,10 +2207,13 @@ pub extern "C" fn molt_sys_flags_payload() -> u64 {
             (b"hash_randomization", sys_flags_hash_randomization(_py)),
             (b"isolated", 0),
             (b"dev_mode", env_flag_bool("PYTHONDEVMODE").unwrap_or(0)),
-            (b"utf8_mode", env_flag_bool("PYTHONUTF8").unwrap_or(0)),
+            (
+                b"utf8_mode",
+                i64::from(crate::builtins::platform::startup_encoding(_py).utf8_mode),
+            ),
             (
                 b"warn_default_encoding",
-                env_flag_bool("PYTHONWARNDEFAULTENCODING").unwrap_or(0),
+                i64::from(crate::builtins::platform::startup_encoding(_py).warn_default_encoding),
             ),
             (b"safe_path", env_flag_bool("PYTHONSAFEPATH").unwrap_or(0)),
             (
@@ -2272,10 +2268,9 @@ pub extern "C" fn molt_sys_flags_payload() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_executable() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let executable = match std::env::var("MOLT_SYS_EXECUTABLE") {
-            Ok(val) if !val.is_empty() => val.into_bytes(),
-            _ => with_process_argv(_py, |args| args.first().cloned().unwrap_or_default()),
-        };
+        let executable = crate::builtins::platform::startup_executable(_py).unwrap_or_else(|| {
+            with_process_argv(_py, |args| args.first().cloned().unwrap_or_default())
+        });
         let ptr = alloc_string(_py, &executable);
         if ptr.is_null() {
             return MoltObject::none().bits();

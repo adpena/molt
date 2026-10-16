@@ -2168,7 +2168,18 @@ pub extern "C" fn molt_del_index(value: u64, _: u64) -> u64 { value }
 #[no_mangle]
 pub extern "C" fn molt_dict_update_missing(value: u64, _: u64, _: u64) -> u64 { value }
 #[no_mangle]
-pub extern "C" fn molt_dict_new(_: u64) -> u64 { hash_new() }
+pub unsafe extern "C" fn molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64) -> u64 {
+    let result = hash_new();
+    if EXCEPTION_PENDING != 0 { return result; }
+    for index in 0..len as usize {
+        hash_insert(result, &[*keys.add(index), *values.add(index)]);
+        if EXCEPTION_PENDING != 0 {
+            molt_dec_ref_obj(result);
+            return BOXED_NONE;
+        }
+    }
+    result
+}
 #[no_mangle]
 pub extern "C" fn molt_set_new(_: u64) -> u64 { hash_new() }
 #[no_mangle]
@@ -2701,33 +2712,39 @@ fn main() {
         molt_dec_ref_obj(result);
         assert_counts("borrowed alias caller cleanup", 1, 1, 2, 0);
         reset();
-        // Steps: `b` mints the box for a source's first use and `i` inserts
-        // one entry. Later uses share that box, so `wider` is boxed only after
-        // the inserts that precede its first entry.
+        // `a` allocates the container, `b` boxes a distinct operand, and `i`
+        // inserts one entry. Dict's full-pairs ABI receives all operands before
+        // allocation; sets retain their existing incremental insertion boundary.
         for (label, run, steps) in [
-            ("dict raw", cleanup_hash_dict_raw as unsafe extern "C" fn() -> u64, "bibii"),
-            ("set raw", cleanup_hash_set_raw as unsafe extern "C" fn() -> u64, "biibi"),
-            ("frozenset raw", cleanup_hash_frozenset_raw as unsafe extern "C" fn() -> u64, "biibi"),
+            ("dict raw", cleanup_hash_dict_raw as unsafe extern "C" fn() -> u64, "bbaiii"),
+            ("set raw", cleanup_hash_set_raw as unsafe extern "C" fn() -> u64, "abiibi"),
+            ("frozenset raw", cleanup_hash_frozenset_raw as unsafe extern "C" fn() -> u64, "abiibi"),
         ] {
             for (allocate, insert, boxing) in [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 2, 0), (0, 3, 0), (0, 0, 1), (0, 0, 2)] {
                 cleanup_hash_mode(allocate, insert);
                 cleanup_hash_box_fail(boxing);
                 let result = run();
-                let (mut calls, mut boxes, mut error) = (0, 0, if allocate != 0 { 71 } else { 0 });
-                if allocate == 0 {
-                    for step in steps.bytes() {
-                        if step == b'b' {
+                let (mut calls, mut boxes, mut allocations, mut error) = (0, 0, 0, 0);
+                for step in steps.bytes() {
+                    match step {
+                        b'a' => {
+                            if allocate != 0 { error = 71; break; }
+                            allocations += 1;
+                        }
+                        b'b' => {
                             boxes += 1;
                             if boxes == boxing { error = 200 + boxing; break; }
-                        } else {
+                            allocations += 1;
+                        }
+                        b'i' => {
                             calls += 1;
                             if calls == insert { error = 100 + insert; break; }
                         }
+                        _ => unreachable!(),
                     }
                 }
-                let allocations = if allocate != 0 { 0 } else { 1 + boxes - u64::from(error > 200) };
                 if error == 0 {
-                    assert_eq!(result, cleanup_oracle_owner(0), "{label}: aggregate identity");
+                    assert_eq!(result, cleanup_oracle_owner(if label == "dict raw" { 2 } else { 0 }), "{label}: aggregate identity");
                     assert_counts(label, allocations, 0, allocations - 1, 1);
                     molt_dec_ref_obj(result);
                 } else {

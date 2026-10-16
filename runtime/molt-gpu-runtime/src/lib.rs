@@ -880,14 +880,17 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
 }
 
 fn parse_format(_py: &PyToken, bits: u64, role: &str) -> Result<ScalarFormat, u64> {
-    let Some(value) = string_obj_to_owned(obj_from_bits(bits)) else {
+    // SAFETY: the caller's argument owner and execution custody remain live;
+    // decoding and scalar admission finish before raising can reenter Python.
+    let Some(bytes) = (unsafe { molt_runtime_core::rt_string_as_bytes(bits) }) else {
         return Err(raise_exception::<_>(
             _py,
             "TypeError",
             &format!("{role} must be a format string"),
         ));
     };
-    match scalar_format_from_text(value.as_str()) {
+    let value = String::from_utf8_lossy(bytes);
+    match scalar_format_from_text(value.as_ref()) {
         Some(fmt) => Ok(fmt),
         None => Err(raise_exception::<_>(
             _py,
@@ -967,9 +970,12 @@ fn kernel_arg_from_bits<'py>(
                     object_attr_bits(_py, bits, b"_size", "_size")?,
                 )
             };
-            let format = string_obj_to_owned(obj_from_bits(format.bits())).ok_or_else(|| {
-                raise_exception::<u64>(_py, "TypeError", "buffer format must be a string")
-            })?;
+            let format = format
+                .string_bytes(_py)
+                .map(String::from_utf8_lossy)
+                .ok_or_else(|| {
+                    raise_exception::<u64>(_py, "TypeError", "buffer format must be a string")
+                })?;
             let size = parse_usize_arg(_py, size.bits(), "_size")?;
             let scalar_format = scalar_format_from_text(&format).ok_or_else(|| {
                 raise_exception::<u64>(_py, "RuntimeError", "unsupported GPU buffer format")
@@ -993,7 +999,7 @@ fn kernel_arg_from_bits<'py>(
             return Ok(RuntimeKernelArg::Buffer(RuntimeKernelBufferArg {
                 object_ptr: ptr,
                 data,
-                original_format: format,
+                original_format: format.into_owned(),
                 size,
                 float_elements: false,
             }));
@@ -1850,8 +1856,10 @@ fn dispatch_metal_kernel(
         Err(err) => return Err(err),
     };
     let descriptor_owner = unsafe { OwnedRuntimeValue::from_owned_bits(_py, descriptor_bits) };
-    let descriptor_json =
-        string_obj_to_owned(obj_from_bits(descriptor_owner.bits())).ok_or_else(|| {
+    let descriptor_json = descriptor_owner
+        .string_bytes(_py)
+        .map(String::from_utf8_lossy)
+        .ok_or_else(|| {
             raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
         })?;
     let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
@@ -1981,8 +1989,10 @@ fn dispatch_webgpu_kernel(
         Err(err) => return Err(err),
     };
     let descriptor_owner = unsafe { OwnedRuntimeValue::from_owned_bits(_py, descriptor_bits) };
-    let descriptor_json =
-        string_obj_to_owned(obj_from_bits(descriptor_owner.bits())).ok_or_else(|| {
+    let descriptor_json = descriptor_owner
+        .string_bytes(_py)
+        .map(String::from_utf8_lossy)
+        .ok_or_else(|| {
             raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
         })?;
     let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
@@ -2098,8 +2108,10 @@ fn dispatch_webgpu_kernel(
         Err(err) => return Err(err),
     };
     let descriptor_owner = unsafe { OwnedRuntimeValue::from_owned_bits(_py, descriptor_bits) };
-    let descriptor_json =
-        string_obj_to_owned(obj_from_bits(descriptor_owner.bits())).ok_or_else(|| {
+    let descriptor_json = descriptor_owner
+        .string_bytes(_py)
+        .map(String::from_utf8_lossy)
+        .ok_or_else(|| {
             raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
         })?;
     let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {

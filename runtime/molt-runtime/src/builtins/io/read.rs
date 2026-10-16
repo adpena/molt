@@ -25,7 +25,10 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
             if !handle.readable {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -264,7 +267,10 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
             if !handle.readable {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -495,7 +501,10 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
             if !handle.readable {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -642,7 +651,10 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
                     }
                 }
             };
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -839,7 +851,10 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                     }
                 }
             };
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -1070,6 +1085,46 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
         if handle_ptr.is_null() {
             return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
         }
+        inc_ref_bits(_py, handle_bits);
+        let _owner = PtrDropGuard::new(ptr);
+        if (*handle_ptr).text {
+            let msg = format!("{name}() unsupported for text files");
+            return raise_exception::<_>(_py, "OSError", &msg);
+        }
+        let buffer =
+            match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, buffer_bits) {
+                Ok(buffer) => buffer,
+                Err(crate::object::buffer_exports::BufferAccessError::Preparation) => {
+                    return MoltObject::none().bits();
+                }
+                Err(_) => {
+                    // Clinic's w* converter deliberately replaces exporter
+                    // failures; the ABI clear owns both raised channels.
+                    crate::object::foreign::retire_native_reference(|| {
+                        molt_cpython_abi::api::errors::PyErr_Clear();
+                    });
+                    let type_name = if obj_from_bits(buffer_bits).is_none() {
+                        "None".to_owned()
+                    } else {
+                        class_name_for_error(type_of_bits(_py, buffer_bits))
+                    };
+                    let type_name =
+                        String::from_utf8_lossy(&type_name.as_bytes()[..type_name.len().min(50)]);
+                    let argument = if (*handle_ptr).buffer_size == 0 && (*handle_ptr).mem_bits == 0
+                    {
+                        "argument 1"
+                    } else {
+                        "argument"
+                    };
+                    let msg = format!(
+                        "{name}() {argument} must be read-write bytes-like object, not {type_name}"
+                    );
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+            };
+        // Clinic acquires the writable argument before the binary operation's
+        // closed/readable checks. Exporter callbacks run with no handle borrow
+        // or backend lock, and the real native instance remains owned.
         let handle = &mut *handle_ptr;
         if let Err(bits) = file_handle_require_attached(_py, handle) {
             return bits;
@@ -1080,37 +1135,13 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
         if !handle.readable {
             return raise_exception::<_>(_py, "UnsupportedOperation", "read");
         }
-        if handle.text {
-            let msg = format!("{name}() unsupported for text files");
-            return raise_exception::<_>(_py, "OSError", &msg);
-        }
-        let buffer =
-            match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, buffer_bits) {
-                Ok(buffer) => buffer,
-                Err(crate::object::buffer_exports::BufferAccessError::Pending) => {
-                    return MoltObject::none().bits();
-                }
-                Err(err) => {
-                    let type_name = class_name_for_error(type_of_bits(_py, buffer_bits));
-                    let msg = format!(
-                        "{name}() argument must be read-write bytes-like object, not {type_name}"
-                    );
-                    return err.raise(_py, &msg);
-                }
-            };
-        // Acquiring an array export can allocate and run finalizers. End the
-        // earlier handle borrow and revalidate before touching the backend.
-        let handle = &mut *handle_ptr;
-        if let Err(bits) = file_handle_require_attached(_py, handle) {
-            return bits;
-        }
-        if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
-        }
         if buffer.len() == 0 {
             return MoltObject::from_int(0).bits();
         }
-        let backend_state = Arc::clone(&handle.state);
+        let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+            Ok(state) => state,
+            Err(error) => return error,
+        });
         let mut guard = backend_state.backend.lock().unwrap();
         let Some(backend) = guard.as_mut() else {
             return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -1119,7 +1150,8 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             Ok(n) => n,
             Err(bits) => return bits,
         };
-        MoltObject::from_int(n as i64).bits()
+        drop(guard);
+        int_bits_from_i64(_py, n as i64)
     }
 }
 
@@ -1183,7 +1215,10 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
                     }
                 }
             };
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
@@ -1258,7 +1293,10 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
             {
                 return raise_exception::<_>(_py, "UnsupportedOperation", "getvalue");
             }
-            let backend_state = Arc::clone(&handle.state);
+            let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
+                Ok(state) => state,
+                Err(error) => return error,
+            });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");

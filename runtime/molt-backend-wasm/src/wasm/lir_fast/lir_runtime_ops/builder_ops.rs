@@ -26,18 +26,18 @@ fn prepare_builder_operands(ctx: &mut LirLowerCtx, op: &LirOp) -> Vec<u32> {
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_list(ctx: &mut LirLowerCtx, op: &LirOp) {
-    emit_lir_fixed_sequence(ctx, op, LirRuntimeCall::ListFromValues);
+    emit_lir_word_range_constructor(ctx, op, LirRuntimeCall::ListFromValues);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_tuple(ctx: &mut LirLowerCtx, op: &LirOp) {
-    emit_lir_fixed_sequence(ctx, op, LirRuntimeCall::TupleFromValues);
+    emit_lir_word_range_constructor(ctx, op, LirRuntimeCall::TupleFromValues);
 }
 
-/// Fixed-arity tuples pass their operand words to the one runtime constructor.
-/// The range is a scratch allocation private to this operation: the runtime
-/// copies and retains every word before it is freed, so there is no builder
-/// owner, per-element failure branch or shared buffer.
-fn emit_lir_fixed_sequence(ctx: &mut LirLowerCtx, op: &LirOp, constructor: LirRuntimeCall) {
+/// Fixed-arity collections pass borrowed operand words to one constructor.
+/// The private scratch range is split into key/value halves for dictionaries;
+/// the runtime owns partial insertion cleanup. No compiler-side aggregate
+/// owner, per-element failure branch or shared buffer survives this boundary.
+fn emit_lir_word_range_constructor(ctx: &mut LirLowerCtx, op: &LirOp, constructor: LirRuntimeCall) {
     assert!(
         !op.result_values.is_empty(),
         "fixed sequence requires result"
@@ -45,13 +45,22 @@ fn emit_lir_fixed_sequence(ctx: &mut LirLowerCtx, op: &LirOp, constructor: LirRu
     // A fallible physical box must precede the scratch acquisition. Otherwise
     // its exception branch would strand the range.
     let operands = prepare_builder_operands(ctx, op);
+    let split_pairs = constructor == LirRuntimeCall::DictFromPairs;
+    assert!(!split_pairs || operands.len().is_multiple_of(2));
     let count = i64::try_from(operands.len()).expect("sequence arity exceeds the i64 ABI");
     if operands.is_empty() {
-        emit_lir_runtime_call_with_args(
-            ctx,
-            constructor,
-            &[LirRuntimeArg::I64Const(0), LirRuntimeArg::I64Const(0)],
-        );
+        if split_pairs {
+            ctx.instructions.push(Instruction::I32Const(0));
+            ctx.instructions.push(Instruction::I32Const(0));
+            ctx.instructions.push(Instruction::I64Const(0));
+            ctx.emit_runtime_call(constructor);
+        } else {
+            emit_lir_runtime_call_with_args(
+                ctx,
+                constructor,
+                &[LirRuntimeArg::I64Const(0), LirRuntimeArg::I64Const(0)],
+            );
+        }
         emit_lir_runtime_result(ctx, op, constructor);
         return;
     }
@@ -70,10 +79,23 @@ fn emit_lir_fixed_sequence(ctx: &mut LirLowerCtx, op: &LirOp, constructor: LirRu
         ctx.instructions.push(Instruction::I32WrapI64);
         ctx.instructions.push(Instruction::LocalGet(operand));
         ctx.instructions
-            .push(Instruction::I64Store(word_memarg(index)));
+            .push(Instruction::I64Store(word_memarg(if split_pairs {
+                index / 2 + (index % 2) * (count as usize / 2)
+            } else {
+                index
+            })));
     }
     ctx.instructions.push(Instruction::LocalGet(scratch));
-    ctx.instructions.push(Instruction::I64Const(count));
+    if split_pairs {
+        ctx.instructions.push(Instruction::I32WrapI64);
+        ctx.instructions.push(Instruction::LocalGet(scratch));
+        ctx.instructions.push(Instruction::I64Const(count / 2 * 8));
+        ctx.instructions.push(Instruction::I64Add);
+        ctx.instructions.push(Instruction::I32WrapI64);
+        ctx.instructions.push(Instruction::I64Const(count / 2));
+    } else {
+        ctx.instructions.push(Instruction::I64Const(count));
+    }
     ctx.emit_runtime_call(constructor);
     // The runtime copied the range; free it while the sequence waits on the stack.
     ctx.instructions.push(Instruction::LocalGet(scratch));
@@ -91,38 +113,11 @@ fn word_memarg(index: usize) -> MemArg {
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_dict(ctx: &mut LirLowerCtx, op: &LirOp) {
-    if !op.tir_op.operands.len().is_multiple_of(2) {
-        panic!("BuildDict requires an even key/value operand count");
-    }
-    let Some(result) = op.result_values.first() else {
-        panic!("BuildDict requires result");
-    };
-    let out = result.id;
-    let operands = prepare_builder_operands(ctx, op);
-    let owner = ctx.alloc_operation_owner();
-    emit_lir_runtime_call_with_args(
-        ctx,
-        LirRuntimeCall::DictNew,
-        &[LirRuntimeArg::I64Const(
-            (op.tir_op.operands.len() / 2) as i64,
-        )],
+    assert!(
+        op.tir_op.operands.len().is_multiple_of(2),
+        "BuildDict requires complete pairs"
     );
-    ctx.instructions.push(Instruction::LocalSet(owner));
-    ctx.guard_operation_exception();
-
-    for pair in operands.chunks(2) {
-        ctx.instructions.push(Instruction::LocalGet(owner));
-        ctx.instructions.push(Instruction::LocalGet(pair[0]));
-        ctx.instructions.push(Instruction::LocalGet(pair[1]));
-        ctx.emit_runtime_call(LirRuntimeCall::DictSet);
-        // DictSet borrows the dictionary and can return None on failure.
-        // Never overwrite the only owner with its status/result word.
-        emit_lir_runtime_discard(ctx, LirRuntimeCall::DictSet);
-        ctx.guard_operation_exception();
-    }
-    ctx.instructions.push(Instruction::LocalGet(owner));
-    ctx.emit_set(out);
-    ctx.forget_operation_owner(owner);
+    emit_lir_word_range_constructor(ctx, op, LirRuntimeCall::DictFromPairs);
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_build_set(ctx: &mut LirLowerCtx, op: &LirOp) {

@@ -520,7 +520,7 @@ fn bytes_remove_affix_impl(
         if object_type_id(hay_ptr) != type_id {
             return MoltObject::none().bits();
         }
-        let affix_bytes = match bytes_like_arg_or_type_error(_py, affix_ptr, || {
+        let affix_bytes_guard = match bytes_like_arg_or_type_error(_py, affix_ptr, || {
             format!(
                 "a bytes-like object is required, not '{}'",
                 type_name(_py, affix)
@@ -529,6 +529,7 @@ fn bytes_remove_affix_impl(
             Ok(slice) => slice,
             Err(bits) => return bits,
         };
+        let affix_bytes = affix_bytes_guard.as_slice();
         let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
         let out = if suffix {
             if hay_bytes.ends_with(affix_bytes) {

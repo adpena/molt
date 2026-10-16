@@ -7,6 +7,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_compatibility_error",
             crate::molt_compatibility_error as *const (),
         )),
+        "molt_capabilities_list" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_capabilities_list",
+            crate::molt_capabilities_list as *const (),
+        )),
         "molt_capabilities_trusted" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_capabilities_trusted",
             crate::molt_capabilities_trusted as *const (),
@@ -91,37 +95,33 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_spawn",
             crate::molt_spawn as *const (),
         )),
-        "molt_env_get" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_get",
-            crate::molt_env_get as *const (),
+        "molt_env_mapping_init" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_env_mapping_init",
+            crate::molt_env_mapping_init as *const (),
         )),
-        "molt_env_snapshot" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_snapshot",
-            crate::molt_env_snapshot as *const (),
+        "molt_env_mapping_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_env_mapping_get",
+            crate::molt_env_mapping_get as *const (),
         )),
-        "molt_env_set" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_set",
-            crate::molt_env_set as *const (),
+        "molt_env_mapping_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_env_mapping_set",
+            crate::molt_env_mapping_set as *const (),
         )),
-        "molt_env_unset" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_unset",
-            crate::molt_env_unset as *const (),
+        "molt_env_mapping_delete" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_env_mapping_delete",
+            crate::molt_env_mapping_delete as *const (),
         )),
-        "molt_env_len" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_len",
-            crate::molt_env_len as *const (),
+        "molt_env_mapping_keys" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_env_mapping_keys",
+            crate::molt_env_mapping_keys as *const (),
         )),
-        "molt_env_contains" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_contains",
-            crate::molt_env_contains as *const (),
+        "molt_env_mapping_len" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_env_mapping_len",
+            crate::molt_env_mapping_len as *const (),
         )),
-        "molt_env_popitem" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_popitem",
-            crate::molt_env_popitem as *const (),
-        )),
-        "molt_env_clear" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_env_clear",
-            crate::molt_env_clear as *const (),
+        "molt_env_mapping_items_iter" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_env_mapping_items_iter",
+            crate::molt_env_mapping_items_iter as *const (),
         )),
         "molt_env_putenv" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_env_putenv",
@@ -130,6 +130,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_env_unsetenv" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_env_unsetenv",
             crate::molt_env_unsetenv as *const (),
+        )),
+        "molt_startup_entry_is_spawn" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_startup_entry_is_spawn",
+            crate::molt_startup_entry_is_spawn as *const (),
+        )),
+        "molt_startup_mp_spawn_enabled" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_startup_mp_spawn_enabled",
+            crate::molt_startup_mp_spawn_enabled as *const (),
         )),
         "molt_gettext_gettext" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gettext_gettext",
@@ -146,6 +154,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_io_class" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_io_class",
             crate::molt_io_class as *const (),
+        )),
+        "molt_io_default_buffer_size" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_io_default_buffer_size",
+            crate::molt_io_default_buffer_size as *const (),
         )),
         "molt_io_member_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_io_member_get",

@@ -456,13 +456,16 @@ fn native_text_result(py: &PyToken<'_>, class: u64, kind: NativePayload, result:
 
 fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Option<u64>) -> u64 {
     use crate::object::buffer_exports::ScopedBuffer;
-    let buffer = match ScopedBuffer::new(py, value) {
+    let buffer = match ScopedBuffer::simple(py, value) {
         Ok(buffer) => buffer,
         Err(error) => return error.raise(py, "decoding to str: need a bytes-like object"),
     };
     let len = match buffer.contiguous_len() {
         Ok(len) => len,
-        Err(crate::object::buffer_exports::BufferAccessError::Pending) => {
+        Err(
+            crate::object::buffer_exports::BufferAccessError::Pending
+            | crate::object::buffer_exports::BufferAccessError::Preparation,
+        ) => {
             return MoltObject::none().bits();
         }
         Err(_) => {

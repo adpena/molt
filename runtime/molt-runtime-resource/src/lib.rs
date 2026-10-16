@@ -349,13 +349,51 @@ pub struct LimitedTracker {
     max_string_result_bytes: usize,
 }
 
+impl ResourceLimits {
+    /// Resolve the actual per-operation ceilings once, for both tracker
+    /// enforcement and child policy inheritance. Unset fields are not unlimited.
+    pub fn operation_result_limits(&self) -> [usize; 4] {
+        let fallback = self
+            .max_operation_result_bytes
+            .unwrap_or(DEFAULT_MAX_OPERATION_RESULT_BYTES);
+        [
+            self.max_pow_result_bytes.unwrap_or(fallback),
+            self.max_repeat_result_bytes.unwrap_or(fallback),
+            self.max_shift_result_bytes.unwrap_or(fallback),
+            self.max_string_result_bytes.unwrap_or(fallback),
+        ]
+    }
+}
+
+/// Canonical positive integer grammar for startup and requested child limits.
+/// Memory uses `parse_human_size`; all other resource fields use this parser.
+pub fn parse_positive_integer<T>(raw: &str) -> Result<T, String>
+where
+    T: Default + PartialEq + std::str::FromStr,
+{
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("must be a positive integer, got an empty value".to_owned());
+    }
+    let parsed = trimmed
+        .parse::<T>()
+        .map_err(|_| format!("must be a positive integer, got {raw:?}"))?;
+    if parsed == T::default() {
+        return Err("must be a positive integer, got 0".to_owned());
+    }
+    Ok(parsed)
+}
+
 impl LimitedTracker {
     /// Create a new tracker from declarative limits. The wall-clock timer
     /// starts immediately.
     pub fn new(limits: &ResourceLimits) -> Self {
-        let fallback = limits
-            .max_operation_result_bytes
-            .unwrap_or(DEFAULT_MAX_OPERATION_RESULT_BYTES);
+        let [
+            max_pow_result_bytes,
+            max_repeat_result_bytes,
+            max_shift_result_bytes,
+            max_string_result_bytes,
+        ] = limits.operation_result_limits();
         Self {
             allocation_count: 0,
             memory_used: 0,
@@ -365,10 +403,10 @@ impl LimitedTracker {
             max_duration: limits.max_duration,
             max_memory: limits.max_memory,
             max_recursion_depth: limits.max_recursion_depth,
-            max_pow_result_bytes: limits.max_pow_result_bytes.unwrap_or(fallback),
-            max_repeat_result_bytes: limits.max_repeat_result_bytes.unwrap_or(fallback),
-            max_shift_result_bytes: limits.max_shift_result_bytes.unwrap_or(fallback),
-            max_string_result_bytes: limits.max_string_result_bytes.unwrap_or(fallback),
+            max_pow_result_bytes,
+            max_repeat_result_bytes,
+            max_shift_result_bytes,
+            max_string_result_bytes,
         }
     }
 
@@ -729,11 +767,17 @@ pub fn clear_global_tracker_factory() {
     *limits_guard = None;
 }
 
-pub fn clear_resource_state() {
-    clear_global_tracker_factory();
+/// Retire only this thread's tracker. Isolates do not own the process factory.
+pub fn clear_thread_resource_state() {
     let _ = TRACKER.try_with(|cell| {
         *cell.borrow_mut() = Box::new(UnlimitedTracker);
     });
+}
+
+/// Retire the primary runtime's process factory and its current thread tracker.
+pub fn clear_resource_state() {
+    clear_global_tracker_factory();
+    clear_thread_resource_state();
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,6 +1073,35 @@ pub fn check_bigint_mul_size(a_bits: u64, b_bits: u64) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn child_policy_and_tracker_share_effective_operation_limits() {
+        let limits = super::ResourceLimits {
+            max_memory: Some(64 * 1024 * 1024),
+            ..Default::default()
+        };
+        assert_eq!(limits.operation_result_limits(), [10 * 1024 * 1024; 4]);
+        let limits = super::ResourceLimits {
+            max_operation_result_bytes: Some(4096),
+            max_pow_result_bytes: Some(2048),
+            ..limits
+        };
+        assert_eq!(limits.operation_result_limits(), [2048, 4096, 4096, 4096]);
+        let tracker = super::LimitedTracker::new(&limits);
+        assert_eq!(tracker.max_pow_result_bytes, 2048);
+        assert_eq!(tracker.max_repeat_result_bytes, 4096);
+    }
+
+    #[test]
+    fn positive_resource_integer_grammar_is_shared_and_bounded() {
+        assert_eq!(
+            super::parse_positive_integer::<u64>(" 1024 ").unwrap(),
+            1024
+        );
+        for raw in ["", "0", "-1", "1.5", "1M", "18446744073709551616"] {
+            assert!(super::parse_positive_integer::<u64>(raw).is_err(), "{raw}");
+        }
+    }
+
     use super::*;
 
     fn make_limited(limits: ResourceLimits) -> LimitedTracker {
@@ -1539,6 +1612,11 @@ mod tests {
             ..Default::default()
         });
         assert!(with_tracker(|t| t.on_allocate(256)).is_err());
+
+        clear_thread_resource_state();
+        assert!(with_tracker(|t| t.on_allocate(256)).is_ok());
+        let limited = std::thread::spawn(|| with_tracker(|t| t.on_allocate(256)));
+        assert!(limited.join().expect("child thread panicked").is_err());
 
         clear_resource_state();
         assert!(with_tracker(|t| t.on_allocate(256)).is_ok());

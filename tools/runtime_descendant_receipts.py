@@ -27,7 +27,11 @@ from io import StringIO
 from pathlib import Path
 
 from molt.exact_json import loads_exact
-from tools.libtest_results import parse_libtest
+from tools.libtest_results import (
+    isolated_test_rows,
+    listed_test_identities,
+    parse_libtest,
+)
 from tools.proof_queue_pkg import custody_cas
 
 RECORD_PREFIX = "MOLT_RUNTIME_DESCENDANT_RECEIPT "
@@ -124,6 +128,30 @@ ABI_MISSING_TEXT = (
     "missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error"
 )
 OWNERS: Mapping[str, Owner] = {
+    "env_var_init_installs_tracker": Owner(
+        "resource-startup",
+        "env_var_init_installs_tracker_child",
+        {"env_var_init_installs_tracker_child": Outcome(0, True)},
+        ignored=True,
+    ),
+    "molt_memory_limit_alias_enforces_via_real_init_path": Owner(
+        "resource-startup",
+        "molt_memory_limit_alias_enforces_via_real_init_path_child",
+        {"molt_memory_limit_alias_enforces_via_real_init_path_child": Outcome(0, True)},
+        ignored=True,
+    ),
+    "no_memory_limit_env_means_unchanged_behavior": Owner(
+        "resource-startup",
+        "no_memory_limit_env_means_unchanged_behavior_child",
+        {"no_memory_limit_env_means_unchanged_behavior_child": Outcome(0, True)},
+        ignored=True,
+    ),
+    "human_size_and_raw_bytes_resolve_to_one_limit": Owner(
+        "resource-startup",
+        "human_size_and_raw_bytes_resolve_to_one_limit_child",
+        {"human_size_and_raw_bytes_resolve_to_one_limit_child": Outcome(0, True)},
+        ignored=True,
+    ),
     ABI_MALFORMED_HOOKS: Owner(
         "abi-hook-registration",
         ABI_MALFORMED_HOOKS,
@@ -459,18 +487,16 @@ def retain_receipt_files(receipt: dict, *, root: Path) -> None:
     if _file_identity(image) != expected:
         raise DescendantEvidenceError("executed image changed before retention")
     sources = {image}
-    executions = receipt.get("executions")
-    if executions and _engaged(receipt):
-        baseline = executions[0]
-        stderr = _parent_capture(receipt, baseline, "stderr", custody)
-        for record in _records(stderr):
-            for name in ("stdout", "stderr"):
-                value = record.get(name)
-                # Check original lexical ownership and current bytes before copy;
-                # the receiver repeats those checks against the immutable copy.
-                _descendant_stream(value, image=image, name=name)
-                path = _canonical(value["path"])
-                sources.update((path, path.parent / "artifact-label.txt"))
+    if _engaged(receipt):
+        for _rows, records in _parent_evidence(receipt, image, custody):
+            for record in records:
+                for name in ("stdout", "stderr"):
+                    value = record.get(name)
+                    # Check original ownership and bytes before copy; the
+                    # receiver repeats this against the immutable copy.
+                    _descendant_stream(value, image=image, name=name)
+                    path = _canonical(value["path"])
+                    sources.update((path, path.parent / "artifact-label.txt"))
     receipt["retained_root"] = str(root)
     receipt["retained_files"] = {
         str(path): retain_file(path, root) for path in sorted(sources)
@@ -538,28 +564,41 @@ def _engaged(receipt: Mapping[str, object]) -> bool:
     executions = receipt.get("executions")
     if not isinstance(executions, list) or not executions:
         return False
-    baseline = executions[0]
-    if not isinstance(baseline, dict):
-        return False
-    argv = baseline.get("argv")
-    for stream in ("stdout", "stderr"):
-        value = baseline.get(f"{stream}_evidence")
-        if not isinstance(value, str) or not value or not Path(value).is_file():
+    selected = (
+        executions
+        if receipt.get("resource_process_isolation") is True
+        else executions[:1]
+    )
+    for execution in selected:
+        if not isinstance(execution, dict):
             continue
-        try:
-            if _records(Path(value)):
-                return True
-            if stream == "stdout" and isinstance(argv, list):
-                with Path(value).open(
-                    "r", encoding="utf-8", errors="replace"
-                ) as handle:
-                    report = parse_libtest(handle, tuple(str(item) for item in argv))
-                if any(row["identity"] in OWNERS for row in report.rows()):
+        argv = execution.get("argv")
+        for stream in ("stdout", "stderr"):
+            value = execution.get(f"{stream}_evidence")
+            if not isinstance(value, str) or not value or not Path(value).is_file():
+                continue
+            try:
+                if _records(Path(value)):
                     return True
-        except (OSError, DescendantEvidenceError):
-            # Unreadable or malformed evidence at an owner-shaped location must
-            # be judged by full verification, not silently skipped.
-            return True
+                if stream == "stdout" and isinstance(argv, list):
+                    with Path(value).open(
+                        "r", encoding="utf-8", errors="replace"
+                    ) as handle:
+                        if "--list" in argv:
+                            if any(
+                                name in OWNERS
+                                for name in listed_test_identities(handle)
+                            ):
+                                return True
+                        else:
+                            report = parse_libtest(
+                                handle, tuple(str(item) for item in argv)
+                            )
+                            if any(row["identity"] in OWNERS for row in report.rows()):
+                                return True
+            except (OSError, ValueError, DescendantEvidenceError):
+                # Malformed owner-shaped evidence requires full verification.
+                return True
     return False
 
 
@@ -590,6 +629,128 @@ def _parent_capture(
             f"parent {stream} capture changed after publication"
         )
     return path
+
+
+def _parent_evidence(
+    receipt: Mapping[str, object], image: Path, custody_root: Path
+) -> list[tuple[list[dict[str, str]], list[dict[str, object]]]]:
+    """Re-derive actual executions, keeping each child's parent scope intact."""
+    isolated = receipt.get("resource_process_isolation")
+    executions = receipt.get("executions")
+    if type(isolated) is not bool or not isinstance(executions, list) or not executions:
+        raise DescendantEvidenceError("runtime descendants lack parent executions")
+    selected = executions if isolated else executions[:1]
+    groups = []
+    all_rows = []
+    discovered = []
+    captures: set[Path] = set()
+    for index, execution in enumerate(selected):
+        if not isinstance(execution, dict):
+            raise DescendantEvidenceError("invalid parent execution")
+        argv = execution.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(arg, str) for arg in argv)
+        ):
+            raise DescendantEvidenceError("parent execution lacks exact argv")
+        if not _same_path(_canonical(argv[0]), image):
+            raise DescendantEvidenceError(
+                "parent execution did not run the receipt image"
+            )
+        stdout = _parent_capture(receipt, execution, "stdout", custody_root)
+        stderr = _parent_capture(receipt, execution, "stderr", custody_root)
+        if stdout in captures or stderr in captures:
+            raise DescendantEvidenceError("parent executions share a capture")
+        captures.update((stdout, stderr))
+        if _records(stdout):
+            raise DescendantEvidenceError(
+                "runtime descendant record escaped its canonical stderr stream"
+            )
+        records = _records(stderr)
+        if isolated and index == 0:
+            if argv.count("--list") != 1 or records:
+                raise DescendantEvidenceError(
+                    "resource discovery is not descendant execution evidence"
+                )
+            if (
+                execution.get("infrastructure_failure") is not None
+                or execution.get("timed_out") is not False
+                or not _exact(
+                    execution.get("termination"), {"kind": "exit", "returncode": 0}
+                )
+            ):
+                raise DescendantEvidenceError(
+                    "resource discovery did not complete successfully"
+                )
+            with stdout.open("r", encoding="utf-8", errors="replace") as handle:
+                try:
+                    discovered = listed_test_identities(handle)
+                except ValueError as exc:
+                    raise DescendantEvidenceError(str(exc)) from exc
+            continue
+        with stdout.open("r", encoding="utf-8", errors="replace") as handle:
+            report = parse_libtest(handle, tuple(argv))
+        if isolated:
+            if (
+                "--list" in argv
+                or argv.count("--exact") != 1
+                or argv.index("--exact") + 1 >= len(argv)
+                or index > len(discovered)
+                or argv[argv.index("--exact") + 1] != discovered[index - 1]
+                or not report.serial
+            ):
+                raise DescendantEvidenceError(
+                    "isolated parent escaped its exact discovered test"
+                )
+            termination = execution.get("termination")
+            rows = isolated_test_rows(
+                report,
+                discovered[index - 1],
+                infrastructure_failure=execution.get("infrastructure_failure"),
+                timed_out=execution.get("timed_out") is not False,
+                termination_kind=termination.get("kind")
+                if isinstance(termination, dict)
+                else None,
+            )
+        else:
+            rows = (
+                []
+                if execution.get("infrastructure_failure") is not None
+                else report.rows()
+            )
+        if receipt.get("status") == "success" and (
+            not report.complete
+            or (
+                isolated
+                and (
+                    len(rows) != 1
+                    or rows[0]["status"] not in {"pass", "ignored"}
+                    or execution.get("timed_out") is not False
+                    or not _exact(
+                        execution.get("termination"), {"kind": "exit", "returncode": 0}
+                    )
+                )
+            )
+        ):
+            raise DescendantEvidenceError(
+                "successful parent lacks complete re-derived libtest accounting"
+            )
+        all_rows.extend(rows)
+        groups.append((rows, records))
+    if (
+        isolated
+        and receipt.get("status") == "success"
+        and len(groups) != len(discovered)
+    ):
+        raise DescendantEvidenceError(
+            "successful resource receipt omitted discovered executions"
+        )
+    if all_rows != receipt.get("test_results"):
+        raise DescendantEvidenceError(
+            "re-derived parent libtest rows disagree with the saved ledger"
+        )
+    return groups
 
 
 def _descendant_stream(
@@ -719,24 +880,6 @@ def _verify(
     receipt_root: Path | None,
     platform: str,
 ) -> dict[str, object]:
-    executions = receipt.get("executions")
-    if (
-        receipt.get("resource_process_isolation") is not False
-        or not isinstance(executions, list)
-        or not executions
-        or not isinstance(executions[0], dict)
-    ):
-        raise DescendantEvidenceError(
-            "runtime descendants require one baseline libtest execution"
-        )
-    baseline = executions[0]
-    argv = baseline.get("argv")
-    if (
-        not isinstance(argv, list)
-        or not argv
-        or not all(isinstance(item, str) for item in argv)
-    ):
-        raise DescendantEvidenceError("baseline execution lacks exact argv")
     image = _canonical(receipt.get("executable_resolved"))
     image_sha256 = receipt.get("executable_sha256")
     image_size = receipt.get("executable_size")
@@ -745,86 +888,71 @@ def _verify(
         image_sha256,
     ):
         raise DescendantEvidenceError("parent test image changed after publication")
-    if not _same_path(_canonical(argv[0]), image):
-        raise DescendantEvidenceError(
-            "baseline execution did not run the receipt image"
-        )
     custody_root = _canonical(receipt.get("receipt_custody_root"))
     if receipt_root is not None and not _same_path(
         custody_root, Path(receipt_root).resolve()
     ):
         raise DescendantEvidenceError("receipt escaped its loader's custody root")
-    stdout_path = _parent_capture(receipt, baseline, "stdout", custody_root)
-    stderr_path = _parent_capture(receipt, baseline, "stderr", custody_root)
-    with stdout_path.open("r", encoding="utf-8", errors="replace") as handle:
-        report = parse_libtest(handle, tuple(argv))
-    rows = [] if baseline.get("infrastructure_failure") is not None else report.rows()
-    if rows != receipt.get("test_results"):
-        raise DescendantEvidenceError(
-            "re-derived parent libtest rows disagree with the saved ledger"
-        )
-    if receipt.get("status") == "success" and not report.complete:
-        raise DescendantEvidenceError(
-            "successful parent lacks complete re-derived libtest accounting"
-        )
-    if _records(stdout_path):
-        raise DescendantEvidenceError(
-            "runtime descendant record escaped its canonical stderr stream"
-        )
-    records = _records(stderr_path)
-    completed = {
-        row["identity"]: row["status"]
-        for row in rows
-        if row["identity"] in OWNERS and row["status"] in {"pass", "fail"}
-    }
-    required = {
-        (parent, mode)
-        for parent, status in completed.items()
-        if status == "pass"
-        for mode in OWNERS[parent].modes
-    }
+    groups = _parent_evidence(receipt, image, custody_root)
     source = receipt.get("source_identity")
-    if (required or records) and not isinstance(source, dict):
-        raise DescendantEvidenceError(
-            "runtime descendant source identity is not admitted"
-        )
+    required: set[tuple[str, str]] = set()
     observed: set[tuple[str, str]] = set()
     owners: set[str] = set()
-    for record in records:
-        if (
-            set(record) != _RECORD_FIELDS
-            or record["schema"] != RECORD_SCHEMA
-            or record["coordinate_authority"] != COORDINATE_AUTHORITY
-        ):
-            raise DescendantEvidenceError(
-                "foreign runtime descendant schema or coordinate authority"
-            )
-        parent, mode = record["parent_test"], record["mode"]
-        if (
-            not isinstance(parent, str)
-            or not isinstance(mode, str)
-            or parent not in completed
-            or mode not in OWNERS[parent].modes
-        ):
-            raise DescendantEvidenceError(
-                f"runtime descendant without a completed owner: {parent!r} ({mode!r})"
-            )
-        if (parent, mode) in observed:
-            raise DescendantEvidenceError(
-                f"duplicate runtime descendant record: {parent} ({mode})"
-            )
-        observed.add((parent, mode))
-        owner = _verify_record(
-            record,
-            source=source,
-            image=image,
-            image_sha256=image_sha256,
-            platform=platform,
-            receipt=receipt,
+    for rows, records in groups:
+        # A record belongs to the execution that emitted it, never another
+        # isolated test with a passing row in the aggregate ledger.
+        completed = {
+            row["identity"]: row["status"]
+            for row in rows
+            if row["identity"] in OWNERS and row["status"] in {"pass", "fail"}
+        }
+        required.update(
+            (parent, mode)
+            for parent, status in completed.items()
+            if status == "pass"
+            for mode in OWNERS[parent].modes
         )
-        if owner in owners:
-            raise DescendantEvidenceError("runtime descendant streams share one owner")
-        owners.add(owner)
+        if (required or records) and not isinstance(source, dict):
+            raise DescendantEvidenceError(
+                "runtime descendant source identity is not admitted"
+            )
+        for record in records:
+            if (
+                set(record) != _RECORD_FIELDS
+                or record["schema"] != RECORD_SCHEMA
+                or record["coordinate_authority"] != COORDINATE_AUTHORITY
+            ):
+                raise DescendantEvidenceError(
+                    "foreign runtime descendant schema or coordinate authority"
+                )
+            parent, mode = record["parent_test"], record["mode"]
+            if (
+                not isinstance(parent, str)
+                or not isinstance(mode, str)
+                or parent not in completed
+                or mode not in OWNERS[parent].modes
+            ):
+                raise DescendantEvidenceError(
+                    f"runtime descendant without a completed owner: {parent!r} ({mode!r})"
+                )
+            if (parent, mode) in observed:
+                raise DescendantEvidenceError(
+                    f"duplicate runtime descendant record: {parent} ({mode})"
+                )
+            observed.add((parent, mode))
+            owner = _verify_record(
+                record,
+                source=source,
+                image=image,
+                image_sha256=image_sha256,
+                platform=platform,
+                receipt=receipt,
+            )
+            if owner in owners:
+                raise DescendantEvidenceError(
+                    "runtime descendant streams share one owner"
+                )
+            owners.add(owner)
     missing = sorted(required - observed)
     if missing:
         raise DescendantEvidenceError(
@@ -832,7 +960,7 @@ def _verify(
         )
     return {
         "status": "verified",
-        "children": len(records),
+        "children": len(observed),
         "coordinate_authority": COORDINATE_AUTHORITY,
     }
 

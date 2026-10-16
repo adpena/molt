@@ -11,7 +11,6 @@ from collections.abc import Collection, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-
 from molt.cli.atomic_io import _write_text_if_changed
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import module_dependencies as _module_dependency_authority

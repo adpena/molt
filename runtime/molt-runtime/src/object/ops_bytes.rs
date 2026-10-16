@@ -34,11 +34,7 @@ use super::ops::parse_codec_arg;
 /// Both byte-storage families use the same index-or-simple-buffer protocol.
 /// Coercion and exporter callbacks finish before observing the haystack address.
 pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u64) -> u64 {
-    use molt_cpython_abi::{
-        abi_types::PyBUF_SIMPLE,
-        api::{buffer::PyObject_GetBuffer, refcount::ProtectedPyObject},
-        bridge::GLOBAL_BRIDGE,
-    };
+    use molt_cpython_abi::abi_types::PyBUF_SIMPLE;
     let has_index = crate::builtins::numbers::index_integral_payload_bits(needle).is_some()
         || match unsafe { crate::builtins::attr::has_special_method(py, needle, b"__index__") } {
             Ok(present) => present,
@@ -80,6 +76,7 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
         // Ordinary byte payloads need no lease: there are no remaining callbacks
         // before the search. Observe both addresses only after index coercion.
         if let Some(ptr) = obj_from_bits(needle).as_ptr()
+            && crate::object::buffer_exports::is_exact_builtin_storage(py, needle)
             && matches!(object_type_id(ptr), TYPE_ID_BYTES | TYPE_ID_BYTEARRAY)
         {
             let needle = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
@@ -87,30 +84,11 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
             let hay = std::slice::from_raw_parts(bytes_data(hay_ptr), bytes_len(hay_ptr));
             return MoltObject::from_bool(bytes_find_impl(hay, needle) >= 0).bits();
         }
-        let object =
-            ProtectedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(needle));
-        if object.as_ptr().is_null() {
-            crate::cpython_abi_hooks::propagate_native_failure(py, "membership buffer projection");
-            return MoltObject::none().bits();
-        }
-        let lease = match crate::object::foreign::RuntimeBufferLease::acquire(
-            object.as_ptr(),
-            PyBUF_SIMPLE,
-            PyObject_GetBuffer,
-        ) {
+        let lease = match molt_runtime_core::native_custody::acquire_buffer(needle, PyBUF_SIMPLE) {
             Ok(lease) => lease,
-            Err(molt_cpython_abi::ErrorIndicatorSet) => {
-                crate::cpython_abi_hooks::propagate_native_failure(
-                    py,
-                    "membership buffer acquisition",
-                );
-                return MoltObject::none().bits();
-            }
+            Err(_) => return MoltObject::none().bits(),
         };
         let view = &*lease.descriptor();
-        if view.len < 0 || (view.len != 0 && view.buf.is_null()) {
-            return raise_exception(py, "BufferError", "invalid membership buffer span");
-        }
         let needle = if view.len == 0 {
             &[][..]
         } else {
@@ -122,48 +100,20 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
     }
 }
 
-fn bytes_like_arg_or_type_error<F>(
-    _py: &PyToken<'_>,
+fn bytes_like_arg_or_type_error<'a, 'py, F>(
+    py: &'a PyToken<'py>,
     ptr: *mut u8,
     make_type_error: F,
-) -> Result<&'static [u8], u64>
+) -> Result<crate::object::buffer_exports::ScopedBuffer<'a, 'py>, u64>
 where
     F: FnOnce() -> String,
 {
-    match unsafe { bytes_like_slice_checked(ptr) } {
-        Ok(slice) => Ok(slice),
-        Err(BytesLikeSliceError::ReleasedMemoryView) => Err(raise_released_memoryview::<u64>(_py)),
-        Err(BytesLikeSliceError::NonContiguousMemoryView) => Err(raise_exception::<u64>(
-            _py,
-            "BufferError",
-            "memoryview: underlying buffer is not C-contiguous",
-        )),
-        Err(BytesLikeSliceError::NotBytesLike) => {
-            let msg = make_type_error();
-            Err(raise_exception::<u64>(_py, "TypeError", &msg))
-        }
+    let source = MoltObject::from_ptr(ptr).bits();
+    if !crate::object::buffer_exports::supports_buffer(py, source) {
+        return Err(raise_exception(py, "TypeError", &make_type_error()));
     }
-}
-
-fn bytes_join_part_or_type_error<F>(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    make_type_error: F,
-) -> Result<&'static [u8], u64>
-where
-    F: FnOnce() -> String,
-{
-    match unsafe { bytes_like_slice_checked(ptr) } {
-        Ok(slice) => Ok(slice),
-        Err(
-            BytesLikeSliceError::ReleasedMemoryView
-            | BytesLikeSliceError::NonContiguousMemoryView
-            | BytesLikeSliceError::NotBytesLike,
-        ) => {
-            let msg = make_type_error();
-            Err(raise_exception::<u64>(_py, "TypeError", &msg))
-        }
-    }
+    crate::object::buffer_exports::ScopedBuffer::simple(py, source)
+        .map_err(|error| error.raise(py, "invalid contiguous buffer"))
 }
 
 pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Option<Vec<u8>> {
@@ -171,7 +121,10 @@ pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Op
     if let Some(ptr) = obj.as_ptr() {
         unsafe {
             let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
+            if type_id == TYPE_ID_BYTEARRAY
+                || (type_id == TYPE_ID_BYTES
+                    && crate::object::buffer_exports::is_exact_builtin_storage(_py, bits))
+            {
                 return Some(bytes_like_slice_raw(ptr).unwrap_or(&[]).to_vec());
             }
             if type_id == TYPE_ID_STRING {
@@ -193,6 +146,9 @@ pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Op
             }
         }
     }
+    if crate::object::buffer_exports::supports_buffer(_py, bits) {
+        return byte_buffer(_py, bits).map(|(bytes, _owner)| bytes);
+    }
     let mut iter = crate::object::iterable::OwnedIterator::new(_py, bits)?;
     bytes_collect_from_iter(_py, &mut iter, BytesCtorKind::Bytearray, 0)
 }
@@ -213,8 +169,35 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
                 );
             }
         }
-        let Some(payload) = collect_bytearray_assign_bytes(_py, other_bits) else {
-            return MoltObject::none().bits();
+        // CPython's setslice keeps the source export until after destination
+        // mutation. Self-extension first snapshots itself and takes no export.
+        let source = if other_bits != bytearray_bits
+            && crate::object::buffer_exports::supports_buffer(_py, other_bits)
+        {
+            match crate::object::buffer_exports::ScopedBuffer::simple(_py, other_bits) {
+                Ok(source) => Some(source),
+                Err(_) => {
+                    clear_exception(_py);
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!(
+                            "can't set bytearray slice from {}",
+                            type_name(_py, obj_from_bits(other_bits))
+                        ),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let payload = if let Some(source) = source.as_ref() {
+            source.as_slice().to_vec()
+        } else {
+            let Some(payload) = collect_bytearray_assign_bytes(_py, other_bits) else {
+                return MoltObject::none().bits();
+            };
+            payload
         };
         unsafe {
             let Some(required_len) = bytearray_len(bytearray_ptr).checked_add(payload.len()) else {
@@ -380,11 +363,7 @@ pub extern "C" fn molt_bytearray_insert(
                     "bytearray.insert expects bytearray",
                 );
             }
-            let mut idx = index_i64_from_obj(
-                _py,
-                index_bits,
-                "bytearray indices must be integers or have an __index__ method",
-            );
+            let mut idx = crate::builtins::numbers::index_ssize_from_obj(_py, index_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -504,11 +483,7 @@ pub extern "C" fn molt_bytearray_reverse(bytearray_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let size = index_i64_from_obj(
-            _py,
-            size_bits,
-            "bytearray.resize() argument must be integer",
-        );
+        let size = crate::builtins::numbers::index_ssize_from_obj(_py, size_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -584,6 +559,67 @@ pub extern "C" fn molt_bytearray_decode(
     })
 }
 
+fn bytes_replace_protocol(
+    py: &PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+    replacement_bits: u64,
+    count_bits: u64,
+    kind: u32,
+) -> u64 {
+    let Some(hay) = obj_from_bits(hay_bits).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    if unsafe { object_type_id(hay) } != kind {
+        return MoltObject::none().bits();
+    }
+    // Array fields retire in acquisition order, including every early return.
+    // Both argument leases survive count conversion and result allocation.
+    let mut arguments = [None, None];
+    for (index, bits) in [needle_bits, replacement_bits].into_iter().enumerate() {
+        let value = obj_from_bits(bits);
+        let message = || {
+            format!(
+                "a bytes-like object is required, not '{}'",
+                type_name(py, value)
+            )
+        };
+        let Some(pointer) = value.as_ptr() else {
+            return raise_exception(py, "TypeError", &message());
+        };
+        arguments[index] = match bytes_like_arg_or_type_error(py, pointer, message) {
+            Ok(buffer) => Some(buffer),
+            Err(error) => return error,
+        };
+    }
+    let count = index_ssize_from_obj(py, count_bits);
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    // No receiver borrow exists across either exporter or __index__ callback.
+    let hay = unsafe { std::slice::from_raw_parts(bytes_data(hay), bytes_len(hay)) };
+    let old = arguments[0].as_ref().unwrap().as_slice();
+    let new = arguments[1].as_ref().unwrap().as_slice();
+    let output = if count < 0 {
+        match replace_bytes_impl(hay, old, new) {
+            Some(bytes) => bytes,
+            None => return MoltObject::none().bits(),
+        }
+    } else {
+        replace_bytes_impl_limit(hay, old, new, count as usize)
+    };
+    let pointer = if kind == TYPE_ID_BYTES {
+        alloc_bytes(py, &output)
+    } else {
+        alloc_bytearray(py, &output)
+    };
+    if pointer.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(pointer).bits()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_replace(
     hay_bits: u64,
@@ -591,78 +627,15 @@ pub extern "C" fn molt_bytes_replace(
     replacement_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let replacement = obj_from_bits(replacement_bits);
-        let count_err = format!(
-            "'{}' object cannot be interpreted as an integer",
-            type_name(_py, obj_from_bits(count_bits))
-        );
-        let count = index_i64_from_obj(_py, count_bits, &count_err);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_BYTES {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-                let needle_ptr = match needle.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, needle)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                let repl_ptr = match replacement.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, replacement)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let repl_bytes = match bytes_like_arg_or_type_error(_py, repl_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, replacement)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                let out = if count < 0 {
-                    match replace_bytes_impl(hay_bytes, needle_bytes, repl_bytes) {
-                        Some(out) => out,
-                        None => return MoltObject::none().bits(),
-                    }
-                } else {
-                    replace_bytes_impl_limit(hay_bytes, needle_bytes, repl_bytes, count as usize)
-                };
-                let ptr = alloc_bytes(_py, &out);
-                if ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(ptr).bits();
-            }
-        }
-        MoltObject::none().bits()
+    crate::with_gil_entry_nopanic!(py, {
+        bytes_replace_protocol(
+            py,
+            hay_bits,
+            needle_bits,
+            replacement_bits,
+            count_bits,
+            TYPE_ID_BYTES,
+        )
     })
 }
 
@@ -927,113 +900,108 @@ pub(crate) fn bytes_hex_from_bits(
     MoltObject::from_ptr(ptr).bits()
 }
 
-fn bytes_translate_impl(
-    _py: &PyToken<'_>,
-    hay_bytes: &[u8],
+fn bytes_translate_protocol(
+    py: &PyToken<'_>,
+    hay_bits: u64,
     table_bits: u64,
     delete_bits: u64,
-) -> Result<Vec<u8>, u64> {
-    let table_obj = obj_from_bits(table_bits);
-    let table_opt = if table_obj.is_none() {
-        None
-    } else {
-        let table_ptr = match table_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                let msg = format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(_py, table_obj)
-                );
-                return Err(raise_exception::<_>(_py, "TypeError", &msg));
-            }
-        };
-        let table_bytes = bytes_like_arg_or_type_error(_py, table_ptr, || {
+    kind: u32,
+) -> u64 {
+    let Some(hay_ptr) = obj_from_bits(hay_bits).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    if unsafe { object_type_id(hay_ptr) } != kind {
+        return MoltObject::none().bits();
+    }
+    let mut arguments = [None, None];
+    for (index, source) in [table_bits, delete_bits].into_iter().enumerate() {
+        if (index == 0 && obj_from_bits(source).is_none())
+            || (index == 1 && is_missing_bits(py, source))
+        {
+            continue;
+        }
+        let value = obj_from_bits(source);
+        let message = || {
             format!(
                 "a bytes-like object is required, not '{}'",
-                type_name(_py, table_obj)
+                type_name(py, value)
             )
-        })?;
-        if table_bytes.len() != 256 {
-            return Err(raise_exception::<_>(
-                _py,
+        };
+        let Some(pointer) = value.as_ptr() else {
+            return raise_exception(py, "TypeError", &message());
+        };
+        arguments[index] =
+            if kind == TYPE_ID_BYTES && unsafe { object_type_id(pointer) } == TYPE_ID_BYTES {
+                Some(unsafe {
+                    crate::object::buffer_exports::ScopedBuffer::physical_bytes(py, pointer)
+                })
+            } else {
+                match bytes_like_arg_or_type_error(py, pointer, message) {
+                    Ok(buffer) => Some(buffer),
+                    Err(error) => return error,
+                }
+            };
+        if index == 0 && arguments[0].as_ref().unwrap().as_slice().len() != 256 {
+            return raise_exception(
+                py,
                 "ValueError",
                 "translation table must be 256 characters long",
-            ));
+            );
         }
-        Some(table_bytes)
-    };
-    let delete_bytes = if is_missing_bits(_py, delete_bits) {
-        &[]
+    }
+    let mut translation = [0i16; 256];
+    for (index, entry) in translation.iter_mut().enumerate() {
+        *entry = arguments[0]
+            .as_ref()
+            .map_or(index as i16, |table| table.as_slice()[index] as i16);
+    }
+    let no_delete = arguments[1]
+        .as_ref()
+        .is_none_or(|buffer| buffer.as_slice().is_empty());
+    let fast = no_delete && arguments[0].is_some();
+    // CPython bytes copies the table then releases it before consuming delete
+    // bytes on its deletion path. Bytearray retains both exports to the end.
+    if kind == TYPE_ID_BYTES && !fast {
+        drop(arguments[0].take());
+    }
+    if let Some(delete) = arguments[1].as_ref() {
+        for &byte in delete.as_slice() {
+            translation[byte as usize] = -1;
+        }
+    }
+    if kind == TYPE_ID_BYTES && !fast {
+        drop(arguments[1].take());
+    }
+    // Exporter/release callbacks may resize bytearray self. Capture its live
+    // storage only after the argument transitions above, never pin it eagerly.
+    let hay = unsafe { std::slice::from_raw_parts(bytes_data(hay_ptr), bytes_len(hay_ptr)) };
+    let output: Vec<u8> = hay
+        .iter()
+        .filter_map(|&byte| {
+            let translated = translation[byte as usize];
+            (translated >= 0).then_some(translated as u8)
+        })
+        .collect();
+    let result = if kind == TYPE_ID_BYTES {
+        alloc_bytes(py, &output)
     } else {
-        let delete_obj = obj_from_bits(delete_bits);
-        let delete_ptr = match delete_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                let msg = format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(_py, delete_obj)
-                );
-                return Err(raise_exception::<_>(_py, "TypeError", &msg));
-            }
-        };
-        bytes_like_arg_or_type_error(_py, delete_ptr, || {
-            format!(
-                "a bytes-like object is required, not '{}'",
-                type_name(_py, delete_obj)
-            )
-        })?
+        alloc_bytearray(py, &output)
     };
-    if hay_bytes.is_empty() {
-        return Ok(Vec::new());
+    if kind == TYPE_ID_BYTES && fast {
+        drop(arguments[1].take());
+        drop(arguments[0].take());
     }
-    let mut delete_map = [false; 256];
-    for &b in delete_bytes {
-        delete_map[b as usize] = true;
+    if result.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(result).bits()
     }
-    let mut out = Vec::with_capacity(hay_bytes.len());
-    match table_opt {
-        Some(table) => {
-            for &b in hay_bytes {
-                if delete_map[b as usize] {
-                    continue;
-                }
-                out.push(table[b as usize]);
-            }
-        }
-        None => {
-            for &b in hay_bytes {
-                if delete_map[b as usize] {
-                    continue;
-                }
-                out.push(b);
-            }
-        }
-    }
-    Ok(out)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_translate(hay_bits: u64, table_bits: u64, delete_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_BYTES {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-            let out = match bytes_translate_impl(_py, hay_bytes, table_bits, delete_bits) {
-                Ok(out) => out,
-                Err(err_bits) => return err_bits,
-            };
-            let ptr = alloc_bytes(_py, &out);
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(ptr).bits()
-        }
+    crate::with_gil_entry_nopanic!(py, {
+        bytes_translate_protocol(py, hay_bits, table_bits, delete_bits, TYPE_ID_BYTES)
     })
 }
 
@@ -1043,91 +1011,53 @@ pub extern "C" fn molt_bytearray_translate(
     table_bits: u64,
     delete_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let Some(hay_ptr) = hay.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(hay_ptr) != TYPE_ID_BYTEARRAY {
-                return MoltObject::none().bits();
-            }
-            let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-            let out = match bytes_translate_impl(_py, hay_bytes, table_bits, delete_bits) {
-                Ok(out) => out,
-                Err(err_bits) => return err_bits,
-            };
-            let ptr = alloc_bytearray(_py, &out);
-            if ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(ptr).bits()
-        }
+    crate::with_gil_entry_nopanic!(py, {
+        bytes_translate_protocol(py, hay_bits, table_bits, delete_bits, TYPE_ID_BYTEARRAY)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_maketrans(from_bits: u64, to_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let from_obj = obj_from_bits(from_bits);
-        let to_obj = obj_from_bits(to_bits);
-        let from_ptr = match from_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                let msg = format!(
+    crate::with_gil_entry_nopanic!(py, {
+        let mut arguments = [None, None];
+        for (index, bits) in [from_bits, to_bits].into_iter().enumerate() {
+            let value = obj_from_bits(bits);
+            let message = || {
+                format!(
                     "a bytes-like object is required, not '{}'",
-                    type_name(_py, from_obj)
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-        };
-        let to_ptr = match to_obj.as_ptr() {
-            Some(ptr) => ptr,
-            None => {
-                let msg = format!(
-                    "a bytes-like object is required, not '{}'",
-                    type_name(_py, to_obj)
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-        };
-        let from_bytes = match bytes_like_arg_or_type_error(_py, from_ptr, || {
-            format!(
-                "a bytes-like object is required, not '{}'",
-                type_name(_py, from_obj)
-            )
-        }) {
-            Ok(slice) => slice,
-            Err(bits) => return bits,
-        };
-        let to_bytes = match bytes_like_arg_or_type_error(_py, to_ptr, || {
-            format!(
-                "a bytes-like object is required, not '{}'",
-                type_name(_py, to_obj)
-            )
-        }) {
-            Ok(slice) => slice,
-            Err(bits) => return bits,
-        };
-        if from_bytes.len() != to_bytes.len() {
-            return raise_exception::<_>(
-                _py,
+                    type_name(py, value)
+                )
+            };
+            let Some(pointer) = value.as_ptr() else {
+                return raise_exception(py, "TypeError", &message());
+            };
+            arguments[index] = match bytes_like_arg_or_type_error(py, pointer, message) {
+                Ok(buffer) => Some(buffer),
+                Err(error) => return error,
+            };
+        }
+        let from = arguments[0].as_ref().unwrap().as_slice();
+        let to = arguments[1].as_ref().unwrap().as_slice();
+        if from.len() != to.len() {
+            return raise_exception(
+                py,
                 "ValueError",
                 "maketrans arguments must have same length",
             );
         }
         let mut table = [0u8; 256];
-        for (idx, slot) in table.iter_mut().enumerate() {
-            *slot = idx as u8;
+        for (index, slot) in table.iter_mut().enumerate() {
+            *slot = index as u8;
         }
-        for (from_byte, to_byte) in from_bytes.iter().zip(to_bytes.iter()) {
-            table[*from_byte as usize] = *to_byte;
+        for (&from, &to) in from.iter().zip(to) {
+            table[from as usize] = to;
         }
-        let ptr = alloc_bytes(_py, &table);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
+        let result = alloc_bytes(py, &table);
+        if result.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(result).bits()
         }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -1329,78 +1259,15 @@ pub extern "C" fn molt_bytearray_replace(
     replacement_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let hay = obj_from_bits(hay_bits);
-        let needle = obj_from_bits(needle_bits);
-        let replacement = obj_from_bits(replacement_bits);
-        let count_err = format!(
-            "'{}' object cannot be interpreted as an integer",
-            type_name(_py, obj_from_bits(count_bits))
-        );
-        let count = index_i64_from_obj(_py, count_bits, &count_err);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if let Some(hay_ptr) = hay.as_ptr() {
-            unsafe {
-                if object_type_id(hay_ptr) != TYPE_ID_BYTEARRAY {
-                    return MoltObject::none().bits();
-                }
-                let hay_bytes = bytes_like_slice(hay_ptr).unwrap_or(&[]);
-                let needle_ptr = match needle.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, needle)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let needle_bytes = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, needle)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                let repl_ptr = match replacement.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        let msg = format!(
-                            "a bytes-like object is required, not '{}'",
-                            type_name(_py, replacement)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                };
-                let repl_bytes = match bytes_like_arg_or_type_error(_py, repl_ptr, || {
-                    format!(
-                        "a bytes-like object is required, not '{}'",
-                        type_name(_py, replacement)
-                    )
-                }) {
-                    Ok(slice) => slice,
-                    Err(bits) => return bits,
-                };
-                let out = if count < 0 {
-                    match replace_bytes_impl(hay_bytes, needle_bytes, repl_bytes) {
-                        Some(out) => out,
-                        None => return MoltObject::none().bits(),
-                    }
-                } else {
-                    replace_bytes_impl_limit(hay_bytes, needle_bytes, repl_bytes, count as usize)
-                };
-                let ptr = alloc_bytearray(_py, &out);
-                if ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(ptr).bits();
-            }
-        }
-        MoltObject::none().bits()
+    crate::with_gil_entry_nopanic!(py, {
+        bytes_replace_protocol(
+            py,
+            hay_bits,
+            needle_bits,
+            replacement_bits,
+            count_bits,
+            TYPE_ID_BYTEARRAY,
+        )
     })
 }
 

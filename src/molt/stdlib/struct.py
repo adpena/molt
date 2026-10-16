@@ -23,10 +23,16 @@ _MOLT_STRUCT_CALCSIZE = _require_intrinsic("molt_struct_calcsize")
 _MOLT_STRUCT_PACK_INTO = _require_intrinsic("molt_struct_pack_into")
 _MOLT_STRUCT_UNPACK_FROM = _require_intrinsic("molt_struct_unpack_from")
 _MOLT_STRUCT_ITER_UNPACK = _require_intrinsic("molt_struct_iter_unpack")
+_MOLT_STRUCT_ITERATOR_TYPE = _require_intrinsic("molt_struct_unpack_iterator_type")
 
 
 class error(Exception):
     pass
+
+
+# Keep the actual exception class and iterator declaration owned by this module.
+_STRUCT_ERROR = error
+_UNPACK_ITERATOR_TYPE = _MOLT_STRUCT_ITERATOR_TYPE()
 
 
 class Struct:
@@ -36,23 +42,15 @@ class Struct:
         self.size = calcsize(normalized)
 
     def pack(self, *values: object) -> bytes:
-        try:
-            return _MOLT_STRUCT_PACK(self.format, values)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise error(str(exc)) from None
+        return _MOLT_STRUCT_PACK(_STRUCT_ERROR, self.format, values)
 
     def unpack(self, buffer: object) -> tuple[object, ...]:
         return unpack(self.format, buffer)
 
     def pack_into(self, buffer: object, offset: int, *values: object) -> None:
-        try:
-            data = _MOLT_STRUCT_PACK(self.format, values)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise error(str(exc)) from None
-        try:
-            _MOLT_STRUCT_PACK_INTO(buffer, offset, data)
-        except (ValueError, OverflowError) as exc:
-            raise error(str(exc)) from None
+        return _MOLT_STRUCT_PACK_INTO(
+            _STRUCT_ERROR, self.format, buffer, offset, values
+        )
 
     def unpack_from(self, buffer: object, offset: int = 0) -> tuple[object, ...]:
         return unpack_from(self.format, buffer, offset)
@@ -79,64 +77,35 @@ def _normalize_format(value: object) -> str:
 
 
 def pack(format: object, *values: object) -> bytes:
-    fmt = _normalize_format(format)
-    try:
-        return _MOLT_STRUCT_PACK(fmt, values)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise error(str(exc)) from None
+    return _MOLT_STRUCT_PACK(_STRUCT_ERROR, _normalize_format(format), values)
 
 
 def unpack(format: object, buffer: object) -> tuple[object, ...]:
-    fmt = _normalize_format(format)
-    try:
-        return _MOLT_STRUCT_UNPACK(fmt, buffer)
-    except (ValueError, OverflowError) as exc:
-        raise error(str(exc)) from None
-    except BufferError:
-        raise
+    return _MOLT_STRUCT_UNPACK(_STRUCT_ERROR, _normalize_format(format), buffer)
 
 
 def calcsize(format: object) -> int:
-    fmt = _normalize_format(format)
-    try:
-        return int(_MOLT_STRUCT_CALCSIZE(fmt))
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise error(str(exc)) from None
+    return _MOLT_STRUCT_CALCSIZE(_STRUCT_ERROR, _normalize_format(format))
 
 
 def pack_into(format: object, buffer: object, offset: object, *values: object) -> None:
-    fmt = _normalize_format(format)
-    try:
-        data = _MOLT_STRUCT_PACK(fmt, values)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise error(str(exc)) from None
-    try:
-        _MOLT_STRUCT_PACK_INTO(buffer, offset, data)
-    except (ValueError, OverflowError) as exc:
-        raise error(str(exc)) from None
+    return _MOLT_STRUCT_PACK_INTO(
+        _STRUCT_ERROR, _normalize_format(format), buffer, offset, values
+    )
 
 
 def unpack_from(
     format: object, buffer: object, offset: object = 0
 ) -> tuple[object, ...]:
-    fmt = _normalize_format(format)
-    try:
-        return _MOLT_STRUCT_UNPACK_FROM(fmt, buffer, offset)
-    except (ValueError, OverflowError) as exc:
-        raise error(str(exc)) from None
-    except BufferError:
-        raise
+    return _MOLT_STRUCT_UNPACK_FROM(
+        _STRUCT_ERROR, _normalize_format(format), buffer, offset
+    )
 
 
 def iter_unpack(format: object, buffer: object):
-    fmt = _normalize_format(format)
-    try:
-        unpacked = _MOLT_STRUCT_ITER_UNPACK(fmt, buffer)
-    except (ValueError, OverflowError) as exc:
-        raise error(str(exc)) from None
-    except BufferError:
-        raise
-    return iter(unpacked)
+    return _MOLT_STRUCT_ITER_UNPACK(
+        _STRUCT_ERROR, _UNPACK_ITERATOR_TYPE, _normalize_format(format), buffer
+    )
 
 
 globals().pop("_require_intrinsic", None)

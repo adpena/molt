@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArm
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArmExpr
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
+    from molt.frontend.lowering.exception_lowering import MoltSyntaxError
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonCellStoragePlan
     from molt.compiler_analysis.python_lexical_scope import PythonCodeNameLayout
@@ -2989,6 +2990,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def visit_MoltBuiltinGuardArmExpr(self, node: MoltBuiltinGuardArmExpr) -> Any: ...
 
     def visit_MoltBuiltinGuardTest(self, node: MoltBuiltinGuardTest) -> MoltValue: ...
+
+    def visit_MoltSyntaxError(self, node: MoltSyntaxError) -> MoltValue: ...
 
     def visit_Name(self, node: ast.Name) -> Any: ...
 

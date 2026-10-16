@@ -2362,18 +2362,71 @@ fn require_pointer_snapshot_epoch() -> Result<(), GcIntrospectionError> {
     }
 }
 
-/// Project one shared-GC node into Molt's public object representation. Native
-/// nodes use the canonical bridge identity and return an owned temporary that
-/// the caller must release after transferring it into a runtime container.
-unsafe fn node_api_value(_py: &PyToken<'_>, node: GcNode) -> Option<(u64, bool)> {
+/// One visibility rule for Python introspection and public C tp_traverse.
+/// Native aliases are checked without allocating a C view or foreign wrapper.
+/// This must never filter the collector's physical ownership graph.
+pub(crate) unsafe fn public_gc_value_is_visible(bits: u64) -> bool {
+    crate::obj_from_bits(bits)
+        .as_ptr()
+        .is_none_or(|ptr| !unsafe { super::object_is_internal_owner(ptr) })
+}
+
+pub(crate) unsafe fn public_gc_edge_is_visible(edge: NativeGcEdge) -> bool {
+    if edge.kind == NativeGcEdgeKind::ManagedHandle as u8 {
+        return unsafe { public_gc_value_is_visible(edge.value) };
+    }
+    if edge.kind == NativeGcEdgeKind::NativePointer as u8 {
+        let Ok(address) = usize::try_from(edge.value) else {
+            // Preserve the caller's existing malformed-edge error path.
+            return true;
+        };
+        let pointer =
+            std::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(address);
+        if let Some(value) = molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(pointer)
+        {
+            return unsafe { public_gc_value_is_visible(value.bits()) };
+        }
+    }
+    true
+}
+
+unsafe fn node_api_is_visible(node: GcNode) -> bool {
     match node {
-        GcNode::Runtime(ptr) => Some((MoltObject::from_ptr(ptr.0).bits(), false)),
+        GcNode::Runtime(ptr) => unsafe {
+            public_gc_value_is_visible(MoltObject::from_ptr(ptr.0).bits())
+        },
+        GcNode::Native(address) => unsafe {
+            public_gc_edge_is_visible(NativeGcEdge {
+                kind: NativeGcEdgeKind::NativePointer as u8,
+                reserved: [0; 7],
+                value: address as u64,
+            })
+        },
+    }
+}
+
+enum PublicGcValue {
+    Hidden,
+    Visible { bits: u64, owned: bool },
+}
+
+/// Hidden is an intentional omission, distinct from native projection failure.
+/// Visible native nodes return an owned temporary for the caller to release.
+unsafe fn node_api_value(_py: &PyToken<'_>, node: GcNode) -> Option<PublicGcValue> {
+    if !unsafe { node_api_is_visible(node) } {
+        return Some(PublicGcValue::Hidden);
+    }
+    match node {
+        GcNode::Runtime(ptr) => Some(PublicGcValue::Visible {
+            bits: MoltObject::from_ptr(ptr.0).bits(),
+            owned: false,
+        }),
         GcNode::Native(address) => unsafe {
             molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .molt_value_for_pyobj(std::ptr::with_exposed_provenance_mut::<
                     molt_cpython_abi::abi_types::PyObject,
                 >(address))
-                .map(|bits| (bits, true))
+                .map(|bits| PublicGcValue::Visible { bits, owned: true })
         },
     }
 }
@@ -2421,6 +2474,9 @@ unsafe fn visit_api_referents(
     node: GcNode,
     visit: &mut dyn FnMut(GcApiTarget),
 ) -> bool {
+    if !unsafe { node_api_is_visible(node) } {
+        return true;
+    }
     let node = match node {
         GcNode::Runtime(ptr) => unsafe {
             if object_type_id(ptr.0) == super::TYPE_ID_FOREIGN {
@@ -2440,14 +2496,18 @@ unsafe fn visit_api_referents(
         match node {
             GcNode::Runtime(ptr) => {
                 let status = super::heap_lifecycle::visit_owned_gc_edges(py, ptr.0, &mut |edge| {
-                    if let Some(target) = api_target_from_native_gc_edge(edge) {
+                    if public_gc_edge_is_visible(edge)
+                        && let Some(target) = api_target_from_native_gc_edge(edge)
+                    {
                         visit(target);
                     }
                 });
                 status == 0
             }
             GcNode::Native(address) => visit_native_owned_edges(address, &mut |edge| {
-                if let Some(target) = api_target_from_native_gc_edge(edge) {
+                if public_gc_edge_is_visible(edge)
+                    && let Some(target) = api_target_from_native_gc_edge(edge)
+                {
                     visit(target);
                 }
             }),
@@ -2482,13 +2542,16 @@ pub(crate) fn get_objects(
         ));
     }
     for candidate in candidates.iter() {
-        let Some((bits, owned)) = (unsafe { node_api_value(py, candidate.node) }) else {
+        let Some(projected) = (unsafe { node_api_value(py, candidate.node) }) else {
             for bits in api_targets.drain(..) {
                 crate::dec_ref_bits(py, bits);
             }
             return Err(GcIntrospectionError::Resource(
                 "GC native introspection projection failed",
             ));
+        };
+        let PublicGcValue::Visible { bits, owned } = projected else {
+            continue;
         };
         if !api_value_membership.insert(bits) {
             if owned {
@@ -2548,11 +2611,20 @@ pub(crate) unsafe fn get_referents(
                     return;
                 }
                 let projected = match child {
-                    GcApiTarget::Inline(bits) => Some((bits, false)),
+                    GcApiTarget::Inline(bits) => {
+                        Some(PublicGcValue::Visible { bits, owned: false })
+                    }
                     GcApiTarget::Node(node) => node_api_value(py, node),
                 };
-                let Some((child_bits, owned)) = projected else {
+                let Some(projected) = projected else {
                     projection_failed = true;
+                    return;
+                };
+                let PublicGcValue::Visible {
+                    bits: child_bits,
+                    owned,
+                } = projected
+                else {
                     return;
                 };
                 if !owned {
@@ -2663,13 +2735,16 @@ pub(crate) unsafe fn get_referrers(
             ));
         }
         if refers {
-            let Some((bits, owned)) = (unsafe { node_api_value(py, candidate.node) }) else {
+            let Some(projected) = (unsafe { node_api_value(py, candidate.node) }) else {
                 for bits in api_targets.drain(..) {
                     crate::dec_ref_bits(py, bits);
                 }
                 return Err(GcIntrospectionError::Resource(
                     "GC native referrer projection failed",
                 ));
+            };
+            let PublicGcValue::Visible { bits, owned } = projected else {
+                continue;
             };
             if !api_value_membership.insert(bits) {
                 if owned {
@@ -3282,9 +3357,12 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                     ..
                 } = &mut *scratch;
                 for &candidate_index in final_unreachable.iter() {
-                    let Some((bits, owned)) = node_api_value(py, candidates[candidate_index].node)
+                    let Some(projected) = node_api_value(py, candidates[candidate_index].node)
                     else {
                         appended_all = false;
+                        continue;
+                    };
+                    let PublicGcValue::Visible { bits, owned } = projected else {
                         continue;
                     };
                     if !api_value_membership.insert(bits) {
@@ -3463,6 +3541,151 @@ mod tests {
     use crate::{DEALLOC_COUNT, dict_set_in_place, exception_pending, obj_from_bits};
     use molt_cpython_abi::abi_types::{PyLong_Type, PyObject};
     use std::sync::atomic::Ordering;
+
+    #[test]
+    #[cfg(not(feature = "free-threaded"))]
+    fn internal_dict_privacy_survives_tracking_and_retained_iterator_lifetimes() {
+        let transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            for minor in [12, 13, 14] {
+                transaction.with_target_python_minor(py, minor, || unsafe {
+                    let hidden = super::super::builders::alloc_internal_dict(py);
+                    let ordinary = alloc_dict_with_pairs(py, &[]);
+                    assert!(!hidden.is_null() && !ordinary.is_null());
+                    let hidden_bits = MoltObject::from_ptr(hidden).bits();
+                    let ordinary_bits = MoltObject::from_ptr(ordinary).bits();
+                    // No platform slot has ever owned this object: privacy must
+                    // already hold before a caller publishes its private root.
+                    let objects = get_objects(py, None).unwrap();
+                    super::super::seq_access::with_borrowed(objects, |values| {
+                        assert!(!values.contains(&hidden_bits));
+                        assert_eq!(values.contains(&ordinary_bits), minor >= 14);
+                    });
+                    dec_ref_bits(py, MoltObject::from_ptr(objects).bits());
+
+                    let child = alloc_list(py, &[]);
+                    let child_bits = MoltObject::from_ptr(child).bits();
+                    let key = MoltObject::from_int(13).bits();
+                    assert!(dict_set_in_place(py, hidden, key, child_bits));
+                    assert!(dict_set_in_place(py, ordinary, key, child_bits));
+                    assert!(gc_is_tracked(hidden) && gc_is_tracked(ordinary));
+                    let objects = get_objects(py, None).unwrap();
+                    super::super::seq_access::with_borrowed(objects, |values| {
+                        assert!(!values.contains(&hidden_bits));
+                        assert!(values.contains(&ordinary_bits));
+                    });
+                    dec_ref_bits(py, MoltObject::from_ptr(objects).bits());
+                    let targets = alloc_tuple(py, &[child_bits]);
+                    let referrers = get_referrers(py, targets).unwrap();
+                    super::super::seq_access::with_borrowed(referrers, |values| {
+                        assert!(!values.contains(&hidden_bits));
+                        assert!(values.contains(&ordinary_bits));
+                    });
+                    dec_ref_bits(py, MoltObject::from_ptr(referrers).bits());
+                    dec_ref_bits(py, MoltObject::from_ptr(targets).bits());
+
+                    let view = crate::molt_dict_items(hidden_bits);
+                    let iterator = crate::molt_iter(view);
+                    assert!(!exception_pending(py));
+                    // Drop the root just as the platform's terminal swap does.
+                    // The view/iterator now supply all remaining root ownership.
+                    dec_ref_bits(py, hidden_bits);
+                    for (source, expected_visible) in
+                        [(iterator, Some(view)), (view, None), (hidden_bits, None)]
+                    {
+                        let args = alloc_tuple(py, &[source]);
+                        let referents = get_referents(py, args).unwrap();
+                        super::super::seq_access::with_borrowed(referents, |values| {
+                            assert!(!values.contains(&hidden_bits));
+                            if let Some(expected) = expected_visible {
+                                assert!(values.contains(&expected));
+                            }
+                            if source == hidden_bits {
+                                assert!(values.is_empty(), "private sources expose no children");
+                            }
+                        });
+                        dec_ref_bits(py, MoltObject::from_ptr(referents).bits());
+                        dec_ref_bits(py, MoltObject::from_ptr(args).bits());
+                    }
+                    let mut physical = Vec::new();
+                    assert_eq!(
+                        super::super::heap_lifecycle::visit_owned_gc_edges(
+                            py,
+                            obj_from_bits(view).as_ptr().unwrap(),
+                            &mut |edge| {
+                                if edge.kind == NativeGcEdgeKind::ManagedHandle as u8 {
+                                    physical.push(edge.value);
+                                }
+                            },
+                        ),
+                        0
+                    );
+                    assert!(
+                        physical.contains(&hidden_bits),
+                        "collector keeps the ownership edge"
+                    );
+                    let args = alloc_tuple(py, &[ordinary_bits]);
+                    let referents = get_referents(py, args).unwrap();
+                    super::super::seq_access::with_borrowed(referents, |values| {
+                        assert!(values.contains(&key) && values.contains(&child_bits));
+                    });
+                    dec_ref_bits(py, MoltObject::from_ptr(referents).bits());
+                    dec_ref_bits(py, MoltObject::from_ptr(args).bits());
+                    dec_ref_bits(py, iterator);
+                    dec_ref_bits(py, view);
+                    dec_ref_bits(py, ordinary_bits);
+                    dec_ref_bits(py, child_bits);
+                    assert!(!exception_pending(py));
+                });
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(not(feature = "free-threaded"))]
+    fn internal_dict_cycles_remain_collectible_without_saveall_publication() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let state = &crate::runtime_state(py).gc;
+            let garbage = state.garbage_bits(py);
+            for public_peer in [false, true] {
+                let hidden = super::super::builders::alloc_internal_dict(py);
+                let hidden_bits = MoltObject::from_ptr(hidden).bits();
+                let peer = public_peer.then(|| alloc_list(py, &[hidden_bits]));
+                let child = peer.map_or(hidden_bits, |ptr| MoltObject::from_ptr(ptr).bits());
+                assert!(unsafe {
+                    dict_set_in_place(py, hidden, MoltObject::from_int(1).bits(), child)
+                });
+                if public_peer {
+                    dec_ref_bits(py, child);
+                }
+                dec_ref_bits(py, hidden_bits);
+                state.set_debug_flags(DEBUG_SAVEALL);
+                let saved = unsafe { collect_cycles(py) };
+                assert_eq!(saved.status, GcCollectStatus::Completed);
+                assert_eq!(saved.retired, 0);
+                assert!(unsafe { gc_is_tracked(hidden) });
+                unsafe {
+                    super::super::seq_access::with_borrowed(
+                        obj_from_bits(garbage).as_ptr().unwrap(),
+                        |values| {
+                            assert!(!values.contains(&hidden_bits));
+                            if public_peer {
+                                assert!(values.contains(&child));
+                            }
+                        },
+                    );
+                }
+                state.set_debug_flags(0);
+                crate::molt_list_clear(garbage);
+                let reclaimed = unsafe { collect_cycles(py) };
+                assert_eq!(reclaimed.status, GcCollectStatus::Completed);
+                assert_eq!(reclaimed.retired, if public_peer { 2 } else { 1 });
+                assert!(!unsafe { gc_is_tracked(hidden) });
+            }
+            dec_ref_bits(py, garbage);
+        });
+    }
 
     #[test]
     fn native_nodes_share_registry_order_and_retain_lifecycle_metadata() {
@@ -4464,6 +4687,57 @@ mod tests {
                 dec_ref_bits(py, MoltObject::from_ptr(args).bits());
                 (*native).notes = std::ptr::null_mut();
                 Py_DECREF(scalar);
+
+                // The native tp_traverse callback can also yield a canonical
+                // C alias for private runtime storage. Public projections must
+                // omit it while the collector still follows the physical edge.
+                let hidden = super::super::builders::alloc_internal_dict(py);
+                let hidden_bits = MoltObject::from_ptr(hidden).bits();
+                // Keep the fixture's runtime owner independently of the C
+                // field's new reference; this crossing must not consume it.
+                let hidden_view = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .borrowed_handle_to_new_pyobj(hidden_bits);
+                assert!(!hidden_view.is_null());
+                assert_eq!(
+                    (*super::super::header_from_obj_ptr(hidden)).ref_count_snapshot(),
+                    2,
+                    "fixture root and C view retain distinct runtime owners"
+                );
+                (*native).notes = hidden_view;
+                let args = alloc_tuple(py, &[native_bits]);
+                let referents = get_referents(py, args).unwrap();
+                assert!(!super::super::seq_access::with_borrowed(
+                    referents,
+                    |values| { values.contains(&hidden_bits) }
+                ));
+                let targets = alloc_tuple(py, &[hidden_bits]);
+                let referrers = get_referrers(py, targets).unwrap();
+                assert!(super::super::seq_access::with_borrowed(
+                    referrers,
+                    |values| values.is_empty()
+                ));
+                let mut physical_hidden = false;
+                traverse_node(py, GcNode::Native(address), &mut |child| {
+                    physical_hidden |= child == GcNode::Runtime(PtrSlot(hidden));
+                });
+                assert!(physical_hidden);
+                dec_ref_bits(py, MoltObject::from_ptr(referrers).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(targets).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(referents).bits());
+                dec_ref_bits(py, MoltObject::from_ptr(args).bits());
+                (*native).notes = std::ptr::null_mut();
+                Py_DECREF(hidden_view);
+                assert_eq!(
+                    (*hidden_view).ob_refcnt,
+                    1,
+                    "only the runtime owner's borrowed-view bias remains"
+                );
+                assert_eq!(
+                    (*super::super::header_from_obj_ptr(hidden)).ref_count_snapshot(),
+                    2,
+                    "the runtime root and stable view hold survive C-field retirement"
+                );
+                dec_ref_bits(py, hidden_bits);
             }
             let list = alloc_list(py, &[native_bits]);
             assert!(!list.is_null());

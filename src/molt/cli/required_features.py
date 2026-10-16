@@ -57,6 +57,7 @@ from molt._intrinsic_symbols import (
 from molt._runtime_feature_gates import (
     link_affecting_feature_gate_for_symbol,
     runtime_symbol_available_on_target,
+    supported_target_oses_for_symbol,
     unsupported_target_arches_for_symbol,
 )
 from molt.cli import function_references as _function_references
@@ -193,10 +194,20 @@ def reachability_profile_feature_refusal(
     link error" contract.
     """
     reached_symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
+    target_os: str | None = None
+    if any(supported_target_oses_for_symbol(symbol) for symbol in reached_symbols):
+        if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
+            target_os = "wasi" if target_triple == "wasm32-wasip1" else "none"
+        else:
+            from molt.cli.native_link_plan import resolve_native_target_spec
+
+            target_os = resolve_native_target_spec(target_triple).os
     unavailable_symbols: list[str] = []
     blocked: dict[str, list[str]] = {}
     for symbol in reached_symbols:
-        if not runtime_symbol_available_on_target(symbol, target_triple=target_triple):
+        if not runtime_symbol_available_on_target(
+            symbol, target_triple=target_triple, target_os=target_os
+        ):
             unavailable_symbols.append(symbol)
         feature = link_affecting_feature_gate_for_symbol(symbol)
         if feature is not None and feature not in profile_features:
@@ -210,10 +221,15 @@ def reachability_profile_feature_refusal(
         arch = (
             target_triple.split("-", 1)[0] if target_triple is not None else "unknown"
         )
-        details = ", ".join(
-            f"{symbol} (unsupported on {', '.join(unsupported_target_arches_for_symbol(symbol))})"
-            for symbol in sorted(unavailable_symbols)
-        )
+        symbol_details: list[str] = []
+        for symbol in sorted(unavailable_symbols):
+            restrictions: list[str] = []
+            if arches := unsupported_target_arches_for_symbol(symbol):
+                restrictions.append(f"unsupported on {', '.join(arches)}")
+            if oses := supported_target_oses_for_symbol(symbol):
+                restrictions.append(f"requires target OS {', '.join(oses)}")
+            symbol_details.append(f"{symbol} ({'; '.join(restrictions)})")
+        details = ", ".join(symbol_details)
         messages.append(
             f"target {target_triple!r} (architecture {arch}) has no runtime provider "
             f"for reached intrinsic symbols: {details}; choose a supported "

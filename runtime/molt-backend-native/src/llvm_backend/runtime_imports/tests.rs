@@ -489,9 +489,6 @@ fn function_and_code_runtime_functions_are_declared() {
         ("molt_code_new", 9),
         ("molt_code_slot_set", 3),
         ("molt_code_slots_init", 1),
-        ("molt_trace_enter_slot", 1),
-        ("molt_trace_exit", 0),
-        ("molt_frame_locals_set", 1),
         ("molt_trace_set_line", 1),
         ("molt_function_defaults_version", 1),
     ] {
@@ -720,6 +717,9 @@ fn module_namespace_and_named_acquisition_have_callback_safe_declarations() {
 
     for (name, arity) in &[
         ("molt_func_new_builtin_named", 4usize),
+        ("molt_trace_enter_slot", 1),
+        ("molt_frame_locals_set", 1),
+        ("molt_trace_exit", 0),
         ("molt_module_import", 1),
         ("molt_module_new", 1),
         ("molt_module_cache_get", 1),

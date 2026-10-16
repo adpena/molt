@@ -235,9 +235,7 @@ pub(super) unsafe fn call_type_with_arguments(
         }
         if class_bits == builtins.type_obj && pos_args.len() == 1 && arguments.keyword_count() == 0
         {
-            let bits = type_of_bits(_py, pos_args[0]);
-            inc_ref_bits(_py, bits);
-            return bits;
+            return crate::builtins::types::class_model::type_of_owned(_py, pos_args[0]);
         }
         if builtin_fast {
             if class_bits == builtins.super_type {

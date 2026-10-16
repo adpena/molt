@@ -38,10 +38,6 @@ unsafe extern "C" {
     /// `alloc_bytes(_py, data) -> *mut u8` (null on OOM)
     pub fn molt_bridge_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
 
-    /// `unsafe { bytes_like_slice(ptr) }` -> data ptr + len, or null if not bytes-like.
-    /// Returns data pointer (null if not bytes-like); writes length to *out_len.
-    pub fn molt_bridge_bytes_like_slice(ptr: *mut u8, out_len: *mut usize) -> *const u8;
-
     /// `bytes_data(ptr) -> *const u8` (raw data pointer of a bytes object)
     pub fn molt_bridge_bytes_data(ptr: *mut u8) -> *const u8;
 
@@ -150,22 +146,6 @@ pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
     unsafe { molt_bridge_alloc_bytes(data.as_ptr(), data.len()) }
 }
 
-/// Get a slice view of a bytes-like object.
-#[inline]
-/// # Safety
-///
-/// `ptr` must refer to a live bytes-like Molt object for the duration of this
-/// call.
-pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
-    let mut len: usize = 0;
-    let data = unsafe { molt_bridge_bytes_like_slice(ptr, &mut len) };
-    if data.is_null() {
-        None
-    } else {
-        Some(unsafe { std::slice::from_raw_parts(data, len) })
-    }
-}
-
 /// Extract an owned String from a string MoltObject.
 #[inline]
 pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
@@ -248,4 +228,31 @@ pub unsafe fn bytes_data(ptr: *mut u8) -> *const u8 {
 /// `ptr` must refer to a live Molt bytes-like object.
 pub unsafe fn bytes_len(ptr: *mut u8) -> usize {
     unsafe { molt_bridge_bytes_len(ptr) }
+}
+
+unsafe extern "C" {
+    pub fn __molt_compression_zlib_compressor_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    pub fn __molt_compression_zlib_compressor_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    pub fn __molt_compression_zlib_decompressor_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    pub fn __molt_compression_zlib_decompressor_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    pub fn __molt_compression_bz2_compressor_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    pub fn __molt_compression_bz2_compressor_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    pub fn __molt_compression_bz2_decompressor_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    pub fn __molt_compression_bz2_decompressor_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    pub fn __molt_compression_bz2_file_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    pub fn __molt_compression_bz2_file_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn __molt_compression_lzma_compressor_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn __molt_compression_lzma_compressor_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn __molt_compression_lzma_decompressor_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn __molt_compression_lzma_decompressor_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn __molt_compression_lzma_file_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn __molt_compression_lzma_file_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    pub fn __molt_compression_gzip_file_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    pub fn __molt_compression_gzip_file_owner_clone(bits: u64) -> *const std::ffi::c_void;
 }

@@ -1,27 +1,95 @@
 use super::*;
+use molt_stdlib_text::codec_registry::{EncodingKind, normalize_encoding};
 use num_bigint::{BigInt, Sign};
-use num_traits::Zero;
+use num_traits::ToPrimitive;
 
-pub(in crate::builtins::io) const TEXT_COOKIE_VERSION: u8 = 2;
+pub(in crate::builtins::io) const TEXT_COOKIE_VERSION: u8 = 3;
 pub(in crate::builtins::io) const TEXT_COOKIE_MAX_PENDING: usize = 4;
-pub(in crate::builtins::io) const TEXT_COOKIE_FIXED_LEN: usize = 16;
+pub(in crate::builtins::io) const TEXT_COOKIE_FIXED_LEN: usize = 17;
 
 pub(in crate::builtins::io) struct TextCookie {
     pub(in crate::builtins::io) pos: u64,
     pub(in crate::builtins::io) pending_byte: Option<u8>,
     pub(in crate::builtins::io) pending_bytes: Vec<u8>,
     pub(in crate::builtins::io) pending_text: Vec<u8>,
+    pub(in crate::builtins::io) decoder: Option<EncodingKind>,
+    // A plain byte offset resets the decoder; a stateful cookie restores it.
+    pub(in crate::builtins::io) bom_seen: Option<bool>,
+}
+
+pub(in crate::builtins::io) fn text_cookie_decoder(
+    handle: &MoltFileHandle,
+) -> Option<EncodingKind> {
+    let original = normalize_encoding(handle.encoding_original.as_deref()?)?;
+    if !handle.text_bom_seen {
+        return None;
+    }
+    let active = normalize_encoding(handle.encoding.as_deref()?)?;
+    match (original, active) {
+        (EncodingKind::Utf16, EncodingKind::Utf16LE | EncodingKind::Utf16BE)
+        | (EncodingKind::Utf32, EncodingKind::Utf32LE | EncodingKind::Utf32BE) => Some(active),
+        _ => None,
+    }
+}
+
+pub(in crate::builtins::io) fn text_cookie_restore_decoder(
+    handle: &mut MoltFileHandle,
+    cookie: &TextCookie,
+) {
+    let Some(original) = handle
+        .encoding_original
+        .as_deref()
+        .and_then(normalize_encoding)
+    else {
+        return;
+    };
+    let at_start = cookie.pos == 0
+        && cookie.pending_byte.is_none()
+        && cookie.pending_bytes.is_empty()
+        && cookie.pending_text.is_empty();
+    handle.text_bom_written = !at_start;
+    handle.text_bom_seen = cookie
+        .bom_seen
+        .unwrap_or(original == EncodingKind::Utf8Sig && !at_start);
+    let active = match original {
+        EncodingKind::Utf16 => match cookie.decoder {
+            Some(kind @ (EncodingKind::Utf16LE | EncodingKind::Utf16BE)) => kind,
+            _ if at_start || cookie.bom_seen == Some(false) => original,
+            _ if cfg!(target_endian = "little") => EncodingKind::Utf16LE,
+            _ => EncodingKind::Utf16BE,
+        },
+        EncodingKind::Utf32 => match cookie.decoder {
+            Some(kind @ (EncodingKind::Utf32LE | EncodingKind::Utf32BE)) => kind,
+            _ if at_start || cookie.bom_seen == Some(false) => original,
+            _ if cfg!(target_endian = "little") => EncodingKind::Utf32LE,
+            _ => EncodingKind::Utf32BE,
+        },
+        EncodingKind::Utf8Sig => {
+            handle.text_bom_seen = cookie.bom_seen.unwrap_or(!at_start);
+            original
+        }
+        _ => return,
+    };
+    handle.encoding = Some(active.name().to_owned());
 }
 
 pub(in crate::builtins::io) fn text_cookie_encode_bits(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     pos: u64,
     pending_byte: Option<u8>,
     pending_bytes: &[u8],
     pending_text: &[u8],
+    decoder: Option<EncodingKind>,
+    bom_seen: bool,
 ) -> Result<u64, String> {
-    if pos == 0 && pending_byte.is_none() && pending_bytes.is_empty() && pending_text.is_empty() {
-        return Ok(MoltObject::from_int(0).bits());
+    // A decoder-free position is the actual byte offset, including nonzero
+    // offsets. Logging and other public consumers legitimately compare it.
+    if pending_byte.is_none()
+        && pending_bytes.is_empty()
+        && pending_text.is_empty()
+        && decoder.is_none()
+    {
+        return Ok(int_bits_from_i128(py, i128::from(pos)));
     }
     if pending_bytes.len() > TEXT_COOKIE_MAX_PENDING {
         return Err("tell overflow".to_string());
@@ -30,86 +98,85 @@ pub(in crate::builtins::io) fn text_cookie_encode_bits(
         .len()
         .try_into()
         .map_err(|_| "tell overflow".to_string())?;
-    let mut bytes =
-        Vec::with_capacity(TEXT_COOKIE_FIXED_LEN + pending_bytes.len() + pending_text.len());
-    bytes.push(TEXT_COOKIE_VERSION);
-    if let Some(byte) = pending_byte {
-        bytes.push(1);
-        bytes.push(byte);
-    } else {
-        bytes.push(0);
-        bytes.push(0);
-    }
-    bytes.push(pending_bytes.len() as u8);
-    bytes.extend_from_slice(pending_bytes);
-    bytes.extend_from_slice(&pending_text_len.to_le_bytes());
-    bytes.extend_from_slice(pending_text);
+    let decoder = match decoder {
+        None => 0,
+        Some(EncodingKind::Utf16LE) => 1,
+        Some(EncodingKind::Utf16BE) => 2,
+        Some(EncodingKind::Utf32LE) => 3,
+        Some(EncodingKind::Utf32BE) => 4,
+        _ => return Err("invalid decoder state".to_string()),
+    };
+    let capacity = TEXT_COOKIE_FIXED_LEN
+        .checked_add(pending_bytes.len())
+        .and_then(|length| length.checked_add(pending_text.len()))
+        .ok_or_else(|| "tell overflow".to_owned())?;
+    let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(&pos.to_le_bytes());
-    let value = BigInt::from_bytes_le(Sign::Plus, &bytes);
-    Ok(int_bits_from_bigint(_py, value))
+    bytes.push(u8::from(pending_byte.is_some()) | (u8::from(bom_seen) << 1));
+    bytes.push(pending_byte.unwrap_or(0));
+    bytes.push(pending_bytes.len() as u8);
+    bytes.push(decoder);
+    bytes.extend_from_slice(&pending_text_len.to_le_bytes());
+    bytes.extend_from_slice(pending_bytes);
+    bytes.extend_from_slice(pending_text);
+    // A nonzero high byte makes every stateful cookie disjoint from all u64
+    // byte offsets, even when its saved position and payload bytes are zero.
+    bytes.push(TEXT_COOKIE_VERSION);
+    Ok(int_bits_from_bigint(
+        py,
+        BigInt::from_bytes_le(Sign::Plus, &bytes),
+    ))
 }
 
 pub(in crate::builtins::io) fn text_cookie_decode_value(
-    value: BigInt,
+    value: &BigInt,
 ) -> Result<TextCookie, String> {
     if value.sign() == Sign::Minus {
         return Err("negative seek position".to_string());
     }
-    if value.is_zero() {
+    if let Some(pos) = value.to_u64() {
         return Ok(TextCookie {
-            pos: 0,
+            pos,
             pending_byte: None,
             pending_bytes: Vec::new(),
             pending_text: Vec::new(),
+            decoder: None,
+            bom_seen: None,
         });
     }
-    let (_, mut bytes) = value.to_bytes_le();
-    if bytes.len() < TEXT_COOKIE_FIXED_LEN {
-        bytes.resize(TEXT_COOKIE_FIXED_LEN, 0);
-    }
-    if bytes[0] != TEXT_COOKIE_VERSION {
+    let (_, bytes) = value.to_bytes_le();
+    if bytes.len() < TEXT_COOKIE_FIXED_LEN
+        || bytes.last() != Some(&TEXT_COOKIE_VERSION)
+        || bytes[8] & !3 != 0
+        || (bytes[8] & 1 == 0 && bytes[9] != 0)
+    {
         return Err("invalid seek position".to_string());
     }
-    let pending_flag = bytes[1] != 0;
-    let pending_byte = if pending_flag { Some(bytes[2]) } else { None };
-    let pending_len = bytes[3] as usize;
-    if pending_len > TEXT_COOKIE_MAX_PENDING {
+    let pending_len = usize::from(bytes[10]);
+    let text_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    let expected_len = TEXT_COOKIE_FIXED_LEN
+        .checked_add(pending_len)
+        .and_then(|n| n.checked_add(text_len));
+    // Validate against supplied bytes before slicing or allocating. A forged
+    // length must never trigger padding/allocation proportional to that length.
+    if pending_len > TEXT_COOKIE_MAX_PENDING || expected_len != Some(bytes.len()) {
         return Err("invalid seek position".to_string());
     }
-    let pending_bytes = if pending_len == 0 {
-        Vec::new()
-    } else {
-        bytes[4..4 + pending_len].to_vec()
+    let decoder = match bytes[11] {
+        0 => None,
+        1 => Some(EncodingKind::Utf16LE),
+        2 => Some(EncodingKind::Utf16BE),
+        3 => Some(EncodingKind::Utf32LE),
+        4 => Some(EncodingKind::Utf32BE),
+        _ => return Err("invalid seek position".to_string()),
     };
-    let text_len_offset = 4 + pending_len;
-    if bytes.len() < text_len_offset + 4 {
-        return Err("invalid seek position".to_string());
-    }
-    let pending_text_len = u32::from_le_bytes(
-        bytes[text_len_offset..text_len_offset + 4]
-            .try_into()
-            .map_err(|_| "invalid seek position".to_string())?,
-    ) as usize;
-    let text_offset = text_len_offset + 4;
-    let pos_offset = text_offset + pending_text_len;
-    if bytes.len() < pos_offset + 8 {
-        bytes.resize(pos_offset + 8, 0);
-    }
-    let pending_text = if pending_text_len == 0 {
-        Vec::new()
-    } else {
-        bytes[text_offset..text_offset + pending_text_len].to_vec()
-    };
-    let pos = u64::from_le_bytes(
-        bytes[pos_offset..pos_offset + 8]
-            .try_into()
-            .map_err(|_| "invalid seek position".to_string())?,
-    );
     Ok(TextCookie {
-        pos,
-        pending_byte,
-        pending_bytes,
-        pending_text,
+        pos: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+        pending_byte: (bytes[8] & 1 != 0).then_some(bytes[9]),
+        pending_bytes: bytes[16..16 + pending_len].to_vec(),
+        pending_text: bytes[16 + pending_len..bytes.len() - 1].to_vec(),
+        decoder,
+        bom_seen: Some(bytes[8] & 2 != 0),
     })
 }
 

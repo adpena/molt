@@ -162,3 +162,65 @@ def test_source_catalog_requires_admitted_rows(tmp_path: Path) -> None:
     catalog = _ModuleSourceCatalog({})
     with pytest.raises(ValueError, match="lacks captured source lease"):
         catalog.read_source("new_module", path)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        codecs.BOM_UTF8 + b"# coding: latin-1\nx = 1\n",
+        b"# coding: does-not-exist\nx = 1\n",
+        b"# coding: utf-8\nvalue = '\xff'\n",
+        b"value = '\xff'\n",
+    ],
+)
+def test_snapshot_encoding_failure_is_native_parser_diagnostic(
+    tmp_path: Path,
+    content: bytes,
+) -> None:
+    path = tmp_path / "physical.py"
+    path.write_bytes(content)
+    snapshot = PythonSourceSnapshot.capture(path)
+    path.write_bytes(b"replacement = 1\n")
+    filename = "/logical/package/source.py"
+    with pytest.raises(SyntaxError) as expected:
+        ast.parse(content, filename=filename)
+    with pytest.raises(SyntaxError) as actual:
+        snapshot.text_for_filename(filename)
+    assert type(actual.value) is type(expected.value)
+    assert actual.value.args == expected.value.args
+    for name in (
+        "msg",
+        "filename",
+        "lineno",
+        "offset",
+        "text",
+        "end_lineno",
+        "end_offset",
+        "print_file_and_line",
+    ):
+        assert getattr(actual.value, name) == getattr(expected.value, name)
+
+
+def test_snapshot_success_does_not_parse_and_decoder_disagreement_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import molt.cli.module_source as module_source
+
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("successful decoding must not invoke the parser")
+
+    monkeypatch.setattr(module_source.ast, "parse", unexpected_parse)
+    snapshot = PythonSourceSnapshot(Path("valid.py"), b"value = 1\n")
+    assert snapshot.text_for_filename("logical.py") == "value = 1\n"
+    assert snapshot.text is snapshot.text
+
+    # This is an impossible decoder/parser disagreement, not an alternate source.
+    monkeypatch.setattr(
+        module_source.ast,
+        "parse",
+        lambda *args, **kwargs: ast.Module(body=[], type_ignores=[]),
+    )
+    broken = PythonSourceSnapshot(Path("invalid.py"), b"# coding: no-such-codec\n")
+    with pytest.raises(RuntimeError, match="decoder rejected bytes accepted") as caught:
+        _ = broken.text
+    assert isinstance(caught.value.__cause__, SyntaxError)

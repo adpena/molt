@@ -2545,6 +2545,13 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     assert protocol.rust_inventory(rust, SA.mask_rust_comments_and_strings(rust), True)[
         0
     ].proved
+    glob = "use crate::builtins::compatibility_error::CompatibilityError; CompatibilityError::PathGlobNonRelative { non_relative: true }.raise(py);"
+    assert protocol.rust_inventory(glob, SA.mask_rust_comments_and_strings(glob), True)[
+        0
+    ].proved
+    assert not protocol.rust_inventory(
+        glob, SA.mask_rust_comments_and_strings(glob), False
+    )[0].proved
     unknown = rust.replace("MemoryviewLookup", "Unknown")
     assert not protocol.rust_inventory(unknown, unknown, True)[0].proved
     emitter = tmp_path / protocol.RUST_PATH
@@ -2560,6 +2567,16 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
         encoding="utf-8",
     )
     assert protocol.projection_errors(tmp_path)
+    # A drive/root predicate reversal must not be classified as proved parity.
+    assert "if non_relative =>" in canonical
+    emitter.write_text(
+        canonical.replace("if non_relative =>", "if !non_relative =>"), encoding="utf-8"
+    )
+    assert protocol.projection_errors(tmp_path)
+    assert any(
+        item.probe == "rust_stub_surface"
+        for item in SA.probe_rust_stub_surfaces(tmp_path)
+    )
     emitter.write_text(canonical.replace("rank > 1", "rank > 0"), encoding="utf-8")
     assert protocol.projection_errors(tmp_path)
     findings = SA.probe_rust_stub_surfaces(tmp_path)
@@ -3030,3 +3047,55 @@ def test_scratch_probe_flags_rust_that_derives_a_root(tmp_path: Path):
 
 def test_the_repository_has_no_scratch_authority_bypass():
     assert SA.probe_scratch_authority_bypasses(ROOT) == []
+
+
+def test_glob_compatibility_source_coordinates_are_version_specific(tmp_path):
+    protocol = SA.compatibility_errors
+    import json
+
+    data = json.loads((ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"))
+    coordinates = {(row["version"], row["path"]) for row in data["sources"]}
+    assert {
+        ("3.12.0", "Lib/pathlib.py"),
+        ("3.13.0", "Lib/pathlib/_local.py"),
+        ("3.14.0", "Lib/pathlib/__init__.py"),
+    } <= coordinates
+    for facts in protocol.OUTCOMES.values():
+        path = tmp_path / facts.witness
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps(data), encoding="utf-8")
+    assert protocol.source_errors(tmp_path) == []
+    # Modern native splitroot is a C provider; Python fallback bytes alone do
+    # not establish its Windows UTF-16 coordinate contract.
+    for missing in ["Modules/posixmodule.c", "Python/fileutils.c"]:
+        changed = json.loads(json.dumps(data))
+        changed["sources"] = [
+            row
+            for row in changed["sources"]
+            if not (row["version"] == "3.14.0" and row["path"] == missing)
+        ]
+        receipt.write_text(json.dumps(changed), encoding="utf-8")
+        assert (
+            "compatibility source coordinates are incomplete or unpinned"
+            in protocol.source_errors(tmp_path)
+        )
+    for bad_coordinate in [
+        ("3.13.0", "Lib/pathlib.py"),
+        ("3.15.0", "Lib/pathlib/_local.py"),
+    ]:
+        changed = json.loads(json.dumps(data))
+        row = next(
+            row for row in changed["sources"] if row["path"] == "Lib/pathlib/_local.py"
+        )
+        row["version"], row["path"] = bad_coordinate
+        row["url"] = (
+            f"https://raw.githubusercontent.com/python/cpython/v{row['version']}/{row['path']}"
+        )
+        receipt.write_text(json.dumps(changed), encoding="utf-8")
+        assert (
+            "compatibility source coordinates are incomplete or unpinned"
+            in protocol.source_errors(tmp_path)
+        )

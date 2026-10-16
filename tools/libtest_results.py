@@ -106,6 +106,49 @@ class LibtestReport:
         }
 
 
+def listed_test_identities(stream: TextIO) -> list[str]:
+    """Read the complete terse discovery capture; listing is not execution."""
+    tests: list[str] = []
+    seen: set[str] = set()
+    for line in stream:
+        identity, separator, kind = line.rstrip("\r\n").rpartition(": ")
+        if separator and kind == "test" and identity:
+            if identity in seen:
+                raise ValueError(f"duplicate test discovery identity: {identity}")
+            seen.add(identity)
+            tests.append(identity)
+    if not tests:
+        raise ValueError("test discovery returned zero tests")
+    return tests
+
+
+def isolated_test_rows(
+    report: LibtestReport,
+    identity: str,
+    *,
+    infrastructure_failure: object,
+    timed_out: bool,
+    termination_kind: object,
+) -> list[dict[str, str]]:
+    """Account for one exact execution, including an observed abnormal failure."""
+    if infrastructure_failure is not None:
+        return []
+    rows = report.rows()
+    if len(rows) == 1 and rows[0]["identity"] == identity:
+        return rows
+    if not timed_out and {"identity": identity, "status": "fail"} in rows:
+        return [{"identity": identity, "status": "fail"}]
+    if (
+        not timed_out
+        and report.serial
+        and not report.issues
+        and identity in report.pending
+        and termination_kind in ("signal", "windows-exception")
+    ):
+        return [{"identity": identity, "status": "fail"}]
+    return []
+
+
 def parse_libtest(stream: TextIO, argv: tuple[str, ...]) -> LibtestReport:
     """Consume bounded prefixes; drain arbitrary output without retaining it."""
     serial = serial_invocation(argv)

@@ -8,6 +8,8 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
     let builtins = builtin_classes(py);
     let none = MoltObject::none().bits();
 }, {
+    "__buffer__" => builtin_buffer_method_bits(py, class_bits, false),
+    "__release_buffer__" => builtin_buffer_method_bits(py, class_bits, true),
     "__class_getitem__" if [builtins.list, builtins.dict, builtins.tuple, builtins.set, builtins.frozenset, builtins.type_obj].contains(&class_bits) => Some(builtin_func_bits(
         py, NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, class_bits, "__class_getitem__"), fn_addr!(molt_generic_alias_new), 2,
     )),
@@ -32,8 +34,68 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
     "__init__" => io_constructor_bits(py, class_bits, false),
 });
 
-// Both descriptor phases share one signature declaration. Exact IO classes and
-// subclasses enter the ordinary type-call binder; no class-local keyword parser.
+// These runtime builtin namespaces have process-owned physical buffer slots.
+// Array and extension classes already publish their declarations through their
+// own readiness/explicit declaration transaction; inheritance uses normal MRO
+// lookup. No namespace enumeration or C readiness is needed for one lazy name.
+fn builtin_buffer_method_bits(py: &PyToken<'_>, class: u64, release: bool) -> Option<u64> {
+    let builtins = builtin_classes(py);
+    if ![builtins.bytes, builtins.bytearray, builtins.memoryview].contains(&class) {
+        return None;
+    }
+    unsafe {
+        use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
+        let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let owner = bridge
+            .handle_to_borrowed_pyobj(class)
+            .cast::<molt_cpython_abi::abi_types::PyTypeObject>();
+        if owner.is_null() {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "buffer declaration owner");
+            return Some(0);
+        }
+        let slot = if release {
+            molt_cpython_abi::type_slots::Py_bf_releasebuffer
+        } else {
+            molt_cpython_abi::type_slots::Py_bf_getbuffer
+        };
+        // bytes has no release callback. Absence is a physical declaration
+        // fact, not a synthetic callable that ignores an unsupported operation.
+        if typeobj::PyType_GetSlot(owner, slot).is_null() {
+            return None;
+        }
+        let name = if release {
+            "__release_buffer__"
+        } else {
+            "__buffer__"
+        };
+        Some(super::common::init_native_callable(
+            py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, name),
+            || {
+                let descriptor =
+                    OwnedPyObject::from_owned(typeobj::buffer_slot_wrapper(owner, release));
+                if descriptor.as_ptr().is_null() {
+                    crate::cpython_abi_hooks::propagate_native_failure(py, "buffer declaration");
+                    return 0;
+                }
+                match bridge.molt_value_for_pyobj(descriptor.as_ptr()) {
+                    Some(bits) => bits,
+                    None => {
+                        crate::cpython_abi_hooks::propagate_native_failure(
+                            py,
+                            "buffer declaration projection",
+                        );
+                        0
+                    }
+                }
+            },
+        ))
+    }
+}
+
+// IO phases enter the ordinary type-call binder. BufferedWriter allocation
+// accepts construction arguments without converting them; its initializer owns
+// the declared raw/size contract and all user callbacks.
 fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64> {
     let b = builtin_classes(py);
     let none = MoltObject::none().bits();
@@ -56,6 +118,13 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
             false,
         ))
     };
+    if class == b.buffered_writer && is_new {
+        return Some(crate::builtins::methods::builtin_variadic_func_bits(
+            py,
+            spec,
+            fn_addr!(crate::builtins::io::buffered_writer_new_method),
+        ));
+    }
     if class == b.file_io {
         // The internal missing singleton distinguishes omission from explicit None.
         let mode = missing_bits(py);
@@ -73,7 +142,7 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
             fn_addr!(molt_buffered_new),
             fn_addr!(molt_buffered_init),
             &[receiver, b"raw", b"buffer_size"],
-            &[MoltObject::from_int(-1).bits()],
+            &[MoltObject::from_int(crate::builtins::io::default_buffer_size(py)).bits()],
         )
     } else if class == b.text_io_wrapper {
         bind(

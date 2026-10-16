@@ -15,9 +15,7 @@ class md5(_hashlib._Hash):
         super().__init__(
             "md5",
             data,
-            _hashlib._validate_options(
-                "md5", {"usedforsecurity": usedforsecurity}, "md5"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 

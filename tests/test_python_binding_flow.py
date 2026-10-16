@@ -1538,6 +1538,139 @@ def test_intrinsic_require_alias_has_one_exact_binding_identity() -> None:
 
 
 @pytest.mark.parametrize(
+    "platform,os_name",
+    [("linux", "posix"), ("darwin", "posix"), ("win32", "nt"), ("wasi", "posix")],
+)
+@pytest.mark.parametrize("intrinsic", ["molt_sys_platform", "molt_os_name"])
+def test_immutable_target_intrinsic_returns_actual_target_value(
+    platform: str, os_name: str, intrinsic: str
+) -> None:
+    expected = platform if intrinsic == "molt_sys_platform" else os_name
+    source = (
+        "from _intrinsics import require_intrinsic as take\n"
+        f"if take({intrinsic!r})() == {expected!r}:\n    selected = 1\n"
+    )
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_sys_platform=platform)
+    )
+    condition = tree.body[1].test
+    result = index.expression_result(condition.left)
+    assert result.value_known and result.value == expected
+    assert result.evaluation_required
+    decision = index.expression_result(condition)
+    assert decision.truth is True and decision.evaluation_required
+    call = index.call_fact(condition.left)
+    assert call is not None
+    assert call.callee_is(
+        PythonIdentity.INTRINSIC_SYS_PLATFORM
+        if intrinsic == "molt_sys_platform"
+        else PythonIdentity.INTRINSIC_OS_NAME
+    )
+    # The acquisition keeps its callback boundary even with a known result.
+    acquisition = index.call_fact(condition.left.func)
+    assert acquisition is not None
+    assert acquisition.effects & PRESERVES_IMPORT_STATE_FORBIDDEN_EFFECTS
+
+
+@pytest.mark.parametrize(
+    "acquisition",
+    [
+        "take('molt_sys_platform')",
+        "take(name='molt_sys_platform')",
+        "take('molt_sys_platform', None)",
+        "take(namespace=None, name='molt_sys_platform')",
+    ],
+)
+def test_immutable_target_reader_identity_flows_through_captured_alias(acquisition):
+    source = (
+        "from _intrinsics import require_intrinsic as take\n"
+        f"reader = {acquisition}\nalias = reader\n"
+        "if alias() == 'win32':\n    selected = 1\n"
+    )
+    # The existing closed graph premise protects aliases from unrelated calls;
+    # the fact does not grant a new namespace or lifetime exemption.
+    index = analyze_python_source_bindings(
+        source,
+        policy=PythonBindingPolicy(
+            target_sys_platform="linux",
+            foreign_namespace_writes=(),
+            callback_member_writes=0,
+        ),
+    )
+    condition = ast.parse(source).body[-1].test
+    assert index.expression_result(condition).truth is False
+    assert index.expression_result(condition).evaluation_required
+
+
+@pytest.mark.parametrize(
+    "prefix,query",
+    [
+        ("take = replacement\n", "take('molt_sys_platform')()"),
+        ("observer()\n", "take('molt_sys_platform')()"),
+        ("globals().update(values)\n", "take('molt_sys_platform')()"),
+        ("", "take(unknown)()"),
+        ("", "take()()"),
+        ("", "take('molt_sys_platform', None, None)()"),
+        ("", "take('molt_sys_platform', name='molt_os_name')()"),
+        ("", "take('molt_sys_platform', other=None)()"),
+        ("", "take(*values)()"),
+        ("", "take(**values)()"),
+        ("", "take('molt_sys_version_info')()"),
+        ("", "take('molt_sys_platform')(1)"),
+        ("", "take('molt_sys_platform')(unexpected=1)"),
+        ("reader=take('molt_sys_platform')\nreader=replacement\n", "reader()"),
+    ],
+)
+def test_immutable_target_property_does_not_override_unknown_or_invalid_call(
+    prefix, query
+):
+    source = (
+        "from _intrinsics import require_intrinsic as take\n"
+        + prefix
+        + f"if {query} == 'win32':\n    selected = 1\n"
+    )
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_sys_platform="linux")
+    )
+    condition = ast.parse(source).body[-1].test
+    assert index.expression_result(condition).truth is None
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [
+        "from _intrinsics import load_intrinsic as take",
+        "from foreign import require_intrinsic as take",
+        "def take(name):\n    return lambda: 'win32'",
+    ],
+)
+def test_target_property_fact_requires_canonical_acquisition_identity(imports):
+    source = imports + "\nif take('molt_sys_platform')() == 'win32':\n    pass\n"
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_sys_platform="linux")
+    )
+    assert index.expression_result(ast.parse(source).body[-1].test).truth is None
+
+
+def test_target_property_requires_known_target_and_ignores_mutable_sys_member():
+    source = (
+        "from _intrinsics import require_intrinsic as take\n"
+        "reader=take('molt_sys_platform')\nimport sys\n"
+        "sys.platform='win32'\nif reader() == 'linux':\n    pass\n"
+    )
+    condition = ast.parse(source).body[-1].test
+    policy = PythonBindingPolicy(foreign_namespace_writes=(), callback_member_writes=0)
+    unknown = analyze_python_source_bindings(source, policy=policy)
+    assert unknown.expression_result(condition).truth is None
+    known = analyze_python_source_bindings(
+        source, policy=replace(policy, target_sys_platform="linux")
+    )
+    assert known.expression_result(condition).truth is True
+    assert known.expression_result(condition).evaluation_required
+
+
+@pytest.mark.parametrize(
     "conditional",
     [
         "if flag:\n    importlib = replacement\n",

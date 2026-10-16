@@ -52,6 +52,8 @@ from tools.libtest_results import (  # noqa: E402
     BINARY_RECEIPT_SCHEMA,
     LibtestReport,
     accounting_problem,
+    isolated_test_rows,
+    listed_test_identities,
     parse_libtest,
 )
 
@@ -456,11 +458,15 @@ def _canonical_test_results(
             identity = execution.argv[exact_index + 1]
         except (ValueError, IndexError):
             continue
-        observed = _structured_results_for_execution(execution)
-        if len(observed) == 1 and observed[0]["identity"] == identity:
-            results.extend(observed)
-        elif _exact_reproduction_kind(execution, identity) is not None:
-            results.append({"identity": identity, "status": "fail"})
+        results.extend(
+            isolated_test_rows(
+                _libtest_report(execution),
+                identity,
+                infrastructure_failure=execution.infrastructure_failure,
+                timed_out=execution.timed_out,
+                termination_kind=execution.termination["kind"],
+            )
+        )
     return results
 
 
@@ -528,17 +534,11 @@ def listed_tests(
             "test discovery failed: "
             f"termination={json.dumps(process.termination, sort_keys=True)}"
         )
-    tests = []
-    with execution_stdout(process) as stream:
-        for line in stream:
-            line = line.rstrip("\r\n")
-            identity, separator, kind = line.rpartition(": ")
-            if separator and kind == "test" and identity:
-                if identity in tests:
-                    raise RuntimeError(f"duplicate test discovery identity: {identity}")
-                tests.append(identity)
-    if not tests:
-        raise RuntimeError("test discovery returned zero tests")
+    try:
+        with execution_stdout(process) as stream:
+            tests = listed_test_identities(stream)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     return tests, process
 
 

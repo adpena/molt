@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "c19c8c1056e672e27909846ba62e8a1c0a777cec36b1d2a16f55103b98dbcda8",
+  "authority_sha256": "f5460411e95106207a544842fb44db36b8aa5a1d2e43b069e11b90cb1819523d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -645,7 +645,8 @@
         "tests/tools/test_runtime_descendant_receipts.py",
         "tests/runtime_descendant_test_support.py",
         "vendor/rust/object/**",
-        "vendor/rust/cranelift-object/**"
+        "vendor/rust/cranelift-object/**",
+        "vendor/rust/zlib-rs/**"
       ],
       "job": "rust-build-unit-smoke",
       "job_reserve_seconds": 240,
@@ -657,7 +658,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 308,
+      "timeout_minutes": 318,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -6734,10 +6735,13 @@
         "molt-runtime",
         "-p",
         "molt-gpu-runtime",
+        "-p",
+        "zlib-rs@0.6.8",
         "--no-default-features",
         "--features",
-        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu",
+        "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG",
         "--",
+        "counter_wrap",
         "tir::",
         "wasm::",
         "wasm_abi::",
@@ -6833,6 +6837,49 @@
         "uv",
         "rustc",
         "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "python",
+        "tools/run_runtime_test_gate.py",
+        "--policy",
+        "zlib-wasi",
+        "--profile",
+        "dev-fast",
+        "--build-timeout-seconds",
+        "300",
+        "--child-timeout-seconds",
+        "120"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-wasi-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.test.zlib-wasi-counters",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "node"
       ]
     },
     {
@@ -7985,14 +8032,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 18480,
+        "budget_seconds": 19080,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 18240,
-        "required_job_seconds": 18480,
+        "projected_makespan_seconds": 18840,
+        "required_job_seconds": 19080,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 18240
+          "compiler-build-resource": 18840
         }
       },
       "rust_security": {
@@ -8378,6 +8425,9 @@
       "local.intrinsic-registry.1": "python -m pytest -q tests/test_gen_intrinsics.py",
       "local.llvm-runtime-abi.0": "python tools/llvm_runtime_abi_audit.py --check",
       "local.llvm-runtime-abi.1": "python -m pytest -q tests/test_llvm_runtime_abi_audit.py",
+      "local.maintained-zlib-counters.0": "python -m pytest -q tests/cli/test_runtime_source_closure.py",
+      "local.maintained-zlib-counters.1": "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
+      "local.maintained-zlib-counters.2": "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120",
       "local.memory-graph.0": "python -m pytest -q tests/tools/test_memory_graph.py",
       "local.memory-graph.1": "python tools/check_memory_graph.py --check",
       "local.native-callable-abi.0": "python tools/gen_native_callable_abi.py --check",
@@ -8398,7 +8448,7 @@
       "local.python-effect-capability-authority.2": "cargo test --locked -p molt-ir --lib python_effects_generated",
       "local.python-identity-catalog-authority.0": "python tools/gen_python_identity_catalog.py --check",
       "local.python-identity-catalog-authority.1": "python -m pytest -q tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
-      "local.runtime-lib.0": "cargo test --locked --profile release-fast -p molt-runtime --lib",
+      "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-fast --build-timeout-seconds 6300 --child-timeout-seconds 120",
       "local.runtime-lib.1": "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings",
       "local.runtime-profile-schema-authority.0": "python tools/gen_runtime_profile_schema.py --check",
       "local.runtime-profile-schema-authority.1": "python -m pytest -q tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
@@ -9403,6 +9453,43 @@
       },
       {
         "command_ids": [
+          "local.maintained-zlib-counters.0",
+          "local.maintained-zlib-counters.1",
+          "local.maintained-zlib-counters.2"
+        ],
+        "description": "Maintained compression provider: complete modular counters and actual source selection.",
+        "gates": [
+          "python -m pytest -q tests/cli/test_runtime_source_closure.py",
+          "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
+          "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120"
+        ],
+        "globs": [
+          "vendor/rust/zlib-rs/**",
+          "tools/run_runtime_test_gate.py",
+          "tests/tools/test_runtime_test_gate.py",
+          "src/molt/node_runtime.py",
+          "rust-toolchain.toml",
+          "Cargo.toml",
+          "Cargo.lock",
+          "runtime/molt-runtime/Cargo.toml",
+          "runtime/molt-runtime/fuzz/Cargo.toml",
+          "runtime/molt-runtime/fuzz/Cargo.lock",
+          "runtime/molt-runtime-compression/Cargo.toml",
+          "runtime/molt-runtime-compression/src/zlib.rs",
+          "tests/cli/test_runtime_source_closure.py"
+        ],
+        "name": "maintained-zlib-counters",
+        "require_fresh_toolchain": true,
+        "toolchains": [
+          "python",
+          "uv",
+          "rustc",
+          "cargo",
+          "node"
+        ]
+      },
+      {
+        "command_ids": [
           "local.backend-llvm.0"
         ],
         "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
@@ -9549,9 +9636,9 @@
           "local.runtime-lib.0",
           "local.runtime-lib.1"
         ],
-        "description": "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary.",
+        "description": "Runtime/object-model Rust: one default-feature image, ordinary and isolated lifecycle semantics, then backend clippy; performance probes remain unrun.",
         "gates": [
-          "cargo test --locked --profile release-fast -p molt-runtime --lib",
+          "python tools/run_runtime_test_gate.py --profile release-fast --build-timeout-seconds 6300 --child-timeout-seconds 120",
           "cargo clippy --locked -p molt-backend --features native-backend -- -D warnings"
         ],
         "globs": [
@@ -10197,6 +10284,30 @@
       ],
       "local.llvm-runtime-abi.1": [
         "python"
+      ],
+      "local.maintained-zlib-counters.0": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "node"
+      ],
+      "local.maintained-zlib-counters.1": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "node"
+      ],
+      "local.maintained-zlib-counters.2": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "git",
+        "node"
       ],
       "local.memory-graph.0": [
         "python"

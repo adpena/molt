@@ -25,11 +25,41 @@ Tcl/Tk public C API (tcl.h 8.6 + 9.0). License discipline: study + reimplement.
 
 Baseline environment: molt links Homebrew libtcl8.6/libtk8.6 (observed via
 Instruments sample, §3); CPython baseline is .venv/bin/python 3.12.13 with
-Tcl/Tk 9.0. The typed bridge is version-robust across both (§2.2) and produced
-byte-identical results despite the Tcl-version skew.
+Tcl/Tk 9.0. That historical comparison did not qualify the Tcl 9 foreign function
+signatures. The current ABI contract below supersedes that assumption.
 -->
 
 # tkinter / Tk GUI Lane (Design 43)
+
+## Current native ABI contract
+
+`tk/tcl.rs::TclApi` owns the selected library and its foreign function table;
+`tk/native.rs` and `TclInterpreter` consume it. The stable `Tcl_GetVersion` call
+selects the external ABI before resolving version-dependent functions. Tcl
+8.6/8.7 exports use `int` counts; Tcl 9.0 uses `ptrdiff_t`, including on Windows
+LLP64. Count inputs are checked before the foreign call, and output lengths use
+storage of the selected native width. `Tcl_FindExecutable` also has different
+return types. Unsupported versions fail admission with the selected path and
+version; missing required symbols report the symbol and selected path. Neither
+failure selects another ABI.
+
+Boolean construction uses the shared wide-integer provider. Reference ownership
+uses the exported `Tcl_DbIncrRefCount`/`Tcl_DbDecrRefCount` functions, and string
+results use `Tcl_GetObjResult` plus length-aware `Tcl_GetStringFromObj`. Macro-only
+source spellings are not assumed to be exported symbols. Library selection stays
+lazy; startup captures its route without loading it.
+
+The binding was reconciled against the official
+[8.6.17](https://github.com/tcltk/tcl/blob/core-8-6-17/generic/tclDecls.h),
+[8.7a5](https://github.com/tcltk/tcl/blob/core-8-7-a5/generic/tclDecls.h), and
+[9.0.4](https://github.com/tcltk/tcl/blob/core-9-0-4/generic/tclDecls.h) declarations
+and [CPython's conversion owner](https://github.com/python/cpython/blob/v3.15.0/Modules/_tkinter.c).
+Source implementation and actual provider qualification are distinct. Existing
+fresh-process tests exercise the installed library's values, lengths, references,
+object type prefix, results and overflow refusal. Provider/platform evidence and
+remaining V1 obligations are recorded in the
+[release ledger](../../agent/V1_HANDOFF_FINDINGS.md); historical timings below
+do not qualify this binding or current GUI performance.
 
 ## Part 0 — The user report, quantified
 
@@ -48,7 +78,7 @@ test runs with `MOLT_CAPABILITIES=` empty and asserts `PermissionError`; the liv
 smoke test silently `SKIP`s on any `Tk()` exception). So the perf report was the
 first signal the lane was broken; fixing it was prerequisite to measuring it.
 
-### Architecture (verified)
+### Historical architecture (June 2026)
 molt's Tk stack is a REAL libtcl FFI, not a reimplementation:
 `molt-runtime-tk/src/tk.rs` (18,467 lines) dynamically loads libtcl
 (`load_tcl_api`, tk.rs:~456), `Tcl_CreateInterp` + `Tcl_Init`
@@ -136,19 +166,21 @@ bytes/str with no string round-trip. Observable proof of the molt bug:
   `Tcl_NewWideIntObj`, `Tcl_NewDoubleObj`, `Tcl_NewBooleanObj`,
   `Tcl_NewByteArrayObj`, `Tcl_GetWideIntFromObj`, `Tcl_GetDoubleFromObj`,
   `Tcl_GetBooleanFromObj`, `Tcl_GetStringFromObj`, `Tcl_GetByteArrayFromObj`,
-  `Tcl_ListObjGetElements`, `Tcl_GetObjResult`, `Tcl_GetObjType`. All stable public
-  API across Tcl 8.5/8.6/9.0.
+  `Tcl_ListObjGetElements`, `Tcl_GetObjResult`, `Tcl_GetObjType`. These are
+  historical source spellings; macros and exported signatures differ by major
+  version. The current native ABI contract replaces the original assumptions.
 - **Type-pointer capture** (`TclTypePtrs::capture`, tk.rs:295), per CPython
   `Tkapp_New`: probe by name (`Tcl_GetObjType("double"|"wideInt"|"list"|"string"|…)`),
   fall back to reading a freshly-constructed object's `typePtr` for types Tcl 9.0
   dropped (`int` → use `wideInt`; `bytearray`/`boolean` via probe objects). Captured
   once per interpreter at `TclInterpreter::new`.
-- **`typePtr` is read via a width-agnostic `#[repr(C)] TclObjHeader`**
-  (tk.rs:217) with a compile-time `offset_of!(type_ptr) == 24` assertion. This offset
-  is correct on 64-bit for BOTH Tcl 8.x (`int` refCount/length) and 9.0 (`Tcl_Size`
-  refCount/length): the pointer alignment makes 8.x's `int+pad` occupy the same 8
-  bytes as 9.0's `Tcl_Size`. The static assert fails the build if a future ABI breaks
-  this. This is the key version-robustness mechanism.
+- **`typePtr` is read through the public `Tcl_Obj` prefix.** The current Rust
+  projection asserts an offset of three pointer-sized words: 24 bytes on 64-bit,
+  12 on 32-bit. Tcl 8's padding and Tcl 9's `Tcl_Size` fields give that prefix on
+  the admitted ABIs. The assertion checks the Rust projection; it cannot detect
+  an external library changing its layout. The installed-provider witness also
+  compares a real list object's `typePtr` with `Tcl_GetObjType`. Unexecuted
+  platform/architecture cells remain unqualified.
 - **AsObj** (`tcl_obj_alloc_typed_from_bits`, tk.rs:3406): bool BEFORE int (bool is an
   int subclass), then wideInt / double / byteArray / string / list (recursive). Heap
   objects dispatch on `object_type_id`, **NOT** via `string_obj_to_owned` — the latter
@@ -185,8 +217,9 @@ against CPython and compares **byte-identically** (`cmp -s`):
 | `set n "00042"` | str `'00042'` |
 | arg int/float/bool round-trips | int / float / int |
 
-Result: `cmp -s` **IDENTICAL** between molt(libtcl8.6) and CPython(Tcl9.0), proving
-the typed bridge is correct AND version-robust.
+The historical comparison recorded identical output for these cases between
+Molt with libtcl8.6 and CPython with Tcl9.0. It did not execute Molt's Tcl9
+bindings or qualify their ABI, other values, platforms or current performance.
 
 ### 2.4 The keystone was necessary but NOT sufficient for perf
 The typed bridge improved `result_list` (35,972 → 27,513 ns/op) and gave ~5–10%

@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, replace
 from threading import Event, RLock
 from types import MappingProxyType
-from typing import Final, Literal, Sequence, cast
+from typing import Final, Literal, Sequence, assert_never, cast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
     ALL_INVALID_MEMBERS,
@@ -34,6 +34,8 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     CANONICAL_MEMBER_IDENTITIES,
     CANONICAL_MEMBER_WRITES,
     CANONICAL_WILDCARD_WRITES,
+    INTRINSIC_CALLABLE_IDENTITIES,
+    INTRINSIC_TARGET_PROPERTIES,
     IdentityMask,
     MemberMask,
     NO_IDENTITIES,
@@ -41,6 +43,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     OTHER_IDENTITY,
     PythonIdentity,
     PythonMember,
+    PythonTargetProperty,
     UNBOUND_IDENTITY,
 )
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
@@ -214,7 +217,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 59
+_ANALYSIS_SCHEMA: Final = 60
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -2030,6 +2033,51 @@ def _literal_string(node: ast.AST | None) -> str | None:
     )
 
 
+def _intrinsic_acquisition_identity(
+    node: ast.Call, arguments: tuple[StaticExpressionResult, ...]
+) -> IdentityMask:
+    """A successful exact require_intrinsic(name, namespace=None) acquisition.
+
+    Argument execution and failure remain owned by the normal call transfer.
+    Unknown expansions or invalid bindings never establish a callable fact.
+    """
+    if (
+        len(node.args) > 2
+        or any(isinstance(argument, ast.Starred) for argument in node.args)
+        or len(arguments) != len(node.args) + len(node.keywords)
+    ):
+        return OTHER_IDENTITY
+    bound = dict(zip(("name", "namespace"), arguments[: len(node.args)]))
+    for keyword, argument in zip(
+        node.keywords, arguments[len(node.args) :], strict=True
+    ):
+        name = keyword.arg
+        if name is None or name not in {"name", "namespace"} or name in bound:
+            return OTHER_IDENTITY
+        bound[name] = argument
+    name = bound.get("name")
+    if name is None or not name.value_known or type(name.value) is not str:
+        return OTHER_IDENTITY
+    return int(INTRINSIC_CALLABLE_IDENTITIES.get(name.value, PythonIdentity.OTHER))
+
+
+def _target_property_result(
+    target_property: PythonTargetProperty, sys_platform: str | None
+) -> StaticExpressionResult:
+    if sys_platform is None:
+        return UNKNOWN_EXPRESSION_RESULT
+    match target_property:
+        case PythonTargetProperty.SYS_PLATFORM:
+            value = sys_platform
+        case PythonTargetProperty.OS_NAME:
+            value = "nt" if sys_platform == "win32" else "posix"
+        case _:
+            assert_never(target_property)
+    # A result proof never erases acquisition, invocation, allocation failure
+    # or operand retirement. Existing conditional lowering keeps evaluation.
+    return StaticExpressionResult.scalar(value, evaluation_required=True)
+
+
 def _identity_can_release(mask: IdentityMask) -> bool:
     # Identity is not retained-owner custody. Modules/functions can be evicted
     # from registries while private aliases remain exact; dropping the last
@@ -3805,7 +3853,25 @@ class _Analyzer:
                 ),
                 method_shape.retained_argument_indices,
             )
-        if builtin_name is not None:
+        if exact and callee == int(PythonIdentity.INTRINSICS_REQUIRE):
+            result = _intrinsic_acquisition_identity(node, argument_results)
+            result_fact = StaticExpressionResult(
+                identities=result, evaluation_required=True
+            )
+            # Preserve the acquisition's existing effects and all operand
+            # lifetime rules. Only its successful result identity is known.
+            effects |= UNKNOWN_EFFECTS
+        elif (
+            (target_property := INTRINSIC_TARGET_PROPERTIES.get(callee)) is not None
+            and not node.args
+            and not node.keywords
+        ):
+            result_fact = _target_property_result(
+                target_property, self.policy.target_sys_platform
+            )
+            result = int(PythonIdentity.INERT_VALUE)
+            effects |= ALLOCATES | RAISES
+        elif builtin_name is not None:
             shape = builtin_call_shape(builtin_name, node, argument_results)
             result_fact = shape.result
             result = result_fact.identities

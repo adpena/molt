@@ -93,11 +93,11 @@ def _random_randbytes(_handle, n):
     return b"x" * int(n)
 
 
-def _struct_pack(fmt, values):
+def _struct_pack(error_type, fmt, values):
     return (str(fmt) + ":" + ",".join(str(v) for v in values)).encode("utf-8")
 
 
-def _struct_unpack(fmt, buffer):
+def _struct_unpack(error_type, fmt, buffer):
     data = bytes(buffer).decode("utf-8")
     _fmt, payload = data.split(":", 1)
     if not payload:
@@ -105,22 +105,23 @@ def _struct_unpack(fmt, buffer):
     return tuple(int(part) for part in payload.split(","))
 
 
-def _struct_calcsize(_fmt):
+def _struct_calcsize(error_type, _fmt):
     return 4
 
 
-def _struct_pack_into(buffer, offset, data):
+def _struct_pack_into(error_type, fmt, buffer, offset, values):
+    data = _struct_pack(error_type, fmt, values)
     mv = memoryview(buffer)
     offset = int(offset)
     mv[offset : offset + len(data)] = data
 
 
-def _struct_unpack_from(fmt, buffer, offset):
-    return _struct_unpack(fmt, bytes(buffer)[int(offset) :])
+def _struct_unpack_from(error_type, fmt, buffer, offset):
+    return _struct_unpack(error_type, fmt, bytes(buffer)[int(offset) :])
 
 
-def _struct_iter_unpack(fmt, buffer):
-    return [_struct_unpack(fmt, buffer)]
+def _struct_iter_unpack(error_type, iterator_type, fmt, buffer):
+    return iter((_struct_unpack(error_type, fmt, buffer),))
 
 
 def _functools_update_wrapper(wrapper, wrapped, assigned, updated):
@@ -286,6 +287,7 @@ install_registry({{
     "molt_struct_pack_into": _struct_pack_into,
     "molt_struct_unpack_from": _struct_unpack_from,
     "molt_struct_iter_unpack": _struct_iter_unpack,
+    "molt_struct_unpack_iterator_type": lambda: type(iter(())),
     "molt_functools_kwd_mark": lambda: _KW_MARK,
     "molt_functools_update_wrapper": _functools_update_wrapper,
     "molt_functools_wraps": _functools_wraps,

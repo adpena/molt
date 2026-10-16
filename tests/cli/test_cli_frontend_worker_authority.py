@@ -25,7 +25,6 @@ from molt.target_python import TargetPythonVersion
 frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 
 _FRONTEND_WORKER_NAMES = (
-    "_format_syntax_error_message",
     "_frontend_lower_module_worker",
     "_lower_module_serial_with_context",
     "_module_frontend_generator",
@@ -167,7 +166,7 @@ def test_lowering_rejects_same_size_restored_mtime_generation(
         with pytest.raises(SyntaxError) as caught:
             compile(source, str(path), "exec")
         syntax_errors["app"] = frontend_pipeline._syntax_error_info_from_exception(
-            caught.value, path=path
+            caught.value
         )
     replacement = "def breaks(:\n" if reader == "syntax_stub" else "VALUE = 2\n"
     path.write_text(replacement, encoding="utf-8")
@@ -258,3 +257,134 @@ def test_phase_timeout_enforced_off_main_thread() -> None:
     assert not thread.is_alive(), "worker never finished; phase timeout not enforced"
     assert outcome.get("result") == "timed-out", outcome
     assert elapsed < 3.0, f"phase timeout fired too late ({elapsed:.1f}s)"
+
+
+def _parser_error_signature(error: SyntaxError) -> tuple[object, ...]:
+    return (
+        type(error).__name__,
+        error.args,
+        error.msg,
+        error.filename,
+        error.lineno,
+        error.offset,
+        error.text,
+        error.end_lineno,
+        error.end_offset,
+        error.print_file_and_line,
+        str(error),
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def broken(:\n    pass\n",
+        "if True:\npass\n",
+        "if True:\n\tpass\n        pass\n",
+        "value = ('α',\n         ) +\n",
+        b"# coding: latin-1\nvalue = 'caf\xe9' +\n",
+        b"# coding: not-a-real-encoding\nvalue = 1\n",
+        b"# coding: utf-8\nvalue = '\xff'\n",
+    ],
+)
+def test_module_syntax_error_keeps_native_class_args_and_spans(source) -> None:
+    import pickle
+    from molt.cli.frontend_pipeline import _syntax_error_info_from_exception
+    from molt.frontend.lowering.exception_lowering import MoltSyntaxError
+
+    filename = "/logical/package/invalid_module.py"
+    with pytest.raises(SyntaxError) as caught:
+        ast.parse(source, filename=filename)
+    original = caught.value
+    info = pickle.loads(pickle.dumps(_syntax_error_info_from_exception(original)))
+    assert info.exception_name == type(original).__name__
+    assert info.args == original.args
+    tree = frontend_worker._syntax_error_stub_ast(info)
+    assert len(tree.body) == 1 and isinstance(tree.body[0], ast.Raise)
+    expression = tree.body[0].exc
+    assert isinstance(expression, MoltSyntaxError)
+    args = tuple(ast.literal_eval(value) for value in expression.args)
+    restored = type(original)(*args)
+    restored.print_file_and_line = ast.literal_eval(expression.print_file_and_line)
+    with pytest.raises(type(original)) as transported:
+        raise restored
+    assert type(transported.value) is type(original)
+    assert _parser_error_signature(transported.value) == _parser_error_signature(
+        original
+    )
+    assert not any(isinstance(node, ast.Name) for node in ast.walk(tree))
+
+    # Exercise the actual protected constructor producer, not a Python fake.
+    gen = SimpleTIRGenerator(module_name="invalid_module")
+    gen.visit(tree)
+    operations = [op for function in gen.funcs_map.values() for op in function["ops"]]
+    constructors = [op for op in operations if op.kind == "EXCEPTION_NEW"]
+    assert len(constructors) == 1
+    constructor = constructors[0]
+    assert any(
+        op.kind == "CONST_STR"
+        and op.result == constructor.args[0]
+        and op.args == [type(original).__name__]
+        for op in operations
+    )
+    assert any(op.kind == "RAISE" for op in operations)
+
+
+def test_module_syntax_error_preserves_print_flag_and_missing_details() -> None:
+    from molt.cli.frontend_pipeline import _syntax_error_info_from_exception
+
+    original = SyntaxError("frontend unavailable")
+    original.print_file_and_line = 1
+    info = _syntax_error_info_from_exception(original)
+    tree = frontend_worker._syntax_error_stub_ast(info)
+    expression = tree.body[0].exc
+    restored = SyntaxError(*(ast.literal_eval(arg) for arg in expression.args))
+    restored.print_file_and_line = ast.literal_eval(expression.print_file_and_line)
+    assert _parser_error_signature(restored) == _parser_error_signature(original)
+    gen = SimpleTIRGenerator(module_name="invalid_module")
+    gen.visit(tree)
+    operations = [op for function in gen.funcs_map.values() for op in function["ops"]]
+    assert any(
+        op.kind == "SETATTR_GENERIC_OBJ" and op.args[1] == "print_file_and_line"
+        for op in operations
+    )
+
+
+@pytest.mark.parametrize("source_kind", ["inline", "path"])
+def test_serial_module_error_uses_captured_payload_without_source_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_kind: str
+) -> None:
+    from molt.cli.frontend_pipeline import _syntax_error_info_from_exception
+
+    path = tmp_path / "invalid.py"
+    source = "if True:\npass\n"
+    if source_kind == "path":
+        path.write_text(source, encoding="utf-8")
+        lease = _ModuleSourceLease.path_backed(path)
+    else:
+        lease = _ModuleSourceLease.inline(path, source)
+    with pytest.raises(IndentationError) as caught:
+        ast.parse(source, filename="logical/invalid.py")
+    info = _syntax_error_info_from_exception(caught.value)
+    monkeypatch.setattr(
+        _ModuleSourceCatalog,
+        "read_source",
+        lambda *args: pytest.fail(
+            "parser payload must not be reconstructed from source"
+        ),
+    )
+    context = cast(
+        _SerialFrontendLoweringContext,
+        SimpleNamespace(
+            syntax_error_modules={"broken": info},
+            module_source_catalog=_ModuleSourceCatalog({"broken": lease}),
+        ),
+    )
+    tree = frontend_worker._resolve_tree_for_serial_frontend_module(
+        "broken",
+        path,
+        lowering_context=context,
+    )
+    expression = tree.body[0].exc
+    assert expression.exception_name == "IndentationError"
+    assert tuple(ast.literal_eval(arg) for arg in expression.args) == caught.value.args

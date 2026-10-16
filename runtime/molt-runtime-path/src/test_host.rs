@@ -228,6 +228,20 @@ pub extern "C" fn __molt_path_inc_ref_bits(bits: u64) {
     let _ = bits;
 }
 
+// Checked C-int coercion can invoke __index__ and publish Python exceptions.
+// It requires the full runtime authority, even for an immediate-looking input.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i32 {
+    let _ = (bits, out);
+    unexpected("__molt_path_index_c_int")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32 {
+    let _ = (bits, out);
+    unexpected("__molt_path_index_i64")
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_to_i64(bits: u64, out: *mut i64) -> i32 {
     if out.is_null() {
@@ -309,8 +323,9 @@ pub extern "C" fn __molt_path_path_from_bits(
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
+    out_bytes: *mut bool,
 ) -> i32 {
-    let _ = (bits, out_ptr, out_len);
+    let _ = (bits, out_ptr, out_len, out_bytes);
     unexpected("__molt_path_path_from_bits")
 }
 
@@ -495,3 +510,5 @@ pub extern "C" fn molt_gil_reacquire_guard(token: u64) {
 pub extern "C" fn molt_runtime_target_at_least(major: i64, minor: i64) -> i64 {
     i64::from(major < 3 || (major == 3 && minor <= 12))
 }
+
+unexpected_u64!(__molt_path_path_result(data: *const u8, len: usize, bytes: bool));

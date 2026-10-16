@@ -1152,7 +1152,6 @@ pub extern "C" fn molt_string_count_slice(
 pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let sep = obj_from_bits(sep_bits);
-        let items = obj_from_bits(items_bits);
         let sep_ptr = match sep.as_ptr() {
             Some(ptr) => ptr,
             None => return MoltObject::none().bits(),
@@ -1172,151 +1171,70 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             let mut first_bits = 0u64;
             let mut first_data = std::ptr::null();
             let mut first_len = 0usize;
-            let mut owned_bits = Vec::new();
-            let mut iter_owned = false;
-            let mut _sequence_snapshot = None;
-            if let Some(ptr) = items.as_ptr() {
-                let type_id = object_type_id(ptr);
-                if matches!(type_id, TYPE_ID_LIST | TYPE_ID_TUPLE)
-                    && crate::object::iterable::builtin_receiver(_py, ptr)
-                {
-                    let Some(elems) = crate::object::seq_access::snapshot(
+            let Some(items) = crate::object::iterable::materialize_sequence(
+                _py,
+                items_bits,
+                "can only join an iterable",
+            ) else {
+                return MoltObject::none().bits();
+            };
+            let items_ptr = obj_from_bits(items.bits()).as_ptr().unwrap();
+            let item_count = crate::object::seq_access::locked_len(items_ptr);
+            if item_count == 1 {
+                let item = crate::object::seq_access::pin_item(_py, items_ptr, 0).unwrap();
+                if type_of_bits(_py, item.bits()) == builtin_classes(_py).str {
+                    return item.into_bits();
+                }
+            }
+            parts.reserve(item_count);
+            // String validation/copy has no item callbacks. Keep scoped current
+            // pins through the copy for concurrent mutation safety.
+            let mut pins = Vec::with_capacity(item_count);
+            for idx in 0..item_count {
+                let Some(pin) = crate::object::seq_access::pin_item(_py, items_ptr, idx) else {
+                    return raise_exception(
                         _py,
-                        ptr,
-                        "string join snapshot allocation failed",
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    parts.reserve(elems.len());
-                    for (idx, &elem_bits) in elems.iter().enumerate() {
-                        let elem_obj = obj_from_bits(elem_bits);
-                        let elem_ptr = match elem_obj.as_ptr() {
-                            Some(ptr) => ptr,
-                            None => {
-                                let msg = format!(
-                                    "sequence item {idx}: expected str instance, {} found",
-                                    type_name(_py, elem_obj)
-                                );
-                                return raise_exception::<_>(_py, "TypeError", &msg);
-                            }
-                        };
-                        if object_type_id(elem_ptr) != TYPE_ID_STRING {
-                            let msg = format!(
-                                "sequence item {idx}: expected str instance, {} found",
-                                type_name(_py, elem_obj)
-                            );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                        let len = string_len(elem_ptr);
-                        total_len += len;
-                        let data = string_bytes(elem_ptr);
-                        if idx == 0 {
-                            first_bits = elem_bits;
-                            first_data = data;
-                            first_len = len;
-                        } else if elem_bits != first_bits {
-                            all_same = false;
-                        }
-                        parts.push(StringPart { data, len });
-                    }
-                    _sequence_snapshot = Some(elems);
-                }
-            }
-            if parts.is_empty() {
-                let iter_bits = molt_iter(items_bits);
-                if obj_from_bits(iter_bits).is_none() {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_exception::<_>(_py, "TypeError", "can only join an iterable");
-                }
-                iter_owned = true;
-                let mut idx = 0usize;
-                loop {
-                    let pair_bits = molt_iter_next(iter_bits);
-                    if exception_pending(_py) {
-                        for bits in owned_bits.iter().copied() {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    let pair_obj = obj_from_bits(pair_bits);
-                    let Some(pair_ptr) = pair_obj.as_ptr() else {
-                        for bits in owned_bits.iter().copied() {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    };
-                    if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                        for bits in owned_bits.iter().copied() {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    }
-                    let Some((elem_bits, done_bits)) =
-                        crate::object::seq_access::tuple_pair(pair_ptr)
-                    else {
-                        for bits in owned_bits.iter().copied() {
-                            dec_ref_bits(_py, bits);
-                        }
-                        return MoltObject::none().bits();
-                    };
-                    if is_truthy(_py, obj_from_bits(done_bits)) {
-                        break;
-                    }
-                    let elem_obj = obj_from_bits(elem_bits);
-                    let elem_ptr = match elem_obj.as_ptr() {
-                        Some(ptr) => ptr,
-                        None => {
-                            for bits in owned_bits.iter().copied() {
-                                dec_ref_bits(_py, bits);
-                            }
-                            let msg = format!(
-                                "sequence item {idx}: expected str instance, {} found",
-                                type_name(_py, elem_obj)
-                            );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
-                        }
-                    };
-                    if object_type_id(elem_ptr) != TYPE_ID_STRING {
-                        for bits in owned_bits.iter().copied() {
-                            dec_ref_bits(_py, bits);
-                        }
-                        let msg = format!(
+                        "RuntimeError",
+                        "sequence changed size during iteration",
+                    );
+                };
+                let elem_bits = pin.bits();
+                pins.push(pin);
+                let elem_obj = obj_from_bits(elem_bits);
+                let Some(elem_ptr) = elem_obj
+                    .as_ptr()
+                    .filter(|&ptr| object_type_id(ptr) == TYPE_ID_STRING)
+                else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        &format!(
                             "sequence item {idx}: expected str instance, {} found",
-                            type_name(_py, elem_obj)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    let len = string_len(elem_ptr);
-                    total_len += len;
-                    let data = string_bytes(elem_ptr);
-                    if idx == 0 {
-                        first_bits = elem_bits;
-                        first_data = data;
-                        first_len = len;
-                    } else if elem_bits != first_bits {
-                        all_same = false;
-                    }
-                    parts.push(StringPart { data, len });
-                    inc_ref_bits(_py, elem_bits);
-                    owned_bits.push(elem_bits);
-                    idx += 1;
+                            type_name(_py, elem_obj),
+                        ),
+                    );
+                };
+                let len = string_len(elem_ptr);
+                let Some(length) = total_len
+                    .checked_add(len)
+                    .and_then(|n| n.checked_add(if idx == 0 { 0 } else { sep_bytes.len() }))
+                    .filter(|&n| n <= isize::MAX as usize)
+                else {
+                    return raise_exception(_py, "OverflowError", "join() result is too long");
+                };
+                total_len = length;
+                let data = string_bytes(elem_ptr);
+                if idx == 0 {
+                    first_bits = elem_bits;
+                    first_data = data;
+                    first_len = len;
+                } else if elem_bits != first_bits {
+                    all_same = false;
                 }
-            }
-            if !parts.is_empty() {
-                let sep_total = sep_bytes
-                    .len()
-                    .saturating_mul(parts.len().saturating_sub(1));
-                total_len = total_len.saturating_add(sep_total);
+                parts.push(StringPart { data, len });
             }
             let out_ptr = alloc_inline_bytes_with_len(_py, total_len, InlineBytesKind::String);
             if out_ptr.is_null() {
-                if iter_owned {
-                    for bits in owned_bits.iter().copied() {
-                        dec_ref_bits(_py, bits);
-                    }
-                }
                 return MoltObject::none().bits();
             }
             let mut cursor = super::layout::InlineBytesStorage::data(out_ptr);
@@ -1349,11 +1267,6 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                     }
                 }
                 let out_bits = MoltObject::from_ptr(out_ptr).bits();
-                if iter_owned {
-                    for bits in owned_bits.iter().copied() {
-                        dec_ref_bits(_py, bits);
-                    }
-                }
                 return out_bits;
             }
             for (idx, part) in parts.iter().enumerate() {
@@ -1365,11 +1278,6 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 cursor = cursor.add(part.len);
             }
             let out_bits = MoltObject::from_ptr(out_ptr).bits();
-            if iter_owned {
-                for bits in owned_bits.iter().copied() {
-                    dec_ref_bits(_py, bits);
-                }
-            }
             out_bits
         }
     })

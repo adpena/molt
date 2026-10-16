@@ -31,6 +31,11 @@ RUST_PATH = "runtime/molt-runtime/src/builtins/compatibility_error.rs"
 TARGETS = ("3.12", "3.13", "3.14")
 SOURCE_RECEIPTS = "config/python_compatibility_error_sources.json"
 MEMORYVIEW_REFERENCES = {"3.12": "3.12.13", "3.13": "3.13.11", "3.14": "3.14.3"}
+PATHLIB_REFERENCES = {
+    "3.12": ("Lib/pathlib.py",),
+    "3.13": ("Lib/pathlib/_local.py", "Modules/posixmodule.c", "Python/fileutils.c"),
+    "3.14": ("Lib/pathlib/__init__.py", "Modules/posixmodule.c", "Python/fileutils.c"),
+}
 REFERENCE_FILES = (
     "Lib/collections/__init__.py",
     "Lib/asyncio/events.py",
@@ -54,6 +59,14 @@ class Outcome:
 
 
 OUTCOMES = {
+    "PathGlobNonRelative": Outcome(
+        ("pathlib.Path.glob", "pathlib.Path.rglob"),
+        TARGETS,
+        ("all",),
+        "selected native or legacy callback parser produces a true non-relative fact in the version-specific root truth order, after type/normalization checks and before tail callbacks, selector validation, base encoding or traversal",
+        "Lib/pathlib.py:Path.glob,rglob (3.12);Lib/pathlib/_local.py:Path.glob,rglob (3.13);Lib/pathlib/__init__.py:PurePath._parse_pattern,Path.glob,rglob (3.14);Lib/ntpath.py:splitroot;Lib/posixpath.py:splitroot",
+        "tests/differential/stdlib/pathlib_glob_relative.py",
+    ),
     "CounterFromkeys": Outcome(
         ("collections.Counter.fromkeys",),
         TARGETS,
@@ -152,6 +165,9 @@ use crate::{
 };
 
 pub(crate) enum CompatibilityError<'a> {
+    PathGlobNonRelative {
+        non_relative: bool,
+    },
     CounterFromkeys,
     WindowsSignalHandler,
     AbstractSignalHandler,
@@ -185,6 +201,9 @@ impl CompatibilityError<'_> {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
+            Self::PathGlobNonRelative { non_relative } if non_relative => {
+                "Non-relative patterns are unsupported".to_owned()
+            }
             Self::CounterFromkeys => {
                 "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.".to_owned()
             }
@@ -270,6 +289,40 @@ __ARMS__
         outcome.exception(py)
     })
 }
+#[cfg(test)]
+mod tests {
+    use super::CompatibilityError;
+
+    #[test]
+    fn glob_outcome_rejects_relative_facts_and_unsupported_targets() {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for minor in 12..=14 {
+                transaction.with_target_python_minor(py, minor, || {
+                    assert_eq!(
+                        CompatibilityError::PathGlobNonRelative { non_relative: true }
+                            .message(py)
+                            .as_deref(),
+                        Ok("Non-relative patterns are unsupported"),
+                    );
+                    assert_eq!(
+                        CompatibilityError::PathGlobNonRelative {
+                            non_relative: false
+                        }
+                        .message(py),
+                        Err("inapplicable compatibility-error outcome"),
+                    );
+                });
+            }
+            transaction.with_target_python_minor(py, 15, || {
+                assert_eq!(
+                    CompatibilityError::PathGlobNonRelative { non_relative: true }.message(py),
+                    Err("unsupported compatibility-error target"),
+                );
+            });
+        });
+    }
+}
 """.replace(
     "__ARMS__",
     "\n".join(
@@ -306,7 +359,12 @@ def source_errors(root: Path) -> list[str]:
                 path,
             )
             for version in TARGETS
-            for path in REFERENCE_FILES
+            for path in (
+                *REFERENCE_FILES,
+                *PATHLIB_REFERENCES[version],
+                "Lib/ntpath.py",
+                "Lib/posixpath.py",
+            )
         }
         valid = (
             receipt["schema_version"] == 1
@@ -480,7 +538,7 @@ def rust_inventory(text: str, code: str, proved: bool) -> list[InventoryHit]:
             proved
             and match.group(1) in aliases
             and outcome in OUTCOMES
-            and outcome.startswith("Memoryview")
+            and (outcome.startswith("Memoryview") or outcome == "PathGlobNonRelative")
         )
         hits.append(
             InventoryHit(

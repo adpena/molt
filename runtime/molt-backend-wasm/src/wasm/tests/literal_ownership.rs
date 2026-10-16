@@ -45,7 +45,7 @@ fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
             let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
             let path = temp.join(format!("{kind}-{shape}.wasm"));
             fs::write(&path, wasm).unwrap();
-            cases.push(json!({"name":format!("{kind}/{shape}"), "constructor":kind,
+            cases.push(json!({"name":format!("{kind}/{shape}"), "constructor":if width == 2 { "dict_from_pairs" } else { kind },
                 "insert":insert, "width":width, "bound":bound, "path":path,
                 "memory_pages":memory_pages, "table_entries":table_entries}));
         }
@@ -70,17 +70,44 @@ for (const test of config.cases) {
   for (const failure of ['success', 'allocate', 'first', 'second']) {
     const name = test.name + '/' + failure;
     let owners = 0, inserted = 0, pending = false, allocations = 0;
+    const memory = new WebAssembly.Memory({initial:test.memory_pages + 1});
+    const range = BigInt(test.memory_pages * 65536 + 64);
+    let scratch = null, freed = 0;
     const imports = {env: {
-      memory: new WebAssembly.Memory({initial:test.memory_pages}),
+      memory,
       __indirect_function_table: new WebAssembly.Table({initial:test.table_entries, element:'anyfunc'}),
     }};
     const providers = {
-      [test.constructor]: capacity => {
-        assert.equal(capacity, 2n, name);
+      [test.constructor]: (...args) => {
+        if (test.width === 2) {
+          const [keys, values, len] = args;
+          assert.equal(typeof keys, 'number', name); assert.equal(typeof values, 'number', name);
+          assert.equal(len, 2n, name);
+          assert.deepEqual({ptr: BigInt(keys), size: 32n}, scratch, name);
+          assert.equal(values, keys + 16, name);
+          const view = new DataView(memory.buffer);
+          for (let i = 0; i < 2; i++) {
+            assert.equal(view.getBigInt64(keys + i * 8, true), value, name);
+            assert.equal(view.getBigInt64(values + i * 8, true), value, name);
+          }
+        } else assert.deepEqual(args, [2n], name);
         allocations++;
         if (failure === 'allocate') { pending = true; return none; }
         owners++;
+        if (test.width === 2) {
+          for (let i = 0; i < 2; i++) {
+            providers[test.insert](owner, value, value);
+            if (pending) { providers.dec_ref_obj(owner); return none; }
+          }
+        }
         return owner;
+      },
+      scratch_alloc: size => {
+        assert.equal(size, 32n, name); assert.equal(scratch, null, name);
+        scratch = {ptr: range, size}; return range;
+      },
+      scratch_free: (ptr, size) => {
+        assert.deepEqual({ptr, size}, scratch, name); scratch = null; freed++;
       },
       [test.insert]: (receiver, ...args) => {
         assert.equal(receiver, owner, name + ': lost container identity');
@@ -117,6 +144,8 @@ for (const test of config.cases) {
     assert.equal(inserted, failure === 'allocate' ? 0 : failure === 'first' ? 1 : 2, name);
     assert.equal(pending, failure !== 'success', name + ': exception preserved');
     assert.equal(owners, retained ? 1 : 0, name + ': owner balance');
+    assert.equal(scratch, null, name + ': no range escapes');
+    assert.equal(freed, test.width === 2 ? 1 : 0, name + ': exact range retirement');
     if (retained) providers.dec_ref_obj(result);
     assert.equal(owners, 0, name + ': caller releases final owner');
   }
@@ -145,6 +174,9 @@ fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
         ("tuple_new", vec![]),
         ("tuple_new", vec!["p2"]),
         ("tuple_new", vec!["p0", "p1", "p2", "p3", "p4"]),
+        ("dict_new", vec![]),
+        ("dict_new", vec!["p2", "p4"]),
+        ("dict_new", vec!["p0", "p1", "p2", "p1"]),
         ("dataclass_new_values", vec!["p0", "p1", "p2"]),
         ("dataclass_new_values", vec!["p0", "p1", "p2", "p3", "p4"]),
     ] {
@@ -238,6 +270,23 @@ for (const test of config.cases) {
         assert.deepEqual({ptr, size}, live, name + ': free exactly the live range');
         live = null;
         frees++;
+      },
+      dict_from_pairs: (keys, values, len) => {
+        constructed++;
+        assert.equal(typeof keys, 'number', name); assert.equal(typeof values, 'number', name);
+        assert.equal(len, BigInt(words.length / 2), name);
+        if (len === 0n) assert.deepEqual([keys, values], [0, 0], name);
+        else {
+          assert.deepEqual({ptr: BigInt(keys), size: len * 16n}, live, name);
+          assert.equal(values, keys + Number(len) * 8, name);
+        }
+        const view = new DataView(memory.buffer), read = [];
+        for (let i = 0; i < Number(len); i++) {
+          read.push(view.getBigInt64(keys + i * 8, true), view.getBigInt64(values + i * 8, true));
+        }
+        assert.deepEqual(read, words, name + ': separate key/value ranges preserve pair identity');
+        if (failure === 'constructor') { pending = true; return none; }
+        owners++; return owner;
       },
       tuple_from_values: (ptr, len) => construct(ptr, len),
       list_from_values: (ptr, len) => construct(ptr, len),

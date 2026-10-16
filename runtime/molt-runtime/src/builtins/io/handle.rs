@@ -1,6 +1,7 @@
 use super::*;
 use crate::object::native_instance::{self, NativePayload};
 use crate::runtime_flags::{self, RuntimeFlag};
+use molt_stdlib_text::codec_registry::{EncodingKind, normalize_encoding};
 
 pub(super) type VfsWritebackEntry = (Arc<dyn crate::vfs::VfsBackend>, String);
 
@@ -77,10 +78,52 @@ pub(super) fn resolve_file_handle_ptr(
     ))
 }
 
+pub(super) fn initial_text_bom_written(
+    state: &MoltFileState,
+    buffer_bits: u64,
+    writable: bool,
+    encoding: Option<&str>,
+) -> bool {
+    // CPython initializes a seekable text encoder at the buffer's logical
+    // position; nonseekable streams retain the initial encoder state. Only
+    // BOM-bearing writable text needs this observation.
+    if writable
+        && matches!(
+            encoding.and_then(normalize_encoding),
+            Some(EncodingKind::Utf8Sig | EncodingKind::Utf16 | EncodingKind::Utf32)
+        )
+    {
+        let position = match state.backend.lock().unwrap().as_mut() {
+            Some(MoltFileBackend::File(file)) => {
+                host_file_seek(state, file, std::io::SeekFrom::Current(0)).ok()
+            }
+            Some(MoltFileBackend::Memory(mem)) => Some(mem.pos as u64),
+            Some(MoltFileBackend::Text(_)) | None => None,
+        };
+        position.is_some_and(|position| {
+            let mut logical = i128::from(position);
+            if let Some(buffer) = obj_from_bits(buffer_bits).as_ptr() {
+                unsafe {
+                    if object_type_id(buffer) == TYPE_ID_FILE_HANDLE {
+                        let buffer = file_handle_ptr(buffer);
+                        if !buffer.is_null() {
+                            logical +=
+                                (*buffer).write_buf.len() as i128 - unread_bytes(&*buffer) as i128;
+                        }
+                    }
+                }
+            }
+            logical != 0
+        })
+    } else {
+        false
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn alloc_file_handle_with_state(
     _py: &PyToken<'_>,
-    state: Arc<MoltFileState>,
+    state: Option<Arc<MoltFileState>>,
     readable: bool,
     writable: bool,
     text: bool,
@@ -99,13 +142,23 @@ pub(super) fn alloc_file_handle_with_state(
     buffer_bits: u64,
     mem_bits: u64,
 ) -> *mut u8 {
+    let text_bom_written = text
+        && state.as_ref().is_some_and(|state| {
+            initial_text_bom_written(state, buffer_bits, writable, encoding.as_deref())
+        });
     let ptr = unsafe {
         native_instance::alloc_unpublished(_py, class_bits, NativePayload::FileHandle, 0)
     };
     if ptr.is_null() {
         return ptr;
     }
+    let attachment = if state.is_some() {
+        crate::object::FileAttachment::Attached
+    } else {
+        crate::object::FileAttachment::Uninitialized
+    };
     let handle = Box::new(MoltFileHandle {
+        write_operation: None,
         dict_bits: 0,
         state,
         readable,
@@ -114,7 +167,7 @@ pub(super) fn alloc_file_handle_with_state(
         closefd,
         owns_fd,
         closed: false,
-        detached: false,
+        attachment,
         line_buffering,
         write_through,
         buffer_size,
@@ -123,7 +176,7 @@ pub(super) fn alloc_file_handle_with_state(
         encoding,
         encoding_original,
         text_bom_seen: false,
-        text_bom_written: false,
+        text_bom_written,
         errors,
         newline,
         buffer_bits,
@@ -134,6 +187,7 @@ pub(super) fn alloc_file_handle_with_state(
         read_buf: Vec::new(),
         read_pos: 0,
         write_buf: Vec::new(),
+        write_start: 0,
         newlines_mask: 0,
         newlines_len: 0,
         newlines_seen: [0; 3],
@@ -191,15 +245,21 @@ pub(super) unsafe fn file_handle_raw_bits(py: &PyToken<'_>, object: *mut u8) -> 
         }
         let (state, readable, writable, closefd, name, mode, memory) = {
             let handle = &*pointer;
-            if handle.detached {
+            if (handle.attachment == crate::object::FileAttachment::Detached) {
                 return Some(MoltObject::none().bits());
             }
             if handle.buffer_bits != 0 && !obj_from_bits(handle.buffer_bits).is_none() {
                 inc_ref_bits(py, handle.buffer_bits);
                 return Some(handle.buffer_bits);
             }
+            if handle.attachment == crate::object::FileAttachment::Uninitialized {
+                return Some(MoltObject::none().bits());
+            }
             (
-                Arc::clone(&handle.state),
+                Arc::clone(match file_handle_physical_state(py, handle) {
+                    Ok(state) => state,
+                    Err(error) => return Some(error),
+                }),
                 handle.readable,
                 handle.writable,
                 handle.closefd,
@@ -210,7 +270,7 @@ pub(super) unsafe fn file_handle_raw_bits(py: &PyToken<'_>, object: *mut u8) -> 
         };
         let raw = alloc_file_handle_with_state(
             py,
-            state,
+            Some(state),
             readable,
             writable,
             false,
@@ -275,7 +335,9 @@ pub(crate) unsafe fn file_handle_close_detached(
         if !handle.owns_fd {
             return false;
         }
-        let backend_state = Arc::clone(&handle.state);
+        let Some(backend_state) = handle.state.as_ref().cloned() else {
+            return false;
+        };
         let mut guard = backend_state.backend.lock().unwrap();
         let had_backend = guard.take().is_some();
         if debug_close {
@@ -307,7 +369,14 @@ pub(crate) fn file_handle_require_attached(
     _py: &PyToken<'_>,
     handle: &MoltFileHandle,
 ) -> Result<(), u64> {
-    if handle.detached {
+    if handle.attachment == crate::object::FileAttachment::Uninitialized {
+        return Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            "I/O operation on uninitialized object",
+        ));
+    }
+    if (handle.attachment == crate::object::FileAttachment::Detached) {
         Err(raise_exception::<u64>(
             _py,
             "ValueError",
@@ -339,5 +408,22 @@ pub(crate) fn file_handle_is_closed(mut handle: &MoltFileHandle) -> bool {
         }
         handle = unsafe { &*child };
     }
-    Arc::clone(&handle.state).backend.lock().unwrap().is_none()
+    handle
+        .state
+        .as_ref()
+        .is_none_or(|state| state.backend.lock().unwrap().is_none())
+}
+
+/// A physical operation must not reinterpret Python raw-stream state as storage.
+pub(super) fn file_handle_physical_state<'a>(
+    py: &PyToken<'_>,
+    handle: &'a MoltFileHandle,
+) -> Result<&'a Arc<MoltFileState>, u64> {
+    handle.state.as_ref().ok_or_else(|| {
+        raise_exception::<u64>(
+            py,
+            "UnsupportedOperation",
+            "operation requires a physical IO backend",
+        )
+    })
 }

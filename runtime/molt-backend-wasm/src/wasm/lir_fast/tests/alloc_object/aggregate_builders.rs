@@ -41,7 +41,13 @@ fn aggregate_builders_stay_lir_fast_runtime_calls() {
             "build_dict",
             OpCode::BuildDict,
             4,
-            vec![("dict_new", 1), ("dict_set", 2)],
+            vec![
+                ("scratch_alloc", 1),
+                ("dict_from_pairs", 1),
+                ("scratch_free", 1),
+                ("dict_new", 0),
+                ("dict_set", 0),
+            ],
         ),
         (
             "build_set",

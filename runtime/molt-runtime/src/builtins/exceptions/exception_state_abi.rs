@@ -591,7 +591,11 @@ pub extern "C" fn molt_exception_report_uncaught(exc_bits: u64) -> u64 {
         }
         let formatted = format_exception_with_traceback(_py, exc_ptr);
         eprintln!("{formatted}");
-        if let Ok(path) = std::env::var("MOLT_EXCEPTION_LOG_PATH") {
+        if let Some(path) = crate::runtime_state(_py)
+            .policy()
+            .exception_log_path
+            .as_ref()
+        {
             let _ = std::fs::write(path, formatted.as_bytes());
         }
         1

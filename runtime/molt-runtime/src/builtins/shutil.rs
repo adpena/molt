@@ -1229,37 +1229,112 @@ mod capability_tests {
     }
 
     #[test]
-    fn executable_lookup_requires_only_environment_access_actually_used() {
+    fn executable_lookup_requires_fs_read_before_selected_input_conversion() {
         use crate::builtins::functions::molt_shutil_which;
-        for (grants, missing) in [
-            ("", "env.read, fs.read"),
-            ("fs.read", "env.read"),
-            ("env.read", "fs.read"),
-        ] {
+        for grants in ["", "env.read", "fs.read"] {
             RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
-                let command = str_bits_local(py, "missing-command");
-                let _ = molt_shutil_which(command, MoltObject::none().bits());
-                assert_denied(py, "shutil.which", missing);
-                dec_ref_bits(py, command);
+                let invalid = MoltObject::none().bits();
+                let empty_ptr = alloc_tuple(py, &[]);
+                assert!(!empty_ptr.is_null());
+                let empty = MoltObject::from_ptr(empty_ptr).bits();
+                // Exercise both invalid files and invalid directories. Admission
+                // must precede conversion, even when no files could be searched.
+                for files in [invalid, empty] {
+                    let _ = molt_shutil_which(files, invalid, invalid);
+                    if grants == "fs.read" {
+                        assert_eq!(
+                            take_error(py),
+                            (
+                                "TypeError".to_string(),
+                                "which search inputs must be lists or tuples".to_string(),
+                            ),
+                        );
+                    } else {
+                        assert_denied(py, "shutil.which.explicit_path", "fs.read");
+                    }
+                }
+                dec_ref_bits(py, empty);
             });
         }
+    }
+
+    #[test]
+    fn executable_lookup_searches_selected_inputs_with_fs_read_only() {
+        use crate::builtins::functions::molt_shutil_which;
         RuntimeTestTransaction::with_explicit_capabilities("fs.read", |py| {
             let artifacts =
-                cargo_test_artifacts::CargoTestArtifacts::new("which-explicit-path").unwrap();
-            let command = str_bits_local(py, "missing-command");
-            let path = str_bits_local(py, &artifacts.path().to_string_lossy());
-            let result = molt_shutil_which(command, path);
-            #[cfg(windows)]
-            assert_denied(py, "shutil.which", "env.read");
-            #[cfg(not(windows))]
+                cargo_test_artifacts::CargoTestArtifacts::new("which-selected-inputs").unwrap();
+            let first = artifacts.path().join("first");
+            let second = artifacts.path().join("second");
+            fs::create_dir(&first).unwrap();
+            fs::create_dir(&second).unwrap();
+            fs::create_dir(first.join("probe")).unwrap();
+            fs::write(first.join("alternate"), b"first directory candidate").unwrap();
+            fs::write(second.join("probe"), b"second directory candidate").unwrap();
+            #[cfg(unix)]
             {
+                fs::set_permissions(first.join("alternate"), fs::Permissions::from_mode(0o600))
+                    .unwrap();
+                fs::set_permissions(second.join("probe"), fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
+            let names = [
+                str_bits_local(py, "missing"),
+                str_bits_local(py, "probe"),
+                str_bits_local(py, "alternate"),
+            ];
+            let paths = [
+                str_bits_local(py, &first.to_string_lossy()),
+                str_bits_local(py, &second.to_string_lossy()),
+            ];
+            let sequence = |elements: &[u64], tuple: bool| {
+                let pointer = if tuple {
+                    alloc_tuple(py, elements)
+                } else {
+                    alloc_list(py, elements)
+                };
+                assert!(!pointer.is_null());
+                MoltObject::from_ptr(pointer).bits()
+            };
+            // Both supported sequence owners implement this actual raw boundary.
+            for tuple_files in [false, true] {
+                let files = sequence(&names, tuple_files);
+                let directories = sequence(&paths, !tuple_files);
+                let executable = {
+                    #[cfg(unix)]
+                    {
+                        second.join("probe")
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        // Windows X_OK does not impose a permission-bit filter.
+                        first.join("alternate")
+                    }
+                };
+                for (mode, expected) in [(0, first.join("alternate")), (1, executable)] {
+                    let result =
+                        molt_shutil_which(files, directories, MoltObject::from_int(mode).bits());
+                    assert!(!exception_pending(py));
+                    // Directory order precedes file order; an existing directory
+                    // named probe is never an executable result, even for F_OK.
+                    assert_eq!(
+                        string_obj_to_owned(obj_from_bits(result)),
+                        Some(expected.to_string_lossy().into_owned()),
+                    );
+                    dec_ref_bits(py, result);
+                }
+                let missing_files = sequence(&names[..1], tuple_files);
+                let result =
+                    molt_shutil_which(missing_files, directories, MoltObject::from_int(0).bits());
                 assert!(!exception_pending(py));
                 assert!(obj_from_bits(result).is_none());
+                for bits in [result, missing_files, directories, files] {
+                    dec_ref_bits(py, bits);
+                }
             }
-            #[cfg(windows)]
-            let _ = result;
-            dec_ref_bits(py, command);
-            dec_ref_bits(py, path);
+            for bits in names.into_iter().chain(paths) {
+                dec_ref_bits(py, bits);
+            }
         });
     }
 }

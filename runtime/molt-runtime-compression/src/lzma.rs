@@ -1,7 +1,9 @@
 use crate::bridge::*;
+use molt_runtime_core::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
+use std::sync::{Arc, Mutex};
 
 // ── Format constants (mirror CPython lzma module) ────────────────────────────
 
@@ -62,25 +64,6 @@ pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn require_bytes_slice(_py: &PyToken, bits: u64) -> Result<&'static [u8], u64> {
-    let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return Err(raise_exception(
-            _py,
-            "TypeError",
-            "a bytes-like object is required",
-        ));
-    };
-    unsafe {
-        if let Some(slice) = bytes_like_slice(ptr) {
-            return Ok(slice);
-        }
-    }
-    let tname = type_name(_py, obj);
-    let msg = format!("a bytes-like object is required, not '{tname}'");
-    Err(raise_exception(_py, "TypeError", &msg))
-}
-
 fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
@@ -130,25 +113,26 @@ fn resolve_check(check: i64) -> xz2::stream::Check {
 /// `lzma.compress(data, format=FORMAT_XZ, check=-1, preset=None) -> bytes`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compress(
+    error_class: u64,
     data_bits: u64,
     format_bits: u64,
     check_bits: u64,
     preset_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+
         let format = match opt_i64(_py, format_bits, FORMAT_XZ, "format") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let preset = match opt_i64(_py, preset_bits, PRESET_DEFAULT, "preset") {
+
+        let check_val = match opt_i64(_py, check_bits, -1, "check") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let check_val = match opt_i64(_py, check_bits, -1, "check") {
+        let preset = match opt_i64(_py, preset_bits, PRESET_DEFAULT, "preset") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -158,17 +142,31 @@ pub extern "C" fn molt_lzma_compress(
         } else {
             resolve_check(check_val)
         };
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "compress",
+            "argument",
+        ) {
+            return MoltObject::none().bits();
+        }
         let result: Result<Vec<u8>, std::io::Error> = match format {
             FORMAT_XZ | FORMAT_AUTO => {
                 let stream = match xz2::stream::Stream::new_easy_encoder(xz_preset, xz_check) {
                     Ok(s) => s,
                     Err(e) => {
                         let msg = format!("lzma init error: {e}");
-                        return raise_exception(_py, "lzma.LZMAError", &msg);
+                        return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                     }
                 };
                 let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
-                enc.write_all(data).and_then(|()| enc.finish())
+                enc.write_all(unsafe { data_export.bytes(_py) })
+                    .and_then(|()| enc.finish())
             }
             FORMAT_ALONE | FORMAT_RAW => {
                 let opts = xz2::stream::LzmaOptions::new_preset(xz_preset)
@@ -177,11 +175,12 @@ pub extern "C" fn molt_lzma_compress(
                     Ok(s) => s,
                     Err(e) => {
                         let msg = format!("lzma init error: {e}");
-                        return raise_exception(_py, "lzma.LZMAError", &msg);
+                        return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                     }
                 };
                 let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
-                enc.write_all(data).and_then(|()| enc.finish())
+                enc.write_all(unsafe { data_export.bytes(_py) })
+                    .and_then(|()| enc.finish())
             }
             _ => {
                 return raise_exception(_py, "ValueError", "unknown format");
@@ -191,7 +190,7 @@ pub extern "C" fn molt_lzma_compress(
             Ok(out) => return_bytes(_py, &out),
             Err(e) => {
                 let msg = format!("lzma compress failed: {e}");
-                raise_exception(_py, "lzma.LZMAError", &msg)
+                molt_runtime_core::rt_raise_class(_py, error_class, &msg)
             }
         }
     })
@@ -202,22 +201,35 @@ pub extern "C" fn molt_lzma_compress(
 /// `lzma.decompress(data, format=FORMAT_AUTO, memlimit=None) -> bytes`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompress(
+    error_class: u64,
     data_bits: u64,
     format_bits: u64,
     _memlimit_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+
         let format = match opt_i64(_py, format_bits, FORMAT_AUTO, "format") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "decompress",
+            "argument 'data'",
+        ) {
+            return MoltObject::none().bits();
+        }
         let result: Result<Vec<u8>, std::io::Error> = match format {
             FORMAT_XZ => {
-                let mut dec = xz2::read::XzDecoder::new(data);
+                let mut dec = xz2::read::XzDecoder::new(unsafe { data_export.bytes(_py) });
                 let mut out = Vec::new();
                 dec.read_to_end(&mut out).map(|_| out)
             }
@@ -226,17 +238,18 @@ pub extern "C" fn molt_lzma_decompress(
                     Ok(s) => s,
                     Err(e) => {
                         let msg = format!("lzma init error: {e}");
-                        return raise_exception(_py, "lzma.LZMAError", &msg);
+                        return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                     }
                 };
-                let mut dec = xz2::read::XzDecoder::new_stream(data, stream);
+                let mut dec =
+                    xz2::read::XzDecoder::new_stream(unsafe { data_export.bytes(_py) }, stream);
                 let mut out = Vec::new();
                 dec.read_to_end(&mut out).map(|_| out)
             }
             FORMAT_AUTO => {
                 // XZ streams start with 0xfd '7zXZ\0'
-                if data.starts_with(b"\xfd7zXZ\x00") {
-                    let mut dec = xz2::read::XzDecoder::new(data);
+                if (unsafe { data_export.bytes(_py) }).starts_with(b"\xfd7zXZ\x00") {
+                    let mut dec = xz2::read::XzDecoder::new(unsafe { data_export.bytes(_py) });
                     let mut out = Vec::new();
                     dec.read_to_end(&mut out).map(|_| out)
                 } else {
@@ -244,10 +257,11 @@ pub extern "C" fn molt_lzma_decompress(
                         Ok(s) => s,
                         Err(e) => {
                             let msg = format!("lzma init error: {e}");
-                            return raise_exception(_py, "lzma.LZMAError", &msg);
+                            return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                         }
                     };
-                    let mut dec = xz2::read::XzDecoder::new_stream(data, stream);
+                    let mut dec =
+                        xz2::read::XzDecoder::new_stream(unsafe { data_export.bytes(_py) }, stream);
                     let mut out = Vec::new();
                     dec.read_to_end(&mut out).map(|_| out)
                 }
@@ -258,9 +272,9 @@ pub extern "C" fn molt_lzma_decompress(
         };
         match result {
             Ok(out) => return_bytes(_py, &out),
-            Err(_) => raise_exception(
+            Err(_) => molt_runtime_core::rt_raise_class(
                 _py,
-                "lzma.LZMAError",
+                error_class,
                 "Input data is not a valid XZ/LZMA stream",
             ),
         }
@@ -269,7 +283,7 @@ pub extern "C" fn molt_lzma_decompress(
 
 // ── Stateful LZMACompressor handle ───────────────────────────────────────────
 
-struct LzmaCompressorHandle {
+pub struct LzmaCompressorHandle {
     format: i64,
     preset: u32,
     check: xz2::stream::Check,
@@ -277,12 +291,13 @@ struct LzmaCompressorHandle {
     flushed: bool,
 }
 
-fn lzma_compressor_from_bits(bits: u64) -> Option<&'static mut LzmaCompressorHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
+fn lzma_compressor_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaCompressorHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_lzma_compressor_owner_clone,
+        )
     }
-    Some(unsafe { &mut *(ptr as *mut LzmaCompressorHandle) })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compressor_new(
@@ -303,7 +318,7 @@ pub extern "C" fn molt_lzma_compressor_new(
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let handle = Box::new(LzmaCompressorHandle {
+        let handle = Arc::new(Mutex::new(LzmaCompressorHandle {
             format,
             preset: resolve_preset(preset),
             check: if check_val < 0 {
@@ -313,40 +328,90 @@ pub extern "C" fn molt_lzma_compressor_new(
             },
             buffer: Vec::new(),
             flushed: false,
-        });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
+        }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                handle,
+                __molt_compression_lzma_compressor_owner_new,
+            )
+        }
     })
 }
 
 /// `compressor.compress(data) -> bytes`
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_compress(handle_bits: u64, data_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_compressor_compress(
+    error_class: u64,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_compressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid compressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_compressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "invalid compressor handle",
+            );
         };
-        if handle.flushed {
-            return raise_exception(_py, "lzma.LZMAError", "Compressor has been flushed");
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "compress",
+            "argument",
+        ) {
+            return MoltObject::none().bits();
         }
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        handle.buffer.extend_from_slice(data);
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if handle.flushed {
+            drop(handle);
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "Compressor has been flushed",
+            );
+        }
+        handle
+            .buffer
+            .extend_from_slice(unsafe { data_export.bytes(_py) });
+        drop(handle);
         return_bytes(_py, &[])
     })
 }
 
 /// `compressor.flush() -> bytes`  (finalises and returns compressed stream)
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_compressor_flush(error_class: u64, handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_compressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid compressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_compressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "invalid compressor handle",
+            );
         };
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if handle.flushed {
-            return raise_exception(_py, "lzma.LZMAError", "Compressor has already been flushed");
+            drop(handle);
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "Compressor has already been flushed",
+            );
         }
         handle.flushed = true;
         let input = std::mem::take(&mut handle.buffer);
@@ -357,7 +422,8 @@ pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
                         Ok(s) => s,
                         Err(e) => {
                             let msg = format!("lzma init error: {e}");
-                            return raise_exception(_py, "lzma.LZMAError", &msg);
+                            drop(handle);
+                            return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                         }
                     };
                 let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
@@ -370,41 +436,35 @@ pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
                     Ok(s) => s,
                     Err(e) => {
                         let msg = format!("lzma init error: {e}");
-                        return raise_exception(_py, "lzma.LZMAError", &msg);
+                        drop(handle);
+                        return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                     }
                 };
                 let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
                 enc.write_all(&input).and_then(|()| enc.finish())
             }
             _ => {
+                drop(handle);
                 return raise_exception(_py, "ValueError", "unknown format");
             }
         };
         match result {
-            Ok(out) => return_bytes(_py, &out),
+            Ok(out) => {
+                drop(handle);
+                return_bytes(_py, &out)
+            }
             Err(e) => {
                 let msg = format!("lzma compress failed: {e}");
-                raise_exception(_py, "lzma.LZMAError", &msg)
+                drop(handle);
+                molt_runtime_core::rt_raise_class(_py, error_class, &msg)
             }
         }
-    })
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut LzmaCompressorHandle) };
-        MoltObject::none().bits()
     })
 }
 
 // ── Stateful LZMADecompressor handle ─────────────────────────────────────────
 
-struct LzmaDecompressorHandle {
+pub struct LzmaDecompressorHandle {
     format: i64,
     input_buffer: Vec<u8>,
     eof: bool,
@@ -412,12 +472,13 @@ struct LzmaDecompressorHandle {
     needs_input: bool,
 }
 
-fn lzma_decompressor_from_bits(bits: u64) -> Option<&'static mut LzmaDecompressorHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
+fn lzma_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaDecompressorHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_lzma_decompressor_owner_clone,
+        )
     }
-    Some(unsafe { &mut *(ptr as *mut LzmaDecompressorHandle) })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_new(format_bits: u64, _memlimit_bits: u64) -> u64 {
@@ -426,41 +487,68 @@ pub extern "C" fn molt_lzma_decompressor_new(format_bits: u64, _memlimit_bits: u
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let handle = Box::new(LzmaDecompressorHandle {
+        let handle = Arc::new(Mutex::new(LzmaDecompressorHandle {
             format,
             input_buffer: Vec::new(),
             eof: false,
             unused_data: Vec::new(),
             needs_input: true,
-        });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
+        }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                handle,
+                __molt_compression_lzma_decompressor_owner_new,
+            )
+        }
     })
 }
 
 /// `decompressor.decompress(data, max_length=-1) -> bytes`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_decompress(
+    error_class: u64,
     handle_bits: u64,
     data_bits: u64,
     max_length_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "invalid decompressor handle",
+            );
         };
-        if handle.eof {
-            return raise_exception(_py, "EOFError", "End of stream already reached");
+        let new_data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &new_data_export,
+            data_bits,
+            "decompress",
+            "argument 'data'",
+        ) {
+            return MoltObject::none().bits();
         }
-        let new_data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
         let max_len = match opt_i64(_py, max_length_bits, -1, "max_length") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        handle.input_buffer.extend_from_slice(new_data);
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if handle.eof {
+            drop(handle);
+            return raise_exception(_py, "EOFError", "End of stream already reached");
+        }
+        handle
+            .input_buffer
+            .extend_from_slice(unsafe { new_data_export.bytes(_py) });
         let input = std::mem::take(&mut handle.input_buffer);
         let format = handle.format;
         let effective_format = if format == FORMAT_AUTO {
@@ -484,7 +572,8 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
                     Err(e) => {
                         handle.input_buffer = input;
                         let msg = format!("lzma init error: {e}");
-                        return raise_exception(_py, "lzma.LZMAError", &msg);
+                        drop(handle);
+                        return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                     }
                 };
                 let mut dec = xz2::read::XzDecoder::new_stream(input.as_slice(), stream);
@@ -492,6 +581,7 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
                 dec.read_to_end(&mut out).map(|_| out)
             }
             _ => {
+                drop(handle);
                 return raise_exception(_py, "ValueError", "unknown format");
             }
         };
@@ -503,11 +593,13 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
                 if max_len >= 0 && out.len() > max_len as usize {
                     out.truncate(max_len as usize);
                 }
+                drop(handle);
                 return_bytes(_py, &out)
             }
             Err(_) => {
                 handle.input_buffer = input;
                 handle.needs_input = true;
+                drop(handle);
                 return_bytes(_py, &[])
             }
         }
@@ -516,47 +608,65 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
 
 /// `decompressor.eof` property
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_eof(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_eof(error_class: u64, handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "invalid decompressor handle",
+            );
         };
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         MoltObject::from_bool(handle.eof).bits()
     })
 }
 
 /// `decompressor.needs_input` property
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_needs_input(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_needs_input(error_class: u64, handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "invalid decompressor handle",
+            );
         };
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         MoltObject::from_bool(handle.needs_input).bits()
     })
 }
 
 /// `decompressor.unused_data` property
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_unused_data(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_unused_data(error_class: u64, handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "invalid decompressor handle",
+            );
         };
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let tail = handle.unused_data.clone();
         return_bytes(_py, &tail)
-    })
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut LzmaDecompressorHandle) };
-        MoltObject::none().bits()
     })
 }
 
@@ -575,21 +685,23 @@ enum LzmaFileInner {
     Closed,
 }
 
-struct LzmaFileHandle {
+pub struct LzmaFileHandle {
     inner: LzmaFileInner,
 }
 
-fn lzma_file_handle_from_bits(bits: u64) -> Option<&'static mut LzmaFileHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
+fn lzma_file_handle_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaFileHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_lzma_file_owner_clone,
+        )
     }
-    Some(unsafe { &mut *(ptr as *mut LzmaFileHandle) })
 }
 
 /// `lzma.open(filename, mode, format, check, preset) -> handle`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_file_open(
+    error_class: u64,
     filename_bits: u64,
     mode_bits: u64,
     format_bits: u64,
@@ -597,6 +709,8 @@ pub extern "C" fn molt_lzma_file_open(
     preset_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
         let name_obj = obj_from_bits(filename_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
             return raise_exception(_py, "TypeError", "filename must be str");
@@ -636,7 +750,7 @@ pub extern "C" fn molt_lzma_file_open(
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("lzma init error: {e}");
-                                return raise_exception(_py, "lzma.LZMAError", &msg);
+                                return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                             }
                         };
                         LzmaFileInner::ReadingLzma(BufReader::new(
@@ -694,26 +808,26 @@ pub extern "C" fn molt_lzma_file_open(
                 );
             }
         };
-        let handle = Box::new(LzmaFileHandle { inner });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
+        let handle = Arc::new(Mutex::new(LzmaFileHandle { inner }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                handle,
+                __molt_compression_lzma_file_owner_new,
+            )
+        }
     })
 }
 
 /// `handle.read(size=-1) -> bytes`
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_read(handle_bits: u64, size_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_file_read(error_class: u64, handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid lzma file handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_file_handle_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(_py, error_class, "invalid lzma file handle");
         };
-        let reader: &mut dyn Read = match &mut handle.inner {
-            LzmaFileInner::Reading(r) => r,
-            LzmaFileInner::ReadingLzma(r) => r,
-            _ => {
-                return raise_exception(_py, "OSError", "file not open for reading");
-            }
-        };
+
         let size = {
             let obj = obj_from_bits(size_bits);
             if obj.is_none() {
@@ -726,6 +840,18 @@ pub extern "C" fn molt_lzma_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                 val
             }
         };
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let reader: &mut dyn Read = match &mut handle.inner {
+            LzmaFileInner::Reading(r) => r,
+            LzmaFileInner::ReadingLzma(r) => r,
+            _ => {
+                drop(handle);
+                return raise_exception(_py, "OSError", "file not open for reading");
+            }
+        };
+
         let mut out = Vec::new();
         let ok = if size < 0 {
             reader.read_to_end(&mut out).is_ok()
@@ -740,38 +866,63 @@ pub extern "C" fn molt_lzma_file_read(handle_bits: u64, size_bits: u64) -> u64 {
             }
         };
         if !ok {
-            return raise_exception(_py, "lzma.LZMAError", "lzma read failed");
+            drop(handle);
+            return molt_runtime_core::rt_raise_class(_py, error_class, "lzma read failed");
         }
+        drop(handle);
         return_bytes(_py, &out)
     })
 }
 
 /// `handle.write(data) -> int`
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_write(handle_bits: u64, data_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_file_write(error_class: u64, handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid lzma file handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_file_handle_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(_py, error_class, "invalid lzma file handle");
         };
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "compress",
+            "argument",
+        ) {
+            return MoltObject::none().bits();
+        }
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let LzmaFileInner::Writing { ref mut buffer, .. } = handle.inner else {
+            drop(handle);
             return raise_exception(_py, "OSError", "file not open for writing");
         };
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        buffer.extend_from_slice(data);
-        int_bits_from_i64(_py, data.len() as i64)
+        buffer.extend_from_slice(unsafe { data_export.bytes(_py) });
+        drop(handle);
+        int_bits_from_i64(_py, (unsafe { data_export.bytes(_py) }).len() as i64)
     })
 }
 
 /// `handle.close() -> None` (finishes the lzma stream and writes to file)
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_file_close(error_class: u64, handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
-            return raise_exception(_py, "lzma.LZMAError", "invalid lzma file handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = lzma_file_handle_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(_py, error_class, "invalid lzma file handle");
         };
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let inner = std::mem::replace(&mut handle.inner, LzmaFileInner::Closed);
         match inner {
             LzmaFileInner::Writing {
@@ -787,7 +938,8 @@ pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("lzma init error: {e}");
-                                return raise_exception(_py, "lzma.LZMAError", &msg);
+                                drop(handle);
+                                return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                             }
                         };
                         let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
@@ -800,44 +952,34 @@ pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
                             Ok(s) => s,
                             Err(e) => {
                                 let msg = format!("lzma init error: {e}");
-                                return raise_exception(_py, "lzma.LZMAError", &msg);
+                                drop(handle);
+                                return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                             }
                         };
                         let mut enc = xz2::write::XzEncoder::new_stream(Vec::new(), stream);
                         enc.write_all(&buffer).and_then(|()| enc.finish())
                     }
                     _ => {
+                        drop(handle);
                         return raise_exception(_py, "ValueError", "unknown format");
                     }
                 };
                 match result {
                     Ok(compressed) => {
                         if file.write_all(&compressed).is_err() {
+                            drop(handle);
                             return raise_exception(_py, "OSError", "lzma write to file failed");
                         }
                     }
                     Err(e) => {
                         let msg = format!("lzma compress failed: {e}");
-                        return raise_exception(_py, "lzma.LZMAError", &msg);
+                        drop(handle);
+                        return molt_runtime_core::rt_raise_class(_py, error_class, &msg);
                     }
                 }
             }
             LzmaFileInner::Reading(_) | LzmaFileInner::ReadingLzma(_) | LzmaFileInner::Closed => {}
         }
-        MoltObject::none().bits()
-    })
-}
-
-/// Free the handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut LzmaFileHandle) };
         MoltObject::none().bits()
     })
 }

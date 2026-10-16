@@ -1058,16 +1058,24 @@ fn nested_try_blocks_compile() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn dict_new_calls_dict_new_import() {
+fn dict_literal_calls_full_pairs_import_without_incremental_mutation() {
     let mut d = op("dict_new");
     d.out = Some("v0".to_string());
     d.args = Some(vec![]);
 
     let wasm = compile_single_function(vec![d, op("ret_void")], &[]);
     let calls = import_call_counts(&wasm);
-    assert!(
-        count_import(&calls, "dict_new") > 0,
-        "dict_new op should call dict_new import"
+    assert_eq!(
+        count_import(&calls, "dict_from_pairs"),
+        1,
+        "an empty dictionary literal calls the complete-pairs constructor once"
+    );
+    assert_eq!(count_import(&calls, "dict_new"), 0);
+    assert_eq!(count_import(&calls, "dict_set"), 0);
+    assert_eq!(
+        count_import(&calls, "scratch_alloc"),
+        0,
+        "empty pairs have no range"
     );
 }
 

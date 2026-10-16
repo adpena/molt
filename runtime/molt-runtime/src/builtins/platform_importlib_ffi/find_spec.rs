@@ -244,7 +244,10 @@ pub(super) fn importlib_find_spec_orchestrated_search_paths(
 ) -> Result<(Vec<String>, bool), u64> {
     let parent_payload = importlib_parent_search_paths_payload(_py, module_name, modules_bits)?;
     if !parent_payload.has_parent {
-        return Ok((importlib_search_paths(path_snapshot, module_file), false));
+        return Ok((
+            importlib_search_paths(_py, path_snapshot, module_file),
+            false,
+        ));
     }
     if !parent_payload.needs_parent_spec {
         return Ok((parent_payload.search_paths, parent_payload.package_context));

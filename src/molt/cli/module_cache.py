@@ -1301,7 +1301,7 @@ def _load_module_analysis(
 
     if source is None:
         source = (
-            snapshot.text
+            snapshot.text_for_filename(logical_source_path)
             if snapshot is not None
             else resolution_cache.read_module_source(path, retain=retain_source)
         )

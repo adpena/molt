@@ -1310,12 +1310,15 @@ fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary(
         }
 
         fn release_acquisition<P: refcount::ReferenceRetirement>(
-            acquired: Result<memory::BufferLease<P>, molt_cpython_abi::ErrorIndicatorSet>,
+            acquired: Result<memory::BufferLease<P>, memory::BufferAcquireError>,
             receiver: *mut PyObject,
             status: c_int,
         ) {
             match acquired {
-                Err(_) => assert_eq!(status, -1, "only a negative callback status rejects"),
+                Err(stage) => {
+                    assert_eq!(stage, memory::BufferAcquireError::Exporter);
+                    assert_eq!(status, -1, "only a negative callback status rejects");
+                }
                 Ok(lease) => {
                     assert_eq!(status, 0);
                     assert_eq!(lease.owner(), receiver);
@@ -2487,4 +2490,343 @@ fn array_index_and_slice_coercion_reenter_before_live_storage_selection() {
             }
         }
     });
+}
+
+#[derive(Clone, Copy, Default)]
+struct PreparationBufferProbe {
+    view: u64,
+    failure: u64,
+    gets: usize,
+    releases: usize,
+    flags: Option<i64>,
+    released_original: bool,
+}
+
+thread_local! {
+    static PREPARATION_BUFFER: std::cell::Cell<PreparationBufferProbe> =
+        std::cell::Cell::new(PreparationBufferProbe::default());
+}
+
+extern "C" fn preparation_buffer_get(_: u64, flags: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let state = PREPARATION_BUFFER.with(|probe| {
+            let mut state = probe.get();
+            state.gets += 1;
+            state.flags = crate::to_i64(crate::obj_from_bits(flags));
+            probe.set(state);
+            state
+        });
+        if state.failure != 0 {
+            crate::record_exception(py, crate::obj_from_bits(state.failure).as_ptr().unwrap());
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(py, state.view);
+        state.view
+    })
+}
+
+extern "C" fn preparation_buffer_release(_: u64, view: u64) -> u64 {
+    PREPARATION_BUFFER.with(|probe| {
+        let mut state = probe.get();
+        state.releases += 1;
+        state.released_original = view == state.view;
+        probe.set(state);
+    });
+    MoltObject::none().bits()
+}
+
+// The observer is process-global and deliberately unavailable in production.
+// Its explicit test below must be the only test running in its process.
+#[cfg(feature = "l7-attestation-probe")]
+struct DenyPreparationCAllocations;
+
+#[cfg(feature = "l7-attestation-probe")]
+impl DenyPreparationCAllocations {
+    fn enter() -> Self {
+        use molt_cpython_abi::l7_attestation::c_allocations;
+        c_allocations::reset();
+        c_allocations::set_denial(true);
+        c_allocations::set_tracking(true);
+        Self
+    }
+}
+
+#[cfg(feature = "l7-attestation-probe")]
+impl Drop for DenyPreparationCAllocations {
+    fn drop(&mut self) {
+        use molt_cpython_abi::l7_attestation::c_allocations;
+        c_allocations::set_tracking(false);
+        c_allocations::set_denial(false);
+    }
+}
+
+fn writable_buffer_preparation_case(deny_lease: bool) {
+    use crate::builtins::exceptions::ExceptionValue;
+    use crate::builtins::io::{molt_bytesio_new, molt_file_readinto, molt_file_tell};
+    use crate::object::buffer_exports::{BufferAccessError, ScopedWritableBuffer};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        let name = ExceptionValue::adopt(
+            py,
+            crate::attr_name_bits_from_bytes(py, b"PreparationExporter").unwrap(),
+        );
+        let mut methods = Vec::new();
+        for (name, target) in [
+            (
+                b"__buffer__".as_slice(),
+                preparation_buffer_get as *const (),
+            ),
+            (
+                b"__release_buffer__".as_slice(),
+                preparation_buffer_release as *const (),
+            ),
+        ] {
+            let key =
+                ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, name).unwrap());
+            let function = crate::object::builders::alloc_function_obj(
+                py,
+                crate::provenance::abi::expose_function_address(target),
+                2,
+            );
+            assert!(!function.is_null());
+            unsafe { crate::object::layout::function_set_call_target_ptr(function, target) };
+            methods.push((
+                key,
+                ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits()),
+            ));
+        }
+        let pairs: Vec<_> = methods
+            .iter()
+            .flat_map(|(key, value)| [key.bits(), value.bits()])
+            .collect();
+        let namespace = crate::alloc_dict_with_pairs(py, &pairs);
+        assert!(!namespace.is_null());
+        let namespace = ExceptionValue::adopt(py, MoltObject::from_ptr(namespace).bits());
+        let class = ExceptionValue::adopt(
+            py,
+            crate::builtins::types::molt_type_new(
+                crate::builtin_classes(py).type_obj,
+                name.bits(),
+                crate::builtin_classes(py).object,
+                namespace.bits(),
+                MoltObject::none().bits(),
+            ),
+        );
+        let instance = ExceptionValue::adopt(py, unsafe {
+            crate::alloc_instance_for_class(
+                py,
+                crate::obj_from_bits(class.bits()).as_ptr().unwrap(),
+            )
+        });
+        let backing = ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(crate::object::builders::alloc_bytearray(py, b"---")).bits(),
+        );
+        let view = ExceptionValue::adopt(py, crate::molt_memoryview_new(backing.bits()));
+        let initial = ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(crate::object::builders::alloc_bytes(py, b"Z")).bits(),
+        );
+        let stream = ExceptionValue::adopt(
+            py,
+            molt_bytesio_new(crate::builtin_classes(py).bytes_io, initial.bits()),
+        );
+        let failure = ExceptionValue::adopt(py, exception_bits(py, "MemoryError"));
+        assert!(!crate::exception_pending(py));
+        PREPARATION_BUFFER.with(|probe| {
+            probe.set(PreparationBufferProbe {
+                view: view.bits(),
+                ..Default::default()
+            })
+        });
+        let pointer = crate::obj_from_bits(instance.bits()).as_ptr().unwrap();
+        let has_view = || unsafe {
+            (*header_from_obj_ptr(pointer)).load_synchronized_flags()
+                & crate::object::HEADER_FLAG_HAS_ABI_VIEW
+                != 0
+        };
+        assert!(
+            !has_view(),
+            "the first acquisition must really project a cold object"
+        );
+        let (result, attempts) = GLOBAL_BRIDGE
+            .with_denied_publication_for_test(instance.bits(), || {
+                molt_file_readinto(stream.bits(), instance.bits())
+            });
+        assert_eq!(result, MoltObject::none().bits());
+        assert_eq!(attempts, 1);
+        assert!(!has_view());
+        assert_eq!(
+            unsafe {
+                errors::PyErr_ExceptionMatches(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast(),
+                )
+            },
+            1,
+            "w* must retain preparation failure instead of normalizing it"
+        );
+        assert_eq!(
+            PREPARATION_BUFFER.with(|probe| (probe.get().gets, probe.get().releases)),
+            (0, 0)
+        );
+        // The selected failure is retained across the actual C error ownership transfer.
+        unsafe {
+            let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert!(!error.as_ptr().is_null());
+            let identity = error.as_ptr();
+            errors::PyErr_SetRaisedException(error.into_ptr());
+            let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(error.as_ptr(), identity);
+        }
+        unsafe { errors::PyErr_Clear() };
+        assert_eq!(
+            crate::to_i64(crate::obj_from_bits(molt_file_tell(stream.bits()))),
+            Some(0)
+        );
+
+        if deny_lease {
+            #[cfg(feature = "l7-attestation-probe")]
+            {
+                // Warm only projection. The first denied allocation is the stable
+                // lease master, before any Python exporter callback can run.
+                let projected = unsafe {
+                    molt_runtime_core::native_custody::project_buffer_object(instance.bits())
+                }
+                .unwrap();
+                let denied = DenyPreparationCAllocations::enter();
+                let result = molt_file_readinto(stream.bits(), instance.bits());
+                drop(denied);
+                let snapshot = molt_cpython_abi::l7_attestation::c_allocations::snapshot();
+                assert_eq!(snapshot.attempts, 1);
+                assert_eq!(snapshot.denied, 1);
+                assert_eq!(result, MoltObject::none().bits());
+                assert_eq!(
+                    unsafe {
+                        errors::PyErr_ExceptionMatches(
+                            (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast(),
+                        )
+                    },
+                    1
+                );
+                assert_eq!(
+                    PREPARATION_BUFFER.with(|probe| (probe.get().gets, probe.get().releases)),
+                    (0, 0)
+                );
+                unsafe { errors::PyErr_Clear() };
+                drop(projected);
+                assert_eq!(
+                    crate::to_i64(crate::obj_from_bits(molt_file_tell(stream.bits()))),
+                    Some(0)
+                );
+            }
+            #[cfg(not(feature = "l7-attestation-probe"))]
+            panic!("C allocation injection requires the existing attestation feature");
+        }
+
+        PREPARATION_BUFFER.with(|probe| {
+            let mut state = probe.get();
+            state.failure = failure.bits();
+            probe.set(state);
+        });
+        assert!(matches!(
+            ScopedWritableBuffer::new(py, instance.bits()),
+            Err(BufferAccessError::Pending)
+        ));
+        assert_eq!(
+            crate::exception_last_bits_noinc(py),
+            Some(failure.bits()),
+            "the exporter really raised the retained MemoryError"
+        );
+        unsafe { errors::PyErr_Clear() };
+        assert_eq!(
+            molt_file_readinto(stream.bits(), instance.bits()),
+            MoltObject::none().bits()
+        );
+        assert_eq!(
+            unsafe {
+                errors::PyErr_ExceptionMatches(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
+                )
+            },
+            1,
+            "the same exception class from exporter dispatch is normalized by w*"
+        );
+        let normalized = crate::exception_last_bits_noinc(py).expect("normalized runtime error");
+        assert_ne!(normalized, failure.bits());
+        assert_eq!(
+            crate::builtins::exceptions::format_exception_message(
+                py,
+                crate::obj_from_bits(normalized).as_ptr().unwrap()
+            ),
+            "readinto() argument must be read-write bytes-like object, not PreparationExporter"
+        );
+        assert_eq!(
+            PREPARATION_BUFFER.with(|probe| (
+                probe.get().gets,
+                probe.get().releases,
+                probe.get().flags
+            )),
+            (2, 0, Some(1))
+        );
+        unsafe { errors::PyErr_Clear() };
+        assert_eq!(
+            crate::to_i64(crate::obj_from_bits(molt_file_tell(stream.bits()))),
+            Some(0)
+        );
+        assert_eq!(
+            unsafe {
+                crate::bytes_like_slice_raw(crate::obj_from_bits(backing.bits()).as_ptr().unwrap())
+                    .unwrap()
+            },
+            b"---"
+        );
+        PREPARATION_BUFFER.with(|probe| {
+            let mut state = probe.get();
+            state.failure = 0;
+            probe.set(state);
+        });
+        assert_eq!(
+            crate::to_i64(crate::obj_from_bits(molt_file_readinto(
+                stream.bits(),
+                instance.bits()
+            ))),
+            Some(1)
+        );
+        assert!(!crate::exception_pending(py));
+        assert_eq!(
+            unsafe {
+                crate::bytes_like_slice_raw(crate::obj_from_bits(backing.bits()).as_ptr().unwrap())
+                    .unwrap()
+            },
+            b"Z--"
+        );
+        assert_eq!(
+            PREPARATION_BUFFER.with(|probe| (
+                probe.get().gets,
+                probe.get().releases,
+                probe.get().released_original
+            )),
+            (3, 1, true)
+        );
+        crate::molt_memoryview_release(view.bits());
+        crate::molt_bytearray_append(backing.bits(), MoltObject::from_int(33).bits());
+        assert!(
+            !crate::exception_pending(py),
+            "all successful and failed acquisition pins have retired"
+        );
+        PREPARATION_BUFFER.with(|probe| probe.set(PreparationBufferProbe::default()));
+    });
+}
+
+#[test]
+fn writable_buffer_cold_preparation_and_exporter_memory_error_have_distinct_policy() {
+    writable_buffer_preparation_case(false);
+}
+
+#[cfg(feature = "l7-attestation-probe")]
+#[test]
+#[ignore = "process-global C allocation denial: run this exact test alone in a fresh process"]
+fn writable_buffer_lease_preparation_failure_precedes_exporter_dispatch() {
+    writable_buffer_preparation_case(true);
 }

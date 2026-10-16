@@ -100,9 +100,30 @@ impl<'a, 'py> ListStorage<'a, 'py> {
         index: usize,
     ) -> Option<crate::object::seq_access::PinnedSequenceItem<'a, 'py>> {
         match self.storage {
-            Storage::Managed(ptr) => unsafe {
-                crate::object::seq_access::pin_item(self.py, ptr, index)
-            },
+            Storage::Managed(ptr) => {
+                // Compact scalar lists own admitted inline values, not a
+                // Vec<u64>. Read that representation without promoting it.
+                let scalar = match unsafe { object_type_id(ptr) } {
+                    TYPE_ID_LIST_INT => unsafe {
+                        crate::object::layout::list_int_vec_ref(ptr)
+                            .as_slice()
+                            .get(index)
+                            .map(|&value| MoltObject::from_int(value).bits())
+                    },
+                    TYPE_ID_LIST_BOOL => unsafe {
+                        crate::object::layout::list_bool_vec_ref(ptr)
+                            .as_slice()
+                            .get(index)
+                            .map(|&value| MoltObject::from_bool(value != 0).bits())
+                    },
+                    _ => {
+                        return unsafe { crate::object::seq_access::pin_item(self.py, ptr, index) };
+                    }
+                };
+                scalar.map(|bits| unsafe {
+                    crate::object::seq_access::PinnedSequenceItem::from_owned_bits(self.py, bits)
+                })
+            }
             Storage::Native(ptr) => {
                 if index >= self.len()? {
                     return None;

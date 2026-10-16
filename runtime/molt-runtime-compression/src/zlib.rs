@@ -1,49 +1,15 @@
 use crate::bridge::*;
-use flate2::Compression;
-use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
-use flate2::write::{DeflateEncoder, ZlibEncoder};
+use libz_rs_sys as zlib;
+use molt_runtime_core::native_custody::{
+    ByteInput, NativeObjectOwner, cpython_abi as abi, retire_native_reference,
+};
 use molt_runtime_core::prelude::*;
-use std::io::{Read, Write};
+use std::borrow::Cow;
+use std::io::{self, BufRead, Read};
+use std::mem::MaybeUninit;
+use std::sync::{Arc, Mutex};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn require_bytes_slice(_py: &PyToken, bits: u64) -> Result<&'static [u8], u64> {
-    let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return Err(raise_exception(
-            _py,
-            "TypeError",
-            "a bytes-like object is required",
-        ));
-    };
-    unsafe {
-        if let Some(slice) = bytes_like_slice(ptr) {
-            return Ok(slice);
-        }
-    }
-    let tname = type_name(_py, obj);
-    let msg = format!("a bytes-like object is required, not '{tname}'");
-    Err(raise_exception(_py, "TypeError", &msg))
-}
-
-fn zlib_compression_from_level(_py: &PyToken, level_bits: u64) -> Result<Compression, u64> {
-    let obj = obj_from_bits(level_bits);
-    if obj.is_none() {
-        return Ok(Compression::default());
-    }
-    let val = index_i64_from_obj(_py, level_bits, "level must be an integer");
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if !(-1..=9).contains(&val) {
-        return Err(raise_exception(_py, "ValueError", "Bad compression level"));
-    }
-    if val == -1 {
-        Ok(Compression::default())
-    } else {
-        Ok(Compression::new(val as u32))
-    }
-}
 
 fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
@@ -57,59 +23,45 @@ fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let obj = obj_from_bits(data_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception(_py, "TypeError", "deflate expects bytes");
+        let export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-                let msg = format!("deflate expects bytes, got {}", type_name(_py, obj));
-                return raise_exception(_py, "TypeError", &msg);
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &export,
+            data_bits,
+            "compress",
+            "argument 1",
+        ) {
+            return MoltObject::none().bits();
+        }
+        // The internal ZIP entry contract uses None for its default level.
+        let level = if obj_from_bits(level_bits).is_none() {
+            -1
+        } else {
+            match zlib_index(_py, level_bits, ZlibIndexRole::CInt) {
+                Ok(value) => value as i32,
+                Err(bits) => return bits,
             }
-            let len = bytes_len(ptr);
-            let data = bytes_data(ptr);
-            let slice = std::slice::from_raw_parts(data, len);
-            let level_obj = obj_from_bits(level_bits);
-            let compression = if level_obj.is_none() {
-                Compression::default()
-            } else {
-                let val = index_i64_from_obj(_py, level_bits, "deflate level must be int");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                if !(-1..=9).contains(&val) {
-                    return raise_exception(
-                        _py,
-                        "ValueError",
-                        "deflate level must be in range -1..9",
-                    );
-                }
-                if val == -1 {
-                    Compression::default()
-                } else {
-                    Compression::new(val as u32)
-                }
-            };
-            let mut encoder = DeflateEncoder::new(Vec::new(), compression);
-            if encoder.write_all(slice).is_err() {
-                return raise_exception(_py, "ValueError", "deflate failed");
+        };
+        match compress_bytes(unsafe { export.bytes(_py) }, level, -15) {
+            Ok(out) => return_bytes(_py, &out),
+            Err(ZlibFailure::Memory) => {
+                raise_exception(_py, "MemoryError", "deflate out of memory")
             }
-            let out = match encoder.finish() {
-                Ok(val) => val,
-                Err(_) => return raise_exception(_py, "ValueError", "deflate failed"),
-            };
-            let out_ptr = alloc_bytes(_py, &out);
-            if out_ptr.is_null() {
-                return raise_exception(_py, "MemoryError", "deflate out of memory");
+            Err(ZlibFailure::Initialization(zlib::Z_STREAM_ERROR)) => {
+                raise_exception(_py, "ValueError", "deflate level must be in range -1..9")
             }
-            MoltObject::from_ptr(out_ptr).bits()
+            Err(_) => raise_exception(_py, "ValueError", "deflate failed"),
         }
     })
 }
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
+        // Internal ZIP storage accepts only physical bytes/bytearray here.
         let obj = obj_from_bits(data_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception(_py, "TypeError", "inflate expects bytes");
@@ -117,116 +69,197 @@ pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-                let msg = format!("inflate expects bytes, got {}", type_name(_py, obj));
-                return raise_exception(_py, "TypeError", &msg);
+                return raise_exception(
+                    _py,
+                    "TypeError",
+                    &format!("inflate expects bytes, got {}", type_name(_py, obj)),
+                );
             }
-            let len = bytes_len(ptr);
-            let data = bytes_data(ptr);
-            let slice = std::slice::from_raw_parts(data, len);
-            let mut decoder = DeflateDecoder::new(slice);
-            let mut out = Vec::new();
-            if decoder.read_to_end(&mut out).is_err() {
-                return raise_exception(_py, "ValueError", "invalid deflate data");
+            let input = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+            match decompress_bytes(input, -15, 16384) {
+                Ok(out) => return_bytes(_py, &out),
+                Err(ZlibFailure::Memory) => {
+                    raise_exception(_py, "MemoryError", "inflate out of memory")
+                }
+                Err(_) => raise_exception(_py, "ValueError", "invalid deflate data"),
             }
-            let out_ptr = alloc_bytes(_py, &out);
-            if out_ptr.is_null() {
-                return raise_exception(_py, "MemoryError", "inflate out of memory");
-            }
-            MoltObject::from_ptr(out_ptr).bits()
         }
     })
 }
 
-// ── zlib.compress ────────────────────────────────────────────────────────────
-
-/// `zlib.compress(data, level=Z_DEFAULT_COMPRESSION) -> bytes`
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compress(data_bits: u64, level_bits: u64) -> u64 {
+pub extern "C" fn molt_zlib_compress(
+    error_class: u64,
+    data_bits: u64,
+    level_bits: u64,
+    wbits_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
-        let compression = match zlib_compression_from_level(_py, level_bits) {
-            Ok(c) => c,
-            Err(bits) => return bits,
-        };
-        let mut encoder = ZlibEncoder::new(Vec::new(), compression);
-        if encoder.write_all(data).is_err() {
-            return raise_exception(_py, "error", "zlib.error: compress failed");
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &export,
+            data_bits,
+            "compress",
+            "argument 1",
+        ) {
+            return MoltObject::none().bits();
         }
-        let out = match encoder.finish() {
-            Ok(v) => v,
-            Err(_) => return raise_exception(_py, "error", "zlib.error: compress failed"),
-        };
-        return_bytes(_py, &out)
-    })
-}
-
-// ── zlib.decompress ──────────────────────────────────────────────────────────
-
-/// `zlib.decompress(data, wbits=MAX_WBITS, bufsize=DEF_BUF_SIZE) -> bytes`
-///
-/// wbits semantics:
-///   positive (8..15)  → zlib format
-///   negative (-8..-15) → raw deflate
-///   >= 16 (16+8..16+15) → gzip format
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompress(data_bits: u64, wbits_bits: u64, bufsize_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
+        let level = match zlib_index(_py, level_bits, ZlibIndexRole::CInt) {
+            Ok(value) => value as i32,
             Err(bits) => return bits,
         };
-        // wbits default = MAX_WBITS (15)
-        let wbits = {
-            let obj = obj_from_bits(wbits_bits);
-            if obj.is_none() {
-                15i64
-            } else {
-                let val = index_i64_from_obj(_py, wbits_bits, "wbits must be an integer");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                val
+        let wbits = match zlib_index(_py, wbits_bits, ZlibIndexRole::CInt) {
+            Ok(value) => value as i32,
+            Err(bits) => return bits,
+        };
+        match compress_bytes(unsafe { export.bytes(_py) }, level, wbits) {
+            Ok(out) => return_bytes(_py, &out),
+            Err(ZlibFailure::Memory) => {
+                raise_exception(_py, "MemoryError", "Out of memory while compressing data")
             }
-        };
-        // bufsize is accepted for API compatibility but we grow dynamically
-        let _bufsize = {
-            let obj = obj_from_bits(bufsize_bits);
-            if obj.is_none() {
-                16384i64
-            } else {
-                let val = index_i64_from_obj(_py, bufsize_bits, "bufsize must be an integer");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                val
+            Err(ZlibFailure::Initialization(zlib::Z_STREAM_ERROR)) => {
+                molt_runtime_core::rt_raise_class(_py, error_owner.bits(), "Bad compression level")
             }
-        };
-        let mut out = Vec::new();
-        let ok = if wbits >= 16 {
-            // gzip format
-            let mut decoder = GzDecoder::new(data);
-            decoder.read_to_end(&mut out).is_ok()
-        } else if wbits < 0 {
-            // raw deflate (negative wbits)
-            let mut decoder = DeflateDecoder::new(data);
-            decoder.read_to_end(&mut out).is_ok()
-        } else {
-            // zlib format (positive wbits)
-            let mut decoder = ZlibDecoder::new(data);
-            decoder.read_to_end(&mut out).is_ok()
-        };
-        if !ok {
-            return raise_exception(
+            Err(error) => molt_runtime_core::rt_raise_class(
                 _py,
-                "error",
-                "zlib.error: Error -3 while decompressing data: incorrect header check",
-            );
+                error_owner.bits(),
+                &error.message("while compressing data"),
+            ),
         }
-        return_bytes(_py, &out)
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_zlib_decompress(
+    error_class: u64,
+    data_bits: u64,
+    wbits_bits: u64,
+    bufsize_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &export,
+            data_bits,
+            "decompress",
+            "argument 1",
+        ) {
+            return MoltObject::none().bits();
+        }
+        let wbits = match zlib_index(_py, wbits_bits, ZlibIndexRole::CInt) {
+            Ok(value) => value as i32,
+            Err(bits) => return bits,
+        };
+        let initial = match zlib_index(_py, bufsize_bits, ZlibIndexRole::OutputSize) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if initial < 0 {
+            return raise_exception(_py, "ValueError", "bufsize must be non-negative");
+        }
+        match decompress_bytes(unsafe { export.bytes(_py) }, wbits, initial.max(1) as usize) {
+            Ok(out) => return_bytes(_py, &out),
+            Err(ZlibFailure::Memory) => {
+                raise_exception(_py, "MemoryError", "Out of memory while decompressing data")
+            }
+            Err(ZlibFailure::Initialization(code)) => molt_runtime_core::rt_raise_class(
+                _py,
+                error_owner.bits(),
+                &zlib_error_message(code, None, "while preparing to decompress data"),
+            ),
+            Err(error) => molt_runtime_core::rt_raise_class(
+                _py,
+                error_owner.bits(),
+                &error.message("while decompressing data"),
+            ),
+        }
+    })
+}
+
+// Shared pure byte consumers for gzip/tar/ZIP adapters. They hold no Python
+// references and reuse these exact stream owners, including fallible startup.
+pub(crate) enum ZlibFailure {
+    Memory,
+    Initialization(i32),
+    Stream(i32, Option<ZlibMessage>),
+}
+
+impl ZlibFailure {
+    pub(crate) fn message(&self, phase: &str) -> String {
+        match self {
+            Self::Memory => "out of memory".to_owned(),
+            Self::Initialization(code) => zlib_error_message(*code, None, phase),
+            Self::Stream(code, message) => zlib_error_message(*code, message.as_ref(), phase),
+        }
+    }
+}
+
+pub(crate) fn compress_bytes(input: &[u8], level: i32, wbits: i32) -> Result<Vec<u8>, ZlibFailure> {
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(16384)
+        .map_err(|_| ZlibFailure::Memory)?;
+    let encoder = DeflateState::new(level, 8, wbits, 8, 0).map_err(|code| {
+        if code == zlib::Z_MEM_ERROR {
+            ZlibFailure::Memory
+        } else {
+            ZlibFailure::Initialization(code)
+        }
+    })?;
+    let mut handle = CompressorHandle {
+        encoder: Some(encoder),
+    };
+    let result = handle
+        .deflate(input, zlib::Z_FINISH, 16384, output)
+        .map_err(|_| ZlibFailure::Memory)?;
+    match result.status {
+        Ok(ZlibStatus::StreamEnd) => Ok(result.output),
+        Err(code) => Err(ZlibFailure::Stream(code, result.message)),
+        Ok(_) => Err(ZlibFailure::Stream(zlib::Z_BUF_ERROR, result.message)),
+    }
+}
+
+pub(crate) fn decompress_bytes(
+    input: &[u8],
+    wbits: i32,
+    initial: usize,
+) -> Result<Vec<u8>, ZlibFailure> {
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(initial)
+        .map_err(|_| ZlibFailure::Memory)?;
+    let decoder = InflateState::new(wbits).map_err(|code| {
+        if code == zlib::Z_MEM_ERROR {
+            ZlibFailure::Memory
+        } else {
+            ZlibFailure::Initialization(code)
+        }
+    })?;
+    let mut handle = DecompressorHandle {
+        decoder: Some(decoder),
+        unconsumed_tail: Vec::new(),
+        unused_data: Vec::new(),
+        eof: false,
+    };
+    let result = handle
+        .inflate(input, isize::MAX as usize, initial, zlib::Z_FINISH, output)
+        .map_err(|_| ZlibFailure::Memory)?;
+    match result.status {
+        Ok(ZlibStatus::StreamEnd) => Ok(result.output),
+        Err(zlib::Z_MEM_ERROR) => Err(ZlibFailure::Memory),
+        Err(code) => Err(ZlibFailure::Stream(code, result.message)),
+        Ok(_) => Err(ZlibFailure::Stream(zlib::Z_BUF_ERROR, result.message)),
+    }
 }
 
 // ── zlib.crc32 ───────────────────────────────────────────────────────────────
@@ -235,10 +268,19 @@ pub extern "C" fn molt_zlib_decompress(data_bits: u64, wbits_bits: u64, bufsize_
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zlib_crc32(data_bits: u64, value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "crc32",
+            "argument 1",
+        ) {
+            return MoltObject::none().bits();
+        }
         let initial = {
             let obj = obj_from_bits(value_bits);
             if obj.is_none() {
@@ -251,7 +293,7 @@ pub extern "C" fn molt_zlib_crc32(data_bits: u64, value_bits: u64) -> u64 {
                 val as u32
             }
         };
-        let result = molt_runtime_core::crc32::crc32(data, initial);
+        let result = molt_runtime_core::crc32::crc32(unsafe { data_export.bytes(_py) }, initial);
         // CPython returns unsigned 32-bit int
         int_bits_from_i64(_py, i64::from(result))
     })
@@ -332,10 +374,19 @@ fn adler32_compute(data: &[u8], initial: u32) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zlib_adler32(data_bits: u64, value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "adler32",
+            "argument 1",
+        ) {
+            return MoltObject::none().bits();
+        }
         let initial = {
             let obj = obj_from_bits(value_bits);
             if obj.is_none() {
@@ -348,7 +399,7 @@ pub extern "C" fn molt_zlib_adler32(data_bits: u64, value_bits: u64) -> u64 {
                 val as u32
             }
         };
-        let result = adler32_compute(data, initial);
+        let result = adler32_compute(unsafe { data_export.bytes(_py) }, initial);
         int_bits_from_i64(_py, i64::from(result))
     })
 }
@@ -413,434 +464,967 @@ pub extern "C" fn molt_zlib_z_full_flush() -> u64 {
 
 // ── Streaming compressobj ────────────────────────────────────────────────────
 
-/// Internal format selector used by both compressobj and decompressobj.
-#[derive(Clone, Copy)]
-enum ZlibFormat {
-    /// Raw deflate (negative wbits)
-    Raw,
-    /// Zlib-wrapped (positive wbits 1..=15)
-    Zlib,
-    /// Gzip-wrapped (wbits 16..=31)
-    Gzip,
+// One public, fallibly initialized maintained-backend stream. Like upstream's
+// stable owner, it moves its inline z_stream: deflate state has no back-pointer.
+struct DeflateState {
+    stream: zlib::z_stream,
 }
 
-fn format_from_wbits(wbits: i64) -> ZlibFormat {
-    if wbits < 0 {
-        ZlibFormat::Raw
-    } else if wbits >= 16 {
-        ZlibFormat::Gzip
-    } else {
-        ZlibFormat::Zlib
+// SAFETY: production uses the backend Rust allocator with null opaque; callers
+// exclusively own the state under CompressorHandle's Mutex and clear all
+// borrowed input/output pointers before returning from the bounded call.
+unsafe impl Send for DeflateState {}
+
+impl DeflateState {
+    fn new(level: i32, method: i32, wbits: i32, memlevel: i32, strategy: i32) -> Result<Self, i32> {
+        unsafe {
+            Self::initialize(
+                level,
+                method,
+                wbits,
+                memlevel,
+                strategy,
+                zlib::z_stream::default(),
+            )
+        }
+    }
+
+    // Custom allocator callbacks/opaque must remain valid and transferable for
+    // the stream lifetime. The failure tests use this same public contract.
+    unsafe fn initialize(
+        level: i32,
+        method: i32,
+        wbits: i32,
+        memlevel: i32,
+        strategy: i32,
+        mut stream: zlib::z_stream,
+    ) -> Result<Self, i32> {
+        let status = unsafe {
+            zlib::deflateInit2_(
+                &mut stream,
+                level,
+                method,
+                wbits,
+                memlevel,
+                strategy,
+                zlib::zlibVersion(),
+                size_of::<zlib::z_stream>() as i32,
+            )
+        };
+        if status == zlib::Z_OK {
+            Ok(Self { stream })
+        } else {
+            Err(status)
+        }
+    }
+
+    fn end(&mut self) -> i32 {
+        unsafe { zlib::deflateEnd(&mut self.stream) }
     }
 }
 
-/// Compressor handle state.
-///
-/// We accumulate compressed bytes in an inner `Vec<u8>` and drain them on
-/// each `compress` / `flush` call. The enum variant selects the wrapper
-/// format (raw deflate, zlib, or gzip).
-enum CompressorInner {
-    Raw(DeflateEncoder<Vec<u8>>),
-    Zlib(ZlibEncoder<Vec<u8>>),
-    Gzip(flate2::write::GzEncoder<Vec<u8>>),
-    Finished,
-}
-
-struct CompressorHandle {
-    inner: CompressorInner,
-}
-
-fn compressor_from_bits(bits: u64) -> Option<&'static mut CompressorHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
+impl Drop for DeflateState {
+    fn drop(&mut self) {
+        // deflateEnd clears this public state pointer, also on unfinished-data
+        // errors. Explicit finish and ordinary owner retirement each free once.
+        if !self.stream.state.is_null() {
+            self.end();
+        }
     }
-    Some(unsafe { &mut *(ptr as *mut CompressorHandle) })
 }
 
-/// `zlib.compressobj(level, method, wbits, memlevel, strategy) -> handle`
-///
-/// `method` and `memlevel` are accepted for API compatibility but not
-/// forwarded to flate2 (it always uses deflate method 8 and a fixed
-/// memory level).
+pub struct CompressorHandle {
+    encoder: Option<DeflateState>,
+}
+
+impl CompressorHandle {
+    fn deflate(
+        &mut self,
+        input: &[u8],
+        flush: i32,
+        initial: usize,
+        mut output: Vec<u8>,
+    ) -> Result<ZlibResult, std::collections::TryReserveError> {
+        let Some(encoder) = self.encoder.as_mut() else {
+            return Ok(ZlibResult {
+                output: Vec::new(),
+                consumed: 0,
+                status: Err(zlib::Z_STREAM_ERROR),
+                message: None,
+            });
+        };
+        let mut consumed = 0;
+        let mut size = initial;
+        loop {
+            output.try_reserve_exact(size - output.len())?;
+            let old_len = output.len();
+            let available = (size - old_len).min(u32::MAX as usize);
+            let supplied = (input.len() - consumed).min(u32::MAX as usize);
+            // Finish/flush only the final input window; earlier windows must
+            // consume normally, without closing or adding intermediate markers.
+            let window_flush = if input.len() - consumed > u32::MAX as usize {
+                zlib::Z_NO_FLUSH
+            } else {
+                flush
+            };
+            encoder.stream.next_in = input[consumed..].as_ptr();
+            encoder.stream.avail_in = supplied as u32;
+            encoder.stream.next_out = output.spare_capacity_mut().as_mut_ptr().cast();
+            encoder.stream.avail_out = available as u32;
+            let code = unsafe { zlib::deflate(&mut encoder.stream, window_flush) };
+            let used = supplied - encoder.stream.avail_in as usize;
+            let written = available - encoder.stream.avail_out as usize;
+            encoder.stream.next_in = std::ptr::null();
+            encoder.stream.avail_in = 0;
+            encoder.stream.next_out = std::ptr::null_mut();
+            encoder.stream.avail_out = 0;
+            consumed += used;
+            // Only the public avail_out delta is initialized, even on failure.
+            unsafe { output.set_len(old_len + written) };
+            let mut status = match code {
+                zlib::Z_OK => Ok(ZlibStatus::Progress),
+                zlib::Z_BUF_ERROR => Ok(ZlibStatus::NeedInputOrOutput),
+                zlib::Z_STREAM_END => Ok(ZlibStatus::StreamEnd),
+                error => Err(error),
+            };
+            if used == 0 && written == 0 && consumed < input.len() {
+                status = Err(zlib::Z_BUF_ERROR);
+            }
+            if status.is_err()
+                || status == Ok(ZlibStatus::StreamEnd)
+                || (consumed == input.len() && written < available)
+            {
+                let mut message = snapshot_zlib_message(&encoder.stream);
+                if status == Ok(ZlibStatus::StreamEnd) && flush == zlib::Z_FINISH {
+                    let code = encoder.end();
+                    if code != zlib::Z_OK {
+                        status = Err(code);
+                        message = snapshot_zlib_message(&encoder.stream);
+                    }
+                    self.encoder = None;
+                }
+                return Ok(ZlibResult {
+                    output,
+                    consumed,
+                    status,
+                    message,
+                });
+            }
+            if output.len() == size {
+                size = size.checked_mul(2).unwrap_or(usize::MAX);
+            }
+        }
+    }
+}
+
+fn compressor_from_bits(bits: u64) -> Option<Arc<Mutex<CompressorHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_zlib_compressor_owner_clone,
+        )
+    }
+}
+
+/// Options are converted in Clinic order before backend validation. Supplied
+/// dictionary bytes are borrowed only through deflateSetDictionary, never saved
+/// as an untraced Python edge in the native owner.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zlib_compressobj_new(
+    error_class: u64,
     level_bits: u64,
-    _method_bits: u64,
+    method_bits: u64,
     wbits_bits: u64,
-    _memlevel_bits: u64,
-    _strategy_bits: u64,
+    memlevel_bits: u64,
+    strategy_bits: u64,
+    zdict_bits: u64,
+    zdict_present_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let compression = match zlib_compression_from_level(_py, level_bits) {
-            Ok(c) => c,
-            Err(bits) => return bits,
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let Some(zdict_present) = obj_from_bits(zdict_present_bits).as_bool() else {
+            return raise_exception(_py, "SystemError", "invalid zdict presence flag");
         };
-        let wbits = {
-            let obj = obj_from_bits(wbits_bits);
-            if obj.is_none() {
-                15i64 // MAX_WBITS
-            } else {
-                let val = index_i64_from_obj(_py, wbits_bits, "wbits must be an integer");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                val
-            }
-        };
-        let inner = match format_from_wbits(wbits) {
-            ZlibFormat::Raw => CompressorInner::Raw(DeflateEncoder::new(Vec::new(), compression)),
-            ZlibFormat::Zlib => CompressorInner::Zlib(ZlibEncoder::new(Vec::new(), compression)),
-            ZlibFormat::Gzip => {
-                CompressorInner::Gzip(flate2::write::GzEncoder::new(Vec::new(), compression))
-            }
-        };
-        let handle = Box::new(CompressorHandle { inner });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
-    })
-}
-
-/// `compressobj.compress(data) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compressobj_compress(handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = compressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "error", "zlib.error: invalid compressor handle");
-        };
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        let write_ok = match handle.inner {
-            CompressorInner::Raw(ref mut enc) => enc.write_all(data).is_ok(),
-            CompressorInner::Zlib(ref mut enc) => enc.write_all(data).is_ok(),
-            CompressorInner::Gzip(ref mut enc) => enc.write_all(data).is_ok(),
-            CompressorInner::Finished => {
-                return raise_exception(_py, "error", "zlib.error: compressor has been flushed");
-            }
-        };
-        if !write_ok {
-            return raise_exception(_py, "error", "zlib.error: compress failed");
-        }
-        // Drain buffered output so far.
-        let mut out = Vec::new();
-        match handle.inner {
-            CompressorInner::Raw(ref mut enc) => std::mem::swap(enc.get_mut(), &mut out),
-            CompressorInner::Zlib(ref mut enc) => {
-                std::mem::swap(enc.get_mut(), &mut out);
-            }
-            CompressorInner::Gzip(ref mut enc) => {
-                std::mem::swap(enc.get_mut(), &mut out);
-            }
-            CompressorInner::Finished => {}
-        }
-        return_bytes(_py, &out)
-    })
-}
-
-/// `compressobj.flush(mode=Z_FINISH) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compressobj_flush(handle_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = compressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "error", "zlib.error: invalid compressor handle");
-        };
-        let mode = {
-            let obj = obj_from_bits(mode_bits);
-            if obj.is_none() {
-                4i64 // Z_FINISH
-            } else {
-                let val = index_i64_from_obj(_py, mode_bits, "mode must be an integer");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                val
-            }
-        };
-        // Z_FINISH = 4 → finalize; Z_SYNC_FLUSH = 2 → sync flush; others → sync flush
-        if mode == 4 {
-            // Finalize: take ownership and finish the encoder.
-            let inner = std::mem::replace(&mut handle.inner, CompressorInner::Finished);
-            let out = match inner {
-                CompressorInner::Raw(enc) => match enc.finish() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return raise_exception(_py, "error", "zlib.error: flush failed");
-                    }
-                },
-                CompressorInner::Zlib(enc) => match enc.finish() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return raise_exception(_py, "error", "zlib.error: flush failed");
-                    }
-                },
-                CompressorInner::Gzip(enc) => match enc.finish() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return raise_exception(_py, "error", "zlib.error: flush failed");
-                    }
-                },
-                CompressorInner::Finished => {
-                    return raise_exception(
-                        _py,
-                        "error",
-                        "zlib.error: compressor has already been flushed",
-                    );
-                }
+        let mut options = [0i32; 5];
+        for (value, bits) in options.iter_mut().zip([
+            level_bits,
+            method_bits,
+            wbits_bits,
+            memlevel_bits,
+            strategy_bits,
+        ]) {
+            *value = match zlib_index(_py, bits, ZlibIndexRole::CInt) {
+                Ok(value) => value as i32,
+                Err(bits) => return bits,
             };
-            return_bytes(_py, &out)
+        }
+        let dictionary = if zdict_present {
+            let export = match unsafe { ByteInput::acquire(_py, zdict_bits) } {
+                Ok(export) => export,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            if !crate::compression_common::validate_clinic_buffer(
+                _py,
+                &export,
+                zdict_bits,
+                "compressobj",
+                "argument 'zdict'",
+            ) {
+                return MoltObject::none().bits();
+            }
+            Some(export)
         } else {
-            // Sync/full flush: flush the encoder but keep it alive.
-            let flush_ok = match handle.inner {
-                CompressorInner::Raw(ref mut enc) => enc.flush().is_ok(),
-                CompressorInner::Zlib(ref mut enc) => enc.flush().is_ok(),
-                CompressorInner::Gzip(ref mut enc) => enc.flush().is_ok(),
-                CompressorInner::Finished => {
+            None
+        };
+        if dictionary
+            .as_ref()
+            .is_some_and(|input| unsafe { input.bytes(_py) }.len() > u32::MAX as usize)
+        {
+            return raise_exception(
+                _py,
+                "OverflowError",
+                "zdict length does not fit in an unsigned int",
+            );
+        }
+        let mut encoder =
+            match DeflateState::new(options[0], options[1], options[2], options[3], options[4]) {
+                Ok(encoder) => encoder,
+                Err(zlib::Z_MEM_ERROR) => {
                     return raise_exception(
                         _py,
-                        "error",
-                        "zlib.error: compressor has been flushed",
+                        "MemoryError",
+                        "Can't allocate memory for compression object",
+                    );
+                }
+                Err(zlib::Z_STREAM_ERROR) => {
+                    return raise_exception(_py, "ValueError", "Invalid initialization option");
+                }
+                Err(code) => {
+                    return molt_runtime_core::rt_raise_class(
+                        _py,
+                        error_owner.bits(),
+                        &zlib_error_message(code, None, "while creating compression object"),
                     );
                 }
             };
-            if !flush_ok {
-                return raise_exception(_py, "error", "zlib.error: flush failed");
+        if let Some(dictionary) = dictionary.as_ref() {
+            let bytes = unsafe { dictionary.bytes(_py) };
+            let code = unsafe {
+                zlib::deflateSetDictionary(&mut encoder.stream, bytes.as_ptr(), bytes.len() as u32)
+            };
+            if code != zlib::Z_OK {
+                return raise_exception(
+                    _py,
+                    "ValueError",
+                    if code == zlib::Z_STREAM_ERROR {
+                        "Invalid dictionary"
+                    } else {
+                        "deflateSetDictionary()"
+                    },
+                );
             }
-            let mut out = Vec::new();
-            match handle.inner {
-                CompressorInner::Raw(ref mut enc) => {
-                    std::mem::swap(enc.get_mut(), &mut out);
-                }
-                CompressorInner::Zlib(ref mut enc) => {
-                    std::mem::swap(enc.get_mut(), &mut out);
-                }
-                CompressorInner::Gzip(ref mut enc) => {
-                    std::mem::swap(enc.get_mut(), &mut out);
-                }
-                CompressorInner::Finished => {}
-            }
-            return_bytes(_py, &out)
+        }
+        let owner = Arc::new(Mutex::new(CompressorHandle {
+            encoder: Some(encoder),
+        }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                owner,
+                __molt_compression_zlib_compressor_owner_new,
+            )
         }
     })
 }
 
-/// Drop the compressor handle.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compressobj_drop(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_zlib_compressobj_compress(
+    error_class: u64,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let Some(handle_owner) = compressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_owner.bits(),
+                "invalid compressor handle",
+            );
+        };
+        let export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &export,
+            data_bits,
+            "compress",
+            "argument 1",
+        ) {
             return MoltObject::none().bits();
         }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut CompressorHandle) };
-        MoltObject::none().bits()
+        let result = {
+            let mut handle = handle_owner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            handle.deflate(
+                unsafe { export.bytes(_py) },
+                zlib::Z_NO_FLUSH,
+                16384,
+                Vec::new(),
+            )
+        };
+        finish_deflate_output(_py, error_owner.bits(), result, "while compressing data")
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_zlib_compressobj_flush(
+    error_class: u64,
+    handle_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_gil_entry!(_py, {
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let Some(handle_owner) = compressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_owner.bits(),
+                "invalid compressor handle",
+            );
+        };
+        let mode = match zlib_index(_py, mode_bits, ZlibIndexRole::CInt) {
+            Ok(value) => value as i32,
+            Err(bits) => return bits,
+        };
+        // Clinic converts even on a retired stream; Z_NO_FLUSH then does
+        // nothing, including after a successful Z_FINISH.
+        if mode == zlib::Z_NO_FLUSH {
+            return return_bytes(_py, &[]);
+        }
+        let result = {
+            let mut handle = handle_owner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            handle.deflate(&[], mode, 16384, Vec::new())
+        };
+        finish_deflate_output(_py, error_owner.bits(), result, "while flushing")
+    })
+}
+
+fn finish_deflate_output(
+    py: &PyToken,
+    error_class: u64,
+    result: Result<ZlibResult, std::collections::TryReserveError>,
+    phase: &str,
+) -> u64 {
+    match result {
+        Err(_) => raise_exception(py, "MemoryError", "Out of memory while compressing data"),
+        Ok(result) => match result.status {
+            Err(code) => molt_runtime_core::rt_raise_class(
+                py,
+                error_class,
+                &zlib_error_message(code, result.message.as_ref(), phase),
+            ),
+            Ok(_) => return_bytes(py, &result.output),
+        },
+    }
 }
 
 // ── Streaming decompressobj ──────────────────────────────────────────────────
 
-struct DecompressorHandle {
-    format: ZlibFormat,
-    /// Buffered input not yet consumed by the decompressor.
-    leftover: Vec<u8>,
-    /// Unconsumed tail after a max_length-limited decompress. Per CPython
-    /// zlib, this is input that was part of the compressed stream but not yet
-    /// processed because `max_length` capped the returned output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ZlibStatus {
+    Progress,
+    NeedInputOrOutput,
+    StreamEnd,
+}
+
+// The public C API uses the same maintained backend as flate2, but exposes its
+// fallible initialization result. Upstream's stable Rust owner also moves its
+// inline z_stream after initialization: inflate state has no back-pointer to it.
+struct InflateState {
+    stream: zlib::z_stream,
+}
+
+// SAFETY: only the Rust allocator with null opaque is installed in production.
+// All state use is exclusive through DecompressorHandle's existing Mutex, and
+// transient caller slices are cleared before that lock can be released.
+unsafe impl Send for InflateState {}
+
+impl InflateState {
+    fn new(wbits: i32) -> Result<Self, i32> {
+        unsafe { Self::initialize(wbits, zlib::z_stream::default()) }
+    }
+
+    // One bounded engine call shared by the Python stream and file reader.
+    // It borrows no input/output beyond this call and never allocates a buffer.
+    fn window(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], flush: i32) -> ZlibWindow {
+        let supplied = input.len().min(u32::MAX as usize);
+        let available = output.len().min(u32::MAX as usize);
+        self.stream.next_in = input.as_ptr();
+        self.stream.avail_in = supplied as u32;
+        self.stream.next_out = output.as_mut_ptr().cast();
+        self.stream.avail_out = available as u32;
+        let code = unsafe { zlib::inflate(&mut self.stream, flush) };
+        let consumed = supplied - self.stream.avail_in as usize;
+        let written = available - self.stream.avail_out as usize;
+        self.stream.next_in = std::ptr::null();
+        self.stream.avail_in = 0;
+        self.stream.next_out = std::ptr::null_mut();
+        self.stream.avail_out = 0;
+        let status = match code {
+            zlib::Z_OK => Ok(ZlibStatus::Progress),
+            zlib::Z_BUF_ERROR => Ok(ZlibStatus::NeedInputOrOutput),
+            zlib::Z_STREAM_END => Ok(ZlibStatus::StreamEnd),
+            error => Err(error),
+        };
+        ZlibWindow {
+            consumed,
+            written,
+            status,
+            message: if status.is_err() {
+                snapshot_zlib_message(&self.stream)
+            } else {
+                None
+            },
+        }
+    }
+
+    // SAFETY: custom allocation callbacks and opaque must remain valid for the
+    // stream lifetime and support its transfer between threads. This is the
+    // actual z_stream allocation contract, also used by the failure control.
+    unsafe fn initialize(wbits: i32, mut stream: zlib::z_stream) -> Result<Self, i32> {
+        let status = unsafe {
+            zlib::inflateInit2_(
+                &mut stream,
+                wbits,
+                zlib::zlibVersion(),
+                size_of::<zlib::z_stream>() as i32,
+            )
+        };
+        if status == zlib::Z_OK {
+            Ok(Self { stream })
+        } else {
+            // inflateInit2_ cleans up its own partial initialization on failure.
+            Err(status)
+        }
+    }
+}
+
+impl Drop for InflateState {
+    fn drop(&mut self) {
+        unsafe { zlib::inflateEnd(&mut self.stream) };
+    }
+}
+
+pub struct DecompressorHandle {
+    // One maintained backend stream, retired only by a completed flush or Drop.
+    // No compressed input or decompressed output is replayed on the next call.
+    decoder: Option<InflateState>,
     unconsumed_tail: Vec<u8>,
-    /// Bytes found *after* the end of the compressed data stream. Per CPython
-    /// zlib, `unused_data` stays b"" until the final byte of compressed data
-    /// has been seen (i.e. EOF), then holds any trailing/concatenated bytes.
-    /// This is distinct from `unconsumed_tail`.
     unused_data: Vec<u8>,
     eof: bool,
 }
 
-fn decompressor_from_bits(bits: u64) -> Option<&'static mut DecompressorHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
+// CPython zlib_error limits the backend diagnostic to 200 bytes. Copy that
+// bounded payload while the stream is owned, without allocating under its lock.
+pub(crate) struct ZlibMessage {
+    bytes: [u8; 200],
+    len: usize,
+}
+
+struct ZlibResult {
+    output: Vec<u8>,
+    consumed: usize,
+    status: Result<ZlibStatus, i32>,
+    message: Option<ZlibMessage>,
+}
+
+struct ZlibWindow {
+    consumed: usize,
+    written: usize,
+    status: Result<ZlibStatus, i32>,
+    message: Option<ZlibMessage>,
+}
+
+// Existing filename gzip reads are sequential and single-member. Preserve that
+// contract with bounded buffered input and direct caller output; no replay,
+// per-read decoder, decoded history, or second decompression implementation.
+pub(crate) struct GzipReader<R> {
+    input: R,
+    decoder: InflateState,
+    eof: bool,
+}
+
+impl<R: BufRead> GzipReader<R> {
+    pub(crate) fn new(input: R) -> Result<Self, i32> {
+        Ok(Self {
+            input,
+            decoder: InflateState::new(31)?,
+            eof: false,
+        })
+    }
+}
+
+impl<R: BufRead> Read for GzipReader<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.eof {
+            return Ok(0);
+        }
+        loop {
+            let input = self.input.fill_buf()?;
+            let source_empty = input.is_empty();
+            // Every byte of the caller's initialized output remains initialized;
+            // the shared engine reports exactly which prefix it overwrote.
+            let spare = unsafe {
+                std::slice::from_raw_parts_mut(
+                    output.as_mut_ptr().cast::<MaybeUninit<u8>>(),
+                    output.len(),
+                )
+            };
+            // Stop at the deflate block boundary so final body bytes are
+            // observable before the next read validates the gzip trailer, as
+            // with the previous sequential GzDecoder reader.
+            let result = self.decoder.window(input, spare, zlib::Z_BLOCK);
+            self.input.consume(result.consumed);
+            if result.status.is_err() {
+                // The native reader boundary owns its existing fixed OSError
+                // message. Keep this transport error allocation-free under the
+                // handle mutex; public zlib calls retain the backend diagnostic.
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            if result.status == Ok(ZlibStatus::StreamEnd) {
+                self.eof = true;
+            }
+            if result.written != 0 || self.eof {
+                return Ok(result.written);
+            }
+            // Z_BLOCK can finish an empty block using bits retained from a
+            // prior input window. Public data_type bit128 identifies that
+            // boundary; the next call advances past it without new input.
+            if result.consumed == 0 && self.decoder.stream.data_type & 128 != 0 {
+                continue;
+            }
+            if source_empty {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            if result.consumed == 0 {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
+    }
+}
+
+impl DecompressorHandle {
+    fn inflate(
+        &mut self,
+        input: &[u8],
+        limit: usize,
+        initial: usize,
+        flush: i32,
+        mut output: Vec<u8>,
+    ) -> Result<ZlibResult, std::collections::TryReserveError> {
+        let Some(decoder) = self.decoder.as_mut() else {
+            return Ok(ZlibResult {
+                output: Vec::new(),
+                consumed: 0,
+                status: Err(zlib::Z_STREAM_ERROR),
+                message: None,
+            });
+        };
+        if self.eof {
+            return Ok(ZlibResult {
+                output: Vec::new(),
+                consumed: 0,
+                status: Ok(ZlibStatus::StreamEnd),
+                message: None,
+            });
+        }
+        let mut consumed = 0;
+        let mut size = initial.min(limit);
+        loop {
+            // Spare capacity is the actual output window. Restrict it explicitly:
+            // an allocator may provide more capacity than requested.
+            output.try_reserve_exact(size - output.len())?;
+            let old_len = output.len();
+            let available = (size - old_len).min(u32::MAX as usize);
+            let window_flush =
+                if flush == zlib::Z_FINISH && input.len() - consumed > u32::MAX as usize {
+                    zlib::Z_NO_FLUSH
+                } else {
+                    flush
+                };
+            let result = decoder.window(
+                &input[consumed..],
+                &mut output.spare_capacity_mut()[..available],
+                window_flush,
+            );
+            let used = result.consumed;
+            let written = result.written;
+            let status = result.status;
+            consumed += used;
+            // The backend initialized exactly the avail_out delta, including on
+            // errors. No runtime callback occurs while these slices are live.
+            unsafe { output.set_len(old_len + written) };
+            let complete = status == Ok(ZlibStatus::StreamEnd) || status.is_err();
+            if complete
+                || output.len() == limit
+                || (used == 0 && written == 0)
+                || (consumed == input.len() && written < available)
+            {
+                return Ok(ZlibResult {
+                    output,
+                    consumed,
+                    status,
+                    message: result.message,
+                });
+            }
+            if output.len() == size {
+                size = size.saturating_mul(2).min(limit);
+            }
+        }
+    }
+
+    // CPython save_unconsumed_input: each decompress call supplies only its
+    // explicit input. A caller chooses whether to resubmit unconsumed_tail;
+    // flush is the sole operation that implicitly consumes that saved tail.
+    fn save_input<'a>(
+        &mut self,
+        input: Cow<'a, [u8]>,
+        result: &ZlibResult,
+        had_tail: bool,
+    ) -> Result<(), (std::collections::TryReserveError, Cow<'a, [u8]>)> {
+        let remaining = &input[result.consumed..];
+        let ended = result.status == Ok(ZlibStatus::StreamEnd);
+        if ended && !remaining.is_empty() {
+            if let Err(error) = self.unused_data.try_reserve(remaining.len()) {
+                return Err((error, input));
+            }
+            self.unused_data.extend_from_slice(remaining);
+        }
+        if (!ended && !remaining.is_empty()) || had_tail {
+            self.unconsumed_tail = match input {
+                Cow::Borrowed(input) => {
+                    let remaining = &input[result.consumed..];
+                    let mut tail = Vec::new();
+                    if let Err(error) = tail.try_reserve_exact(remaining.len()) {
+                        return Err((error, Cow::Borrowed(input)));
+                    }
+                    tail.extend_from_slice(remaining);
+                    tail
+                }
+                Cow::Owned(mut input) => {
+                    input.drain(..result.consumed);
+                    input
+                }
+            };
+        }
+        if ended {
+            self.eof = true;
+        }
+        Ok(())
+    }
+}
+
+enum ZlibIndexRole {
+    CInt,
+    OutputSize,
+}
+
+// Argument Clinic uses the existing C-API integer authority for these roles.
+// Integer callbacks happen before the stream mutex is acquired.
+fn zlib_index(py: &PyToken, bits: u64, role: ZlibIndexRole) -> Result<i64, u64> {
+    unsafe {
+        let object = NativeObjectOwner::from_owned(retire_native_reference(|| {
+            abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits)
+        }));
+        if object.as_ptr().is_null() {
+            return Err(MoltObject::none().bits());
+        }
+        let value = if matches!(role, ZlibIndexRole::CInt) {
+            retire_native_reference(|| abi::api::numbers::PyLong_AsInt(object.as_ptr())) as i64
+        } else {
+            let integer = NativeObjectOwner::from_owned(retire_native_reference(|| {
+                abi::api::abstract_number::PyNumber_Index(object.as_ptr())
+            }));
+            if integer.as_ptr().is_null() {
+                return Err(MoltObject::none().bits());
+            }
+            retire_native_reference(|| abi::api::numbers::PyLong_AsSsize_t(integer.as_ptr())) as i64
+        };
+        if exception_pending(py) {
+            Err(MoltObject::none().bits())
+        } else {
+            Ok(value)
+        }
+    }
+}
+
+fn snapshot_zlib_message(stream: &zlib::z_stream) -> Option<ZlibMessage> {
+    if stream.msg.is_null() {
         return None;
     }
-    Some(unsafe { &mut *(ptr as *mut DecompressorHandle) })
+    let source = unsafe { std::ffi::CStr::from_ptr(stream.msg) }.to_bytes();
+    let len = source.len().min(200);
+    let mut message = ZlibMessage {
+        bytes: [0; 200],
+        len,
+    };
+    message.bytes[..len].copy_from_slice(&source[..len]);
+    Some(message)
+}
+
+fn zlib_error_message(code: i32, message: Option<&ZlibMessage>, phase: &str) -> String {
+    let message = message.map(|message| String::from_utf8_lossy(&message.bytes[..message.len]));
+    let fallback = match code {
+        zlib::Z_VERSION_ERROR => Some("library version mismatch"),
+        zlib::Z_BUF_ERROR => Some("incomplete or truncated stream"),
+        zlib::Z_STREAM_ERROR => Some("inconsistent stream state"),
+        zlib::Z_DATA_ERROR => Some("invalid input data"),
+        _ => None,
+    };
+    match message.as_deref().or(fallback) {
+        Some(message) => format!("Error {code} {phase}: {message}"),
+        None => format!("Error {code} {phase}"),
+    }
+}
+
+fn decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<DecompressorHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_zlib_decompressor_owner_clone,
+        )
+    }
 }
 
 /// `zlib.decompressobj(wbits=MAX_WBITS) -> handle`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let wbits = {
-            let obj = obj_from_bits(wbits_bits);
-            if obj.is_none() {
-                15i64
-            } else {
-                let val = index_i64_from_obj(_py, wbits_bits, "wbits must be an integer");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                val
+        let wbits = match zlib_index(_py, wbits_bits, ZlibIndexRole::CInt) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let decoder = match InflateState::new(wbits as i32) {
+            Ok(decoder) => decoder,
+            Err(zlib::Z_MEM_ERROR) => {
+                return raise_exception(
+                    _py,
+                    "MemoryError",
+                    "Can't allocate memory for decompression object",
+                );
+            }
+            Err(zlib::Z_STREAM_ERROR) => {
+                return raise_exception(_py, "ValueError", "Invalid initialization option");
+            }
+            Err(_) => {
+                return raise_exception(
+                    _py,
+                    "SystemError",
+                    "zlib decompressor ABI initialization failed",
+                );
             }
         };
-        let handle = Box::new(DecompressorHandle {
-            format: format_from_wbits(wbits),
-            leftover: Vec::new(),
+        let handle = Arc::new(Mutex::new(DecompressorHandle {
+            decoder: Some(decoder),
             unconsumed_tail: Vec::new(),
             unused_data: Vec::new(),
             eof: false,
-        });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
+        }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                handle,
+                __molt_compression_zlib_decompressor_owner_new,
+            )
+        }
     })
-}
-
-/// Decompress `input` using the given format, returning (decompressed, bytes_consumed).
-fn decompress_chunk(format: ZlibFormat, input: &[u8]) -> Result<(Vec<u8>, usize), String> {
-    let mut out = Vec::new();
-    let consumed;
-    match format {
-        ZlibFormat::Raw => {
-            let mut decoder = DeflateDecoder::new(input);
-            match decoder.read_to_end(&mut out) {
-                Ok(_) => {
-                    consumed = input.len() - decoder.into_inner().len();
-                }
-                Err(e) => return Err(format!("zlib.error: {e}")),
-            }
-        }
-        ZlibFormat::Zlib => {
-            let mut decoder = ZlibDecoder::new(input);
-            match decoder.read_to_end(&mut out) {
-                Ok(_) => {
-                    consumed = input.len() - decoder.into_inner().len();
-                }
-                Err(e) => return Err(format!("zlib.error: {e}")),
-            }
-        }
-        ZlibFormat::Gzip => {
-            let mut decoder = GzDecoder::new(input);
-            match decoder.read_to_end(&mut out) {
-                Ok(_) => {
-                    consumed = input.len() - decoder.into_inner().len();
-                }
-                Err(e) => return Err(format!("zlib.error: {e}")),
-            }
-        }
-    }
-    Ok((out, consumed))
 }
 
 /// `decompressobj.decompress(data, max_length=0) -> bytes`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zlib_decompressobj_decompress(
+    error_class: u64,
     handle_bits: u64,
     data_bits: u64,
     max_length_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "error", "zlib.error: invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "zlib.error: invalid decompressor handle",
+            );
         };
-        if handle.eof {
-            return raise_exception(_py, "error", "zlib.error: inconsistent stream state");
+        let new_data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &new_data_export,
+            data_bits,
+            "decompress",
+            "argument 1",
+        ) {
+            return MoltObject::none().bits();
         }
-        let new_data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
+        let max_length = match zlib_index(_py, max_length_bits, ZlibIndexRole::OutputSize) {
+            Ok(value) => value,
             Err(bits) => return bits,
         };
-        let max_length = {
-            let obj = obj_from_bits(max_length_bits);
-            if obj.is_none() {
-                0i64
-            } else {
-                let val = index_i64_from_obj(_py, max_length_bits, "max_length must be an integer");
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                val
-            }
-        };
-        // Assemble input: leftover + unconsumed_tail + new data
-        let mut input = std::mem::take(&mut handle.leftover);
-        input.extend_from_slice(&std::mem::take(&mut handle.unconsumed_tail));
-        input.extend_from_slice(new_data);
-
-        let (mut out, consumed) = match decompress_chunk(handle.format, &input) {
-            Ok(pair) => pair,
-            Err(msg) => {
-                // Partial data: store everything for next call
-                handle.leftover = input;
-                return raise_exception(_py, "error", &msg);
-            }
-        };
-
-        let remaining = &input[consumed..];
-        let reached_eof = consumed > 0;
-
-        // Honour max_length
-        if max_length > 0 && out.len() > max_length as usize {
-            // We cannot truly "re-feed" partial output to flate2, so we
-            // stash everything beyond max_length as unconsumed_tail and mark
-            // not-EOF so the caller can call flush() to get the rest. The
-            // remaining input is part of the (still-unfinished-from the
-            // caller's view) stream, so it is unconsumed_tail, not unused_data.
-            handle.unconsumed_tail = remaining.to_vec();
-            handle.unused_data.clear();
-            // Keep the excess output in leftover so flush() can return it.
-            let excess = out.split_off(max_length as usize);
-            handle.leftover = excess;
-            handle.eof = false;
-        } else if reached_eof {
-            // The compressed stream ended and its whole output fit within
-            // max_length. Any bytes after `consumed` are past the end of the
-            // compressed data — CPython exposes these as `unused_data`, not
-            // `unconsumed_tail`. unconsumed_tail is empty once the stream is
-            // complete.
-            handle.unused_data = remaining.to_vec();
-            handle.unconsumed_tail.clear();
-            handle.eof = true;
-        } else {
-            // Stream not yet complete (flate2 consumed nothing decisive): the
-            // whole remainder is still pending compressed input.
-            handle.unconsumed_tail = remaining.to_vec();
+        if max_length < 0 {
+            return raise_exception(_py, "ValueError", "max_length must be non-negative");
         }
-
-        return_bytes(_py, &out)
+        let limit = if max_length == 0 {
+            isize::MAX as usize
+        } else {
+            max_length as usize
+        };
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let input = unsafe { new_data_export.bytes(_py) };
+        let result = match handle.inflate(input, limit, 16 * 1024, zlib::Z_SYNC_FLUSH, Vec::new()) {
+            Ok(result) => result,
+            Err(_) => {
+                drop(handle);
+                return raise_exception(_py, "MemoryError", "out of memory");
+            }
+        };
+        let had_tail = !handle.unconsumed_tail.is_empty();
+        if handle
+            .save_input(Cow::Borrowed(input), &result, had_tail)
+            .is_err()
+        {
+            drop(handle);
+            return raise_exception(_py, "MemoryError", "out of memory");
+        }
+        drop(handle);
+        if let Err(error) = result.status {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                &zlib_error_message(error, result.message.as_ref(), "while decompressing data"),
+            );
+        }
+        return_bytes(_py, &result.output)
     })
 }
 
 /// `decompressobj.flush(length=DEF_BUF_SIZE) -> bytes`
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_flush(handle_bits: u64, _length_bits: u64) -> u64 {
+pub extern "C" fn molt_zlib_decompressobj_flush(
+    error_class: u64,
+    handle_bits: u64,
+    _length_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "error", "zlib.error: invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "zlib.error: invalid decompressor handle",
+            );
         };
-        // Return any buffered leftover output from a max_length-limited decompress.
-        let out = std::mem::take(&mut handle.leftover);
-        handle.eof = true;
-        return_bytes(_py, &out)
+
+        let length = match zlib_index(_py, _length_bits, ZlibIndexRole::OutputSize) {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if length <= 0 {
+            return raise_exception(_py, "ValueError", "length must be greater than zero");
+        }
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Move, rather than copy, the only input implicitly consumed by flush.
+        let input = std::mem::take(&mut handle.unconsumed_tail);
+        let result = match handle.inflate(
+            &input,
+            isize::MAX as usize,
+            length as usize,
+            zlib::Z_FINISH,
+            Vec::new(),
+        ) {
+            Ok(result) => result,
+            Err(_) => {
+                handle.unconsumed_tail = input;
+                drop(handle);
+                return raise_exception(_py, "MemoryError", "out of memory");
+            }
+        };
+        let had_tail = !input.is_empty();
+        if let Err((_, input)) = handle.save_input(Cow::Owned(input), &result, had_tail) {
+            // The tail was moved only to borrow it during inflate. A failed
+            // unused_data allocation must not retire that pre-existing owner.
+            handle.unconsumed_tail = input.into_owned();
+            drop(handle);
+            return raise_exception(_py, "MemoryError", "out of memory");
+        }
+        if result.status == Ok(ZlibStatus::StreamEnd) {
+            handle.decoder = None;
+        }
+        // CPython flush preserves incomplete state and returns partial output;
+        // only STREAM_END retires inflate state. Repeated flush returns b"".
+        drop(handle);
+        return_bytes(_py, &result.output)
     })
 }
 
 /// `decompressobj.eof` property
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_eof(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_zlib_decompressobj_eof(error_class: u64, handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "error", "zlib.error: invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "zlib.error: invalid decompressor handle",
+            );
         };
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         MoltObject::from_bool(handle.eof).bits()
     })
 }
 
 /// `decompressobj.unconsumed_tail` property
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_unconsumed_tail(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_zlib_decompressobj_unconsumed_tail(
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "error", "zlib.error: invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "zlib.error: invalid decompressor handle",
+            );
         };
-        return_bytes(_py, &handle.unconsumed_tail)
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        {
+            let bytes = handle.unconsumed_tail.clone();
+            drop(handle);
+            return_bytes(_py, &bytes)
+        }
     })
 }
 
@@ -850,25 +1434,317 @@ pub extern "C" fn molt_zlib_decompressobj_unconsumed_tail(handle_bits: u64) -> u
 /// data has been processed; once the stream ends it holds any bytes found
 /// past the end of the compressed data (e.g. trailing/concatenated streams).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_unused_data(handle_bits: u64) -> u64 {
+pub extern "C" fn molt_zlib_decompressobj_unused_data(error_class: u64, handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = decompressor_from_bits(handle_bits) else {
-            return raise_exception(_py, "error", "zlib.error: invalid decompressor handle");
+        let error_owner = OwnedRuntimeValue::retain(_py, error_class);
+        let error_class = error_owner.bits();
+        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+            return molt_runtime_core::rt_raise_class(
+                _py,
+                error_class,
+                "zlib.error: invalid decompressor handle",
+            );
         };
-        return_bytes(_py, &handle.unused_data)
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        {
+            let bytes = handle.unused_data.clone();
+            drop(handle);
+            return_bytes(_py, &bytes)
+        }
     })
 }
 
-/// Drop the decompressor handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DeniedAllocator {
+        allocations: AtomicUsize,
+        frees: AtomicUsize,
+    }
+
+    unsafe extern "C" fn deny_allocation(
+        opaque: zlib::voidpf,
+        _items: zlib::uInt,
+        _size: zlib::uInt,
+    ) -> zlib::voidpf {
+        let counts = unsafe { &*opaque.cast::<DeniedAllocator>() };
+        counts.allocations.fetch_add(1, Ordering::Relaxed);
+        std::ptr::null_mut()
+    }
+
+    unsafe extern "C" fn count_free(opaque: zlib::voidpf, _pointer: zlib::voidpf) {
+        let counts = unsafe { &*opaque.cast::<DeniedAllocator>() };
+        counts.frees.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn inflate_initialization_reports_allocator_denial() {
+        // Exercise the maintained public allocator contract, not a mocked
+        // status. A backend allocation refusal must be returned, never asserted.
+        let mut counts = DeniedAllocator {
+            allocations: AtomicUsize::new(0),
+            frees: AtomicUsize::new(0),
+        };
+        let stream = zlib::z_stream {
+            zalloc: Some(deny_allocation),
+            zfree: Some(count_free),
+            opaque: (&mut counts as *mut DeniedAllocator).cast(),
+            ..zlib::z_stream::default()
+        };
+        let result = unsafe { InflateState::initialize(-15, stream) };
+        assert!(matches!(result, Err(zlib::Z_MEM_ERROR)));
+        assert!(counts.allocations.load(Ordering::Relaxed) > 0);
+        assert_eq!(counts.frees.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn raw_stream_keeps_progress_and_trailer_after_owner_move() {
+        // Independent RFC 1951 final stored block, followed by non-deflate data.
+        // Moving the initialized owner must preserve the backend state, and a
+        // bounded output window must retain compressed input rather than replay.
+        let input = b"\x01\x0b\x00\xf4\xffhello worldTAIL";
+        let mut decoder = InflateState::new(-15).unwrap();
+        // Exercise the actual cumulative-counter boundary without allocating a
+        // 4 GiB input. On every native width, an unchecked backend += would fail.
+        decoder.stream.total_in = zlib::uLong::MAX;
+        let mut handle = DecompressorHandle {
+            decoder: Some(decoder),
+            unconsumed_tail: Vec::new(),
+            unused_data: Vec::new(),
+            eof: false,
+        };
+        let first = handle
+            .inflate(input, 3, 3, zlib::Z_SYNC_FLUSH, Vec::new())
+            .unwrap();
+        assert_eq!(first.output, b"hel");
+        assert_eq!(
+            handle.decoder.as_ref().unwrap().stream.total_in,
+            zlib::uLong::MAX.wrapping_add(first.consumed as zlib::uLong),
+        );
+        assert_ne!(first.status, Ok(ZlibStatus::StreamEnd));
+        assert!(
+            handle
+                .save_input(Cow::Borrowed(input), &first, false)
+                .is_ok()
+        );
+        assert!(!handle.eof);
+        let tail = std::mem::take(&mut handle.unconsumed_tail);
+        let tail_pointer = tail.as_ptr();
+        let last = handle
+            .inflate(&tail, isize::MAX as usize, 1, zlib::Z_FINISH, Vec::new())
+            .unwrap();
+        assert_eq!(last.output, b"lo world");
+        assert_eq!(last.status, Ok(ZlibStatus::StreamEnd));
+        assert!(handle.save_input(Cow::Owned(tail), &last, true).is_ok());
+        assert!(handle.eof);
+        assert_eq!(handle.unused_data, b"TAIL");
+        assert_eq!(handle.unconsumed_tail, b"TAIL");
+        assert_eq!(handle.unconsumed_tail.as_ptr(), tail_pointer);
+        let stream = &handle.decoder.as_ref().unwrap().stream;
+        assert!(stream.next_in.is_null());
+        assert!(stream.next_out.is_null());
+        assert_eq!((stream.avail_in, stream.avail_out), (0, 0));
+    }
+
+    #[test]
+    fn deflate_initialization_reports_allocator_denial_and_invalid_options() {
+        let mut counts = DeniedAllocator {
+            allocations: AtomicUsize::new(0),
+            frees: AtomicUsize::new(0),
+        };
+        let stream = zlib::z_stream {
+            zalloc: Some(deny_allocation),
+            zfree: Some(count_free),
+            opaque: (&mut counts as *mut DeniedAllocator).cast(),
+            ..zlib::z_stream::default()
+        };
+        let result = unsafe { DeflateState::initialize(6, 8, 15, 8, 0, stream) };
+        assert!(matches!(result, Err(zlib::Z_MEM_ERROR)));
+        assert!(counts.allocations.load(Ordering::Relaxed) > 0);
+        assert_eq!(counts.frees.load(Ordering::Relaxed), 0);
+        for (level, method, window, memory, strategy) in [
+            (10, 8, 15, 8, 0),
+            (6, 7, 15, 8, 0),
+            (6, 8, -8, 8, 0),
+            (6, 8, 24, 8, 0),
+            (6, 8, 15, 0, 0),
+            (6, 8, 15, 8, 5),
+        ] {
+            assert!(matches!(
+                DeflateState::new(level, method, window, memory, strategy),
+                Err(zlib::Z_STREAM_ERROR)
+            ));
         }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut DecompressorHandle) };
-        MoltObject::none().bits()
-    })
+    }
+
+    struct CountingAllocator {
+        allocations: AtomicUsize,
+        frees: AtomicUsize,
+    }
+
+    unsafe extern "C" fn counted_allocate(
+        opaque: zlib::voidpf,
+        items: zlib::uInt,
+        size: zlib::uInt,
+    ) -> zlib::voidpf {
+        let context = unsafe { &*opaque.cast::<CountingAllocator>() };
+        let Some(bytes) = (items as usize).checked_mul(size as usize) else {
+            return std::ptr::null_mut();
+        };
+        if bytes == 0 {
+            return std::ptr::null_mut();
+        }
+        let Some(total) = bytes.checked_add(std::mem::size_of::<usize>()) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(layout) = std::alloc::Layout::from_size_align(total, std::mem::align_of::<usize>())
+        else {
+            return std::ptr::null_mut();
+        };
+        let base = unsafe { std::alloc::alloc(layout) };
+        if base.is_null() {
+            return std::ptr::null_mut();
+        }
+        // A custom zalloc/zfree pair owns its allocation layout. The backend
+        // provides any additional alignment it needs around this returned span.
+        unsafe { base.cast::<usize>().write(total) };
+        context.allocations.fetch_add(1, Ordering::Relaxed);
+        unsafe { base.add(std::mem::size_of::<usize>()).cast() }
+    }
+
+    unsafe extern "C" fn counted_free(opaque: zlib::voidpf, pointer: zlib::voidpf) {
+        if pointer.is_null() {
+            return;
+        }
+        let context = unsafe { &*opaque.cast::<CountingAllocator>() };
+        let base = unsafe { pointer.cast::<u8>().sub(std::mem::size_of::<usize>()) };
+        let total = unsafe { base.cast::<usize>().read() };
+        // The prefix was written by counted_allocate with this exact layout.
+        let layout = unsafe {
+            std::alloc::Layout::from_size_align_unchecked(total, std::mem::align_of::<usize>())
+        };
+        unsafe { std::alloc::dealloc(base, layout) };
+        context.frees.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn deflate_owner_retirement_and_bounded_output_preserve_stored_block() {
+        // Exercise the public custom-allocator contract with a paired allocator,
+        // recording real successful allocations and frees. Backend default Rust
+        // callbacks have a private layout-bearing free convention and cannot be
+        // detached from that backend's allocator-identity dispatch.
+        let mut counts = CountingAllocator {
+            allocations: AtomicUsize::new(0),
+            frees: AtomicUsize::new(0),
+        };
+        for finish in [false, true] {
+            let stream = zlib::z_stream {
+                zalloc: Some(counted_allocate),
+                zfree: Some(counted_free),
+                opaque: (&mut counts as *mut CountingAllocator).cast(),
+                ..zlib::z_stream::default()
+            };
+            let encoder = unsafe { DeflateState::initialize(0, 8, -15, 8, 0, stream) }.unwrap();
+            let owner = Arc::new(Mutex::new(CompressorHandle {
+                encoder: Some(encoder),
+            }));
+            let retained = Arc::clone(&owner);
+            drop(owner);
+            assert!(
+                counts.allocations.load(Ordering::Relaxed) > counts.frees.load(Ordering::Relaxed)
+            );
+            if finish {
+                let mut handle = retained.lock().unwrap();
+                // One-byte initial output forces growth; this literal is the
+                // RFC 1951 final stored block for the eleven-byte plaintext.
+                let result = handle
+                    .deflate(b"hello world", zlib::Z_FINISH, 1, Vec::new())
+                    .unwrap();
+                assert_eq!(result.status, Ok(ZlibStatus::StreamEnd));
+                assert_eq!(result.output, b"\x01\x0b\x00\xf4\xffhello world");
+                assert_eq!(result.consumed, 11);
+                assert!(handle.encoder.is_none());
+                let again = handle
+                    .deflate(b"x", zlib::Z_NO_FLUSH, 1, Vec::new())
+                    .unwrap();
+                assert_eq!(again.status, Err(zlib::Z_STREAM_ERROR));
+            }
+            drop(retained);
+            assert_eq!(
+                counts.allocations.load(Ordering::Relaxed),
+                counts.frees.load(Ordering::Relaxed)
+            );
+        }
+    }
+
+    #[test]
+    fn gzip_reader_tiny_input_truncation_and_trailer_preserve_partial_output() {
+        // Independent gzip header + RFC stored block + literal CRC32/ISIZE.
+        let member = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x01\x0b\x00\xf4\xffhello world\x85\x11\x4a\x0d\x0b\x00\x00\x00";
+        let input = std::io::BufReader::with_capacity(1, std::io::Cursor::new(member));
+        let mut reader = GzipReader::new(input).unwrap();
+        assert_eq!(reader.read(&mut []).unwrap(), 0);
+        let mut decoded = Vec::new();
+        let mut byte = [0u8; 1];
+        while reader.read(&mut byte).unwrap() != 0 {
+            decoded.push(byte[0]);
+        }
+        assert_eq!(decoded, b"hello world");
+        assert_eq!(reader.read(&mut byte).unwrap(), 0);
+        assert!(reader.decoder.stream.next_in.is_null());
+        assert!(reader.decoder.stream.next_out.is_null());
+
+        for bad_checksum in [false, true] {
+            let mut input = member.to_vec();
+            if bad_checksum {
+                input[26] ^= 1;
+            } else {
+                input.truncate(input.len() - 1);
+            }
+            let mut reader = GzipReader::new(std::io::Cursor::new(input)).unwrap();
+            let mut output = [0u8; 64];
+            let size = reader.read(&mut output).unwrap();
+            assert_eq!(&output[..size], b"hello world");
+            let error = reader.read(&mut output).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                if bad_checksum {
+                    io::ErrorKind::InvalidData
+                } else {
+                    io::ErrorKind::UnexpectedEof
+                }
+            );
+        }
+        let empty_member =
+            b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        let mut empty_stream = GzipReader::new(std::io::Cursor::new(empty_member)).unwrap();
+        assert_eq!(empty_stream.read(&mut byte).unwrap(), 0);
+        assert!(empty_stream.eof);
+        let mut members = member.to_vec();
+        members.extend_from_slice(member);
+        let mut one_member = GzipReader::new(std::io::Cursor::new(members)).unwrap();
+        let mut first = Vec::new();
+        one_member.read_to_end(&mut first).unwrap();
+        assert_eq!(first, b"hello world");
+        assert_eq!(one_member.input.position(), member.len() as u64);
+
+        // Three empty fixed-Huffman blocks, the third final: each consists
+        // of its three-bit header plus the seven-bit end-of-block symbol.
+        // Whole input plus tiny output also exercises buffered-bit boundaries.
+        let empty_blocks = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x02\x08\x30\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        let mut empty_blocks = GzipReader::new(std::io::Cursor::new(empty_blocks)).unwrap();
+        assert_eq!(empty_blocks.read(&mut byte).unwrap(), 0);
+        assert!(empty_blocks.eof);
+
+        let mut empty = GzipReader::new(std::io::Cursor::new(&[])).unwrap();
+        assert_eq!(
+            empty.read(&mut byte).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
 }

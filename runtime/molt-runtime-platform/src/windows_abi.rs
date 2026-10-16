@@ -54,6 +54,7 @@ pub fn winerror_to_errno(mut winerror: i32) -> i32 {
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
+    pub fn NeedCurrentDirectoryForExePathW(exe_name: *const u16) -> i32;
     pub fn GetCurrentProcess() -> *mut c_void;
     pub fn GetFileType(hFile: *mut c_void) -> u32;
     pub fn GetConsoleMode(hConsoleHandle: *mut c_void, lpMode: *mut u32) -> i32;
@@ -84,6 +85,10 @@ unsafe extern "system" {
 }
 
 unsafe extern "C" {
+    pub fn _wgetenv(name: *const u16) -> *mut u16;
+    pub fn __p__wenviron() -> *mut *mut *mut u16;
+    pub fn _wputenv(assignment: *const u16) -> i32;
+    pub fn _errno() -> *mut i32;
     #[link_name = "_mktime64"]
     pub fn mktime64(tm: *mut libc::tm) -> libc::time_t;
 
@@ -146,4 +151,19 @@ mod tests {
         }
         assert_eq!(winerror_to_errno(WSAENOTSOCK), WSAENOTSOCK);
     }
+}
+
+pub const LOCALE_USER_DEFAULT: u32 = 0x0400;
+pub const LOCALE_IDEFAULTLANGUAGE: u32 = 0x0009;
+pub const LOCALE_SISO639LANGNAME: u32 = 0x0059;
+pub const LOCALE_SISO3166CTRYNAME: u32 = 0x005a;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    pub fn GetACP() -> u32;
+    pub fn GetLocaleInfoA(locale: u32, kind: u32, data: *mut u8, capacity: i32) -> i32;
+}
+unsafe extern "C" {
+    pub fn _wsetlocale(category: libc::c_int, locale: *const u16) -> *mut u16;
+    pub fn _wputenv_s(name: *const u16, value: *const u16) -> libc::c_int;
 }

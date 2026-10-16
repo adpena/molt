@@ -55,7 +55,7 @@ fn bounded_stream_max_queued_bytes(value: usize) -> usize {
     value.clamp(STREAM_MIN_MAX_QUEUED_BYTES, STREAM_MAX_MAX_QUEUED_BYTES)
 }
 
-pub(crate) fn default_stream_max_queued_bytes() -> usize {
+pub(crate) fn capture_stream_max_queued_bytes() -> usize {
     parse_positive_usize_env(STREAM_MAX_QUEUED_BYTES_ENV)
         .map(bounded_stream_max_queued_bytes)
         .unwrap_or(STREAM_DEFAULT_MAX_QUEUED_BYTES)
@@ -471,7 +471,10 @@ pub extern "C" fn molt_stream_new(capacity_bits: u64) -> u64 {
         let Some(capacity) = super::capacity_from_object(_py, capacity_bits) else {
             return MoltObject::none().bits();
         };
-        stream_new_with_byte_budget(capacity, default_stream_max_queued_bytes())
+        stream_new_with_byte_budget(
+            capacity,
+            crate::runtime_state(_py).policy().stream_max_queued_bytes,
+        )
     })
 }
 
@@ -514,7 +517,7 @@ pub extern "C" fn molt_stream_new_with_io_hooks(
         };
         let stream = new_stream_box(
             0,
-            default_stream_max_queued_bytes(),
+            crate::runtime_state(_py).policy().stream_max_queued_bytes,
             send_hook,
             recv_hook,
             close_hook,
@@ -729,6 +732,39 @@ mod stream_tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn public_stream_constructors_use_frozen_budget_after_process_mutation() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let expected = crate::runtime_state(py).policy().stream_max_queued_bytes;
+            let key = super::STREAM_MAX_QUEUED_BYTES_ENV;
+            let previous = std::env::var_os(key);
+            let changed = if expected == STREAM_MIN_MAX_QUEUED_BYTES {
+                "1073741824"
+            } else {
+                "65536"
+            };
+            unsafe {
+                std::env::set_var(key, changed);
+            }
+            let plain = super::molt_stream_new(MoltObject::from_int(0).bits());
+            let hook = super::molt_stream_new_with_hooks(0, 0, std::ptr::null_mut());
+            let actual_plain =
+                unsafe { &*(ptr_from_bits(plain) as *mut MoltStream) }.max_queued_bytes;
+            let actual_hook = unsafe { &*(hook as *mut MoltStream) }.max_queued_bytes;
+            unsafe {
+                molt_stream_drop(plain);
+                molt_stream_drop(crate::opaque_handle_bits(hook));
+                match previous {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            assert_eq!(actual_plain, expected);
+            assert_eq!(actual_hook, expected);
+        });
+    }
 
     #[test]
     fn stream_send_object_boxes_ready_and_preserves_pending() {

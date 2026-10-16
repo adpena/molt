@@ -45,6 +45,7 @@ from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.frontend.lowering.exception_lowering import SyntaxErrorName
     from molt.frontend import ClassId, ClassInfo
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
@@ -84,11 +85,15 @@ BuildEntrySelectorTarget = Literal["file", "module"]
 
 @dataclass(frozen=True)
 class ModuleSyntaxErrorInfo:
-    message: str
-    filename: str
-    lineno: int | None
-    offset: int | None
-    text: str | None
+    """Lossless parser exception payload; construction owns derived attributes.
+
+    Parser args contain only immutable literals and the four- or six-field
+    details tuple. Keeping them intact also preserves absent detail fields.
+    """
+
+    exception_name: SyntaxErrorName
+    args: tuple[object, ...]
+    print_file_and_line: int | None
 
 
 class _CanonicalPackagePaths(tuple[Path, ...]):
@@ -755,7 +760,7 @@ class _FrontendLayerRunResult:
 
 @dataclass(frozen=True)
 class _FrontendLayerExecutionContext:
-    syntax_error_modules: Mapping[str, Any]
+    syntax_error_modules: Mapping[str, "ModuleSyntaxErrorInfo"]
     module_graph: Mapping[str, Path]
     module_source_catalog: _ModuleSourceCatalog
     project_root: Path | None
@@ -814,7 +819,7 @@ class _FrontendLayerRuntimeHooks:
 
 @dataclass(frozen=True)
 class _SerialFrontendLoweringContext:
-    syntax_error_modules: Mapping[str, Any]
+    syntax_error_modules: Mapping[str, "ModuleSyntaxErrorInfo"]
     module_source_catalog: _ModuleSourceCatalog
     generated_module_source_paths: Mapping[str, str]
     project_root: Path | None

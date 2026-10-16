@@ -64,6 +64,9 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
             );
             return -1;
         };
+        if !crate::object::gc::public_gc_value_is_visible(bits) {
+            return 0;
+        }
         crate::inc_ref_bits(&py, bits);
         let mut snapshot = PinnedGcSnapshot {
             py: &py,
@@ -72,7 +75,7 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
         };
         let mut reserved = true;
         let status = crate::object::heap_lifecycle::visit_owned_gc_edges(&py, ptr, &mut |edge| {
-            if reserved {
+            if reserved && crate::object::gc::public_gc_edge_is_visible(edge) {
                 reserved = snapshot.push(edge);
             }
         });

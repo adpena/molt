@@ -13,6 +13,7 @@ from typing import Any, Collection, Mapping, cast
 
 from molt.compat import CompatibilityError
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend.lowering.exception_lowering import MoltSyntaxError
 from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
@@ -55,50 +56,20 @@ from molt.target_python import (
 )
 
 
-def _format_syntax_error_message(info: ModuleSyntaxErrorInfo) -> str:
-    if info.lineno is None:
-        return info.message
-    filename = Path(info.filename).name if info.filename else "<unknown>"
-    return f"{info.message} ({filename}, line {info.lineno})"
-
-
 def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:
-    msg = _format_syntax_error_message(info)
-    err_name = ast.Name(id="err", ctx=ast.Store())
-    err_value = ast.Name(id="err", ctx=ast.Load())
-    stmts: list[ast.stmt] = [
-        ast.Assign(
-            targets=[err_name],
-            value=ast.Call(
-                func=ast.Name(id="SyntaxError", ctx=ast.Load()),
-                args=[ast.Constant(msg)],
-                keywords=[],
-            ),
-        )
-    ]
-    attr_values = [
-        ("lineno", info.lineno),
-        ("offset", info.offset),
-        ("filename", Path(info.filename).name if info.filename else None),
-        ("text", info.text),
-    ]
-    for attr_name, value in attr_values:
-        if value is None:
-            continue
-        stmts.append(
-            ast.Assign(
-                targets=[
-                    ast.Attribute(
-                        value=err_value,
-                        attr=attr_name,
-                        ctx=ast.Store(),
-                    )
-                ],
-                value=ast.Constant(value),
-            )
-        )
-    stmts.append(ast.Raise(exc=err_value, cause=None))
-    module = ast.Module(body=stmts, type_ignores=[])
+    def literal(value: object) -> ast.expr:
+        if isinstance(value, tuple):
+            return ast.Tuple(elts=[literal(item) for item in value], ctx=ast.Load())
+        if value is None or type(value) is str or type(value) is int:
+            return ast.Constant(value=value)
+        raise TypeError("module parser exception contains a non-literal argument")
+
+    error = MoltSyntaxError(
+        info.exception_name,
+        [literal(value) for value in info.args],
+        literal(info.print_file_and_line),
+    )
+    module = ast.Module(body=[ast.Raise(exc=error, cause=None)], type_ignores=[])
     return ast.fix_missing_locations(module)
 
 

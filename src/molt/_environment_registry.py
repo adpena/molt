@@ -15,7 +15,7 @@ _REGISTRY_JSON = r"""{
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_CHILD_RLIMIT_GB",
       "suffix": "_CHILD_RLIMIT_GB",
-      "summary": "Guard-scope direct-child RLIMIT_RSS request in GiB; the default follows the live process budget capped by tree/global budgets, and zero disables this optional kernel layer without disabling sampled RSS checks. Separately, the root MOLT_CHILD_RLIMIT_GB is read by Linux runtime child startup: a positive resolved value tightens the budget derived from raw-integer MOLT_RESOURCE_MAX_MEMORY (including headroom), or supplies the budget when absent; zero skips this explicit RLIMIT_DATA installation. Human-readable parent memory values do not enter that numeric derivation. A selected runtime child cap that cannot be installed fails child startup; inherited OS limits remain separate.",
+      "summary": "Guard-scope direct-child RLIMIT_RSS request in GiB; the default follows the live process budget capped by tree/global budgets, and zero disables this optional kernel layer without disabling sampled RSS checks. Separately, RuntimePolicy freezes the root MOLT_CHILD_RLIMIT_GB at startup: a positive value tightens the budget derived from typed MOLT_RESOURCE_MAX_MEMORY (including human-size values and headroom), or supplies the budget when absent; initial zero disables this explicit RLIMIT_DATA layer. Later environment changes cannot widen the parent policy; explicit child requests may tighten it. A selected runtime child cap that cannot be installed fails child startup; inherited OS limits remain separate.",
       "values": []
     },
     {
@@ -863,8 +863,8 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "int",
       "name": "MOLT_ASYNC_THREADS",
-      "owner": "runtime/molt-runtime/src/async_rt/scheduler/diagnostics.rs",
-      "summary": "Number of async scheduler worker threads on native targets, capped at the CPU count; unset, 0, or non-numeric spawns no worker threads.",
+      "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
+      "summary": "Number of async scheduler worker threads on native targets, capped at the CPU count; unset, 0, or non-numeric spawns no worker threads. Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
     },
     {
@@ -1439,8 +1439,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "list",
       "name": "MOLT_CAPABILITIES",
-      "owner": "src/molt/capabilities.py",
-      "summary": "Comma-separated capability names granted to the program in addition to the MOLT_CAPABILITY_TIER grants; blank entries are ignored and an unset value adds nothing.",
+      "owner": "src/molt/capability_manifest.py",
+      "summary": "Comma-separated capability names granted to the program in addition to the MOLT_CAPABILITY_TIER grants; blank entries are ignored and an unset value adds nothing. Runtime initialization freezes the selected grants and target before Ready; isolates inherit them and public queries cannot reseed them.",
       "values": []
     },
     {
@@ -1457,8 +1457,8 @@ _REGISTRY_JSON = r"""{
       "default": "none",
       "kind": "enum",
       "name": "MOLT_CAPABILITY_TIER",
-      "owner": "src/molt/capabilities.py",
-      "summary": "Built-in capability tier whose grants seed the program's capability set, compared after trim and casefold; an unknown tier grants nothing, full is the tier --trusted selects, default none.",
+      "owner": "src/molt/capability_manifest.py",
+      "summary": "Built-in capability tier whose grants seed the program's capability set, compared after trim and casefold; an unknown tier grants nothing, full is the tier --trusted selects, default none. Runtime initialization freezes the selected grants and target before Ready; isolates inherit them and public queries cannot reseed them.",
       "values": [
         "none",
         "safe",
@@ -2702,7 +2702,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_DIAGNOSTICS_FILE",
       "owner": "runtime/molt-runtime-diagnostics/src/lib.rs",
-      "summary": "File that receives out-of-band runtime diagnostics (profile JSON, leak reports) by append instead of stderr; resolved once per process, unset, empty, or an unopenable path keeps stderr, and the differential harness sets a per-run file.",
+      "summary": "File that receives out-of-band runtime diagnostics (profile JSON, leak reports) by append instead of stderr; resolved once per process, unset, empty, or an unopenable path keeps stderr, and the differential harness sets a per-run file. Runtime initialization forces this process-lifetime selection before Ready.",
       "values": []
     },
     {
@@ -3668,7 +3668,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_ENTRY_MODULE",
       "owner": "src/molt/cli/config_resolution.py",
-      "summary": "Entry module name of the program being compiled; src/molt/cli sets it for the backend process, which defaults to __main__ and uses it to classify user-owned symbols for the shared-stdlib partition, the compiled program's entry stub reads it to detect a multiprocessing spawn child, and multiprocessing sets it to multiprocessing.spawn for the children it launches.",
+      "summary": "Entry module name of the program being compiled; src/molt/cli sets it for the backend process, which defaults to __main__ and uses it to classify user-owned symbols for the shared-stdlib partition, the runtime captures the compiled program's multiprocessing-spawn selector at startup, and multiprocessing sets it to multiprocessing.spawn for the children it launches.",
       "values": []
     },
     {
@@ -3685,8 +3685,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_EXCEPTION_LOG_PATH",
-      "owner": "runtime/molt-runtime/src/builtins/exceptions/exception_state_abi.rs",
-      "summary": "File that receives the formatted traceback when the runtime exits on an unhandled exception; the file is overwritten each time, write errors are ignored, and unset writes only to stderr.",
+      "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
+      "summary": "File that receives the formatted traceback when the runtime exits on an unhandled exception; the file is overwritten each time, write errors are ignored, and unset writes only to stderr. Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
     },
     {
@@ -3695,7 +3695,7 @@ _REGISTRY_JSON = r"""{
       "kind": "enum",
       "name": "MOLT_EXECUTION_TARGET",
       "owner": "runtime/molt-runtime/src/async_rt/channels/capabilities.rs",
-      "summary": "Execution target the wasm32 runtime uses to decide which host operations are supported; the Molt hosts set it (wasm/run_wasm.js wasi, wasm/browser_host.js browser, the Cloudflare worker shim cloudflare, the native main stub native), the runtime lowercases it and assumes wasi when unset, and native builds ignore it.",
+      "summary": "Execution target the wasm32 runtime uses to decide which host operations are supported; the Molt hosts set it (wasm/run_wasm.js wasi, wasm/browser_host.js browser, the Cloudflare worker shim cloudflare, the native main stub native), the runtime lowercases it and assumes wasi when unset, and native builds ignore it. Runtime initialization freezes the selected grants and target before Ready; isolates inherit them and public queries cannot reseed them.",
       "values": [
         "wasi",
         "browser",
@@ -4624,8 +4624,8 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_MP_SPAWN",
-      "owner": "src/molt/frontend/lowering/module_lifecycle.py",
-      "summary": "Marks a multiprocessing child; the parent sets it to 1 when it spawns a Process or pool worker, the compiled entry module skips its top-level body when it reads the exact value 1, multiprocessing.spawn then runs spawn_main, and the runtime process-io trace reports whether it is present.",
+      "owner": "runtime/molt-runtime/src/builtins/platform.rs",
+      "summary": "Marks a multiprocessing child; the parent sets it to 1 when it spawns a Process or pool worker, the compiled entry module skips its top-level body when the frozen startup selector is exactly 1, multiprocessing.spawn then runs spawn_main, and the runtime process-io trace reports whether it is present.",
       "values": []
     },
     {
@@ -4739,8 +4739,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES",
-      "owner": "runtime/molt-runtime/src/async_rt/process/stdio.rs",
-      "summary": "Queued-byte budget for each stdin, stdout, or stderr pipe stream of a runtime-spawned child process; a positive integer sets the cap, otherwise the stream default applies (MOLT_STREAM_MAX_QUEUED_BYTES, else 16777216 bytes).",
+      "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
+      "summary": "Queued-byte budget for each stdin, stdout, or stderr pipe stream of a runtime-spawned child process; a positive integer sets the cap, otherwise the stream default applies (MOLT_STREAM_MAX_QUEUED_BYTES, else 16777216 bytes). Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
     },
     {
@@ -4758,7 +4758,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_PROCESS_TEARDOWN_JOIN_TIMEOUT_MS",
       "owner": "runtime/molt-runtime/src/async_rt/process.rs",
-      "summary": "Milliseconds the runtime waits at teardown for each spawned child's wait thread after the kill phase; a non-numeric value falls back to 1000.",
+      "summary": "Milliseconds the runtime waits at teardown for each spawned child's wait thread after the kill phase; a non-numeric value falls back to 1000. ProcessRegistry captures the deadline at startup; isolate registries inherit it and settlement never rereads the environment.",
       "values": []
     },
     {
@@ -4767,7 +4767,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_PROCESS_TEARDOWN_TERM_GRACE_MS",
       "owner": "runtime/molt-runtime/src/async_rt/process.rs",
-      "summary": "Milliseconds the runtime waits at teardown for still-running spawned children to exit after the terminate request before it kills them; a non-numeric value falls back to 50.",
+      "summary": "Milliseconds the runtime waits at teardown for still-running spawned children to exit after the terminate request before it kills them; a non-numeric value falls back to 50. ProcessRegistry captures the deadline at startup; isolate registries inherit it and settlement never rereads the environment.",
       "values": []
     },
     {
@@ -5207,8 +5207,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_ALLOCATIONS",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Positive live-allocation-count limit configured on each LimitedTracker; emitted from resources.max_allocations. Runtime init rejects empty, zero or non-integer values. Only selected allocation hooks account usage, and independent thread-local trackers do not provide an aggregate cap. Numeric child environment values are min-merged with the parent. Unset leaves this count unlimited; whole-runtime enforcement remains V1-19 work (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Positive live-allocation-count limit configured on each LimitedTracker; emitted from resources.max_allocations. Runtime init rejects empty, zero or non-integer values. Only selected allocation hooks account usage, and independent thread-local trackers do not provide an aggregate cap. Native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset leaves this count unlimited; whole-runtime enforcement remains V1-19 work (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5216,8 +5216,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_DURATION_MS",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Positive elapsed-time limit in milliseconds configured on each LimitedTracker; emitted from resources.max_duration. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset leaves duration unlimited. No production consumers of the tracker time-check method are present in the inspected runtime; this setting does not establish execution-time enforcement (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Positive elapsed-time limit in milliseconds configured on each LimitedTracker; emitted from resources.max_duration. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset leaves duration unlimited. No production consumers of the tracker time-check method are present in the inspected runtime; this setting does not establish execution-time enforcement (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5225,8 +5225,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "string",
       "name": "MOLT_RESOURCE_MAX_MEMORY",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Memory limit configured on each LimitedTracker; accepts positive raw bytes or a human-readable size such as 64M or 1.5GiB directly, with base-1024 units. The manifest emits raw bytes from resources.max_memory; malformed or non-positive values abort runtime init. Only raw-integer parent values participate in child environment min-merge and the numeric Linux child-budget derivation. Native Linux init attempts an optional RLIMIT_DATA backstop; lookup or installation failure does not establish protection. Selected hooks and independent thread-local usage do not provide a whole-runtime or aggregate cap. Unset leaves tracker memory unlimited (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Memory limit configured on each LimitedTracker; accepts positive raw bytes or a human-readable size such as 64M or 1.5GiB directly, with base-1024 units. The manifest emits raw bytes from resources.max_memory; malformed or non-positive values abort runtime init. Native and WASM child plans use the parsed startup byte limit, including human-size values, and preserve tighter explicit requests. Native Linux init attempts an optional RLIMIT_DATA backstop; lookup or installation failure does not establish protection. Selected hooks and independent thread-local usage do not provide a whole-runtime or aggregate cap. Unset leaves tracker memory unlimited (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5235,7 +5235,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_OPERATION_RESULT",
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Positive combined result-size fallback in bytes for LimitedTracker operation checks; runtime init parses it, but the capability manifest does not emit it. Numeric child environment values are min-merged with the parent. Each unset per-operation cap uses this value, or 10 MiB when it is absent; UnlimitedTracker performs no operation checks. No production consumers of the tracker operation-check method are present in the inspected runtime, so this configuration is not builtin enforcement (docs/RESOURCE_CONTROLS.md).",
+      "summary": "Positive combined result-size fallback in bytes for LimitedTracker operation checks; runtime init parses it, but the capability manifest does not emit it. Native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Each unset per-operation cap uses this value, or 10 MiB when it is absent; UnlimitedTracker performs no operation checks. No production consumers of the tracker operation-check method are present in the inspected runtime, so this configuration is not builtin enforcement (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5243,8 +5243,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_POW_RESULT",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Positive byte cap configured for LimitedTracker integer-power estimates; emitted from resources.operation_limits.max_pow_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin power limit (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Positive byte cap configured for LimitedTracker integer-power estimates; emitted from resources.operation_limits.max_pow_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin power limit (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5252,8 +5252,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Positive recursion-depth limit configured on each LimitedTracker; emitted from resources.max_recursion_depth. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset leaves tracker recursion unlimited. No production consumers of the tracker recursion-check method are present in the inspected runtime; frame enforcement and catchable RecursionError behavior remain unqualified (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Positive recursion-depth limit configured on each LimitedTracker; emitted from resources.max_recursion_depth. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset leaves tracker recursion unlimited. No production consumers of the tracker recursion-check method are present in the inspected runtime; frame enforcement and catchable RecursionError behavior remain unqualified (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5261,8 +5261,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_REPEAT_RESULT",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Positive byte cap configured for LimitedTracker repetition estimates; emitted from resources.operation_limits.max_repeat_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin repetition limit (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Positive byte cap configured for LimitedTracker repetition estimates; emitted from resources.operation_limits.max_repeat_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin repetition limit (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5270,8 +5270,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_SHIFT_RESULT",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Positive byte cap configured for LimitedTracker integer left-shift and multiplication estimates; emitted from resources.operation_limits.max_shift_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; standalone arithmetic guards are separate and do not establish enforcement of this setting (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Positive byte cap configured for LimitedTracker integer left-shift and multiplication estimates; emitted from resources.operation_limits.max_shift_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; standalone arithmetic guards are separate and do not establish enforcement of this setting (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5279,8 +5279,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_STRING_RESULT",
-      "owner": "src/molt/capability_manifest.py",
-      "summary": "Positive byte cap configured for LimitedTracker string-replacement estimates; emitted from resources.operation_limits.max_string_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin string-result limit (docs/RESOURCE_CONTROLS.md).",
+      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
+      "summary": "Positive byte cap configured for LimitedTracker string-replacement estimates; emitted from resources.operation_limits.max_string_result. Runtime init rejects empty, zero or non-integer values, and native and WASM child plans inherit the frozen typed limit and preserve tighter explicit requests. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin string-result limit (docs/RESOURCE_CONTROLS.md). Captured once during runtime startup; later process or application mapping changes cannot widen the parent policy.",
       "values": []
     },
     {
@@ -5315,8 +5315,8 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_RUNTIME_FEEDBACK",
-      "owner": "runtime/molt-runtime/src/object/ops_convert.rs",
-      "summary": "Enables writing the runtime profile JSON payload to a feedback file at profile dump when runtime profiling (MOLT_PROFILE) is active; exactly 1 enables it, read once per process; default off.",
+      "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
+      "summary": "Enables writing the runtime profile JSON payload to a feedback file at profile dump when runtime profiling (MOLT_PROFILE) is active; exactly 1 enables it; default off. Captured through RuntimeFlag by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
     },
     {
@@ -5324,8 +5324,8 @@ _REGISTRY_JSON = r"""{
       "default": "molt_runtime_feedback.json",
       "kind": "path",
       "name": "MOLT_RUNTIME_FEEDBACK_FILE",
-      "owner": "runtime/molt-runtime/src/object/ops_convert.rs",
-      "summary": "Path of the JSON file that MOLT_RUNTIME_FEEDBACK writes the profile payload to, with parent directories created; unset or empty writes molt_runtime_feedback.json in the working directory; write errors print a molt_runtime_feedback_error line to stderr.",
+      "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
+      "summary": "Path of the JSON file that MOLT_RUNTIME_FEEDBACK writes the profile payload to, with parent directories created; unset or empty writes molt_runtime_feedback.json in the working directory; write errors print a molt_runtime_feedback_error line to stderr. Captured by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
     },
     {
@@ -5701,7 +5701,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_STREAM_MAX_QUEUED_BYTES",
       "owner": "runtime/molt-runtime/src/async_rt/channels/stream.rs",
-      "summary": "Default per-stream queued byte limit for runtime async channel streams; a positive integer clamped to the range 65536 to 1073741824, and non-numeric or zero values are ignored; default 16777216.",
+      "summary": "Default per-stream queued byte limit for runtime async channel streams; a positive integer clamped to the range 65536 to 1073741824, and non-numeric or zero values are ignored; default 16777216. RuntimePolicy captures this value once before Ready; ordinary, hook and process-pipe streams consume the frozen budget.",
       "values": []
     },
     {
@@ -5745,8 +5745,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_SYS_EXECUTABLE",
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Path the runtime reports as sys.executable and that multiprocessing spawn uses for child interpreters; unset or empty uses argv[0].",
+      "owner": "runtime/molt-runtime/src/builtins/platform.rs",
+      "summary": "Captured once at runtime startup as the path reported by sys.executable and used by multiprocessing spawn; unset or empty selects the frozen argv[0] projection. Later environment mutation cannot rewrite it.",
       "values": []
     },
     {
@@ -5791,7 +5791,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_TCL_LIB",
       "owner": "runtime/molt-runtime-tk/src/tk/tcl.rs",
-      "summary": "Explicit path of the Tcl shared library that the native Tk lane tries first; unset or blank falls through to the bundled runtime, platform and MOLT_TCL_LIB_DIR candidates.",
+      "summary": "Explicit path of the Tcl shared library that the native Tk lane tries first; unset or blank falls through to the bundled runtime, platform and MOLT_TCL_LIB_DIR candidates. Captured by initialize_library_policy before Ready for the process-lifetime Tcl API; capture does not load a library and later environment writes cannot redirect it.",
       "values": []
     },
     {
@@ -5800,7 +5800,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_TCL_LIB_DIR",
       "owner": "runtime/molt-runtime-tk/src/tk/tcl.rs",
-      "summary": "Directory in which the native Tk lane tries the platform's preferred Tcl library names (libtcl9.0, 8.7 and 8.6 dylibs, tcl87t and tcl86t DLLs, libtcl8.7 and 8.6 shared objects) after the bundled and platform candidates; unset or blank adds none.",
+      "summary": "Directory in which the native Tk lane tries the platform's preferred Tcl library names (libtcl9.0, 8.7 and 8.6 dylibs, tcl87t and tcl86t DLLs, libtcl8.7 and 8.6 shared objects) after the bundled and platform candidates; unset or blank adds none. Captured by initialize_library_policy before Ready for the process-lifetime Tcl API; capture does not load a library and later environment writes cannot redirect it.",
       "values": []
     },
     {
@@ -5844,8 +5844,8 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_THREAD_ISOLATED",
-      "owner": "runtime/molt-runtime/src/concurrency/isolates.rs",
-      "summary": "Makes thread spawn use the isolated-heap ThreadSpawnIsolated operation and makes shared-thread calls raise RuntimeError when set to exactly 1; read once per process, default off.",
+      "owner": "runtime/molt-runtime/src/state/runtime_state.rs",
+      "summary": "Makes thread spawn use the isolated-heap ThreadSpawnIsolated operation and makes shared-thread calls raise RuntimeError when set to exactly 1; default off. Captured through RuntimeFlag by RuntimePolicy before Ready and inherited by isolates; later environment changes cannot select new policy or destinations.",
       "values": []
     },
     {
@@ -6210,15 +6210,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TRACE_DECREF_ZERO_FUNCTION_ALL",
       "owner": "runtime/molt-runtime/src/object/mod.rs",
       "summary": "Set to 1 to print molt dec_ref_zero function name=<name> fn_ptr=<ptr> obj_ptr=<ptr> followed by a captured backtrace on stderr every time any function object is freed; read once per process, and unset or any other value prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_TRACE_ENV_GET",
-      "owner": "runtime/molt-runtime-platform/src/env_support.rs",
-      "summary": "Set to 1 to print molt_env_get key=<name> hit=<true or false> on stderr for every environment lookup the compiled program makes through molt_env_get; read once per process and cached, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -7097,7 +7088,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_VFS_BUNDLE",
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
-      "summary": "Path to a directory or .tar file that the runtime mounts at /bundle in its virtual filesystem on first VFS access, together with /tmp and /dev mounts; molt-wasm-host --bundle and wasm/run_wasm.js set it for the WASM guest; unset means no virtual filesystem.",
+      "summary": "Path to a directory or .tar file mounted at /bundle together with /tmp and /dev. Runtime startup freezes route, explicit absence and relative-path basis before Ready; payload loading remains lazy. Molt WASM hosts set this value for guests; unset selects no virtual filesystem. Isolates share the selected mount and quota owner.",
       "values": []
     },
     {
@@ -7106,7 +7097,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_BYTES",
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
-      "summary": "Maximum total bytes the VFS bundle loader accepts across all bundle entries; non-numeric or zero values fall back to 268435456 (256 MiB).",
+      "summary": "Maximum total bytes the VFS bundle loader accepts across all bundle entries; non-numeric or zero values fall back to 268435456 (256 MiB). Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
     },
     {
@@ -7115,7 +7106,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_ENTRIES",
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
-      "summary": "Maximum number of entries the VFS bundle loader accepts; non-numeric or zero values fall back to 100000.",
+      "summary": "Maximum number of entries the VFS bundle loader accepts; non-numeric or zero values fall back to 100000. Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
     },
     {
@@ -7124,7 +7115,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_ENTRY_BYTES",
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
-      "summary": "Maximum bytes of one bundle entry the VFS bundle loader accepts; non-numeric or zero values fall back to 67108864 (64 MiB).",
+      "summary": "Maximum bytes of one bundle entry the VFS bundle loader accepts; non-numeric or zero values fall back to 67108864 (64 MiB). Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
     },
     {
@@ -7133,7 +7124,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_VFS_BUNDLE_MAX_PATH_BYTES",
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
-      "summary": "Maximum total bytes of entry paths the VFS bundle loader accepts across the bundle; non-numeric or zero values fall back to 16777216 (16 MiB).",
+      "summary": "Maximum total bytes of entry paths the VFS bundle loader accepts across the bundle; non-numeric or zero values fall back to 16777216 (16 MiB). Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
     },
     {
@@ -7142,7 +7133,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS",
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
-      "summary": "Set to exactly 1 to let a directory bundle follow host symlinks, junctions and other reparse points into /bundle for native development; unset, empty or 0 rejects any host link, and any other value fails the bundle load.",
+      "summary": "Set to exactly 1 to let a directory bundle follow host symlinks, junctions and other reparse points into /bundle for native development; unset, empty or 0 rejects any host link, and any other value fails the bundle load. Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
     },
     {
@@ -7151,7 +7142,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_VFS_TMP_QUOTA_MB",
       "owner": "runtime/molt-runtime-vfs/src/load.rs",
-      "summary": "Quota in MiB for the in-memory /tmp mount of the runtime virtual filesystem; molt-wasm-host sets it for the guest from --vfs-tmp-quota; non-numeric values or unset mean 64.",
+      "summary": "Quota in MiB for the in-memory /tmp mount of the runtime virtual filesystem; molt-wasm-host sets it for the guest from --vfs-tmp-quota; non-numeric values or unset mean 64. Captured with the VFS route before Ready; later environment writes do not change the selected quota or link policy.",
       "values": []
     },
     {

@@ -66,14 +66,6 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CLASS_SET_LAYOUT_VERSION":
-            ctx.json_ops.append(
-                {
-                    "kind": "class_set_layout_version",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "CLASS_SET_DEFINITION":
             (created_class,) = op.args
             ctx.json_ops.append(
@@ -81,14 +73,6 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "kind": "class_set_definition",
                     "args": [created_class.name],
                     "class_definition": (op.metadata or {})["class_definition"],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "CLASS_MERGE_LAYOUT":
-            ctx.json_ops.append(
-                {
-                    "kind": "class_merge_layout",
-                    "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )

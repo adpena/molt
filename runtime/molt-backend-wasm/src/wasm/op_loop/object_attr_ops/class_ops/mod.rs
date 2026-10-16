@@ -33,9 +33,6 @@ pub(super) fn emit_class_object_op(
         "class_layout_version" => {
             metadata::emit_class_layout_version(func, op, import_ids, locals, reloc_enabled)
         }
-        "class_set_layout_version" => {
-            metadata::emit_class_set_layout_version(func, op, import_ids, locals, reloc_enabled)
-        }
         "class_set_definition" => metadata::emit_class_set_definition(
             func,
             op,
@@ -44,9 +41,6 @@ pub(super) fn emit_class_object_op(
             locals,
             reloc_enabled,
         ),
-        "class_merge_layout" => {
-            metadata::emit_class_merge_layout(func, op, import_ids, locals, reloc_enabled)
-        }
         "isinstance" => relationships::emit_isinstance(func, op, import_ids, locals, reloc_enabled),
         "exception_match_builtin" => {
             relationships::emit_exception_match_builtin(func, op, import_ids, locals, reloc_enabled)

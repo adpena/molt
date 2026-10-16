@@ -1127,6 +1127,54 @@ fn spoofed_native_identity_cannot_enter_exception_matching_or_descriptors() {
     });
 }
 
+/// Exercise the actual generic callable boundary instead of the lowered
+/// type_of intrinsic. The binder consumes the builder and its retained operand.
+unsafe fn callable_type(py: &PyToken<'_>, value: u64) -> u64 {
+    unsafe {
+        let arguments = crate::molt_callargs_new(1, 0);
+        assert!(!obj_from_bits(arguments).is_none());
+        crate::molt_callargs_push_pos(arguments, value);
+        assert!(!crate::exception_pending(py));
+        crate::molt_call_bind(builtin_classes(py).type_obj, arguments)
+    }
+}
+
+#[test]
+fn generic_type_call_preserves_managed_and_native_exception_identity() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            for (value, expected) in [
+                (MoltObject::from_int(17).bits(), builtin_classes(py).int),
+                (MoltObject::none().bits(), builtin_classes(py).none_type),
+            ] {
+                let class = callable_type(py, value);
+                assert_eq!(class, expected);
+                dec_ref_bits(py, class);
+            }
+            for native_class in [&raw mut PyExc_TypeError, &raw mut PyExc_ValueError] {
+                let native = refcount::OwnedPyObject::from_owned(native_exception(native_class));
+                let value = ExceptionValue::adopt(py, foreign_bits(native.as_ptr()));
+                let class = ExceptionValue::adopt(py, callable_type(py, value.bits()));
+                assert_eq!(
+                    GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class.bits()),
+                    native_class.cast::<PyObject>(),
+                    "the callable type result must retain the actual native error class",
+                );
+                assert!(exception_matches_type(py, value.bits(), class.bits()));
+                assert!(exception_matches_type(
+                    py,
+                    value.bits(),
+                    builtin_classes(py).base_exception
+                ));
+                assert!(!crate::exception_pending(py));
+                assert!(errors::PyErr_Occurred().is_null());
+            }
+        }
+    });
+}
+
 #[test]
 fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
     use crate::builtins::functions::native_callable::{
@@ -1149,6 +1197,12 @@ fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
             };
             let bits = foreign_bits(&raw mut value);
             let class = crate::molt_type_of(bits);
+            let generic_class = callable_type(py, bits);
+            assert_eq!(generic_class, class);
+            dec_ref_bits(py, generic_class);
+            let metaclass = callable_type(py, class);
+            assert_eq!(metaclass, builtin_classes(py).type_obj);
+            dec_ref_bits(py, metaclass);
             assert_eq!(
                 GLOBAL_BRIDGE.handle_to_borrowed_pyobj(class),
                 (&raw mut *first).cast::<PyObject>(),
@@ -1189,6 +1243,9 @@ fn native_classmethod_binding_and_public_type_follow_live_native_identity() {
             // an already-bound classmethod retains its original receiver.
             value.ob_type = &raw mut *second;
             let current = crate::molt_type_of(bits);
+            let generic_current = callable_type(py, bits);
+            assert_eq!(generic_current, current);
+            dec_ref_bits(py, generic_current);
             assert_eq!(
                 GLOBAL_BRIDGE.handle_to_borrowed_pyobj(current),
                 (&raw mut *second).cast::<PyObject>(),

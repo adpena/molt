@@ -12,7 +12,11 @@ pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str
     })
 }
 
-#[cfg(any(not(feature = "stdlib_http"), not(feature = "stdlib_itertools")))]
+#[cfg(any(
+    not(feature = "stdlib_http"),
+    not(feature = "stdlib_itertools"),
+    not(feature = "stdlib_path")
+))]
 pub fn exception_pending(_py: &CoreGilToken) -> bool {
     crate::with_gil_entry_nopanic!(py, { crate::exception_pending(py) })
 }
@@ -121,6 +125,11 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
     runtime_string_obj_to_owned(obj)
 }
 
+#[cfg(not(feature = "stdlib_path"))]
+pub fn string_obj_bytes(obj: MoltObject) -> Option<Vec<u8>> {
+    crate::object::ops_format::string_obj_bytes(obj)
+}
+
 #[cfg(any(not(feature = "stdlib_itertools"), not(feature = "stdlib_path")))]
 pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
     crate::with_gil_entry_nopanic!(py, { crate::is_truthy(py, obj) })
@@ -145,7 +154,7 @@ pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
     })
 }
 
-#[cfg(not(feature = "stdlib_itertools"))]
+#[cfg(any(not(feature = "stdlib_itertools"), not(feature = "stdlib_path")))]
 pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
     crate::with_gil_entry_nopanic!(py, {
         crate::inc_ref_bits(py, bits);
@@ -155,6 +164,22 @@ pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
 // ---------------------------------------------------------------------------
 // Numeric helpers
 // ---------------------------------------------------------------------------
+
+#[cfg(not(feature = "stdlib_path"))]
+pub fn index_c_int_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i32> {
+    crate::with_gil_entry_nopanic!(py, {
+        crate::builtins::numbers::index_c_int_from_obj(py, bits)
+    })
+}
+
+#[cfg(not(feature = "stdlib_path"))]
+pub fn index_i64_checked_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
+    crate::with_gil_entry_nopanic!(py, {
+        let value =
+            crate::builtins::numbers::index_i64_from_obj(py, bits, "an integer is required");
+        (!crate::exception_pending(py)).then_some(value)
+    })
+}
 
 #[cfg(any(not(feature = "stdlib_http"), not(feature = "stdlib_path")))]
 pub fn to_i64(obj: MoltObject) -> Option<i64> {

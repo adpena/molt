@@ -742,28 +742,24 @@ fn open_impl(
                     host_descriptor: false,
                 });
 
-                // Register VFS writeback so molt_file_close can flush
-                // the bytearray content back to the VFS backend.
-                if let Some(entry) = vfs_backend_arc {
-                    vfs_writeback_register(_py, &vfs_state, entry);
-                }
-
                 // Reuse the same encoding / errors / newline resolution
                 // that the normal path uses.
-                let enc = if mode_info.text {
-                    let e = encoding.unwrap_or_else(|| "utf-8".to_string());
-                    let (label, _kind) = match normalize_text_encoding(&e) {
+                let (enc, enc_original) = if mode_info.text {
+                    if !warn_default_text_encoding(_py, encoding.as_deref()) {
+                        dec_ref_bits(_py, mem_bits);
+                        return MoltObject::none().bits();
+                    }
+                    let (label, display) = match selected_text_encoding(_py, encoding.as_deref()) {
                         Ok(val) => val,
                         Err(msg) => {
                             dec_ref_bits(_py, mem_bits);
                             return raise_exception::<_>(_py, "LookupError", &msg);
                         }
                     };
-                    Some(label)
+                    (Some(label), Some(display))
                 } else {
-                    None
+                    (None, None)
                 };
-                let enc_original = enc.clone();
                 let errs = if mode_info.text {
                     Some(errors.unwrap_or_else(|| "strict".to_string()))
                 } else {
@@ -799,14 +795,14 @@ fn open_impl(
                 let buf_size = if buffering == 0 {
                     0
                 } else if line_buffering || buffering < 0 {
-                    DEFAULT_BUFFER_SIZE
+                    default_buffer_size(_py)
                 } else {
                     buffering
                 };
                 let buffer_bits = if mode_info.text {
                     let buffer_ptr = alloc_file_handle_with_state(
                         _py,
-                        Arc::clone(&vfs_state),
+                        Some(Arc::clone(&vfs_state)),
                         vfs_readable,
                         vfs_writable,
                         false, // text
@@ -835,7 +831,7 @@ fn open_impl(
                 };
                 let ptr = alloc_file_handle_with_state(
                     _py,
-                    vfs_state,
+                    Some(vfs_state),
                     vfs_readable,
                     vfs_writable,
                     mode_info.text,
@@ -854,6 +850,22 @@ fn open_impl(
                     buffer_bits,
                     if mode_info.text { 0 } else { mem_bits },
                 );
+                // Publish writeback only after every fallible construction
+                // step. Refused codecs/warnings/allocations own no map entry.
+                if !ptr.is_null()
+                    && let Some(entry) = vfs_backend_arc
+                {
+                    unsafe {
+                        vfs_writeback_register(
+                            _py,
+                            (*file_handle_ptr(ptr))
+                                .state
+                                .as_ref()
+                                .expect("new physical stream owns its state"),
+                            entry,
+                        );
+                    }
+                }
                 dec_ref_bits(_py, mem_bits);
                 if buffer_bits != 0 {
                     dec_ref_bits(_py, buffer_bits);
@@ -931,17 +943,58 @@ fn open_impl(
         host_descriptor: false,
     });
 
+    if mode_info.append {
+        // O_APPEND only controls writes. CPython also positions every append
+        // constructor (path, opener, or supplied fd) at EOF before publication.
+        let seek_error = {
+            let mut guard = state.backend.lock().unwrap();
+            let Some(MoltFileBackend::File(file)) = guard.as_mut() else {
+                unreachable!()
+            };
+            host_file_seek(&state, file, std::io::SeekFrom::End(0)).err()
+        };
+        #[cfg(windows)]
+        let nonseekable = seek_error
+            .as_ref()
+            .is_some_and(|error| error.raw_os_error() == Some(libc::ESPIPE));
+        #[cfg(not(windows))]
+        let nonseekable = seek_error
+            .as_ref()
+            .is_some_and(|error| error.kind() == ErrorKind::NotSeekable);
+        if let Some(error) = seek_error.filter(|_| !nonseekable) {
+            // A failed FileIO constructor never takes a caller-supplied fd,
+            // even with closefd=True. Private duplicates/path/opener fds still
+            // retire through the existing state owner on this error path.
+            if fd.is_some() && closefd {
+                #[cfg(windows)]
+                {
+                    state.crt_fd.lock().unwrap().take();
+                }
+                #[cfg(not(windows))]
+                if let Some(MoltFileBackend::File(file)) = state.backend.lock().unwrap().take() {
+                    std::mem::forget(file);
+                }
+            }
+            return match error.raw_os_error() {
+                Some(errno) => raise_os_error_errno::<u64>(_py, i64::from(errno), "open"),
+                None => raise_os_error::<u64>(_py, error, "open"),
+            };
+        }
+    }
+
     // Keep text-I/O encoding normalization explicit so open()/TextIOWrapper
     // remains deterministic across native and wasm builds.
-    let encoding = if mode_info.text {
-        let encoding = encoding.unwrap_or_else(|| "utf-8".to_string());
-        let (label, _kind) = match normalize_text_encoding(&encoding) {
+    let (encoding, encoding_original) = if mode_info.text {
+        if !warn_default_text_encoding(_py, encoding.as_deref()) {
+            return MoltObject::none().bits();
+        }
+        let (label, display) = match selected_text_encoding(_py, encoding.as_deref()) {
             Ok(val) => val,
             Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
         };
-        Some(label)
+        (Some(label), Some(display))
     } else {
-        None
+        (None, None)
     };
     let errors = if mode_info.text {
         Some(errors.unwrap_or_else(|| "strict".to_string()))
@@ -949,7 +1002,6 @@ fn open_impl(
         None
     };
 
-    let encoding_original = encoding.clone();
     let builtins = builtin_classes(_py);
     let buffered_class_bits = if mode_info.readable && mode_info.writable {
         builtins.buffered_random
@@ -976,14 +1028,14 @@ fn open_impl(
     let buffer_size = if buffering == 0 {
         0
     } else if line_buffering || buffering < 0 {
-        DEFAULT_BUFFER_SIZE
+        default_buffer_size(_py)
     } else {
         buffering
     };
     let buffer_bits = if mode_info.text {
         let buffer_ptr = alloc_file_handle_with_state(
             _py,
-            Arc::clone(&state),
+            Some(Arc::clone(&state)),
             mode_info.readable,
             mode_info.writable,
             false,
@@ -1017,7 +1069,7 @@ fn open_impl(
     };
     let ptr = alloc_file_handle_with_state(
         _py,
-        state,
+        Some(state),
         mode_info.readable,
         mode_info.writable,
         mode_info.text,
@@ -1097,7 +1149,7 @@ fn alloc_stdio_handle(
     let buffer_size = if buffering == 0 {
         0
     } else if line_buffering || buffering < 0 {
-        DEFAULT_BUFFER_SIZE
+        default_buffer_size(_py)
     } else {
         buffering
     };
@@ -1140,7 +1192,7 @@ fn alloc_stdio_handle(
     let buffer_bits = if mode_info.text {
         let buffer_ptr = alloc_file_handle_with_state(
             _py,
-            Arc::clone(&state),
+            Some(Arc::clone(&state)),
             mode_info.readable,
             mode_info.writable,
             false,
@@ -1175,7 +1227,7 @@ fn alloc_stdio_handle(
     };
     let ptr = alloc_file_handle_with_state(
         _py,
-        state,
+        Some(state),
         mode_info.readable,
         mode_info.writable,
         mode_info.text,
@@ -1187,8 +1239,18 @@ fn alloc_stdio_handle(
         handle_class_bits,
         name_bits,
         mode_string,
-        Some("utf-8".to_string()),
-        Some("utf-8".to_string()),
+        Some(
+            normalize_text_encoding(
+                &crate::builtins::platform::startup_encoding(_py).stdio_encoding,
+            )
+            .expect("startup validates the stdio codec")
+            .0,
+        ),
+        Some(
+            crate::builtins::platform::startup_encoding(_py)
+                .stdio_encoding
+                .clone(),
+        ),
         Some(errors.to_string()),
         None,
         buffer_bits,
@@ -1248,7 +1310,15 @@ fn cached_stdio_handle(
 pub extern "C" fn molt_sys_stdin() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         cached_stdio_handle(_py, &runtime_state(_py).io.sys_stdin_handle_bits, || {
-            alloc_stdio_handle(_py, 0, true, false, "<stdin>", "surrogateescape", false)
+            alloc_stdio_handle(
+                _py,
+                0,
+                true,
+                false,
+                "<stdin>",
+                &crate::builtins::platform::startup_encoding(_py).stdio_errors,
+                false,
+            )
         })
     })
 }
@@ -1257,7 +1327,15 @@ pub extern "C" fn molt_sys_stdin() -> u64 {
 pub extern "C" fn molt_sys_stdout() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         cached_stdio_handle(_py, &runtime_state(_py).io.sys_stdout_handle_bits, || {
-            alloc_stdio_handle(_py, 1, false, true, "<stdout>", "surrogateescape", false)
+            alloc_stdio_handle(
+                _py,
+                1,
+                false,
+                true,
+                "<stdout>",
+                &crate::builtins::platform::startup_encoding(_py).stdio_errors,
+                false,
+            )
         })
     })
 }

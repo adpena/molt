@@ -268,16 +268,23 @@ fn alloc_hash_aggregate_for_class_unpublished(
         type_id,
         TYPE_ID_DICT | TYPE_ID_SET | TYPE_ID_FROZENSET
     ));
-    let table_capacity = if capacity == 0 {
-        0
+    let table_capacity = if type_id == TYPE_ID_DICT {
+        crate::object::ops::dict_presize_capacity(capacity)
+    } else if capacity == 0 {
+        Some(0)
     } else {
-        let Some(capacity) = crate::object::ops::checked_dict_table_capacity(capacity) else {
-            record_memory_error_without_allocation(_py);
-            return std::ptr::null_mut();
-        };
-        capacity
+        crate::object::ops::checked_set_table_capacity(capacity)
     };
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<HashStorage<DictEntry>>();
+    let Some(table_capacity) = table_capacity else {
+        record_memory_error_without_allocation(_py);
+        return std::ptr::null_mut();
+    };
+    let payload_size = if type_id == TYPE_ID_DICT {
+        std::mem::size_of::<DictStorage>()
+    } else {
+        std::mem::size_of::<HashStorage<SetEntry>>()
+    };
+    let total = std::mem::size_of::<MoltHeader>() + payload_size;
     let ptr = if let Some(class) = class {
         let kind = match type_id {
             TYPE_ID_SET => super::native_instance::NativePayload::Set,
@@ -303,10 +310,12 @@ fn alloc_hash_aggregate_for_class_unpublished(
     unsafe {
         let initialized = (|| {
             if type_id == TYPE_ID_DICT {
+                let usable = crate::object::ops::dict_usable_capacity(table_capacity);
                 dict_storage(ptr).entries =
-                    crate::object::backing::tracked_vec_box_with_capacity::<DictEntry>(capacity)?;
+                    crate::object::backing::tracked_vec_box_with_capacity::<DictEntry>(usable)?;
                 dict_storage(ptr).table =
                     crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
+                dict_storage(ptr).usable = usable;
             } else {
                 set_storage(ptr).entries =
                     crate::object::backing::tracked_vec_box_with_capacity::<SetEntry>(capacity)?;
@@ -324,27 +333,84 @@ fn alloc_hash_aggregate_for_class_unpublished(
     ptr
 }
 
+/// Borrowed dictionary literal inputs. Both physical transports share key-kind
+/// admission and insertion; neither acquires a temporary array of owners.
+#[derive(Clone, Copy)]
+pub(crate) enum DictItems<'a> {
+    Interleaved(&'a [u64]),
+    Split { keys: &'a [u64], values: &'a [u64] },
+}
+
+impl DictItems<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::Interleaved(words) => words.len() / 2,
+            Self::Split { keys, values } => {
+                debug_assert_eq!(keys.len(), values.len());
+                keys.len()
+            }
+        }
+    }
+
+    fn pair(self, index: usize) -> (u64, u64) {
+        match self {
+            Self::Interleaved(words) => (words[index * 2], words[index * 2 + 1]),
+            Self::Split { keys, values } => (keys[index], values[index]),
+        }
+    }
+}
+
 /// Storage and initial edges remain unpublished until complete. Each write
 /// applies the shared sticky GC tracking law; publication exposes the complete
 /// payload without scanning it again or forgetting a replaced trackable edge.
 pub(crate) fn alloc_dict_with_capacity_and_pairs(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     capacity_hint: usize,
     pairs: &[u64],
 ) -> *mut u8 {
-    let ptr =
-        alloc_hash_aggregate_unpublished(_py, capacity_hint.max(pairs.len() / 2), TYPE_ID_DICT);
+    alloc_dict_from_items(py, capacity_hint, DictItems::Interleaved(pairs))
+}
+
+pub(crate) fn alloc_dict_from_items(
+    py: &PyToken<'_>,
+    capacity_hint: usize,
+    items: DictItems<'_>,
+) -> *mut u8 {
+    // _PyDict_FromItems selects key layout from every already-evaluated key
+    // before allocation/insertion. A later non-string must not shrink an empty
+    // presized table or compact earlier literal entries.
+    let unicode = (0..items.len()).all(|index| unsafe {
+        crate::object::ops::exact_string_bytes(py, items.pair(index).0).is_some()
+    });
+    let ptr = alloc_hash_aggregate_unpublished(py, capacity_hint.max(items.len()), TYPE_ID_DICT);
     if ptr.is_null() {
         return ptr;
     }
     unsafe {
-        for pair in pairs.chunks(2) {
-            if pair.len() == 2 && !dict_set_in_place(_py, ptr, pair[0], pair[1]) {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+        if !dict_table(ptr).is_empty() && !unicode {
+            dict_storage(ptr).kind = DictKeyKind::General;
+        }
+        for index in 0..items.len() {
+            let (key, value) = items.pair(index);
+            if !dict_set_in_place(py, ptr, key, value) {
+                dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
                 return std::ptr::null_mut();
             }
         }
-        crate::object::gc::gc_publish_initialized(_py, ptr);
+        crate::object::gc::gc_publish_initialized(py, ptr);
+    }
+    ptr
+}
+
+/// Allocate private runtime storage without a public GC-observable interval.
+/// The ordinary dictionary owner still supplies tracking, mutation and cleanup.
+pub(crate) fn alloc_internal_dict(py: &PyToken<'_>) -> *mut u8 {
+    let ptr = alloc_hash_aggregate_unpublished(py, 0, TYPE_ID_DICT);
+    if !ptr.is_null() {
+        unsafe {
+            (*super::header_from_obj_ptr(ptr)).fetch_or_flags(super::HEADER_FLAG_INTERNAL_OWNER);
+            super::gc::gc_publish_initialized(py, ptr);
+        }
     }
     ptr
 }
@@ -2424,6 +2490,20 @@ pub(crate) fn alloc_bytearray_with_len(_py: &PyToken<'_>, len: usize) -> *mut u8
     ptr
 }
 
+enum PinnedMemoryViewOwner<'a, 'py> {
+    Export(super::buffer_exports::ScopedBufferExport<'a, 'py>),
+    CallbackRoot(molt_runtime_core::OwnedRuntimeValue<'a>),
+}
+
+impl PinnedMemoryViewOwner<'_, '_> {
+    fn into_owner(self) -> u64 {
+        match self {
+            Self::Export(owner) => owner.into_owner(),
+            Self::CallbackRoot(owner) => owner.into_bits(),
+        }
+    }
+}
+
 /// Own the descriptor edges and counted export before callbacks or allocation.
 /// Geometry may change while pinned; ownership can only transfer into a view.
 pub(crate) struct PinnedMemoryViewStorage<'a, 'py> {
@@ -2431,7 +2511,7 @@ pub(crate) struct PinnedMemoryViewStorage<'a, 'py> {
     storage: crate::object::memoryview::TypedStridedStorage,
     base_guard: PtrDropGuard,
     format_guard: PtrDropGuard,
-    owner: Option<super::buffer_exports::ScopedBufferExport<'a, 'py>>,
+    owner: Option<PinnedMemoryViewOwner<'a, 'py>>,
 }
 
 impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
@@ -2457,7 +2537,17 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
         );
-        let owner = super::buffer_exports::ScopedBufferExport::new(py, storage.owner_bits)?;
+        let owner = if storage.kind.scope() == super::MemoryViewScope::Derived {
+            PinnedMemoryViewOwner::CallbackRoot(molt_runtime_core::OwnedRuntimeValue::retain(
+                py.core_token(),
+                storage.owner_bits,
+            ))
+        } else {
+            PinnedMemoryViewOwner::Export(super::buffer_exports::ScopedBufferExport::new(
+                py,
+                storage.owner_bits,
+            )?)
+        };
         Ok(Self {
             py,
             storage,
@@ -2547,7 +2637,7 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
             (*mv_ptr).readonly = if storage.readonly { 1 } else { 0 };
             (*mv_ptr).ndim = storage.shape.len() as u8;
             (*mv_ptr).released = 0;
-            (*mv_ptr).restricted = 0;
+            (*mv_ptr).kind = storage.kind;
             (*mv_ptr)._pad = [0; 4];
             (*mv_ptr).format_bits = storage.format_bits;
             (*mv_ptr).shape_ptr = shape_ptr;
@@ -2580,11 +2670,7 @@ impl Drop for PinnedMemoryViewStorage<'_, '_> {
     fn drop(&mut self) {
         // Retire the counted export before the descriptor fields, preserving
         // ordinary native release visibility even when slicing failed.
-        if let Some(owner) = self.owner.take()
-            && owner.owner_bits() != 0
-        {
-            drop(owner);
-        }
+        drop(self.owner.take());
     }
 }
 
@@ -2949,10 +3035,10 @@ mod sequence_builder_tests {
     }
 
     #[test]
-    fn hash_storage_capacity_overflow_replaces_prior_error_without_allocation() {
+    fn set_storage_capacity_overflow_replaces_prior_error_without_allocation() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            for type_id in [TYPE_ID_DICT, TYPE_ID_SET, TYPE_ID_FROZENSET] {
+            for type_id in [TYPE_ID_SET, TYPE_ID_FROZENSET] {
                 for capacity in [usize::MAX, usize::MAX / 2] {
                     assert!(alloc_hash_aggregate_unpublished(py, capacity, type_id).is_null());
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
@@ -2975,6 +3061,45 @@ mod sequence_builder_tests {
                     dec_ref_bits(py, pending);
                 }
             }
+        });
+    }
+
+    #[test]
+    fn dictionary_presize_is_bounded_and_allocation_failure_preserves_edge_custody() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            // Literal CPython _PyDict_NewPresized boundaries; hints do not
+            // represent populated rows or bypass accounted allocation.
+            for (hint, capacity, usable) in [
+                (0, 0, 0),
+                (1, 0, 0),
+                (5, 0, 0),
+                (6, 16, 10),
+                (10, 16, 10),
+                (11, 32, 21),
+                (usize::MAX, 131_072, 87_381),
+            ] {
+                let ptr = alloc_hash_aggregate_unpublished(py, hint, TYPE_ID_DICT);
+                assert!(!ptr.is_null());
+                unsafe {
+                    assert_eq!(dict_table(ptr).len(), capacity);
+                    assert_eq!(dict_storage(ptr).usable, usable);
+                    assert_eq!(dict_storage(ptr).kind, DictKeyKind::Unicode);
+                    assert_eq!(dict_len(ptr), 0);
+                    assert!(dict_entries(ptr).is_empty());
+                }
+                dec_ref_bits(py, bits_from_ptr(ptr));
+                assert!(!exception_pending(py));
+            }
+            raise_exception::<()>(py, "ValueError", "original presize caller error");
+            let pending = crate::builtins::exceptions::molt_exception_last_pending();
+            let budget = deny_allocations();
+            assert!(alloc_hash_aggregate_unpublished(py, usize::MAX, TYPE_ID_DICT).is_null());
+            assert_ne!(crate::exception_last_bits_noinc(py), Some(pending));
+            assert_eq!(refs(pending), 1);
+            crate::test_support::assert_and_clear_emergency_memory_error(py);
+            drop(budget);
+            dec_ref_bits(py, pending);
         });
     }
 

@@ -1,16 +1,12 @@
-//! Pure fnmatch algorithms for the `fnmatch` stdlib module.
+//! Pure fnmatch algorithms shared by Python fnmatch and platform path matching.
 //!
-//! Runtime object/ABI shims stay in `molt-runtime`; this crate owns matching,
-//! normalization, and regex translation so fnmatch behavior has one stdlib-text
-//! authority.
+//! Runtime object/ABI shims stay in `molt-runtime`; this module owns matching,
+//! normalization, and regex translation without a dependency on the stdlib layer.
 
-type CharClassRange = (char, char);
-type ParsedCharClass = (Vec<char>, Vec<CharClassRange>, bool, usize);
-type ByteClassRange = (u8, u8);
-type ParsedByteClass = (Vec<u8>, Vec<ByteClassRange>, bool, usize);
+type ParsedClass<T> = (Vec<T>, Vec<(T, T)>, bool, usize);
 
-fn fnmatch_parse_char_class(pat: &[char], mut idx: usize) -> Option<ParsedCharClass> {
-    if idx >= pat.len() || pat[idx] != '[' {
+fn parse_class<T: Copy + Ord + From<u8>>(pat: &[T], mut idx: usize) -> Option<ParsedClass<T>> {
+    if idx >= pat.len() || pat[idx] != T::from(b'[') {
         return None;
     }
     idx += 1;
@@ -19,7 +15,7 @@ fn fnmatch_parse_char_class(pat: &[char], mut idx: usize) -> Option<ParsedCharCl
     }
 
     let mut negate = false;
-    if pat[idx] == '!' {
+    if pat[idx] == T::from(b'!') {
         negate = true;
         idx += 1;
     }
@@ -27,16 +23,16 @@ fn fnmatch_parse_char_class(pat: &[char], mut idx: usize) -> Option<ParsedCharCl
         return None;
     }
 
-    let mut singles: Vec<char> = Vec::new();
-    let mut ranges: Vec<CharClassRange> = Vec::new();
+    let mut singles: Vec<T> = Vec::new();
+    let mut ranges: Vec<(T, T)> = Vec::new();
 
-    if pat[idx] == ']' {
-        singles.push(']');
+    if pat[idx] == T::from(b']') {
+        singles.push(T::from(b']'));
         idx += 1;
     }
 
-    while idx < pat.len() && pat[idx] != ']' {
-        if idx + 2 < pat.len() && pat[idx + 1] == '-' && pat[idx + 2] != ']' {
+    while idx < pat.len() && pat[idx] != T::from(b']') {
+        if idx + 2 < pat.len() && pat[idx + 1] == T::from(b'-') && pat[idx + 2] != T::from(b']') {
             let start = pat[idx];
             let end = pat[idx + 2];
             if start <= end {
@@ -48,18 +44,13 @@ fn fnmatch_parse_char_class(pat: &[char], mut idx: usize) -> Option<ParsedCharCl
         singles.push(pat[idx]);
         idx += 1;
     }
-    if idx >= pat.len() || pat[idx] != ']' {
+    if idx >= pat.len() || pat[idx] != T::from(b']') {
         return None;
     }
     Some((singles, ranges, negate, idx + 1))
 }
 
-fn fnmatch_char_class_hit(
-    ch: char,
-    singles: &[char],
-    ranges: &[(char, char)],
-    negate: bool,
-) -> bool {
+fn class_hit<T: Copy + Ord>(ch: T, singles: &[T], ranges: &[(T, T)], negate: bool) -> bool {
     let mut hit = singles.contains(&ch);
     if !hit {
         hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);
@@ -67,132 +58,18 @@ fn fnmatch_char_class_hit(
     if negate { !hit } else { hit }
 }
 
-pub fn fnmatch_match_impl(name: &str, pat: &str) -> bool {
-    let name_chars: Vec<char> = name.chars().collect();
-    let pat_chars: Vec<char> = pat.chars().collect();
-    let mut pi: usize = 0;
-    let mut ni: usize = 0;
-    let mut star_idx: Option<usize> = None;
-    let mut matched_from_star: usize = 0;
-
-    while ni < name_chars.len() {
-        if pi < pat_chars.len() && pat_chars[pi] == '*' {
-            while pi < pat_chars.len() && pat_chars[pi] == '*' {
-                pi += 1;
-            }
-            if pi == pat_chars.len() {
-                return true;
-            }
-            star_idx = Some(pi);
-            matched_from_star = ni;
-            continue;
-        }
-        if pi < pat_chars.len() && pat_chars[pi] == '?' {
-            pi += 1;
-            ni += 1;
-            continue;
-        }
-        if pi < pat_chars.len()
-            && pat_chars[pi] == '['
-            && let Some((singles, ranges, negate, next_idx)) =
-                fnmatch_parse_char_class(&pat_chars, pi)
-        {
-            let hit = fnmatch_char_class_hit(name_chars[ni], &singles, &ranges, negate);
-            if hit {
-                pi = next_idx;
-                ni += 1;
-                continue;
-            }
-            if let Some(star) = star_idx {
-                matched_from_star += 1;
-                ni = matched_from_star;
-                pi = star;
-                continue;
-            }
-            return false;
-        }
-        if pi < pat_chars.len() && pat_chars[pi] == name_chars[ni] {
-            pi += 1;
-            ni += 1;
-            continue;
-        }
-        if let Some(star) = star_idx {
-            matched_from_star += 1;
-            ni = matched_from_star;
-            pi = star;
-            continue;
-        }
-        return false;
-    }
-
-    while pi < pat_chars.len() && pat_chars[pi] == '*' {
-        pi += 1;
-    }
-    pi == pat_chars.len()
-}
-
-fn fnmatch_parse_char_class_bytes(pat: &[u8], mut idx: usize) -> Option<ParsedByteClass> {
-    if idx >= pat.len() || pat[idx] != b'[' {
-        return None;
-    }
-    idx += 1;
-    if idx >= pat.len() {
-        return None;
-    }
-
-    let mut negate = false;
-    if pat[idx] == b'!' {
-        negate = true;
-        idx += 1;
-    }
-    if idx >= pat.len() {
-        return None;
-    }
-
-    let mut singles: Vec<u8> = Vec::new();
-    let mut ranges: Vec<ByteClassRange> = Vec::new();
-
-    if pat[idx] == b']' {
-        singles.push(b']');
-        idx += 1;
-    }
-
-    while idx < pat.len() && pat[idx] != b']' {
-        if idx + 2 < pat.len() && pat[idx + 1] == b'-' && pat[idx + 2] != b']' {
-            let start = pat[idx];
-            let end = pat[idx + 2];
-            if start <= end {
-                ranges.push((start, end));
-            }
-            idx += 3;
-            continue;
-        }
-        singles.push(pat[idx]);
-        idx += 1;
-    }
-    if idx >= pat.len() || pat[idx] != b']' {
-        return None;
-    }
-    Some((singles, ranges, negate, idx + 1))
-}
-
-fn fnmatch_char_class_hit_bytes(ch: u8, singles: &[u8], ranges: &[(u8, u8)], negate: bool) -> bool {
-    let mut hit = singles.contains(&ch);
-    if !hit {
-        hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);
-    }
-    if negate { !hit } else { hit }
-}
-
-pub fn fnmatch_match_bytes_impl(name: &[u8], pat: &[u8]) -> bool {
+/// Match Unicode code points or bytes without changing their coordinate system.
+/// Bytes retain their borrowed input; Unicode callers supply Python code points,
+/// including surrogate values which Rust `char` cannot represent.
+pub fn fnmatch_match_units<T: Copy + Ord + From<u8>>(name: &[T], pat: &[T]) -> bool {
     let mut pi: usize = 0;
     let mut ni: usize = 0;
     let mut star_idx: Option<usize> = None;
     let mut matched_from_star: usize = 0;
 
     while ni < name.len() {
-        if pi < pat.len() && pat[pi] == b'*' {
-            while pi < pat.len() && pat[pi] == b'*' {
+        if pi < pat.len() && pat[pi] == T::from(b'*') {
+            while pi < pat.len() && pat[pi] == T::from(b'*') {
                 pi += 1;
             }
             if pi == pat.len() {
@@ -202,17 +79,16 @@ pub fn fnmatch_match_bytes_impl(name: &[u8], pat: &[u8]) -> bool {
             matched_from_star = ni;
             continue;
         }
-        if pi < pat.len() && pat[pi] == b'?' {
+        if pi < pat.len() && pat[pi] == T::from(b'?') {
             pi += 1;
             ni += 1;
             continue;
         }
         if pi < pat.len()
-            && pat[pi] == b'['
-            && let Some((singles, ranges, negate, next_idx)) =
-                fnmatch_parse_char_class_bytes(pat, pi)
+            && pat[pi] == T::from(b'[')
+            && let Some((singles, ranges, negate, next_idx)) = parse_class(pat, pi)
         {
-            let hit = fnmatch_char_class_hit_bytes(name[ni], &singles, &ranges, negate);
+            let hit = class_hit(name[ni], &singles, &ranges, negate);
             if hit {
                 pi = next_idx;
                 ni += 1;
@@ -240,10 +116,21 @@ pub fn fnmatch_match_bytes_impl(name: &[u8], pat: &[u8]) -> bool {
         return false;
     }
 
-    while pi < pat.len() && pat[pi] == b'*' {
+    while pi < pat.len() && pat[pi] == T::from(b'*') {
         pi += 1;
     }
     pi == pat.len()
+}
+
+pub fn fnmatch_match_impl(name: &str, pat: &str) -> bool {
+    fnmatch_match_units(
+        &name.chars().collect::<Vec<_>>(),
+        &pat.chars().collect::<Vec<_>>(),
+    )
+}
+
+pub fn fnmatch_match_bytes_impl(name: &[u8], pat: &[u8]) -> bool {
+    fnmatch_match_units(name, pat)
 }
 
 pub fn fnmatch_normcase_text(input: &str) -> String {
@@ -457,6 +344,23 @@ pub fn fnmatch_translate_impl(pat: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matching_keeps_python_codepoints_distinct_from_encoded_bytes() {
+        // CPython fnmatch.fnmatchcase: a surrogate and a non-ASCII scalar each
+        // consume one '?'; their UTF-8/WTF-8 byte encodings consume more.
+        assert!(fnmatch_match_units(&[0xdcffu32], &[b'?' as u32]));
+        assert!(fnmatch_match_units(&[0x00e9u32], &[b'?' as u32]));
+        assert!(!fnmatch_match_bytes_impl(&[0xc3, 0xa9], b"?"));
+        assert!(fnmatch_match_units(
+            &[0xdcffu32],
+            &[b'[' as u32, 0xdc80, b'-' as u32, 0xdcff, b']' as u32]
+        ));
+        assert!(!fnmatch_match_units(
+            &[0xe9u32],
+            &[b'[' as u32, 0xdc80, b'-' as u32, 0xdcff, b']' as u32]
+        ));
+    }
 
     #[test]
     fn matches_text_patterns() {

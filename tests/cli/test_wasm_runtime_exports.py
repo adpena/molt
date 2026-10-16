@@ -663,5 +663,6 @@ def test_runtime_build_abi_is_the_registry_narrowed_by_that_build_only() -> None
         if not runtime_symbol_available_on_target(
             wasm_runtime_export_name_for_import(name) or name,
             target_triple="aarch64-apple-darwin",
+            target_os="macos",
         )
     }

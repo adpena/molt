@@ -718,3 +718,67 @@ def test_local_class_guard_reads_no_class_storage(operation: str, storage: str) 
         for op in ops
         for arg in op.args
     )
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [
+        "None",
+        "True",
+        "7",
+        "1.5",
+        "'sentinel'",
+        "{'marker': 23}",
+        "type('Existing', (), {'marker': 'original'})",
+    ],
+)
+@pytest.mark.parametrize("metaclass_is_type", [False, True])
+def test_metaclass_return_does_not_authorize_layout_mutation(
+    returned: str, metaclass_is_type: bool
+) -> None:
+    if metaclass_is_type:
+        factory = (
+            "class Meta(type):\n"
+            "    def __new__(cls, name, bases, namespace):\n"
+            "        events.append(namespace['marker'])\n"
+            "        return result\n"
+        )
+    else:
+        factory = (
+            "def Meta(name, bases, namespace):\n"
+            "    events.append(namespace['marker'])\n"
+            "    return result\n"
+        )
+    source = (
+        f"result = {returned}\nevents = []\n"
+        + factory
+        + "class Subject(metaclass=Meta):\n"
+        "    marker = 42\n"
+        "    def method(self):\n"
+        "        return (__class__, self.marker)\n"
+    )
+    reference: dict = {}
+    try:
+        exec(compile(source, "metaclass_return.py", "exec"), reference)
+    except RuntimeError as exc:
+        # A returned type still has CPython's original-cell obligation; an
+        # arbitrary non-type return deliberately bypasses that check.
+        assert isinstance(reference["result"], type)
+        assert str(exc).startswith("__class__ not set defining 'Subject'")
+        assert "Subject" not in reference
+    else:
+        assert reference["Subject"] is reference["result"]
+    assert reference["events"] == [42]
+    if isinstance(reference["result"], type):
+        assert reference["result"].marker == "original"
+
+    # The native constructor owns storage. A class statement cannot infer
+    # ownership from the type of an arbitrary metaclass return value.
+    ops = _ops(source)
+    assert all(
+        op.kind not in {"CLASS_MERGE_LAYOUT", "CLASS_SET_LAYOUT_VERSION"} for op in ops
+    )
+    assert all(
+        op.kind not in {"GUARDED_GETATTR", "GETATTR"}
+        for op in _attribute_ops(ops, "marker")
+    )

@@ -16,7 +16,9 @@ pub(super) struct WordRangeConstructor<'a> {
     pub(super) trailing: &'a [u32],
 }
 
-/// Construct from already-evaluated operands passed as `(address, length)`.
+/// Construct from already-evaluated borrowed operands. Sequences use one word
+/// range; dictionaries split that same storage into key/value ranges for their
+/// existing pointer ABI and complete key-kind prescan.
 /// The range is a scratch allocation owned by this one construction: written
 /// here, copied and retained by the runtime in a single call, then freed before
 /// the next operation. No static buffer is visible to a reentrant callback,
@@ -32,6 +34,13 @@ pub(super) fn emit_word_range_constructor(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) {
+    let split_pairs = constructor.import == WasmRuntimeImport::DictFromPairs;
+    assert!(
+        !split_pairs
+            || (value_names.len().is_multiple_of(2)
+                && constructor.leading.is_empty()
+                && constructor.trailing.is_empty())
+    );
     if value_names.is_empty() {
         // An empty range needs no address, allocation or failure branch.
         emit_word_range_call(
@@ -66,7 +75,12 @@ pub(super) fn emit_word_range_constructor(
         func.instruction(&Instruction::LocalGet(scratch));
         func.instruction(&Instruction::I32WrapI64);
         func.instruction(&Instruction::LocalGet(locals[value_name]));
-        func.instruction(&Instruction::I64Store(word_memarg(index)));
+        let offset = if split_pairs {
+            index / 2 + (index % 2) * (value_names.len() / 2)
+        } else {
+            index
+        };
+        func.instruction(&Instruction::I64Store(word_memarg(offset)));
     }
     emit_word_range_call(
         func,
@@ -99,8 +113,19 @@ fn emit_word_range_call(
     for &local in constructor.leading {
         func.instruction(&Instruction::LocalGet(local));
     }
-    func.instruction(&address);
-    func.instruction(&Instruction::I64Const(count as i64));
+    if constructor.import == WasmRuntimeImport::DictFromPairs {
+        // This existing C ABI uses actual wasm32 pointers, not boxed words.
+        func.instruction(&address);
+        func.instruction(&Instruction::I32WrapI64);
+        func.instruction(&address);
+        func.instruction(&Instruction::I64Const((count / 2 * 8) as i64));
+        func.instruction(&Instruction::I64Add);
+        func.instruction(&Instruction::I32WrapI64);
+        func.instruction(&Instruction::I64Const((count / 2) as i64));
+    } else {
+        func.instruction(&address);
+        func.instruction(&Instruction::I64Const(count as i64));
+    }
     for &local in constructor.trailing {
         func.instruction(&Instruction::LocalGet(local));
     }

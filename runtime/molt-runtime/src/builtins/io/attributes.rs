@@ -322,13 +322,17 @@ pub(super) unsafe fn io_member_value(
         if operation == IoOperation::Raw {
             return file_handle_raw_bits(py, object);
         }
+        if (*handle_ptr).attachment == crate::object::FileAttachment::Uninitialized {
+            raise_exception::<u64>(py, "ValueError", "I/O operation on uninitialized object");
+            return None;
+        }
         if matches!(
             operation,
             IoOperation::Name | IoOperation::Mode | IoOperation::Closed
         ) {
             let underlying = {
                 let handle = &*handle_ptr;
-                if handle.detached {
+                if (handle.attachment == crate::object::FileAttachment::Detached) {
                     return raise_exception::<_>(
                         py,
                         "ValueError",
@@ -369,7 +373,7 @@ pub(super) unsafe fn io_member_value(
         match operation {
             IoOperation::Dictionary | IoOperation::Raw => unreachable!(),
             IoOperation::Closed => {
-                if handle.detached {
+                if (handle.attachment == crate::object::FileAttachment::Detached) {
                     return raise_exception::<_>(
                         py,
                         "ValueError",
@@ -379,7 +383,7 @@ pub(super) unsafe fn io_member_value(
                 Some(MoltObject::from_bool(file_handle_is_closed(handle)).bits())
             }
             IoOperation::Name => {
-                if handle.detached {
+                if (handle.attachment == crate::object::FileAttachment::Detached) {
                     return raise_exception::<_>(
                         py,
                         "ValueError",
@@ -393,7 +397,7 @@ pub(super) unsafe fn io_member_value(
                 Some(handle.name_bits)
             }
             IoOperation::Mode => {
-                if handle.detached && !handle.text {
+                if (handle.attachment == crate::object::FileAttachment::Detached) && !handle.text {
                     return raise_exception::<_>(
                         py,
                         "ValueError",
@@ -408,7 +412,7 @@ pub(super) unsafe fn io_member_value(
                     return None;
                 }
                 let value = if operation == IoOperation::Encoding {
-                    &handle.encoding
+                    &handle.encoding_original
                 } else {
                     &handle.errors
                 };
@@ -460,14 +464,14 @@ pub(super) unsafe fn io_member_value(
                     return None;
                 }
                 let value = handle.buffer_bits;
-                if handle.detached || value == 0 {
+                if (handle.attachment == crate::object::FileAttachment::Detached) || value == 0 {
                     return Some(MoltObject::none().bits());
                 }
                 inc_ref_bits(py, value);
                 Some(value)
             }
             IoOperation::Closefd => {
-                if handle.detached {
+                if (handle.attachment == crate::object::FileAttachment::Detached) {
                     return raise_exception::<_>(
                         py,
                         "ValueError",

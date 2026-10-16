@@ -43,6 +43,27 @@ LZMA module supplies constants and explicit unavailable-operation diagnostics.
 That symbol presence does not claim a WASM LZMA implementation. Runtime export
 validation remains strict for the exact admitted feature and target set.
 
+## Target availability and compiler facts
+
+`intrinsics/categories.toml` owns provider feature, architecture and OS
+availability. Generated resolvers, compiler admission and WASM exports consume
+that same policy. A target-exclusive provider has a real implementation only
+on its admitted targets; other targets do not carry a callable failure stub.
+Callable and boxed ABI facts use the complete normalized runtime declarations;
+the WASM provider list is a separate target projection of those declarations.
+Filtering WASM imports cannot delete native ABI facts.
+
+The compiler's generated Python identity catalog declares immutable target
+readers obtained through a proven `require_intrinsic` binding. Their scalar
+results flow through the existing binding analysis and condition pruning;
+lookup and call evaluation, rebinding and namespace invalidation retain their
+ordinary semantics. Platform guards precede unknown namespace publication when
+they need an exact loader proof. A matching string or mutable helper is not a
+proof. Runtime version readers are excluded because their state can be set.
+The frontend uses the selected runtime's platform value: `win32`, `darwin` or
+`linux` for admitted native targets and `wasi` for current wasm32 runtimes.
+Compiler facts and proof apparatus add no fallback Python to emitted programs.
+
 ## Dynamic callable closure
 
 `molt-tir::passes::collect_app_callable_requirements` owns possible callable

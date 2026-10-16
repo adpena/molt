@@ -26,12 +26,16 @@ _fake_codecs.lookup = lambda encoding: _CodecInfo(encoding)
 sys.modules["codecs"] = _fake_codecs
 
 
-def _encode(obj, encoding, errors):
-    return f"enc:{{encoding}}:{{errors}}:{{obj}}"
+def _encode(obj, encoding, errors, with_consumed):
+    assert type(with_consumed) is bool
+    value = f"enc:{{encoding}}:{{errors}}:{{obj}}"
+    return (value, 17) if with_consumed else value
 
 
-def _decode(obj, encoding, errors):
-    return f"dec:{{encoding}}:{{errors}}:{{obj}}"
+def _decode(obj, encoding, errors, with_consumed):
+    assert type(with_consumed) is bool
+    value = f"dec:{{encoding}}:{{errors}}:{{obj}}"
+    return (value, 13) if with_consumed else value
 
 
 def _lookup_name(name):
@@ -71,8 +75,8 @@ checks = {{
     "behavior": (
         _private.encode("x", "utf-8", "strict") == "enc:utf-8:strict:x"
         and _private.decode("y", "utf-8", "ignore") == "dec:utf-8:ignore:y"
-        and codec.encode("z") == ("enc:utf-8:strict:z", 1)
-        and codec.decode("w", "replace") == ("dec:utf-8:replace:w", 1)
+        and codec.encode("z") == ("enc:utf-8:strict:z", 17)
+        and codec.decode("w", "replace") == ("dec:utf-8:replace:w", 13)
         and _private.lookup("utf-8").name == "utf-8"
     ),
 }}

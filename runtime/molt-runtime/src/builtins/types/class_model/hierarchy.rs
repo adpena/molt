@@ -40,7 +40,41 @@ pub(crate) fn prepare_class_base_layout(
         };
         unsafe {
             if object_type_id(base_ptr) != TYPE_ID_TYPE {
-                raise_exception::<()>(_py, "TypeError", "base must be a type object");
+                // Native classes carry their own readiness and BASETYPE fact.
+                // Admission belongs here, after metaclass preparation and the
+                // class body, never in resolve_bases or namespace preparation.
+                let native = match crate::object::class_layout::real_class_view(base) {
+                    Ok(Some(native)) => native,
+                    Ok(None) => {
+                        raise_exception::<()>(_py, "TypeError", "base must be a type object");
+                        return None;
+                    }
+                    Err(()) => {
+                        crate::cpython_abi_hooks::propagate_native_failure(_py, "base type");
+                        return None;
+                    }
+                };
+                if molt_cpython_abi::api::typeobj::PyType_Ready(native) < 0 {
+                    crate::cpython_abi_hooks::propagate_native_failure(_py, "base readiness");
+                    return None;
+                }
+                if (*native).tp_flags & molt_cpython_abi::abi_types::Py_TPFLAGS_BASETYPE == 0 {
+                    let name =
+                        molt_cpython_abi::api::typeobj::type_name_with_precision(native, 100);
+                    raise_exception::<()>(
+                        _py,
+                        "TypeError",
+                        &format!("type '{name}' is not an acceptable base type"),
+                    );
+                } else {
+                    // A semantic class view does not make foreign C storage a
+                    // managed field layout. Keep the existing capability boundary.
+                    raise_exception::<()>(
+                        _py,
+                        "TypeError",
+                        "native C class storage cannot be inherited by a managed class",
+                    );
+                }
                 return None;
             }
             if crate::object::class_is_not_base(_py, base_ptr) {
@@ -466,28 +500,6 @@ pub extern "C" fn molt_class_layout_version(class_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_set_layout_version(class_bits: u64, version_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let class_obj = obj_from_bits(class_bits);
-        let Some(class_ptr) = class_obj.as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return MoltObject::none().bits();
-            }
-            let version = match to_i64(obj_from_bits(version_bits)) {
-                Some(val) if val >= 0 => val as u64,
-                _ => return raise_exception::<_>(_py, "TypeError", "layout version must be int"),
-            };
-            class_set_layout_version_bits(class_ptr, version);
-            crate::bump_type_version();
-        }
-        MoltObject::none().bits()
-    })
-}
-
 /// Stamp the class a compiled class statement just created with that
 /// statement's identity (HF-220). `definition_slot` is the raw program slot the
 /// program bound to the statement's definition symbol. Layout guards compare
@@ -521,207 +533,5 @@ pub extern "C" fn molt_class_set_definition(class_bits: u64, definition_slot: u6
             }
         }
         MoltObject::none().bits()
-    })
-}
-
-/// Merge construction inputs only. A finished class's physical record is
-/// immutable; explicit callers must agree with that record instead of resizing
-/// it or reconstructing a competing extent from namespace dictionaries.
-unsafe fn merge_class_layout_metadata(
-    py: &PyToken<'_>,
-    class: *mut u8,
-    offsets_bits: u64,
-    size_bits: u64,
-) -> Result<(), u64> {
-    unsafe {
-        let hinted_size = to_i64(obj_from_bits(size_bits))
-            .filter(|&size| size >= 0)
-            .and_then(|size| usize::try_from(size).ok())
-            .ok_or_else(|| {
-                raise_exception::<u64>(py, "TypeError", "__molt_layout_size__ must be int")
-            })?;
-        let source = if obj_from_bits(offsets_bits).is_none() {
-            None
-        } else {
-            Some(
-                obj_from_bits(offsets_bits)
-                    .as_ptr()
-                    .filter(|&ptr| object_type_id(ptr) == TYPE_ID_DICT)
-                    .ok_or_else(|| {
-                        raise_exception::<u64>(
-                            py,
-                            "TypeError",
-                            "__molt_field_offsets__ must be dict or None",
-                        )
-                    })?,
-            )
-        };
-        if let Some(source) = source {
-            inc_ref_bits(py, offsets_bits);
-            let _source_owner = crate::PtrDropGuard::new(source);
-            if crate::object::class_definition_is_finished(class) {
-                let size = crate::object::layout::class_cached_layout_size(class).unwrap();
-                let tail = crate::object::class_reserved_layout_tail(py, class);
-                crate::object::validate_class_field_offsets(
-                    py,
-                    source,
-                    0,
-                    size.saturating_sub(tail),
-                )
-                .map_err(|()| MoltObject::none().bits())?;
-                if hinted_size > size
-                    || crate::object::ops_dict::dict_snapshot(
-                        py,
-                        source,
-                        crate::object::ops_dict::DictSnapshotKind::Entries,
-                    )
-                    .ok_or_else(|| MoltObject::none().bits())?
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .any(|row| {
-                        crate::builtins::attr::class_field_offset(py, class, row[0])
-                            != obj_from_bits(row[1])
-                                .as_int()
-                                .and_then(|offset| usize::try_from(offset).ok())
-                    })
-                {
-                    return Err(raise_exception::<u64>(
-                        py,
-                        "ValueError",
-                        "class layout hint disagrees with sealed physical storage",
-                    ));
-                }
-                return Ok(());
-            }
-        }
-        // A size-only dataclass/compiler hint describes its logical vector,
-        // not an additional physical storage claim on an already sealed class.
-        if crate::object::class_definition_is_finished(class) {
-            return Ok(());
-        }
-        let Some(namespace) = obj_from_bits(class_dict_bits(class))
-            .as_ptr()
-            .filter(|&ptr| object_type_id(ptr) == TYPE_ID_DICT)
-        else {
-            return Ok(());
-        };
-        inc_ref_bits(py, MoltObject::from_ptr(namespace).bits());
-        let _namespace_owner = crate::PtrDropGuard::new(namespace);
-        let offsets_name = intern_static_name(
-            py,
-            &runtime_state(py).interned.field_offsets_name,
-            b"__molt_field_offsets__",
-        );
-        let size_name = intern_static_name(
-            py,
-            &runtime_state(py).interned.molt_layout_size,
-            b"__molt_layout_size__",
-        );
-        if exception_pending(py) {
-            return Err(MoltObject::none().bits());
-        }
-        if let Some(source) = source {
-            inc_ref_bits(py, offsets_bits);
-            let _source_owner = crate::PtrDropGuard::new(source);
-            crate::object::validate_class_field_offsets(py, source, 0, usize::MAX)
-                .map_err(|()| MoltObject::none().bits())?;
-            let target_bits = dict_get_in_place(py, namespace, offsets_name)
-                .map_err(|()| MoltObject::none().bits())?
-                .filter(|&bits| !obj_from_bits(bits).is_none());
-            let target = if let Some(bits) = target_bits {
-                let target = obj_from_bits(bits)
-                    .as_ptr()
-                    .filter(|&ptr| object_type_id(ptr) == TYPE_ID_DICT)
-                    .ok_or_else(|| {
-                        raise_exception::<u64>(
-                            py,
-                            "TypeError",
-                            "__molt_field_offsets__ must be dict",
-                        )
-                    })?;
-                inc_ref_bits(py, bits);
-                target
-            } else {
-                let target = alloc_dict_with_pairs(py, &[]);
-                if target.is_null() {
-                    return Err(MoltObject::none().bits());
-                }
-                if !dict_set_in_place(
-                    py,
-                    namespace,
-                    offsets_name,
-                    MoltObject::from_ptr(target).bits(),
-                ) {
-                    dec_ref_bits(py, MoltObject::from_ptr(target).bits());
-                    return Err(MoltObject::none().bits());
-                }
-                target
-            };
-            let _target_owner = crate::PtrDropGuard::new(target);
-            crate::object::validate_class_field_offsets(py, target, 0, usize::MAX)
-                .map_err(|()| MoltObject::none().bits())?;
-            let entries = crate::object::ops_dict::dict_snapshot(
-                py,
-                source,
-                crate::object::ops_dict::DictSnapshotKind::Entries,
-            )
-            .ok_or_else(|| MoltObject::none().bits())?;
-            for pair in entries.as_chunks::<2>().0 {
-                if let Some(prior) = dict_get_in_place(py, target, pair[0])
-                    .map_err(|()| MoltObject::none().bits())?
-                {
-                    if prior != pair[1] {
-                        return Err(raise_exception::<u64>(
-                            py,
-                            "ValueError",
-                            "conflicting explicit class field offsets",
-                        ));
-                    }
-                } else {
-                    if !dict_set_in_place(py, target, pair[0], pair[1]) {
-                        return Err(MoltObject::none().bits());
-                    }
-                }
-            }
-        }
-        let previous = dict_get_in_place(py, namespace, size_name)
-            .map_err(|()| MoltObject::none().bits())?
-            .and_then(|bits| obj_from_bits(bits).as_int())
-            .and_then(|size| usize::try_from(size).ok())
-            .unwrap_or(0);
-        let size = i64::try_from(previous.max(hinted_size)).map_err(|_| {
-            raise_exception::<u64>(py, "OverflowError", "class instance layout is too large")
-        })?;
-        let completed =
-            dict_set_in_place(py, namespace, size_name, MoltObject::from_int(size).bits());
-        if !completed {
-            Err(MoltObject::none().bits())
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_merge_layout(
-    class_bits: u64,
-    offsets_bits: u64,
-    size_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let class_obj = obj_from_bits(class_bits);
-        let Some(class_ptr) = class_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class layout merge expects type");
-        };
-        unsafe {
-            if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "class layout merge expects type");
-            }
-            match merge_class_layout_metadata(_py, class_ptr, offsets_bits, size_bits) {
-                Ok(()) => MoltObject::none().bits(),
-                Err(bits) => bits,
-            }
-        }
     })
 }

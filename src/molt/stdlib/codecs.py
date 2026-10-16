@@ -129,25 +129,16 @@ def _normalize_search_name(encoding: object) -> str:
     return "".join(out)
 
 
-def _safe_len(value: object) -> int:
-    try:
-        return len(value)  # type: ignore[arg-type]
-    except Exception:
-        return 0
-
-
 def _encode_with_consumed(
     obj: object, encoding: object, errors: object = "strict"
 ) -> tuple[object, int]:
-    out = _MOLT_CODECS_ENCODE(obj, encoding, errors)
-    return out, _safe_len(obj)
+    return _MOLT_CODECS_ENCODE(obj, encoding, errors, True)
 
 
 def _decode_with_consumed(
     obj: object, encoding: object, errors: object = "strict"
 ) -> tuple[object, int]:
-    out = _MOLT_CODECS_DECODE(obj, encoding, errors)
-    return out, _safe_len(obj)
+    return _MOLT_CODECS_DECODE(obj, encoding, errors, True)
 
 
 class Codec:
@@ -426,11 +417,11 @@ def getreader(encoding: object):
 
 
 def encode(obj: object, encoding: object = "utf-8", errors: object = "strict"):
-    return _MOLT_CODECS_ENCODE(obj, encoding, errors)
+    return _MOLT_CODECS_ENCODE(obj, encoding, errors, False)
 
 
 def decode(obj: object, encoding: object = "utf-8", errors: object = "strict"):
-    return _MOLT_CODECS_DECODE(obj, encoding, errors)
+    return _MOLT_CODECS_DECODE(obj, encoding, errors, False)
 
 
 def register_error(name, error_handler):

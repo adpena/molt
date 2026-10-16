@@ -314,7 +314,7 @@ pub(super) fn parse_bool_arg(
     if let Some(value) = to_i64(obj) {
         return Ok(value != 0);
     }
-    if let Some(text) = string_obj_to_owned(obj)
+    if let Some(text) = unsafe { string_obj_to_owned(obj) }
         && let Some(value) = parse_bool_text(&text)
     {
         return Ok(value);
@@ -417,7 +417,7 @@ pub(super) fn value_bits_to_i64_default(bits: u64, default: i64) -> i64 {
     if let Some(value) = to_i64(obj) {
         return value;
     }
-    if let Some(text) = string_obj_to_owned(obj)
+    if let Some(text) = unsafe { string_obj_to_owned(obj) }
         && let Ok(value) = text.trim().parse::<i64>()
     {
         return value;
@@ -594,7 +594,7 @@ pub(super) fn parse_simple_end_or_int_index_bits(bits: u64, upper: usize) -> Opt
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, upper));
     }
-    let spec = string_obj_to_owned(obj)?;
+    let spec = unsafe { string_obj_to_owned(obj) }?;
     parse_simple_end_or_int_index(&spec, upper)
 }
 
@@ -608,7 +608,7 @@ pub(super) fn parse_listbox_index_bits(bits: u64, len: usize, for_insert: bool) 
         };
         return Some(clamp_index_i64(value, upper));
     }
-    let spec = string_obj_to_owned(obj)?;
+    let spec = unsafe { string_obj_to_owned(obj) }?;
     let trimmed = spec.trim();
     if trimmed.eq_ignore_ascii_case("end") {
         return if for_insert {
@@ -643,7 +643,7 @@ pub(super) fn parse_menu_existing_index_bits(
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, len - 1));
     }
-    let spec = string_obj_to_owned(obj)?;
+    let spec = unsafe { string_obj_to_owned(obj) }?;
     let trimmed = spec.trim();
     if trimmed.eq_ignore_ascii_case("end") || trimmed.eq_ignore_ascii_case("last") {
         return Some(len - 1);
@@ -665,7 +665,7 @@ pub(super) fn parse_menu_insert_index_bits(bits: u64, len: usize) -> Option<usiz
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, len));
     }
-    let spec = string_obj_to_owned(obj)?;
+    let spec = unsafe { string_obj_to_owned(obj) }?;
     let trimmed = spec.trim();
     if trimmed.eq_ignore_ascii_case("end") {
         return Some(len);
@@ -712,7 +712,7 @@ pub(super) fn parse_entry_like_index_bits(
     if let Some(index) = parse_simple_end_or_int_index_bits(bits, text_len) {
         return Some(index.min(text_len));
     }
-    let spec = string_obj_to_owned(obj_from_bits(bits))?;
+    let spec = unsafe { string_obj_to_owned(obj_from_bits(bits)) }?;
     let normalized = spec.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "insert" => Some(insert_cursor.min(text_len)),
@@ -791,7 +791,7 @@ pub(super) fn parse_text_index_bits(bits: u64, text: &str) -> Option<usize> {
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, text_char_count(text)));
     }
-    let spec = string_obj_to_owned(obj)?;
+    let spec = unsafe { string_obj_to_owned(obj) }?;
     parse_text_index_spec(&spec, text)
 }
 
@@ -803,7 +803,7 @@ pub(super) fn parse_treeview_item_list_arg(
 ) -> Result<Vec<String>, u64> {
     if let Some(raw_items) = decode_value_list(obj_from_bits(bits)) {
         let mut out = Vec::with_capacity(raw_items.len());
-        for item_bits in raw_items {
+        for &item_bits in raw_items.iter() {
             out.push(get_string_arg(py, handle, item_bits, label)?);
         }
         return Ok(out);
@@ -817,15 +817,15 @@ pub(super) fn parse_treeview_tags(item: &TkTreeviewItem) -> Vec<String> {
     };
     if let Some(raw) = decode_value_list(obj_from_bits(tags_bits)) {
         let mut out = Vec::with_capacity(raw.len());
-        for tag_bits in raw {
-            if let Some(tag) = string_obj_to_owned(obj_from_bits(tag_bits)) {
+        for &tag_bits in raw.iter() {
+            if let Some(tag) = unsafe { string_obj_to_owned(obj_from_bits(tag_bits)) } {
                 out.push(tag);
             }
         }
         return out;
     }
     let value = obj_from_bits(tags_bits);
-    if let Some(tag) = string_obj_to_owned(value) {
+    if let Some(tag) = unsafe { string_obj_to_owned(value) } {
         if tag.trim().is_empty() {
             return Vec::new();
         }

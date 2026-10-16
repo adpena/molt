@@ -5,7 +5,6 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "env_get",
     "exception_pending",
     "function_defaults_version",
     "print",
@@ -62,44 +61,6 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     };
 
     match op.kind.as_str() {
-        "env_get" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let key = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Env key not found");
-            let default = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Env default not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_env_get",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*key, *default]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
         "exception_pending" => {
             // Read the runtime exception-pending flag as a boolean value:
             // `molt_exception_pending_fast() != 0`. Produced by the TIR

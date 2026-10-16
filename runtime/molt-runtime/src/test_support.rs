@@ -41,6 +41,45 @@ thread_local! {
 static INSTALL_EXPECTED_PANIC_HOOK: Once = Once::new();
 static PROCESS_GLOBAL_TEST_STATE: Mutex<()> = Mutex::new(());
 
+/// Reproduce array.py's real producer boundary: a declared class publishes
+/// native wrapper descriptors and an ordinary instance owns the storage handle.
+/// The caller retains its handle; the returned instance is a new owned value.
+pub(crate) fn declared_array_buffer_instance(py: &crate::PyToken<'_>, handle: u64) -> u64 {
+    use crate::{MoltObject, dec_ref_bits, exception_pending, obj_from_bits};
+    let name = crate::attr_name_bits_from_bytes(py, b"BufferContractArray").unwrap();
+    let namespace = crate::alloc_dict_with_pairs(py, &[]);
+    assert!(!namespace.is_null());
+    let namespace = MoltObject::from_ptr(namespace).bits();
+    let builtins = crate::builtin_classes(py);
+    let class = crate::builtins::types::molt_type_new(
+        builtins.type_obj,
+        name,
+        builtins.object,
+        namespace,
+        MoltObject::none().bits(),
+    );
+    assert!(!exception_pending(py));
+    assert!(!obj_from_bits(class).is_none());
+    dec_ref_bits(py, namespace);
+    dec_ref_bits(py, name);
+    crate::builtins::array_mod::molt_array_declare_buffer(class);
+    assert!(!exception_pending(py));
+    let instance =
+        unsafe { crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap()) };
+    assert!(!obj_from_bits(instance).is_none());
+    let name = crate::attr_name_bits_from_bytes(py, b"_handle").unwrap();
+    let result = crate::molt_set_attr_name(instance, name, handle);
+    assert!(!exception_pending(py));
+    dec_ref_bits(py, result);
+    dec_ref_bits(py, name);
+    dec_ref_bits(py, class);
+    // Raw storage is still admitted by the internal physical C transport, but
+    // public eligibility comes from the declared facade's semantic slots.
+    assert!(!crate::object::buffer_exports::supports_buffer(py, handle));
+    assert!(crate::object::buffer_exports::supports_buffer(py, instance));
+    instance
+}
+
 // Restore independent already-owned channels without manufacturing a new raise
 // site. The matching/cleanup oracles intentionally retain both saved owners.
 pub(crate) fn restore_runtime_raised(py: &crate::PyToken<'_>, bits: u64) {
@@ -505,6 +544,31 @@ impl RuntimeTestTransaction {
     /// Exercise production admission with an exact grant set and no ambient tier.
     /// Environment mutation and the whole runtime lifecycle share process custody.
     pub(crate) fn with_explicit_capabilities(grants: &str, body: impl FnOnce(&crate::PyToken<'_>)) {
+        Self::with_explicit_capabilities_using_init(
+            grants,
+            || crate::state::runtime_state::molt_runtime_init(),
+            body,
+        );
+    }
+
+    /// Supply real VFS backends at the production pre-Ready publication point.
+    pub(crate) fn with_explicit_capabilities_and_vfs(
+        grants: &str,
+        vfs: Option<crate::vfs::VfsState>,
+        body: impl FnOnce(&crate::PyToken<'_>),
+    ) {
+        Self::with_explicit_capabilities_using_init(
+            grants,
+            || crate::state::runtime_state::runtime_init_with_vfs_for_testing(vfs),
+            body,
+        );
+    }
+
+    fn with_explicit_capabilities_using_init(
+        grants: &str,
+        initialize: impl FnOnce() -> u64,
+        body: impl FnOnce(&crate::PyToken<'_>),
+    ) {
         Self::with_cold_runtime_lifecycle(|| {
             struct RestoreEnvironment([(&'static str, Option<std::ffi::OsString>); 2]);
             impl Drop for RestoreEnvironment {
@@ -527,7 +591,7 @@ impl RuntimeTestTransaction {
                 std::env::set_var("MOLT_CAPABILITY_TIER", "none");
                 std::env::set_var("MOLT_CAPABILITIES", grants);
             }
-            assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+            assert_eq!(initialize(), 1);
             crate::with_gil_entry_nopanic!(py, { body(py) });
         });
     }

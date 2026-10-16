@@ -928,3 +928,407 @@ fn filehandler_revents_translation_is_stable() {
         TK_FILE_EVENT_READABLE | TK_FILE_EVENT_EXCEPTION
     );
 }
+
+// Each test owns process-global OnceLocks and CWD: run one exact ignored test
+// per fresh process. The parent proof guard supplies TEMP/TMPDIR and removes its
+// scratch after exit; Windows keeps the production-owned DLL mapped until then.
+#[cfg(all(
+    feature = "native-tcl",
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
+mod library_policy_tests {
+    use crate::tk::tcl::{load_tcl_api, tcl_library_candidates};
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
+    fn set_operator(key: &str, value: Option<&OsStr>) {
+        molt_runtime_platform::env_support::process_env_set(OsStr::new(key), value).unwrap();
+    }
+
+    fn installed_tcl() -> PathBuf {
+        let path =
+            PathBuf::from(std::env::var_os("MOLT_TCL_LIB").expect(
+                "fresh-process proof requires MOLT_TCL_LIB naming an installed Tcl library",
+            ));
+        assert!(
+            path.is_absolute(),
+            "proof prerequisite must be an absolute file"
+        );
+        assert!(path.is_file(), "installed Tcl library is missing: {path:?}");
+        path
+    }
+
+    struct TestDirectories {
+        original_cwd: PathBuf,
+        startup: PathBuf,
+        guest: PathBuf,
+    }
+
+    impl TestDirectories {
+        fn new() -> Self {
+            let root = std::path::absolute(std::env::temp_dir())
+                .unwrap()
+                .join(format!(
+                    "molt-tcl-policy-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+            std::fs::create_dir(&root).unwrap();
+            let startup = root.join("startup");
+            let guest = root.join("guest");
+            std::fs::create_dir(&startup).unwrap();
+            std::fs::create_dir(&guest).unwrap();
+            eprintln!(
+                "Tcl policy proof scratch (retire after process exit): {}",
+                root.display()
+            );
+            let original_cwd = std::env::current_dir().unwrap();
+            std::env::set_current_dir(&startup).unwrap();
+            // Match the OS startup basis even when TEMP itself is a symlink.
+            let startup = std::env::current_dir().unwrap();
+            let guest = startup.parent().unwrap().join("guest");
+            Self {
+                original_cwd,
+                startup,
+                guest,
+            }
+        }
+    }
+
+    impl Drop for TestDirectories {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original_cwd).unwrap();
+        }
+    }
+
+    // Inspect the actual function supplied by the OS loader, not the policy's
+    // candidate list or a test replacement for Library::new.
+    #[cfg(unix)]
+    fn loaded_image(address: *const std::ffi::c_void) -> PathBuf {
+        use std::os::unix::ffi::OsStrExt;
+        let mut info = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+        assert_ne!(unsafe { libc::dladdr(address, info.as_mut_ptr()) }, 0);
+        let info = unsafe { info.assume_init() };
+        assert!(!info.dli_fname.is_null());
+        let name = unsafe { std::ffi::CStr::from_ptr(info.dli_fname) };
+        PathBuf::from(OsStr::from_bytes(name.to_bytes()))
+    }
+
+    #[cfg(windows)]
+    fn loaded_image(address: *const std::ffi::c_void) -> PathBuf {
+        use std::os::windows::ffi::OsStringExt;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            #[link_name = "GetModuleHandleExW"]
+            fn module_from_address(
+                flags: u32,
+                address: *const u16,
+                module: *mut *mut std::ffi::c_void,
+            ) -> i32;
+            #[link_name = "GetModuleFileNameW"]
+            fn module_filename(module: *mut std::ffi::c_void, name: *mut u16, capacity: u32)
+            -> u32;
+        }
+        let mut module = std::ptr::null_mut();
+        // FROM_ADDRESS | UNCHANGED_REFCOUNT: production already pins the image.
+        assert_ne!(
+            unsafe { module_from_address(0x00000004 | 0x00000002, address.cast(), &mut module) },
+            0
+        );
+        let mut name = vec![0_u16; 32768];
+        let length =
+            unsafe { module_filename(module, name.as_mut_ptr(), name.len() as u32) } as usize;
+        assert!(
+            length > 0 && length < name.len(),
+            "module filename must not truncate"
+        );
+        PathBuf::from(std::ffi::OsString::from_wide(&name[..length]))
+    }
+
+    // Exercise the real selected library, not a symbol-shaped fixture. Each
+    // count output is checked against literal contents; Tcl 9's wide writes
+    // cannot be hidden by a successful loader-only test.
+    fn assert_loaded_value_abi(api: &'static crate::tk::tcl::TclApi) {
+        use crate::tk::tcl::{TCL_OK, tcl_merge_args, tcl_result_string, tcl_split_list};
+        use std::ffi::c_void;
+        use std::ptr;
+
+        let executable = super::tcl_find_executable_arg();
+        unsafe { api.find_executable(executable.as_ptr()) };
+        let interp = unsafe { (api.create_interp)() };
+        assert!(!interp.is_null());
+        // Tcl_CreateInterp installs core commands without requiring Tk/display
+        // or an init.tcl discovery policy unrelated to this ABI witness.
+        unsafe {
+            // Impossible sizes must fail before the foreign function sees the
+            // null payload, for either admitted ABI and without large buffers.
+            assert!(api.new_string_obj(ptr::null(), usize::MAX).is_err());
+            assert!(api.new_byte_array_obj(ptr::null(), usize::MAX).is_err());
+            assert!(api.new_list_obj(usize::MAX, ptr::null()).is_err());
+            assert!(api.merge(usize::MAX, ptr::null()).is_err());
+            assert!(api.eval_objv(interp, usize::MAX, ptr::null(), 0).is_err());
+            let text = api.new_string_obj(b"a\0b".as_ptr().cast(), 3).unwrap();
+            assert!(!text.is_null());
+            api.incr_ref_count_obj(text);
+            let mut length = -1;
+            let bytes = api.get_string_from_obj(text, &mut length);
+            assert_eq!(length, 3);
+            assert_eq!(std::slice::from_raw_parts(bytes.cast::<u8>(), 3), b"a\0b");
+            api.decr_ref_count_obj(text);
+
+            let data = api.new_byte_array_obj([0_u8, 255, 42].as_ptr(), 3).unwrap();
+            assert!(!data.is_null());
+            api.incr_ref_count_obj(data);
+            let mut length = -1;
+            let bytes = api.get_byte_array_from_obj(data, &mut length);
+            assert_eq!(length, 3);
+            assert_eq!(std::slice::from_raw_parts(bytes, 3), &[0, 255, 42]);
+            api.decr_ref_count_obj(data);
+
+            let empty = api.new_byte_array_obj(ptr::null(), 0).unwrap();
+            assert!(!empty.is_null());
+            api.incr_ref_count_obj(empty);
+            let mut length = -1;
+            let bytes = api.get_byte_array_from_obj(empty, &mut length);
+            assert!(!bytes.is_null());
+            assert_eq!(length, 0);
+            api.decr_ref_count_obj(empty);
+
+            // The shared exported boolean wrapper must parse Tcl spellings,
+            // including false, and write a full C int on either ABI.
+            for (text, expected) in [(c"yes", 1), (c"off", 0)] {
+                let value = api.new_string_obj(text.as_ptr(), 3).unwrap();
+                assert!(!value.is_null());
+                api.incr_ref_count_obj(value);
+                let mut truth = -1;
+                assert_eq!(
+                    (api.get_boolean_from_obj)(interp, value, &mut truth),
+                    TCL_OK
+                );
+                assert_eq!(truth, expected);
+                api.decr_ref_count_obj(value);
+            }
+
+            let word = api.new_string_obj(c"two words".as_ptr(), 9).unwrap();
+            let boolean = (api.new_wide_int_obj)(1);
+            let list = api.new_list_obj(2, [word, boolean].as_ptr()).unwrap();
+            assert!(!list.is_null());
+            api.incr_ref_count_obj(list);
+            let list_type = (api.get_obj_type)(c"list".as_ptr());
+            assert!(!list_type.is_null());
+            assert_eq!(
+                (*list.cast::<crate::tk::tcl::TclObjHeader>()).type_ptr,
+                list_type
+            );
+            let mut count = -1;
+            let mut elements: *mut *mut c_void = ptr::null_mut();
+            assert_eq!(
+                api.list_obj_get_elements(interp, list, &mut count, &mut elements),
+                TCL_OK
+            );
+            assert_eq!(count, 2);
+            assert_eq!(*elements, word);
+            let mut truth = -1;
+            assert_eq!(
+                (api.get_boolean_from_obj)(interp, *elements.add(1), &mut truth),
+                TCL_OK
+            );
+            assert_eq!(truth, 1);
+            let last = api.new_string_obj(c"tail".as_ptr(), 4).unwrap();
+            assert_eq!((api.list_obj_append_element)(interp, list, last), TCL_OK);
+            let command = api.new_string_obj(c"llength".as_ptr(), 7).unwrap();
+            api.incr_ref_count_obj(command);
+            assert_eq!(
+                api.eval_objv(interp, 2, [command, list].as_ptr(), 0)
+                    .unwrap(),
+                TCL_OK
+            );
+            assert_eq!(tcl_result_string(api, interp), "3");
+            api.decr_ref_count_obj(command);
+            api.decr_ref_count_obj(list);
+
+            let args = vec![
+                "two words".to_string(),
+                "{braces}".to_string(),
+                "".to_string(),
+            ];
+            let merged = String::from_utf8(tcl_merge_args(api, &args).unwrap()).unwrap();
+            assert_eq!(tcl_split_list(api, interp, &merged).unwrap(), args);
+
+            let command = api.new_string_obj(c"error".as_ptr(), 5).unwrap();
+            let message = api
+                .new_string_obj(c"ABI error witness".as_ptr(), 17)
+                .unwrap();
+            api.incr_ref_count_obj(command);
+            api.incr_ref_count_obj(message);
+            assert_eq!(
+                api.eval_objv(interp, 2, [command, message].as_ptr(), 0)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(tcl_result_string(api, interp), "ABI error witness");
+            api.decr_ref_count_obj(command);
+            api.decr_ref_count_obj(message);
+            (api.delete_interp)(interp);
+        }
+    }
+
+    fn assert_first_load_is(expected: &Path) {
+        let api = load_tcl_api().expect("real Tcl first-use load must succeed");
+        let actual = loaded_image(api.create_interp as *const () as *const std::ffi::c_void);
+        // Filesystem identity is an independent test oracle only. Production
+        // capture never canonicalizes, stats, discovers or loads the path.
+        assert_eq!(
+            actual.canonicalize().unwrap(),
+            expected.canonicalize().unwrap()
+        );
+        assert_loaded_value_abi(api);
+    }
+
+    fn path_load_after_chdir(make_override: impl FnOnce(&Path) -> PathBuf) {
+        let source = installed_tcl();
+        let dirs = TestDirectories::new();
+        let preferred = dirs.startup.join("preferred");
+        let selected = preferred.join(source.file_name().unwrap());
+        let configured = make_override(&selected);
+        set_operator("MOLT_TCL_LIB", Some(configured.as_os_str()));
+        set_operator("MOLT_TCL_LIB_DIR", Some(OsStr::new("preferred")));
+        crate::initialize_library_policy();
+        // Neither the file nor its parent exists at capture: eager loading,
+        // canonicalization and filesystem discovery would reject this case.
+        std::fs::create_dir(&preferred).unwrap();
+        std::fs::copy(&source, &selected).unwrap();
+        std::env::set_current_dir(&dirs.guest).unwrap();
+        set_operator("MOLT_TCL_LIB", Some(OsStr::new("./guest-selected-library")));
+        set_operator(
+            "MOLT_TCL_LIB_DIR",
+            Some(OsStr::new("guest-selected-directory")),
+        );
+        crate::initialize_library_policy();
+        assert_first_load_is(&selected);
+
+        // MOLT_TCL_LIB_DIR follows system defaults. This assertion proves its
+        // captured route/order, not that a system Tcl loaded from this directory.
+        let candidates = tcl_library_candidates().unwrap();
+        assert!(candidates[0].is_absolute());
+        assert_eq!(
+            candidates[0].canonicalize().unwrap(),
+            selected.canonicalize().unwrap()
+        );
+        let directory_start = candidates
+            .iter()
+            .skip(1)
+            .position(|path| path.parent() == Some(preferred.as_path()))
+            .map(|position| position + 1)
+            .expect("captured directory candidates");
+        assert!(
+            candidates[directory_start..]
+                .iter()
+                .all(|path| path.parent() == Some(preferred.as_path()))
+        );
+        assert!(!candidates.iter().any(|path| path.starts_with(&dirs.guest)));
+    }
+
+    #[test]
+    #[ignore = "requires installed Tcl and fresh process with guarded scratch; owns CWD and loader OnceLocks"]
+    fn relative_library_is_loaded_from_startup_after_guest_chdir() {
+        path_load_after_chdir(|selected| {
+            Path::new(".")
+                .join("preferred")
+                .join(selected.file_name().unwrap())
+        });
+    }
+
+    #[test]
+    #[ignore = "requires installed Tcl and fresh process with guarded scratch; owns CWD and loader OnceLocks"]
+    fn absolute_library_is_unchanged_after_guest_chdir() {
+        path_load_after_chdir(Path::to_path_buf);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires installed Tcl and fresh Windows process with guarded scratch; owns CWD and loader OnceLocks"]
+    fn rooted_library_keeps_startup_drive() {
+        path_load_after_chdir(|selected| {
+            let rooted: PathBuf = selected.components().skip(1).collect();
+            assert!(rooted.has_root() && !rooted.is_absolute());
+            rooted
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires installed Tcl and fresh Windows process with guarded scratch; owns CWD and loader OnceLocks"]
+    fn drive_relative_library_keeps_startup_directory() {
+        path_load_after_chdir(|selected| {
+            let std::path::Component::Prefix(prefix) = selected.components().next().unwrap() else {
+                panic!("native Windows fixture must have a drive prefix");
+            };
+            let drive = match prefix.kind() {
+                std::path::Prefix::Disk(drive) | std::path::Prefix::VerbatimDisk(drive) => drive,
+                _ => panic!("drive-relative proof requires a local-drive scratch directory"),
+            };
+            PathBuf::from(format!("{}:preferred", char::from(drive)))
+                .join(selected.file_name().unwrap())
+        });
+    }
+
+    #[test]
+    #[ignore = "requires installed Tcl discoverable by bare loader name and a fresh process with guarded scratch"]
+    fn bare_library_name_preserves_native_loader_search() {
+        let source = installed_tcl();
+        let bare = source.file_name().unwrap();
+        let dirs = TestDirectories::new();
+        set_operator("MOLT_TCL_LIB", Some(bare));
+        set_operator("MOLT_TCL_LIB_DIR", None);
+        crate::initialize_library_policy();
+        std::env::set_current_dir(&dirs.guest).unwrap();
+        assert_first_load_is(&source);
+        assert_eq!(
+            tcl_library_candidates().unwrap()[0].as_path(),
+            Path::new(bare)
+        );
+    }
+
+    #[cfg(unix)]
+    fn unavailable_startup_basis_is_retained(setting: &str) {
+        let source = installed_tcl();
+        let dirs = TestDirectories::new();
+        set_operator("MOLT_TCL_LIB", None);
+        set_operator("MOLT_TCL_LIB_DIR", None);
+        set_operator(setting, Some(OsStr::new("./relative-operator-path")));
+        std::fs::remove_dir(&dirs.startup).unwrap();
+        crate::initialize_library_policy();
+        std::env::set_current_dir(&dirs.guest).unwrap();
+        // Even a valid late override must not clear the startup failure or load
+        // a fallback. This exercises the actual first-use API after CWD recovery.
+        set_operator("MOLT_TCL_LIB", Some(source.as_os_str()));
+        set_operator("MOLT_TCL_LIB_DIR", None);
+        crate::initialize_library_policy();
+        let error = match load_tcl_api() {
+            Ok(_) => panic!("startup path capture failure admitted a library"),
+            Err(error) => error,
+        };
+        assert!(
+            error.starts_with(&format!("cannot capture startup {setting} path:")),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires installed Tcl and fresh process with guarded scratch; removes its CWD before init"]
+    fn library_capture_error_survives_until_first_use() {
+        unavailable_startup_basis_is_retained("MOLT_TCL_LIB");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires installed Tcl and fresh process with guarded scratch; removes its CWD before init"]
+    fn directory_capture_error_blocks_first_use_before_fallback() {
+        unavailable_startup_basis_is_retained("MOLT_TCL_LIB_DIR");
+    }
+}

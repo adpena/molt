@@ -76,6 +76,7 @@ fn bind_runtime_import_result_name(
 pub(in crate::native_backend::function_compiler) enum FixedAggregateConstructor {
     List,
     Tuple,
+    Dict,
     Dataclass,
     DataclassTuple,
     ClassNew,
@@ -92,12 +93,15 @@ pub(in crate::native_backend::function_compiler) enum FixedAggregateConstructor 
 }
 
 /// Store a borrowed word range in fixed frame storage. Empty ranges pass a
-/// null pointer; they never allocate a dummy slot. The runtime snapshots and
-/// retains the words before any user callback may reuse its scratch storage.
+/// null pointer; they never allocate a dummy slot. The caller keeps the words
+/// alive through the runtime call, including callbacks and partial construction.
 #[cfg(feature = "native-backend")]
-fn store_borrowed_word_range(builder: &mut FunctionBuilder<'_>, words: &[Value]) -> (Value, Value) {
+fn store_borrowed_word_range(
+    builder: &mut FunctionBuilder<'_>,
+    words: impl ExactSizeIterator<Item = Value>,
+) -> (Value, Value) {
     let count = builder.ins().iconst(types::I64, words.len() as i64);
-    if words.is_empty() {
+    if words.len() == 0 {
         return (builder.ins().iconst(types::I64, 0), count);
     }
     let bytes = words
@@ -108,7 +112,7 @@ fn store_borrowed_word_range(builder: &mut FunctionBuilder<'_>, words: &[Value])
         .expect("fixed aggregate word range exceeds the native stack address ABI");
     let slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, bytes, 3));
-    for (index, &value) in words.iter().enumerate() {
+    for (index, value) in words.enumerate() {
         builder.ins().stack_store(value, slot, (index * 8) as i32);
     }
     (builder.ins().stack_addr(types::I64, slot, 0), count)
@@ -354,7 +358,8 @@ impl<'op> NativeOperandTransaction<'op> {
             switch_to_block_materialized(builder, failed);
             seal_block_once(builder, sealed_blocks, failed);
             if !self.adopted_objects.is_empty() || self.adopted_callable.is_some() {
-                let (arguments, count) = store_borrowed_word_range(builder, &self.adopted_objects);
+                let (arguments, count) =
+                    store_borrowed_word_range(builder, self.adopted_objects.iter().copied());
                 let callable = self
                     .adopted_callable
                     .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
@@ -674,6 +679,13 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     let (symbol, first_word, arity) = match constructor {
         FixedAggregateConstructor::List => ("molt_list_from_values", 0, 2),
         FixedAggregateConstructor::Tuple => ("molt_tuple_from_values", 0, 2),
+        FixedAggregateConstructor::Dict => {
+            assert!(
+                args.len().is_multiple_of(2),
+                "dict literal needs complete pairs"
+            );
+            ("molt_dict_from_pairs", 0, 3)
+        }
         FixedAggregateConstructor::Dataclass => ("molt_dataclass_new_from_values", 3, 5),
         FixedAggregateConstructor::DataclassTuple => {
             assert_eq!(
@@ -735,11 +747,18 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     let words = &operands[first_word..];
     let call_args = match constructor {
         FixedAggregateConstructor::List | FixedAggregateConstructor::Tuple => {
-            let (address, count) = store_borrowed_word_range(builder, words);
+            let (address, count) = store_borrowed_word_range(builder, words.iter().copied());
             vec![address, count]
         }
+        FixedAggregateConstructor::Dict => {
+            let (keys, count) =
+                store_borrowed_word_range(builder, words.iter().step_by(2).copied());
+            let (values, _) =
+                store_borrowed_word_range(builder, words.iter().skip(1).step_by(2).copied());
+            vec![keys, values, count]
+        }
         FixedAggregateConstructor::Dataclass => {
-            let (address, count) = store_borrowed_word_range(builder, words);
+            let (address, count) = store_borrowed_word_range(builder, words.iter().copied());
             vec![operands[0], operands[1], address, count, operands[2]]
         }
         FixedAggregateConstructor::DataclassTuple | FixedAggregateConstructor::ClassNew => {
@@ -752,8 +771,9 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
             layout_version,
             flags,
         } => {
-            let (bases, base_count) = store_borrowed_word_range(builder, &words[..nbases]);
-            let (attrs, _) = store_borrowed_word_range(builder, &words[nbases..]);
+            let (bases, base_count) =
+                store_borrowed_word_range(builder, words[..nbases].iter().copied());
+            let (attrs, _) = store_borrowed_word_range(builder, words[nbases..].iter().copied());
             let attr_count = builder.ins().iconst(types::I64, nattrs as i64);
             let size = builder.ins().iconst(types::I64, layout_size);
             let version = builder.ins().iconst(types::I64, layout_version);
@@ -815,15 +835,10 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     }
 }
 
-/// One failure-atomic construction protocol for dict, set, and frozenset.
-/// The aggregate keeps its original owner; mutator returns follow generated
-/// ABI facts. Entries materialize lazily in entry order through one operand
-/// transaction: a source repeated in a later entry reuses its first box, and
-/// minted boxes stay owned until construction ends, so no shared box is
-/// released while a later entry borrows it. Failed allocation, boxing or
-/// insertion skips all later boxing and entries, releases the partial
-/// aggregate and every initialized temporary, and leaves the pending exception
-/// for the ordinary IR exception edge.
+/// Dictionary literals delegate to the full-pairs runtime constructor so its
+/// key-kind prescan precedes all insertions. Sets keep their incremental owner
+/// and lazy entry boxing: failure skips later entries and releases the partial
+/// aggregate and every minted temporary before the ordinary exception edge.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_hash_container_constructor(
@@ -839,18 +854,29 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
-    let (new_symbol, insert_symbol, width) = match op.kind.as_str() {
-        "dict_new" => ("molt_dict_new", "molt_dict_set", 2),
-        "set_new" => ("molt_set_new", "molt_set_add", 1),
-        "frozenset_new" => ("molt_frozenset_new", "molt_frozenset_add", 1),
+    if op.kind == "dict_new" {
+        emit_fixed_aggregate_constructor(
+            op,
+            FixedAggregateConstructor::Dict,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            representation_plan,
+            nbc,
+            block_tracked_obj,
+            block_tracked_ptr,
+        );
+        return;
+    }
+    let (new_symbol, insert_symbol) = match op.kind.as_str() {
+        "set_new" => ("molt_set_new", "molt_set_add"),
+        "frozenset_new" => ("molt_frozenset_new", "molt_frozenset_add"),
         kind => panic!("not a hash container constructor: {kind}"),
     };
     let args = op.args.as_deref().unwrap_or(&[]);
-    assert!(
-        args.len().is_multiple_of(width),
-        "incomplete {} entry",
-        op.kind
-    );
     // Owner slots for every distinct full-width source precede allocation,
     // the first failure edge.
     let mut transaction = NativeOperandTransaction::begin(
@@ -867,45 +893,40 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
         &[types::I64],
         &[types::I64],
     );
-    let insert_params = vec![types::I64; width + 1];
     let insert = import_func_ref(
         module,
         import_ids,
         builder,
         import_refs,
         insert_symbol,
-        &insert_params,
+        &[types::I64; 2],
         &[types::I64],
     );
-    let capacity = builder
-        .ins()
-        .iconst(types::I64, (args.len() / width) as i64);
+    let capacity = builder.ins().iconst(types::I64, args.len() as i64);
     let created = builder.ins().call(create, &[capacity]);
     let aggregate = builder.inst_results(created)[0];
     let unallocated = builder.ins().icmp_imm(IntCC::Equal, aggregate, box_none());
     transaction.fail_if(builder, sealed_blocks, unallocated);
-    for entry in args.chunks(width) {
-        let mut operands = vec![aggregate];
-        for name in entry {
-            operands.push(transaction.operand(
-                name,
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                representation_plan,
-                nbc,
-            ));
-        }
+    for name in args {
+        let operand = transaction.operand(
+            name,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            representation_plan,
+            nbc,
+        );
+        let operands = [aggregate, operand];
         let inserted = builder.ins().call(insert, &operands);
         let result = builder.inst_results(inserted)[0];
         bind_runtime_import_result_name(
             None,
             result,
             insert_symbol,
-            width + 1,
+            2,
             module,
             import_ids,
             builder,

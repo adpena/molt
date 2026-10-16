@@ -1229,13 +1229,21 @@ pub extern "C" fn molt_email_address_format(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match quopri_expect_bytes_like(_py, data_bits, "encodestring") {
-            Ok(data) => data,
-            Err(bits) => return bits,
+        let input = match unsafe {
+            molt_runtime_core::native_custody::ByteInput::acquire(_py, data_bits)
+        } {
+            Ok(input) => input,
+            Err(_) => return MoltObject::none().bits(),
         };
         let quotetabs = is_truthy(_py, obj_from_bits(quotetabs_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         let header = is_truthy(_py, obj_from_bits(header_bits));
-        let out = quopri_encode_impl(data.as_slice(), quotetabs, header);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let out = quopri_encode_impl(unsafe { input.bytes(_py) }, quotetabs, header);
         let ptr = alloc_bytes(_py, out.as_slice());
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -1247,12 +1255,17 @@ pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_quopri_decode(data_bits: u64, header_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match quopri_expect_bytes_like(_py, data_bits, "decodestring") {
-            Ok(data) => data,
-            Err(bits) => return bits,
+        let input = match unsafe {
+            molt_runtime_core::native_custody::ByteInput::acquire(_py, data_bits)
+        } {
+            Ok(input) => input,
+            Err(_) => return MoltObject::none().bits(),
         };
         let header = is_truthy(_py, obj_from_bits(header_bits));
-        let out = quopri_decode_impl(data.as_slice(), header);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let out = quopri_decode_impl(unsafe { input.bytes(_py) }, header);
         let ptr = alloc_bytes(_py, out.as_slice());
         if ptr.is_null() {
             return MoltObject::none().bits();

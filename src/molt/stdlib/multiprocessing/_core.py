@@ -56,8 +56,6 @@ _MOLT_STREAM_SEND = _intrinsics_require("molt_stream_send_obj", globals())
 _MOLT_STREAM_RECV = _intrinsics_require("molt_stream_recv", globals())
 _MOLT_STREAM_CLOSE = _intrinsics_require("molt_stream_close", globals())
 _MOLT_STREAM_DROP = _intrinsics_require("molt_stream_drop", globals())
-_MOLT_ENV_GET = _intrinsics_require("molt_env_get", globals())
-_MOLT_ENV_SNAPSHOT = _intrinsics_require("molt_env_snapshot", globals())
 _MOLT_PENDING = _intrinsics_require("molt_pending", globals())
 _MOLT_REQUIRE_OPERATION = _intrinsics_require(
     "molt_capabilities_require_operation", globals()
@@ -172,8 +170,7 @@ def _require_spawn_operation() -> None:
 
 
 def _get_env_value(key: str, default: str) -> str:
-    getter = _require_intrinsic(_MOLT_ENV_GET, "molt_env_get")
-    return str(getter(key, default))
+    return str(os.environ.get(key, default))
 
 
 def _mp_debug_enabled() -> bool:
@@ -205,10 +202,7 @@ def _spawn_trace(message: str) -> None:
 
 
 def _build_spawn_env() -> dict[str, str]:
-    snapshot = _require_intrinsic(_MOLT_ENV_SNAPSHOT, "molt_env_snapshot")()
-    if not isinstance(snapshot, dict):
-        raise RuntimeError("molt_env_snapshot must return a dict")
-    return {str(key): str(val) for key, val in snapshot.items()}
+    return os.environ.copy()
 
 
 def _exception_ref_from_exc(exc: BaseException) -> _ExceptionRef:

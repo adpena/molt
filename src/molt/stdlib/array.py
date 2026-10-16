@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_ARRAY_DECLARE_BUFFER = _require_intrinsic("molt_array_declare_buffer")
 _MOLT_ARRAY_NEW = _require_intrinsic("molt_array_new")
 _MOLT_ARRAY_FROM_LIST = _require_intrinsic("molt_array_from_list")
 _MOLT_ARRAY_APPEND = _require_intrinsic("molt_array_append")
@@ -173,6 +174,8 @@ class array:
             return f"array('{tc}', {items!r})"
         return f"array('{tc}', {items!r})"
 
+
+_MOLT_ARRAY_DECLARE_BUFFER(array)
 
 ArrayType = array
 

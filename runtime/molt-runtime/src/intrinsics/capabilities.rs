@@ -5,6 +5,43 @@ use crate::{
 };
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_capabilities_list() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let _ = has_capability(py, "_init");
+        let mut names: Vec<&str> = crate::runtime_state(py)
+            .capabilities
+            .get()
+            .expect("frozen capabilities")
+            .iter()
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        let mut values = Vec::with_capacity(names.len());
+        for name in names {
+            let pointer = crate::alloc_string(py, name.as_bytes());
+            if pointer.is_null() {
+                return MoltObject::none().bits();
+            }
+            values.push(unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    MoltObject::from_ptr(pointer).bits(),
+                )
+            });
+        }
+        let list = crate::alloc_list(
+            py,
+            molt_runtime_core::OwnedRuntimeValue::as_bits_slice(&values),
+        );
+        if list.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_capabilities_trusted() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(is_trusted(_py)).bits() })
 }

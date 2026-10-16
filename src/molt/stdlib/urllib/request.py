@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+_MOLT_REQUIRE_OPERATION = _require_intrinsic("molt_capabilities_require_operation")
+
+from urllib.parse import _splitport
 from urllib.error import URLError
 from urllib.response import addinfourl
 
@@ -22,6 +27,10 @@ __all__ = [
     "addinfourl",
     "build_opener",
     "urlopen",
+    "getproxies",
+    "getproxies_environment",
+    "proxy_bypass",
+    "proxy_bypass_environment",
 ]
 
 _MOLT_REQUEST_INIT = _require_intrinsic("molt_urllib_request_request_init")
@@ -133,11 +142,90 @@ class HTTPCookieProcessor(BaseHandler):
         self.cookiejar = cookiejar
 
 
+def getproxies_environment():
+    _MOLT_REQUIRE_OPERATION("env.snapshot")
+    proxies = {}
+    environment = []
+    for name in os.environ:
+        if len(name) > 5 and name[-6] == "_" and name[-5:].lower() == "proxy":
+            value = os.environ[name]
+            proxy_name = name[:-6].lower()
+            environment.append((name, value, proxy_name))
+            if value:
+                proxies[proxy_name] = value
+    if "REQUEST_METHOD" in os.environ:
+        proxies.pop("http", None)
+    for name, value, proxy_name in environment:
+        if name[-6:] == "_proxy":
+            if value:
+                proxies[proxy_name] = value
+            else:
+                proxies.pop(proxy_name, None)
+    return proxies
+
+
+def proxy_bypass_environment(host, proxies=None):
+    """Test if proxies should not be used for a particular host.
+
+    Checks the proxy dict for the value of no_proxy, which should
+    be a list of comma separated DNS suffixes, or '*' for all hosts.
+
+    """
+    if proxies is None:
+        proxies = getproxies_environment()
+    # don't bypass, if no_proxy isn't specified
+    try:
+        no_proxy = proxies["no"]
+    except KeyError:
+        return False
+    # '*' is special case for always bypass
+    if no_proxy == "*":
+        return True
+    host = host.lower()
+    # strip port off host
+    hostonly, port = _splitport(host)
+    # check if the host ends with any of the DNS suffixes
+    for name in no_proxy.split(","):
+        name = name.strip()
+        if name:
+            name = name.lstrip(".")  # ignore leading dots
+            name = name.lower()
+            if hostonly == name or host == name:
+                return True
+            name = "." + name
+            if hostonly.endswith(name) or host.endswith(name):
+                return True
+    # otherwise, don't bypass
+    return False
+
+
+# Environment providers are the admitted core. Platform registry and system
+# proxy providers require their own target qualification.
+getproxies = getproxies_environment
+proxy_bypass = proxy_bypass_environment
+
+
 class ProxyHandler(BaseHandler):
     handler_order = 100
 
     def __init__(self, proxies=None):
-        self.proxies = dict(proxies or {})
+        if proxies is None:
+            proxies = getproxies()
+        if not hasattr(proxies, "keys"):
+            raise AssertionError("proxies must be a mapping")
+        self.proxies = proxies
+        for scheme, url in proxies.items():
+            scheme = scheme.lower()
+            setattr(
+                self,
+                scheme + "_open",
+                lambda req, proxy=url, scheme=scheme, method=self.proxy_open: method(
+                    req, proxy, scheme
+                ),
+            )
+
+    def proxy_open(self, req, proxy, scheme):
+        return _MOLT_OPENER_OPEN(self.parent, req, scheme, proxy)
 
 
 class HTTPPasswordMgrWithDefaultRealm:
@@ -254,7 +342,8 @@ class OpenerDirector:
         if data is not None and isinstance(req, Request):
             req.data = data
         req.timeout = timeout
-        out = _MOLT_OPENER_OPEN(self, req)
+        scheme = str.partition(req.full_url, ":")[0].lower()
+        out = _MOLT_OPENER_OPEN(self, req, scheme, None)
         return self._wrap_response(req, out)
 
 
@@ -262,7 +351,8 @@ def build_opener(*handlers):
     opener = OpenerDirector()
     opener._molt_allow_data_fallback = True
     opener._molt_raise_on_none = True
-    opener.add_handler(ProxyHandler())
+    if not any(isinstance(handler, ProxyHandler) for handler in handlers):
+        opener.add_handler(ProxyHandler())
     has_custom_http_error_processor = any(
         isinstance(handler, HTTPErrorProcessor) for handler in handlers
     )

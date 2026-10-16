@@ -6,35 +6,51 @@ use crate::wasm_binary::emit_call;
 use crate::wasm_values::box_none;
 use wasm_encoder::{BlockType, Function, Instruction};
 
-/// Hash-container construction keeps one owner through every insertion. A
-/// mutator's borrowed receiver/None return is never a replacement owner.
+/// Dictionaries use the runtime full-pairs constructor. Incremental sets keep
+/// one owner through every insertion; a mutator result never replaces it.
 pub(super) fn emit_hash_container_op(
     func: &mut Function,
     op: &OpIR,
     ctx: &AggregateRuntimeContext<'_>,
 ) -> bool {
-    let (constructor, insert, entry_width) = match op.kind.as_str() {
-        "dict_new" => (WasmRuntimeImport::DictNew, WasmRuntimeImport::DictSet, 2),
-        "set_new" => (WasmRuntimeImport::SetNew, WasmRuntimeImport::SetAdd, 1),
+    if op.kind == "dict_new" {
+        use super::super::super::builder_ops::{WordRangeConstructor, emit_word_range_constructor};
+        let args = op.args.as_deref().unwrap_or(&[]);
+        assert!(
+            args.len().is_multiple_of(2),
+            "dict literal needs complete pairs"
+        );
+        let out = ctx.locals.op_result_or_sink_slot(op);
+        emit_word_range_constructor(
+            func,
+            args,
+            out,
+            WordRangeConstructor {
+                import: WasmRuntimeImport::DictFromPairs,
+                leading: &[],
+                trailing: &[],
+            },
+            ctx.import_ids,
+            ctx.locals,
+            ctx.reloc_enabled,
+        );
+        finish_owned_local_result(func, op, ctx.locals, ctx.import_ids, ctx.reloc_enabled, out);
+        return true;
+    }
+    let (constructor, insert) = match op.kind.as_str() {
+        "set_new" => (WasmRuntimeImport::SetNew, WasmRuntimeImport::SetAdd),
         "frozenset_new" => (
             WasmRuntimeImport::FrozensetNew,
             WasmRuntimeImport::FrozensetAdd,
-            1,
         ),
         _ => return false,
     };
     let args = op.args.as_deref().unwrap_or(&[]);
-    assert_eq!(
-        args.len() % entry_width,
-        0,
-        "{} requires complete entries",
-        op.kind
-    );
     let imports = ctx.import_ids;
     let locals = ctx.locals;
     let reloc = ctx.reloc_enabled;
     let out = locals.op_result_or_sink_slot(op);
-    func.instruction(&Instruction::I64Const((args.len() / entry_width) as i64));
+    func.instruction(&Instruction::I64Const(args.len() as i64));
     emit_call(func, reloc, imports[constructor]);
     func.instruction(&Instruction::LocalSet(out));
 
@@ -45,11 +61,9 @@ pub(super) fn emit_hash_container_op(
         func.instruction(&Instruction::I64Ne);
         func.instruction(&Instruction::If(BlockType::Empty));
         func.instruction(&Instruction::Block(BlockType::Empty));
-        for entry in args.chunks_exact(entry_width) {
+        for value in args {
             func.instruction(&Instruction::LocalGet(out));
-            for value in entry {
-                func.instruction(&Instruction::LocalGet(locals[value]));
-            }
+            func.instruction(&Instruction::LocalGet(locals[value]));
             emit_call(func, reloc, imports[insert]);
             discard_runtime_result(func, imports, reloc, insert);
             emit_call(func, reloc, imports[WasmRuntimeImport::ExceptionPending]);

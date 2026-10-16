@@ -214,24 +214,38 @@ pub(in crate::builtins::io) unsafe fn text_backend_seek(
             "text backend missing",
         ));
     };
-    let len = text_backend.data.len() as i64;
-    let new_pos = match whence {
-        0 => offset,
-        1 => text_backend.pos as i64 + offset,
-        2 => len + offset,
-        _ => {
-            return Err(raise_exception::<_>(_py, "ValueError", "invalid whence"));
-        }
-    };
-    if new_pos < 0 {
+    let offset = isize::try_from(offset).map_err(|_| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            "Python int too large to convert to C ssize_t",
+        )
+    })?;
+    if !matches!(whence, 0..=2) {
+        return Err(raise_exception::<_>(_py, "ValueError", "invalid whence"));
+    }
+    if whence == 0 && offset < 0 {
         return Err(raise_exception::<_>(
             _py,
             "ValueError",
             "negative seek position",
         ));
     }
-    text_backend.pos = new_pos as usize;
-    Ok(new_pos)
+    if whence != 0 && offset != 0 {
+        return Err(raise_exception::<_>(
+            _py,
+            "OSError",
+            "Can't do nonzero cur-relative seeks",
+        ));
+    }
+    let pos = match whence {
+        0 => offset as usize,
+        1 => text_backend.pos,
+        2 => text_backend.data.len(),
+        _ => unreachable!(),
+    };
+    text_backend.pos = pos;
+    Ok(pos as i64)
 }
 
 pub(in crate::builtins::io) unsafe fn text_backend_truncate(

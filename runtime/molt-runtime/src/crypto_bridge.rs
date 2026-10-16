@@ -5,13 +5,20 @@
 //! `extern "C"` imports and they are resolved at link time.
 
 use crate::audit::AuditArgs;
-use crate::builtins::containers::dict_len as _dict_len;
-use crate::builtins::numbers::{
-    index_bigint_from_obj as _index_bigint_from_obj, index_i64_from_obj as _index_i64_from_obj,
-};
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
 use num_bigint::{BigInt, Sign};
+
+crate::object::native_handle::native_handle_bridge!(
+    __molt_crypto_hash_owner_new,
+    __molt_crypto_hash_owner_clone,
+    molt_runtime_crypto::hashlib::HashHandle
+);
+crate::object::native_handle::native_handle_bridge!(
+    __molt_crypto_hmac_owner_new,
+    __molt_crypto_hmac_owner_clone,
+    molt_runtime_crypto::hmac::HmacHandle
+);
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -66,42 +73,6 @@ pub extern "C" fn __molt_crypto_alloc_string(data_ptr: *const u8, data_len: usiz
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_crypto_object_type_id(ptr: *mut u8) -> u32 {
     unsafe { object_type_id(ptr) }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_bytes_like_slice(
-    ptr: *mut u8,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    match unsafe { bytes_like_slice(ptr) } {
-        Some(slice) => {
-            unsafe {
-                *out_ptr = slice.as_ptr();
-                *out_len = slice.len();
-            }
-            1
-        }
-        None => 0,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_bytes_like_slice_raw(
-    ptr: *mut u8,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    match unsafe { bytes_like_slice_raw(ptr) } {
-        Some(slice) => {
-            unsafe {
-                *out_ptr = slice.as_ptr();
-                *out_len = slice.len();
-            }
-            1
-        }
-        None => 0,
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -204,65 +175,6 @@ pub extern "C" fn __molt_crypto_int_bits_from_bigint(
         let value = BigInt::from_bytes_be(sign, bytes);
         int_bits_from_bigint(_py, value)
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_index_i64_from_obj(
-    obj_bits: u64,
-    err_ptr: *const u8,
-    err_len: usize,
-) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let err =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
-        _index_i64_from_obj(_py, obj_bits, err)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_index_bigint_from_obj(
-    obj_bits: u64,
-    err_ptr: *const u8,
-    err_len: usize,
-    out_sign: *mut i32,
-    out_ptr: *mut *const u8,
-    out_len: *mut usize,
-) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let err =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
-        match _index_bigint_from_obj(_py, obj_bits, err) {
-            Some(value) => {
-                let (sign, bytes) = value.to_bytes_be();
-                let sign_i32 = match sign {
-                    Sign::Minus => -1i32,
-                    Sign::NoSign => 0i32,
-                    Sign::Plus => 1i32,
-                };
-                let boxed = bytes.into_boxed_slice();
-                let ok = unsafe {
-                    crate::resource::bridge_buffer::export_u8_box(boxed, out_ptr, out_len)
-                };
-                if ok == 0 {
-                    return 0;
-                }
-                unsafe {
-                    *out_sign = sign_i32;
-                }
-                1
-            }
-            None => 0,
-        }
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Container helpers
-// ---------------------------------------------------------------------------
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_dict_len(ptr: *mut u8) -> usize {
-    unsafe { _dict_len(ptr) }
 }
 
 #[unsafe(no_mangle)]

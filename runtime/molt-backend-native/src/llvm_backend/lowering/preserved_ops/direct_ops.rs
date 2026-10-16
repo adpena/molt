@@ -32,7 +32,6 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
     "exception_clear",
     "builtin_type",
     "class_layout_version",
-    "class_set_layout_version",
     "class_set_definition",
     "object_set_class",
     "string_format",
@@ -443,20 +442,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind,
                     "class_set_definition",
-                );
-                true
-            }
-            "class_set_layout_version" => {
-                if op.operands.len() != 2 {
-                    return false;
-                }
-                let set_fn = self.ensure_runtime_i64_fn("molt_class_set_layout_version", 2);
-                self.emit_positional_runtime_call(
-                    op,
-                    set_fn,
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
-                    "class_set_layout_version",
                 );
                 true
             }

@@ -33,13 +33,12 @@ canonical conversion diagnostics. Signed ties-to-even decimal multiples share
 one decision across integer carriers and negative float digit counts.
 
 Heap objects are referenced directly via tagged 48-bit canonical pointers.
-Rust-owned opaque handles are not heap objects: they are registered in the
-dedicated sharded generational slab and exposed to Python as bounded, synthetic
-immediate-int IDs via `opaque_handle_bits`. IDs never depend on host
-virtual-address width. Runtime intrinsics that own those handles resolve and
-release the registry ID explicitly; refcount, finalizer, and object-header APIs
-must never observe opaque Rust allocations as pointer-tagged `MoltObject`
-payloads.
+Typed native handles are managed heap objects whose declared owner operations
+retain and retire the Rust payload. The payload's Arc or raw Rust allocation
+must never itself be tagged as a Python heap pointer. Native-handle declarations
+also govern whether Python edges are permitted; an opaque Rust owner cannot hide
+untraced Python references. Any separately admitted immediate resource IDs remain
+distinct from managed object pointers and follow their own registered custody.
 
 ### 2.1 The Bit Scheme (64-bit)
 - **NaN Space**: `0x7FF0000000000000` to `0xFFFF000000000000`
@@ -63,7 +62,28 @@ pub enum MoltObject {
 ### 3.1 RC + Incremental GC (Baseline)
 - **Reference Counting (RC)**: The primary mechanism. Every heap object has a 32-bit RC in its header.
 - **Biased RC**: Objects that are predominantly owned by one thread use biased RC to avoid atomic overhead.
-- **Cycle Detection**: An incremental, non-blocking mark-and-sweep collector runs in the background. It only scans objects that have been "decremented but not freed" and are potentially part of a cycle.
+- **Cycle Detection**: The shared collector follows declared heap edges and
+  retires unreachable cycles through the same ownership and callback protocols.
+  Its scheduling and collection phases belong to the GC design below; native
+  owners cannot hide Python edges from that traversal.
+
+Readable and writable buffer acquisition share one scoped descriptor/lease
+owner. Exporter callbacks complete before consumers borrow storage addresses;
+release happens after consumers finish, with the original error visible. Ordinary
+retained memoryviews own their storage or native export until retirement.
+
+Raw writer callbacks have a different lifetime: the caller may mutate or release
+the input after `write` returns, as required by
+[RawIOBase.write](https://docs.python.org/3.14/library/io.html#io.RawIOBase.write).
+A temporary readonly view may expose that storage without copying only during the
+callback. Its scope expires before the caller's export is released. Retaining a
+Python view or deriving another view cannot prolong that export; access after
+scope expiry must fail before reading storage. Releasing one view during the
+callback does not expire already-derived views. Scope edges retain only the
+existing scope anchor, while actual buffer exports keep their counted protocol.
+Native pointers obtained for the callback have that documented call lifetime;
+subsequent descriptor release must remain safe. This contract introduces no
+second storage registry or eager input copy.
 
 ### 3.2 Memory Management Roadmap
 RC is predictable but adds per-write overhead. We plan to evaluate:
@@ -71,7 +91,9 @@ RC is predictable but adds per-write overhead. We plan to evaluate:
 - **Hybrid RC + tracing** (RC for deterministic release of FFI buffers; tracing for graph-heavy Python objects).
 - **Region/arena allocation** for compiler-internal short-lived objects.
 
-Determinism constraints: GC triggers must be driven by explicit byte/epoch budgets (not wall-clock), and we avoid user-visible finalizers.
+Determinism constraints: GC triggers use explicit byte/epoch budgets. Finalizers
+and release callbacks preserve admitted CPython semantics, including reentry;
+cleanup must not expose partially retired ownership or replace the original error.
 
 See `docs/spec/areas/runtime/0009_GC_DESIGN.md` for the concrete hybrid design and targets.
 
@@ -88,7 +110,12 @@ struct MoltHeader {
 
 ## 4. Collections
 - **Lists**: `MoltList` - Heap-managed `Vec<MoltObject>` storage with explicit length + capacity (growth supported).
-- **Tuples**: `MoltTuple` - Immutable sequence stored as a `Vec<MoltObject>` and hashable for composite keys.
+- **Tuples**: Exact immutable inline storage records its length and trailing
+  elements in one allocation, with no separate element buffer. Borrowing tuple
+  construction retains its elements; consuming construction transfers owned
+  elements only on success. Producers retire every prepared element on failure.
+  Mixed borrowed and owned inputs must acquire the borrowed references before a
+  consuming call. Tuples remain hashable when their elements are hashable.
   Rich comparisons use one declaring-family storage contract shared by
   operator dispatch, native descriptors and C-API adapters. List/tuple
   lexicographic loops and SIMD byte comparisons live in the shared object

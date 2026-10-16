@@ -305,10 +305,12 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_code_new", 9, ATTR_WILLRETURN),
     i64_ret("molt_code_slot_set", 3, ATTR_WILLRETURN),
     i64_ret("molt_code_slots_init", 1, ATTR_WILLRETURN),
-    i64_ret("molt_trace_enter_slot", 1, ATTR_WILLRETURN),
-    i64_ret("molt_frame_locals_set", 1, ATTR_WILLRETURN),
+    // Module builtins capture/publication and frame retirement can run
+    // namespace callbacks or displaced owners' finalizers.
+    i64_ret("molt_trace_enter_slot", 1, ATTR_NONE),
+    i64_ret("molt_frame_locals_set", 1, ATTR_NONE),
     i64_ret("molt_trace_set_line", 1, ATTR_WILLRETURN),
-    i64_ret("molt_trace_exit", 0, ATTR_WILLRETURN),
+    i64_ret("molt_trace_exit", 0, ATTR_NONE),
     // Lends the raw homes address, or 0 with an exception pending; runs no
     // Python code.
     i64_ret("molt_frame_homes", 1, ATTR_WILLRETURN),
@@ -345,7 +347,16 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_call_loaded_method3", 5, ATTR_NONE),
     i64_ret("molt_call_loaded_method4", 6, ATTR_NONE),
     i64_ret("molt_call_loaded_method_spilled", 4, ATTR_NONE),
-    i64_ret("molt_dict_new", 1, ATTR_WILLRETURN),
+    custom(
+        "molt_dict_from_pairs",
+        &[
+            FixedRuntimeParamAbi::Ptr,
+            FixedRuntimeParamAbi::Ptr,
+            FixedRuntimeParamAbi::I64,
+        ],
+        FixedRuntimeReturnAbi::I64,
+        ATTR_NONE,
+    ),
     i64_ret("molt_set_new", 1, ATTR_WILLRETURN),
     // Module publication, namespace access, and replacement share callback-
     // bearing dictionary/attribute authorities. Mapping hooks, PEP 562 getters,

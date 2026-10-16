@@ -371,6 +371,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "molt-backend-wasm",
         "molt-runtime",
         "molt-gpu-runtime",
+        "zlib-rs@0.6.8",
     }
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
@@ -458,6 +459,9 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
         "molt-runtime/builtin_set",
         "molt-runtime/molt_gpu_primitives",
         "molt-runtime/molt_gpu_webgpu",
+        "zlib-rs/std",
+        "zlib-rs/rust-allocator",
+        "zlib-rs/ZLIB_DEBUG",
     ]
     assert "test_builtins" in [
         cargo[index + 1] for index, arg in enumerate(cargo[:-1]) if arg == "--test"
@@ -762,6 +766,87 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
         assert {"object@0.39.1", "cranelift-object@0.133.3", "molt-backend"} <= packages
         assert {"integration", "basic", "native_extern_linkage"} <= targets
         assert "--locked" in argv
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "vendor/rust/zlib-rs/src/inflate.rs",
+        "runtime/molt-runtime-compression/src/zlib.rs",
+        "runtime/molt-runtime/fuzz/Cargo.lock",
+        "Cargo.toml",
+    ],
+)
+def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
+    path: str,
+) -> None:
+    from tools import molt_dev
+
+    gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
+    rule = next(rule for rule in matched if rule.name == "maintained-zlib-counters")
+    assert _classes(path)["rust"] is True
+    assert set(rule.gates) <= set(gates)
+    assert "python -m pytest -q tests/cli/test_runtime_source_closure.py" in rule.gates
+    local = tuple(rule.gates[1].split())
+    ci = next(
+        command.argv
+        for command in PLAN.commands
+        if command.id == "rust.test.ir-wasm-runtime-authorities"
+    )
+    for argv in (local, ci):
+        packages = {
+            argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "-p"
+        }
+        assert "zlib-rs@0.6.8" in packages
+        assert "--locked" in argv and "--lib" in argv
+        assert argv[argv.index("--profile") + 1] == "dev-fast"
+        assert "counter_wrap" in argv[argv.index("--") + 1 :]
+        features = set(argv[argv.index("--features") + 1].split(","))
+        assert {feature.split("/")[-1] for feature in features} >= {
+            "std",
+            "rust-allocator",
+        }
+        assert {feature.split("/")[-1] for feature in features} >= {"ZLIB_DEBUG"}
+        # This explicit provider test is the sole debug feature owner. The
+        # micro-runtime still excludes compression and archive product code.
+        assert "molt-runtime/stdlib_compression" not in features
+        assert "molt-runtime/stdlib_archive" not in features
+
+    wasi = next(
+        command
+        for command in PLAN.commands
+        if command.id == "rust.test.zlib-wasi-counters"
+    )
+    assert wasi.family == "rust" and wasi.data["cell"] == "linux-x86_64-rust-wasi-dev"
+    assert {"node", "rustc", "cargo"} <= set(wasi.toolchains)
+    assert not proof_plan.cargo_native_units(wasi.data)
+    for argv in (wasi.argv, tuple(rule.gates[2].split())):
+        assert "tools/run_runtime_test_gate.py" in argv
+        assert argv[argv.index("--policy") + 1] == "zlib-wasi"
+        assert argv[argv.index("--profile") + 1] == "dev-fast"
+    local_policy = next(row for row in PLAN.local_rules if row["name"] == rule.name)
+    assert "node" in local_policy["toolchains"]
+
+    # A separate target build contributes its whole existing command deadline;
+    # a warm four-case run cannot erase the cold build and receipt allowances.
+    assert (wasi.data["timeout_budget"], wasi.data["timeout_seconds"]) == (
+        "integration",
+        600,
+    )
+    envelope = PLAN.timeout_envelope("rust")
+    without_provider = replace(
+        PLAN, commands=tuple(row for row in PLAN.commands if row.id != wasi.id)
+    ).timeout_envelope("rust")
+    assert envelope.projected_makespan_seconds == (
+        without_provider.projected_makespan_seconds + wasi.data["timeout_seconds"]
+    )
+    family = next(row for row in PLAN.families if row.name == "rust")
+    required_seconds = envelope.projected_makespan_seconds + int(
+        family.data["job_reserve_seconds"]
+    )
+    # The job backstop is the smallest whole-minute bound that retains every
+    # command deadline and the independent operational reserve.
+    assert int(family.data["timeout_minutes"]) == (required_seconds + 59) // 60
 
 
 def test_midend_change_runs_complete_rust_llvm_formal_family() -> None:

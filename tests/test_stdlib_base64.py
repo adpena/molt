@@ -13,11 +13,19 @@ _FAKE_INTRINSICS: dict[str, object] = {}
 _FAKE_INTRINSICS.setdefault("molt_capabilities_has", lambda _name=None: True)
 _FAKE_INTRINSICS.setdefault(
     "molt_codecs_encode",
-    lambda data, encoding, errors="strict": codecs.encode(data, encoding, errors),
+    lambda data, encoding, errors, with_consumed: (
+        codecs.lookup(encoding).encode(data, errors)
+        if with_consumed
+        else codecs.encode(data, encoding, errors)
+    ),
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_codecs_decode",
-    lambda data, encoding, errors="strict": codecs.decode(data, encoding, errors),
+    lambda data, encoding, errors, with_consumed: (
+        codecs.lookup(encoding).decode(data, errors)
+        if with_consumed
+        else codecs.decode(data, encoding, errors)
+    ),
 )
 _FAKE_INTRINSICS.setdefault(
     "molt_base64_b64encode",

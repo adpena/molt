@@ -15,9 +15,7 @@ class sha1(_hashlib._Hash):
         super().__init__(
             "sha1",
             data,
-            _hashlib._validate_options(
-                "sha1", {"usedforsecurity": usedforsecurity}, "sha1"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 

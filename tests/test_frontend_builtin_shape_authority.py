@@ -275,6 +275,31 @@ def test_known_constructor_result_survives_callbackful_invocation() -> None:
     assert call.result.type_hint == "list"
 
 
+@pytest.mark.parametrize("callee", ["list", "constructor"])
+def test_proven_list_constructor_uses_original_operand_extension(callee: str) -> None:
+    prefix = "constructor = list\n" if callee == "constructor" else ""
+    generator = SimpleTIRGenerator()
+    generator.visit(ast.parse(prefix + f"result = {callee}((1, 2))\n"))
+    ops = generator.funcs_map["molt_main"]["ops"]
+    constants = {
+        op.result.name: op.args[0]
+        for op in ops
+        if op.kind == "CONST" and op.result is not None
+    }
+    source = next(
+        op.result
+        for op in ops
+        if op.kind == "TUPLE_NEW"
+        and [constants.get(arg.name) for arg in op.args] == [1, 2]
+    )
+    extension = next(op for op in ops if op.kind == "LIST_EXTEND")
+    assert extension.args[1] is source
+    assert any(op.kind == "LIST_NEW" and op.result is extension.args[0] for op in ops)
+    assert extension.args[0].type_hint == "list"
+    assert generator.global_elem_hints[extension.args[0].name] == "int"
+    assert not any(op.kind in {"ITER_NEW", "ITER_NEXT", "LIST_APPEND"} for op in ops)
+
+
 @pytest.mark.parametrize(
     ("expression", "kind"),
     [("dict(item=1)", "dict"), ("int('10', base=2)", "int"), ("list(*args)", "list")],

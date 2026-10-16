@@ -17,22 +17,9 @@ def _probe_source(module_name: str, module_path: Path) -> str:
 import importlib.util
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
+from tests.crypto_intrinsic_registry import crypto_intrinsics
 
-install_registry({{
-    "molt_hash_new": lambda *args, **kwargs: 1,
-    "molt_hash_update": lambda *args, **kwargs: None,
-    "molt_hash_copy": lambda *args, **kwargs: 1,
-    "molt_hash_digest": lambda *args, **kwargs: b"",
-    "molt_hash_drop": lambda *args, **kwargs: None,
-    "molt_compare_digest": lambda a, b: a == b,
-    "molt_pbkdf2_hmac": lambda *args, **kwargs: b"",
-    "molt_scrypt": lambda *args, **kwargs: b"",
-    "molt_hmac_new": lambda *args, **kwargs: 1,
-    "molt_hmac_update": lambda *args, **kwargs: None,
-    "molt_hmac_copy": lambda *args, **kwargs: 1,
-    "molt_hmac_digest": lambda *args, **kwargs: b"",
-    "molt_hmac_drop": lambda *args, **kwargs: None,
-}})
+install_registry(crypto_intrinsics())
 
 
 def _load_module(name, path_text):
@@ -46,6 +33,8 @@ def _load_module(name, path_text):
 
 _load_module("hashlib", {str(STDLIB_ROOT / "hashlib.py")!r})
 _load_module("hmac", {str(STDLIB_ROOT / "hmac.py")!r})
+_load_module("_hashlib", {str(STDLIB_ROOT / "_hashlib.py")!r})
+_load_module("_hmac", {str(STDLIB_ROOT / "_hmac.py")!r})
 module = _load_module({module_name!r}, {str(module_path)!r})
 
 public_names = [

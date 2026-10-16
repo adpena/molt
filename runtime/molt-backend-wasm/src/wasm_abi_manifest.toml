@@ -424,6 +424,12 @@ runtime_name = "molt_array_buffer_info"
 callable_arity = 1
 
 [[import]]
+name = "array_declare_buffer"
+type = 2
+runtime_name = "molt_array_declare_buffer"
+callable_arity = 1
+
+[[import]]
 name = "array_count"
 type = 3
 runtime_name = "molt_array_count"
@@ -891,12 +897,6 @@ return_contract = "owned_object"
 type = 2
 
 [[import]]
-name = "class_merge_layout"
-type = 5
-runtime_name = "molt_class_merge_layout"
-callable_arity = 3
-
-[[import]]
 name = "class_new"
 type = 2
 runtime_name = "molt_class_new"
@@ -907,11 +907,6 @@ name = "class_set_base"
 type = 3
 runtime_name = "molt_class_set_base"
 callable_arity = 2
-
-[[import]]
-name = "class_set_layout_version"
-return_contract = "owned_object"
-type = 3
 
 [[import]]
 name = "class_set_definition"
@@ -2067,6 +2062,12 @@ type = 2
 name = "dict_keys"
 type = 2
 
+# Existing C ABI: two native pointers and a u64 item count.
+[[import]]
+name = "dict_from_pairs"
+return_contract = "owned_object"
+type = 23
+
 [[import]]
 name = "dict_new"
 return_contract = "owned_object"
@@ -2582,15 +2583,63 @@ runtime_name = "molt_dir_builtin"
 callable_arity = 1
 
 [[import]]
-name = "env_get"
+name = "env_mapping_init"
+type = 0
+runtime_name = "molt_env_mapping_init"
+callable_arity = 0
+
+[[import]]
+name = "env_mapping_get"
+type = 2
+runtime_name = "molt_env_mapping_get"
+callable_arity = 1
+
+[[import]]
+name = "env_mapping_set"
 type = 3
-runtime_name = "molt_env_get"
+runtime_name = "molt_env_mapping_set"
 callable_arity = 2
 
 [[import]]
-name = "env_snapshot"
+name = "env_mapping_delete"
+type = 2
+runtime_name = "molt_env_mapping_delete"
+callable_arity = 1
+
+[[import]]
+name = "env_mapping_keys"
 type = 0
-runtime_name = "molt_env_snapshot"
+runtime_name = "molt_env_mapping_keys"
+callable_arity = 0
+
+[[import]]
+name = "env_mapping_len"
+type = 0
+runtime_name = "molt_env_mapping_len"
+callable_arity = 0
+
+[[import]]
+name = "env_mapping_items_iter"
+type = 0
+runtime_name = "molt_env_mapping_items_iter"
+callable_arity = 0
+
+[[import]]
+name = "startup_entry_is_spawn"
+type = 0
+runtime_name = "molt_startup_entry_is_spawn"
+callable_arity = 0
+
+[[import]]
+name = "startup_mp_spawn_enabled"
+type = 0
+runtime_name = "molt_startup_mp_spawn_enabled"
+callable_arity = 0
+
+[[import]]
+name = "capabilities_list"
+type = 0
+runtime_name = "molt_capabilities_list"
 callable_arity = 0
 
 [[import]]
@@ -2857,15 +2906,15 @@ callable_arity = 1
 
 [[import]]
 name = "codecs_decode"
-type = 5
+type = 7
 runtime_name = "molt_codecs_decode"
-callable_arity = 3
+callable_arity = 4
 
 [[import]]
 name = "codecs_encode"
-type = 5
+type = 7
 runtime_name = "molt_codecs_encode"
-callable_arity = 3
+callable_arity = 4
 
 [[import]]
 name = "msgpack_parse_scalar"
@@ -4040,9 +4089,9 @@ callable_arity = 0
 
 [[import]]
 name = "os_path_commonpath"
-type = 2
+type = 3
 runtime_name = "molt_os_path_commonpath"
-callable_arity = 1
+callable_arity = 2
 
 [[import]]
 name = "os_path_commonprefix"
@@ -4669,39 +4718,39 @@ type = 2
 
 [[import]]
 name = "struct_calcsize"
-type = 2
+type = 3
 runtime_name = "molt_struct_calcsize"
-callable_arity = 1
+callable_arity = 2
 
 [[import]]
 name = "struct_iter_unpack"
-type = 3
+type = 7
 runtime_name = "molt_struct_iter_unpack"
-callable_arity = 2
+callable_arity = 4
 
 [[import]]
 name = "struct_pack"
-type = 3
+type = 5
 runtime_name = "molt_struct_pack"
-callable_arity = 2
+callable_arity = 3
 
 [[import]]
 name = "struct_pack_into"
-type = 5
+type = 12
 runtime_name = "molt_struct_pack_into"
-callable_arity = 3
+callable_arity = 5
 
 [[import]]
 name = "struct_unpack"
-type = 3
+type = 5
 runtime_name = "molt_struct_unpack"
-callable_arity = 2
+callable_arity = 3
 
 [[import]]
 name = "struct_unpack_from"
-type = 5
+type = 7
 runtime_name = "molt_struct_unpack_from"
-callable_arity = 3
+callable_arity = 4
 
 [[import]]
 name = "process_drop"
@@ -5762,12 +5811,8 @@ variant = "ListFromValues"
 import_name = "list_from_values"
 
 [[lir_runtime_call]]
-variant = "DictNew"
-import_name = "dict_new"
-
-[[lir_runtime_call]]
-variant = "DictSet"
-import_name = "dict_set"
+variant = "DictFromPairs"
+import_name = "dict_from_pairs"
 
 [[lir_runtime_call]]
 variant = "SetNew"
@@ -6441,7 +6486,6 @@ kinds = [
   "file_open",
   "file_read",
   "file_write",
-  "env_get",
   "del_index",
   "list_append",
   "list_int_new",
@@ -8199,3 +8243,9 @@ runtime_name = "molt_contextvars_missing_repr"
 callable_arity = 1
 shared_runtime_callable = true
 type = 2
+
+[[import]]
+name = "struct_unpack_iterator_type"
+type = 0
+runtime_name = "molt_struct_unpack_iterator_type"
+callable_arity = 0

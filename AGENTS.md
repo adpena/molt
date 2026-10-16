@@ -1,17 +1,13 @@
 # Molt Agent Constitution
 
-This file contains the small set of project facts and operating invariants that
-should be present in every agent session. It is guidance for capable engineers,
-not a script. Use judgment, inspect the live system, and prefer current code,
-tests, measurements, and explicit user direction over stale prose.
+Keep these project facts and operating invariants in every agent session. Use judgment:
+prefer live code, tests, measurements and explicit user direction over stale prose.
 
 ## Own the outcome
 
-- Carry an authorized task through implementation, integration, verification, and cleanup. When
-  enough information exists to act, act.
-- Match the requested action: questions and reviews authorize inspection; change requests authorize
-  in-scope implementation and relevant local checks. Define completion for the current outcome,
-  including its integration owner.
+- Carry authorized work through implementation, integration, verification and cleanup; act when enough is known.
+- Questions and reviews authorize inspection; change requests authorize in-scope implementation
+  and relevant local checks. Define completion and the integration owner for the current outcome.
 - Pause only for input the user alone can provide, a real scope change, or a destructive,
   irreversible, privileged, or externally consequential action that was not already authorized.
   Proceed with safe, reversible work that follows from the request.
@@ -201,5 +197,4 @@ tests, measurements, and explicit user direction over stale prose.
 - CI failure triage (NEW versus main, ledger owners): `python3 tools/ci_triage.py RUN_ID`
 - Loop anatomy and cost buckets: `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md`
 
-These are pointers, not reading lists: load only what the task needs, and update the owning
-authority when its facts change.
+Load only the authority the task needs, and update it when its facts change.

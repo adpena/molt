@@ -107,33 +107,6 @@ pub(super) fn emit_class_layout_version(
     );
 }
 
-pub(super) fn emit_class_set_layout_version(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let class_bits = locals[&args[0]];
-    let version_bits = locals[&args[1]];
-    func.instruction(&Instruction::LocalGet(class_bits));
-    func.instruction(&Instruction::LocalGet(version_bits));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassSetLayoutVersion],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::ClassSetLayoutVersion,
-    );
-}
-
 /// Stamp the class a statement created with the statement's compile-time
 /// program slot (HF-220): `molt_class_set_definition(class, slot)`.
 pub(super) fn emit_class_set_definition(
@@ -163,34 +136,5 @@ pub(super) fn emit_class_set_definition(
         import_ids,
         reloc_enabled,
         crate::wasm_abi_generated::WasmRuntimeImport::ClassSetDefinition,
-    );
-}
-
-pub(super) fn emit_class_merge_layout(
-    func: &mut Function,
-    op: &OpIR,
-    import_ids: &TrackedImportIds,
-    locals: &WasmFrameLocals,
-    reloc_enabled: bool,
-) {
-    let args = op.args.as_ref().unwrap();
-    let class_bits = locals[&args[0]];
-    let offsets_bits = locals[&args[1]];
-    let size_bits = locals[&args[2]];
-    func.instruction(&Instruction::LocalGet(class_bits));
-    func.instruction(&Instruction::LocalGet(offsets_bits));
-    func.instruction(&Instruction::LocalGet(size_bits));
-    emit_call(
-        func,
-        reloc_enabled,
-        import_ids[crate::wasm_abi_generated::WasmRuntimeImport::ClassMergeLayout],
-    );
-    store_runtime_result(
-        func,
-        op,
-        locals,
-        import_ids,
-        reloc_enabled,
-        crate::wasm_abi_generated::WasmRuntimeImport::ClassMergeLayout,
     );
 }

@@ -16,9 +16,7 @@ class sha3_224(_hashlib._Hash):
         super().__init__(
             "sha3_224",
             data,
-            _hashlib._validate_options(
-                "sha3_224", {"usedforsecurity": usedforsecurity}, "sha3_224"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -27,9 +25,7 @@ class sha3_256(_hashlib._Hash):
         super().__init__(
             "sha3_256",
             data,
-            _hashlib._validate_options(
-                "sha3_256", {"usedforsecurity": usedforsecurity}, "sha3_256"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -38,9 +34,7 @@ class sha3_384(_hashlib._Hash):
         super().__init__(
             "sha3_384",
             data,
-            _hashlib._validate_options(
-                "sha3_384", {"usedforsecurity": usedforsecurity}, "sha3_384"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -49,9 +43,7 @@ class sha3_512(_hashlib._Hash):
         super().__init__(
             "sha3_512",
             data,
-            _hashlib._validate_options(
-                "sha3_512", {"usedforsecurity": usedforsecurity}, "sha3_512"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -60,9 +52,7 @@ class shake_128(_hashlib._Hash):
         super().__init__(
             "shake_128",
             data,
-            _hashlib._validate_options(
-                "shake_128", {"usedforsecurity": usedforsecurity}, "shake_128"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 
@@ -71,9 +61,7 @@ class shake_256(_hashlib._Hash):
         super().__init__(
             "shake_256",
             data,
-            _hashlib._validate_options(
-                "shake_256", {"usedforsecurity": usedforsecurity}, "shake_256"
-            ),
+            {"usedforsecurity": usedforsecurity},
         )
 
 

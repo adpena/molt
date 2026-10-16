@@ -1341,18 +1341,20 @@ pub extern "C" fn molt_socket_setsockopt(
         let level = to_i64(obj_from_bits(_level_bits)).unwrap_or(0) as i32;
         let optname = to_i64(obj_from_bits(_opt_bits)).unwrap_or(0) as i32;
         let obj = obj_from_bits(_value_bits);
-        let (val_buf, val_len) = if let Some(val) = to_i64(obj) {
-            let bytes = (val as i32).to_ne_bytes();
-            (bytes.to_vec(), bytes.len())
-        } else if let Some(ptr) = obj.as_ptr() {
-            let bytes = unsafe { bytes_like_slice_raw(ptr) };
-            let Some(bytes) = bytes else {
-                return raise_exception::<_>(_py, "TypeError", "invalid optval");
-            };
-            (bytes.to_vec(), bytes.len())
+        let integer;
+        let input_export;
+        let val_buf: &[u8] = if let Some(value) = to_i64(obj) {
+            integer = (value as i32).to_ne_bytes();
+            &integer
         } else {
-            return raise_exception::<_>(_py, "TypeError", "invalid optval");
+            input_export =
+                match crate::object::buffer_exports::ScopedBuffer::simple(_py, _value_bits) {
+                    Ok(input) => input,
+                    Err(error) => return error.raise(_py, "invalid optval"),
+                };
+            input_export.as_slice()
         };
+        let val_len = val_buf.len();
         let rc = unsafe {
             crate::molt_socket_setsockopt_host(
                 handle,

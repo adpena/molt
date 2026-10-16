@@ -32,11 +32,17 @@ def _load_module(name, path_text):
 
 # Keep actual codec selection, error policies and registered callback behavior.
 # These are CPython's admitted builtins, not discovery of another installation.
-def _codecs_encode(obj, encoding, errors):
+def _codecs_encode(obj, encoding, errors, with_consumed):
+    assert type(with_consumed) is bool
+    if with_consumed:
+        return _core_codecs.lookup(encoding).encode(obj, errors)
     return _core_codecs.encode(obj, encoding, errors)
 
 
-def _codecs_decode(obj, encoding, errors):
+def _codecs_decode(obj, encoding, errors, with_consumed):
+    assert type(with_consumed) is bool
+    if with_consumed:
+        return _core_codecs.lookup(encoding).decode(obj, errors)
     return _core_codecs.decode(obj, encoding, errors)
 
 
@@ -96,11 +102,11 @@ install_registry({{
     "molt_codecs_bom_utf32_le": lambda: b"\\xff\\xfe\\x00\\x00",
     "molt_codecs_bom_utf32_be": lambda: b"\\x00\\x00\\xfe\\xff",
     "molt_codecs_incremental_encoder_new": lambda encoding, errors: (encoding, errors),
-    "molt_codecs_incremental_encoder_encode": lambda handle, input, final=False: _codecs_encode(input, handle[0], handle[1]),
+    "molt_codecs_incremental_encoder_encode": lambda handle, input, final=False: _core_codecs.encode(input, handle[0], handle[1]),
     "molt_codecs_incremental_encoder_reset": lambda handle: None,
     "molt_codecs_incremental_encoder_drop": lambda handle: None,
     "molt_codecs_incremental_decoder_new": lambda encoding, errors: (encoding, errors),
-    "molt_codecs_incremental_decoder_decode": lambda handle, input, final=False: _codecs_decode(input, handle[0], handle[1]),
+    "molt_codecs_incremental_decoder_decode": lambda handle, input, final=False: _core_codecs.decode(input, handle[0], handle[1]),
     "molt_codecs_incremental_decoder_reset": lambda handle: None,
     "molt_codecs_incremental_decoder_drop": lambda handle: None,
     "molt_codecs_stream_reader_new": lambda stream, encoding, errors: (stream, encoding, errors),

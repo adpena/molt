@@ -5,15 +5,10 @@ use crate::object::memoryview::{
     memoryview_shape_product, memoryview_strided_bounds,
 };
 
-fn format(view: &MoltBufferView) -> Option<MemoryViewFormat> {
-    let end = view
-        .format
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(view.format.len());
-    let text = std::str::from_utf8(&view.format[..end]).ok()?;
+fn format(buffer: &ScopedBuffer<'_, '_>) -> Option<MemoryViewFormat> {
+    let text = std::str::from_utf8(buffer.format()).ok()?;
     let fmt = memoryview_format_from_str(text)?;
-    (u64::try_from(fmt.itemsize).ok()? == view.itemsize).then_some(fmt)
+    (u64::try_from(fmt.itemsize).ok()? == buffer.view().itemsize).then_some(fmt)
 }
 
 fn element_count(view: &MoltBufferView) -> Option<usize> {
@@ -98,12 +93,15 @@ pub(super) fn compare(
     }
     let left = match ScopedBuffer::new(py, left.bits()) {
         Ok(buffer) => buffer,
-        Err(BufferAccessError::Pending) => return CompareValueOutcome::Error,
+        Err(BufferAccessError::Preparation | BufferAccessError::Pending) => {
+            return CompareValueOutcome::Error;
+        }
         Err(BufferAccessError::Invalid) => return CompareValueOutcome::NotComparable,
     };
     let right_is_view = physical_type(right) == Some(TYPE_ID_MEMORYVIEW);
     let right = match ScopedBuffer::new(py, right.bits()) {
         Ok(buffer) => buffer,
+        Err(BufferAccessError::Preparation) => return CompareValueOutcome::Error,
         Err(BufferAccessError::Pending) => {
             if right_is_view {
                 return CompareValueOutcome::Error;
@@ -119,35 +117,35 @@ pub(super) fn compare(
         Err(BufferAccessError::Invalid) => return CompareValueOutcome::NotComparable,
     };
     let compare = || -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
-        let (left, right) = (left.view(), right.view());
-        let Some(lcount) = element_count(left) else {
+        let (left_view, right_view) = (left.view(), right.view());
+        let Some(lcount) = element_count(left_view) else {
             raise_exception::<()>(py, "BufferError", "invalid comparison buffer geometry");
             return Err(molt_runtime_core::ErrorIndicatorSet);
         };
-        let Some(rcount) = element_count(right) else {
+        let Some(rcount) = element_count(right_view) else {
             raise_exception::<()>(py, "BufferError", "invalid comparison buffer geometry");
             return Err(molt_runtime_core::ErrorIndicatorSet);
         };
-        if left.ndim != right.ndim || lcount != rcount {
+        if left_view.ndim != right_view.ndim || lcount != rcount {
             return Ok(false);
         }
         // Empty suffix dimensions are unobservable: [1, 0, 5] and [1, 0, 7]
         // describe the same zero-element logical shape in CPython.
-        for axis in 0..left.ndim as usize {
-            if left.shape[axis] != right.shape[axis] {
+        for axis in 0..left_view.ndim as usize {
+            if left_view.shape[axis] != right_view.shape[axis] {
                 return Ok(false);
             }
-            if left.shape[axis] == 0 {
+            if left_view.shape[axis] == 0 {
                 break;
             }
         }
         // Unsupported formats compare unequal even for the same exporter.
-        let (Some(lfmt), Some(rfmt)) = (format(left), format(right)) else {
+        let (Some(lfmt), Some(rfmt)) = (format(&left), format(&right)) else {
             return Ok(false);
         };
         for index in 0..lcount {
-            let lhs = scalar(py, left, index, lfmt)?;
-            let rhs = scalar(py, right, index, rfmt)?;
+            let lhs = scalar(py, left_view, index, lfmt)?;
+            let rhs = scalar(py, right_view, index, rfmt)?;
             // Buffer elements have value semantics, including NaN != NaN.
             // The container identity-or-equality shortcut is inapplicable.
             let equal = comparison_value_to_bool(

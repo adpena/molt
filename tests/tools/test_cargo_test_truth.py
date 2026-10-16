@@ -2339,6 +2339,75 @@ def test_binary_runner_binds_runtime_descendants_from_real_captures(
     assert loaded["runtime_descendants"]["children"] == 2
 
 
+@pytest.mark.parametrize("missing_later_child", [False, True])
+def test_resource_runner_retains_each_isolated_owner_for_truth_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing_later_child: bool
+) -> None:
+    binary_runner = cargo_test_binary_runner
+    image = descendants.make_image(
+        tmp_path, "resource_enforcement-0123456789abcdef.exe"
+    )
+    names = list(descendants.RESOURCE_OWNERS)
+    records = descendants.family_records(image, names)
+    calls = []
+
+    def guarded_spawn(argv, **kwargs):
+        calls.append((list(argv), kwargs["timeout"]))
+        assert (
+            json.loads(kwargs["env"]["MOLT_TEST_SOURCE_IDENTITY_JSON"])
+            == descendants.SOURCE
+        )
+        if "--list" in argv:
+            stdout = "".join(f"{name}: test\n" for name in names)
+            stderr = ""
+        else:
+            identity = argv[argv.index("--exact") + 1]
+            stdout = descendants.transcript([identity])
+            stderr = descendants.records_text(
+                [
+                    row
+                    for row in records
+                    if row["parent_test"] == identity
+                    and not (missing_later_child and identity == names[-1])
+                ]
+            )
+        Path(kwargs["stdout_capture_path"]).write_text(stdout, encoding="utf-8")
+        Path(kwargs["stderr_capture_path"]).write_text(stderr, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(binary_runner, "_COMMANDS", SimpleNamespace(run=guarded_spawn))
+    receipts = tmp_path / "receipts"
+    code, receipt = _invoke_runner(binary_runner, receipts, image)
+    assert receipt["resource_process_isolation"] is True
+    assert len(receipt["executions"]) == 5
+    assert "--list" in calls[0][0]
+    assert [argv[argv.index("--exact") + 1] for argv, _ in calls[1:]] == names
+    assert all(0 < budget <= 30 for _, budget in calls)
+    if missing_later_child:
+        assert code == 2
+        assert receipt["status"] == "failed"
+        assert "missing mandatory" in receipt["runtime_descendants"]["error"]
+        return
+    assert code == 0
+    assert receipt["runtime_descendants"]["children"] == 4
+    assert receipt["test_results"] == [
+        {"identity": name, "status": "pass"} for name in names
+    ]
+    # Original build and child output cleanup cannot invalidate retained evidence.
+    for source in receipt["retained_files"]:
+        Path(source).unlink()
+    truth = run_cargo_test_truth
+    [loaded] = truth.load_binary_receipts(
+        receipts,
+        expected_run_id="run",
+        expected_source_identity=descendants.SOURCE,
+    )
+    assert loaded["runtime_descendants"]["children"] == 4
+    descendants.corrupt_retained_file(receipt, Path(records[-1]["stderr"]["path"]))
+    with pytest.raises(RuntimeError, match="changed after receipt publication"):
+        truth.load_binary_receipts(receipts, expected_run_id="run")
+
+
 def test_binary_runner_demotes_success_whose_children_left_no_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, descendant_owner
 ) -> None:

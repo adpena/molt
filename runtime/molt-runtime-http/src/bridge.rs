@@ -419,6 +419,10 @@ unsafe extern "C" {
     fn __molt_http_call_callable0(call_bits: u64) -> u64;
     fn __molt_http_call_callable1(call_bits: u64, arg0: u64) -> u64;
     fn __molt_http_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64;
+    fn molt_callargs_new(pos_capacity: u64, kw_capacity: u64) -> u64;
+    fn molt_callargs_push_pos(builder_bits: u64, value_bits: u64) -> u64;
+    fn molt_callargs_push_kw(builder_bits: u64, name_bits: u64, value_bits: u64) -> u64;
+    fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64;
     fn __molt_http_call_class_init_with_args(
         class_bits: u64,
         args_ptr: *const u64,
@@ -444,6 +448,30 @@ pub fn call_callable1(_py: &CoreGilToken, call_bits: u64, arg0: u64) -> u64 {
 
 pub fn call_callable2(_py: &CoreGilToken, call_bits: u64, arg0: u64, arg1: u64) -> u64 {
     unsafe { __molt_http_call_callable2(call_bits, arg0, arg1) }
+}
+
+/// Preserve keyword binding for callbacks whose public signature is extensible.
+/// The canonical binder consumes the builder even when argument preparation fails.
+pub(crate) fn call_callable1_keyword(
+    py: &CoreGilToken,
+    call_bits: u64,
+    arg_bits: u64,
+    name: &[u8],
+    value_bits: u64,
+) -> u64 {
+    let Some(name_bits) = attr_name_bits_from_bytes(py, name) else {
+        return MoltObject::none().bits();
+    };
+    let name = unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py, name_bits) };
+    let builder = unsafe { molt_callargs_new(1, 1) };
+    if builder == 0 {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        let _ = molt_callargs_push_pos(builder, arg_bits);
+        let _ = molt_callargs_push_kw(builder, name.bits(), value_bits);
+        molt_call_bind(call_bits, builder)
+    }
 }
 
 pub fn call_class_init_with_args(_py: &CoreGilToken, class_bits: u64, args: &[u64]) -> u64 {
@@ -535,56 +563,9 @@ pub fn molt_set_attr_name(obj_bits: u64, name_bits: u64, value_bits: u64) {
 // Buffer export
 // ---------------------------------------------------------------------------
 
-/// Mirrors crate::BufferExport from molt-runtime.
-/// IMPORTANT: This layout must match the runtime's BufferExport exactly.
-pub const MOLT_BUFFER_MAX_NDIM: usize = 64;
-pub const MOLT_BUFFER_FORMAT_CAP: usize = 16;
-
-#[repr(C)]
-pub struct BufferExport {
-    pub ptr: u64,
-    pub len: u64,
-    pub backing_capacity: u64,
-    pub readonly: u32,
-    pub ndim: u32,
-    pub itemsize: u64,
-    pub offset: isize,
-    pub owner: u64,
-    pub base: u64,
-    pub shape: [isize; MOLT_BUFFER_MAX_NDIM],
-    pub strides: [isize; MOLT_BUFFER_MAX_NDIM],
-    pub format: [u8; MOLT_BUFFER_FORMAT_CAP],
-}
-
-impl Default for BufferExport {
-    fn default() -> Self {
-        let mut format = [0; MOLT_BUFFER_FORMAT_CAP];
-        format[0] = b'B';
-        Self {
-            ptr: 0,
-            len: 0,
-            backing_capacity: 0,
-            readonly: 1,
-            ndim: 1,
-            itemsize: 1,
-            offset: 0,
-            owner: 0,
-            base: 0,
-            shape: [0; MOLT_BUFFER_MAX_NDIM],
-            strides: [0; MOLT_BUFFER_MAX_NDIM],
-            format,
-        }
-    }
-}
-
 unsafe extern "C" {
-    fn __molt_http_molt_buffer_export(buffer_bits: u64, export: *mut BufferExport) -> i32;
     fn __molt_http_bytes_like_slice(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize)
     -> i32;
-}
-
-pub fn molt_buffer_export(buffer_bits: u64, export: &mut BufferExport) -> bool {
-    unsafe { __molt_http_molt_buffer_export(buffer_bits, export as *mut BufferExport) != 0 }
 }
 
 pub fn bytes_like_slice(bits: u64) -> Option<&'static [u8]> {
@@ -603,22 +584,28 @@ pub fn bytes_like_slice(bits: u64) -> Option<&'static [u8]> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_http_require_operation(name_ptr: *const u8, name_len: usize) -> i32;
+    fn __molt_http_require_operation(name_ptr: *const u8, name_len: usize, environment: i32)
+    -> i32;
     fn __molt_http_has_capability(name_ptr: *const u8, name_len: usize) -> i32;
-    fn __molt_http_env_state_get(
-        key_ptr: *const u8,
-        key_len: usize,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
+
 }
 
 pub fn require_operation(
     _py: &CoreGilToken,
     operation: molt_runtime_core::host_capabilities_generated::OperationId,
 ) -> Result<(), u64> {
+    require_route_operation(_py, operation, false)
+}
+
+pub fn require_route_operation(
+    _py: &CoreGilToken,
+    operation: molt_runtime_core::host_capabilities_generated::OperationId,
+    environment: bool,
+) -> Result<(), u64> {
     let name = operation.as_str();
-    if unsafe { __molt_http_require_operation(name.as_ptr(), name.len()) } != 0 {
+    if unsafe { __molt_http_require_operation(name.as_ptr(), name.len(), i32::from(environment)) }
+        != 0
+    {
         Ok(())
     } else {
         Err(MoltObject::none().bits())
@@ -627,19 +614,6 @@ pub fn require_operation(
 
 pub fn has_capability(_py: &CoreGilToken, name: &str) -> bool {
     unsafe { __molt_http_has_capability(name.as_ptr(), name.len()) != 0 }
-}
-
-pub fn env_state_get(key: &str) -> Option<String> {
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    let ok =
-        unsafe { __molt_http_env_state_get(key.as_ptr(), key.len(), &mut out_ptr, &mut out_len) };
-    if ok != 0 {
-        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        Some(String::from_utf8_lossy(&boxed).into_owned())
-    } else {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------

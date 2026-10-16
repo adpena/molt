@@ -194,23 +194,22 @@ fn is_host_link(meta: &std::fs::Metadata) -> bool {
 /// exactly `MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS=1`; any other set value
 /// fails closed so unsafe access is never inferred from loose truthiness.
 pub(crate) fn read_dir_recursive(
-    base: &str,
+    base: impl AsRef<std::path::Path>,
     quota: &mut VfsLoadQuota,
     unsafe_follow_links: bool,
 ) -> Result<Vec<(String, Vec<u8>)>, VfsError> {
-    use std::path::Path;
-
-    let base_path = Path::new(base);
+    let base_path = base.as_ref();
     let base_meta =
         std::fs::symlink_metadata(base_path).map_err(|err| VfsError::IoError(err.to_string()))?;
     if is_host_link(&base_meta) && !unsafe_follow_links {
         return Err(VfsError::IoError(format!(
-            "bundle directory root is host link: {base}"
+            "bundle directory root is host link: {}",
+            base_path.display()
         )));
     }
 
     let mut result = Vec::new();
-    let mut stack = vec![base.to_string()];
+    let mut stack = vec![base_path.to_path_buf()];
     let mut visited_dirs = std::collections::BTreeSet::new();
 
     while let Some(dir) = stack.pop() {
@@ -245,7 +244,7 @@ pub(crate) fn read_dir_recursive(
                 link_meta
             };
             if meta.is_dir() {
-                stack.push(path.to_string_lossy().into_owned());
+                stack.push(path);
             } else if meta.is_file() {
                 let expected_len =
                     usize::try_from(meta.len()).map_err(|_| VfsError::QuotaExceeded)?;
@@ -347,7 +346,7 @@ pub extern "C" fn molt_vfs_inject_finish() -> i32 {
 enum BundleSource {
     Injected(InjectedBundleState),
     Host {
-        path: String,
+        path: Result<std::path::PathBuf, VfsError>,
         quota: VfsLoadQuota,
         follow_links: Result<bool, VfsError>,
     },
@@ -367,12 +366,13 @@ impl BundleSource {
                 mut quota,
                 follow_links,
             } => {
+                let path = path?;
                 let follow_links = follow_links?;
-                if std::path::Path::new(&path).is_dir() {
+                if path.is_dir() {
                     let entries = read_dir_recursive(&path, &mut quota, follow_links)?;
                     return bundle::BundleFs::try_from_entries(entries);
                 }
-                if path.ends_with(".tar") {
+                if path.extension().is_some_and(|extension| extension == "tar") {
                     #[cfg(feature = "vfs_bundle_tar")]
                     {
                         let metadata = std::fs::metadata(&path)
@@ -392,7 +392,8 @@ impl BundleSource {
                     ));
                 }
                 Err(VfsError::IoError(format!(
-                    "invalid VFS bundle source: {path}"
+                    "invalid VFS bundle source: {}",
+                    path.display()
                 )))
             }
         }
@@ -464,10 +465,14 @@ impl VfsBackend for LazyBundleFs {
     }
 }
 
-/// Build only the mount table from injected data or frozen environment settings.
+/// Capture the startup mount table from injected data or operator settings.
+/// Runtime initialization calls this before guest entry, including when no
+/// bundle is configured. Consumers retain that decision instead of rereading
+/// the environment. Payload loading remains lazy.
 /// Routing never reads or validates a host bundle payload. A configured bundle
 /// always owns /bundle; a bad source fails there instead of falling through to
-/// the host filesystem. Relative host source paths resolve at first backend use.
+/// the host filesystem. Relative host source paths resolve against startup CWD;
+/// no canonicalization, symlink resolution, stat or payload read occurs here.
 pub fn load_vfs() -> Option<VfsState> {
     let injected = INJECTED_BUNDLE.lock().unwrap().take();
     let source = match injected {
@@ -475,7 +480,17 @@ pub fn load_vfs() -> Option<VfsState> {
             BundleSource::Injected(state)
         }
         _ => BundleSource::Host {
-            path: std::env::var("MOLT_VFS_BUNDLE").ok()?,
+            path: {
+                let path = std::path::PathBuf::from(std::env::var("MOLT_VFS_BUNDLE").ok()?);
+                if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    // `absolute` obtains CWD only when required and handles
+                    // Windows drive-relative/root-relative paths without I/O
+                    // against the selected bundle or resolving its links.
+                    std::path::absolute(path).map_err(|error| VfsError::IoError(error.to_string()))
+                }
+            },
             quota: VfsLoadQuota::from_env(),
             follow_links: unsafe_follow_host_links_enabled(),
         },

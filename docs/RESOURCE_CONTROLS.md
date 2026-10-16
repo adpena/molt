@@ -238,14 +238,24 @@ qualified runtime enforcement. The owning host must admit and enforce its actual
 instance limits; the SDK and linked-output policy transport also remain release
 work. See the canonical release findings for acceptance status.
 
+Optional exception and runtime-feedback output destinations capture their absolute
+startup path before Ready, without opening files or resolving symlinks. Later
+`chdir` or environment mutation cannot retarget them. If a relative destination
+cannot capture its startup basis, the runtime reports the failure and disables
+that optional sink.
+
 ## Source Files
 
 - Trait, `ResourceLimits` (single source of truth), `LimitedTracker`,
   `parse_human_size` (the `MOLT_RESOURCE_MAX_MEMORY` size grammar), and
   `install_memory_backstop` (Linux `RLIMIT_DATA`):
   `runtime/molt-runtime-resource/src/lib.rs` (re-exported as `molt_runtime::resource`)
-- Env parsing + `molt_runtime_init_resources` (resolves `MOLT_RESOURCE_MAX_*`
-  and installs the configured tracker while attempting the optional memory backstop):
+- Private startup initializer `initialize_runtime_resources`, reached through
+  `molt_runtime_init` before Ready (resolves `MOLT_RESOURCE_MAX_*` and installs
+  the configured tracker while attempting the optional memory backstop).
+  Repeated initialization after Ready does not reparse operator policy; isolate
+  teardown retires only its thread tracker, while primary retirement clears the
+  process factory:
   `runtime/molt-runtime/src/object/ops_sys.rs`
 - Child-process limit inheritance (per-op caps + memory):
   `runtime/molt-runtime/src/async_rt/process/child_resources.rs`

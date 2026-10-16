@@ -273,7 +273,6 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             bytes_data,
             bytearray_data,
             bytearray_resize,
-            buffer_supports,
             buffer_acquire,
             buffer_release,
             object_get_attr,

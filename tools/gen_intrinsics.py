@@ -450,6 +450,7 @@ _SYMBOL_FEATURE_GATES: list[tuple[str, str]] = (
 _SYMBOL_TARGET_ARCH_EXCLUSIONS: list[tuple[str, tuple[str, ...]]] = (
     _load_runtime_target_arch_exclusions_from_categories()
 )
+_SYMBOL_TARGET_OS_REQUIREMENTS = _RUNTIME_AVAILABILITY.target_os_requirements
 _FEATURE_TARGET_ARCH_EXCLUSIONS: list[tuple[str, tuple[str, ...]]] = (
     _load_runtime_feature_target_arch_exclusions_from_categories()
 )
@@ -474,6 +475,13 @@ def _cfg_gate_for_symbol(symbol: str) -> str | None:
         f'not(target_arch = "{arch}")'
         for arch in _target_arch_exclusions_for_symbol(symbol)
     )
+    if oses := _RUNTIME_AVAILABILITY.supported_target_oses_for_symbol(symbol):
+        os_predicates = [f'target_os = "{target_os}"' for target_os in oses]
+        predicates.append(
+            os_predicates[0]
+            if len(os_predicates) == 1
+            else f"any({', '.join(os_predicates)})"
+        )
     if not predicates:
         return None
     if len(predicates) == 1:
@@ -505,7 +513,6 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_tokenize_", "tokenize"),
     ("molt_sys_", "sys"),
     ("molt_platform_", "platform"),
-    ("molt_locale_", "locale"),
     ("molt_codecs_", "codecs"),
     ("molt_encodings_", "codecs"),
     ("molt_pprint_", "pprint"),
@@ -1047,6 +1054,12 @@ def _render_runtime_feature_gates_py() -> str:
         lines.append(f'    ("{prefix}", ({rendered})),\n')
     lines.append(")\n\n")
     lines.append(
+        "RUNTIME_TARGET_OS_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
+    )
+    for prefix, oses in _SYMBOL_TARGET_OS_REQUIREMENTS:
+        lines.append(f"    ({prefix!r}, {oses!r}),\n")
+    lines.append(")\n\n")
+    lines.append(
         "RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS: dict[str, frozenset[str]] = {\n"
     )
     for feature, arches in _FEATURE_TARGET_ARCH_EXCLUSIONS:
@@ -1091,14 +1104,31 @@ def _render_runtime_feature_gates_py() -> str:
     lines.append("                best = (prefix_len, arches)\n")
     lines.append("    return best[1] if best is not None else ()\n\n\n")
     lines.append(
+        "def supported_target_oses_for_symbol(symbol: str) -> tuple[str, ...]:\n"
+    )
+    lines.append('    """Return required OSes, or () for no OS restriction."""\n')
+    lines.append("    if symbol in RUNTIME_BUILTIN_SYMBOLS:\n")
+    lines.append("        return ()\n")
+    lines.append("    best: tuple[int, tuple[str, ...]] | None = None\n")
+    lines.append("    for prefix, oses in RUNTIME_TARGET_OS_REQUIREMENTS:\n")
+    lines.append("        if symbol.startswith(prefix):\n")
+    lines.append("            prefix_len = len(prefix)\n")
+    lines.append("            if best is None or prefix_len > best[0]:\n")
+    lines.append("                best = (prefix_len, oses)\n")
+    lines.append("    return best[1] if best is not None else ()\n\n\n")
+    lines.append(
         "def runtime_symbol_available_on_target(\n"
-        "    symbol: str, *, target_triple: str | None\n"
+        "    symbol: str, *, target_triple: str | None, target_os: str | None\n"
         ") -> bool:\n"
     )
     lines.append('    """Whether *symbol* has a provider for *target_triple*."""\n')
     lines.append("    arch = target_arch_from_triple(target_triple)\n")
+    lines.append("    supported_oses = supported_target_oses_for_symbol(symbol)\n")
     lines.append(
-        "    return arch is None or arch not in unsupported_target_arches_for_symbol(symbol)\n\n\n"
+        "    return (\n"
+        "        arch not in unsupported_target_arches_for_symbol(symbol)\n"
+        "        and (not supported_oses or target_os in supported_oses)\n"
+        "    )\n\n\n"
     )
     lines.append(
         "def link_affecting_features_unsupported_on_target(\n"

@@ -203,21 +203,74 @@ pub(crate) fn collect_from_owned_iterator(
         match iter.next() {
             Ok(Some(item)) => {
                 if values.try_reserve(1).is_err() {
+                    raise_exception::<()>(py, "MemoryError", "iterable allocation failed");
                     dec_ref_bits(py, item);
-                    for value in values {
+                    drop(iter);
+                    for value in values.into_iter().rev() {
                         dec_ref_bits(py, value);
                     }
-                    return raise_exception::<_>(py, "MemoryError", "iterable allocation failed");
+                    return None;
                 }
                 values.push(item);
             }
             Ok(None) => return Some(values),
             Err(molt_runtime_core::ErrorIndicatorSet) => {
-                for value in values {
+                // The iterator retires before the partial materialization;
+                // collection elements then unwind in reverse insertion order.
+                drop(iter);
+                for value in values.into_iter().rev() {
                     dec_ref_bits(py, value);
                 }
                 return None;
             }
         }
     }
+}
+
+/// PySequence_Fast-style custody for join consumers. Exact sequences retain
+/// only the sequence object; generic iterables finish all callbacks and publish
+/// an owned list before a caller validates elements or borrows payloads.
+pub(crate) fn materialize_sequence<'a, 'py>(
+    py: &'a PyToken<'py>,
+    iterable: u64,
+    acquisition_error: &str,
+) -> Option<molt_runtime_core::OwnedRuntimeValue<'a>> {
+    let class = type_of_bits(py, iterable);
+    if class == builtin_classes(py).list || class == builtin_classes(py).tuple {
+        inc_ref_bits(py, iterable);
+        return Some(unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), iterable)
+        });
+    }
+    let Some(first) = OwnedIterator::new(py, iterable) else {
+        let error = molt_exception_last_pending();
+        let type_error =
+            crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
+        dec_ref_bits(py, error);
+        if type_error {
+            clear_exception(py);
+            raise_exception::<()>(py, "TypeError", acquisition_error);
+        }
+        return None;
+    };
+    // PySequence_Fast obtains an iterator, then PySequence_List reacquires it
+    // and consults that first iterator's hint. Later errors are not translated.
+    let values = collect(py, first.bits(), LengthHint::Consult)?;
+    let list = super::builders::alloc_list_with_capacity_owned(py, &values, values.len());
+    if list.is_null() {
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            for value in values.into_iter().rev() {
+                dec_ref_bits(py, value);
+            }
+        });
+        return None;
+    }
+    // Publication transfers the collected references; the canonical list owner
+    // retires its edges in reverse order, including callback-visible cleanup.
+    Some(unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            MoltObject::from_ptr(list).bits(),
+        )
+    })
 }

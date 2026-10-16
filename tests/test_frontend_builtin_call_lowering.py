@@ -4257,6 +4257,91 @@ def test_target_sys_platform_prunes_unreachable_darwin_guarded_module_code() -> 
     assert not _module_attr_accesses(main_ops, "module_get_global", "polyval")
 
 
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32", "wasi"])
+def test_locale_facade_target_guard_prunes_only_unavailable_intrinsic(platform) -> None:
+    from molt.cli.required_features import reached_intrinsic_symbols
+
+    source = (
+        Path(__file__).resolve().parents[1] / "src/molt/stdlib/_locale.py"
+    ).read_text(encoding="utf-8")
+    gen = SimpleTIRGenerator(
+        module_name="_locale",
+        known_modules={"_intrinsics"},
+        target_sys_platform=platform,
+    )
+    gen.visit(ast.parse(source))
+    functions = gen.to_json()["functions"]
+    reached = reached_intrinsic_symbols(functions)
+    assert ("molt_locale_getdefaultlocale" in reached) is (platform == "win32")
+    assert "molt_sys_platform" in reached
+    main_ops = next(f["ops"] for f in functions if f["name"] == "molt_main")
+    (reader,) = [
+        op
+        for op in main_ops
+        if op["kind"] == "builtin_func" and op.get("s_value") == "molt_sys_platform"
+    ]
+    # A static successor does not remove the real property call or its failure
+    # and lifetime boundaries; a constant string alone cannot satisfy this.
+    assert any(
+        op["kind"] == "call_func" and op["args"] == [reader["out"]] for op in main_ops
+    )
+
+
+@pytest.mark.parametrize("platform,expected", [("linux", False), ("win32", True)])
+def test_target_guard_preserves_cpython_condition_effects(platform, expected) -> None:
+    source = (
+        "if _require_intrinsic('molt_sys_platform')() == 'win32':\n"
+        "    _require_intrinsic('molt_locale_getdefaultlocale')\n"
+    )
+    events = []
+
+    def require(name):
+        events.append(("acquire", name))
+
+        def reader():
+            events.append(("invoke", name))
+            return platform
+
+        return reader
+
+    # CPython independently observes the acquisition/call order and selected
+    # branch. The compiler proof uses the real canonical import below.
+    exec(
+        compile(source, "<target-property-oracle>", "exec"),
+        {"_require_intrinsic": require},
+    )
+    assert events == [
+        ("acquire", "molt_sys_platform"),
+        ("invoke", "molt_sys_platform"),
+        *([("acquire", "molt_locale_getdefaultlocale")] if expected else []),
+    ]
+    gen = SimpleTIRGenerator(
+        module_name="target_property_effects",
+        known_modules={"_intrinsics"},
+        target_sys_platform=platform,
+    )
+    gen.visit(
+        ast.parse(
+            "from _intrinsics import require_intrinsic as _require_intrinsic\n" + source
+        )
+    )
+    from molt.cli.required_features import reached_intrinsic_symbols
+
+    functions = gen.to_json()["functions"]
+    main_ops = next(f["ops"] for f in functions if f["name"] == "molt_main")
+    symbols = reached_intrinsic_symbols(functions)
+    assert "molt_sys_platform" in symbols
+    assert ("molt_locale_getdefaultlocale" in symbols) is expected
+    (reader,) = [
+        op
+        for op in main_ops
+        if op["kind"] == "builtin_func" and op.get("s_value") == "molt_sys_platform"
+    ]
+    assert any(
+        op["kind"] == "call_func" and op["args"] == [reader["out"]] for op in main_ops
+    )
+
+
 def test_target_sys_platform_keeps_reachable_matching_platform_module_code() -> None:
     source = (
         "import sys\nif sys.platform == 'darwin':\n    polyval([1], [2])\nanswer = 1\n"

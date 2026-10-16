@@ -19,3 +19,9 @@ pub mod intrinsics_generated;
 pub mod tk;
 #[cfg(feature = "tk")]
 pub mod tkinter_core;
+
+/// Freeze the process-owned native library selection before guest execution.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
+pub fn initialize_library_policy() {
+    tk::initialize_library_policy();
+}

@@ -75,6 +75,68 @@ for rank in (0, 1, 2):
     show_error(lambda: view[()])
     show_error(lambda: set_item(view, (), 1))
 
+# Physical list/tuple shape readers ignore subclass callbacks and retain
+# compact scalar representations instead of promoting or iterating them.
+shape_events = []
+
+
+class ShapeList(list):
+    def __len__(self):
+        shape_events.append("list.len")
+        raise AssertionError("shape length override")
+
+    def __iter__(self):
+        shape_events.append("list.iter")
+        raise AssertionError("shape iteration override")
+
+    def __getitem__(self, index):
+        shape_events.append("list.item")
+        raise AssertionError("shape item override")
+
+
+class ShapeTuple(tuple):
+    def __len__(self):
+        shape_events.append("tuple.len")
+        raise AssertionError("shape length override")
+
+    def __iter__(self):
+        shape_events.append("tuple.iter")
+        raise AssertionError("shape iteration override")
+
+    def __getitem__(self, index):
+        shape_events.append("tuple.item")
+        raise AssertionError("shape item override")
+
+
+class ShapeIndex:
+    def __index__(self):
+        shape_events.append("element.index")
+        return 1
+
+
+for shape in (
+    [1] * 2,
+    [True] * 2,
+    ShapeList([1, 1]),
+    ShapeTuple((1, 1)),
+    [1] * 64,
+    [1] * 65,
+    [ShapeIndex()],
+    [1.0],
+    [sys.maxsize + 1],
+    [sys.maxsize, 2, "unreached"],
+):
+    base = memoryview(bytearray(b"a"))
+    try:
+        child = base.cast("B", shape=shape)
+    except Exception as exc:
+        print("shape family error", type(exc).__name__, str(exc))
+    else:
+        print("shape family", child.shape, child.strides)
+        child.release()
+    base.release()
+print("shape callbacks", shape_events)
+
 print("zero-dimensional ellipsis", mv0[...] is mv0)
 set_item(mv0, Ellipsis, 99)
 print("zero-dimensional assignment", mv0[()])
@@ -338,3 +400,48 @@ for first in (0, 9):
     later = AssignmentIndex("later", 0, calls, assignment_callback_failure)
     show_error(lambda: view[key, later])
     print("tuple read callback order", first, calls)
+
+
+# Semantic buffer formats survive direct exporters as well as derived views.
+# Equality compares decoded values; byte length alone does not determine type.
+for typecode, values in (("h", [7, 8, 9]), ("b", [-1, 2, -3])):
+    typed = array.array(typecode, values)
+    typed_view = memoryview(typed)
+    print("typed exporter equality", typecode, typed_view == typed, typed == typed_view)
+    other = array.array(typecode, values)
+    other[1] = 0
+    print("typed exporter unequal", typecode, typed_view == other)
+    typed_view.release()
+    typed.append(4)
+    print("typed exporter cleanup", typecode, typed.tolist())
+
+
+if sys.version_info >= (3, 12):
+    class StridedTypedExporter:
+        def __init__(self, owner, reverse):
+            self.owner = owner
+            self.reverse = reverse
+            self.events = []
+
+        def __buffer__(self, flags):
+            self.events.append(("acquire", flags))
+            return memoryview(self.owner)[::-2] if self.reverse else memoryview(self.owner)[::2]
+
+        def __release_buffer__(self, view):
+            self.events.append(("release", view.format, view.tolist()))
+            view.release()
+
+    for reverse in (False, True):
+        backing = array.array("h", [7, 99, 8, 99, 9])
+        exporter = StridedTypedExporter(backing, reverse)
+        expected = array.array("h", [9, 8, 7] if reverse else [7, 8, 9])
+        expected_view = memoryview(expected)
+        print("strided exporter equality", reverse, expected_view == exporter, exporter.events)
+        target = array.array("h", [0, 0, 0, 0, 0])
+        target_view = memoryview(target)
+        target_view[::2] = exporter
+        print("strided exporter assignment", reverse, target.tolist(), exporter.events)
+        target_view.release()
+        expected_view.release()
+        backing.append(100)
+        print("strided exporter cleanup", reverse, backing.tolist())

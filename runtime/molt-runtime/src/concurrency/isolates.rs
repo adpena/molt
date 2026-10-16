@@ -1,4 +1,3 @@
-use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{MoltObject, PyToken, alloc_list, raise_exception};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -497,7 +496,7 @@ fn run_isolate_thread(
     let lifetime = std::mem::ManuallyDrop::new(lifetime);
     let thread_id = current_thread_id();
     handle.mark_started(thread_id, thread_id);
-    let state = Box::new(RuntimeState::new());
+    let state = Box::new(RuntimeState::new_isolate(&lifetime));
     let state_ptr = Box::into_raw(state);
     let gc_owner = crate::object::gc::IsolateGcOwner::new(unsafe { &*state_ptr }, &lifetime);
     set_thread_runtime_state(state_ptr);
@@ -564,6 +563,7 @@ fn run_isolate_thread(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod bootstrap_failure_tests {
     use super::*;
+    use crate::runtime_flags::RuntimeFlag;
     use crate::{builtin_classes, runtime_state};
     use std::ffi::c_void;
     use std::os::raw::c_int;
@@ -1224,6 +1224,148 @@ mod bootstrap_failure_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "mutates the process-global runtime lifecycle; run in isolation"]
+    fn completed_isolate_preserves_primary_resource_factory_for_new_workers() {
+        use crate::resource::{OperationEstimate, ResourceError, with_tracker};
+        use crate::state::runtime_state::{molt_runtime_init, molt_runtime_shutdown};
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            // An operation cap exercises real startup installation without
+            // changing the host process's OS memory backstop.
+            const KEY: &str = "MOLT_RESOURCE_MAX_REPEAT_RESULT";
+            struct RestoreEnv(Option<std::ffi::OsString>);
+            impl Drop for RestoreEnv {
+                fn drop(&mut self) {
+                    unsafe {
+                        match &self.0 {
+                            Some(value) => std::env::set_var(KEY, value),
+                            None => std::env::remove_var(KEY),
+                        }
+                    }
+                }
+            }
+            let _environment = RestoreEnv(std::env::var_os(KEY));
+            unsafe {
+                std::env::set_var(KEY, "1024");
+            }
+            assert_eq!(molt_runtime_init(), 1);
+            fn assert_limited() {
+                let result = with_tracker(|tracker| {
+                    tracker.check_operation_size(&OperationEstimate::Repeat {
+                        item_bytes: 1,
+                        count: 2048,
+                    })
+                });
+                assert!(
+                    matches!(result, Err(ResourceError::OperationTooLarge { .. })),
+                    "the startup cap must remain installed on this worker"
+                );
+            }
+            assert_limited();
+            let completed = Arc::new(AtomicBool::new(false));
+            let verified = Arc::clone(&completed);
+            let lifetime = RuntimeLifetimeLease::try_acquire().unwrap();
+            let worker = spawn_runtime_thread(move || {
+                run_isolate_thread(
+                    lifetime,
+                    Arc::new(MoltThreadHandle::new()),
+                    || MoltObject::none().bits(),
+                    || {
+                        assert_limited();
+                        verified.store(true, AtomicOrdering::Release);
+                    },
+                );
+            })
+            .unwrap();
+            worker.join().unwrap();
+            assert!(
+                completed.load(AtomicOrdering::Acquire),
+                "isolate payload did not complete"
+            );
+            // This is a fresh TLS tracker initialized after the actual isolate
+            // teardown, not a tracker retained from before it.
+            std::thread::spawn(assert_limited).join().unwrap();
+            assert_limited();
+            assert_eq!(molt_runtime_shutdown(), 1);
+        });
+    }
+
+    #[test]
+    fn isolate_inherits_startup_policy_after_process_environment_mutation() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let expected = crate::with_gil_entry_nopanic!(py, {
+            let state = runtime_state(py);
+            (
+                state.policy().stream_max_queued_bytes,
+                state.policy().thread_isolated,
+                state.capabilities.get().unwrap().clone(),
+                *state.trusted.get().unwrap(),
+                state.get_vfs().map(|vfs| vfs as *const _ as usize),
+            )
+        });
+        let keys = [
+            "MOLT_STREAM_MAX_QUEUED_BYTES",
+            RuntimeFlag::MOLT_THREAD_ISOLATED.name(),
+            "MOLT_CAPABILITY_TIER",
+            "MOLT_CAPABILITIES",
+            "MOLT_VFS_BUNDLE",
+        ];
+        let saved = keys.map(|key| (key, std::env::var_os(key)));
+        unsafe {
+            std::env::set_var(
+                keys[0],
+                if expected.0 == 65536 {
+                    "1073741824"
+                } else {
+                    "65536"
+                },
+            );
+            std::env::set_var(keys[1], if expected.1 { "0" } else { "1" });
+            std::env::set_var(keys[2], if expected.3 { "none" } else { "full" });
+            std::env::set_var(keys[3], "test.late-grant");
+            std::env::set_var(keys[4], "late-untrusted-isolate-bundle");
+        }
+        let completed = Arc::new(AtomicBool::new(false));
+        let verified = Arc::clone(&completed);
+        let lifetime = RuntimeLifetimeLease::try_acquire().unwrap();
+        let worker = spawn_runtime_thread(move || {
+            run_isolate_thread(
+                lifetime,
+                Arc::new(MoltThreadHandle::new()),
+                || MoltObject::none().bits(),
+                || {
+                    crate::with_gil_entry_nopanic!(py, {
+                        let state = runtime_state(py);
+                        assert_eq!(state.policy().stream_max_queued_bytes, expected.0);
+                        assert_eq!(state.policy().thread_isolated, expected.1);
+                        assert_eq!(state.capabilities.get().unwrap(), &expected.2);
+                        assert_eq!(*state.trusted.get().unwrap(), expected.3);
+                        assert_eq!(
+                            state.get_vfs().map(|vfs| vfs as *const _ as usize),
+                            expected.4
+                        );
+                        verified.store(true, AtomicOrdering::Release);
+                    })
+                },
+            );
+        })
+        .unwrap();
+        let joined = worker.join();
+        for (key, value) in saved {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        joined.unwrap();
+        assert!(
+            completed.load(AtomicOrdering::Acquire),
+            "isolate must execute with the inherited policy"
+        );
     }
 
     static SHARED_DRAIN_ORIGIN: AtomicUsize = AtomicUsize::new(0);
@@ -2369,7 +2511,7 @@ pub(crate) fn configured_thread_stack_size() -> Option<usize> {
 /// `payload_bits` must reference a valid thread payload tuple allocated by this runtime.
 pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let isolated_override = runtime_flags::enabled(RuntimeFlag::MOLT_THREAD_ISOLATED);
+        let isolated_override = crate::runtime_state(_py).policy().thread_isolated;
         let operation = if isolated_override {
             crate::OperationId::ThreadSpawnIsolated
         } else {
@@ -2443,7 +2585,7 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
         {
             return err;
         }
-        let isolated_override = runtime_flags::enabled(RuntimeFlag::MOLT_THREAD_ISOLATED);
+        let isolated_override = crate::runtime_state(_py).policy().thread_isolated;
         if isolated_override {
             return raise_exception::<_>(
                 _py,

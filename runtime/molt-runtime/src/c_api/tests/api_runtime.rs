@@ -5,6 +5,64 @@ fn c_api_version_is_nonzero() {
 }
 
 #[test]
+fn core_immutable_views_borrow_existing_owners_without_retain() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        use molt_runtime_core::OwnedRuntimeValue;
+
+        // A lone surrogate's WTF-8, an embedded NUL and arbitrary bytes remain
+        // opaque; borrowing must neither normalize nor copy their storage.
+        let encoded = b"a\0\xed\xa0\x80";
+        let string_ptr = alloc_string(py, encoded);
+        assert!(!string_ptr.is_null());
+        let string = unsafe {
+            OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(string_ptr).bits(),
+            )
+        };
+        let header = unsafe { &*crate::object::header_from_obj_ptr(string_ptr) };
+        let owners_before = header.owned_ref_count_snapshot();
+        let view = string
+            .string_bytes(py.core_token())
+            .expect("owned string view");
+        assert_eq!(view, encoded);
+        assert_eq!(view.as_ptr(), unsafe { crate::string_bytes(string_ptr) });
+        assert_eq!(header.owned_ref_count_snapshot(), owners_before);
+
+        for payload in [b"".as_slice(), b"\0\x80\xff".as_slice()] {
+            let bytes_ptr = alloc_bytes(py, payload);
+            assert!(!bytes_ptr.is_null());
+            let bytes = unsafe {
+                OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    MoltObject::from_ptr(bytes_ptr).bits(),
+                )
+            };
+            let header = unsafe { &*crate::object::header_from_obj_ptr(bytes_ptr) };
+            let owners_before = header.owned_ref_count_snapshot();
+            let view = bytes
+                .bytes_slice(py.core_token())
+                .expect("owned bytes view");
+            assert_eq!(view, payload);
+            assert_eq!(view.as_ptr(), unsafe { crate::bytes_data(bytes_ptr) });
+            assert_eq!(header.owned_ref_count_snapshot(), owners_before);
+        }
+        let mutable_ptr = alloc_bytearray(py, b"\0\xff");
+        assert!(!mutable_ptr.is_null());
+        let mutable = unsafe {
+            OwnedRuntimeValue::from_owned_bits(
+                py.core_token(),
+                MoltObject::from_ptr(mutable_ptr).bits(),
+            )
+        };
+        assert!(mutable.bytes_slice(py.core_token()).is_none());
+        assert_pending_exception_class(py, "TypeError");
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
 fn err_set_matches_fetch_roundtrip() {
     let _guard = CApiTestGuard::new();
     let runtime_error = crate::with_gil_entry_nopanic!(_py, { runtime_error_type_bits(_py) });
@@ -432,8 +490,9 @@ fn buffer_export_contract_bytesio_strict_policy_and_flush_retry() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(py, {
         use crate::builtins::io::{
-            file_handle_is_closed, molt_bytesio_new, molt_file_close, molt_file_flush,
-            molt_file_getbuffer, molt_file_getvalue, molt_file_truncate, molt_file_write,
+            file_handle_is_closed, molt_buffered_new, molt_bytesio_new, molt_file_close,
+            molt_file_flush, molt_file_getbuffer, molt_file_getvalue, molt_file_truncate,
+            molt_file_write,
         };
         let initial = unsafe { molt_bytes_from(b"abc".as_ptr(), 3) };
         let payload = unsafe { molt_bytes_from(b"Z".as_ptr(), 1) };
@@ -451,29 +510,39 @@ fn buffer_export_contract_bytesio_strict_policy_and_flush_retry() {
         assert_pending_exception_class(py, "BufferError");
         let handle = unsafe { crate::file_handle_ptr(obj_from_bits(stream).as_ptr().unwrap()) };
         assert!(!file_handle_is_closed(unsafe { &*handle }));
-        // Exercise the real buffered flush failure/retry path over the same
-        // storage without bypassing write or flush admission.
-        unsafe {
-            (*handle).buffer_size = 8;
-        }
-        molt_file_write(stream, payload);
+        // Construct the real BufferedWriter receiver over this BytesIO. Changing
+        // BytesIO's buffer_size does not change its semantic export policy.
+        let buffered = molt_buffered_new(
+            crate::builtin_classes(py).buffered_writer,
+            stream,
+            MoltObject::from_int(8).bits(),
+        );
+        crate::builtins::io::molt_buffered_init(buffered, stream, MoltObject::from_int(8).bits());
         assert!(!exception_pending(py));
-        molt_file_flush(stream);
+        let buffered_handle =
+            unsafe { crate::file_handle_ptr(obj_from_bits(buffered).as_ptr().unwrap()) };
+        let written = molt_file_write(buffered, payload);
+        assert_eq!(to_i64(obj_from_bits(written)), Some(1));
+        assert!(!exception_pending(py));
+        molt_file_flush(buffered);
         assert_pending_exception_class(py, "BufferError");
-        assert_eq!(unsafe { &(*handle).write_buf }.as_slice(), b"Z");
+        assert_eq!(unsafe { &(*buffered_handle).write_buf }.as_slice(), b"Z");
         crate::molt_memoryview_release(view);
-        molt_file_flush(stream);
+        molt_file_flush(buffered);
         assert!(!exception_pending(py));
-        assert!(unsafe { &(*handle).write_buf }.is_empty());
+        assert!(unsafe { &(*buffered_handle).write_buf }.is_empty());
         let value = molt_file_getvalue(stream);
         assert_eq!(
             unsafe { crate::bytes_like_slice_raw(obj_from_bits(value).as_ptr().unwrap()).unwrap() },
             b"Zbc"
         );
-        molt_file_close(stream);
+        molt_file_close(buffered);
         assert!(!exception_pending(py));
         assert!(file_handle_is_closed(unsafe { &*handle }));
-        for bits in [initial, payload, empty, stream, view, value] {
+        assert!(file_handle_is_closed(unsafe { &*buffered_handle }));
+        for bits in [
+            initial, payload, empty, stream, buffered, view, value, written,
+        ] {
             dec_ref_bits(py, bits);
         }
     });
@@ -485,8 +554,10 @@ fn buffer_export_contract_array_root_and_lease_survive_source_drop() {
     crate::with_gil_entry_nopanic!(py, {
         use crate::builtins::array_mod::{molt_array_append, molt_array_new};
         let format = MoltObject::from_ptr(alloc_string(py, b"i")).bits();
-        let owner = molt_array_new(format);
-        molt_array_append(owner, MoltObject::from_int(123).bits());
+        let handle = molt_array_new(format);
+        molt_array_append(handle, MoltObject::from_int(123).bits());
+        let owner = crate::test_support::declared_array_buffer_instance(py, handle);
+        dec_ref_bits(py, handle);
         let root = crate::molt_memoryview_new(owner);
         assert!(!exception_pending(py));
         let clone = crate::molt_memoryview_new(root);
@@ -627,16 +698,17 @@ fn buffer_export_contract_writable_consumer_array_pin_and_source_drop() {
         use crate::builtins::io::{molt_bytesio_new, molt_file_readinto};
         use crate::object::buffer_exports::ScopedWritableBuffer;
         let format = MoltObject::from_ptr(alloc_string(py, b"H")).bits();
-        let owner = molt_array_new(format);
+        let handle = molt_array_new(format);
         for _ in 0..4 {
-            molt_array_append(owner, MoltObject::from_int(0).bits());
+            molt_array_append(handle, MoltObject::from_int(0).bits());
         }
+        let owner = crate::test_support::declared_array_buffer_instance(py, handle);
         let source = unsafe { molt_bytes_from(b"abcdefgh".as_ptr(), 8) };
         let stream = molt_bytesio_new(crate::builtin_classes(py).bytes_io, source);
         {
             let buffer = ScopedWritableBuffer::new(py, owner).expect("typed array byte span");
             assert_eq!(buffer.len(), 8);
-            molt_array_append(owner, MoltObject::from_int(1).bits());
+            molt_array_append(handle, MoltObject::from_int(1).bits());
             assert_pending_exception_class(py, "BufferError");
             let copied = molt_file_readinto(stream, owner);
             assert_eq!(to_i64(obj_from_bits(copied)), Some(8));
@@ -646,11 +718,12 @@ fn buffer_export_contract_writable_consumer_array_pin_and_source_drop() {
                 b"abcdefgh"
             );
         }
-        molt_array_append(owner, MoltObject::from_int(1).bits());
+        molt_array_append(handle, MoltObject::from_int(1).bits());
         assert!(!exception_pending(py), "all consumer pins must be released");
-        let bytes = molt_array_tobytes(owner);
+        let bytes = molt_array_tobytes(handle);
         let buffer = ScopedWritableBuffer::new(py, owner).expect("array lease");
         dec_ref_bits(py, owner);
+        dec_ref_bits(py, handle);
         assert_eq!(buffer.len(), 10);
         assert_eq!(
             unsafe { std::slice::from_raw_parts(buffer.as_mut_ptr(), buffer.len()) },
@@ -683,11 +756,17 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
             );
             assert!(!view_ptr.is_null());
             let view = MoltObject::from_ptr(view_ptr).bits();
-            assert!(matches!(
-                ScopedWritableBuffer::new(py, view),
-                Err(BufferAccessError::Invalid)
-            ));
-            assert!(!exception_pending(py));
+            let result = ScopedWritableBuffer::new(py, view);
+            if readonly {
+                // Exact readonly storage has a callback-free Invalid fast path.
+                assert!(matches!(result, Err(BufferAccessError::Invalid)));
+                assert!(!exception_pending(py));
+            } else {
+                // WRITABLE omits strides: the memoryview exporter refuses each
+                // non-contiguous layout, including the empty rank-one slice.
+                assert!(matches!(result, Err(BufferAccessError::Pending)));
+                assert_pending_exception_class(py, "BufferError");
+            }
             // Failed admission releases only its own export, so explicit view
             // release succeeds and discharges the final bytearray resize pin.
             crate::molt_memoryview_release(view);
@@ -703,14 +782,19 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
             }
         }
         let readonly = unsafe { molt_bytes_from(b"abc".as_ptr(), 3) };
-        for value in [readonly, MoltObject::from_int(1).bits(), none_bits()] {
+        assert!(matches!(
+            ScopedWritableBuffer::new(py, readonly),
+            Err(BufferAccessError::Invalid)
+        ));
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, readonly);
+        for value in [MoltObject::from_int(1).bits(), none_bits()] {
             assert!(matches!(
                 ScopedWritableBuffer::new(py, value),
-                Err(BufferAccessError::Invalid)
+                Err(BufferAccessError::Pending)
             ));
-            assert!(!exception_pending(py));
+            assert_pending_exception_class(py, "TypeError");
         }
-        dec_ref_bits(py, readonly);
     });
 }
 

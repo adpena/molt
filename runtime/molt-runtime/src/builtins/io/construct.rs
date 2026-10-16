@@ -1,6 +1,11 @@
 use super::*;
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_io_default_buffer_size() -> u64 {
+    crate::with_gil_entry_nopanic!(py, { MoltObject::from_int(default_buffer_size(py)).bits() })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
@@ -27,6 +32,25 @@ pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
         };
         inc_ref_bits(_py, bits);
         bits
+    })
+}
+
+pub(crate) extern "C" fn buffered_writer_new_method(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(call) =
+            crate::builtins::native_arguments::NativeArguments::read(py, "__new__", args, kwargs)
+        else {
+            return MoltObject::none().bits();
+        };
+        let Some((class, _)) = crate::builtins::type_ops::native_constructor_receiver(
+            py,
+            builtin_classes(py).buffered_writer,
+            call.positional.first().copied(),
+            "BufferedWriter",
+        ) else {
+            return MoltObject::none().bits();
+        };
+        buffered_writer::new(py, class)
     })
 }
 
@@ -64,6 +88,9 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
                 "expected a concrete buffered stream type",
             );
         };
+        if want_write && !want_read {
+            return buffered_writer::new(_py, cls_bits);
+        }
         let raw_handle_ptr = match resolve_file_handle_ptr(_py, raw_bits) {
             Ok(ptr) => ptr,
             Err(bits) => return bits,
@@ -81,7 +108,7 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
             }
             let size_obj = obj_from_bits(buffer_size_bits);
             let mut buffer_size = if size_obj.is_none() {
-                DEFAULT_BUFFER_SIZE
+                default_buffer_size(_py)
             } else {
                 match to_i64(size_obj) {
                     Some(val) => val,
@@ -94,7 +121,7 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
                 }
             };
             if buffer_size < 0 {
-                buffer_size = DEFAULT_BUFFER_SIZE;
+                buffer_size = default_buffer_size(_py);
             }
             if buffer_size == 0 {
                 return raise_exception::<_>(_py, "ValueError", "buffer size must be > 0");
@@ -108,7 +135,12 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
             let owns_fd = raw_handle.owns_fd;
             let ptr = alloc_file_handle_with_state(
                 _py,
-                Arc::clone(&raw_handle.state),
+                Some(Arc::clone(
+                    match file_handle_physical_state(_py, raw_handle) {
+                        Ok(state) => state,
+                        Err(error) => return error,
+                    },
+                )),
                 want_read,
                 want_write,
                 false,
@@ -138,12 +170,41 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_buffered_init(
-    _self_bits: u64,
-    _raw_bits: u64,
-    _buffer_size_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+pub extern "C" fn molt_buffered_init(self_bits: u64, raw_bits: u64, buffer_size_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(pointer) = obj_from_bits(self_bits).as_ptr() else {
+            return raise_exception(py, "TypeError", "expected buffered stream");
+        };
+        unsafe {
+            if object_type_id(pointer) != TYPE_ID_FILE_HANDLE || file_handle_ptr(pointer).is_null()
+            {
+                return raise_exception(py, "TypeError", "expected buffered stream");
+            }
+            let classes = builtin_classes(py);
+            let class = obj_from_bits(object_class_bits(pointer)).as_ptr().unwrap();
+            let owner = crate::class_mro_view(py, class)
+                .iter()
+                .copied()
+                .find(|base| {
+                    [
+                        classes.buffered_reader,
+                        classes.buffered_writer,
+                        classes.buffered_random,
+                    ]
+                    .contains(base)
+                });
+            if owner == Some(classes.buffered_writer) {
+                return buffered_writer::initialize(
+                    py,
+                    self_bits,
+                    pointer,
+                    raw_bits,
+                    buffer_size_bits,
+                );
+            }
+        }
+        MoltObject::none().bits()
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -167,6 +228,11 @@ pub extern "C" fn molt_text_io_wrapper_new(
         {
             return MoltObject::none().bits();
         }
+        // Warning callbacks may close the supplied buffer. Complete them
+        // before resolving/borrowing its native handle.
+        if obj_from_bits(encoding_bits).is_none() && !warn_default_text_encoding(_py, None) {
+            return MoltObject::none().bits();
+        }
         let buffer_handle_ptr = match resolve_file_handle_ptr(_py, buffer_bits) {
             Ok(ptr) => ptr,
             Err(bits) => return bits,
@@ -183,7 +249,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
                 return raise_exception::<_>(_py, "ValueError", "buffer must be binary");
             }
             let encoding = if obj_from_bits(encoding_bits).is_none() {
-                Some("utf-8".to_string())
+                None
             } else {
                 let encoding = reconfigure_arg_type(_py, encoding_bits, "encoding");
                 if exception_pending(_py) {
@@ -191,16 +257,11 @@ pub extern "C" fn molt_text_io_wrapper_new(
                 }
                 encoding
             };
-            let encoding = if let Some(label) = encoding {
-                let (label, _kind) = match normalize_text_encoding(&label) {
-                    Ok(val) => val,
-                    Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
+            let (encoding, encoding_original) =
+                match selected_text_encoding(_py, encoding.as_deref()) {
+                    Ok((label, display)) => (Some(label), Some(display)),
+                    Err(message) => return raise_exception::<u64>(_py, "LookupError", &message),
                 };
-                Some(label)
-            } else {
-                None
-            };
-            let encoding_original = encoding.clone();
             let errors = if obj_from_bits(errors_bits).is_none() {
                 Some("strict".to_string())
             } else {
@@ -230,7 +291,12 @@ pub extern "C" fn molt_text_io_wrapper_new(
             let owns_fd = buffer_handle.owns_fd;
             let ptr = alloc_file_handle_with_state(
                 _py,
-                Arc::clone(&buffer_handle.state),
+                Some(Arc::clone(
+                    match file_handle_physical_state(_py, buffer_handle) {
+                        Ok(state) => state,
+                        Err(error) => return error,
+                    },
+                )),
                 buffer_handle.readable,
                 buffer_handle.writable,
                 true,
@@ -285,11 +351,43 @@ pub extern "C" fn molt_bytesio_new(cls_bits: u64, initial_bits: u64) -> u64 {
         {
             return MoltObject::none().bits();
         }
-        let payload = match unsafe { collect_bytes_like(_py, initial_bits) } {
-            Ok(payload) => payload,
-            Err(bits) => return bits,
+        // BytesIO requests the contiguous read-only role, including dimensions.
+        // Keep the original exporter live until the owned backing copy exists.
+        let input = if obj_from_bits(initial_bits).is_none() {
+            None
+        } else {
+            match crate::object::buffer_exports::ScopedBuffer::with_flags(
+                _py,
+                initial_bits,
+                molt_cpython_abi::abi_types::PyBUF_CONTIG_RO,
+            ) {
+                Ok(input) => Some(input),
+                Err(error) => {
+                    return error.raise(_py, "a bytes-like object is required");
+                }
+            }
         };
-        let bytearray_ptr = alloc_bytearray(_py, &payload);
+        let payload = match input.as_ref() {
+            None => &[][..],
+            Some(input) => {
+                let len = match input.contiguous_len() {
+                    Ok(len) => len,
+                    Err(error) => return error.raise(_py, "a bytes-like object is required"),
+                };
+                unsafe {
+                    std::slice::from_raw_parts(
+                        if len == 0 {
+                            std::ptr::NonNull::<u8>::dangling().as_ptr()
+                        } else {
+                            input.view().data
+                        },
+                        len,
+                    )
+                }
+            }
+        };
+        let bytearray_ptr = alloc_bytearray(_py, payload);
+        drop(input);
         if bytearray_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -302,7 +400,7 @@ pub extern "C" fn molt_bytesio_new(cls_bits: u64, initial_bits: u64) -> u64 {
         });
         let ptr = alloc_file_handle_with_state(
             _py,
-            state,
+            Some(state),
             true,
             true,
             false,
@@ -375,7 +473,7 @@ pub extern "C" fn molt_stringio_new(cls_bits: u64, initial_bits: u64, newline_bi
         });
         let ptr = alloc_file_handle_with_state(
             _py,
-            state,
+            Some(state),
             true,
             true,
             true,

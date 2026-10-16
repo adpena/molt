@@ -88,48 +88,6 @@ pub(super) unsafe fn memory_backend_bits(handle: &MoltFileHandle) -> u64 {
     unsafe { (*buffer_handle_ptr).mem_bits }
 }
 
-pub(crate) unsafe fn collect_bytes_like(_py: &PyToken<'_>, bits: u64) -> Result<Vec<u8>, u64> {
-    unsafe {
-        let obj = obj_from_bits(bits);
-        if obj.is_none() {
-            return Ok(Vec::new());
-        }
-        let Some(ptr) = obj.as_ptr() else {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "a bytes-like object is required",
-            ));
-        };
-        match object_type_id(ptr) {
-            TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
-                let len = bytes_len(ptr);
-                let raw = std::slice::from_raw_parts(bytes_data(ptr), len);
-                Ok(raw.to_vec())
-            }
-            TYPE_ID_MEMORYVIEW => {
-                if memoryview_released(ptr) {
-                    return Err(raise_released_memoryview(_py));
-                }
-                if let Some(out) = memoryview_collect_bytes(ptr) {
-                    Ok(out)
-                } else {
-                    Err(raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "a bytes-like object is required",
-                    ))
-                }
-            }
-            _ => Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "a bytes-like object is required",
-            )),
-        }
-    }
-}
-
 /// Copy into an admitted destination which may alias a memory backend. Callers
 /// retain its allocation and must not hold Rust references to either byte span
 /// during the copy. Only the OS-file branch creates a temporary mutable slice.
@@ -203,19 +161,31 @@ pub(super) unsafe fn buffered_read_reserve_hint(
     }
 }
 
+/// Preserve native errno until the consuming IO operation chooses its Clinic
+/// outcome. In particular FileIO None and buffered BlockingIOError are distinct.
+pub(super) enum BackendWriteError {
+    Pending(u64),
+    Io(std::io::Error),
+}
+impl BackendWriteError {
+    pub(super) fn raise(self, py: &PyToken<'_>) -> u64 {
+        match self {
+            Self::Pending(error) => error,
+            Self::Io(error) => raise_os_error(py, error, "write"),
+        }
+    }
+}
+
 pub(super) unsafe fn backend_write_bytes(
     _py: &PyToken<'_>,
     mem_bits: u64,
     backend: &mut MoltFileBackend,
     bytes: &[u8],
-) -> Result<usize, u64> {
+) -> Result<usize, BackendWriteError> {
     unsafe {
         match backend {
-            MoltFileBackend::File(file) => match file.write(bytes) {
-                Ok(n) => Ok(n),
-                Err(_) => Err(raise_exception::<_>(_py, "OSError", "write failed")),
-            },
-            MoltFileBackend::Memory(mem) => {
+            MoltFileBackend::File(file) => file.write(bytes).map_err(BackendWriteError::Io),
+            MoltFileBackend::Memory(mem) => (|| -> Result<usize, u64> {
                 let ptr = memory_backend_ptr_from_bits(_py, mem_bits)?;
                 crate::object::buffer_exports::bytearray_require_unexported(_py, ptr)?;
                 let end = mem.pos.checked_add(bytes.len()).ok_or_else(|| {
@@ -233,12 +203,13 @@ pub(super) unsafe fn backend_write_bytes(
                 .ok_or_else(|| MoltObject::none().bits())?;
                 mem.pos = end;
                 Ok(bytes.len())
-            }
-            MoltFileBackend::Text(_) => Err(raise_exception::<_>(
+            })()
+            .map_err(BackendWriteError::Pending),
+            MoltFileBackend::Text(_) => Err(BackendWriteError::Pending(raise_exception::<_>(
                 _py,
                 "UnsupportedOperation",
                 "binary write on text backend",
-            )),
+            ))),
         }
     }
 }
@@ -256,6 +227,44 @@ pub(super) unsafe fn backend_flush(
     }
 }
 
+/// Host file positions use errno-based offsets, including the owned CRT fd on
+/// Windows. Do not reinterpret a Win32 last-error value as a CRT errno.
+pub(super) fn host_file_seek(
+    _state: &MoltFileState,
+    _file: &mut std::fs::File,
+    from: std::io::SeekFrom,
+) -> std::io::Result<u64> {
+    #[cfg(windows)]
+    {
+        let (offset, origin) = match from {
+            std::io::SeekFrom::Start(offset) => (
+                i64::try_from(offset)
+                    .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?,
+                libc::SEEK_SET,
+            ),
+            std::io::SeekFrom::Current(offset) => (offset, libc::SEEK_CUR),
+            std::io::SeekFrom::End(offset) => (offset, libc::SEEK_END),
+        };
+        let descriptor = _state
+            .crt_fd
+            .lock()
+            .unwrap()
+            .expect("file owns a CRT descriptor");
+        let position = unsafe { libc::lseek64(descriptor as libc::c_int, offset, origin) };
+        if position < 0 {
+            Err(std::io::Error::from_raw_os_error(unsafe {
+                *crate::windows_abi::_errno()
+            }))
+        } else {
+            Ok(position as u64)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        _file.seek(from)
+    }
+}
+
 pub(super) unsafe fn backend_seek(
     _py: &PyToken<'_>,
     handle: &mut MoltFileHandle,
@@ -264,26 +273,27 @@ pub(super) unsafe fn backend_seek(
 ) -> Result<u64, u64> {
     unsafe {
         match backend {
-            MoltFileBackend::File(file) => match file.seek(from) {
-                Ok(pos) => Ok(pos),
-                Err(_) => Err(raise_exception::<_>(_py, "OSError", "seek failed")),
-            },
-            MoltFileBackend::Memory(mem) => {
-                let pos = match from {
-                    std::io::SeekFrom::Start(pos) => pos as i64,
-                    std::io::SeekFrom::Current(delta) => mem.pos as i64 + delta,
-                    std::io::SeekFrom::End(delta) => {
-                        let len = memory_backend_vec_ref(_py, handle)?.len() as i64;
-                        len + delta
-                    }
-                };
-                if pos < 0 {
-                    return Err(raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "negative seek position",
-                    ));
+            MoltFileBackend::File(file) => {
+                match host_file_seek(file_handle_physical_state(_py, handle)?, file, from) {
+                    Ok(pos) => Ok(pos),
+                    Err(error) => Err(raise_os_error::<_>(_py, error, "seek")),
                 }
+            }
+            MoltFileBackend::Memory(mem) => {
+                // Memory stream positions are target Py_ssize_t values, not
+                // OS file offsets. Widen before adding and commit only after
+                // checking the target bound; negative relative seeks clamp.
+                let pos = match from {
+                    std::io::SeekFrom::Start(pos) => i128::from(pos),
+                    std::io::SeekFrom::Current(delta) => mem.pos as i128 + i128::from(delta),
+                    std::io::SeekFrom::End(delta) => {
+                        memory_backend_vec_ref(_py, handle)?.len() as i128 + i128::from(delta)
+                    }
+                }
+                .max(0);
+                let pos = isize::try_from(pos).map_err(|_| {
+                    raise_exception::<u64>(_py, "OverflowError", "new position too large")
+                })?;
                 mem.pos = pos as usize;
                 Ok(mem.pos as u64)
             }
@@ -298,13 +308,16 @@ pub(super) unsafe fn backend_seek(
 
 pub(super) unsafe fn backend_tell(
     _py: &PyToken<'_>,
+    state: &MoltFileState,
     backend: &mut MoltFileBackend,
 ) -> Result<u64, u64> {
     match backend {
-        MoltFileBackend::File(file) => match file.stream_position() {
-            Ok(pos) => Ok(pos),
-            Err(_) => Err(raise_exception::<_>(_py, "OSError", "tell failed")),
-        },
+        MoltFileBackend::File(file) => {
+            match host_file_seek(state, file, std::io::SeekFrom::Current(0)) {
+                Ok(pos) => Ok(pos),
+                Err(error) => Err(raise_os_error::<_>(_py, error, "tell")),
+            }
+        }
         MoltFileBackend::Memory(mem) => Ok(mem.pos as u64),
         MoltFileBackend::Text(_) => Err(raise_exception::<_>(
             _py,
@@ -377,6 +390,7 @@ pub(super) fn prepend_read_buffer(handle: &mut MoltFileHandle, prefix: &[u8]) {
 
 pub(super) fn clear_write_buffer(handle: &mut MoltFileHandle) {
     handle.write_buf.clear();
+    handle.write_start = 0;
 }
 
 pub(super) fn unread_bytes(handle: &MoltFileHandle) -> usize {
@@ -396,12 +410,16 @@ pub(super) unsafe fn rewind_read_buffer(
     match backend {
         MoltFileBackend::File(file) => {
             let offset = -(unread as i64);
-            match file.seek(std::io::SeekFrom::Current(offset)) {
+            match host_file_seek(
+                file_handle_physical_state(_py, handle)?,
+                file,
+                std::io::SeekFrom::Current(offset),
+            ) {
                 Ok(_) => {
                     clear_read_buffer(handle);
                     Ok(())
                 }
-                Err(_) => Err(raise_exception::<_>(_py, "OSError", "seek failed")),
+                Err(error) => Err(raise_os_error::<_>(_py, error, "seek")),
             }
         }
         MoltFileBackend::Memory(mem) => {
@@ -422,33 +440,37 @@ pub(super) unsafe fn flush_write_buffer(
     backend: &mut MoltFileBackend,
 ) -> Result<(), u64> {
     unsafe {
-        if handle.write_buf.is_empty() {
+        if handle.write_start == handle.write_buf.len() {
+            clear_write_buffer(handle);
             return Ok(());
         }
-        let bytes = handle.write_buf.clone();
-        let mut written = 0usize;
+        // Move the existing allocation, never clone pending bytes. Failed
+        // partial writes preserve an offset instead of shifting on each retry.
+        let mut bytes = std::mem::take(&mut handle.write_buf);
+        let mut written = handle.write_start;
+        let mut result = Ok(());
         while written < bytes.len() {
-            let n = match backend_write_bytes(
-                _py,
-                memory_backend_bits(handle),
-                backend,
-                &bytes[written..],
-            ) {
-                Ok(n) => n,
-                Err(bits) => {
-                    handle.write_buf.drain(..written);
-                    return Err(bits);
+            match backend_write_bytes(_py, memory_backend_bits(handle), backend, &bytes[written..])
+            {
+                Ok(0) => {
+                    result = Err(raise_exception::<u64>(_py, "OSError", "write failed"));
+                    break;
                 }
-            };
-            if n == 0 {
-                handle.write_buf.drain(..written);
-                return Err(raise_exception::<_>(_py, "OSError", "write failed"));
+                Ok(count) => written += count,
+                Err(error) => {
+                    result = Err(error.raise(_py));
+                    break;
+                }
             }
-            written += n;
         }
-        handle.write_buf.clear();
-        backend_flush(_py, backend)?;
-        Ok(())
+        if written == bytes.len() {
+            bytes.clear();
+            written = 0;
+        }
+        handle.write_buf = bytes;
+        handle.write_start = written;
+        result?;
+        backend_flush(_py, backend)
     }
 }
 

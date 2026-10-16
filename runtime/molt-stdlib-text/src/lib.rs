@@ -18,7 +18,6 @@ pub mod charmap_codecs_generated;
 pub mod codec_aliases_generated;
 pub mod codec_errors;
 pub mod codec_registry;
-pub mod fnmatch;
 #[cfg(feature = "stdlib_text")]
 pub mod html;
 pub mod punycode;

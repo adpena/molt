@@ -1195,7 +1195,7 @@ dependencies = []
 [[ci_family]]
 name = "rust"
 description = "Rust workspace build, target checks, test truth, and non-overlapping lint proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py", "tools/runtime_descendant_receipts.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/runtime_descendant_test_support.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/**", "runtime/**", "tools/run_cargo_test_truth.py", "tools/cargo_test_binary_runner.py", "tools/libtest_results.py", "tools/check_cargo_test_truth.py", "tests/tools/test_cargo_test_truth.py", "tools/run_runtime_test_gate.py", "tests/tools/test_runtime_test_gate.py", "tests/tools/test_cargo_test_binary_discovery.py", "tools/runtime_descendant_receipts.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/runtime_descendant_test_support.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**", "vendor/rust/zlib-rs/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "rust-build-unit-smoke"
@@ -1207,8 +1207,9 @@ required = true
 # Full parallel runtime plus every gate-declared fresh-process witness is mandatory.
 # The full resource-serialized DAG, including the focused extension witness,
 # includes the actual WASI lifecycle producer/consumer and has a separate
-# operational allowance inside the job backstop.
-timeout_minutes = 308
+# operational allowance inside the job backstop. The maintained-provider WASI
+# row adds its existing 600-second integration deadline: 18840 + 240 seconds.
+timeout_minutes = 318
 # Observed setup/post-proof total 218s, rounded up to whole minutes.
 job_reserve_seconds = 240
 resource_class = "compiler-build-resource"
@@ -3298,7 +3299,7 @@ dependencies = []
 # The WASM backend's own trace-import test consumes the same symbolic frame metadata.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-gpu-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "gpu_runtime_tests::", "kernel_storage::", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "counter_wrap", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "gpu_runtime_tests::", "kernel_storage::", "--nocapture", "--test-threads=1"]
 toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 
 [[command]]
@@ -3320,6 +3321,19 @@ dependencies = []
 # unrun entries; no missing child or incomplete result accounting can pass.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+
+# Small pure-Rust provider libtest, executed at the repaired 32-bit width.
+[[command]]
+id = "rust.test.zlib-wasi-counters"
+family = "rust"
+cell = "linux-x86_64-rust-wasi-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--policy", "zlib-wasi", "--profile", "dev-fast", "--build-timeout-seconds", "300", "--child-timeout-seconds", "120"]
+toolchains = ["python", "uv", "rustc", "cargo", "node"]
 
 [[command]]
 id = "rust.test.wasi-runtime-lifecycle"
@@ -4472,7 +4486,37 @@ gates = [
   "cargo test --locked --profile dev-fast -p object@0.39.1 -p cranelift-object@0.133.3 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho",
 ]
 
+# --- Maintained compression counter authority -----------------------------
+# Actual upstream stream tests share the existing CI foundation graph. Local
+# integration uses the same provider/profile and guards actual consumer custody.
+[[rule]]
+name = "maintained-zlib-counters"
+toolchains = ["python", "uv", "rustc", "cargo", "node"]
+description = "Maintained compression provider: complete modular counters and actual source selection."
+require_fresh_toolchain = true
+globs = [
+  "vendor/rust/zlib-rs/**",
+  "tools/run_runtime_test_gate.py",
+  "tests/tools/test_runtime_test_gate.py",
+  "src/molt/node_runtime.py",
+  "rust-toolchain.toml",
+  "Cargo.toml",
+  "Cargo.lock",
+  "runtime/molt-runtime/Cargo.toml",
+  "runtime/molt-runtime/fuzz/Cargo.toml",
+  "runtime/molt-runtime/fuzz/Cargo.lock",
+  "runtime/molt-runtime-compression/Cargo.toml",
+  "runtime/molt-runtime-compression/src/zlib.rs",
+  "tests/cli/test_runtime_source_closure.py",
+]
+gates = [
+  "python -m pytest -q tests/cli/test_runtime_source_closure.py",
+  "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
+  "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120",
+]
+
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
+
 [[rule]]
 name = "backend-llvm"
 toolchains = ["python", "rustc", "cargo", "llvm-sdk"]
@@ -4578,7 +4622,7 @@ gates = [
 [[rule]]
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
-description = "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary."
+description = "Runtime/object-model Rust: one default-feature image, ordinary and isolated lifecycle semantics, then backend clippy; performance probes remain unrun."
 require_fresh_toolchain = true
 globs = [
   "runtime/molt-runtime/**/*.rs",
@@ -4586,7 +4630,7 @@ globs = [
   "runtime/**/Cargo.toml",
 ]
 gates = [
-  "cargo test --locked --profile release-fast -p molt-runtime --lib",
+  "python tools/run_runtime_test_gate.py --profile release-fast --build-timeout-seconds 6300 --child-timeout-seconds 120",
   # Mirror CI (ci.yml:159): lib-scoped clippy. --all-targets pulls in the
   # documented pre-existing TEST-target debt (38+9 errors) — adding it is the
   # clippy-test-debt ratchet arc, not this manifest's job.

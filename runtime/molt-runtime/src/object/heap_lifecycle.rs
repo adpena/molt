@@ -1260,7 +1260,8 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     (*table).clear();
                 }
                 crate::dict_storage(ptr).live = 0;
-                crate::dict_storage(ptr).fill = 0;
+                crate::dict_storage(ptr).usable = 0;
+                crate::dict_storage(ptr).kind = crate::DictKeyKind::Unicode;
                 (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
                 // The dictionary authority's reset commit: the structural epoch
                 // and the namespace binding guard state move together (HF-79).

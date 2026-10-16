@@ -55,6 +55,23 @@ def test_duplicate_listing_identity_cannot_hide_before_tail(monkeypatch, tmp_pat
         runner.listed_tests("runtime.exe", [], timeout_seconds=1)
 
 
+@pytest.mark.parametrize("text", ["", "owner: bench\n", "owner: tes\n", ": test\n"])
+def test_discovery_requires_a_complete_literal_test_identity(monkeypatch, text):
+    execution = runner.BinaryExecution(
+        ("runtime.exe", "--list"),
+        0,
+        text,
+        "",
+        0.01,
+        False,
+        None,
+        None,
+    )
+    monkeypatch.setattr(runner, "execute_binary", lambda *_: execution)
+    with pytest.raises(RuntimeError, match="zero tests"):
+        runner.listed_tests("runtime.exe", [], timeout_seconds=1)
+
+
 def test_libtest_accounting_retains_early_failure_outside_display_tail(tmp_path):
     names = [f"case_{index:04d}" for index in range(1800)]
     text = (

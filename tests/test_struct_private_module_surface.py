@@ -15,13 +15,26 @@ import struct as _host_struct
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
+def _call_struct(error_type, operation, *args):
+    try:
+        return operation(*args)
+    except _host_struct.error as exc:
+        raise error_type(str(exc)) from None
+
+
+def _iter_unpack(error_type, iterator_type, fmt, buffer):
+    assert iterator_type is type(_host_struct.iter_unpack("B", b""))
+    return _call_struct(error_type, _host_struct.iter_unpack, fmt, buffer)
+
+
 install_registry({{
-    "molt_struct_pack": lambda fmt, values: _host_struct.pack(fmt, *values),
-    "molt_struct_unpack": _host_struct.unpack,
-    "molt_struct_calcsize": _host_struct.calcsize,
-    "molt_struct_pack_into": lambda buffer, offset, data: buffer.__setitem__(slice(offset, offset + len(data)), data),
-    "molt_struct_unpack_from": _host_struct.unpack_from,
-    "molt_struct_iter_unpack": lambda fmt, buffer: tuple(_host_struct.iter_unpack(fmt, buffer)),
+    "molt_struct_pack": lambda error_type, fmt, values: _call_struct(error_type, _host_struct.pack, fmt, *values),
+    "molt_struct_unpack": lambda error_type, fmt, buffer: _call_struct(error_type, _host_struct.unpack, fmt, buffer),
+    "molt_struct_calcsize": lambda error_type, fmt: _call_struct(error_type, _host_struct.calcsize, fmt),
+    "molt_struct_pack_into": lambda error_type, fmt, buffer, offset, values: _call_struct(error_type, _host_struct.pack_into, fmt, buffer, offset, *values),
+    "molt_struct_unpack_from": lambda error_type, fmt, buffer, offset: _call_struct(error_type, _host_struct.unpack_from, fmt, buffer, offset),
+    "molt_struct_iter_unpack": _iter_unpack,
+    "molt_struct_unpack_iterator_type": lambda: type(_host_struct.iter_unpack("B", b"")),
 }})
 
 
@@ -58,6 +71,27 @@ checks = {{
         and _private.Struct(">H").pack(0x1234) == b"\\x12\\x34"
     ),
 }}
+probe = bytearray(b"ab")
+iterator = _private.iter_unpack("B", probe)
+first = next(iterator)
+probe[1] = 9
+second = next(iterator)
+try:
+    probe.append(0)
+except BufferError:
+    pinned_after_last = True
+else:
+    pinned_after_last = False
+exhausted = next(iterator, None) is None
+probe.append(0)
+try:
+    _private.pack("B", 256)
+except _private.error:
+    actual_error_class = True
+else:
+    actual_error_class = False
+checks["lazy_and_error"] = (first == (97,) and second == (9,)
+    and pinned_after_last and exhausted and len(probe) == 3 and actual_error_class)
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
 """
@@ -100,4 +134,4 @@ def test__struct_public_surface_matches_expected_shape() -> None:
     for name, type_name, is_callable in rows:
         if type_name != "type":
             assert is_callable == "True", f"{name} should be callable"
-    assert checks == {"behavior": "True"}
+    assert checks == {"behavior": "True", "lazy_and_error": "True"}

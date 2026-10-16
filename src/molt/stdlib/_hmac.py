@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import hashlib as _hashlib
 import hmac as _hmac
 
 
@@ -12,26 +11,30 @@ class UnknownHashError(ValueError):
     pass
 
 
+_UnknownHashError = UnknownHashError
+
+
 HMAC = _hmac.HMAC
 _GIL_MINSIZE = 2048
 
 
-def _normalize_digest_name(digest: Any) -> str:
-    if isinstance(digest, str):
-        return digest
-    raise UnknownHashError(f"unsupported hash type: {digest!r}")
+_MISSING = object()
 
 
-def new(digest: Any, key: Any, msg: Any | None = None) -> HMAC:
-    digest_name = _normalize_digest_name(digest)
-    try:
-        return _hmac.new(key, msg, digest_name)
-    except ValueError as exc:
-        raise UnknownHashError(str(exc)) from exc
+def new(key: Any, msg: Any = None, digestmod: Any = _MISSING) -> HMAC:
+    state = _hmac._molt_hmac_new(
+        key, msg, digestmod, None, _hmac._BUILTIN_NEW, _UnknownHashError,
+        digestmod is not _MISSING,
+    )
+    result = object.__new__(HMAC)
+    result._set_native(state)
+    return result
 
 
 def compute_digest(key: Any, msg: Any, digest: Any) -> bytes:
-    return new(digest, key, msg).digest()
+    return _hmac._molt_hmac_new(
+        key, msg, digest, None, _hmac._BUILTIN_SINGLESHOT, _UnknownHashError, True,
+    )
 
 
 def compute_md5(key: Any, msg: Any) -> bytes:
@@ -75,11 +78,11 @@ def compute_sha3_512(key: Any, msg: Any) -> bytes:
 
 
 def compute_blake2b_32(key: Any, msg: Any) -> bytes:
-    return _hmac.digest(key, msg, lambda: _hashlib.blake2b(digest_size=32))
+    return compute_digest(key, msg, "blake2b")
 
 
 def compute_blake2s_32(key: Any, msg: Any) -> bytes:
-    return _hmac.digest(key, msg, lambda: _hashlib.blake2s(digest_size=32))
+    return compute_digest(key, msg, "blake2s")
 
 
 __all__ = [

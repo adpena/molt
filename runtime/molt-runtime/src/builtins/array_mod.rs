@@ -32,6 +32,27 @@ use crate::{
 };
 use molt_runtime_core::OwnedRuntimeValue;
 
+/// Module construction declares array's physical buffer producer once. Public
+/// eligibility follows the resulting semantic slots, never an instance field.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_array_declare_buffer(class: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let owner = crate::object::foreign::NativeObjectOwner::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class),
+            );
+            if owner.as_ptr().is_null()
+                || molt_cpython_abi::api::typeobj::declare_managed_buffer_type(
+                    owner.as_ptr().cast(),
+                ) < 0
+            {
+                crate::cpython_abi_hooks::propagate_native_failure(py, "array buffer declaration");
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Typecode metadata
 // ---------------------------------------------------------------------------
@@ -1241,17 +1262,11 @@ pub extern "C" fn molt_array_frombytes(handle_bits: u64, data_bits: u64) -> u64 
             Ok(cell) => cell,
             Err(error) => return error,
         };
-        let data = unsafe {
-            obj_from_bits(data_bits)
-                .as_ptr()
-                .and_then(|ptr| crate::bytes_like_slice(ptr))
-                .ok_or(ArrayStorageError::Exception(
-                    "TypeError",
-                    "a bytes-like object is required",
-                ))
-                .and_then(copy_array_bytes)
+        let buffer = match crate::object::buffer_exports::ScopedBuffer::simple(py, data_bits) {
+            Ok(buffer) => buffer,
+            Err(error) => return error.raise(py, "a bytes-like object is required"),
         };
-        let data = match data {
+        let data = match copy_array_bytes(buffer.as_slice()) {
             Ok(data) => data,
             Err(error) => return error.raise(py),
         };

@@ -7,6 +7,7 @@ rust-version.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+molt-runtime-platform = { path = "../molt-runtime-platform", optional = true, default-features = false }
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 libloading = { version = "0.9", optional = true }
@@ -15,4 +16,4 @@ libc = "0.2"
 [features]
 default = ["tk", "native-tcl"]
 tk = []
-native-tcl = ["tk", "dep:libloading"]
+native-tcl = ["tk", "dep:libloading", "dep:molt-runtime-platform"]

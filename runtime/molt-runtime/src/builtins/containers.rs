@@ -840,14 +840,36 @@ pub(crate) struct HashStorage<Entry> {
     pub(crate) fill: usize,
 }
 
+/// This mode governs real dictionary key-table conversion. Both modes keep
+/// the same sparse row representation; moving to general keys compacts the
+/// table at the configured version's non-exact-string insertion phase.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum DictKeyKind {
+    #[default]
+    Unicode,
+    General,
+}
+
+/// Dictionary append capacity is consumed even when a probe reuses a deleted
+/// index or popitem truncates the row extent. Sets retain occupied-slot fill.
+#[repr(C)]
+pub(crate) struct DictStorage {
+    pub(crate) entries: *mut Vec<DictEntry>,
+    pub(crate) table: *mut Vec<usize>,
+    pub(crate) live: usize,
+    pub(crate) usable: usize,
+    pub(crate) kind: DictKeyKind,
+}
+
 const _: () = {
     assert!(std::mem::size_of::<DictEntry>() == 24);
     assert!(std::mem::size_of::<SetEntry>() == 16);
-    assert!(std::mem::size_of::<HashStorage<DictEntry>>() == 4 * std::mem::size_of::<usize>());
+    assert!(std::mem::size_of::<DictStorage>() == 5 * std::mem::size_of::<usize>());
     assert!(std::mem::size_of::<HashStorage<SetEntry>>() == 4 * std::mem::size_of::<usize>());
 };
 
-pub(crate) unsafe fn dict_storage(ptr: *mut u8) -> &'static mut HashStorage<DictEntry> {
+pub(crate) unsafe fn dict_storage(ptr: *mut u8) -> &'static mut DictStorage {
     unsafe { &mut *ptr.cast() }
 }
 pub(crate) unsafe fn set_storage(ptr: *mut u8) -> &'static mut HashStorage<SetEntry> {

@@ -112,8 +112,9 @@ fn assert_send_hook_result_paths(
 }
 
 pub(crate) use capabilities::{
-    capability_fix_hint, has_capability, is_trusted, operation_allowed, raise_capability_denied,
-    require_named_operation, require_operation, require_operation_with_capabilities,
+    capability_fix_hint, freeze_capabilities, has_capability, is_trusted, operation_allowed,
+    raise_capability_denied, require_named_operation, require_operation,
+    require_operation_with_capabilities,
 };
 pub use channel::molt_chan_recv_blocking;
 pub use channel::{
@@ -126,7 +127,7 @@ pub use db::{molt_db_set_exec_hook, molt_db_set_query_hook};
 pub(crate) use molt_runtime_core::host_capabilities_generated::OperationId;
 pub use stream::*;
 pub(crate) use stream::{
-    default_stream_max_queued_bytes, stream_close_local, stream_enqueue_bytes_blocking,
+    capture_stream_max_queued_bytes, stream_close_local, stream_enqueue_bytes_blocking,
     stream_new_with_byte_budget, stream_release_queued_bytes,
 };
 pub use websocket::*;

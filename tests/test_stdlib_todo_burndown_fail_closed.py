@@ -174,8 +174,6 @@ def mp_spawn(mp_core, monkeypatch):
         "_MOLT_PROCESS_SPAWN",
         "_MOLT_PROCESS_STDIN",
         "_MOLT_PROCESS_STDOUT",
-        "_MOLT_ENV_GET",
-        "_MOLT_ENV_SNAPSHOT",
         "_MOLT_MP_CODEC_DUMPS",
         "_MOLT_STREAM_SEND",
         "_MOLT_PENDING",
@@ -230,8 +228,18 @@ def _admit_spawn_environment(module, calls, monkeypatch):
         return {"SELECTED_ENV": "retained"}
 
     monkeypatch.setattr(module, "_MOLT_REQUIRE_OPERATION", require)
-    monkeypatch.setattr(module, "_MOLT_ENV_GET", get_env)
-    monkeypatch.setattr(module, "_MOLT_ENV_SNAPSHOT", snapshot)
+    monkeypatch.setattr(
+        module,
+        "os",
+        types.SimpleNamespace(
+            environ=types.SimpleNamespace(get=get_env, copy=snapshot),
+            **{
+                name: getattr(module.os, name)
+                for name in ("path", "getcwd", "name", "sep", "pathsep")
+                if hasattr(module.os, name)
+            },
+        ),
+    )
 
 
 @pytest.mark.parametrize("surface", ["process", "worker", "pool"])
@@ -336,7 +344,8 @@ def test_process_start_failure_never_runs_target_inline_or_marks_started(
 def zlib_mod():
     captured: dict[str, object] = {}
 
-    def _unused_data(handle):
+    def _unused_data(error_class, handle):
+        assert error_class is captured["error_class"]
         # Echo whatever the handle carries; the test seeds it below.
         return captured.get("unused", b"")
 
@@ -346,6 +355,7 @@ def zlib_mod():
         }
     )
     mod = _load_stdlib_module("molt_test__zlib", "zlib.py")
+    captured["error_class"] = mod.error
     mod._TEST_CAPTURED = captured  # type: ignore[attr-defined]
     yield mod
     sys.modules.pop("molt_test__zlib", None)
@@ -367,3 +377,11 @@ def test_unused_data_empty_when_no_trailing(zlib_mod) -> None:
     dec = zlib_mod.Decompress.__new__(zlib_mod.Decompress)
     dec._handle = 1
     assert dec.unused_data == b""
+
+
+def test_unused_data_keeps_declared_error_authority(zlib_mod) -> None:
+    zlib_mod._TEST_CAPTURED["unused"] = b"tail"
+    zlib_mod.error = RuntimeError
+    dec = zlib_mod.Decompress.__new__(zlib_mod.Decompress)
+    dec._handle = 1
+    assert dec.unused_data == b"tail"

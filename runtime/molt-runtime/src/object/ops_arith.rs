@@ -1045,43 +1045,19 @@ pub(crate) fn repeat_sequence_in_place(py: &PyToken<'_>, ptr: *mut u8, count: i6
 
 unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits: u64) -> bool {
     unsafe {
-        let other = obj_from_bits(other_bits);
-        let Some(other_ptr) = other.as_ptr() else {
-            return native_slots::SequenceConcatKind::BytesLike.raise(
-                _py,
-                MoltObject::from_ptr(ptr).bits(),
-                other_bits,
-            );
-        };
-        let other_type = object_type_id(other_ptr);
-        let payload = if other_type == TYPE_ID_MEMORYVIEW {
-            if memoryview_released(other_ptr) {
-                return raise_released_memoryview(_py);
-            }
-            if let Some(slice) = memoryview_bytes_slice(other_ptr) {
-                slice.to_vec()
-            } else if let Some(buf) = memoryview_collect_bytes(other_ptr) {
-                buf
-            } else {
+        let buffer = match crate::object::buffer_exports::ScopedBuffer::simple(_py, other_bits) {
+            Ok(buffer) => buffer,
+            Err(_) => {
+                molt_cpython_abi::api::errors::PyErr_Clear();
+                crate::clear_exception(_py);
                 return native_slots::SequenceConcatKind::BytesLike.raise(
                     _py,
                     MoltObject::from_ptr(ptr).bits(),
                     other_bits,
                 );
             }
-        } else if other_type == TYPE_ID_BYTES || other_type == TYPE_ID_BYTEARRAY {
-            if other_ptr == ptr {
-                bytearray_vec_ref(ptr).clone()
-            } else {
-                bytes_like_slice_raw(other_ptr).unwrap_or(&[]).to_vec()
-            }
-        } else {
-            return native_slots::SequenceConcatKind::BytesLike.raise(
-                _py,
-                MoltObject::from_ptr(ptr).bits(),
-                other_bits,
-            );
         };
+        let payload = buffer.as_slice();
         let Some(required_len) = bytearray_len(ptr).checked_add(payload.len()) else {
             return {
                 crate::record_memory_error_without_allocation(_py);
@@ -1089,7 +1065,7 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
             };
         };
         crate::object::buffer_exports::bytearray_mutate(_py, ptr, required_len, |elems| {
-            elems.extend_from_slice(&payload)
+            elems.extend_from_slice(payload)
         })
         .is_some()
     }

@@ -28,7 +28,7 @@ pub(super) fn get_string_arg(
     bits: u64,
     label: &str,
 ) -> Result<String, u64> {
-    string_obj_to_owned(obj_from_bits(bits)).ok_or_else(|| {
+    unsafe { string_obj_to_owned(obj_from_bits(bits)) }.ok_or_else(|| {
         raise_tcl_for_handle(
             py,
             handle,
@@ -60,7 +60,7 @@ pub(super) fn get_text_arg(
     if obj.is_none() {
         return Ok(String::new());
     }
-    if let Some(text) = string_obj_to_owned(obj) {
+    if let Some(text) = unsafe { string_obj_to_owned(obj) } {
         return Ok(text);
     }
     if let Some(value) = to_i64(obj) {

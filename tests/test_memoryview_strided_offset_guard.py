@@ -36,7 +36,6 @@ C_API_SURFACE_PATH = (
     ROOT / "docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md"
 )
 CPYTHON_ABI_HOOKS_PATH = ROOT / "runtime/molt-cpython-abi/src/hooks.rs"
-HTTP_BRIDGE_PATH = ROOT / "runtime/molt-runtime-http/src/bridge.rs"
 
 MOLT_BUFFER_VIEW_FIELDS = [
     "data",
@@ -111,10 +110,6 @@ def _rust_molt_buffer_fields(source: str, name: str = "MoltBufferView") -> list[
     return fields
 
 
-def _canonical_buffer_fields(fields: list[str]) -> list[str]:
-    return ["data" if field == "ptr" else field for field in fields]
-
-
 def _c_define_value(source: str, name: str) -> int:
     match = re.search(rf"^\s*#define\s+{re.escape(name)}\s+([0-9]+)u?\b", source, re.M)
     assert match is not None, f"{name} is missing from C header"
@@ -179,18 +174,11 @@ def test_molt_buffer_view_v2_layout_is_mirrored() -> None:
     header_source = MOLT_HEADER_PATH.read_text(encoding="utf-8")
     runtime_source = RUNTIME_MEMORYVIEW_PATH.read_text(encoding="utf-8")
     cpython_abi_source = CPYTHON_ABI_HOOKS_PATH.read_text(encoding="utf-8")
-    http_bridge_source = HTTP_BRIDGE_PATH.read_text(encoding="utf-8")
     c_api_symbols_source = C_API_MOLT_API_PATH.read_text(encoding="utf-8")
 
     assert _c_molt_buffer_fields(header_source) == MOLT_BUFFER_VIEW_FIELDS
     assert _rust_molt_buffer_fields(runtime_source) == MOLT_BUFFER_VIEW_FIELDS
     assert _rust_molt_buffer_fields(cpython_abi_source) == MOLT_BUFFER_VIEW_FIELDS
-    assert (
-        _canonical_buffer_fields(
-            _rust_molt_buffer_fields(http_bridge_source, "BufferExport")
-        )
-        == MOLT_BUFFER_VIEW_FIELDS
-    )
     assert _c_define_value(header_source, "MOLT_C_API_VERSION") == 5
     assert (
         "int32_t molt_buffer_export(MoltHandle obj_bits, MoltBufferView *out_view);"
@@ -263,7 +251,18 @@ def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
     assert "alloc_object(" not in wrapper_body
     owner = "impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py>"
     pin_body = _rust_function_body(builders_source, "new", owner=owner)
-    assert "ScopedBufferExport::new(py, storage.owner_bits)?" in pin_body
+    ordinary_owner = _rust_block_body(pin_body, "else")
+    assert "ScopedBufferExport::new(" in ordinary_owner
+    assert "storage.owner_bits" in ordinary_owner
+    scoped_owner = _rust_block_body(
+        pin_body, "if storage.kind.scope() == super::MemoryViewScope::Derived"
+    )
+    assert "OwnedRuntimeValue::retain(" in scoped_owner
+    assert "ScopedBufferExport" not in scoped_owner
+    assert "storage.owner_bits" in scoped_owner
+    assert "source_storage.kind" in _rust_function_body(
+        c_api_source, "molt_memoryview_from_buffer"
+    )
     alloc_body = _rust_function_body(builders_source, "allocate", owner=owner)
     # The existing runtime null/span/capacity cases own behavior. These guards
     # keep backing admission in the pinned allocation authority after the move.

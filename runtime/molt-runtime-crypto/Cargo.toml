@@ -30,7 +30,7 @@ ripemd = { version = "0.2", optional = true }
 scrypt = { version = "0.12", optional = true }
 sha3 = { version = "0.12", optional = true }
 shake = { version = "0.1", optional = true }
-subtle = { version = "2.6", optional = true }
+subtle = "2.6"
 
 [features]
 default = ["full"]
@@ -39,7 +39,7 @@ default = ["full"]
 full = [
     "dep:sha3", "dep:shake",
     "dep:blake2b_simd", "dep:blake2s_simd",
-    "dep:hmac", "dep:pbkdf2", "dep:scrypt", "dep:subtle",
+    "dep:hmac", "dep:pbkdf2", "dep:scrypt",
 ]
 # Legacy crypto: deprecated or weak algorithms (MD4, RIPEMD-160).
 # Only enabled for stdlib_full builds. Not suitable for edge or server tiers.

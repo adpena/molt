@@ -1,4 +1,4 @@
-//! Runtime-independent path text helpers shared by platform/importlib/path builtins.
+//! Runtime-independent path text and native access helpers shared by path consumers.
 
 /// Owned lexical join state. Appending never copies the accumulated tail.
 /// A separate NT drive permits case replacement without moving that tail.
@@ -10,9 +10,8 @@ pub struct PathJoin {
 }
 
 impl PathJoin {
-    pub fn new(mut base: Vec<u8>, sep: u8, text: bool) -> Self {
+    pub fn new(mut base: Vec<u8>, sep: u8, text: bool, drive_end: usize) -> Self {
         assert!(matches!(sep, b'/' | b'\\'));
-        let drive_end = path_root_offsets(&base, sep, text).0;
         let drive = base[..drive_end].to_vec();
         base.drain(..drive_end);
         Self {
@@ -23,8 +22,7 @@ impl PathJoin {
         }
     }
 
-    pub fn push(&mut self, part: &[u8]) {
-        let (drive_end, root_end) = path_root_offsets(part, self.sep, self.text);
+    pub fn push(&mut self, part: &[u8], (drive_end, root_end): (usize, usize)) {
         let drive = &part[..drive_end];
         if root_end != drive_end {
             if !drive.is_empty() || self.drive.is_empty() {
@@ -94,8 +92,12 @@ impl PathJoin {
 }
 
 pub fn path_join_text(base: String, part: &str, sep: char) -> String {
-    let mut join = PathJoin::new(base.into_bytes(), sep as u8, true);
-    join.push(part.as_bytes());
+    let drive = path_root_offsets(base.as_bytes(), sep as u8, PathCoordinate::PythonCodePoints).0;
+    let mut join = PathJoin::new(base.into_bytes(), sep as u8, true, drive);
+    join.push(
+        part.as_bytes(),
+        path_root_offsets(part.as_bytes(), sep as u8, PathCoordinate::PythonCodePoints),
+    );
     String::from_utf8(join.finish()).expect("ASCII path joining preserves UTF-8")
 }
 
@@ -104,9 +106,17 @@ pub fn path_join_many_text(
     parts: impl IntoIterator<Item = impl AsRef<str>>,
     sep: char,
 ) -> String {
-    let mut join = PathJoin::new(base.into_bytes(), sep as u8, true);
+    let drive = path_root_offsets(base.as_bytes(), sep as u8, PathCoordinate::PythonCodePoints).0;
+    let mut join = PathJoin::new(base.into_bytes(), sep as u8, true, drive);
     for part in parts {
-        join.push(part.as_ref().as_bytes());
+        join.push(
+            part.as_ref().as_bytes(),
+            path_root_offsets(
+                part.as_ref().as_bytes(),
+                sep as u8,
+                PathCoordinate::PythonCodePoints,
+            ),
+        );
     }
     String::from_utf8(join.finish()).expect("ASCII path joining preserves UTF-8")
 }
@@ -155,55 +165,6 @@ pub fn path_splitext_text(path: &str, sep: char) -> (String, String) {
     (root, ext)
 }
 
-pub fn path_name_text(path: &str, sep: char) -> String {
-    let parts = path_parts_text(path, sep);
-    if parts.is_empty() {
-        return String::new();
-    }
-    let sep_s = sep.to_string();
-    if parts.len() == 1 && parts[0] == sep_s {
-        return String::new();
-    }
-    parts.last().cloned().unwrap_or_default()
-}
-
-pub fn path_suffix_text(path: &str, sep: char) -> String {
-    let name = path_name_text(path, sep);
-    if name.is_empty() || name == "." {
-        return String::new();
-    }
-    let (_, suffix) = path_splitext_text(&name, sep);
-    suffix
-}
-
-pub fn path_suffixes_text(path: &str, sep: char) -> Vec<String> {
-    let name = path_name_text(path, sep);
-    if name.is_empty() || name == "." {
-        return Vec::new();
-    }
-    let mut suffixes: Vec<String> = Vec::new();
-    let mut stem = name;
-    loop {
-        let (next_stem, suffix) = path_splitext_text(&stem, sep);
-        if suffix.is_empty() {
-            break;
-        }
-        suffixes.push(suffix);
-        stem = next_stem;
-    }
-    suffixes.reverse();
-    suffixes
-}
-
-pub fn path_stem_text(path: &str, sep: char) -> String {
-    let name = path_name_text(path, sep);
-    if name.is_empty() || name == "." {
-        return String::new();
-    }
-    let (stem, _) = path_splitext_text(&name, sep);
-    stem
-}
-
 pub fn path_as_uri_text(path: &str, sep: char) -> Result<String, String> {
     if !path.starts_with(sep) {
         return Err("relative path can't be expressed as a file URI".to_string());
@@ -236,7 +197,15 @@ fn path_normpath(path: &[u8], sep: u8, text: bool) -> Vec<u8> {
     } else {
         path
     };
-    let (drive_end, root_end) = path_root_offsets(path, sep, text);
+    let (drive_end, root_end) = path_root_offsets(
+        path,
+        sep,
+        if text {
+            PathCoordinate::PythonCodePoints
+        } else {
+            PathCoordinate::Bytes
+        },
+    );
     let rooted = root_end != drive_end;
     let mut parts: Vec<&[u8]> = Vec::new();
     for part in path[root_end..].split(|&byte| byte == sep) {
@@ -278,9 +247,18 @@ fn path_separator(byte: u8, sep: u8) -> bool {
     byte == sep || (sep == b'\\' && byte == b'/')
 }
 
+/// Indexing coordinate of the upstream path parser. Offsets returned below are
+/// always byte offsets into the original (possibly WTF-8) storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PathCoordinate {
+    Bytes,
+    PythonCodePoints,
+    WindowsUtf16,
+}
+
 // One drive/root parser for joining, lexical normalization and splitroot projection.
 // Offsets lie on ASCII boundaries in either UTF-8 or opaque filesystem bytes.
-fn path_root_offsets(path: &[u8], sep: u8, text: bool) -> (usize, usize) {
+pub fn path_root_offsets(path: &[u8], sep: u8, coordinate: PathCoordinate) -> (usize, usize) {
     if sep == b'\\' {
         if path
             .get(..2)
@@ -321,12 +299,20 @@ fn path_root_offsets(path: &[u8], sep: u8, text: bool) -> (usize, usize) {
         if path.first().is_some_and(|&byte| path_separator(byte, sep)) {
             return (0, 1);
         }
-        // Text drive letters are Python characters, not UTF-8 bytes.
-        let first_width = if text {
-            path.first()
-                .map_or(1, |byte| byte.leading_ones().max(1) as usize)
-        } else {
-            1
+        // The native Windows splitroot provider indexes UTF-16 code units.
+        // A scalar encoded with four WTF-8 bytes occupies two such units, so
+        // its following colon cannot be the second unit of a drive prefix.
+        let first_width = match coordinate {
+            PathCoordinate::Bytes => 1,
+            PathCoordinate::PythonCodePoints | PathCoordinate::WindowsUtf16 => {
+                let width = path
+                    .first()
+                    .map_or(1, |byte| byte.leading_ones().max(1) as usize);
+                if coordinate == PathCoordinate::WindowsUtf16 && width == 4 {
+                    return (0, 0);
+                }
+                width
+            }
         };
         if path.get(first_width) == Some(&b':') {
             let drive_end = first_width + 1;
@@ -368,49 +354,21 @@ pub fn path_parts_text(path: &str, sep: char) -> Vec<String> {
     out
 }
 
-pub fn path_compare_text(lhs: &str, rhs: &str, sep: char) -> i64 {
-    let lhs_parts = path_parts_text(lhs, sep);
-    let rhs_parts = path_parts_text(rhs, sep);
-    use std::cmp::Ordering;
-    match lhs_parts.cmp(&rhs_parts) {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
-}
-
-pub fn path_parents_text(path: &str, sep: char) -> Vec<String> {
-    let (drive, root, tail) = path_splitroot_text(path, sep);
-    let anchor = format!("{drive}{root}");
-    let tail_parts = tail
-        .split(sep)
-        .filter(|part| !part.is_empty() && *part != ".")
-        .map(ToOwned::to_owned)
-        .collect::<Vec<String>>();
-    if tail_parts.is_empty() {
-        return Vec::new();
-    }
-    let sep_s = sep.to_string();
-    let mut out: Vec<String> = Vec::new();
-    let mut idx = tail_parts.len();
-    while idx > 0 {
-        idx -= 1;
-        if idx == 0 {
-            if anchor.is_empty() {
-                out.push(".".to_string());
-            } else {
-                out.push(anchor.clone());
-            }
-            continue;
-        }
-        let prefix = tail_parts[..idx].join(&sep_s);
-        if anchor.is_empty() {
-            out.push(prefix);
+pub fn path_isabs_raw(path: &[u8], sep: char, text: bool) -> bool {
+    let (drive, root) = path_root_offsets(
+        path,
+        sep as u8,
+        if text {
+            PathCoordinate::PythonCodePoints
         } else {
-            out.push(format!("{anchor}{prefix}"));
-        }
-    }
-    out
+            PathCoordinate::Bytes
+        },
+    );
+    root > drive
+        || (sep == '\\'
+            && path
+                .get(..2)
+                .is_some_and(|start| start.iter().all(|byte| path_separator(*byte, sep as u8))))
 }
 
 pub fn path_isabs_text(path: &str, sep: char) -> bool {
@@ -446,7 +404,8 @@ pub fn path_splitroot_text(path: &str, sep: char) -> (String, String, String) {
     } else {
         path
     };
-    let (drive, root) = path_root_offsets(path.as_bytes(), sep as u8, true);
+    let (drive, root) =
+        path_root_offsets(path.as_bytes(), sep as u8, PathCoordinate::PythonCodePoints);
     (
         path[..drive].to_string(),
         path[drive..root].to_string(),
@@ -454,220 +413,8 @@ pub fn path_splitroot_text(path: &str, sep: char) -> (String, String, String) {
     )
 }
 
-pub fn path_relative_to_text(path: &str, base: &str, sep: char) -> Result<String, String> {
-    let sep_s = sep.to_string();
-    let target_parts = path_parts_text(path, sep);
-    let base_parts = path_parts_text(base, sep);
-    let target_abs = target_parts.first().is_some_and(|part| part == &sep_s);
-    let base_abs = base_parts.first().is_some_and(|part| part == &sep_s);
-    if (base_abs && !target_abs) || (!base_abs && target_abs) {
-        return Err(format!("{path:?} is not in the subpath of {base:?}"));
-    }
-    if base_parts.len() > target_parts.len() {
-        return Err(format!("{path:?} is not in the subpath of {base:?}"));
-    }
-    for (idx, part) in base_parts.iter().enumerate() {
-        if target_parts.get(idx) != Some(part) {
-            return Err(format!("{path:?} is not in the subpath of {base:?}"));
-        }
-    }
-    let rel_parts = &target_parts[base_parts.len()..];
-    if rel_parts.is_empty() {
-        Ok(".".to_string())
-    } else {
-        Ok(rel_parts.join(&sep_s))
-    }
-}
-
-pub fn path_expandvars_with_lookup(
-    path: &str,
-    mut lookup: impl FnMut(&str) -> Option<String>,
-) -> String {
-    if !path.contains('$') {
-        return path.to_string();
-    }
-    let is_var_char = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
-    let chars: Vec<char> = path.chars().collect();
-    let mut out = String::with_capacity(path.len());
-    let mut idx = 0usize;
-    while idx < chars.len() {
-        let ch = chars[idx];
-        if ch != '$' {
-            out.push(ch);
-            idx += 1;
-            continue;
-        }
-        if idx + 1 >= chars.len() {
-            out.push('$');
-            idx += 1;
-            continue;
-        }
-        let next = chars[idx + 1];
-        if next == '{' {
-            let mut end = idx + 2;
-            while end < chars.len() && chars[end] != '}' {
-                end += 1;
-            }
-            if end >= chars.len() {
-                for c in &chars[idx..] {
-                    out.push(*c);
-                }
-                break;
-            }
-            let name: String = chars[idx + 2..end].iter().collect();
-            if name.is_empty() {
-                for c in &chars[idx..=end] {
-                    out.push(*c);
-                }
-            } else if let Some(value) = lookup(&name) {
-                out.push_str(&value);
-            } else {
-                for c in &chars[idx..=end] {
-                    out.push(*c);
-                }
-            }
-            idx = end + 1;
-            continue;
-        }
-        if next == '$' {
-            out.push('$');
-            out.push('$');
-            idx += 2;
-            continue;
-        }
-        let start = idx + 1;
-        let mut end = start;
-        while end < chars.len() && is_var_char(chars[end]) {
-            end += 1;
-        }
-        if end == start {
-            out.push('$');
-            idx += 1;
-            continue;
-        }
-        let name: String = chars[start..end].iter().collect();
-        if let Some(value) = lookup(&name) {
-            out.push_str(&value);
-        } else {
-            for c in &chars[idx..end] {
-                out.push(*c);
-            }
-        }
-        idx = end;
-    }
-    out
-}
-
 pub fn path_match_simple_pattern(name: &str, pat: &str) -> bool {
-    type GlobCharClassParse = (Vec<char>, Vec<(char, char)>, bool, usize);
-
-    fn parse_char_class(pat: &[char], mut idx: usize) -> Option<GlobCharClassParse> {
-        if idx >= pat.len() || pat[idx] != '[' {
-            return None;
-        }
-        idx += 1;
-        if idx >= pat.len() {
-            return None;
-        }
-
-        let mut negate = false;
-        if pat[idx] == '!' {
-            negate = true;
-            idx += 1;
-        }
-        if idx >= pat.len() {
-            return None;
-        }
-
-        let mut singles: Vec<char> = Vec::new();
-        let mut ranges: Vec<(char, char)> = Vec::new();
-
-        if pat[idx] == ']' {
-            singles.push(']');
-            idx += 1;
-        }
-
-        while idx < pat.len() && pat[idx] != ']' {
-            if idx + 2 < pat.len() && pat[idx + 1] == '-' && pat[idx + 2] != ']' {
-                let start = pat[idx];
-                let end = pat[idx + 2];
-                if start <= end {
-                    ranges.push((start, end));
-                }
-                idx += 3;
-                continue;
-            }
-            singles.push(pat[idx]);
-            idx += 1;
-        }
-        if idx >= pat.len() || pat[idx] != ']' {
-            return None;
-        }
-        Some((singles, ranges, negate, idx + 1))
-    }
-
-    fn char_class_hit(ch: char, singles: &[char], ranges: &[(char, char)], negate: bool) -> bool {
-        let mut hit = singles.contains(&ch);
-        if !hit {
-            hit = ranges.iter().any(|(start, end)| *start <= ch && ch <= *end);
-        }
-        if negate { !hit } else { hit }
-    }
-
-    let name_chars: Vec<char> = name.chars().collect();
-    let pat_chars: Vec<char> = pat.chars().collect();
-    let mut pi: usize = 0;
-    let mut ni: usize = 0;
-    let mut star_idx: Option<usize> = None;
-    let mut matched_from_star: usize = 0;
-
-    while ni < name_chars.len() {
-        if pi < pat_chars.len() && pat_chars[pi] == '*' {
-            while pi < pat_chars.len() && pat_chars[pi] == '*' {
-                pi += 1;
-            }
-            if pi == pat_chars.len() {
-                return true;
-            }
-            star_idx = Some(pi);
-            matched_from_star = ni;
-            continue;
-        }
-        if pi < pat_chars.len()
-            && pat_chars[pi] == '['
-            && let Some((singles, ranges, negate, next_idx)) = parse_char_class(&pat_chars, pi)
-        {
-            let hit = char_class_hit(name_chars[ni], &singles, &ranges, negate);
-            if hit {
-                pi = next_idx;
-                ni += 1;
-                continue;
-            }
-            if let Some(star) = star_idx {
-                matched_from_star += 1;
-                ni = matched_from_star;
-                pi = star;
-                continue;
-            }
-            return false;
-        }
-        if pi < pat_chars.len() && (pat_chars[pi] == '?' || pat_chars[pi] == name_chars[ni]) {
-            pi += 1;
-            ni += 1;
-            continue;
-        }
-        if let Some(star) = star_idx {
-            matched_from_star += 1;
-            ni = matched_from_star;
-            pi = star;
-            continue;
-        }
-        return false;
-    }
-    while pi < pat_chars.len() && pat_chars[pi] == '*' {
-        pi += 1;
-    }
-    pi == pat_chars.len()
+    crate::fnmatch::fnmatch_match_impl(name, pat)
 }
 
 pub fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
@@ -737,72 +484,106 @@ pub fn path_match_text(path: &str, pattern: &str, sep: char) -> bool {
 }
 
 pub fn glob_has_magic_text(pathname: &str) -> bool {
-    pathname
-        .as_bytes()
-        .iter()
-        .any(|ch| matches!(*ch, b'*' | b'?' | b'['))
+    glob_has_magic_raw(pathname.as_bytes())
+}
+
+pub fn glob_has_magic_raw(pathname: &[u8]) -> bool {
+    pathname.iter().any(|ch| matches!(*ch, b'*' | b'?' | b'['))
 }
 
 pub fn glob_is_hidden_text(name: &str) -> bool {
     name.starts_with('.')
 }
 
-pub fn glob_split_path_text(pathname: &str, sep: char) -> (String, String) {
-    let (drive, root, tail) = path_splitroot_text(pathname, sep);
+pub fn glob_split_path_raw(
+    pathname: &[u8],
+    sep: char,
+    coordinate: PathCoordinate,
+) -> (Vec<u8>, Vec<u8>) {
+    let sep = sep as u8;
+    let (_, root_end) = path_root_offsets(pathname, sep, coordinate);
+    glob_split_path_with_root(pathname, sep, root_end)
+}
+
+pub fn glob_split_path_with_root(pathname: &[u8], sep: u8, root_end: usize) -> (Vec<u8>, Vec<u8>) {
+    let tail = &pathname[root_end..];
     if tail.is_empty() {
-        return (format!("{drive}{root}"), String::new());
+        return (pathname.to_vec(), Vec::new());
     }
-
-    let mut head = String::new();
-    let mut base = tail.clone();
-    if let Some(idx) = tail.rfind(sep) {
-        head = tail[..idx + sep.len_utf8()].to_string();
-        base = tail[idx + sep.len_utf8()..].to_string();
-    }
-
-    if !head.is_empty() {
-        let all_sep = head.chars().all(|ch| ch == sep);
-        if !all_sep {
-            head = head.trim_end_matches(sep).to_string();
+    let Some(index) = tail.iter().rposition(|byte| *byte == sep) else {
+        return (pathname[..root_end].to_vec(), tail.to_vec());
+    };
+    let mut end = root_end + index + 1;
+    if !tail[..index + 1].iter().all(|byte| *byte == sep) {
+        while end > root_end && pathname[end - 1] == sep {
+            end -= 1;
         }
     }
+    (pathname[..end].to_vec(), tail[index + 1..].to_vec())
+}
 
-    let dirname = format!("{drive}{root}{head}");
-    (dirname, base)
+pub fn glob_split_path_text(pathname: &str, sep: char) -> (String, String) {
+    let (head, tail) =
+        glob_split_path_raw(pathname.as_bytes(), sep, PathCoordinate::PythonCodePoints);
+    (
+        String::from_utf8(head).expect("ASCII separator boundary"),
+        String::from_utf8(tail).expect("ASCII separator boundary"),
+    )
+}
+
+pub fn glob_join_raw(
+    base: &[u8],
+    part: &[u8],
+    sep: char,
+    text: bool,
+    coordinate: PathCoordinate,
+) -> Vec<u8> {
+    let mut join = PathJoin::new(
+        base.to_vec(),
+        sep as u8,
+        text,
+        path_root_offsets(base, sep as u8, coordinate).0,
+    );
+    join.push(part, path_root_offsets(part, sep as u8, coordinate));
+    join.finish()
 }
 
 pub fn glob_join_text(base: &str, part: &str, sep: char) -> String {
-    if base.is_empty() {
-        return part.to_string();
-    }
-    if path_isabs_text(part, sep) {
-        return part.to_string();
-    }
-    #[cfg(windows)]
-    {
-        let (part_drive, _part_root, _part_tail) = path_splitroot_text(part, sep);
-        if !part_drive.is_empty() {
-            return part.to_string();
-        }
-    }
-    path_join_text(base.to_string(), part, sep)
+    String::from_utf8(glob_join_raw(
+        base.as_bytes(),
+        part.as_bytes(),
+        sep,
+        true,
+        PathCoordinate::PythonCodePoints,
+    ))
+    .expect("UTF-8 path join")
 }
 
-pub fn glob_escape_text(pathname: &str, sep: char) -> String {
-    let (drive, root, tail) = path_splitroot_text(pathname, sep);
-    let mut out = String::new();
-    out.push_str(&drive);
-    out.push_str(&root);
-    for ch in tail.chars() {
-        if matches!(ch, '*' | '?' | '[') {
-            out.push('[');
-            out.push(ch);
-            out.push(']');
+pub fn glob_escape_raw(pathname: &[u8], sep: char, coordinate: PathCoordinate) -> Vec<u8> {
+    let (drive_end, _) = path_root_offsets(pathname, sep as u8, coordinate);
+    glob_escape_with_drive(pathname, drive_end)
+}
+
+/// Escape only after an already parsed drive (which may use a filesystem codec).
+pub fn glob_escape_with_drive(pathname: &[u8], drive_end: usize) -> Vec<u8> {
+    let mut out = pathname[..drive_end].to_vec();
+    for &byte in &pathname[drive_end..] {
+        if matches!(byte, b'*' | b'?' | b'[') {
+            out.extend_from_slice(&[b'[', byte, b']']);
         } else {
-            out.push(ch);
+            out.push(byte);
         }
     }
     out
+}
+
+pub fn glob_escape_text(pathname: &str, sep: char) -> String {
+    String::from_utf8(glob_escape_raw(
+        pathname.as_bytes(),
+        sep,
+        PathCoordinate::PythonCodePoints,
+    ))
+    .expect("ASCII wildcard escape")
 }
 
 fn glob_regex_escape_char(out: &mut String, ch: char) {
@@ -1037,76 +818,122 @@ pub fn glob_translate_text(
     format!("(?s:{body})\\Z")
 }
 
-fn glob_split_components(text: &str, sep: char) -> Vec<String> {
-    text.split(sep)
-        .filter(|part| !part.is_empty() && *part != ".")
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn glob_walk(
+/// Directory traversal retains OS names. Filesystem scan errors suppress that
+/// directory, as pathlib selectors do; only the Python decoder can fail outward.
+fn glob_walk<E>(
     dir: &std::path::Path,
-    rel_parts: &mut Vec<String>,
-    pat_parts: &[String],
-    pi: usize,
-    sep: char,
-    out: &mut Vec<String>,
-) -> std::io::Result<()> {
-    let sep_s = sep.to_string();
-    if pi >= pat_parts.len() {
-        if !rel_parts.is_empty() {
-            out.push(rel_parts.join(&sep_s));
+    relative: &mut std::path::PathBuf,
+    pattern: &[Vec<u32>],
+    index: usize,
+    out: &mut Vec<std::path::PathBuf>,
+    terminal_recursive_files: bool,
+    decode: &mut impl FnMut(&std::ffi::OsStr) -> Result<Vec<u32>, E>,
+) -> Result<(), E> {
+    if index == pattern.len() {
+        out.push(relative.clone());
+        return Ok(());
+    }
+    let part = &pattern[index];
+    if part.is_empty() {
+        if dir.is_dir() {
+            out.push(relative.clone());
         }
         return Ok(());
     }
-    let pat = &pat_parts[pi];
-    if pat == "**" {
-        glob_walk(dir, rel_parts, pat_parts, pi + 1, sep, out)?;
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if !file_type.is_dir() {
+    // Parent components select a path directly; directory entries never contain
+    // "..". Preserve the lexical component in the returned Path, as pathlib does.
+    if part == &[u32::from(b'.'), u32::from(b'.')] {
+        relative.push("..");
+        let result = glob_walk(
+            &dir.join(".."),
+            relative,
+            pattern,
+            index + 1,
+            out,
+            terminal_recursive_files,
+            decode,
+        );
+        relative.pop();
+        return result;
+    }
+    let recursive = part == &[u32::from(b'*'), u32::from(b'*')];
+    if recursive {
+        glob_walk(
+            dir,
+            relative,
+            pattern,
+            index + 1,
+            out,
+            terminal_recursive_files,
+            decode,
+        )?;
+    }
+    // Close each directory stream before descending, including failure while
+    // iterating it. Deep traversal must not retain one descriptor per level.
+    let Ok(entries) =
+        std::fs::read_dir(dir).and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
+    else {
+        return Ok(());
+    };
+    for entry in entries {
+        let name = entry.file_name();
+        if recursive {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                if terminal_recursive_files && index + 1 == pattern.len() {
+                    out.push(relative.join(name));
+                }
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            rel_parts.push(name);
-            glob_walk(&entry.path(), rel_parts, pat_parts, pi, sep, out)?;
-            rel_parts.pop();
-        }
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !path_match_simple_pattern(&name, pat) {
+        } else if !crate::fnmatch::fnmatch_match_units(&decode(&name)?, part) {
             continue;
         }
-        let file_type = entry.file_type()?;
-        rel_parts.push(name);
-        if pi + 1 >= pat_parts.len() {
-            out.push(rel_parts.join(&sep_s));
-        } else if file_type.is_dir() {
-            glob_walk(&entry.path(), rel_parts, pat_parts, pi + 1, sep, out)?;
+        relative.push(&name);
+        if !recursive && index + 1 == pattern.len() {
+            out.push(relative.clone());
+        } else if recursive || entry.path().is_dir() {
+            // Ordinary components follow directory symlinks; ** does not.
+            glob_walk(
+                &entry.path(),
+                relative,
+                pattern,
+                if recursive { index } else { index + 1 },
+                out,
+                terminal_recursive_files,
+                decode,
+            )?;
         }
-        rel_parts.pop();
+        relative.pop();
     }
     Ok(())
 }
 
-pub fn path_glob_matches(
+pub fn path_glob_matches<E>(
     dir: &std::path::Path,
-    pattern: &str,
-    sep: char,
-) -> std::io::Result<Vec<String>> {
-    #[cfg(windows)]
-    let pattern = pattern.replace('/', "\\");
-    #[cfg(not(windows))]
-    let pattern = pattern.to_string();
-    let pat_parts = glob_split_components(&pattern, sep);
-    let mut matches: Vec<String> = Vec::new();
-    if !pat_parts.is_empty() {
-        let mut rel_parts: Vec<String> = Vec::new();
-        glob_walk(dir, &mut rel_parts, &pat_parts, 0, sep, &mut matches)?;
+    pattern: &[Vec<u32>],
+    terminal_recursive_files: bool,
+    mut decode: impl FnMut(&std::ffi::OsStr) -> Result<Vec<u32>, E>,
+) -> Result<Vec<std::path::PathBuf>, E> {
+    let mut matches = Vec::new();
+    if dir.is_dir() {
+        glob_walk(
+            dir,
+            &mut std::path::PathBuf::new(),
+            pattern,
+            0,
+            &mut matches,
+            terminal_recursive_files,
+            &mut decode,
+        )?;
+    }
+    // Recursive selectors may reach one path through several ** components.
+    if pattern
+        .iter()
+        .filter(|part| part.as_slice() == [42, 42])
+        .count()
+        > 1
+    {
+        let mut seen = std::collections::HashSet::new();
+        matches.retain(|path| seen.insert(path.clone()));
     }
     Ok(matches)
 }
@@ -1114,6 +941,48 @@ pub fn path_glob_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_coordinates_distinguish_bytes_python_characters_and_windows_units() {
+        use PathCoordinate::{Bytes, PythonCodePoints, WindowsUtf16};
+        for (path, byte_root, python_root, wide_root) in [
+            (b"C:leaf".as_slice(), (2, 2), (2, 2), (2, 2)),
+            ("é:leaf".as_bytes(), (0, 0), (3, 3), (3, 3)),
+            ("😀:leaf".as_bytes(), (0, 0), (5, 5), (0, 0)),
+            (b"\xed\xa0\x80:leaf".as_slice(), (0, 0), (4, 4), (4, 4)),
+            (
+                b"\xed\xa0\xbd\xed\xb8\x80:leaf".as_slice(),
+                (0, 0),
+                (0, 0),
+                (0, 0),
+            ),
+            (
+                b"\\\\server\\share\\leaf".as_slice(),
+                (14, 15),
+                (14, 15),
+                (14, 15),
+            ),
+        ] {
+            for (coordinate, expected) in [
+                (Bytes, byte_root),
+                (PythonCodePoints, python_root),
+                (WindowsUtf16, wide_root),
+            ] {
+                assert_eq!(
+                    path_root_offsets(path, b'\\', coordinate),
+                    expected,
+                    "{path:?} {coordinate:?}"
+                );
+            }
+        }
+        for coordinate in [Bytes, PythonCodePoints, WindowsUtf16] {
+            assert_eq!(
+                path_root_offsets(b"//server/share", b'/', coordinate),
+                (0, 2)
+            );
+            assert_eq!(path_root_offsets(b"///leaf", b'/', coordinate), (0, 1));
+        }
+    }
 
     #[test]
     fn joins_match_cpython_posix_nt_text_and_bytes() {
@@ -1183,9 +1052,19 @@ mod tests {
             ),
         ];
         for &(sep, text, parts, expected) in cases {
-            let mut join = PathJoin::new(parts[0].to_vec(), sep, text);
+            let coordinate = if text {
+                PathCoordinate::PythonCodePoints
+            } else {
+                PathCoordinate::Bytes
+            };
+            let mut join = PathJoin::new(
+                parts[0].to_vec(),
+                sep,
+                text,
+                path_root_offsets(parts[0], sep, coordinate).0,
+            );
             for part in &parts[1..] {
-                join.push(part);
+                join.push(part, path_root_offsets(part, sep, coordinate));
             }
             assert_eq!(join.finish(), expected, "{parts:?}");
         }
@@ -1198,8 +1077,8 @@ mod tests {
             path_join_many_text("a".to_string(), ["b", "c"], '/'),
             "a/b/c"
         );
-        let mut bytes = PathJoin::new(b"a".to_vec(), b'/', false);
-        bytes.push(b"b");
+        let mut bytes = PathJoin::new(b"a".to_vec(), b'/', false, 0);
+        bytes.push(b"b", (0, 0));
         assert_eq!(bytes.finish(), b"a/b");
         assert_eq!(path_basename_text("/a/b/", '/'), "b");
         assert_eq!(path_dirname_text("/a/b/", '/'), "/a");
@@ -1252,41 +1131,11 @@ mod tests {
     }
 
     #[test]
-    fn derives_names_suffixes_parts_and_relative_paths() {
+    fn projects_normalized_parts() {
         let sep = std::path::MAIN_SEPARATOR;
-        let root = sep.to_string();
-        let pkg = format!("{sep}a{sep}pkg.tar.gz");
-        assert_eq!(path_name_text(&pkg, sep), "pkg.tar.gz");
-        assert_eq!(path_suffix_text(&pkg, sep), ".gz");
-        assert_eq!(path_suffixes_text(&pkg, sep), vec![".tar", ".gz"]);
-        assert_eq!(path_stem_text(&pkg, sep), "pkg.tar");
         assert_eq!(
             path_parts_text(&format!("{sep}a{sep}b"), sep),
-            vec![root.clone(), "a".into(), "b".into()]
-        );
-        assert_eq!(
-            path_parents_text(&format!("{sep}a{sep}b{sep}c"), sep),
-            vec![format!("{sep}a{sep}b"), format!("{sep}a"), root]
-        );
-        assert_eq!(
-            path_compare_text(&format!("{sep}a"), &format!("{sep}b"), sep),
-            -1
-        );
-        assert_eq!(
-            path_relative_to_text(&format!("{sep}a{sep}b{sep}c"), &format!("{sep}a"), sep),
-            Ok(format!("b{sep}c"))
-        );
-    }
-
-    #[test]
-    fn expands_variables_through_caller_lookup() {
-        assert_eq!(
-            path_expandvars_with_lookup("$ROOT/${NAME}/$$/$MISSING", |name| match name {
-                "ROOT" => Some("r".into()),
-                "NAME" => Some("n".into()),
-                _ => None,
-            }),
-            "r/n/$$/$MISSING"
+            vec![sep.to_string(), "a".into(), "b".into()]
         );
     }
 
@@ -1339,12 +1188,69 @@ mod tests {
         std::fs::write(root.join("pkg").join("sub").join("b.py"), b"b").unwrap();
         std::fs::write(root.join("pkg").join("sub").join("c.txt"), b"c").unwrap();
 
-        let mut matches = path_glob_matches(&root, &format!("pkg{sep}**{sep}*.py"), sep).unwrap();
+        let pattern = ["pkg", "**", "*.py"].map(|part| part.chars().map(u32::from).collect());
+        let mut matches = path_glob_matches(&root, &pattern, false, |name| {
+            Ok::<_, std::convert::Infallible>(
+                name.to_str().unwrap().chars().map(u32::from).collect(),
+            )
+        })
+        .unwrap();
         matches.sort();
+        let wildcard = [vec![u32::from(b'*')]];
+        assert_eq!(
+            path_glob_matches(&root, &wildcard, false, |_| Err::<Vec<u32>, _>(
+                "decode-failure"
+            )),
+            Err("decode-failure")
+        );
+        assert!(
+            path_glob_matches(&root.join("pkg/a.py"), &wildcard, false, |_| Err::<
+                Vec<u32>,
+                _,
+            >(
+                "must-not-decode"
+            ))
+            .unwrap()
+            .is_empty()
+        );
         assert_eq!(
             matches,
-            vec![format!("pkg{sep}a.py"), format!("pkg{sep}sub{sep}b.py")]
+            vec![
+                std::path::PathBuf::from(format!("pkg{sep}a.py")),
+                std::path::PathBuf::from(format!("pkg{sep}sub{sep}b.py"))
+            ]
+        );
+        let parent_pattern = ["..", "a.py"].map(|part| part.chars().map(u32::from).collect());
+        assert_eq!(
+            path_glob_matches(&root.join("pkg/sub"), &parent_pattern, false, |name| {
+                Ok::<_, std::convert::Infallible>(
+                    name.to_str().unwrap().chars().map(u32::from).collect(),
+                )
+            })
+            .unwrap(),
+            vec![std::path::PathBuf::from("..").join("a.py")]
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+/// Shared native access predicate. No Python objects or conversion callbacks;
+/// each caller owns admission, argument conversion and exception ordering.
+pub fn path_access(path: &std::path::Path, mode: i32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+            return false;
+        };
+        unsafe { libc::access(path.as_ptr(), mode) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        // CPython Windows uses attributes: READONLY directories satisfy W_OK.
+        // R_OK/X_OK add no attribute restriction. WASI execution is unqualified.
+        mode & 2 == 0 || !metadata.permissions().readonly() || metadata.is_dir()
     }
 }

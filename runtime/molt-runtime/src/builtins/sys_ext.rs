@@ -837,10 +837,15 @@ pub extern "C" fn molt_sys_getdefaultencoding() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { str_bits(_py, "utf-8") })
 }
 
-/// `sys.getfilesystemencoding()` -> "utf-8"
+/// The immutable filesystem encoding chosen at runtime startup.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_getfilesystemencoding() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { str_bits(_py, "utf-8") })
+    crate::with_gil_entry_nopanic!(_py, {
+        str_bits(
+            _py,
+            &crate::builtins::platform::startup_encoding(_py).filesystem_encoding,
+        )
+    })
 }
 
 // --- Thread switch interval (GIL timeslice stub) ---
@@ -1177,32 +1182,7 @@ pub extern "C" fn molt_sys_excepthook_write(text_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_path() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let mut entries: Vec<String> = Vec::new();
-
-        // 1. Current directory (empty string = cwd per CPython convention)
-        entries.push(String::new());
-
-        // 2. Explicit Molt module roots. Ambient PYTHONPATH belongs to the
-        // host Python process used to drive tooling; compiled binaries must
-        // not silently import from that host search path.
-        if let Ok(module_roots) = std::env::var("MOLT_MODULE_ROOTS") {
-            for p in module_roots.split(if cfg!(windows) { ';' } else { ':' }) {
-                if !p.is_empty() {
-                    entries.push(p.to_string());
-                }
-            }
-        }
-
-        // 3. Executable's parent lib directory
-        if let Ok(exe) = std::env::current_exe()
-            && let Some(parent) = exe.parent()
-        {
-            let lib_dir = parent.join("lib");
-            if lib_dir.is_dir() {
-                entries.push(lib_dir.to_string_lossy().into_owned());
-            }
-            entries.push(parent.to_string_lossy().into_owned());
-        }
+        let entries = crate::builtins::platform::startup_sys_path(_py);
 
         let mut bits_vec: Vec<u64> = Vec::with_capacity(entries.len());
         for entry in &entries {

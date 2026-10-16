@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
+from molt._host_capabilities_generated import SUPPORTED_TARGET_PLATFORMS
+
 FeatureGates: TypeAlias = tuple[tuple[str, str], ...]
 TargetArchExclusions: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
+TargetOsRequirements: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
 FeatureTargetArchExclusions: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
 
 
@@ -22,6 +25,7 @@ class IntrinsicAvailability:
     builtin_symbols: tuple[str, ...]
     feature_gates: FeatureGates
     target_arch_exclusions: TargetArchExclusions
+    target_os_requirements: TargetOsRequirements
     feature_target_arch_exclusions: FeatureTargetArchExclusions
 
     def feature_gate_for_symbol(self, symbol: str) -> str | None:
@@ -36,8 +40,19 @@ class IntrinsicAvailability:
             return ()
         return longest_prefix_value(symbol, self.target_arch_exclusions) or ()
 
-    def symbol_available_on_target_arch(self, symbol: str, target_arch: str) -> bool:
-        return target_arch not in self.target_arch_exclusions_for_symbol(symbol)
+    def supported_target_oses_for_symbol(self, symbol: str) -> tuple[str, ...]:
+        """Return required OSes, or no OS restriction, with exact builtins first."""
+        if symbol in self.builtin_symbols:
+            return ()
+        return longest_prefix_value(symbol, self.target_os_requirements) or ()
+
+    def symbol_available_on_target(
+        self, symbol: str, *, target_arch: str | None, target_os: str | None
+    ) -> bool:
+        supported_oses = self.supported_target_oses_for_symbol(symbol)
+        return target_arch not in self.target_arch_exclusions_for_symbol(symbol) and (
+            not supported_oses or target_os in supported_oses
+        )
 
 
 def _string_list(value: object, *, field: str) -> tuple[str, ...]:
@@ -75,9 +90,11 @@ def load_intrinsic_availability(
     builtin_symbols: list[str] = []
     feature_gates: list[tuple[str, str]] = []
     target_exclusions: list[tuple[str, tuple[str, ...]]] = []
+    target_os_requirements: list[tuple[str, tuple[str, ...]]] = []
     feature_target_exclusions: dict[str, set[str]] = {}
     feature_prefix_owners: dict[str, str] = {}
     target_prefix_owners: dict[str, tuple[str, ...]] = {}
+    target_os_prefix_owners: dict[str, tuple[str, ...]] = {}
 
     builtin = data.get("builtin", {})
     if not isinstance(builtin, dict):
@@ -110,13 +127,38 @@ def load_intrinsic_availability(
                 )
 
         raw_arches = mod_data.get("unsupported_target_arches", [])
-        if raw_arches:
-            arches = _string_list(
-                raw_arches, field=f"stdlib.{mod_name}.unsupported_target_arches"
-            )
+        raw_oses = mod_data.get("supported_target_oses")
+        supported_oses: tuple[str, ...] = ()
+        target_prefixes: tuple[str, ...] = ()
+        if raw_oses is not None:
+            field = f"stdlib.{mod_name}.supported_target_oses"
+            supported_oses = _string_list(raw_oses, field=field)
+            if not supported_oses or not set(supported_oses) <= set(
+                SUPPORTED_TARGET_PLATFORMS
+            ):
+                raise TypeError(
+                    f"{field} must be a non-empty subset of "
+                    f"{SUPPORTED_TARGET_PLATFORMS!r}"
+                )
+        if raw_arches or supported_oses:
             target_prefixes = _string_list(
                 mod_data.get("target_prefixes", list(prefixes)),
                 field=f"stdlib.{mod_name}.target_prefixes",
+            )
+            if not target_prefixes:
+                raise TypeError(f"stdlib.{mod_name}.target_prefixes must not be empty")
+            for prefix in target_prefixes:
+                if supported_oses:
+                    _append_prefix_rule(
+                        target_os_requirements,
+                        target_os_prefix_owners,
+                        prefix=f"molt_{prefix}",
+                        value=supported_oses,
+                        field=f"stdlib.{mod_name}.supported_target_oses",
+                    )
+        if raw_arches:
+            arches = _string_list(
+                raw_arches, field=f"stdlib.{mod_name}.unsupported_target_arches"
             )
             for prefix in target_prefixes:
                 _append_prefix_rule(
@@ -136,6 +178,7 @@ def load_intrinsic_availability(
         builtin_symbols=tuple(dict.fromkeys(builtin_symbols)),
         feature_gates=tuple(feature_gates),
         target_arch_exclusions=tuple(target_exclusions),
+        target_os_requirements=tuple(target_os_requirements),
         feature_target_arch_exclusions=tuple(
             (feature, tuple(sorted(arches)))
             for feature, arches in sorted(feature_target_exclusions.items())

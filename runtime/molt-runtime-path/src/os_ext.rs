@@ -20,7 +20,7 @@ use crate::bridge::*;
 use molt_obj_model::MoltObject;
 use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -69,14 +69,14 @@ fn str_bits(_py: &CoreGilToken, s: &str) -> u64 {
 // 1. Directory operations
 // ---------------------------------------------------------------------------
 
-/// `os.listdir(path)` → list[str]
+/// `os.listdir(path)` → list[str] or list[bytes], matching the path flavor
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         if let Err(error) = require_operation(_py, "os.listdir", AuditArg::None) {
             return error;
         }
-        let path = match require_path(_py, path_bits, "path") {
+        let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
             Ok(p) => p,
             Err(bits) => return bits,
         };
@@ -89,15 +89,14 @@ pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
             match entry_result {
                 Ok(entry) => {
                     let name = entry.file_name();
-                    let text = name.to_string_lossy();
-                    let ptr = alloc_string(_py, text.as_bytes());
-                    if ptr.is_null() {
+                    let bits = path_result(_py, Path::new(&name), bytes_flavor);
+                    if obj_from_bits(bits).is_none() {
                         for e in &entries {
                             dec_ref_bits(_py, *e);
                         }
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
-                    entries.push(MoltObject::from_ptr(ptr).bits());
+                    entries.push(bits);
                 }
                 Err(err) => {
                     for e in &entries {
@@ -118,7 +117,7 @@ pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
     })
 }
 
-/// `os.scandir(path)` → list[tuple[str, str, bool, bool, bool]]
+/// `os.scandir(path)` → entries whose name/path match the input str/bytes flavor.
 /// Each tuple: (name, path, is_dir, is_file, is_symlink)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
@@ -126,7 +125,7 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "os.scandir", AuditArg::None) {
             return error;
         }
-        let dir_path = match require_path(_py, path_bits, "path") {
+        let (dir_path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
             Ok(p) => p,
             Err(bits) => return bits,
         };
@@ -139,9 +138,7 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
             match entry_result {
                 Ok(entry) => {
                     let name_os = entry.file_name();
-                    let name_str = name_os.to_string_lossy();
                     let full_path = entry.path();
-                    let full_str = full_path.to_string_lossy();
 
                     let meta_sym = std::fs::symlink_metadata(entry.path());
                     let is_symlink = meta_sym
@@ -152,23 +149,23 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
                     let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                     let is_file = meta.as_ref().map(|m| m.is_file()).unwrap_or(false);
 
-                    let name_ptr = alloc_string(_py, name_str.as_bytes());
-                    let path_ptr = alloc_string(_py, full_str.as_bytes());
-                    if name_ptr.is_null() || path_ptr.is_null() {
-                        if !name_ptr.is_null() {
-                            dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
-                        }
-                        if !path_ptr.is_null() {
-                            dec_ref_bits(_py, MoltObject::from_ptr(path_ptr).bits());
-                        }
+                    let name_bits = path_result(_py, Path::new(&name_os), bytes_flavor);
+                    let path_bits = if obj_from_bits(name_bits).is_none() {
+                        MoltObject::none().bits()
+                    } else {
+                        path_result(_py, &full_path, bytes_flavor)
+                    };
+                    if obj_from_bits(name_bits).is_none() || obj_from_bits(path_bits).is_none() {
+                        dec_ref_bits(_py, name_bits);
+                        dec_ref_bits(_py, path_bits);
                         for t in &tuples {
                             dec_ref_bits(_py, *t);
                         }
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return MoltObject::none().bits();
                     }
                     let elems = [
-                        MoltObject::from_ptr(name_ptr).bits(),
-                        MoltObject::from_ptr(path_ptr).bits(),
+                        name_bits,
+                        path_bits,
                         MoltObject::from_bool(is_dir).bits(),
                         MoltObject::from_bool(is_file).bits(),
                         MoltObject::from_bool(is_symlink).bits(),
@@ -203,7 +200,8 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
     })
 }
 
-/// `os.walk(top, topdown=True, followlinks=False)` → list[tuple[str, list[str], list[str]]]
+/// `os.walk(top, topdown=True, followlinks=False)` → directory/name triplets
+/// whose path components match the input str/bytes flavor.
 ///
 /// Each element: (dirpath, dirnames, filenames).
 /// We collect the full walk eagerly (no generator semantics in the intrinsic layer).
@@ -213,73 +211,35 @@ pub extern "C" fn molt_os_walk(top_bits: u64, topdown_bits: u64, followlinks_bit
         if let Err(error) = require_operation(_py, "os.walk", AuditArg::None) {
             return error;
         }
-        let top = match require_path(_py, top_bits, "top") {
+        let (top, bytes_flavor) = match path_from_bits_with_flavor(_py, top_bits) {
             Ok(p) => p,
             Err(bits) => return bits,
         };
         let topdown = is_truthy(_py, obj_from_bits(topdown_bits));
         let followlinks = is_truthy(_py, obj_from_bits(followlinks_bits));
 
-        let mut results: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+        let mut results: Vec<(PathBuf, Vec<PathBuf>, Vec<PathBuf>)> = Vec::new();
         walk_dir_collect(&top, topdown, followlinks, &mut results);
 
         let mut triplets: Vec<u64> = Vec::with_capacity(results.len());
         for (dirpath, dirnames, filenames) in &results {
-            let dp_ptr = alloc_string(_py, dirpath.as_bytes());
-            if dp_ptr.is_null() {
-                for t in &triplets {
-                    dec_ref_bits(_py, *t);
-                }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            let mut elems = [MoltObject::none().bits(); 3];
+            elems[0] = path_result(_py, dirpath, bytes_flavor);
+            if !obj_from_bits(elems[0]).is_none() {
+                elems[1] = path_list_result(_py, dirnames, bytes_flavor);
             }
-            let dn_bits: Vec<u64> = dirnames
-                .iter()
-                .filter_map(|s| {
-                    let p = alloc_string(_py, s.as_bytes());
-                    if p.is_null() {
-                        None
-                    } else {
-                        Some(MoltObject::from_ptr(p).bits())
-                    }
-                })
-                .collect();
-            let fn_bits: Vec<u64> = filenames
-                .iter()
-                .filter_map(|s| {
-                    let p = alloc_string(_py, s.as_bytes());
-                    if p.is_null() {
-                        None
-                    } else {
-                        Some(MoltObject::from_ptr(p).bits())
-                    }
-                })
-                .collect();
-            let dn_list = alloc_list(_py, &dn_bits);
-            let fn_list = alloc_list(_py, &fn_bits);
-            for b in &dn_bits {
-                dec_ref_bits(_py, *b);
+            if !obj_from_bits(elems[1]).is_none() {
+                elems[2] = path_list_result(_py, filenames, bytes_flavor);
             }
-            for b in &fn_bits {
-                dec_ref_bits(_py, *b);
+            if elems.iter().any(|bits| obj_from_bits(*bits).is_none()) {
+                for bits in elems {
+                    dec_ref_bits(_py, bits);
+                }
+                for bits in triplets {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
             }
-            if dn_list.is_null() || fn_list.is_null() {
-                if !dn_list.is_null() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(dn_list).bits());
-                }
-                if !fn_list.is_null() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(fn_list).bits());
-                }
-                dec_ref_bits(_py, MoltObject::from_ptr(dp_ptr).bits());
-                for t in &triplets {
-                    dec_ref_bits(_py, *t);
-                }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            let elems = [
-                MoltObject::from_ptr(dp_ptr).bits(),
-                MoltObject::from_ptr(dn_list).bits(),
-                MoltObject::from_ptr(fn_list).bits(),
-            ];
             let tup_ptr = alloc_tuple(_py, &elems);
             for e in &elems {
                 dec_ref_bits(_py, *e);
@@ -303,23 +263,46 @@ pub extern "C" fn molt_os_walk(top_bits: u64, topdown_bits: u64, followlinks_bit
     })
 }
 
+fn path_list_result(py: &CoreGilToken, paths: &[PathBuf], bytes: bool) -> u64 {
+    let mut values = Vec::with_capacity(paths.len());
+    for path in paths {
+        let bits = path_result(py, path, bytes);
+        if obj_from_bits(bits).is_none() {
+            for value in values {
+                dec_ref_bits(py, value);
+            }
+            return bits;
+        }
+        values.push(bits);
+    }
+    let pointer = alloc_list(py, &values);
+    for value in values {
+        dec_ref_bits(py, value);
+    }
+    if pointer.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(pointer).bits()
+    }
+}
+
 /// Recursive walk helper (pure Rust, no GIL calls).
 fn walk_dir_collect(
     dir: &Path,
     topdown: bool,
     followlinks: bool,
-    out: &mut Vec<(String, Vec<String>, Vec<String>)>,
+    out: &mut Vec<(PathBuf, Vec<PathBuf>, Vec<PathBuf>)>,
 ) {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(_) => return,
     };
-    let mut dirnames: Vec<String> = Vec::new();
-    let mut filenames: Vec<String> = Vec::new();
+    let mut dirnames: Vec<PathBuf> = Vec::new();
+    let mut filenames: Vec<PathBuf> = Vec::new();
     let mut subdirs: Vec<PathBuf> = Vec::new();
     for entry_result in rd {
         let Ok(entry) = entry_result else { continue };
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = PathBuf::from(entry.file_name());
         let path = entry.path();
         let meta = if followlinks {
             std::fs::metadata(&path)
@@ -334,7 +317,7 @@ fn walk_dir_collect(
             filenames.push(name.clone());
         }
     }
-    let dirpath = dir.to_string_lossy().into_owned();
+    let dirpath = dir.to_path_buf();
     if topdown {
         out.push((dirpath, dirnames.clone(), filenames));
         for sub in &subdirs {
@@ -356,10 +339,7 @@ pub extern "C" fn molt_os_getcwd() -> u64 {
             return error;
         }
         match std::env::current_dir() {
-            Ok(path) => {
-                let text = path.to_string_lossy();
-                str_bits(_py, &text)
-            }
+            Ok(path) => path_result(_py, &path, false),
             Err(err) => os_err_bits(_py, err, "getcwd"),
         }
     })
@@ -464,55 +444,25 @@ pub extern "C" fn molt_os_removedirs(path_bits: u64) -> u64 {
 // 2. File operations
 // ---------------------------------------------------------------------------
 
-/// `os.access(path, mode)` → bool
-/// mode: F_OK=0, X_OK=1, W_OK=2, R_OK=4  (POSIX standard values)
+/// `os.access(path, mode)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.access", AuditArg::None) {
+    molt_runtime_core::with_core_gil!(py, {
+        if let Err(error) = require_operation(py, "os.access", AuditArg::None) {
             return error;
         }
-        let path = match require_path(_py, path_bits, "path") {
-            Ok(p) => p,
-            Err(bits) => return bits,
+        let path = match require_path(py, path_bits, "path") {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0) as u32;
-        // F_OK: existence
-        let meta = std::fs::metadata(&path);
-        if meta.is_err() {
-            return MoltObject::from_bool(false).bits();
+        if path.as_os_str().as_encoded_bytes().contains(&0) {
+            return raise_exception::<u64>(py, "ValueError", "embedded null byte");
         }
-        let meta = meta.unwrap();
-        // On WASM or Windows we approximate using std metadata.
-        #[cfg(unix)]
-        {
-            // X_OK=1, W_OK=2, R_OK=4
-            let perms = meta.permissions();
-            use std::os::unix::fs::PermissionsExt;
-            let m = perms.mode();
-            // Check against effective user — we use a simplified owner check.
-            // For production correctness this calls libc::access.
-            let path_c = match std::ffi::CString::new(path.to_string_lossy().as_bytes()) {
-                Ok(c) => c,
-                Err(_) => return MoltObject::from_bool(false).bits(),
-            };
-            let rc = unsafe { libc::access(path_c.as_ptr(), mode as libc::c_int) };
-            let _ = m;
-            MoltObject::from_bool(rc == 0).bits()
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = meta;
-            // Windows: approximate - F_OK already succeeded via metadata.
-            if mode == 0 {
-                return MoltObject::from_bool(true).bits();
-            }
-            // W_OK: check read-only flag
-            if mode & 2 != 0 && meta.permissions().readonly() {
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(true).bits()
-        }
+        let mode = match index_c_int_from_obj(py, mode_bits) {
+            Some(mode) => mode,
+            None => return MoltObject::none().bits(),
+        };
+        MoltObject::from_bool(molt_runtime_platform::path_text::path_access(&path, mode)).bits()
     })
 }
 
@@ -640,19 +590,19 @@ pub extern "C" fn molt_os_symlink(_src_bits: u64, _dst_bits: u64) -> u64 {
     })
 }
 
-/// `os.readlink(path)` → str
+/// `os.readlink(path)` → str or bytes, matching the path flavor
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_readlink(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         if let Err(error) = require_operation(_py, "os.readlink", AuditArg::None) {
             return error;
         }
-        let path = match require_path(_py, path_bits, "path") {
+        let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
             Ok(p) => p,
             Err(bits) => return bits,
         };
         match std::fs::read_link(&path) {
-            Ok(target) => str_bits(_py, &target.to_string_lossy()),
+            Ok(target) => path_result(_py, &target, bytes_flavor),
             Err(err) => os_err_bits(_py, err, "readlink"),
         }
     })
@@ -1113,10 +1063,10 @@ pub extern "C" fn molt_os_umask(_mask_bits: u64) -> u64 {
 // 4. os.path operations not yet in io.rs
 // ---------------------------------------------------------------------------
 
-/// `os.path.commonpath(paths)` → str
+/// `os.path.commonpath(paths)` → str or bytes, matching the path flavor
 /// All paths must share a common root; raises ValueError if they do not.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_commonpath(paths_bits: u64) -> u64 {
+pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let paths_obj = obj_from_bits(paths_bits);
         if paths_obj.is_none() {
@@ -1126,7 +1076,9 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64) -> u64 {
                 "commonpath() arg is an empty sequence",
             );
         }
-        let paths: Vec<PathBuf> = {
+        let windows_utf16 = cfg!(windows) && is_truthy(_py, obj_from_bits(windows_utf16_bits));
+        let mut bytes_flavor = None;
+        let paths: Vec<(Vec<u8>, (usize, usize))> = {
             let Some(ptr) = paths_obj.as_ptr() else {
                 return raise_exception::<_>(_py, "TypeError", "paths must be iterable");
             };
@@ -1142,49 +1094,168 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64) -> u64 {
                     "commonpath() arg is an empty sequence",
                 );
             }
-            let mut out = Vec::with_capacity(elems.len());
+            let mut values = Vec::with_capacity(elems.len());
             for &bits in elems.iter() {
-                match path_from_bits(_py, bits) {
-                    Ok(p) => out.push(p),
-                    Err(bits) => return bits,
+                let value = fspath_bits(bits);
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                values.push(unsafe { ProtectedRuntimeValue::from_owned_bits(_py, value) });
+            }
+            let mut out = Vec::with_capacity(values.len());
+            for owner in &values {
+                let value = owner.bits();
+                let is_bytes = unsafe {
+                    object_type_id(obj_from_bits(value).as_ptr().expect("fspath str/bytes"))
+                } == TYPE_ID_BYTES;
+                // A mixed component fails at replace, before its splitroot codec.
+                // Earlier same-flavor codec failures still take precedence.
+                if bytes_flavor.is_some_and(|previous| previous != is_bytes) {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "Can't mix strings and bytes in path components",
+                    );
+                }
+                bytes_flavor = Some(is_bytes);
+                let raw = if windows_utf16 {
+                    let converted = path_from_bits_with_flavor(_py, value);
+                    match converted {
+                        Ok((path, bytes)) => (path.into_os_string().into_encoded_bytes(), bytes),
+                        Err(error) => return error,
+                    }
+                } else if let Some(text) = string_obj_bytes(obj_from_bits(value)) {
+                    (text, false)
+                } else {
+                    let pointer = obj_from_bits(value).as_ptr().expect("fspath str/bytes");
+                    (
+                        unsafe { bytes_like_slice(pointer) }
+                            .expect("fspath bytes")
+                            .to_vec(),
+                        true,
+                    )
+                };
+                let coordinate = if windows_utf16 {
+                    molt_runtime_platform::path_text::PathCoordinate::WindowsUtf16
+                } else if raw.1 {
+                    molt_runtime_platform::path_text::PathCoordinate::Bytes
+                } else {
+                    molt_runtime_platform::path_text::PathCoordinate::PythonCodePoints
+                };
+                let offsets = molt_runtime_platform::path_text::path_root_offsets(
+                    &raw.0,
+                    std::path::MAIN_SEPARATOR as u8,
+                    coordinate,
+                );
+                if windows_utf16 && raw.1 {
+                    // Preserve the actual codec-projected byte pieces, not merely
+                    // offsets into potentially noncanonical input spellings.
+                    let mut projected = Vec::new();
+                    let mut projected_offsets = [0; 2];
+                    for (index, part) in [
+                        &raw.0[..offsets.0],
+                        &raw.0[offsets.0..offsets.1],
+                        &raw.0[offsets.1..],
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let value = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(part) };
+                        let bits = path_result(_py, Path::new(value), true);
+                        let owner = unsafe { ProtectedRuntimeValue::from_owned_bits(_py, bits) };
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
+                        let pointer = obj_from_bits(owner.bits())
+                            .as_ptr()
+                            .expect("path bytes result");
+                        projected.extend_from_slice(
+                            unsafe { bytes_like_slice(pointer) }.expect("path bytes result"),
+                        );
+                        if index < 2 {
+                            projected_offsets[index] = projected.len();
+                        }
+                    }
+                    out.push((projected, (projected_offsets[0], projected_offsets[1])));
+                } else {
+                    out.push((raw.0, offsets));
                 }
             }
             out
         };
         match common_path_impl(&paths) {
-            Some(common) => str_bits(_py, &common.to_string_lossy()),
+            Some(common) => {
+                let pointer = if bytes_flavor == Some(true) {
+                    alloc_bytes(_py, &common)
+                } else {
+                    alloc_string(_py, &common)
+                };
+                if pointer.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(pointer).bits()
+                }
+            }
             None => raise_exception::<_>(_py, "ValueError", "paths have different drives or roots"),
         }
     })
 }
 
-fn common_path_impl(paths: &[PathBuf]) -> Option<PathBuf> {
-    if paths.is_empty() {
-        return None;
-    }
-    // Collect component lists for each path.
-    let component_lists: Vec<Vec<Component<'_>>> =
-        paths.iter().map(|p| p.components().collect()).collect();
-    // Find the minimum length prefix that all paths share.
-    let min_len = component_lists.iter().map(|c| c.len()).min().unwrap_or(0);
-    let mut common: Vec<Component<'_>> = Vec::new();
-    'outer: for i in 0..min_len {
-        let first = &component_lists[0][i];
-        for comps in component_lists.iter().skip(1) {
-            if comps[i] != *first {
-                break 'outer;
+fn common_path_impl(paths: &[(Vec<u8>, (usize, usize))]) -> Option<Vec<u8>> {
+    let sep = std::path::MAIN_SEPARATOR as u8;
+    let normalized: Vec<Vec<u8>> = paths
+        .iter()
+        .map(|(path, _)| {
+            path.iter()
+                .map(|&byte| {
+                    if sep == b'\\' && byte == b'/' {
+                        sep
+                    } else {
+                        byte
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let mut components = Vec::with_capacity(paths.len());
+    let mut anchor: Option<(&[u8], bool)> = None;
+    for (path, (_, (drive, root))) in normalized.iter().zip(paths) {
+        let (drive, root) = (*drive, *root);
+        let current = (&path[..drive], root != drive);
+        if let Some(previous) = anchor {
+            if previous.0 != current.0 || previous.1 != current.1 {
+                return None;
             }
+        } else {
+            anchor = Some(current);
         }
-        common.push(*first);
+        components.push(
+            path[root..]
+                .split(|&byte| byte == sep)
+                .filter(|part| !part.is_empty() && *part != b".")
+                .collect::<Vec<_>>(),
+        );
     }
-    if common.is_empty() {
-        return None;
+    let (drive, rooted) = anchor?;
+    let first = components.first()?;
+    let count = (0..first.len())
+        .take_while(|&index| {
+            components
+                .iter()
+                .all(|parts| parts.get(index) == Some(&first[index]))
+        })
+        .count();
+    let mut out = drive.to_vec();
+    if rooted {
+        out.push(sep);
     }
-    let mut result = PathBuf::new();
-    for c in common {
-        result.push(c);
+    for (index, part) in first[..count].iter().enumerate() {
+        if index != 0 {
+            out.push(sep);
+        }
+        out.extend_from_slice(part);
     }
-    Some(result)
+    Some(out)
 }
 
 /// `os.path.commonprefix(paths)` → str
@@ -1520,14 +1591,26 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
         if let Err(error) = require_operation(_py, "os.lseek", AuditArg::None) {
             return error;
         }
-        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+        let Some(fd) = index_c_int_from_obj(_py, fd_bits) else {
+            return MoltObject::none().bits();
         };
-        let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pos must be an integer");
+        let Some(pos) = index_i64_checked_from_obj(_py, pos_bits) else {
+            return MoltObject::none().bits();
         };
-        let Some(how) = to_i64(obj_from_bits(how_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "how must be an integer");
+        #[cfg(unix)]
+        let pos = {
+            let host_pos = pos as libc::off_t;
+            if i128::from(host_pos) != i128::from(pos) {
+                return raise_exception::<_>(
+                    _py,
+                    "OverflowError",
+                    "Python int too large to convert to C off_t",
+                );
+            }
+            host_pos
+        };
+        let Some(how) = index_c_int_from_obj(_py, how_bits) else {
+            return MoltObject::none().bits();
         };
         if fd < 0 {
             return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "lseek");
@@ -1540,26 +1623,24 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
         #[cfg(not(target_arch = "wasm32"))]
         {
             #[cfg(unix)]
-            let result =
-                unsafe { libc::lseek(fd as libc::c_int, pos as libc::off_t, how as libc::c_int) };
+            let result = unsafe { libc::lseek(fd, pos, how) };
             #[cfg(windows)]
-            let result = unsafe {
-                libc::lseek64(
-                    fd as libc::c_int,
-                    pos as libc::c_longlong,
-                    how as libc::c_int,
-                )
-            };
+            let result = unsafe { libc::lseek64(fd, pos, how) };
             #[cfg(not(any(unix, windows)))]
             let result = -1;
             if result == -1 {
+                #[cfg(windows)]
+                let err = std::io::Error::from_raw_os_error(unsafe {
+                    *molt_runtime_platform::windows_abi::_errno()
+                });
+                #[cfg(not(windows))]
                 let err = std::io::Error::last_os_error();
                 if let Some(errno) = err.raw_os_error() {
                     return raise_os_error_errno::<u64>(_py, errno as i64, "lseek");
                 }
                 return raise_os_error::<u64>(_py, err, "lseek");
             }
-            MoltObject::from_int(result as i64).bits()
+            rt_int(result as i64)
         }
     })
 }
@@ -1965,19 +2046,19 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
 // Filesystem operations (Phase 2)
 // ---------------------------------------------------------------------------
 
-/// `os.path.realpath(path)` → str — resolve path following symlinks
+/// `os.path.realpath(path)` → str or bytes, matching the path flavor — resolve path following symlinks
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         if let Err(error) = require_operation(_py, "os.path.realpath", AuditArg::None) {
             return error;
         }
-        let path = match require_path(_py, path_bits, "path") {
+        let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
             Ok(p) => p,
             Err(bits) => return bits,
         };
         match std::fs::canonicalize(&path) {
-            Ok(resolved) => str_bits(_py, &resolved.to_string_lossy()),
+            Ok(resolved) => path_result(_py, &resolved, bytes_flavor),
             Err(err) => os_err_bits(_py, err, "realpath"),
         }
     })
@@ -2006,7 +2087,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
         {
             use std::ffi::CString;
 
-            let c_path = match CString::new(path.to_string_lossy().as_bytes()) {
+            let c_path = match CString::new(path.as_os_str().as_encoded_bytes()) {
                 Ok(c) => c,
                 Err(_) => {
                     return raise_exception::<_>(_py, "ValueError", "path contains null byte");
@@ -2367,7 +2448,7 @@ fn at_resolve_dir_fd(_py: &CoreGilToken, dir_fd_bits: u64) -> Result<libc::c_int
     }
 }
 
-/// `os.readlink(path, dir_fd=...)` → str — directory-relative readlink.
+/// `os.readlink(path, dir_fd=...)` → str or bytes, matching the path flavor.
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
@@ -2375,7 +2456,7 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "os.readlink_at", AuditArg::None) {
             return error;
         }
-        let path = match require_path(_py, path_bits, "path") {
+        let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
             Ok(p) => p,
             Err(bits) => return bits,
         };
@@ -2407,7 +2488,9 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
                 let n = rc as usize;
                 if n < cap {
                     buf.truncate(n);
-                    return str_bits(_py, &String::from_utf8_lossy(&buf));
+                    use std::os::unix::ffi::OsStringExt;
+                    let path = PathBuf::from(std::ffi::OsString::from_vec(buf));
+                    return path_result(_py, &path, bytes_flavor);
                 }
                 cap *= 2;
             }
@@ -2796,52 +2879,6 @@ pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 // 9. Tier-0 gaps for click / trio / httpx support
 // ---------------------------------------------------------------------------
-
-/// `os.environ` → dict[str, str]  (snapshot of the process environment)
-///
-/// Returns a new dict each call; the Python wrapper caches it in `os.environ`
-/// and keeps it synchronised via `os.putenv` / `os.unsetenv`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_environ() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "os.environ", AuditArg::None) {
-            return error;
-        }
-        let vars: Vec<(String, String)> = std::env::vars().collect();
-        let mut pairs: Vec<u64> = Vec::with_capacity(vars.len() * 2);
-        let mut owned: Vec<u64> = Vec::with_capacity(vars.len() * 2);
-        for (key, value) in &vars {
-            let k_ptr = alloc_string(_py, key.as_bytes());
-            let v_ptr = alloc_string(_py, value.as_bytes());
-            if k_ptr.is_null() || v_ptr.is_null() {
-                if !k_ptr.is_null() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(k_ptr).bits());
-                }
-                if !v_ptr.is_null() {
-                    dec_ref_bits(_py, MoltObject::from_ptr(v_ptr).bits());
-                }
-                for bits in &owned {
-                    dec_ref_bits(_py, *bits);
-                }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
-            }
-            let k_bits = MoltObject::from_ptr(k_ptr).bits();
-            let v_bits = MoltObject::from_ptr(v_ptr).bits();
-            pairs.push(k_bits);
-            pairs.push(v_bits);
-            owned.push(k_bits);
-            owned.push(v_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in &owned {
-            dec_ref_bits(_py, *bits);
-        }
-        if dict_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
-        }
-        MoltObject::from_ptr(dict_ptr).bits()
-    })
-}
 
 /// `os.makedirs(name, mode=0o777, exist_ok=False)` → None
 ///

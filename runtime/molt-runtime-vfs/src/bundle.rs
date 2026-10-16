@@ -50,14 +50,6 @@ impl BundleFs {
         Ok(Self { files, dirs })
     }
 
-    /// Create from raw tar bytes.
-    /// Rejects symlinks and paths containing ".." (traversal protection).
-    #[cfg(feature = "vfs_bundle_tar")]
-    pub fn from_tar(tar_bytes: &[u8]) -> Result<Self, String> {
-        let mut quota = VfsLoadQuota::from_env();
-        Self::from_tar_with_quota(tar_bytes, &mut quota)
-    }
-
     /// Create from raw tar bytes with cumulative load quota enforcement.
     #[cfg(feature = "vfs_bundle_tar")]
     pub(crate) fn from_tar_with_quota(

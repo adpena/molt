@@ -5,6 +5,7 @@ from __future__ import annotations
 import abc as _abc
 import sys as _sys
 import types as _types
+from _collections_abc import MutableMapping as _MutableMapping, Mapping as _Mapping
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
@@ -22,19 +23,19 @@ else:
 
     Any = object
     Iterator = _TypingAlias()
-    ItemsView = _TypingAlias()
-    KeysView = _TypingAlias()
-    ValuesView = _TypingAlias()
 
 
-_MOLT_ENV_GET = _require_intrinsic("molt_env_get")
-_MOLT_ENV_SNAPSHOT = _require_intrinsic("molt_env_snapshot")
-_MOLT_ENV_SET = _require_intrinsic("molt_env_set")
-_MOLT_ENV_UNSET = _require_intrinsic("molt_env_unset")
-_MOLT_ENV_LEN = _require_intrinsic("molt_env_len")
-_MOLT_ENV_CONTAINS = _require_intrinsic("molt_env_contains")
-_MOLT_ENV_POPITEM = _require_intrinsic("molt_env_popitem")
-_MOLT_ENV_CLEAR = _require_intrinsic("molt_env_clear")
+_MOLT_SYS_VERSION_INFO = _require_intrinsic("molt_sys_version_info")
+_RUNTIME_VERSION = _MOLT_SYS_VERSION_INFO()
+_PYTHON_313 = _RUNTIME_VERSION >= (3, 13)
+
+_MOLT_ENV_MAPPING_INIT = _require_intrinsic("molt_env_mapping_init")
+_MOLT_ENV_MAPPING_GET = _require_intrinsic("molt_env_mapping_get")
+_MOLT_ENV_MAPPING_SET = _require_intrinsic("molt_env_mapping_set")
+_MOLT_ENV_MAPPING_DELETE = _require_intrinsic("molt_env_mapping_delete")
+_MOLT_ENV_MAPPING_KEYS = _require_intrinsic("molt_env_mapping_keys")
+_MOLT_ENV_MAPPING_LEN = _require_intrinsic("molt_env_mapping_len")
+_MOLT_ENV_MAPPING_ITEMS_ITER = _require_intrinsic("molt_env_mapping_items_iter")
 _MOLT_ENV_PUTENV = _require_intrinsic("molt_env_putenv")
 _MOLT_ENV_UNSETENV = _require_intrinsic("molt_env_unsetenv")
 _MOLT_OS_NAME = _require_intrinsic("molt_os_name")
@@ -49,7 +50,6 @@ _MOLT_PATH_SPLITEXT = _require_intrinsic("molt_path_splitext")
 _MOLT_PATH_NORMPATH = _require_intrinsic("molt_path_normpath")
 _MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath")
 _MOLT_PATH_RELPATH = _require_intrinsic("molt_path_relpath")
-_MOLT_PATH_EXPANDUSER = _require_intrinsic("molt_path_expanduser")
 _MOLT_PATH_MAKEDIRS = _require_intrinsic("molt_path_makedirs")
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir")
 _MOLT_PATH_ISFILE = _require_intrinsic("molt_path_isfile")
@@ -68,7 +68,6 @@ _MOLT_OS_ACCESS = _require_intrinsic("molt_os_access")
 _MOLT_OS_CHDIR = _require_intrinsic("molt_os_chdir")
 _MOLT_OS_CPU_COUNT = _require_intrinsic("molt_os_cpu_count")
 _MOLT_OS_LINK = _require_intrinsic("molt_os_link")
-_MOLT_OS_ENVIRON = _require_intrinsic("molt_os_environ")
 _MOLT_OS_MAKEDIRS = _require_intrinsic("molt_os_makedirs")
 _MOLT_OS_PATH_EXISTS = _require_intrinsic("molt_os_path_exists")
 _MOLT_OS_PATH_ISFILE = _require_intrinsic("molt_os_path_isfile")
@@ -102,6 +101,7 @@ _MOLT_OS_PATH_REALPATH = _require_intrinsic("molt_os_path_realpath")
 _MOLT_OS_UTIME = _require_intrinsic("molt_os_utime")
 _MOLT_OS_SENDFILE = _require_intrinsic("molt_os_sendfile")
 _MOLT_OS_PATH_COMMONPATH = _require_intrinsic("molt_os_path_commonpath")
+_MOLT_PATH_SPLITROOT = _require_intrinsic("molt_path_splitroot")
 _MOLT_OS_PATH_COMMONPREFIX = _require_intrinsic("molt_os_path_commonprefix")
 _MOLT_OS_PATH_GETATIME = _require_intrinsic("molt_os_path_getatime")
 _MOLT_OS_PATH_GETCTIME = _require_intrinsic("molt_os_path_getctime")
@@ -124,8 +124,8 @@ _MOLT_OS_RMDIR_V2 = _require_intrinsic("molt_os_rmdir")
 _MOLT_OS_CHMOD_V2 = _require_intrinsic("molt_os_chmod")
 _MOLT_OS_SYMLINK_V2 = _require_intrinsic("molt_os_symlink")
 _MOLT_OS_READLINK_V2 = _require_intrinsic("molt_os_readlink")
-_MOLT_PATH_EXPANDVARS = _require_intrinsic("molt_path_expandvars")
 _MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require")
+_MOLT_REQUIRE_OPERATION = _require_intrinsic("molt_capabilities_require_operation")
 _MOLT_OS_WIFEXITED = _require_intrinsic("molt_os_wifexited")
 _MOLT_OS_WEXITSTATUS = _require_intrinsic("molt_os_wexitstatus")
 _MOLT_OS_WIFSIGNALED = _require_intrinsic("molt_os_wifsignaled")
@@ -261,6 +261,7 @@ __all__ = [
 ]
 
 name = _resolve_os_name()
+_WINDOWS_UTF16_ROOT = name == "nt" and _PYTHON_313
 sep = _MOLT_OS_SEP()
 altsep = _MOLT_OS_ALTSEP()
 curdir = _MOLT_OS_CURDIR()
@@ -351,9 +352,6 @@ _ENV_MISSING = object()
 
 if TYPE_CHECKING:
 
-    def molt_env_get(key: str, default: Any = None) -> Any:
-        return default
-
     def _molt_getcwd() -> str:
         return curdir
 
@@ -365,87 +363,6 @@ if TYPE_CHECKING:
 
     def _molt_path_rmdir(path: Any) -> None:
         return None
-
-
-def _molt_env_get(key: str, default: Any = None) -> Any:
-    return _MOLT_ENV_GET(key, default)
-
-
-def _molt_env_snapshot() -> dict[str, str]:
-    # Prefer the new consolidated intrinsic when available.
-    if callable(_MOLT_OS_ENVIRON):
-        raw = _MOLT_OS_ENVIRON()
-        if isinstance(raw, dict):
-            out: dict[str, str] = {}
-            for key, value in raw.items():
-                if not isinstance(key, str) or not isinstance(value, str):
-                    raise RuntimeError(
-                        "os env snapshot intrinsic returned invalid value"
-                    )
-                out[key] = value
-            return out
-        # The Rust side may return a flat list of [k, v, k, v, ...].
-        if isinstance(raw, (list, tuple)):
-            out2: dict[str, str] = {}
-            it = iter(raw)
-            for k in it:
-                v = next(it)
-                if not isinstance(k, str) or not isinstance(v, str):
-                    raise RuntimeError(
-                        "os env snapshot intrinsic returned invalid value"
-                    )
-                out2[k] = v
-            return out2
-    # Fallback to the legacy snapshot intrinsic.
-    raw_legacy = _MOLT_ENV_SNAPSHOT()
-    if not isinstance(raw_legacy, dict):
-        raise RuntimeError("os env snapshot intrinsic returned invalid value")
-    out3: dict[str, str] = {}
-    for key, value in raw_legacy.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise RuntimeError("os env snapshot intrinsic returned invalid value")
-        out3[key] = value
-    return out3
-
-
-def _molt_env_set(key: str, value: str) -> None:
-    _MOLT_ENV_SET(key, value)
-
-
-def _molt_env_unset(key: str) -> bool:
-    return bool(_MOLT_ENV_UNSET(key))
-
-
-def _molt_env_len() -> int:
-    return int(_MOLT_ENV_LEN())
-
-
-def _molt_env_contains(key: str) -> bool:
-    return bool(_MOLT_ENV_CONTAINS(key))
-
-
-def _molt_env_popitem() -> tuple[str, str]:
-    value = _MOLT_ENV_POPITEM()
-    if (
-        isinstance(value, (tuple, list))
-        and len(value) == 2
-        and isinstance(value[0], str)
-        and isinstance(value[1], str)
-    ):
-        return value[0], value[1]
-    raise RuntimeError("os env popitem intrinsic returned invalid value")
-
-
-def _molt_env_clear() -> None:
-    _MOLT_ENV_CLEAR()
-
-
-def _molt_env_putenv(key: str, value: str) -> None:
-    _MOLT_ENV_PUTENV(key, value)
-
-
-def _molt_env_unsetenv(key: str) -> None:
-    _MOLT_ENV_UNSETENV(key)
 
 
 def _require_cap(name: str) -> None:
@@ -669,8 +586,8 @@ class DirEntry:
 
     def __init__(
         self,
-        name: str,
-        path: str,
+        name: str | bytes,
+        path: str | bytes,
         is_dir: bool,
         is_file: bool,
         is_symlink: bool,
@@ -704,121 +621,145 @@ class DirEntry:
     def __repr__(self) -> str:
         return f"<DirEntry {self.name!r}>"
 
-    def __fspath__(self) -> str:
+    def __fspath__(self) -> str | bytes:
         return self.path
 
 
-class _Environ:
-    def _check_key(self, key: Any) -> str:
-        if not isinstance(key, str):
-            raise TypeError(f"str expected, not {type(key).__name__}")
-        return key
+class _Environ(_MutableMapping):
+    # Codecs remain ordinary Python attributes; storage is exclusively runtime
+    # owned so neither this facade nor a view can expose an unchecked dict.
+    def __init__(self, encodekey, decodekey, encodevalue, decodevalue):
+        self.encodekey = encodekey
+        self.decodekey = decodekey
+        self.encodevalue = encodevalue
+        self.decodevalue = decodevalue
 
-    def _check_value(self, value: Any) -> str:
-        if not isinstance(value, str):
-            raise TypeError(f"str expected, not {type(value).__name__}")
-        return value
+    def __getitem__(self, key):
+        _MOLT_REQUIRE_OPERATION("env.get")
+        try:
+            value = _MOLT_ENV_MAPPING_GET(self.encodekey(key))
+        except KeyError:
+            raise KeyError(key) from None
+        return self.decodevalue(value)
 
-    def __getitem__(self, key: str) -> str:
-        _require_cap("env.read")
-        key = self._check_key(key)
-        value = _molt_env_get(key, _ENV_MISSING)
-        if value is not _ENV_MISSING:
-            return value
-        raise KeyError(key)
+    def __setitem__(self, key, value):
+        _MOLT_REQUIRE_OPERATION("env.set")
+        key = self.encodekey(key)
+        value = self.encodevalue(value)
+        _MOLT_ENV_MAPPING_SET(key, value)
 
-    def __setitem__(self, key: str, value: str) -> None:
-        _require_cap("env.write")
-        key = self._check_key(key)
-        value = self._check_value(value)
-        _molt_env_set(key, value)
+    def __delitem__(self, key):
+        _MOLT_REQUIRE_OPERATION("env.unset")
+        encodedkey = self.encodekey(key)
+        try:
+            _MOLT_ENV_MAPPING_DELETE(encodedkey)
+        except KeyError:
+            raise KeyError(key) from None
 
-    def __delitem__(self, key: str) -> None:
-        _require_cap("env.write")
-        key = self._check_key(key)
-        if not _molt_env_unset(key):
-            raise KeyError(key)
+    def __iter__(self):
+        # A generator captures only encoded key references at first advance.
+        # Decoding stays per-yield; view construction performs no snapshot.
+        _MOLT_REQUIRE_OPERATION("env.keys")
+        keys = _MOLT_ENV_MAPPING_KEYS()
+        for key in keys:
+            yield self.decodekey(key)
 
-    def __iter__(self) -> Iterator[str]:
-        _require_cap("env.read")
-        return iter(_molt_env_snapshot())
+    def __len__(self):
+        _MOLT_REQUIRE_OPERATION("env.len")
+        return _MOLT_ENV_MAPPING_LEN()
 
-    def __len__(self) -> int:
-        _require_cap("env.read")
-        return _molt_env_len()
+    def __repr__(self):
+        _MOLT_REQUIRE_OPERATION("env.snapshot")
+        formatted_items = ", ".join(
+            f"{self.decodekey(key)!r}: {self.decodevalue(value)!r}"
+            for key, value in _MOLT_ENV_MAPPING_ITEMS_ITER()
+        )
+        return f"environ({{{formatted_items}}})"
 
-    def __contains__(self, key: object) -> bool:
-        _require_cap("env.read")
-        key = self._check_key(key)
-        return _molt_env_contains(key)
+    def copy(self):
+        _MOLT_REQUIRE_OPERATION("env.snapshot")
+        return dict(self)
 
-    def __repr__(self) -> str:
-        return "environ(" + repr(self.copy()) + ")"
-
-    def copy(self) -> dict[str, str]:
-        _require_cap("env.read")
-        return _molt_env_snapshot()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        _require_cap("env.read")
-        key = self._check_key(key)
-        value = _molt_env_get(key, _ENV_MISSING)
-        if value is not _ENV_MISSING:
-            return value
-        return default
-
-    def setdefault(self, key: str, default: Any = None) -> str:
-        _require_cap("env.write")
-        key = self._check_key(key)
-        default = self._check_value(default)
-        value = _molt_env_get(key, _ENV_MISSING)
-        if value is not _ENV_MISSING:
-            return value
-        self[key] = default
-        return default
-
-    def update(self, other: Any = None, /, **kwargs: str) -> None:
-        _require_cap("env.write")
-        if other is not None:
-            if hasattr(other, "items"):
-                for key, value in other.items():
-                    self[key] = value
-            else:
-                for key, value in other:
-                    self[key] = value
-        for key, value in kwargs.items():
+    def setdefault(self, key, value):
+        _MOLT_REQUIRE_OPERATION("env.setdefault")
+        if key not in self:
             self[key] = value
+        return self[key]
 
-    def pop(self, key: str, default: Any = _ENV_MISSING) -> Any:
-        _require_cap("env.write")
-        key = self._check_key(key)
-        value = _molt_env_get(key, _ENV_MISSING)
-        if value is not _ENV_MISSING:
-            _molt_env_unset(key)
-            return value
+    def pop(self, key, default=_ENV_MISSING):
+        _MOLT_REQUIRE_OPERATION("env.pop")
         if default is _ENV_MISSING:
-            raise KeyError(key)
-        return default
+            return _MutableMapping.pop(self, key)
+        return _MutableMapping.pop(self, key, default)
 
-    def popitem(self) -> tuple[str, str]:
-        _require_cap("env.write")
-        return _molt_env_popitem()
+    def popitem(self):
+        _MOLT_REQUIRE_OPERATION("env.popitem")
+        return _MutableMapping.popitem(self)
 
-    def clear(self) -> None:
-        _require_cap("env.write")
-        _molt_env_clear()
+    def clear(self):
+        _MOLT_REQUIRE_OPERATION("env.clear")
+        return _MutableMapping.clear(self)
 
-    def items(self) -> ItemsView[str, str]:
-        _require_cap("env.read")
-        return _molt_env_snapshot().items()
+    def update(self, other=(), /, **kwargs):
+        _MOLT_REQUIRE_OPERATION("env.set")
+        return _MutableMapping.update(self, other, **kwargs)
 
-    def keys(self) -> KeysView[str]:
-        _require_cap("env.read")
-        return _molt_env_snapshot().keys()
+    def keys(self):
+        _MOLT_REQUIRE_OPERATION("env.keys")
+        return _MutableMapping.keys(self)
 
-    def values(self) -> ValuesView[str]:
-        _require_cap("env.read")
-        return _molt_env_snapshot().values()
+    def items(self):
+        _MOLT_REQUIRE_OPERATION("env.snapshot")
+        return _MutableMapping.items(self)
+
+    def values(self):
+        _MOLT_REQUIRE_OPERATION("env.snapshot")
+        return _MutableMapping.values(self)
+
+    def __ior__(self, other):
+        self.update(other)
+        return self
+
+    def __or__(self, other):
+        if not isinstance(other, _Mapping):
+            return NotImplemented
+        new = dict(self)
+        new.update(other)
+        return new
+
+    def __ror__(self, other):
+        if not isinstance(other, _Mapping):
+            return NotImplemented
+        new = dict(other)
+        new.update(self)
+        return new
+
+
+def _createenviron():
+    if name == "nt":
+
+        def encode(value):
+            if not isinstance(value, str):
+                raise TypeError("str expected, not %s" % type(value).__name__)
+            return value
+
+        decode = str
+
+        def encodekey(key):
+            return encode(key).upper()
+    else:
+        encoding = _sys.getfilesystemencoding()
+
+        def encode(value):
+            if not isinstance(value, str):
+                raise TypeError("str expected, not %s" % type(value).__name__)
+            return value.encode(encoding, "surrogateescape")
+
+        def decode(value):
+            return value.decode(encoding, "surrogateescape")
+
+        encodekey = encode
+    return _Environ(encodekey, decode, encode, decode)
 
 
 class PathLike(_abc.ABC):
@@ -857,10 +798,242 @@ fsencode, fsdecode = _fscodec()
 del _fscodec
 
 
-def _path_join_splitroot(value):
-    # CPython 3.12 ntpath.splitroot. Preserve subclass operations and original
-    # separator spelling; exact paths use the shared native root parser.
+# CPython supported-patch path protocols (3.12.15 through 3.15.0).
+# Regex import, compilation and each str/bytes cache stay at first expansion.
+
+
+def _posix_expanduser(path):
+    """Expand ~ and ~user constructions.  If user or $HOME is unknown,
+    do nothing."""
+    path = fspath(path)
+    if isinstance(path, bytes):
+        tilde = b"~"
+    else:
+        tilde = "~"
+    if not path.startswith(tilde):
+        return path
+    sep = b"/" if isinstance(path, bytes) else "/"
+    i = path.find(sep, 1)
+    if i < 0:
+        i = len(path)
+    if i == 1:
+        _MOLT_REQUIRE_OPERATION("env.expanduser")
+        if "HOME" not in environ:
+            try:
+                import pwd
+            except ImportError:
+                return path
+            try:
+                userhome = pwd.getpwuid(getuid()).pw_dir
+            except KeyError:
+                return path
+        else:
+            userhome = environ["HOME"]
+    else:
+        try:
+            import pwd
+        except ImportError:
+            return path
+        name = path[1:i]
+        if isinstance(name, bytes):
+            name = fsdecode(name)
+        try:
+            pwent = pwd.getpwnam(name)
+        except KeyError:
+            return path
+        userhome = pwent.pw_dir
+    if userhome is None and _sys.platform == "vxworks":
+        return path
+    if isinstance(path, bytes):
+        userhome = fsencode(userhome)
+        root = b"/"
+    else:
+        root = "/"
+    userhome = userhome.rstrip(root)
+    return userhome + path[i:] or root
+
+
+def _expandvars(path, windows):
+    path = fspath(path)
+    raw = isinstance(path, bytes)
+    if raw:
+        if b"$" not in path and (not windows or b"%" not in path):
+            return path
+    elif "$" not in path and (not windows or "%" not in path):
+        return path
+    _MOLT_REQUIRE_OPERATION("env.expandvars")
+    environment = globals().get("environb") if raw else environ
+
+    # CPython's ASCII expansion grammar has only ASCII delimiters. Scan byte
+    # coordinates so UTF-8 character indexing cannot repeatedly walk a prefix.
+    # Base operations bypass subclass hooks, just as the regex engine does.
+    if raw:
+        data = bytes.__bytes__(path)
+    else:
+        data = str.encode(path, "utf-8", "surrogatepass")
+    empty = b"" if raw else ""
+
+    def text(segment):
+        return segment if raw else segment.decode("utf-8", "surrogatepass")
+
+    parts = []
+    literal_start = 0
+    index = 0
+    size = len(data)
+    while index < size:
+        if not windows:
+            index = data.find(b"$", index)
+            if index < 0:
+                break
+        char = data[index]
+        if windows and char == 39:  # Single quotes protect the entire span.
+            start = index
+            end = data.find(b"'", index + 1)
+            index = size if end < 0 else end + 1
+            if literal_start < start:
+                parts.append(text(data[literal_start:start]))
+            parts.append(text(data[start:index]))
+            literal_start = index
+            continue
+        if char != 36 and (not windows or char != 37):
+            index += 1
+            continue
+        start = index
+        index += 1
+        if windows and index < size and data[index] == char:
+            # NT alone treats $$ and %% as escaped literal markers.
+            index += 1
+            value = text(data[start : start + 1])
+        else:
+            if char == 37:
+                end = data.find(b"%", index)
+                if end < 0:
+                    break
+                key = data[index:end]
+                index = end + 1
+            elif index < size and data[index] == 123:
+                end = data.find(b"}", index + 1)
+                if end < 0:
+                    break
+                key = data[index + 1 : end]
+                index = end + 1
+            else:
+                name_start = index
+                while index < size:
+                    char = data[index]
+                    if not (
+                        65 <= char <= 90
+                        or 97 <= char <= 122
+                        or 48 <= char <= 57
+                        or char == 95
+                        or (windows and char == 45)
+                    ):
+                        break
+                    index += 1
+                if index == name_start:
+                    continue
+                key = data[name_start:index]
+            key = text(key)
+            try:
+                if environment is None:
+                    value = fsencode(environ[fsdecode(key)])
+                else:
+                    value = environment[key]
+            except KeyError:
+                value = text(data[start:index])
+        if literal_start < start:
+            parts.append(text(data[literal_start:start]))
+        # Match CPython substitution: None disappears, and other replacement
+        # types are checked by the final join, after all mapping callbacks.
+        if value is not None:
+            parts.append(value)
+        literal_start = index
+    if literal_start < size:
+        parts.append(text(data[literal_start:]))
+    return empty.join(parts)
+
+
+def _posix_expandvars(path):
+    return _expandvars(path, False)
+
+
+def _path_nt_split(p):
+    """Split a pathname.
+
+    Return tuple (head, tail) where tail is everything after the final slash.
+    Either part may be empty."""
+    p = fspath(p)
+    seps = b"\\/" if isinstance(p, bytes) else "\\/"
+    d, r, p = _path_splitroot(p, False)
+    i = len(p)
+    while i and p[i - 1] not in seps:
+        i -= 1
+    head, tail = (p[:i], p[i:])
+    return (d + r + head.rstrip(seps), tail)
+
+
+def _nt_expanduser(path):
+    """Expand ~ and ~user constructs.
+
+    If user or $HOME is unknown, do nothing."""
+    path = fspath(path)
+    if isinstance(path, bytes):
+        tilde = b"~"
+    else:
+        tilde = "~"
+    if not path.startswith(tilde):
+        return path
+    i, n = (1, len(path))
+    while i < n and path[i] not in (b"\\/" if isinstance(path, bytes) else "\\/"):
+        i += 1
+    _MOLT_REQUIRE_OPERATION("env.expanduser")
+    if "USERPROFILE" in environ:
+        userhome = environ["USERPROFILE"]
+    elif not "HOMEPATH" in environ:
+        return path
+    else:
+        try:
+            drive = environ["HOMEDRIVE"]
+        except KeyError:
+            drive = ""
+        userhome = _Path.join(drive, environ["HOMEPATH"])
+    if i != 1:
+        target_user = path[1:i]
+        if isinstance(target_user, bytes):
+            target_user = fsdecode(target_user)
+        current_user = environ.get("USERNAME")
+        if target_user != current_user:
+            if current_user != _Path.basename(userhome):
+                return path
+            userhome = _Path.join(_Path.dirname(userhome), target_user)
+    if isinstance(path, bytes):
+        userhome = fsencode(userhome)
+    return userhome + path[i:]
+
+
+def _nt_expandvars(path):
+    return _expandvars(path, True)
+
+
+_path_expandvars = _nt_expandvars if name == "nt" else _posix_expandvars
+_path_expanduser = _nt_expanduser if name == "nt" else _posix_expanduser
+
+
+def _path_splitroot(value, posix):
+    # One legacy callback authority for both lexical flavors. Exact values and
+    # modern native providers use the shared native parser; legacy subclasses
+    # retain the actual CPython slicing/replace/find result semantics.
     value = fspath(value)
+    wide = _WINDOWS_UTF16_ROOT and not posix
+    if wide or (posix and _PYTHON_313) or type(value) in (str, bytes):
+        return _MOLT_PATH_SPLITROOT(value, posix, wide, False)
+    if posix:
+        slash, empty = (b"/", b"") if isinstance(value, bytes) else ("/", "")
+        if value[:1] != slash:
+            return empty, empty, value
+        if value[1:2] != slash or value[2:3] == slash:
+            return empty, slash, value[1:]
+        return empty, value[:2], value[2:]
     if isinstance(value, bytes):
         slash, alt, colon, unc, empty = b"\\", b"/", b":", b"\\\\?\\UNC\\", b""
     else:
@@ -884,6 +1057,88 @@ def _path_join_splitroot(value):
     return empty, empty, value
 
 
+def _path_join(first, rest, posix):
+    sep = "/" if posix else "\\"
+    # CPython 3.12 posixpath/ntpath ordering. Native accumulation handles
+    # exact values, including lazily resolved PathLike operands, in linear
+    # time. A subclass resumes here once, before any observable operation.
+    first = fspath(first)
+    slash = (
+        (b"/" if isinstance(first, bytes) else "/")
+        if sep == "/"
+        else (b"\\" if isinstance(first, bytes) else "\\")
+    )
+    try:
+        result = _MOLT_PATH_JOIN_MANY(first, rest, posix)
+        if not isinstance(result, tuple):
+            return result
+        resume, b, state = result
+        del result  # Do not keep a second owner of callback-bearing values.
+        if sep == "/":
+            path = first if state is None else state
+            del state
+            if not rest:
+                path[:0] + slash
+            for index in range(resume, len(rest)):
+                if index != resume or b is None:
+                    b = fspath(rest[index])
+                if b.startswith(slash):
+                    path = b
+                elif not path or path.endswith(slash):
+                    path += b
+                else:
+                    path += slash + b
+            return path
+        seps = b"\\/" if isinstance(first, bytes) else "\\/"
+        colon = b":" if isinstance(first, bytes) else ":"
+        if state is None:
+            if not rest:
+                first[:0] + slash
+            drive, root, tail = _path_splitroot(first, False)
+        else:
+            drive, root, tail = state
+        del state
+        for index in range(resume, len(rest)):
+            if index != resume or b is None:
+                b = fspath(rest[index])
+            p_drive, p_root, p_tail = _path_splitroot(b, False)
+            if p_root:
+                if p_drive or not drive:
+                    drive = p_drive
+                root = p_root
+                tail = p_tail
+                continue
+            elif p_drive and p_drive != drive:
+                if p_drive.lower() != drive.lower():
+                    drive, root, tail = p_drive, p_root, p_tail
+                    continue
+                drive = p_drive
+            if tail and tail[-1] not in seps:
+                tail = tail + slash
+            tail = tail + p_tail
+        if tail and not root and drive and drive[-1:] not in colon + seps:
+            return drive + slash + tail
+        return drive + root + tail
+    except (TypeError, AttributeError, BytesWarning):
+        # Inspect originals, as CPython does; never repeat __fspath__ calls.
+        has_str = has_bytes = False
+        for value in (first, *rest):
+            if isinstance(value, str):
+                has_str = True
+            elif isinstance(value, bytes):
+                has_bytes = True
+            else:
+                raise TypeError(
+                    "join() argument must be str, bytes, or os.PathLike object, "
+                    f"not {value.__class__.__name__!r}"
+                ) from None
+        if has_str and has_bytes:
+            raise TypeError(
+                "Can't mix strings and bytes in path components"
+            ) from None
+        raise
+
+
 class _Path:
     sep = sep
     pathsep = pathsep
@@ -894,99 +1149,28 @@ class _Path:
 
     @staticmethod
     def join(first: Any, *rest: Any) -> Any:
-        # CPython 3.12 posixpath/ntpath ordering. Native accumulation handles
-        # exact values, including lazily resolved PathLike operands, in linear
-        # time. A subclass resumes here once, before any observable operation.
-        first = fspath(first)
-        slash = (
-            (b"/" if isinstance(first, bytes) else "/")
-            if sep == "/"
-            else (b"\\" if isinstance(first, bytes) else "\\")
-        )
-        try:
-            result = _MOLT_PATH_JOIN_MANY(first, rest)
-            if not isinstance(result, tuple):
-                return result
-            resume, b, state = result
-            del result  # Do not keep a second owner of callback-bearing values.
-            if sep == "/":
-                path = first if state is None else state
-                del state
-                if not rest:
-                    path[:0] + slash
-                for index in range(resume, len(rest)):
-                    if index != resume or b is None:
-                        b = fspath(rest[index])
-                    if b.startswith(slash):
-                        path = b
-                    elif not path or path.endswith(slash):
-                        path += b
-                    else:
-                        path += slash + b
-                return path
-            seps = b"\\/" if isinstance(first, bytes) else "\\/"
-            colon = b":" if isinstance(first, bytes) else ":"
-            if state is None:
-                if not rest:
-                    first[:0] + slash
-                drive, root, tail = _path_join_splitroot(first)
-            else:
-                drive, root, tail = state
-            del state
-            for index in range(resume, len(rest)):
-                if index != resume or b is None:
-                    b = fspath(rest[index])
-                p_drive, p_root, p_tail = _path_join_splitroot(b)
-                if p_root:
-                    if p_drive or not drive:
-                        drive = p_drive
-                    root = p_root
-                    tail = p_tail
-                    continue
-                elif p_drive and p_drive != drive:
-                    if p_drive.lower() != drive.lower():
-                        drive, root, tail = p_drive, p_root, p_tail
-                        continue
-                    drive = p_drive
-                if tail and tail[-1] not in seps:
-                    tail = tail + slash
-                tail = tail + p_tail
-            if tail and not root and drive and drive[-1:] not in colon + seps:
-                return drive + slash + tail
-            return drive + root + tail
-        except (TypeError, AttributeError, BytesWarning):
-            # Inspect originals, as CPython does; never repeat __fspath__ calls.
-            has_str = has_bytes = False
-            for value in (first, *rest):
-                if isinstance(value, str):
-                    has_str = True
-                elif isinstance(value, bytes):
-                    has_bytes = True
-                else:
-                    raise TypeError(
-                        "join() argument must be str, bytes, or os.PathLike object, "
-                        f"not {value.__class__.__name__!r}"
-                    ) from None
-            if has_str and has_bytes:
-                raise TypeError(
-                    "Can't mix strings and bytes in path components"
-                ) from None
-            raise
+        return _path_join(first, rest, sep == "/")
 
     @staticmethod
     def isabs(path: str) -> bool:
         return bool(_MOLT_PATH_ISABS(path))
 
     @staticmethod
-    def dirname(path: str) -> str:
+    def dirname(path: Any) -> str | bytes:
+        if name == "nt" and type(path) is not str:
+            return _path_nt_split(path)[0]
         return _expect_str(_MOLT_PATH_DIRNAME(path), "path_dirname")
 
     @staticmethod
-    def basename(path: str) -> str:
+    def basename(path: Any) -> str | bytes:
+        if name == "nt" and type(path) is not str:
+            return _path_nt_split(path)[1]
         return _expect_str(_MOLT_PATH_BASENAME(path), "path_basename")
 
     @staticmethod
-    def split(path: str) -> tuple[str, str]:
+    def split(path: Any) -> tuple[str, str] | tuple[bytes, bytes]:
+        if name == "nt" and type(path) is not str:
+            return _path_nt_split(path)
         value = _MOLT_PATH_SPLIT(path)
         if (
             isinstance(value, (tuple, list))
@@ -1006,9 +1190,8 @@ class _Path:
         return _expect_str(_MOLT_PATH_NORMPATH(path), "path_normpath")
 
     @staticmethod
-    def expandvars(path: str) -> str:
-        _require_cap("env.read")
-        return _expect_str(_MOLT_PATH_EXPANDVARS(path), "path_expandvars")
+    def expandvars(path: Any) -> str | bytes:
+        return _path_expandvars(path)
 
     @staticmethod
     def abspath(path: str) -> str:
@@ -1019,9 +1202,8 @@ class _Path:
         return _expect_str(_MOLT_PATH_RELPATH(path, start), "path_relpath")
 
     @staticmethod
-    def expanduser(path: str) -> str:
-        _require_cap("env.read")
-        return _expect_str(_MOLT_PATH_EXPANDUSER(path), "path_expanduser")
+    def expanduser(path: Any) -> str | bytes:
+        return _path_expanduser(path)
 
     @staticmethod
     def exists(path: Any) -> bool:
@@ -1065,12 +1247,12 @@ class _Path:
         _MOLT_OS_RMDIR_V2(path)
 
     @staticmethod
-    def commonpath(paths: Any) -> str:
+    def commonpath(paths: Any) -> str | bytes:
         _require_cap("fs.read")
         intrinsic = _require_callable_intrinsic(
             _MOLT_OS_PATH_COMMONPATH, "molt_os_path_commonpath"
         )
-        return _expect_str(intrinsic(list(paths)), "path_commonpath")
+        return intrinsic(list(paths), _WINDOWS_UTF16_ROOT)
 
     @staticmethod
     def commonprefix(list_of_paths: Any) -> str:
@@ -1085,7 +1267,7 @@ class _Path:
         intrinsic = _require_callable_intrinsic(
             _MOLT_OS_PATH_GETATIME, "molt_os_path_getatime"
         )
-        return float(intrinsic(str(path)))
+        return float(intrinsic(path))
 
     @staticmethod
     def getctime(path: Any) -> float:
@@ -1093,7 +1275,7 @@ class _Path:
         intrinsic = _require_callable_intrinsic(
             _MOLT_OS_PATH_GETCTIME, "molt_os_path_getctime"
         )
-        return float(intrinsic(str(path)))
+        return float(intrinsic(path))
 
     @staticmethod
     def getmtime(path: Any) -> float:
@@ -1101,7 +1283,7 @@ class _Path:
         intrinsic = _require_callable_intrinsic(
             _MOLT_OS_PATH_GETMTIME, "molt_os_path_getmtime"
         )
-        return float(intrinsic(str(path)))
+        return float(intrinsic(path))
 
     @staticmethod
     def getsize(path: Any) -> int:
@@ -1109,7 +1291,7 @@ class _Path:
         intrinsic = _require_callable_intrinsic(
             _MOLT_OS_PATH_GETSIZE, "molt_os_path_getsize"
         )
-        return int(intrinsic(str(path)))
+        return int(intrinsic(path))
 
     @staticmethod
     def samefile(path1: Any, path2: Any) -> bool:
@@ -1117,11 +1299,11 @@ class _Path:
         intrinsic = _require_callable_intrinsic(
             _MOLT_OS_PATH_SAMEFILE, "molt_os_path_samefile"
         )
-        return bool(intrinsic(str(path1), str(path2)))
+        return bool(intrinsic(path1, path2))
 
     @staticmethod
-    def realpath(path: Any, *, strict: bool = False) -> str:
-        return _expect_str(_MOLT_OS_PATH_REALPATH(str(path)), "path_realpath")
+    def realpath(path: Any, *, strict: bool = False) -> str | bytes:
+        return _MOLT_OS_PATH_REALPATH(path)
 
 
 _path_impl = _Path()
@@ -1141,17 +1323,30 @@ _sys.modules.setdefault(f"{__name__}.path", path)
 __path__ = []  # Enable dotted imports like `import os.path`.
 
 
-def listdir(path: Any = ".") -> list[str]:
+def listdir(path: Any = ".") -> list[str] | list[bytes]:
     _require_cap("fs.read")
-    res = _MOLT_OS_LISTDIR_V2(path)
-    if not isinstance(res, list):
-        raise RuntimeError("os listdir intrinsic returned invalid value")
-    if not all(isinstance(entry, str) for entry in res):
-        raise RuntimeError("os listdir intrinsic returned invalid value")
-    return list(res)
+    return _MOLT_OS_LISTDIR_V2(path)
 
 
-environ = _Environ()
+_MOLT_ENV_MAPPING_INIT()
+environ = _createenviron()
+del _createenviron
+supports_bytes_environ = name != "nt"
+__all__.append("supports_bytes_environ")
+if supports_bytes_environ:
+
+    def _check_bytes(value):
+        if not isinstance(value, bytes):
+            raise TypeError("bytes expected, not %s" % type(value).__name__)
+        return value
+
+    environb = _Environ(_check_bytes, bytes, _check_bytes, bytes)
+    del _check_bytes
+
+    def getenvb(key, default=None):
+        return environb.get(key, default)
+
+    __all__.extend(("environb", "getenvb"))
 
 
 def getpid() -> int:
@@ -1170,18 +1365,17 @@ def getcwd() -> str:
 
 
 def getenv(key: str, default: Any = None) -> Any:
-    _require_cap("env.read")
-    return _molt_env_get(key, default)
+    return environ.get(key, default)
 
 
-def putenv(key: str, value: str) -> None:
-    _require_cap("env.write")
-    _molt_env_putenv(environ._check_key(key), environ._check_value(value))
+def putenv(key: Any, value: Any) -> None:
+    _MOLT_REQUIRE_OPERATION("env.putenv")
+    _MOLT_ENV_PUTENV(key, value)
 
 
-def unsetenv(key: str) -> None:
-    _require_cap("env.write")
-    _molt_env_unsetenv(environ._check_key(key))
+def unsetenv(key: Any) -> None:
+    _MOLT_REQUIRE_OPERATION("env.unsetenv")
+    _MOLT_ENV_UNSETENV(key)
 
 
 def unlink(path: Any) -> None:
@@ -1192,11 +1386,11 @@ def remove(path: Any) -> None:
     unlink(path)
 
 
-def readlink(path: Any, *, dir_fd: int | None = None) -> str:
+def readlink(path: Any, *, dir_fd: int | None = None) -> str | bytes:
     _require_cap("fs.read")
     if dir_fd is not None:
-        return _expect_str(_MOLT_OS_READLINK_AT(path, dir_fd), "readlink")
-    return _expect_str(_MOLT_OS_READLINK_V2(path), "readlink")
+        return _MOLT_OS_READLINK_AT(path, dir_fd)
+    return _MOLT_OS_READLINK_V2(path)
 
 
 def symlink(
@@ -1286,7 +1480,7 @@ def dup2(fd: int, fd2: int) -> int:
 
 
 def lseek(fd: int, pos: int, how: int) -> int:
-    return int(_MOLT_OS_LSEEK(int(fd), int(pos), int(how)))
+    return _MOLT_OS_LSEEK(fd, pos, how)
 
 
 def ftruncate(fd: int, length: int) -> None:
@@ -1373,13 +1567,13 @@ def replace(
 def access(path: Any, mode: int, *, follow_symlinks: bool = True) -> bool:
     _require_cap("fs.read")
     intrinsic = _require_callable_intrinsic(_MOLT_OS_ACCESS, "molt_os_access")
-    return bool(intrinsic(str(path), mode))
+    return bool(intrinsic(path, mode))
 
 
 def chdir(path: Any) -> None:
     _require_cap("fs.write")
     intrinsic = _require_callable_intrinsic(_MOLT_OS_CHDIR, "molt_os_chdir")
-    intrinsic(str(path))
+    intrinsic(path)
 
 
 def cpu_count() -> int | None:
@@ -1403,13 +1597,13 @@ def link(
         _MOLT_OS_LINK_AT(src, src_dir_fd, dst, dst_dir_fd, bool(follow_symlinks))
         return
     intrinsic = _require_callable_intrinsic(_MOLT_OS_LINK, "molt_os_link")
-    intrinsic(str(src), str(dst))
+    intrinsic(src, dst)
 
 
 def truncate(path: Any, length: int) -> None:
     _require_cap("fs.write")
     intrinsic = _require_callable_intrinsic(_MOLT_OS_TRUNCATE, "molt_os_truncate")
-    intrinsic(str(path), length)
+    intrinsic(path, length)
 
 
 def umask(mask: int) -> int:
@@ -1603,9 +1797,9 @@ def utime(
                 raise TypeError(
                     "utime: 'times' must be either a tuple of two ints or None"
                 )
-            _MOLT_OS_UTIME(str(path), float(times[0]), float(times[1]))
+            _MOLT_OS_UTIME(path, float(times[0]), float(times[1]))
         else:
-            _MOLT_OS_UTIME(str(path), None, None)
+            _MOLT_OS_UTIME(path, None, None)
         return
     # dir_fd / ns=... / follow_symlinks=False -> the `*at` intrinsic. Times are
     # pre-split into (sec, nsec) pairs so no argument exceeds the inline-int
@@ -1642,7 +1836,7 @@ def sendfile(out_fd: int, in_fd: int, offset: int | None, count: int) -> int:
 def removedirs(name: Any) -> None:
     _require_cap("fs.write")
     intrinsic = _require_callable_intrinsic(_MOLT_OS_REMOVEDIRS, "molt_os_removedirs")
-    intrinsic(str(name))
+    intrinsic(name)
 
 
 def get_terminal_size(fd: int = 1) -> terminal_size:
@@ -1660,36 +1854,21 @@ def walk(
     topdown: bool = True,
     onerror: Any = None,
     followlinks: bool = False,
-) -> Any:
+) -> Iterator[
+    tuple[str, list[str], list[str]] | tuple[bytes, list[bytes], list[bytes]]
+]:
     _require_cap("fs.read")
     intrinsic = _require_callable_intrinsic(_MOLT_OS_WALK, "molt_os_walk")
-    result = intrinsic(str(top), bool(topdown), bool(followlinks))
-    if not isinstance(result, (list, tuple)):
-        raise RuntimeError("os walk intrinsic returned invalid value")
-    for entry in result:
-        yield entry
+    yield from intrinsic(top, bool(topdown), bool(followlinks))
 
 
-def scandir(path: Any = ".") -> list:
+def scandir(path: Any = ".") -> list[DirEntry]:
     _require_cap("fs.read")
     intrinsic = _require_callable_intrinsic(_MOLT_OS_SCANDIR, "molt_os_scandir")
-    raw = intrinsic(str(path))
-    if not isinstance(raw, (list, tuple)):
-        raise RuntimeError("os scandir intrinsic returned invalid value")
-    entries: list[DirEntry] = []
-    for item in raw:
-        if not isinstance(item, (tuple, list)) or len(item) < 5:
-            raise RuntimeError("os scandir intrinsic returned invalid entry")
-        entries.append(
-            DirEntry(
-                name=str(item[0]),
-                path=str(item[1]),
-                is_dir=bool(item[2]),
-                is_file=bool(item[3]),
-                is_symlink=bool(item[4]),
-            )
-        )
-    return entries
+    return [
+        DirEntry(name, entry_path, is_dir, is_file, is_symlink)
+        for name, entry_path, is_dir, is_file, is_symlink in intrinsic(path)
+    ]
 
 
 # ---------------------------------------------------------------------------

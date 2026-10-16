@@ -55,6 +55,12 @@ ABORT = {
     "nt": {"kind": "windows-exception", "code": 0xC0000409},
 }
 SERIAL = ["--nocapture", "--test-threads=1"]
+RESOURCE_OWNERS = (
+    "env_var_init_installs_tracker",
+    "molt_memory_limit_alias_enforces_via_real_init_path",
+    "no_memory_limit_env_means_unchanged_behavior",
+    "human_size_and_raw_bytes_resolve_to_one_limit",
+)
 
 # (owner, mode) -> role, exact child argv after the image, child stdout/stderr
 # and the exact exit or abort plus completion. Independent Rust call-site oracle.
@@ -73,6 +79,20 @@ CONTRACT: dict[tuple[str, str], dict[str, Any]] = {
     }
     for mode in ("no-lease", "lease")
 }
+for _owner in RESOURCE_OWNERS:
+    _child = f"{_owner}_child"
+    CONTRACT[(_owner, _child)] = {
+        "role": "resource-startup",
+        "child": _child,
+        "args": ["--exact", _child, "--ignored", *SERIAL],
+        "stdout": (
+            f"\nrunning 1 test\ntest {_child} ... ok\n\ntest result: ok. 1 passed; "
+            "0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n\n"
+        ),
+        "stderr": "",
+        "exit_code": 0,
+        "completes": True,
+    }
 CONTRACT[(TRAP, "stale-exception")] = {
     "role": "pending-success-trap",
     "child": TRAP_CHILD,
@@ -514,6 +534,69 @@ def retain_fixture_file(receipt: dict, source: Path) -> None:
     }
 
 
+def resource_receipt(
+    root: Path,
+    image: Path,
+    tests: list[str],
+    records: list[dict],
+    *,
+    statuses: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """Literal runner layout: discovery, then one exact process per listed test."""
+    statuses = statuses or {}
+    receipt = binary_receipt(root, image, tests, records, statuses=statuses)
+    evidence = root / "evidence" / receipt["invocation_id"]
+    executions = []
+    for index, identity in enumerate([None, *tests]):
+        discovery = identity is None
+        stdout = publish(
+            evidence / f"resource-{index}.stdout.log",
+            "".join(f"{name}: test\n" for name in tests)
+            if discovery
+            else transcript([identity], statuses=statuses),
+        )
+        stderr = publish(
+            evidence / f"resource-{index}.stderr.log",
+            ""
+            if discovery
+            else records_text(
+                [record for record in records if record["parent_test"] == identity]
+            ),
+        )
+        code = 101 if statuses.get(identity) == "fail" else 0
+        executions.append(
+            {
+                "argv": [str(image), "--list", "--format", "terse"]
+                if discovery
+                else [
+                    str(image),
+                    "--exact",
+                    identity,
+                    "--test-threads=1",
+                    "--nocapture",
+                ],
+                "returncode": code,
+                "termination": {"kind": "exit", "returncode": code},
+                "timed_out": False,
+                "infrastructure_failure": None,
+                "stdout_evidence": stdout["path"],
+                "stdout_bytes": stdout["bytes"],
+                "stdout_sha256": stdout["sha256"],
+                "stderr_evidence": stderr["path"],
+                "stderr_bytes": stderr["bytes"],
+                "stderr_sha256": stderr["sha256"],
+            }
+        )
+    receipt["resource_process_isolation"] = True
+    receipt["executions"] = executions
+    receipt["diagnosis"] = {
+        "kind": "resource-process-isolation",
+        "failed_tests": receipt["failure_identities"],
+        "structural_failures": [],
+    }
+    return receipt
+
+
 def corrupt_retained_file(receipt: dict, source: Path) -> None:
     row = receipt["retained_files"][str(source.resolve())]
     path = Path(row["path"])
@@ -522,9 +605,11 @@ def corrupt_retained_file(receipt: dict, source: Path) -> None:
     path.chmod(0o444)
 
 
-def republish(receipt: dict, stream: str, text: str) -> None:
+def republish(
+    receipt: dict, stream: str, text: str, *, execution_index: int = 0
+) -> None:
     """Replace one parent capture and keep the receipt's hashes consistent."""
-    execution = receipt["executions"][0]
+    execution = receipt["executions"][execution_index]
     path = Path(execution[f"{stream}_evidence"])
     data = text.encode("utf-8")
     path.write_bytes(data)

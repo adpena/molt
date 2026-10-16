@@ -42,8 +42,9 @@ extern "C" fn same_hash_key_eq(_self_bits: u64, _other_bits: u64) -> u64 {
                     .as_ptr()
                     .unwrap();
                 unsafe {
-                    // Shift every later entry, then bind a key the transition
-                    // already probed as absent.
+                    // Delete an earlier row, then bind a key the transition
+                    // already probed as absent. Only exhausted usable capacity
+                    // makes the insertion compact/reindex the remaining rows.
                     assert!(
                         dict_del_in_place(py, dict, PROBE_DELETE.load(Ordering::SeqCst)).unwrap()
                     );
@@ -168,6 +169,24 @@ unsafe fn dict_with_same_hash_key(
     }
     assert!(!exception_pending(py));
     dict
+}
+
+/// Consume the initial key table's append capacity without changing its live
+/// entries. The next absent insertion must perform real compaction/reindexing.
+unsafe fn exhaust_dict_usable_with_deleted_rows(py: &PyToken<'_>, dict: *mut u8) {
+    unsafe {
+        assert_eq!(dict_len(dict), 2);
+        assert_eq!(dict_table(dict).len(), 8);
+        assert_eq!(dict_storage(dict).usable, 3);
+        for integer in 0..3 {
+            let key = MoltObject::from_int(integer).bits();
+            assert!(dict_set_in_place(py, dict, key, MoltObject::none().bits()));
+            assert!(dict_del_in_place(py, dict, key).unwrap());
+        }
+        assert_eq!(dict_len(dict), 2);
+        assert_eq!(dict_entries(dict).len(), 5);
+        assert_eq!(dict_storage(dict).usable, 0);
+    }
 }
 
 fn take_pending_error(py: &PyToken<'_>, expected: &str) {
@@ -727,51 +746,83 @@ fn exact_string_reads_reacquire_entries_after_equality_mutates_the_table() {
             let removed = string_key(py, b"removed");
             let query = string_key(py, b"inserted");
             let inserted = string_key(py, b"inserted");
-            for projection in 0..3 {
-                let dict = dict_with_same_hash_key(
-                    py,
-                    &[removed, MoltObject::none().bits()],
-                    probe,
-                    b"inserted",
-                );
-                PROBE_DICT.store(MoltObject::from_ptr(dict).bits(), Ordering::SeqCst);
-                PROBE_DELETE.store(removed, Ordering::SeqCst);
-                PROBE_INSERT.store(inserted, Ordering::SeqCst);
-                PROBE_CALLS.store(0, Ordering::SeqCst);
-                PROBE_MODE.store(PROBE_RESTRUCTURE, Ordering::SeqCst);
-                if projection == 0 {
-                    assert_eq!(dict_find_entry(py, dict, query).unwrap(), Some(1));
-                } else if projection == 1 {
-                    assert_eq!(
-                        dict_find_entry_kv_in_place(py, dict, query).unwrap(),
-                        Some((inserted, MoltObject::from_int(40).bits()))
-                    );
-                } else {
-                    assert_eq!(
-                        dict_get_in_place(py, dict, query).unwrap(),
-                        Some(MoltObject::from_int(40).bits())
-                    );
-                }
-                // Initial read, callback insertion, then restarted read. The
-                // speculative string probe itself may not call equality.
-                assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 3);
-                assert_eq!(
-                    dict_live_entries(dict)
-                        .flat_map(|row| [row.key, row.value])
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                    &[
+            for (compact, probe_first) in [(false, false), (true, false), (true, true)] {
+                for projection in 0..3 {
+                    let initial_entries = [removed, MoltObject::none().bits()];
+                    let dict = dict_with_same_hash_key(
+                        py,
+                        if probe_first { &[] } else { &initial_entries },
                         probe,
-                        MoltObject::from_int(7).bits(),
-                        inserted,
-                        MoltObject::from_int(40).bits()
-                    ]
-                );
-                PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
-                PROBE_DICT.store(0, Ordering::SeqCst);
-                PROBE_DELETE.store(0, Ordering::SeqCst);
-                PROBE_INSERT.store(0, Ordering::SeqCst);
-                dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+                        b"inserted",
+                    );
+                    if probe_first {
+                        assert!(dict_set_in_place(
+                            py,
+                            dict,
+                            removed,
+                            MoltObject::none().bits()
+                        ));
+                    }
+                    if compact {
+                        exhaust_dict_usable_with_deleted_rows(py, dict);
+                    }
+                    let table_before = dict_table(dict).as_ptr();
+                    let layout_before =
+                        crate::object::backing::tracked_vec_mutation_epoch(dict_table_ptr(dict));
+                    PROBE_DICT.store(MoltObject::from_ptr(dict).bits(), Ordering::SeqCst);
+                    PROBE_DELETE.store(removed, Ordering::SeqCst);
+                    PROBE_INSERT.store(inserted, Ordering::SeqCst);
+                    PROBE_CALLS.store(0, Ordering::SeqCst);
+                    PROBE_MODE.store(PROBE_RESTRUCTURE, Ordering::SeqCst);
+                    if projection == 0 {
+                        // Without reindexing the deleted row remains a hole;
+                        // after real compaction the original dense index applies.
+                        assert_eq!(
+                            dict_find_entry(py, dict, query).unwrap(),
+                            Some(if compact { 1 } else { 2 })
+                        );
+                    } else if projection == 1 {
+                        assert_eq!(
+                            dict_find_entry_kv_in_place(py, dict, query).unwrap(),
+                            Some((inserted, MoltObject::from_int(40).bits()))
+                        );
+                    } else {
+                        assert_eq!(
+                            dict_get_in_place(py, dict, query).unwrap(),
+                            Some(MoltObject::from_int(40).bits())
+                        );
+                    }
+                    // Initial read + callback insertion. A changed key layout
+                    // adds exactly one restarted comparison; a mere hole does not.
+                    assert_eq!(
+                        PROBE_CALLS.load(Ordering::SeqCst),
+                        if compact { 3 } else { 2 }
+                    );
+                    let layout_after =
+                        crate::object::backing::tracked_vec_mutation_epoch(dict_table_ptr(dict));
+                    assert_eq!(layout_before != layout_after, compact);
+                    // Same-capacity reindexing reuses the index allocation. The
+                    // probe-first case also leaves the compared row at index 0.
+                    assert_eq!(dict_table(dict).as_ptr(), table_before);
+                    assert_eq!(dict_entries(dict).len(), if compact { 2 } else { 3 });
+                    assert_eq!(
+                        dict_live_entries(dict)
+                            .flat_map(|row| [row.key, row.value])
+                            .collect::<Vec<_>>()
+                            .as_slice(),
+                        &[
+                            probe,
+                            MoltObject::from_int(7).bits(),
+                            inserted,
+                            MoltObject::from_int(40).bits()
+                        ]
+                    );
+                    PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+                    PROBE_DICT.store(0, Ordering::SeqCst);
+                    PROBE_DELETE.store(0, Ordering::SeqCst);
+                    PROBE_INSERT.store(0, Ordering::SeqCst);
+                    dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+                }
             }
             for bits in [removed, query, inserted, probe, class, function] {
                 dec_ref_bits(py, bits);
@@ -860,13 +911,22 @@ fn exact_string_reads_setdefault_reuses_probe_and_observes_reentrant_insertion()
             let removed = string_key(py, b"removed");
             let query = string_key(py, b"selected");
             for empty_list in [false, true] {
-                for mode in [PROBE_UNEQUAL, PROBE_EQUAL, PROBE_RAISE, PROBE_RESTRUCTURE] {
+                for (mode, compact) in [
+                    (PROBE_UNEQUAL, false),
+                    (PROBE_EQUAL, false),
+                    (PROBE_RAISE, false),
+                    (PROBE_RESTRUCTURE, false),
+                    (PROBE_RESTRUCTURE, true),
+                ] {
                     let dict = dict_with_same_hash_key(
                         py,
                         &[removed, MoltObject::none().bits()],
                         probe,
                         b"selected",
                     );
+                    if compact {
+                        exhaust_dict_usable_with_deleted_rows(py, dict);
+                    }
                     let dict_bits = MoltObject::from_ptr(dict).bits();
                     let default = mortal_value(py);
                     PROBE_DICT.store(dict_bits, Ordering::SeqCst);
@@ -881,7 +941,11 @@ fn exact_string_reads_setdefault_reuses_probe_and_observes_reentrant_insertion()
                     };
                     assert_eq!(
                         PROBE_CALLS.load(Ordering::SeqCst),
-                        if mode == PROBE_RESTRUCTURE { 3 } else { 1 }
+                        if mode == PROBE_RESTRUCTURE {
+                            if compact { 3 } else { 2 }
+                        } else {
+                            1
+                        }
                     );
                     match mode {
                         PROBE_RAISE => {
@@ -1036,9 +1100,10 @@ fn sparse_erase_is_allocation_free_and_reinsertion_preserves_live_order() {
                     .collect::<Vec<_>>(),
                 vec![int(0), int(2)]
             );
-            // Insertion crosses the holes >= live compaction boundary. The live
-            // order is the CPython oracle; physical row addresses are internal.
+            // Erasure does not refund append capacity or trigger compaction.
+            // This fifth append retains the earlier holes and the live order.
             assert!(dict_set_in_place(py, dict, int(1), int(21)));
+            assert_eq!(dict_entries(dict).len(), 5);
             assert_eq!(
                 dict_live_entries(dict)
                     .flat_map(|row| [row.key, row.value])
@@ -1239,6 +1304,399 @@ fn prehashed_setdefault_observes_reentrant_publication_and_lookup_errors() {
                 probe,
                 class,
                 function,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn dictionary_append_budget_controls_real_compaction_and_popitem_extent() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let int = |value| MoltObject::from_int(value).bits();
+            let dict = alloc_dict_with_pairs(py, &[]);
+            let entries_owner = dict_entries_ptr(dict);
+            let table_owner = dict_table_ptr(dict);
+            for key in 0..5 {
+                assert!(dict_set_in_place(py, dict, int(key), int(key + 10)));
+            }
+            assert_eq!((dict_table(dict).len(), dict_storage(dict).usable), (8, 0));
+            for key in [1, 3] {
+                assert!(dict_del_in_place(py, dict, int(key)).unwrap());
+            }
+            assert_eq!((dict_entries(dict).len(), dict_len(dict)), (5, 3));
+            assert_eq!(dict_storage(dict).usable, 0, "erasure refunds no appends");
+            assert!(dict_set_in_place(py, dict, int(5), int(15)));
+            assert_eq!(
+                (
+                    dict_table(dict).len(),
+                    dict_entries(dict).len(),
+                    dict_storage(dict).usable
+                ),
+                (16, 4, 6)
+            );
+            assert_eq!(
+                dict_live_entries(dict)
+                    .map(|row| row.key)
+                    .collect::<Vec<_>>(),
+                vec![int(0), int(2), int(4), int(5)]
+            );
+            assert_eq!(dict_entries_ptr(dict), entries_owner);
+            assert_eq!(dict_table_ptr(dict), table_owner);
+            drop(dict_clear_deferred(py, dict).unwrap());
+            assert_eq!(
+                (
+                    dict_table(dict).len(),
+                    dict_entries(dict).len(),
+                    dict_storage(dict).usable
+                ),
+                (0, 0, 0)
+            );
+            assert_eq!(dict_storage(dict).kind, DictKeyKind::Unicode);
+            for key in 0..4 {
+                assert!(dict_set_in_place(py, dict, int(key), int(key + 10)));
+            }
+            assert!(dict_del_in_place(py, dict, int(2)).unwrap());
+            let popped = dict_remove_last(py, dict).unwrap().into_owned_storage();
+            assert_eq!(popped, [int(3), int(13)]);
+            for bits in popped {
+                dec_ref_bits(py, bits);
+            }
+            assert_eq!(
+                (dict_entries(dict).len(), dict_storage(dict).usable),
+                (3, 1)
+            );
+            assert!(dict_set_in_place(py, dict, int(4), int(14)));
+            assert_eq!(
+                (dict_entries(dict).len(), dict_storage(dict).usable),
+                (4, 0)
+            );
+            assert!(dict_set_in_place(py, dict, int(5), int(15)));
+            assert_eq!(
+                (
+                    dict_table(dict).len(),
+                    dict_entries(dict).len(),
+                    dict_storage(dict).usable
+                ),
+                (16, 4, 6)
+            );
+            assert_eq!(
+                dict_live_entries(dict)
+                    .map(|row| row.key)
+                    .collect::<Vec<_>>(),
+                vec![int(0), int(1), int(4), int(5)]
+            );
+            dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn dictionary_copy_preserves_dense_holes_and_compacts_sparse_sources_without_rehashing() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let int = |value| MoltObject::from_int(value).bits();
+            let dict = alloc_dict_with_pairs(py, &[]);
+            for key in 0..5 {
+                assert!(dict_set_in_place(py, dict, int(key), int(key + 10)));
+            }
+            assert!(dict_del_in_place(py, dict, int(1)).unwrap());
+            let original = MoltObject::from_ptr(dict).bits();
+            let copied = crate::object::ops_dict::molt_dict_copy(original);
+            let copy = obj_from_bits(copied).as_ptr().unwrap();
+            assert_eq!(
+                dict_entries(copy),
+                dict_entries(dict),
+                "dense copy retains physical holes"
+            );
+            assert_eq!((dict_table(copy).len(), dict_storage(copy).usable), (8, 0));
+            assert_ne!(dict_entries_ptr(copy), dict_entries_ptr(dict));
+            let constructed = crate::molt_dict_from_obj(original);
+            let compact = obj_from_bits(constructed).as_ptr().unwrap();
+            assert_eq!(
+                (
+                    dict_entries(compact).len(),
+                    dict_table(compact).len(),
+                    dict_storage(compact).usable
+                ),
+                (4, 8, 1)
+            );
+            for key in [2, 3] {
+                assert!(dict_del_in_place(py, dict, int(key)).unwrap());
+            }
+            let sparse_copy = crate::object::ops_dict::molt_dict_copy(original);
+            let sparse = obj_from_bits(sparse_copy).as_ptr().unwrap();
+            assert_eq!(
+                (
+                    dict_entries(sparse).len(),
+                    dict_table(sparse).len(),
+                    dict_storage(sparse).usable
+                ),
+                (2, 8, 3)
+            );
+            assert_eq!(
+                dict_live_entries(sparse)
+                    .map(|row| row.key)
+                    .collect::<Vec<_>>(),
+                vec![int(0), int(4)]
+            );
+            for bits in [sparse_copy, constructed, copied, original] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn dictionary_general_key_conversion_reserves_before_compacting_or_publishing() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let keys = [
+                string_key(py, b"first"),
+                string_key(py, b"hole"),
+                string_key(py, b"last"),
+            ];
+            let int = |value| MoltObject::from_int(value).bits();
+            let dict =
+                alloc_dict_with_pairs(py, &[keys[0], int(1), keys[1], int(2), keys[2], int(3)]);
+            assert!(dict_del_in_place(py, dict, keys[1]).unwrap());
+            let before = dict_entries(dict).clone();
+            let epoch = dict_structural_epoch(dict);
+            // Force the general-key conversion to grow from eight index
+            // slots before denying its real accounted reservation.
+            for (key, value) in [
+                (string_key(py, b"fourth"), int(4)),
+                (string_key(py, b"fifth"), int(5)),
+            ] {
+                assert!(dict_set_in_place(py, dict, key, value));
+                dec_ref_bits(py, key);
+            }
+            assert_eq!(dict_storage(dict).kind, DictKeyKind::Unicode);
+            let rows = dict_entries(dict).clone();
+            let conversion_epoch = dict_structural_epoch(dict);
+            let reset = TrackerReset;
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                max_allocations: Some(0),
+                ..Default::default()
+            })));
+            assert!(!dict_set_in_place(py, dict, int(9), int(9)));
+            crate::test_support::assert_and_clear_emergency_memory_error(py);
+            drop(reset);
+            assert_eq!(dict_entries(dict), &rows);
+            assert_eq!(dict_structural_epoch(dict), conversion_epoch);
+            assert_eq!(dict_storage(dict).kind, DictKeyKind::Unicode);
+            assert!(dict_set_in_place(py, dict, int(9), int(9)));
+            assert_eq!(dict_storage(dict).kind, DictKeyKind::General);
+            assert_eq!(
+                (
+                    dict_table(dict).len(),
+                    dict_entries(dict).len(),
+                    dict_storage(dict).usable
+                ),
+                (16, 5, 5)
+            );
+            assert!(dict_structural_epoch(dict) > epoch);
+            assert_eq!(before.len(), 3);
+            dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+            for key in keys {
+                dec_ref_bits(py, key);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn dictionary_full_pairs_prescan_and_fromkeys_share_real_capacity_policy() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let int = |value| MoltObject::from_int(value).bits();
+            let keys = [int(1), int(2), int(3), int(4), int(5), int(5)];
+            let values = [int(10), int(20), int(30), int(40), int(50), int(51)];
+            let literal = crate::c_api::molt_dict_from_pairs(keys.as_ptr(), values.as_ptr(), 6);
+            let dict = obj_from_bits(literal).as_ptr().unwrap();
+            assert_eq!(dict_storage(dict).kind, DictKeyKind::General);
+            assert_eq!(
+                (
+                    dict_table(dict).len(),
+                    dict_len(dict),
+                    dict_storage(dict).usable
+                ),
+                (16, 5, 5)
+            );
+            assert_eq!(
+                dict_live_entries(dict)
+                    .map(|row| row.value)
+                    .collect::<Vec<_>>(),
+                vec![int(10), int(20), int(30), int(40), int(51)]
+            );
+            assert!(dict_del_in_place(py, dict, int(2)).unwrap());
+            assert!(dict_set_in_place(py, dict, int(6), int(60)));
+            assert_eq!(
+                (dict_entries(dict).len(), dict_storage(dict).usable),
+                (6, 4)
+            );
+            // Exact dict fromkeys presizes from live cardinality, not source
+            // extent; generic tuple fromkeys grows from the shared empty state.
+            let cls = builtin_classes(py).dict;
+            let exact = dict_fromkeys_method(cls, literal, int(99)) as u64;
+            let exact_ptr = obj_from_bits(exact).as_ptr().unwrap();
+            assert_eq!(
+                (
+                    dict_table(exact_ptr).len(),
+                    dict_entries(exact_ptr).len(),
+                    dict_storage(exact_ptr).usable
+                ),
+                (8, 5, 0)
+            );
+            let tuple = alloc_tuple(py, &keys);
+            let tuple_bits = MoltObject::from_ptr(tuple).bits();
+            let generic = dict_fromkeys_method(cls, tuple_bits, int(99)) as u64;
+            let generic_ptr = obj_from_bits(generic).as_ptr().unwrap();
+            assert_eq!(
+                (
+                    dict_table(generic_ptr).len(),
+                    dict_len(generic_ptr),
+                    dict_storage(generic_ptr).usable
+                ),
+                (8, 5, 0)
+            );
+            for bits in [generic, tuple_bits, exact, literal] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn dictionary_equal_nonstring_probe_obeys_selected_conversion_phase() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let modern = crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
+            let int = |value| MoltObject::from_int(value).bits();
+            let keys = [
+                string_key(py, b"resident"),
+                string_key(py, b"hole"),
+                string_key(py, b"last"),
+            ];
+            let (probe, class, function) = same_hash_probe_key(py);
+            for setdefault in [false, true] {
+                let dict =
+                    alloc_dict_with_pairs(py, &[keys[0], int(1), keys[1], int(2), keys[2], int(3)]);
+                assert!(dict_del_in_place(py, dict, keys[1]).unwrap());
+                let epoch = dict_structural_epoch(dict);
+                PROBE_MODE.store(PROBE_EQUAL, Ordering::SeqCst);
+                PROBE_CALLS.store(0, Ordering::SeqCst);
+                let hash = hash_string_bytes(py, b"resident") as u64;
+                if setdefault {
+                    let (value, inserted) =
+                        dict_setdefault_with_hash_in_place(py, dict, probe, Some(int(9)), hash)
+                            .unwrap();
+                    assert_eq!(value, int(1));
+                    assert!(!inserted);
+                    dec_ref_bits(py, value);
+                } else {
+                    assert!(dict_set_with_hash_in_place(py, dict, probe, int(9), hash));
+                }
+                assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    dict_storage(dict).kind,
+                    if modern {
+                        DictKeyKind::Unicode
+                    } else {
+                        DictKeyKind::General
+                    }
+                );
+                assert_eq!(dict_entries(dict).len(), if modern { 3 } else { 2 });
+                assert_eq!(dict_structural_epoch(dict) == epoch, modern);
+                let rows: Vec<_> = dict_live_entries(dict).collect();
+                assert_eq!(rows[0].key, keys[0]);
+                assert_eq!(rows[0].value, if setdefault { int(1) } else { int(9) });
+                assert_eq!(rows[1].key, keys[2]);
+                dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+            }
+            for bits in [probe, class, function, keys[0], keys[1], keys[2]] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+static FROMKEYS_RETURN_DICT: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn fromkeys_return_existing_dict(_class: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let result = FROMKEYS_RETURN_DICT.load(Ordering::SeqCst);
+        inc_ref_bits(py, result);
+        result
+    })
+}
+
+#[test]
+fn dictionary_fromkeys_nonempty_exact_constructor_preserves_live_capacity() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let int = |value| MoltObject::from_int(value).bits();
+            let target = alloc_dict_with_pairs(py, &[]);
+            for key in 0..8 {
+                assert!(dict_set_in_place(py, target, int(key), int(key)));
+            }
+            let capacity = dict_table(target).len();
+            assert_eq!(capacity, 16);
+            let target_bits = MoltObject::from_ptr(target).bits();
+            FROMKEYS_RETURN_DICT.store(target_bits, Ordering::SeqCst);
+            let name = string_key(py, b"ExistingFromKeysTarget");
+            let class = crate::molt_class_new(name);
+            crate::molt_class_set_base(class, builtin_classes(py).dict);
+            let method = string_key(py, b"__new__");
+            let function = alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr(
+                    "fromkeys_return_existing_dict",
+                    fromkeys_return_existing_dict as *const (),
+                ),
+                1,
+            );
+            assert!(!function.is_null());
+            let function = MoltObject::from_ptr(function).bits();
+            crate::molt_set_attr_name(class, method, function);
+            crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
+                .unwrap();
+            let source = alloc_dict_with_pairs(py, &[int(0), int(42)]);
+            let source_bits = MoltObject::from_ptr(source).bits();
+            let result = dict_fromkeys_method(class, source_bits, int(99)) as u64;
+            assert!(!exception_pending(py));
+            assert_eq!(result, target_bits);
+            assert_eq!(dict_len(target), 8);
+            assert_eq!(dict_table(target).len(), capacity);
+            assert_eq!(
+                dict_get_in_place(py, target, int(0)).unwrap(),
+                Some(int(99))
+            );
+            assert_eq!(dict_get_in_place(py, target, int(7)).unwrap(), Some(int(7)));
+            FROMKEYS_RETURN_DICT.store(0, Ordering::SeqCst);
+            for bits in [
+                result,
+                source_bits,
+                function,
+                method,
+                class,
+                name,
+                target_bits,
             ] {
                 dec_ref_bits(py, bits);
             }

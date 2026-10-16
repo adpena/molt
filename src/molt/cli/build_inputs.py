@@ -71,6 +71,7 @@ from molt.cli.module_resolution import (
     _stdlib_root_path,
 )
 from molt.cli.module_source import PythonSourceSnapshot
+from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.cli.output import CliFailure as _CliFailure, fail as _fail
 from molt.cli.profile_feedback import _load_pgo_profile, _load_runtime_feedback
@@ -1259,8 +1260,20 @@ def _runtime_policy_flag_environment(
     return env
 
 
-def _target_sys_platform(target: Target) -> str | None:
+def _target_sys_platform(target: Target) -> str:
+    """Use the runtime's platform value for the admitted compiler target."""
     normalized = target.strip().lower()
     if normalized in {"wasm", "wasm-freestanding"} or normalized.startswith("wasm32"):
-        return "wasm"
-    return None
+        return "wasi"
+    spec = resolve_native_target_spec(None if normalized == "native" else normalized)
+    match spec.os:
+        case "windows":
+            return "win32"
+        case "macos":
+            return "darwin"
+        case "linux":
+            return "linux"
+        case _:
+            raise RuntimeError(
+                f"No Python platform contract for target {spec.triple!r}"
+            )

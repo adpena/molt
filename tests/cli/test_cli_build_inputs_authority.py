@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import importlib
+import sys
 from importlib.machinery import PathFinder
 from pathlib import Path
 
@@ -262,3 +263,31 @@ def test_venv_root_selection_custodies_version_and_site_misses(
     assert site in after.roots
     with pytest.raises(PythonImportTopologyChangedError):
         owner.validate()
+
+
+@pytest.mark.parametrize(
+    "target, expected",
+    [
+        ("wasm", "wasi"),
+        ("wasm-freestanding", "wasi"),
+        ("wasm32-unknown-unknown", "wasi"),
+        ("wasm32-wasip1", "wasi"),
+        ("aarch64-apple-darwin", "darwin"),
+        ("x86_64-unknown-linux-gnu", "linux"),
+        ("aarch64-unknown-linux-musl", "linux"),
+        ("x86_64-pc-windows-msvc", "win32"),
+        ("aarch64-pc-windows-msvc", "win32"),
+        ("x86_64-pc-windows-gnu", "win32"),
+    ],
+)
+def test_frontend_platform_fact_uses_selected_runtime_target(target, expected):
+    assert build_inputs._target_sys_platform(target) == expected
+
+
+def test_frontend_native_platform_fact_uses_the_actual_host():
+    assert build_inputs._target_sys_platform("native") == sys.platform
+
+
+def test_frontend_platform_fact_refuses_an_unadmitted_target():
+    with pytest.raises(RuntimeError, match="no object-format policy"):
+        build_inputs._target_sys_platform("x86_64-notlinux-unknown")

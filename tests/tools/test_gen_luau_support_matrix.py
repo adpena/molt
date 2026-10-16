@@ -38,12 +38,6 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "class_layout_version" => {
                 self.emit_line("local out = if type(cls.__molt_layout_version) == \"number\" then cls.__molt_layout_version else 0");
             }
-            "class_set_layout_version" => {
-                self.emit_line("cls.__molt_layout_version = version");
-            }
-            "class_merge_layout" => {
-                self.emit_line("cls.__molt_layout_size__ = size");
-            }
             "class_apply_set_name" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
@@ -105,10 +99,8 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert "Checked Luau emission rejects" in rows["br_if"].note
     assert rows["bridge_unavailable"].status == "not-admitted"
     assert rows["object_set_class"].status == "implemented-exact"
-    assert rows["class_set_layout_version"].status == "implemented-exact"
     assert rows["class_apply_set_name"].status == "not-admitted"
     assert rows["class_layout_version"].status == "implemented-exact"
-    assert rows["class_merge_layout"].status == "implemented-exact"
     assert rows["classmethod_new"].status == "not-admitted"
     assert rows["staticmethod_new"].status == "not-admitted"
     assert rows["property_new"].status == "not-admitted"

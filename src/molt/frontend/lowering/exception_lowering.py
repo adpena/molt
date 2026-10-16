@@ -10,7 +10,7 @@ call, import, annotation, comprehension, and async visitors.
 from __future__ import annotations
 
 import ast
-from typing import Sequence
+from typing import Literal, Sequence
 
 from molt.frontend._types import (
     ActiveException,
@@ -25,7 +25,46 @@ from molt.frontend._types import (
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
+SyntaxErrorName = Literal["SyntaxError", "IndentationError", "TabError"]
+
+
+class MoltSyntaxError(ast.expr):
+    """Compiler-owned parser failure; never a mutable Python builtin lookup.
+
+    Ordinary AST argument children retain normal constant/tuple lowering and
+    lexical/source traversal. Only the exception class identity is protected.
+    """
+
+    _fields = ("exception_name", "args", "print_file_and_line")
+
+    def __init__(
+        self,
+        exception_name: SyntaxErrorName,
+        args: list[ast.expr],
+        print_file_and_line: ast.expr,
+    ) -> None:
+        super().__init__()
+        self.exception_name = exception_name
+        self.args = args
+        self.print_file_and_line = print_file_and_line
+
+
 class ExceptionLoweringMixin(GeneratorMixinBase):
+    def visit_MoltSyntaxError(self, node: MoltSyntaxError) -> MoltValue:
+        args = [self.visit(arg) for arg in node.args]
+        error = self._emit_exception_new_from_args(node.exception_name, args)
+        self._emit_raise_if_pending()
+        # This flag is not a constructor operand. All location/message fields
+        # belong to the existing SyntaxError constructor's structured args.
+        if not (
+            isinstance(node.print_file_and_line, ast.Constant)
+            and node.print_file_and_line.value is None
+        ):
+            flag = self.visit(node.print_file_and_line)
+            self._emit_attribute_store(error, None, None, "print_file_and_line", flag)
+            self._emit_raise_if_pending()
+        return error
+
     def _emit_exception_class(self, name: str) -> MoltValue:
         kind_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=kind_val))

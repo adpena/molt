@@ -468,7 +468,7 @@ capabilities = ["db.read"]
 
 [[operation]]
 name = "env.clear"
-capabilities = ["env.write"]
+capabilities = ["env.read", "env.write"]
 
 [[operation]]
 name = "env.contains"
@@ -487,12 +487,24 @@ name = "env.get"
 capabilities = ["env.read"]
 
 [[operation]]
+name = "env.keys"
+capabilities = ["env.read"]
+
+[[operation]]
+name = "env.pop"
+capabilities = ["env.read", "env.write"]
+
+[[operation]]
+name = "env.setdefault"
+capabilities = ["env.read", "env.write"]
+
+[[operation]]
 name = "env.len"
 capabilities = ["env.read"]
 
 [[operation]]
 name = "env.popitem"
-capabilities = ["env.write"]
+capabilities = ["env.read", "env.write"]
 
 [[operation]]
 name = "env.putenv"
@@ -792,6 +804,12 @@ name = "os.removedirs"
 capabilities = ["fs.write"]
 
 [[operation]]
+name = "os.need_current_directory_for_exe_path"
+capabilities = ["env.read"]
+targets = ["native"]
+platforms = ["windows"]
+
+[[operation]]
 name = "os.access"
 capabilities = ["fs.read"]
 
@@ -978,10 +996,6 @@ platforms = ["linux", "macos"]
 capabilities = ["fs.read"]
 
 [[operation]]
-name = "os.environ"
-capabilities = ["env.read"]
-
-[[operation]]
 name = "os.makedirs"
 capabilities = ["fs.write"]
 
@@ -998,10 +1012,6 @@ name = "pathlib.iterdir"
 capabilities = ["fs.read"]
 
 [[operation]]
-name = "pathlib.rglob"
-capabilities = ["fs.read"]
-
-[[operation]]
 name = "pathlib.touch"
 capabilities = ["fs.write"]
 
@@ -1011,16 +1021,8 @@ targets = ["native"]
 capabilities = ["fs.write"]
 
 [[operation]]
-name = "pathlib.read_text"
-capabilities = ["fs.read"]
-
-[[operation]]
 name = "pathlib.read_bytes"
 capabilities = ["fs.read"]
-
-[[operation]]
-name = "pathlib.write_text"
-capabilities = ["fs.write"]
 
 [[operation]]
 name = "pathlib.write_bytes"

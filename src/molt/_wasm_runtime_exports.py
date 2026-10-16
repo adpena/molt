@@ -9,6 +9,7 @@ from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import (
     link_affecting_feature_gate_for_symbol,
     runtime_symbol_available_on_target,
+    supported_target_oses_for_symbol,
 )
 from molt.source_root import compiler_source_root
 from molt._wasm_abi_generated import (
@@ -258,9 +259,19 @@ def wasm_runtime_import_names_for_features(
     """
     enabled = frozenset(enabled_features)
     selected: list[str] = []
+    target_os: str | None = None
     for name in wasm_runtime_import_names():
         symbol = _runtime_export_name_or_fail(name)
-        if not runtime_symbol_available_on_target(symbol, target_triple=target_triple):
+        if target_os is None and supported_target_oses_for_symbol(symbol):
+            if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
+                target_os = "wasi" if target_triple == "wasm32-wasip1" else "none"
+            else:
+                from molt.cli.native_link_plan import resolve_native_target_spec
+
+                target_os = resolve_native_target_spec(target_triple).os
+        if not runtime_symbol_available_on_target(
+            symbol, target_triple=target_triple, target_os=target_os
+        ):
             continue
         feature = link_affecting_feature_gate_for_symbol(symbol)
         if feature is not None and feature not in enabled:

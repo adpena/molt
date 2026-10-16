@@ -7,6 +7,40 @@
 
 use molt_runtime_core::prelude::*;
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
+
+unsafe extern "C" {
+    fn __molt_crypto_hash_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    fn __molt_crypto_hash_owner_clone(bits: u64) -> *const std::ffi::c_void;
+    fn __molt_crypto_hmac_owner_new(pointer: *const std::ffi::c_void) -> u64;
+    fn __molt_crypto_hmac_owner_clone(bits: u64) -> *const std::ffi::c_void;
+}
+
+pub(crate) fn new_hash_owner(value: crate::hashlib::HashHandle) -> u64 {
+    let owner = Arc::new(Mutex::new(value));
+    unsafe {
+        molt_runtime_core::native_custody::transfer_native_arc(owner, __molt_crypto_hash_owner_new)
+    }
+}
+
+pub(crate) fn hash_owner(bits: u64) -> Option<Arc<Mutex<crate::hashlib::HashHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(bits, __molt_crypto_hash_owner_clone)
+    }
+}
+
+pub(crate) fn new_hmac_owner(value: crate::hmac::HmacHandle) -> u64 {
+    let owner = Arc::new(Mutex::new(value));
+    unsafe {
+        molt_runtime_core::native_custody::transfer_native_arc(owner, __molt_crypto_hmac_owner_new)
+    }
+}
+
+pub(crate) fn hmac_owner(bits: u64) -> Option<Arc<Mutex<crate::hmac::HmacHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(bits, __molt_crypto_hmac_owner_clone)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -69,16 +103,6 @@ pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
 
 unsafe extern "C" {
     fn __molt_crypto_object_type_id(ptr: *mut u8) -> u32;
-    fn __molt_crypto_bytes_like_slice(
-        ptr: *mut u8,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
-    fn __molt_crypto_bytes_like_slice_raw(
-        ptr: *mut u8,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
     fn __molt_crypto_string_obj_to_owned(
         bits: u64,
         out_ptr: *mut *const u8,
@@ -94,38 +118,6 @@ unsafe extern "C" {
 /// call.
 pub unsafe fn object_type_id(ptr: *mut u8) -> u32 {
     unsafe { __molt_crypto_object_type_id(ptr) }
-}
-
-/// # Safety
-///
-/// `ptr` must refer to a live Molt object that the runtime recognizes as a
-/// bytes-like object when this function returns `Some`.
-pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    unsafe {
-        if __molt_crypto_bytes_like_slice(ptr, &mut out_ptr, &mut out_len) != 0 {
-            Some(std::slice::from_raw_parts(out_ptr, out_len))
-        } else {
-            None
-        }
-    }
-}
-
-/// # Safety
-///
-/// `ptr` must refer to a live Molt object that the runtime recognizes as a raw
-/// bytes-like object when this function returns `Some`.
-pub unsafe fn bytes_like_slice_raw(ptr: *mut u8) -> Option<&'static [u8]> {
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    unsafe {
-        if __molt_crypto_bytes_like_slice_raw(ptr, &mut out_ptr, &mut out_len) != 0 {
-            Some(std::slice::from_raw_parts(out_ptr, out_len))
-        } else {
-            None
-        }
-    }
 }
 
 /// Returns an owned String from a string object, or None.
@@ -193,15 +185,6 @@ unsafe extern "C" {
     fn __molt_crypto_to_i64(bits: u64, out: *mut i64) -> i32;
     fn __molt_crypto_int_bits_from_i64(val: i64) -> u64;
     fn __molt_crypto_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
-    fn __molt_crypto_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize) -> i64;
-    fn __molt_crypto_index_bigint_from_obj(
-        obj_bits: u64,
-        err_ptr: *const u8,
-        err_len: usize,
-        out_sign: *mut i32,
-        out_ptr: *mut *const u8,
-        out_len: *mut usize,
-    ) -> i32;
 }
 
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -225,51 +208,12 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
     unsafe { __molt_crypto_int_bits_from_bigint(sign_i32, bytes.as_ptr(), bytes.len()) }
 }
 
-pub fn index_i64_from_obj(_py: &PyToken, obj_bits: u64, err: &str) -> i64 {
-    unsafe { __molt_crypto_index_i64_from_obj(obj_bits, err.as_ptr(), err.len()) }
-}
-
-pub fn index_bigint_from_obj(
-    _py: &PyToken,
-    obj_bits: u64,
-    err: &str,
-) -> Option<num_bigint::BigInt> {
-    use num_bigint::{BigInt, Sign};
-    let mut out_sign: i32 = 0;
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    let ok = unsafe {
-        __molt_crypto_index_bigint_from_obj(
-            obj_bits,
-            err.as_ptr(),
-            err.len(),
-            &mut out_sign,
-            &mut out_ptr,
-            &mut out_len,
-        )
-    };
-    if ok == 0 {
-        return None;
-    }
-    let sign = match out_sign {
-        -1 => Sign::Minus,
-        0 => Sign::NoSign,
-        _ => Sign::Plus,
-    };
-    if out_len == 0 {
-        return Some(BigInt::from(0));
-    }
-    let bytes = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-    Some(BigInt::from_bytes_be(sign, &bytes))
-}
-
 // ---------------------------------------------------------------------------
 // Container helpers
 // ---------------------------------------------------------------------------
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_crypto_dict_len(ptr: *mut u8) -> usize;
     fn __molt_crypto_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
     fn __molt_crypto_list_len(ptr: *mut u8) -> usize;
     fn __molt_crypto_seq_snapshot(
@@ -278,13 +222,6 @@ unsafe extern "C" {
         out_len: *mut usize,
     ) -> i32;
     fn molt_seq_read_item_owned(ptr: *mut u8, index: usize, out: *mut u64) -> i32;
-}
-
-/// # Safety
-///
-/// `ptr` must refer to a live Molt dictionary object.
-pub unsafe fn dict_len(ptr: *mut u8) -> usize {
-    unsafe { __molt_crypto_dict_len(ptr) }
 }
 
 /// # Safety

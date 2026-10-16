@@ -1131,30 +1131,6 @@ pub(super) fn urllib_http_request_timeout(
     Ok(Some(value))
 }
 
-pub(super) fn urllib_http_host_matches_no_proxy(host: &str, no_proxy: &str) -> bool {
-    let normalized_host = host.trim().to_ascii_lowercase();
-    if normalized_host.is_empty() {
-        return false;
-    }
-    for raw in no_proxy.split(',') {
-        let token = raw.trim().to_ascii_lowercase();
-        if token.is_empty() {
-            continue;
-        }
-        if token == "*" {
-            return true;
-        }
-        let needle = token.strip_prefix('.').unwrap_or(&token);
-        if needle.is_empty() {
-            continue;
-        }
-        if normalized_host == needle || normalized_host.ends_with(&format!(".{needle}")) {
-            return true;
-        }
-    }
-    false
-}
-
 pub(super) fn urllib_http_parse_host_port(netloc: &str, default_port: u16) -> (String, u16) {
     let without_user = netloc.rsplit('@').next().unwrap_or(netloc);
     if without_user.starts_with('[')
@@ -1367,230 +1343,85 @@ pub(super) fn http_client_execute_wire(
     .ok_or_else(|| MoltObject::none().bits())
 }
 
+// Request and cookie-jar header mappings share one typed extraction authority.
 pub(super) fn urllib_http_extract_request_headers(
-    _py: &molt_runtime_core::CoreGilToken,
+    py: &molt_runtime_core::CoreGilToken,
     request_bits: u64,
 ) -> Result<Vec<(String, String)>, u64> {
-    let Some(headers_bits) = attr_optional(_py, request_bits, b"headers")? else {
+    let Some(headers_bits) = attr_optional(py, request_bits, b"headers")? else {
         return Ok(Vec::new());
     };
-    if obj_from_bits(headers_bits).is_none() {
-        dec_ref_bits(_py, headers_bits);
-        return Ok(Vec::new());
-    }
-    let Some(items_name_bits) = attr_name_bits_from_bytes(_py, b"items") else {
-        dec_ref_bits(_py, headers_bits);
-        return Err(MoltObject::none().bits());
-    };
-    let missing = missing_bits(_py);
-    let items_method_bits = molt_getattr_builtin(headers_bits, items_name_bits, missing);
-    dec_ref_bits(_py, headers_bits);
-    dec_ref_bits(_py, items_name_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if items_method_bits == missing || !molt_is_callable(items_method_bits) {
-        if items_method_bits != missing {
-            dec_ref_bits(_py, items_method_bits);
-        }
-        return Err(raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "headers must be a mapping",
-        ));
-    }
-    let iterable_bits = unsafe { call_callable0(_py, items_method_bits) };
-    dec_ref_bits(_py, items_method_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    let iter_bits = molt_iter(iterable_bits);
-    dec_ref_bits(_py, iterable_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(_py, iter_bits) };
-    let result = (|| {
-        let mut out: Vec<(String, String)> = Vec::new();
-        loop {
-            let Some(item) =
-                iter_next_owned(_py, &iterator).map_err(|_| MoltObject::none().bits())?
-            else {
-                break;
-            };
-            let item = unsafe { ProtectedRuntimeValue::from_owned_bits(_py, item.into_bits()) };
-            let item_bits = item.bits();
-            let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "headers mapping items must be pairs",
-                ));
-            };
-            let item_type = unsafe { object_type_id(item_ptr) };
-            if item_type != crate::bridge::type_id_list()
-                && item_type != crate::bridge::type_id_tuple()
-            {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "headers mapping items must be pairs",
-                ));
-            }
-            let fields = unsafe { seq_snapshot(item_ptr) };
-            if fields.len() != 2 {
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "headers mapping items must be pairs",
-                ));
-            }
-            let name = crate::bridge::format_obj_str(_py, obj_from_bits(fields[0]))
-                .ok_or_else(|| MoltObject::none().bits())?;
-            let value = crate::bridge::format_obj_str(_py, obj_from_bits(fields[1]))
-                .ok_or_else(|| MoltObject::none().bits())?;
-            out.push((name, value));
-        }
-        Ok(out)
-    })();
-    drop(unsafe { ProtectedRuntimeValue::from_owned_bits(_py, iterator.into_bits()) });
-    result
+    let headers = unsafe { ProtectedRuntimeValue::from_owned_bits(py, headers_bits) };
+    urllib_http_extract_headers_mapping(py, headers.bits())
 }
 
+// Request.get_method owns method selection, including empty bytes and overrides.
+// Read data after that callback, as CPython's HTTPHandler.do_open does.
 pub(super) fn urllib_http_extract_method_and_body(
-    _py: &molt_runtime_core::CoreGilToken,
+    py: &molt_runtime_core::CoreGilToken,
     request_bits: u64,
 ) -> Result<(String, Vec<u8>), u64> {
-    let body = match attr_optional(_py, request_bits, b"data")? {
-        Some(bits) if !obj_from_bits(bits).is_none() => {
-            let Some(ptr) = obj_from_bits(bits).as_ptr() else {
-                dec_ref_bits(_py, bits);
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "Request data must be bytes-like",
-                ));
-            };
-            let Some(bytes) = (unsafe { bytes_like_slice(MoltObject::from_ptr(ptr).bits()) })
-            else {
-                dec_ref_bits(_py, bits);
-                return Err(raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "Request data must be bytes-like",
-                ));
-            };
-            let payload = bytes.to_vec();
-            dec_ref_bits(_py, bits);
-            payload
-        }
-        Some(bits) => {
-            dec_ref_bits(_py, bits);
-            Vec::new()
-        }
-        None => Vec::new(),
-    };
-    let method = match attr_optional(_py, request_bits, b"method")? {
-        Some(bits) if !obj_from_bits(bits).is_none() => {
-            let value = crate::bridge::format_obj_str(_py, obj_from_bits(bits));
-            dec_ref_bits(_py, bits);
-            value.ok_or_else(|| MoltObject::none().bits())?
-        }
-        Some(bits) => {
-            dec_ref_bits(_py, bits);
-            String::new()
-        }
-        None => String::new(),
-    };
-    let normalized = if method.trim().is_empty() {
-        if body.is_empty() {
-            "GET".to_string()
-        } else {
-            "POST".to_string()
-        }
+    let name =
+        attr_name_bits_from_bytes(py, b"get_method").ok_or_else(|| MoltObject::none().bits())?;
+    let name = unsafe { ProtectedRuntimeValue::from_owned_bits(py, name) };
+    let get_method = molt_getattr_builtin(request_bits, name.bits(), missing_bits(py));
+    let get_method = unsafe { ProtectedRuntimeValue::from_owned_bits(py, get_method) };
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
+    }
+    drop(name);
+    let method = unsafe { call_callable0(py, get_method.bits()) };
+    let method = unsafe { ProtectedRuntimeValue::from_owned_bits(py, method) };
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
+    }
+    drop(get_method);
+    let name = attr_name_bits_from_bytes(py, b"data").ok_or_else(|| MoltObject::none().bits())?;
+    let name = unsafe { ProtectedRuntimeValue::from_owned_bits(py, name) };
+    let data = molt_getattr_builtin(request_bits, name.bits(), missing_bits(py));
+    let data = unsafe { ProtectedRuntimeValue::from_owned_bits(py, data) };
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
+    }
+    drop(name);
+    let method = string_obj_to_owned(obj_from_bits(method.bits()))
+        .ok_or_else(|| raise_exception::<u64>(py, "TypeError", "method must be str"))?;
+    let body = if obj_from_bits(data.bits()).is_none() {
+        Vec::new()
     } else {
-        method
+        unsafe { bytes_like_slice(data.bits()) }
+            .ok_or_else(|| {
+                raise_exception::<u64>(py, "TypeError", "Request data must be bytes-like")
+            })?
+            .to_vec()
     };
-    Ok((normalized, body))
+    Ok((method, body))
 }
 
-pub(super) fn urllib_http_find_proxy_for_scheme(
-    _py: &molt_runtime_core::CoreGilToken,
-    opener_bits: u64,
-    scheme: &str,
+pub(super) fn urllib_http_proxy_bypass(
+    py: &molt_runtime_core::CoreGilToken,
     host: &str,
-) -> Result<Option<String>, u64> {
-    let mut proxy: Option<String> = None;
-    let mut saw_proxy_handler = false;
-    let list_bits = urllib_request_ensure_handlers_list(_py, opener_bits)?;
-    let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
-        return Err(raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "opener handler registry is invalid",
-        ));
+) -> Result<bool, u64> {
+    let callback = crate::bridge::resolve_global_bits(py, "urllib.request", "proxy_bypass")?;
+    let callback = unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py, callback) };
+    let host = alloc_string(py, host.as_bytes());
+    if host.is_null() {
+        return Err(MoltObject::none().bits());
+    }
+    let host = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(host).bits())
     };
-    let handlers = unsafe { seq_snapshot(list_ptr) };
-    for handler_bits in handlers.iter().copied() {
-        let Some(proxies_bits) = attr_optional(_py, handler_bits, b"proxies")? else {
-            continue;
-        };
-        saw_proxy_handler = true;
-        if obj_from_bits(proxies_bits).is_none() {
-            dec_ref_bits(_py, proxies_bits);
-            continue;
-        }
-        let Some(get_name_bits) = attr_name_bits_from_bytes(_py, b"get") else {
-            dec_ref_bits(_py, proxies_bits);
-            return Err(MoltObject::none().bits());
-        };
-        let missing = missing_bits(_py);
-        let get_method_bits = molt_getattr_builtin(proxies_bits, get_name_bits, missing);
-        dec_ref_bits(_py, get_name_bits);
-        if exception_pending(_py) {
-            dec_ref_bits(_py, proxies_bits);
-            return Err(MoltObject::none().bits());
-        }
-        if get_method_bits == missing || !molt_is_callable(get_method_bits) {
-            if get_method_bits != missing {
-                dec_ref_bits(_py, get_method_bits);
-            }
-            dec_ref_bits(_py, proxies_bits);
-            continue;
-        }
-        let key_ptr = alloc_string(_py, scheme.as_bytes());
-        if key_ptr.is_null() {
-            dec_ref_bits(_py, get_method_bits);
-            dec_ref_bits(_py, proxies_bits);
-            return Err(MoltObject::none().bits());
-        }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let out_bits = unsafe { call_callable1(_py, get_method_bits, key_bits) };
-        dec_ref_bits(_py, key_bits);
-        dec_ref_bits(_py, get_method_bits);
-        dec_ref_bits(_py, proxies_bits);
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
-        if !obj_from_bits(out_bits).is_none() {
-            let text = crate::bridge::format_obj_str(_py, obj_from_bits(out_bits));
-            dec_ref_bits(_py, out_bits);
-            proxy = Some(text.ok_or_else(|| MoltObject::none().bits())?);
-            break;
-        }
-        dec_ref_bits(_py, out_bits);
+    let result = unsafe { call_callable1(py, callback.bits(), host.bits()) };
+    let result = unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py, result) };
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
     }
-    if proxy.is_none() && !saw_proxy_handler {
-        let env_key = format!("{}_proxy", scheme.to_ascii_lowercase());
-        proxy = env_state_get(&env_key).or_else(|| env_state_get(&env_key.to_ascii_uppercase()));
+    let bypass = is_truthy(py, obj_from_bits(result.bits()));
+    if exception_pending(py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(bypass)
     }
-    let no_proxy = env_state_get("no_proxy").or_else(|| env_state_get("NO_PROXY"));
-    if let (Some(rule), Some(_proxy_url)) = (no_proxy.as_deref(), proxy.as_ref())
-        && urllib_http_host_matches_no_proxy(host, rule)
-    {
-        proxy = None;
-    }
-    Ok(proxy)
 }
 
 pub(super) fn urllib_base64_encode(input: &[u8]) -> String {

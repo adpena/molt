@@ -10,107 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import hmac as _host_hmac
-import hashlib as _host_hashlib
 import importlib.util
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
+from tests.crypto_intrinsic_registry import crypto_intrinsics
 
-_hash_handles = {{}}
-_hash_next_handle = [0]
-_hmac_handles = {{}}
-_hmac_next_handle = [0]
-
-
-def _new_hash_handle(state):
-    _hash_next_handle[0] += 1
-    handle = _hash_next_handle[0]
-    _hash_handles[handle] = state
-    return handle
-
-
-def _new_hmac_handle(state):
-    _hmac_next_handle[0] += 1
-    handle = _hmac_next_handle[0]
-    _hmac_handles[handle] = state
-    return handle
-
-
-def _molt_hash_new(name, data=b"", options=None):
-    options = dict(options or {{}})
-    state = getattr(_host_hashlib, name)(data, **options)
-    return _new_hash_handle(state)
-
-
-def _molt_hash_update(handle, data):
-    _hash_handles[handle].update(data)
-
-
-def _molt_hash_copy(handle):
-    return _new_hash_handle(_hash_handles[handle].copy())
-
-
-def _molt_hash_digest(handle, length=None):
-    state = _hash_handles[handle]
-    if length is None:
-        return state.digest()
-    return state.digest(length)
-
-
-def _molt_hash_drop(handle):
-    _hash_handles.pop(handle, None)
-
-
-def _molt_hmac_new(key, msg, digest_name, options):
-    digest_name = str(digest_name)
-    options = dict(options or {{}})
-    digestmod = lambda data=b"": getattr(_host_hashlib, digest_name)(data, **options)
-    return _new_hmac_handle(_host_hmac.new(key, msg, digestmod))
-
-
-def _molt_hmac_update(handle, msg):
-    _hmac_handles[handle].update(msg)
-
-
-def _molt_hmac_copy(handle):
-    return _new_hmac_handle(_hmac_handles[handle].copy())
-
-
-def _molt_hmac_digest(handle):
-    return _hmac_handles[handle].digest()
-
-
-def _molt_hmac_drop(handle):
-    _hmac_handles.pop(handle, None)
-
-
-def _molt_scrypt(password, salt, n, r, p, maxmem=0, dklen=64):
-    return _host_hashlib.scrypt(
-        password,
-        salt=salt,
-        n=n,
-        r=r,
-        p=p,
-        maxmem=maxmem,
-        dklen=dklen,
-    )
-
-
-install_registry({{
-    "molt_hash_new": _molt_hash_new,
-    "molt_hash_update": _molt_hash_update,
-    "molt_hash_copy": _molt_hash_copy,
-    "molt_hash_digest": _molt_hash_digest,
-    "molt_hash_drop": _molt_hash_drop,
-    "molt_compare_digest": _host_hmac.compare_digest,
-    "molt_pbkdf2_hmac": _host_hashlib.pbkdf2_hmac,
-    "molt_scrypt": _molt_scrypt,
-    "molt_hmac_new": _molt_hmac_new,
-    "molt_hmac_update": _molt_hmac_update,
-    "molt_hmac_copy": _molt_hmac_copy,
-    "molt_hmac_digest": _molt_hmac_digest,
-    "molt_hmac_drop": _molt_hmac_drop,
-}})
+install_registry(crypto_intrinsics())
 
 
 def _load_module(name, path_text):
@@ -124,12 +29,92 @@ def _load_module(name, path_text):
 
 _hashlib = _load_module("hashlib", {str(STDLIB_ROOT / "hashlib.py")!r})
 _hmac = _load_module("hmac", {str(STDLIB_ROOT / "hmac.py")!r})
-_hashlib_private = _load_module("molt_test__hashlib", {str(STDLIB_ROOT / "_hashlib.py")!r})
+_hashlib_private = _load_module("_hashlib", {str(STDLIB_ROOT / "_hashlib.py")!r})
+_load_module("_hmac", {str(STDLIB_ROOT / "_hmac.py")!r})
 
 sha = _hashlib_private.new("sha256", b"molt")
 hmac_obj = _hashlib_private.hmac_new(b"key", b"msg", "sha256")
 
+def _error(action):
+    try:
+        action()
+    except Exception as error:
+        return type(error), str(error)
+    raise AssertionError("unsupported spelling was admitted")
+
+alias = _hashlib.new("SHA-512/224", b"molt")
+alias_copy = alias.copy()
+public_error = _error(lambda: _hashlib.new("sha512/224"))
+private_error = _error(lambda: _hashlib_private.new("sha512/224"))
+pbkdf_error = _error(lambda: _hashlib.pbkdf2_hmac("sha512/224", b"p", b"s", 1))
+
+original_unsupported = _hashlib_private.UnsupportedDigestmodError
+class ReplacementError(ValueError):
+    pass
+_hashlib.UnsupportedDigestmodError = ReplacementError
+public_alias_only = _error(lambda: _hmac.new(b"k", b"v", "sha512/224"))
+_hashlib_private.UnsupportedDigestmodError = ReplacementError
+captured_new = _error(lambda: _hashlib_private.new("sha512/224"))
+captured_pbkdf = _error(lambda: _hashlib.pbkdf2_hmac("sha512/224", b"p", b"s", 1))
+captured_hmac = _error(lambda: _hashlib_private.hmac_new(b"k", b"v", "sha512/224"))
+# The native class stays fixed, while the Python except clause deliberately
+# follows the rebound private-module alias and therefore no longer catches it.
+dynamic_hmac = _error(lambda: _hmac.new(b"k", b"v", "sha512/224"))
+_hashlib.UnsupportedDigestmodError = original_unsupported
+_hashlib_private.UnsupportedDigestmodError = original_unsupported
+
+security_events = []
+class SecurityWitness:
+    def __bool__(self):
+        security_events.append("security")
+        raise RuntimeError("security marker")
+bad_name = _error(lambda: _hashlib_private.new(123))
+none_name = _error(lambda: _hashlib_private.new(None))
+name_phase = _error(lambda: _hashlib_private.new(123, object(), usedforsecurity=SecurityWitness()))
+modern = sys.version_info[:2] >= (3, 13)
+
+public_events = []
+class Name(str):
+    def __hash__(self):
+        public_events.append("hash")
+        return str.__hash__(self)
+    def __eq__(self, other):
+        raise AssertionError("unexpected name equality")
+public_keyword = _error(lambda: _hashlib.new(Name("sha256"), bogus=1))
+public_hash_events = public_events[:]
+original_blake = _hashlib.blake2b
+_hashlib.blake2b = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("rebound BLAKE"))
+captured_blake = _hashlib.new("blake2b", b"abc", digest_size=17)
+_hashlib.blake2b = original_blake
+
 checks = {{
+    "captured_declaration_and_dynamic_catch": (
+        captured_new == (original_unsupported, "[digital envelope routines] unsupported")
+        and captured_pbkdf == captured_new and captured_hmac == captured_new
+        and dynamic_hmac == captured_new
+        and public_alias_only == (ValueError, "unsupported hash type sha512/224")
+    ),
+    "private_name_conversion_phase": (
+        bad_name == (TypeError, "new() argument 'name' must be str, not int" if modern else "name must be a string")
+        and none_name == (TypeError, "new() argument 'name' must be str, not None" if modern else "name must be a string")
+        and name_phase == (bad_name if modern else (RuntimeError, "security marker"))
+        and security_events == ([] if modern else ["security"])
+    ),
+    "public_name_dispatch": (
+        public_keyword == (TypeError, "'bogus' is an invalid keyword argument for new()")
+        and public_hash_events == ["hash"]
+        and captured_blake.digest_size == 17
+        and captured_blake.hexdigest() == "658fb5b767c736b82b1a7fa7050454344c"
+    ),
+    "name_metadata_and_errors": (
+        (alias.name, alias.digest_size, alias.block_size) == ("sha512_224", 28, 128)
+        and (alias_copy.name, alias_copy.digest_size, alias_copy.block_size) == ("sha512_224", 28, 128)
+        and alias.digest() == alias_copy.digest()
+        and public_error == (ValueError, "unsupported hash type sha512/224")
+        and private_error == (_hashlib_private.UnsupportedDigestmodError, "[digital envelope routines] unsupported")
+        and pbkdf_error == private_error
+        and _hashlib.blake2b(digest_size=17).digest_size == 17
+    ),
     "classes": (
         _hashlib_private.HASH is _hashlib._Hash
         and issubclass(_hashlib_private.HASHXOF, _hashlib._Hash)
@@ -153,8 +138,9 @@ checks = {{
         _hashlib_private.UnsupportedDigestmodError is _hashlib.UnsupportedDigestmodError
         and _hashlib_private._GIL_MINSIZE == 2048
         and _hashlib_private.get_fips_mode() == 0
-        and "sha256" in _hashlib_private._constructors
-        and "blake2b" in _hashlib_private._constructors
+        and _hashlib_private._constructors[_hashlib_private.openssl_sha256] == "sha256"
+        and _hashlib.blake2b not in _hashlib_private._constructors
+        and _hashlib.blake2s not in _hashlib_private._constructors
     ),
     "public_module_private_handles_hidden": (
         "molt_hash_new" not in _hashlib.__dict__
@@ -193,8 +179,12 @@ def test_hashlib_private_module_surface() -> None:
     checks = _run_probe()
     assert checks == {
         "classes": "True",
+        "captured_declaration_and_dynamic_catch": "True",
+        "private_name_conversion_phase": "True",
+        "public_name_dispatch": "True",
         "functions": "True",
         "metadata": "True",
+        "name_metadata_and_errors": "True",
         "openssl_aliases": "True",
         "public_module_private_handles_hidden": "True",
     }

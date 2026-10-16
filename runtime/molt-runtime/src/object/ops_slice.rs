@@ -49,8 +49,11 @@ fn slice_reduce_tuple(_py: &PyToken<'_>, slice_ptr: *mut u8) -> u64 {
         }
         let args_bits = MoltObject::from_ptr(args_ptr).bits();
         let class_bits = builtin_classes(_py).slice;
-        let res_ptr = alloc_tuple(_py, &[class_bits, args_bits]);
+        inc_ref_bits(_py, class_bits);
+        let res_ptr = crate::object::builders::alloc_tuple_owned(_py, &[class_bits, args_bits]);
         if res_ptr.is_null() {
+            dec_ref_bits(_py, class_bits);
+            dec_ref_bits(_py, args_bits);
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(res_ptr).bits()
@@ -120,10 +123,28 @@ pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
                 slice_indices_adjust(idx, &len, &lower, &upper)
             };
             let start_bits = int_bits_from_bigint(_py, start);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let stop_bits = int_bits_from_bigint(_py, stop);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, start_bits);
+                return MoltObject::none().bits();
+            }
             let step_bits = int_bits_from_bigint(_py, step);
-            let tuple_ptr = alloc_tuple(_py, &[start_bits, stop_bits, step_bits]);
+            if exception_pending(_py) {
+                dec_ref_bits(_py, stop_bits);
+                dec_ref_bits(_py, start_bits);
+                return MoltObject::none().bits();
+            }
+            let tuple_ptr = crate::object::builders::alloc_tuple_owned(
+                _py,
+                &[start_bits, stop_bits, step_bits],
+            );
             if tuple_ptr.is_null() {
+                for bits in [step_bits, stop_bits, start_bits] {
+                    dec_ref_bits(_py, bits);
+                }
                 return MoltObject::none().bits();
             }
             MoltObject::from_ptr(tuple_ptr).bits()
@@ -193,9 +214,12 @@ pub extern "C" fn molt_dataclass_new(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let values_obj = obj_from_bits(values_bits);
-        let values = match decode_value_list(values_obj) {
+        let values = match decode_value_list(_py, values_obj) {
             Some(val) => val,
             None => {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(
                     _py,
                     "TypeError",

@@ -341,6 +341,154 @@ owner.insert(Index("insert-index", 0), Index("insert-value", 120))
 print("insert-order", events, bytes(owner))
 
 
+# Required index conversion precedes value conversion and resize admission.
+# Boundary values follow the executing target's Py_ssize_t width.
+for label, position in (
+    ("ssize-min", -sys.maxsize - 1),
+    ("ssize-max", sys.maxsize),
+    ("below-ssize", -sys.maxsize - 2),
+    ("above-ssize", sys.maxsize + 1),
+):
+    for indexed in (False, True):
+        for live_export in (False, True):
+            events.clear()
+            owner = bytearray(b"ab")
+            exported = memoryview(owner) if live_export else None
+            argument = Index("index", position) if indexed else position
+            outcome = "ok"
+            message = ""
+            try:
+                owner.insert(argument, Index("value", 120))
+            except Exception as exc:
+                outcome = type(exc).__name__
+                message = str(exc)
+            if exported is not None:
+                exported.release()
+            owner.append(33)
+            print(
+                "insert-boundary",
+                label,
+                indexed,
+                live_export,
+                events,
+                outcome,
+                message,
+                bytes(owner),
+            )
+
+
+for failure_stage in ("index", "value"):
+    for live_export in (False, True):
+        events.clear()
+        owner = bytearray(b"ab")
+        exported = memoryview(owner) if live_export else None
+        retained_error = RuntimeError("insert callback")
+
+        def fail_insert_callback():
+            raise retained_error
+
+        index = Index(
+            "index", 0, fail_insert_callback if failure_stage == "index" else None
+        )
+        value = Index(
+            "value", 120, fail_insert_callback if failure_stage == "value" else None
+        )
+        try:
+            owner.insert(index, value)
+        except Exception as exc:
+            print(
+                "insert-callback-error",
+                failure_stage,
+                live_export,
+                events,
+                exc is retained_error,
+                type(exc).__name__,
+                str(exc),
+                bytes(owner),
+            )
+        else:
+            print("insert-callback-missed", failure_stage, live_export, events)
+        if exported is not None:
+            exported.release()
+        owner.append(33)
+        print("insert-callback-retired", failure_stage, live_export, bytes(owner))
+
+# Releasing the existing export in argument conversion permits the resize.
+events.clear()
+owner = bytearray(b"ab")
+exported = memoryview(owner)
+owner.insert(Index("index", 0), Index("value", 120, exported.release))
+print("insert-callback-release", events, bytes(owner))
+
+
+if sys.version_info >= (3, 14):
+    for label, size in (
+        ("same", 2),
+        ("shrink", 1),
+        ("grow", 3),
+        ("negative", -1),
+        ("above-ssize", sys.maxsize + 1),
+        ("below-ssize", -sys.maxsize - 2),
+    ):
+        for live_export in (False, True):
+            events.clear()
+            owner = bytearray(b"ab")
+            exported = memoryview(owner) if live_export else None
+            outcome = "ok"
+            message = ""
+            try:
+                owner.resize(Index("size", size))
+            except Exception as exc:
+                outcome = type(exc).__name__
+                message = str(exc)
+            if exported is not None:
+                exported.release()
+            owner.append(33)
+            print(
+                "resize-index",
+                label,
+                live_export,
+                events,
+                outcome,
+                message,
+                bytes(owner),
+            )
+
+    for live_export in (False, True):
+        events.clear()
+        owner = bytearray(b"ab")
+        exported = memoryview(owner) if live_export else None
+        retained_error = RuntimeError("resize callback")
+
+        def fail_resize_callback():
+            raise retained_error
+
+        try:
+            owner.resize(Index("size", 3, fail_resize_callback))
+        except Exception as exc:
+            print(
+                "resize-callback-error",
+                live_export,
+                events,
+                exc is retained_error,
+                type(exc).__name__,
+                str(exc),
+                bytes(owner),
+            )
+        else:
+            print("resize-callback-missed", live_export, events)
+        if exported is not None:
+            exported.release()
+        owner.append(33)
+        print("resize-callback-retired", live_export, bytes(owner))
+
+    events.clear()
+    owner = bytearray(b"ab")
+    exported = memoryview(owner)
+    owner.resize(Index("size", 3, exported.release))
+    print("resize-callback-release", events, bytes(owner))
+
+
 class Values:
     def __init__(self, owner):
         self.owner = owner
@@ -454,3 +602,41 @@ for fmt, make_value in (
     else:
         print("view-scalar-release", fmt, events, bytes(owner))
     exported.release()
+
+# Memoryview export geometry is intentionally stricter than the generic C
+# zero-length contiguity query. Empty rank-one strided views refuse simple
+# buffers, while singleton and empty multidimensional views can export them.
+for label, make_view in (
+    ("empty-strided", lambda owner: memoryview(owner)[0:0:2]),
+    ("singleton-strided", lambda owner: memoryview(owner)[0:1:2]),
+    ("nonempty-strided", lambda owner: memoryview(owner)[::2]),
+    (
+        "empty-multidimensional",
+        lambda owner: memoryview(owner).cast("B", (2, 4))[0:0:2],
+    ),
+):
+    for mutable in (False, True):
+        owner = bytearray(b"a|b|c|d|")
+        view = make_view(owner)
+        receiver = bytearray(b"a|b") if mutable else b"a|b"
+        separator = bytearray(b"-") if mutable else b"-"
+        for operation in ("join", "split"):
+            try:
+                result = (
+                    separator.join([view])
+                    if operation == "join"
+                    else receiver.split(view)
+                )
+                print("view-export", label, mutable, operation, result)
+            except Exception as error:
+                print(
+                    "view-export",
+                    label,
+                    mutable,
+                    operation,
+                    type(error).__name__,
+                    str(error),
+                )
+        view.release()
+        owner.append(33)
+        print("view-export-retired", label, mutable, owner)

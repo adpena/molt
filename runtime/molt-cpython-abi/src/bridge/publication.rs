@@ -511,7 +511,12 @@ impl ObjectBridge {
     /// projection authority. Static builtin bindings and managed Type views
     /// both come from `handle_to_borrowed_pyobj`; neither changes the physical
     /// storage type of the value whose class is requested.
-    pub(super) unsafe fn runtime_class_view(&self, bits: u64) -> *mut PyTypeObject {
+    ///
+    /// # Safety
+    /// `bits` is a live borrowed operand under uninterrupted runtime execution
+    /// custody. The returned class view is borrowed from the canonical bridge;
+    /// callers must not retain it across retirement or Python reentry.
+    pub unsafe fn runtime_class_view(&self, bits: u64) -> *mut PyTypeObject {
         let result = unsafe { crate::hooks::hooks_or_stubs().runtime_class_borrowed(bits) };
         let class_bits = match result.decode() {
             crate::hooks::DecodedHandleResult::Ok(class_bits) if class_bits != 0 => class_bits,

@@ -1769,54 +1769,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         else:
             # Dynamic path
             self._publish_class_value(node.name, class_val)
-            offsets_dict_d: MoltValue | None = None
-            if (
-                not class_info.get("dataclass")
-                and not class_info.get("dynamic")
-                and class_info.get("fields")
-            ):
-                field_items_d: list[MoltValue] = []
-                for field in sorted(class_info["fields"]):
-                    key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[field], result=key_val))
-                    offset_val = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(
-                        MoltOp(
-                            kind="CONST",
-                            args=[class_info["fields"][field]],
-                            result=offset_val,
-                        )
-                    )
-                    field_items_d.extend([key_val, offset_val])
-                offsets_dict_d = MoltValue(self.next_var(), type_hint="dict")
-                self.emit(
-                    MoltOp(kind="DICT_NEW", args=field_items_d, result=offsets_dict_d)
-                )
-            size_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[class_info["size"]], result=size_val))
-            offsets_arg = offsets_dict_d
-            if offsets_arg is None:
-                offsets_arg = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=offsets_arg))
-            self.emit(
-                MoltOp(
-                    kind="CLASS_MERGE_LAYOUT",
-                    args=[class_val, offsets_arg, size_val],
-                    result=MoltValue("none"),
-                )
-            )
-            # The selected metaclass owns __set_name__ and __init_subclass__
-            # during construction. Replaying either after return is observable.
-            layout_version = class_info.get("layout_version", 0)
-            layout_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[layout_version], result=layout_val))
-            self.emit(
-                MoltOp(
-                    kind="CLASS_SET_LAYOUT_VERSION",
-                    args=[class_val, layout_val],
-                    result=MoltValue("none"),
-                )
-            )
+            # The metaclass owns construction and may return any object,
+            # including an existing type. Its result is never a compiler
+            # layout owner. Native type construction seals physical storage;
+            # dynamic class facts do not authorize field/layout guards.
             # ``@dataclass`` runtime application on the dynamic-build path (P0
             # #50).  A dataclass whose body needs block execution (control flow /
             # ``del`` / non-Name assign target) is routed through ``dynamic_build``

@@ -2,30 +2,13 @@ use crate::bridge::*;
 use bzip2::Compression as BzCompression;
 use bzip2::read::BzDecoder;
 use bzip2::write::BzEncoder;
+use molt_runtime_core::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
+use std::sync::{Arc, Mutex};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn require_bytes_slice(_py: &PyToken, bits: u64) -> Result<&'static [u8], u64> {
-    let obj = obj_from_bits(bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return Err(raise_exception(
-            _py,
-            "TypeError",
-            "a bytes-like object is required",
-        ));
-    };
-    unsafe {
-        if let Some(slice) = bytes_like_slice(ptr) {
-            return Ok(slice);
-        }
-    }
-    let tname = type_name(_py, obj);
-    let msg = format!("a bytes-like object is required, not '{tname}'");
-    Err(raise_exception(_py, "TypeError", &msg))
-}
 
 /// Maps CPython compresslevel (1–9) to a bzip2::Compression value.
 fn bz_compression_from_level(_py: &PyToken, level_bits: u64) -> Result<BzCompression, u64> {
@@ -61,16 +44,28 @@ fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compress(data_bits: u64, compresslevel_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
         let compression = match bz_compression_from_level(_py, compresslevel_bits) {
             Ok(c) => c,
             Err(bits) => return bits,
         };
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "compress",
+            "argument",
+        ) {
+            return MoltObject::none().bits();
+        }
         let mut encoder = BzEncoder::new(Vec::new(), compression);
-        if encoder.write_all(data).is_err() {
+        if encoder
+            .write_all(unsafe { data_export.bytes(_py) })
+            .is_err()
+        {
             return raise_exception(_py, "OSError", "bz2 compress failed");
         }
         let out = match encoder.finish() {
@@ -85,11 +80,20 @@ pub extern "C" fn molt_bz2_compress(data_bits: u64, compresslevel_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompress(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
-        let mut decoder = BzDecoder::new(data);
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "decompress",
+            "argument 'data'",
+        ) {
+            return MoltObject::none().bits();
+        }
+        let mut decoder = BzDecoder::new(unsafe { data_export.bytes(_py) });
         let mut out = Vec::new();
         if decoder.read_to_end(&mut out).is_err() {
             return raise_exception(_py, "OSError", "Invalid data stream");
@@ -100,19 +104,20 @@ pub extern "C" fn molt_bz2_decompress(data_bits: u64) -> u64 {
 
 // ── Stateful BZ2Compressor handle ────────────────────────────────────────────
 
-struct Bz2CompressorHandle {
+pub struct Bz2CompressorHandle {
     // We accumulate data and compress in flush() to keep the interface simple.
     // The bzip2 crate's streaming encoder writes directly to a sink; we use
     // Vec<u8> as the sink and drain it on each call.
     encoder: Option<BzEncoder<Vec<u8>>>,
 }
 
-fn bz2_compressor_from_bits(bits: u64) -> Option<&'static mut Bz2CompressorHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
+fn bz2_compressor_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2CompressorHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_bz2_compressor_owner_clone,
+        )
     }
-    Some(unsafe { &mut *(ptr as *mut Bz2CompressorHandle) })
 }
 
 /// `bz2.BZ2Compressor(compresslevel=9)` → handle
@@ -123,11 +128,15 @@ pub extern "C" fn molt_bz2_compressor_new(compresslevel_bits: u64) -> u64 {
             Ok(c) => c,
             Err(bits) => return bits,
         };
-        let handle = Box::new(Bz2CompressorHandle {
+        let handle = Arc::new(Mutex::new(Bz2CompressorHandle {
             encoder: Some(BzEncoder::new(Vec::new(), compression)),
-        });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
+        }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                handle,
+                __molt_compression_bz2_compressor_owner_new,
+            )
+        }
     })
 }
 
@@ -135,26 +144,42 @@ pub extern "C" fn molt_bz2_compressor_new(compresslevel_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compressor_compress(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_compressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_compressor_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 compressor handle");
         };
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "compress",
+            "argument",
+        ) {
+            return MoltObject::none().bits();
+        }
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let Some(enc) = handle.encoder.as_mut() else {
+            drop(handle);
             return raise_exception(
                 _py,
                 "OSError",
                 "compressor has been flushed and is no longer usable",
             );
         };
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        if enc.write_all(data).is_err() {
+        if enc.write_all(unsafe { data_export.bytes(_py) }).is_err() {
+            drop(handle);
             return raise_exception(_py, "OSError", "bz2 compress failed");
         }
         // Drain buffered output so far.
         let mut out = Vec::new();
         std::mem::swap(enc.get_mut(), &mut out);
+        drop(handle);
         return_bytes(_py, &out)
     })
 }
@@ -163,59 +188,61 @@ pub extern "C" fn molt_bz2_compressor_compress(handle_bits: u64, data_bits: u64)
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_compressor_flush(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_compressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_compressor_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 compressor handle");
         };
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let Some(enc) = handle.encoder.take() else {
+            drop(handle);
             return raise_exception(_py, "OSError", "compressor has already been flushed");
         };
         let out = match enc.finish() {
             Ok(v) => v,
-            Err(_) => return raise_exception(_py, "OSError", "bz2 flush failed"),
+            Err(_) => {
+                drop(handle);
+                return raise_exception(_py, "OSError", "bz2 flush failed");
+            }
         };
+        drop(handle);
         return_bytes(_py, &out)
-    })
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bz2_compressor_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut Bz2CompressorHandle) };
-        MoltObject::none().bits()
     })
 }
 
 // ── Stateful BZ2Decompressor handle ──────────────────────────────────────────
 
-struct Bz2DecompressorHandle {
+pub struct Bz2DecompressorHandle {
     leftover: Vec<u8>,
     eof: bool,
     needs_input: bool,
 }
 
-fn bz2_decompressor_from_bits(bits: u64) -> Option<&'static mut Bz2DecompressorHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
+fn bz2_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2DecompressorHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_bz2_decompressor_owner_clone,
+        )
     }
-    Some(unsafe { &mut *(ptr as *mut Bz2DecompressorHandle) })
 }
 
 /// `bz2.BZ2Decompressor()` → handle
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_new() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let handle = Box::new(Bz2DecompressorHandle {
+        let handle = Arc::new(Mutex::new(Bz2DecompressorHandle {
             leftover: Vec::new(),
             eof: false,
             needs_input: true,
-        });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
+        }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                handle,
+                __molt_compression_bz2_decompressor_owner_new,
+            )
+        }
     })
 }
 
@@ -227,16 +254,22 @@ pub extern "C" fn molt_bz2_decompressor_decompress(
     max_length_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_decompressor_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 decompressor handle");
         };
-        if handle.eof {
-            return raise_exception(_py, "EOFError", "End of stream already reached");
-        }
-        let new_data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let new_data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
         };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &new_data_export,
+            data_bits,
+            "decompress",
+            "argument 'data'",
+        ) {
+            return MoltObject::none().bits();
+        }
         let max_len = {
             let obj = obj_from_bits(max_length_bits);
             if obj.is_none() {
@@ -249,10 +282,18 @@ pub extern "C" fn molt_bz2_decompressor_decompress(
                 val
             }
         };
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if handle.eof {
+            drop(handle);
+            return raise_exception(_py, "EOFError", "End of stream already reached");
+        }
         // Concatenate leftover + new data then run through a single-shot decoder.
         // This is correct for bzip2 because each bz2 stream is independently decodeable.
         let mut input = std::mem::take(&mut handle.leftover);
-        input.extend_from_slice(new_data);
+        input.extend_from_slice(unsafe { new_data_export.bytes(_py) });
         let mut decoder = BzDecoder::new(input.as_slice());
         let mut out = Vec::new();
         match decoder.read_to_end(&mut out) {
@@ -271,6 +312,7 @@ pub extern "C" fn molt_bz2_decompressor_decompress(
         if max_len >= 0 && out.len() > max_len as usize {
             out.truncate(max_len as usize);
         }
+        drop(handle);
         return_bytes(_py, &out)
     })
 }
@@ -279,9 +321,13 @@ pub extern "C" fn molt_bz2_decompressor_decompress(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_eof(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_decompressor_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 decompressor handle");
         };
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         MoltObject::from_bool(handle.eof).bits()
     })
 }
@@ -290,22 +336,14 @@ pub extern "C" fn molt_bz2_decompressor_eof(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_needs_input(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_decompressor_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 decompressor handle");
         };
+
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         MoltObject::from_bool(handle.needs_input).bits()
-    })
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bz2_decompressor_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut Bz2DecompressorHandle) };
-        MoltObject::none().bits()
     })
 }
 
@@ -316,13 +354,22 @@ pub extern "C" fn molt_bz2_decompressor_drop(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_decompressor_unused_data(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_decompressor_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 decompressor handle");
         };
+
         // unused_data is the data after the end-of-stream (empty until eof)
+        let handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if handle.eof {
-            return_bytes(_py, &handle.leftover)
+            {
+                let bytes = handle.leftover.clone();
+                drop(handle);
+                return_bytes(_py, &bytes)
+            }
         } else {
+            drop(handle);
             return_bytes(_py, &[])
         }
     })
@@ -336,16 +383,17 @@ enum Bz2FileInner {
     Closed,
 }
 
-struct Bz2FileHandle {
+pub struct Bz2FileHandle {
     inner: Bz2FileInner,
 }
 
-fn bz2_file_handle_from_bits(bits: u64) -> Option<&'static mut Bz2FileHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
+fn bz2_file_handle_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2FileHandle>>> {
+    unsafe {
+        molt_runtime_core::native_custody::clone_native_arc(
+            bits,
+            __molt_compression_bz2_file_owner_clone,
+        )
     }
-    Some(unsafe { &mut *(ptr as *mut Bz2FileHandle) })
 }
 
 /// `bz2.open(filename, mode, compresslevel) -> handle`
@@ -410,9 +458,13 @@ pub extern "C" fn molt_bz2_file_open(
                 );
             }
         };
-        let handle = Box::new(Bz2FileHandle { inner });
-        let ptr = Box::into_raw(handle) as *mut u8;
-        bits_from_ptr(ptr)
+        let handle = Arc::new(Mutex::new(Bz2FileHandle { inner }));
+        unsafe {
+            molt_runtime_core::native_custody::transfer_native_arc(
+                handle,
+                __molt_compression_bz2_file_owner_new,
+            )
+        }
     })
 }
 
@@ -420,12 +472,10 @@ pub extern "C" fn molt_bz2_file_open(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_file_handle_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 file handle");
         };
-        let Bz2FileInner::Reading(ref mut reader) = handle.inner else {
-            return raise_exception(_py, "OSError", "file not open for reading");
-        };
+
         let size = {
             let obj = obj_from_bits(size_bits);
             if obj.is_none() {
@@ -438,6 +488,14 @@ pub extern "C" fn molt_bz2_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                 val
             }
         };
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Bz2FileInner::Reading(ref mut reader) = handle.inner else {
+            drop(handle);
+            return raise_exception(_py, "OSError", "file not open for reading");
+        };
+
         let mut out = Vec::new();
         let ok = if size < 0 {
             reader.read_to_end(&mut out).is_ok()
@@ -452,8 +510,10 @@ pub extern "C" fn molt_bz2_file_read(handle_bits: u64, size_bits: u64) -> u64 {
             }
         };
         if !ok {
+            drop(handle);
             return raise_exception(_py, "OSError", "bz2 read failed");
         }
+        drop(handle);
         return_bytes(_py, &out)
     })
 }
@@ -462,18 +522,34 @@ pub extern "C" fn molt_bz2_file_read(handle_bits: u64, size_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_file_handle_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 file handle");
         };
+        let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
+            Ok(export) => export,
+            Err(_) => return MoltObject::none().bits(),
+        };
+        if !crate::compression_common::validate_clinic_buffer(
+            _py,
+            &data_export,
+            data_bits,
+            "compress",
+            "argument",
+        ) {
+            return MoltObject::none().bits();
+        }
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let Bz2FileInner::Writing(ref mut encoder) = handle.inner else {
+            drop(handle);
             return raise_exception(_py, "OSError", "file not open for writing");
         };
-        let data = match require_bytes_slice(_py, data_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
-        };
-        match encoder.write_all(data) {
-            Ok(()) => int_bits_from_i64(_py, data.len() as i64),
+        let written = encoder.write_all(unsafe { data_export.bytes(_py) });
+        drop(handle);
+        match written {
+            Ok(()) => int_bits_from_i64(_py, (unsafe { data_export.bytes(_py) }).len() as i64),
             Err(e) => {
                 let msg = format!("bz2 write failed: {e}");
                 raise_exception(_py, "OSError", &msg)
@@ -486,32 +562,23 @@ pub extern "C" fn molt_bz2_file_write(handle_bits: u64, data_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bz2_file_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle) = bz2_file_handle_from_bits(handle_bits) else {
+        let Some(handle_owner) = bz2_file_handle_from_bits(handle_bits) else {
             return raise_exception(_py, "OSError", "invalid bz2 file handle");
         };
+
+        let mut handle = handle_owner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let inner = std::mem::replace(&mut handle.inner, Bz2FileInner::Closed);
         match inner {
             Bz2FileInner::Writing(enc) => {
                 if enc.finish().is_err() {
+                    drop(handle);
                     return raise_exception(_py, "OSError", "bz2 close/finish failed");
                 }
             }
             Bz2FileInner::Reading(_) | Bz2FileInner::Closed => {}
         }
-        MoltObject::none().bits()
-    })
-}
-
-/// Free the handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bz2_file_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe { release_ptr(ptr) };
-        let _ = unsafe { Box::from_raw(ptr as *mut Bz2FileHandle) };
         MoltObject::none().bits()
     })
 }

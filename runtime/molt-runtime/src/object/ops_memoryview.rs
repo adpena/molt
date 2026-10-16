@@ -52,26 +52,13 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
                 return MoltObject::from_ptr(out_ptr).bits();
             }
 
-            if type_id == TYPE_ID_FOREIGN {
-                let pointer = std::ptr::with_exposed_provenance_mut::<
-                    molt_cpython_abi::abi_types::PyObject,
-                >(crate::object::foreign::foreign_ptr_from_obj(ptr));
-                if pointer.is_null() {
-                    return raise_exception(_py, "TypeError", "invalid native buffer exporter");
-                }
-                let lease = match crate::object::foreign::RuntimeBufferLease::acquire(
-                    pointer,
+            if !super::buffer_exports::is_exact_builtin_storage(_py, bits) {
+                let lease = match molt_runtime_core::native_custody::acquire_buffer(
+                    bits,
                     molt_cpython_abi::abi_types::PyBUF_FULL_RO,
-                    molt_cpython_abi::api::buffer::PyObject_GetBuffer,
                 ) {
                     Ok(lease) => lease,
-                    Err(molt_cpython_abi::ErrorIndicatorSet) => {
-                        crate::cpython_abi_hooks::propagate_native_failure(
-                            _py,
-                            "native memoryview acquisition",
-                        );
-                        return MoltObject::none().bits();
-                    }
+                    Err(_) => return MoltObject::none().bits(),
                 };
                 let descriptor = match molt_cpython_abi::api::buffer::descriptor_from_pybuffer(
                     lease.descriptor(),
@@ -122,17 +109,6 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
                 return MoltObject::from_ptr(out_ptr).bits();
-            }
-            if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_NATIVE_HANDLE {
-                let mut exported = MoltBufferView::default();
-                if crate::c_api::molt_buffer_acquire(bits, &mut exported) == 0 {
-                    let out = crate::c_api::molt_memoryview_from_buffer(&exported);
-                    crate::c_api::molt_buffer_release(&mut exported);
-                    return out;
-                }
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
             }
         }
         raise_memoryview_buffer_error(_py, obj)
@@ -246,45 +222,54 @@ pub extern "C" fn molt_memoryview_cast(
                 return raise_released_memoryview(_py);
             }
             let shape = if has_shape {
-                let shape_obj = obj_from_bits(shape_bits);
-                let shape_ptr = match shape_obj.as_ptr() {
-                    Some(ptr) => ptr,
-                    None => {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "shape must be a list or a tuple",
-                        );
-                    }
+                // PyList_Check/PyTuple_Check admit the physical family,
+                // including compact lists and genuine native containers.
+                // Base storage reads must not dispatch subclass protocols.
+                let list = super::list_storage::ListStorage::from_bits(_py, shape_bits);
+                let tuple = if list.is_none() {
+                    super::tuple_storage::TupleStorage::from_bits(_py, shape_bits)
+                } else {
+                    None
                 };
-                let type_id = object_type_id(shape_ptr);
-                if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
+                if list.is_none() && tuple.is_none() {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
                         "shape must be a list or a tuple",
                     );
                 }
-                let Some(elems) = crate::object::seq_access::snapshot(
-                    _py,
-                    shape_ptr,
-                    "memoryview shape snapshot allocation failed",
-                ) else {
+                let Some(ndim) = (if let Some(list) = list {
+                    list.len()
+                } else {
+                    tuple.as_ref().unwrap().len()
+                }) else {
                     return MoltObject::none().bits();
                 };
-                if elems.len() > crate::object::memoryview::MOLT_BUFFER_MAX_NDIM {
+                if ndim > crate::object::memoryview::MOLT_BUFFER_MAX_NDIM {
                     return raise_exception::<_>(
                         _py,
                         "ValueError",
                         "memoryview: number of dimensions must not exceed 64",
                     );
                 }
-                let mut shape = Vec::with_capacity(elems.len());
-                for &elem_bits in elems.iter() {
-                    let Some(val) = crate::builtins::numbers::index_i64_integral_bits(elem_bits)
+                let mut shape = Vec::with_capacity(ndim);
+                let mut byte_extent = fmt.itemsize;
+                for index in 0..ndim {
+                    let item = if let Some(list) = list {
+                        list.item(index)
+                    } else {
+                        tuple.as_ref().unwrap().item(index).map(|bits| {
+                            super::seq_access::PinnedSequenceItem::from_owned_bits(_py, bits)
+                        })
+                    };
+                    let Some(item) = item else {
+                        return MoltObject::none().bits();
+                    };
+                    let Some(val) = crate::builtins::numbers::index_i64_integral_bits(item.bits())
                         .and_then(|value| isize::try_from(value).ok())
                     else {
-                        if crate::builtins::numbers::index_bigint_integral_bits(elem_bits).is_some()
+                        if crate::builtins::numbers::index_integral_payload_bits(item.bits())
+                            .is_some()
                         {
                             return raise_exception::<_>(
                                 _py,
@@ -305,16 +290,17 @@ pub extern "C" fn molt_memoryview_cast(
                             "memoryview.cast(): elements of shape must be integers > 0",
                         );
                     }
-                    shape.push(val);
                     // Match copy_shape's left-to-right overflow precedence;
-                    // all storage consumers share the same byte-extent limit.
-                    if memoryview_checked_nbytes(&shape, fmt.itemsize).is_none() {
+                    // update the product once rather than rescanning prefixes.
+                    let Some(next_extent) = memoryview_checked_nbytes(&[val], byte_extent) else {
                         return raise_exception::<_>(
                             _py,
                             "ValueError",
                             "memoryview.cast(): product(shape) > SSIZE_MAX",
                         );
-                    }
+                    };
+                    byte_extent = next_extent;
+                    shape.push(val);
                 }
                 shape
             } else {
@@ -370,11 +356,7 @@ pub extern "C" fn molt_memoryview_cast(
                 shape,
                 strides,
             )
-            .map(|storage| {
-                storage
-                    .with_owner(memoryview_owner_bits(view_ptr))
-                    .with_native_lease((*memoryview_ptr(view_ptr)).native_lease.clone())
-            });
+            .map(|storage| storage.with_memoryview_owner(view_ptr));
             let out_ptr = match storage {
                 Some(storage) => alloc_memoryview_from_storage(_py, storage),
                 None => {

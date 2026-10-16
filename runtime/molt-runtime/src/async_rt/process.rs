@@ -4,6 +4,8 @@ use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 
 mod child_resources;
+#[cfg(unix)]
+pub(crate) use child_resources::child_memory_rlimit_bytes;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_io;
 mod stdio;
@@ -253,7 +255,7 @@ pub unsafe extern "C" fn molt_process_spawn(
                 for (key, _value) in env_entries {
                     if key == "MOLT_ENTRY_MODULE" {
                         has_entry = true;
-                    } else if key == "MOLT_MP_SPAWN" {
+                    } else if key == RuntimeFlag::MOLT_MP_SPAWN.name() {
                         has_spawn = true;
                     } else if key == "MOLT_CAPABILITY_TIER" {
                         has_capability_tier = true;
@@ -267,7 +269,11 @@ pub unsafe extern "C" fn molt_process_spawn(
                 cmd.env(key, value);
             }
         }
-        apply_child_resource_env(&mut cmd, env_entries.as_deref());
+        apply_child_resource_env(
+            &mut cmd,
+            env_entries.as_deref(),
+            runtime_state(_py).policy().resources.as_ref(),
+        );
         if !obj_from_bits(cwd_bits).is_none() {
             let cwd = match path_from_bits(_py, cwd_bits) {
                 Ok(path) => path,
@@ -278,7 +284,10 @@ pub unsafe extern "C" fn molt_process_spawn(
         #[cfg(unix)]
         let owns_process_group = configure_unix_owned_process_group(&mut cmd, false, None);
         #[cfg(unix)]
-        apply_child_memory_rlimit(&mut cmd);
+        apply_child_memory_rlimit(
+            &mut cmd,
+            runtime_state(_py).policy().child_memory_rlimit_bytes,
+        );
         let stdin_mode = process_stdio_mode(_py, stdin_bits, "stdin");
         let stdout_mode = process_stdio_mode(_py, stdout_bits, "stdout");
         let stderr_mode = process_stdio_mode(_py, stderr_bits, "stderr");
@@ -371,7 +380,11 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
                 cmd.env(key, value);
             }
         }
-        apply_child_resource_env(&mut cmd, env_entries.as_deref());
+        apply_child_resource_env(
+            &mut cmd,
+            env_entries.as_deref(),
+            runtime_state(_py).policy().resources.as_ref(),
+        );
         if !obj_from_bits(cwd_bits).is_none() {
             let cwd = match path_from_bits(_py, cwd_bits) {
                 Ok(path) => path,
@@ -433,7 +446,10 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         let owns_process_group =
             configure_unix_owned_process_group(&mut cmd, new_session, process_group_val);
         #[cfg(unix)]
-        apply_child_memory_rlimit(&mut cmd);
+        apply_child_memory_rlimit(
+            &mut cmd,
+            runtime_state(_py).policy().child_memory_rlimit_bytes,
+        );
 
         let process_stdio =
             match configure_native_stdio(_py, &mut cmd, stdin_mode, stdout_mode, stderr_mode) {
@@ -823,12 +839,33 @@ struct ProcessRegistryInner {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct ProcessRegistry {
     inner: Mutex<ProcessRegistryInner>,
+    term_grace: Duration,
+    join_timeout: Duration,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ProcessRegistry {
     pub(crate) fn new() -> Self {
+        Self::with_deadlines(
+            process_teardown_duration(
+                PROCESS_TEARDOWN_TERM_GRACE_MS_ENV,
+                PROCESS_TEARDOWN_TERM_GRACE_MS_DEFAULT,
+            ),
+            process_teardown_duration(
+                PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
+                PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT,
+            ),
+        )
+    }
+
+    pub(crate) fn new_isolate(&self) -> Self {
+        Self::with_deadlines(self.term_grace, self.join_timeout)
+    }
+
+    fn with_deadlines(term_grace: Duration, join_timeout: Duration) -> Self {
         Self {
+            term_grace,
+            join_timeout,
             inner: Mutex::new(ProcessRegistryInner {
                 next_id: 1,
                 closed: false,
@@ -923,10 +960,7 @@ impl ProcessRegistry {
             let closed = self.settle_workers(
                 std::slice::from_ref(&state),
                 Duration::ZERO,
-                process_teardown_duration(
-                    PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
-                    PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT,
-                ),
+                self.join_timeout,
             );
             return if closed {
                 Err(error)
@@ -1064,16 +1098,7 @@ impl ProcessRegistry {
     }
 
     pub(crate) fn drain_for_teardown(&self) {
-        self.drain_with_deadlines(
-            process_teardown_duration(
-                PROCESS_TEARDOWN_TERM_GRACE_MS_ENV,
-                PROCESS_TEARDOWN_TERM_GRACE_MS_DEFAULT,
-            ),
-            process_teardown_duration(
-                PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
-                PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT,
-            ),
-        );
+        self.drain_with_deadlines(self.term_grace, self.join_timeout);
     }
 
     fn drain_with_deadlines(&self, term_grace: Duration, join_timeout: Duration) {
@@ -1928,6 +1953,42 @@ mod process_wait_state_tests {
 
 #[cfg(all(test, unix, not(target_arch = "wasm32")))]
 mod process_registry_tests {
+
+    #[test]
+    fn registry_settlement_deadlines_ignore_late_environment_changes() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let keys = [
+            super::PROCESS_TEARDOWN_TERM_GRACE_MS_ENV,
+            super::PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
+        ];
+        let saved = keys.map(|key| (key, std::env::var_os(key)));
+        unsafe {
+            std::env::set_var(keys[0], "3");
+            std::env::set_var(keys[1], "7");
+        }
+        let registry = super::ProcessRegistry::new();
+        unsafe {
+            std::env::set_var(keys[0], "999999999");
+            std::env::set_var(keys[1], "999999999");
+        }
+        let inherited = registry.new_isolate();
+        let observed = (inherited.term_grace, inherited.join_timeout);
+        for (key, value) in saved {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        assert_eq!(
+            observed,
+            (
+                std::time::Duration::from_millis(3),
+                std::time::Duration::from_millis(7)
+            )
+        );
+    }
     use super::*;
     use std::fs;
     use std::process::Command;

@@ -651,17 +651,18 @@ pub(crate) fn decode_string_list(obj: MoltObject) -> Option<Vec<String>> {
     }
 }
 
-pub(crate) fn decode_value_list(obj: MoltObject) -> Option<Vec<u64>> {
-    let ptr = obj.as_ptr()?;
+/// Keep decoded elements alive across callbacks using their storage's existing
+/// owner. Immutable tuples need only a tuple pin; mutable lists need a snapshot.
+pub(crate) fn decode_value_list<'a, 'py>(
+    py: &'a PyToken<'py>,
+    obj: MoltObject,
+) -> Option<crate::object::seq_access::PinnedSequence<'a, 'py>> {
     unsafe {
-        let type_id = object_type_id(ptr);
-        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return None;
-        }
-        Some(crate::object::seq_access::with_borrowed(
-            ptr,
-            <[u64]>::to_vec,
-        ))
+        crate::object::seq_access::pin_sequence(
+            py,
+            obj.as_ptr()?,
+            "sequence snapshot allocation failed",
+        )
     }
 }
 
@@ -1774,6 +1775,226 @@ mod tests {
     fn refcount(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
         unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn value_decoder_pins_tuple_without_allocation_and_accounts_list_snapshot() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            assert!(super::decode_value_list(py, MoltObject::from_int(1)).is_none());
+            assert!(!crate::exception_pending(py));
+            let child = MoltObject::from_ptr(alloc_string(py, b"tuple pinned payload")).bits();
+            for tuple in [false, true] {
+                let ptr = if tuple {
+                    alloc_tuple(py, &[child])
+                } else {
+                    crate::alloc_list(py, &[child])
+                };
+                assert!(!ptr.is_null());
+                let bits = MoltObject::from_ptr(ptr).bits();
+                let child_refs = refcount(child);
+                let sequence_refs = refcount(bits);
+                struct Reset;
+                impl Drop for Reset {
+                    fn drop(&mut self) {
+                        set_tracker(Box::new(UnlimitedTracker));
+                    }
+                }
+                let reset = Reset;
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_allocations: Some(0),
+                    ..ResourceLimits::default()
+                })));
+                if tuple {
+                    let view = super::decode_value_list(py, MoltObject::from_ptr(ptr)).unwrap();
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(&*view, &[child]);
+                    assert_eq!(view.as_ptr(), unsafe {
+                        crate::object::layout::tuple_storage_items(ptr)
+                    });
+                    assert_eq!(
+                        refcount(child),
+                        child_refs,
+                        "tuple pin does not retain every element"
+                    );
+                    assert_eq!(refcount(bits), sequence_refs + 1);
+                    crate::dec_ref_bits(py, bits);
+                    assert_eq!(view[0], child, "view owns the last tuple reference");
+                    assert_eq!(refcount(child), child_refs);
+                    drop(view);
+                    assert_eq!(refcount(child), child_refs - 1);
+                    assert!(!crate::exception_pending(py));
+                } else {
+                    assert!(super::decode_value_list(py, MoltObject::from_ptr(ptr)).is_none());
+                    assert_eq!(refcount(child), child_refs);
+                    assert_eq!(refcount(bits), sequence_refs);
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
+                    crate::dec_ref_bits(py, bits);
+                }
+                drop(reset);
+            }
+            assert_eq!(refcount(child), 1);
+            crate::dec_ref_bits(py, child);
+        });
+    }
+
+    #[test]
+    fn decoded_tuple_pin_blocks_checked_c_api_mutation_until_retired() {
+        use molt_cpython_abi::api::{errors, numbers, refcount as c_refs, sequences, strings};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let tuple = sequences::PyTuple_New(1);
+                assert!(!tuple.is_null());
+                let first = strings::PyUnicode_FromString(c"checked tuple payload".as_ptr());
+                assert!(!first.is_null());
+                assert_eq!(sequences::PyTuple_SetItem(tuple, 0, first), 0);
+                let bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(tuple).unwrap().bits();
+                assert_eq!((*tuple).ob_refcnt, 1, "C ownership alone is unique");
+                assert_eq!(refcount(bits), 1, "only the stable C-view hold exists");
+                let view = super::decode_value_list(py, obj_from_bits(bits)).unwrap();
+                let original = view[0];
+                assert_eq!(
+                    (*tuple).ob_refcnt,
+                    2,
+                    "the live runtime pin adds the borrowed-view bias"
+                );
+                assert_eq!(
+                    refcount(bits),
+                    2,
+                    "the runtime tuple pin supplies shared custody"
+                );
+                let replacement = numbers::PyLong_FromLong(9);
+                assert_eq!(sequences::PyTuple_SetItem(tuple, 0, replacement), -1);
+                assert!(!errors::PyErr_Occurred().is_null());
+                assert_eq!(
+                    errors::PyErr_ExceptionMatches(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+                    ),
+                    1
+                );
+                errors::PyErr_Clear();
+                assert_eq!(view[0], original);
+                assert_eq!(sequences::PyTuple_GetItem(tuple, 0), first);
+                drop(view);
+                assert_eq!(
+                    (*tuple).ob_refcnt,
+                    1,
+                    "retiring the runtime pin removes the borrowed-view bias"
+                );
+                assert_eq!(refcount(bits), 1);
+                let replacement = numbers::PyLong_FromLong(9);
+                assert_eq!(sequences::PyTuple_SetItem(tuple, 0, replacement), 0);
+                let view = super::decode_value_list(py, obj_from_bits(bits)).unwrap();
+                assert_eq!(crate::to_i64(obj_from_bits(view[0])), Some(9));
+                drop(view);
+                assert_eq!((*tuple).ob_refcnt, 1);
+                assert_eq!(refcount(bits), 1);
+                c_refs::Py_DECREF(tuple);
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    static SEQUENCE_FINALIZERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    extern "C" fn sequence_retirement_finalizer(_object: u64) -> u64 {
+        SEQUENCE_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::with_gil_entry_nopanic!(py, {
+            crate::raise_exception::<u64>(py, "ValueError", "retired sequence element")
+        })
+    }
+
+    fn retire_sequence_owner<T>(py: &crate::PyToken<'_>, owner: T, pending: bool) {
+        let selected = if pending {
+            crate::raise_exception::<u64>(py, "LookupError", "selected callback failure");
+            crate::exception_last_bits_noinc(py)
+        } else {
+            None
+        };
+        let before = SEQUENCE_FINALIZERS.load(std::sync::atomic::Ordering::SeqCst);
+        drop(owner);
+        assert_eq!(
+            SEQUENCE_FINALIZERS.load(std::sync::atomic::Ordering::SeqCst),
+            before + 1
+        );
+        assert_eq!(crate::exception_last_bits_noinc(py), selected);
+        assert_eq!(crate::exception_pending(py), pending);
+        crate::molt_exception_clear();
+    }
+
+    #[test]
+    fn sequence_owner_retirement_preserves_selected_and_empty_error_state() {
+        use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+        use crate::object::seq_access;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            let name = attr_name_bits_from_bytes(py, b"SequenceRetirement").unwrap();
+            let class = crate::molt_class_new(name);
+            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let finalizer_name = attr_name_bits_from_bytes(py, b"__del__").unwrap();
+            let finalizer = MoltObject::from_ptr(alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr(
+                    "sequence_retirement_finalizer",
+                    sequence_retirement_finalizer as *const (),
+                ),
+                1,
+            ))
+            .bits();
+            crate::molt_set_attr_name(class, finalizer_name, finalizer);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            unsafe {
+                crate::object::class_finish_definition(py, class_ptr).unwrap();
+            }
+            for pending in [false, true] {
+                for kind in 0..4 {
+                    let item = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+                    let source = if kind >= 2 {
+                        alloc_tuple(py, &[item])
+                    } else {
+                        crate::alloc_list(py, &[item])
+                    };
+                    crate::dec_ref_bits(py, item);
+                    match kind {
+                        0 => {
+                            let owner =
+                                super::decode_value_list(py, MoltObject::from_ptr(source)).unwrap();
+                            crate::dec_ref_bits(py, MoltObject::from_ptr(source).bits());
+                            retire_sequence_owner(py, owner, pending);
+                        }
+                        1 => {
+                            let owner = unsafe { seq_access::pin_item(py, source, 0) }.unwrap();
+                            crate::dec_ref_bits(py, MoltObject::from_ptr(source).bits());
+                            retire_sequence_owner(py, owner, pending);
+                        }
+                        2 => {
+                            let owner = unsafe { seq_access::pin_tuple(py, source) }.unwrap();
+                            crate::dec_ref_bits(py, MoltObject::from_ptr(source).bits());
+                            retire_sequence_owner(py, owner, pending);
+                        }
+                        _ => {
+                            let owner =
+                                super::decode_value_list(py, MoltObject::from_ptr(source)).unwrap();
+                            crate::dec_ref_bits(py, MoltObject::from_ptr(source).bits());
+                            retire_sequence_owner(py, owner, pending);
+                        }
+                    }
+                }
+            }
+            unsafe {
+                crate::object::heap_lifecycle::clear_cycle_edges(py, class_ptr);
+            }
+            for bits in [class, name, finalizer_name, finalizer] {
+                crate::dec_ref_bits(py, bits);
+            }
+            assert!(!crate::exception_pending(py));
+        });
     }
 
     #[test]

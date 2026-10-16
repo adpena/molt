@@ -15,7 +15,8 @@ use super::common::{
 pub extern "C" fn molt_tk_flatten_args(args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let mut out: Vec<u64> = Vec::new();
-        flatten_recursive(args_bits, &mut out);
+        let mut snapshots = Vec::new();
+        flatten_recursive(args_bits, &mut out, &mut snapshots);
         if rt_exception_pending() {
             return MoltObject::none().bits();
         }
@@ -27,14 +28,20 @@ pub extern "C" fn molt_tk_flatten_args(args_bits: u64) -> u64 {
 }
 
 /// Recursive helper for flatten_args.
-fn flatten_recursive(bits: u64, out: &mut Vec<u64>) {
+fn flatten_recursive(
+    bits: u64,
+    out: &mut Vec<u64>,
+    snapshots: &mut Vec<OwnedBridgeHandleSnapshot>,
+) {
     if bits_is_none(bits) {
         return;
     }
     if let Some(elems) = decode_value_list_bits(bits) {
-        for elem_bits in elems {
-            flatten_recursive(elem_bits, out);
+        for &elem_bits in elems.iter() {
+            flatten_recursive(elem_bits, out, snapshots);
         }
+        // Keep nested leaves pinned until allocation adopts the flattened list.
+        snapshots.push(elems);
     } else {
         // Leaf value — include as-is
         out.push(bits);

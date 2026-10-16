@@ -31,7 +31,7 @@ pub(super) fn alloc_tuple_result(elems: &[u64]) -> Result<u64, u64> {
 /// Extract a Rust `String` from NaN-boxed bits that should be a Molt string.
 /// Returns `None` if the value is not a string (could be int, None, etc.).
 pub(super) fn bits_to_string(bits: u64) -> Option<String> {
-    string_obj_to_owned(obj_from_bits(bits))
+    unsafe { string_obj_to_owned(obj_from_bits(bits)) }
 }
 
 /// Try to interpret bits as an integer.  Handles int, bool, and int-subclass.

@@ -679,19 +679,19 @@ def _runtime_feature_gate_for_symbol(
 
 
 def _runtime_symbol_available_on_wasm(symbol: str) -> bool:
-    return _load_runtime_availability_from_categories().symbol_available_on_target_arch(
-        symbol, "wasm32"
+    return _load_runtime_availability_from_categories().symbol_available_on_target(
+        symbol, target_arch="wasm32", target_os="wasi"
     )
 
 
-def _remove_target_unavailable_wasm_imports(imports: list[dict]) -> None:
-    """Delete imports whose runtime definitions do not exist on wasm32.
+def _wasm_provider_imports(imports: list[dict]) -> list[dict]:
+    """Project imports whose runtime definitions exist on wasm32.
 
     The WASM ABI artifacts are provider manifests, not a catalogue of symbols
     available on other targets. Advertising an unsupplied symbol defers a
     deterministic target error into an undefined import at link or runtime.
     """
-    imports[:] = [
+    return [
         entry
         for entry in imports
         if (
@@ -716,12 +716,13 @@ def runtime_export_name(entry: dict) -> str | None:
 def runtime_callable_abi_specs(data: dict) -> list[dict]:
     """Normalize explicit Python-callable contracts, never raw i64 signatures.
 
-    Invoke before target filtering so native-only intrinsic providers retain
-    their callable ABI. Reserved rows own their trampoline transport contract.
+    Canonical runtime_import declarations retain native-only providers even
+    after the separate WASM provider projection. Reserved rows own their
+    trampoline transport contract.
     """
-    imports = {entry["name"]: entry for entry in data["import"]}
+    imports = {entry["name"]: entry for entry in data["runtime_import"]}
     specs: dict[str, dict] = {}
-    for entry in [*data["import"], *data.get("reserved_runtime_callable", [])]:
+    for entry in [*data["runtime_import"], *data.get("reserved_runtime_callable", [])]:
         if "callable_arity" not in entry:
             continue
         symbol = entry["runtime_name"]
@@ -757,6 +758,8 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
     Plain op-loop local/result sinks are transport facts, not value semantics,
     so only explicitly boxed op-loop rows authorize this projection.
     Raw and trampoline imports stay out.
+    The target-neutral runtime_import declarations own this ABI; filtering the
+    WASM provider view must not remove native direct-call facts.
     """
     specs: dict[str, dict] = {}
     reserved = {
@@ -797,7 +800,7 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
                 f"import {name!r} has conflicting boxed op-loop arities"
             )
         op_loop_arities[name] = len(args)
-    for import_entry in data["import"]:
+    for import_entry in data["runtime_import"]:
         entry = {**import_entry, **reserved.get(import_entry["name"], {})}
         explicit = entry.get("boxed_call", False)
         if not isinstance(explicit, bool):
@@ -2081,10 +2084,13 @@ def validate_loaded_manifest(
                 f"poll_table_slot values must be contiguous from 1; missing {missing}"
             )
     _validate_runtime_callable_export_abi(imports)
-    # Callable signatures are target-neutral; retain native-only providers before
-    # the WASM provider manifest applies its target availability projection.
+    # These normalized declarations own target-neutral callable and boxed ABI
+    # facts. The WASM provider view shares their rows without removing native
+    # providers from the declaration authority.
+    data["runtime_import"] = imports
     data["runtime_callable_abi"] = runtime_callable_abi_specs(data)
-    _remove_target_unavailable_wasm_imports(imports)
+    imports = _wasm_provider_imports(imports)
+    data["import"] = imports
     seen_imports = {entry["name"] for entry in imports}
 
     lir_runtime_calls = data.get("lir_runtime_call", [])
@@ -2832,6 +2838,7 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
         INTRINSICS_MANIFEST,
         Path(parse_intrinsic_manifest.__code__.co_filename).resolve(),
         INTRINSIC_CATEGORIES,
+        ROOT / "src/molt/_host_capabilities_generated.py",
         FRONTEND_TYPES,
         CPYTHON_ABI_VARIADIC_SHIM,
         *_cpython_abi_link_header_closure(),

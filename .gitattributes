@@ -13,3 +13,9 @@ vendor/rust/cranelift-object/LICENSE whitespace=-blank-at-eof
 
 # Preserved handoff WIP: patch context lines carry their source whitespace verbatim.
 docs/agent/handoff-patches/*.patch -whitespace
+
+# Published compression corpus files are byte inputs, including the PDF fixture.
+vendor/rust/zlib-rs/src/deflate/test-data/* binary
+
+# Retain the original upstream license bytes, including its copyright spacing.
+vendor/rust/zlib-rs/LICENSE whitespace=-blank-at-eof,-blank-at-eol

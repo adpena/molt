@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::OwnedRuntimeValue;
 
 fn normalized_hadamard_in_place(values: &mut [f32]) {
     let size = values.len();
@@ -927,16 +928,28 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
 
-        let k_role_bits = molt_getattr_builtin(k_bits, role_name, missing);
-        let v_role_bits = molt_getattr_builtin(v_bits, role_name, missing);
-        let Some(k_role) = string_obj_to_owned(obj_from_bits(k_role_bits)) else {
+        // Each attribute lookup returns an owned reference. Keep that owner
+        // through decoding and retire it on every subsequent exit.
+        let k_role_owner = unsafe {
+            OwnedRuntimeValue::from_owned_bits(
+                _py,
+                molt_getattr_builtin(k_bits, role_name, missing),
+            )
+        };
+        let v_role_owner = unsafe {
+            OwnedRuntimeValue::from_owned_bits(
+                _py,
+                molt_getattr_builtin(v_bits, role_name, missing),
+            )
+        };
+        let Some(k_role) = k_role_owner.string_bytes(_py).map(String::from_utf8_lossy) else {
             return raise_exception::<_>(
                 _py,
                 "ValueError",
                 "turboquant attention key view is missing _kv_role",
             );
         };
-        let Some(v_role) = string_obj_to_owned(obj_from_bits(v_role_bits)) else {
+        let Some(v_role) = v_role_owner.string_bytes(_py).map(String::from_utf8_lossy) else {
             return raise_exception::<_>(
                 _py,
                 "ValueError",

@@ -935,6 +935,14 @@ const _: () = {
     assert!(std::mem::align_of::<MemoryViewLease>() == std::mem::align_of::<usize>());
 };
 
+/// Distinguish preparation before exporter dispatch from an invoked exporter
+/// failure. Consumers normalize only the latter; both leave the error set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferAcquireError {
+    Preparation,
+    Exporter,
+}
+
 impl<P: crate::api::refcount::ReferenceRetirement> BufferLease<P> {
     /// The declaring slot is passed explicitly by __buffer__ adapters; ordinary
     /// acquisition passes PyObject_GetBuffer. Failed callbacks own their cleanup.
@@ -942,13 +950,13 @@ impl<P: crate::api::refcount::ReferenceRetirement> BufferLease<P> {
         object: *mut PyObject,
         flags: c_int,
         get: unsafe extern "C" fn(*mut PyObject, *mut Py_buffer, c_int) -> c_int,
-    ) -> Result<Self, crate::ErrorIndicatorSet> {
+    ) -> Result<Self, BufferAcquireError> {
         let owner = unsafe { crate::api::refcount::PyObjectOwner::<P>::from_borrowed(object) };
         let pointer = unsafe { PyMem_Calloc(1, std::mem::size_of::<MemoryViewExport>()) }
             .cast::<MemoryViewExport>();
         let Some(pointer) = std::ptr::NonNull::new(pointer) else {
             unsafe { crate::api::errors::PyErr_NoMemory() };
-            return Err(crate::ErrorIndicatorSet);
+            return Err(BufferAcquireError::Preparation);
         };
         unsafe {
             (&raw mut (*pointer.as_ptr()).references).write(std::sync::atomic::AtomicUsize::new(1))
@@ -963,7 +971,7 @@ impl<P: crate::api::refcount::ReferenceRetirement> BufferLease<P> {
             if status < 0 {
                 unsafe { (&raw mut (*pointer.as_ptr()).master).write(std::mem::zeroed()) };
             }
-            return Err(crate::ErrorIndicatorSet);
+            return Err(BufferAcquireError::Exporter);
         }
         Ok(lease)
     }
@@ -1158,6 +1166,39 @@ pub(crate) unsafe fn memoryview_release(op: *mut PyObject) -> *mut PyObject {
     };
     let result = unsafe { (crate::hooks::hooks_or_stubs().memoryview_release)(value.bits()) };
     unsafe { crate::bridge::GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
+}
+
+/// Enter the memoryview declaring kernel, not the generic reflected dispatcher.
+/// A mixed managed/native comparison reaches this slot through C type dispatch;
+/// redispatching there would select this same slot recursively.
+pub(crate) unsafe extern "C" fn memoryview_richcompare(
+    left: *mut PyObject,
+    right: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    use molt_lang_obj_model::sequence_compare::RichCompareOp;
+    if !RichCompareOp::from_i32(op).is_some_and(RichCompareOp::is_equality)
+        || unsafe { PyMemoryView_Check(left) } == 0
+    {
+        let result = &raw mut crate::abi_types::Py_NotImplementedSentinel;
+        unsafe { crate::api::refcount::Py_INCREF(result) };
+        return result;
+    }
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(left) = (unsafe { crate::bridge::RuntimeValue::acquire(left) }) else {
+        return std::ptr::null_mut();
+    };
+    let Some(right) = (unsafe { crate::bridge::RuntimeValue::acquire(right) }) else {
+        return std::ptr::null_mut();
+    };
+    unsafe {
+        crate::api::typeobj::declaring_richcompare(
+            &raw mut crate::abi_types::PyMemoryView_Type,
+            left.bits(),
+            right.bits(),
+            op,
+        )
+    }
 }
 
 pub unsafe extern "C" fn memoryview_releasebuffer(_op: *mut PyObject, view: *mut Py_buffer) {

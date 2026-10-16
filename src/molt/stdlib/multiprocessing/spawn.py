@@ -22,14 +22,13 @@ def _debug_spawn(message: str) -> None:
             pass
 
 
-_MOLT_ENV_GET = _require_intrinsic("molt_env_get")
 
 
 def _get_env(key: str, default: str = "") -> str:
-    return str(_MOLT_ENV_GET(key, default))
+    return str(_os.environ.get(key, default))
 
 
-_SPAWN_EXECUTABLE = _get_env("MOLT_SYS_EXECUTABLE", _sys.executable)
+_SPAWN_EXECUTABLE = _sys.executable
 
 WINEXE = _os.name == "nt" and bool(getattr(_sys, "frozen", False))
 WINSERVICE = _os.name == "nt" and bool(getattr(_sys, "frozen", False))

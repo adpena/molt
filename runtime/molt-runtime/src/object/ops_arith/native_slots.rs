@@ -138,16 +138,22 @@ pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
                 .unwrap_or_else(|| MoltObject::none().bits());
         }
         if matches!(kind, TYPE_ID_BYTES | TYPE_ID_BYTEARRAY) {
-            if !crate::object::buffer_exports::supports_buffer(py, right) {
-                return SequenceConcatKind::BytesLike.raise(py, left, right);
+            let mut arguments = [None, None];
+            for (index, value) in [left, right].into_iter().enumerate() {
+                arguments[index] =
+                    match crate::object::buffer_exports::ScopedBuffer::simple(py, value) {
+                        Ok(buffer) => Some(buffer),
+                        Err(_) => {
+                            // CPython concatenation replaces exporter errors.
+                            molt_cpython_abi::api::errors::PyErr_Clear();
+                            crate::clear_exception(py);
+                            return SequenceConcatKind::BytesLike.raise(py, left, right);
+                        }
+                    };
             }
-            // Hold the export while reading its detached copy. No mutable byte
-            // view survives an exporter callback.
-            let Some((rhs, _export)) = crate::object::ops_bytes::byte_buffer(py, right) else {
-                return MoltObject::none().bits();
-            };
-            let lhs = bytes_like_slice_raw(lhs).unwrap();
-            return concat_bytes_like(py, lhs, &rhs, kind)
+            let lhs = arguments[0].as_ref().unwrap().as_slice();
+            let rhs = arguments[1].as_ref().unwrap().as_slice();
+            return concat_bytes_like(py, lhs, rhs, kind)
                 .unwrap_or_else(|| MoltObject::none().bits());
         }
         raise_exception(

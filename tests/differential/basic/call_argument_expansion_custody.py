@@ -125,6 +125,46 @@ run("subclass-list", lambda: target(list(ListSubclass([1]))))
 run("subclass-tuple", lambda: target(tuple(ListSubclass([1]))))
 
 
+original_hint_error = ValueError("original length sentinel")
+
+
+class OriginalHintIterator(Values):
+    def __del__(self):
+        events.append("returned-iterator.drop")
+
+
+class OriginalHint:
+    def __init__(self, fail=False):
+        self.fail = fail
+
+    def __iter__(self):
+        events.append("original.iter")
+        return OriginalHintIterator([5, 6], "returned-iterator")
+
+    def __len__(self):
+        events.append("original.len")
+        if self.fail:
+            raise original_hint_error
+        return 2
+
+
+def original_hint_list(fail):
+    source = OriginalHint(fail)
+    try:
+        result = list(source)
+    except ValueError as error:
+        events.append(("original-error-identity", error is original_hint_error))
+    else:
+        events.append(("original-result", result))
+
+
+run("list-original-hint", lambda: original_hint_list(False))
+run("list-original-hint-error", lambda: original_hint_list(True))
+# Comprehensions consume the iterator directly and must not acquire the source
+# length hint merely because the output is also a list.
+run("comprehension-no-hint", lambda: target([item for item in OriginalHint(True)]))
+
+
 def partial_extend():
     destination = [0]
     try:
@@ -734,3 +774,352 @@ except ValueError as error:
     print("binding-callback-failure", str(error), ordered, drops)
 else:
     raise AssertionError("keyword equality exception was replaced or lost")
+
+
+"""Independent public mutation observations; parent executes all configured versions."""
+
+def mutation_case(mode):
+    trace = []
+
+    class Key:
+        def __init__(self, callback=None):
+            self.callback = callback
+
+        def __hash__(self):
+            return 1
+
+        def __eq__(self, other):
+            if self.callback is not None:
+                callback, self.callback = self.callback, None
+                trace.append("equal")
+                callback()
+            return False
+
+    source = {Key(): 10, 2: 20}
+    if mode == "resize-same-extent":
+        source.update({3: 30, 4: 40, 5: 50})
+    elif mode == "popitem-earlier-hole":
+        source[3] = 30
+        del source[2]
+    elif mode in ("copy-retains-holes", "copy-compacts-holes"):
+        source.update({3: 30, 4: 40, 5: 50})
+        del source[2]
+        if mode == "copy-compacts-holes":
+            del source[3]
+            del source[4]
+        source = source.copy()
+
+    def mutate():
+        if mode == "replace":
+            source[2] = 21
+        elif mode == "delete-only":
+            del source[2]
+        elif mode in ("delete-append-room", "resize-same-extent"):
+            del source[2]
+            source[6] = 60
+        elif mode == "popitem-earlier-hole":
+            source.popitem()
+            source[4] = 40
+        elif mode == "clear-same-extent":
+            source.clear()
+            source.update({3: 30, 4: 40})
+        elif mode == "clear-smaller-extent":
+            source.clear()
+            source[3] = 30
+        elif mode == "copy-retains-holes":
+            source[6] = 60
+        elif mode == "copy-compacts-holes":
+            source[6] = 60
+        elif mode == "add":
+            source[3] = 30
+        elif mode == "nested":
+            source.update({2: 21})
+
+    destination = {Key(mutate): 0}
+    try:
+        destination.update(source)
+    except RuntimeError as error:
+        trace.append((type(error).__name__, str(error)))
+    print(mode, trace, tuple(source.values()), tuple(destination.values()))
+
+for mode in (
+    "replace", "delete-only", "delete-append-room", "resize-same-extent",
+    "popitem-earlier-hole", "clear-same-extent", "clear-smaller-extent",
+    "copy-retains-holes", "copy-compacts-holes", "add", "nested",
+):
+    mutation_case(mode)
+
+
+def string_transition():
+    trace = []
+    source = {"resident": 10, "removed": 20, "last": 30}
+    del source["removed"]
+
+    class Foreign(str):
+        __hash__ = str.__hash__
+
+    class Collision(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            trace.append("equal")
+            source[Foreign("last")] = 31
+            return str.__eq__(self, other)
+
+    destination = {Collision("resident"): 0}
+    try:
+        destination.update(source)
+    except RuntimeError as error:
+        trace.append((type(error).__name__, str(error)))
+    print("string-key-transition", trace, tuple(source.values()), tuple(destination.values()))
+
+string_transition()
+
+
+def direct_error_retirement():
+    trace = []
+    sentinel = LookupError("retain this merge failure")
+
+    class SourceKey:
+        def __hash__(self):
+            return 1
+
+        def __del__(self):
+            trace.append("key-retired")
+
+    class Value:
+        def __del__(self):
+            trace.append("value-retired")
+
+    class Collision:
+        def __hash__(self):
+            return 1
+
+        def __eq__(self, other):
+            source.clear()
+            raise sentinel
+
+    source = {SourceKey(): Value()}
+    destination = {Collision(): 0}
+    try:
+        destination.update(source)
+    except LookupError as error:
+        trace.append(("same-error", error is sentinel))
+    print("direct-error-retirement", trace, len(source), tuple(destination.values()))
+
+direct_error_retirement()
+
+
+def known_hash_copy():
+    trace = []
+
+    class Key:
+        def __hash__(self):
+            trace.append("hash")
+            return 1
+
+    source = {Key(): 10, 2: 20, 3: 30}
+    del source[2]
+    trace.clear()
+    copied = source.copy()
+    merged = {}
+    merged.update(source)
+    constructed = dict(source)
+    print("copy-known-hash", trace, tuple(copied.values()), tuple(merged.values()), tuple(constructed.values()))
+
+known_hash_copy()
+
+
+"""Full-pairs presizing and fromkeys protocol witnesses; configured CPython oracle."""
+def duplicate_literal_transition():
+    trace = []
+
+    class Key:
+        def __init__(self, mutate=False):
+            self.mutate = mutate
+
+        def __hash__(self):
+            return 1
+
+        def __eq__(self, other):
+            if self.mutate:
+                self.mutate = False
+                trace.append("equal")
+                del source[2]
+                source[6] = 60
+            return False
+
+    # Six already-evaluated pairs select a sixteen-slot table before inserting
+    # five unique keys. An incremental empty constructor reaches eight instead.
+    source = {Key(): 10, 2: 20, 3: 30, 4: 40, 5: 50, 5: 51}
+    destination = {Key(True): 0}
+    try:
+        destination.update(source)
+    except RuntimeError as error:
+        trace.append((type(error).__name__, str(error)))
+    print("literal-duplicate-capacity", trace, tuple(source.values()), tuple(destination.values()))
+
+
+def fromkeys_protocol():
+    trace = []
+
+    class Key:
+        def __hash__(self):
+            trace.append("hash")
+            return 1
+
+    key = Key()
+    for source in ({key: 0}, {key}, frozenset([key])):
+        trace.clear()
+        result = dict.fromkeys(source, 7)
+        print("fromkeys-cached", trace, tuple(result.values()), next(iter(result)) is key)
+
+    class Keys:
+        def __iter__(self):
+            trace.append("iter")
+            return iter(["first", "second", "first"])
+
+        def __len__(self):
+            raise AssertionError("fromkeys must not request a length hint")
+
+    trace.clear()
+    print("fromkeys-generic", dict.fromkeys(Keys(), 9), trace)
+
+    class Custom(dict):
+        def __setitem__(self, key, value):
+            trace.append(("set", key, value))
+            dict.__setitem__(self, key, value + 1)
+
+    trace.clear()
+    result = Custom.fromkeys(Keys(), 9)
+    print("fromkeys-subtype", tuple(result.items()), trace, type(result) is Custom)
+
+
+duplicate_literal_transition()
+fromkeys_protocol()
+
+
+# Exact results returned by subclass construction keep the selected fromkeys
+# role: 3.12 rehashes a nonempty result, 3.13+ consumes source cached hashes.
+def fromkeys_existing_result():
+    trace = []
+
+    class Key:
+        def __hash__(self):
+            trace.append("hash")
+            return 1
+
+    key = Key()
+    for source in ({key: 0}, {key}, frozenset([key])):
+        for count in (1, 8):
+            target = {str(index): index for index in range(count)}
+
+            class Existing(dict):
+                def __new__(cls):
+                    return target
+
+            trace.clear()
+            result = Existing.fromkeys(source, 9)
+            print("fromkeys-existing", type(source).__name__, count, trace,
+                  result is target, tuple(result.values()), next(reversed(result)) is key)
+
+
+# Observe the live cursor while equal non-exact strings reach both insertion
+# consumers. No __sizeof__ or internal epoch is used as the public oracle.
+def string_setdefault_transition():
+    trace = []
+    source = {"resident": 10, "removed": 20, "last": 30}
+    del source["removed"]
+
+    class Foreign(str):
+        __hash__ = str.__hash__
+
+    class Collision(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            trace.append(("equal", source.setdefault(Foreign("last"), 31)))
+            return str.__eq__(self, other)
+
+    destination = {Collision("resident"): 0}
+    try:
+        destination.update(source)
+    except RuntimeError as error:
+        trace.append((type(error).__name__, str(error)))
+    print("string-setdefault-transition", trace, tuple(source.values()), tuple(destination.values()))
+
+
+def clear_during_key_lookup():
+    for use_default in (False, True):
+        trace = []
+        target = {"resident": 1, "last": 2}
+
+        class Clearing(str):
+            __hash__ = str.__hash__
+
+            def __eq__(self, other):
+                trace.append("clear")
+                target.clear()
+                return False
+
+        key = Clearing("resident")
+        if use_default:
+            result = target.setdefault(key, 7)
+        else:
+            target[key] = 7
+            result = None
+        print("lookup-clears-table", use_default, trace, result,
+              tuple(target.values()), next(iter(target)) is key)
+
+
+fromkeys_existing_result()
+string_setdefault_transition()
+clear_during_key_lookup()
+
+
+# Ordinary lookup restarts only for a replaced key layout or compared key.
+# Fixed integer hash/keys avoid depending on randomized string probe placement.
+def lookup_layout_restart():
+    for operation in ("getitem", "get", "contains", "setdefault", "assign", "delete"):
+        for compact, probe_first in ((False, False), (True, False), (True, True)):
+            trace = []
+            active = False
+
+            class Stored:
+                def __hash__(self):
+                    return 0
+
+                def __eq__(self, other):
+                    trace.append("equal")
+                    if active and len(trace) == 1:
+                        del target[1]
+                        target[0] = 40
+                    return False
+
+            stored = Stored()
+            target = {stored: 7, 1: None} if probe_first else {1: None, stored: 7}
+            if compact:
+                for key in (2, 3, 4):
+                    target[key] = None
+                    del target[key]
+            trace.clear()
+            active = True
+            if operation == "getitem":
+                result = target[0]
+            elif operation == "get":
+                result = target.get(0)
+            elif operation == "contains":
+                result = 0 in target
+            elif operation == "setdefault":
+                result = target.setdefault(0, 99)
+            elif operation == "assign":
+                target[0] = 99
+                result = None
+            else:
+                del target[0]
+                result = None
+            print("lookup-layout", operation, compact, probe_first, trace, result,
+                  tuple(target.values()), next(iter(target)) is stored)
+
+
+lookup_layout_restart()

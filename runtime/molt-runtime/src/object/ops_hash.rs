@@ -826,8 +826,13 @@ fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         // TypeError: unhashable type: 'bytearray'. The owner's hash value is
         // discarded — only its hashability gates the view. molt flattens nested
         // views at construction, so the owner is always the root bytes/bytearray.
-        let owner_hash = hash_bits_signed(_py, memoryview_owner_bits(ptr));
-        if owner_hash == -1 {
+        // Callback descriptors have CPython's NULL master.obj. Their hidden
+        // root is a lifetime anchor, not an exporting object's hashability gate.
+        if !matches!(
+            (*memoryview_ptr(ptr)).kind.scope(),
+            super::MemoryViewScope::Root | super::MemoryViewScope::Derived
+        ) && hash_bits_signed(_py, memoryview_owner_bits(ptr)) == -1
+        {
             return -1;
         }
 

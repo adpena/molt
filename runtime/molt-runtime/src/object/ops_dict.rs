@@ -209,6 +209,7 @@ pub(crate) unsafe fn dict_update_apply(
         let outcome = crate::object::mapping_merge::apply(
             _py,
             other_bits,
+            direct_target,
             |_, _| true,
             |key, value, hash| {
                 if let Some(target) = direct_target {
@@ -538,6 +539,7 @@ pub extern "C" fn molt_dict_clear(dict_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let original = dict_bits;
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
@@ -560,7 +562,25 @@ pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let result = MoltObject::from_ptr(out_ptr).bits();
-            if !dict_update_apply(_py, result, dict_update_set_in_place, dict_bits) {
+            if dict_len(dict_ptr) == 0 {
+                return result;
+            }
+            let direct = match crate::object::mapping_merge::direct_dict(_py, original) {
+                Ok(direct) => direct.is_some(),
+                Err(()) => {
+                    dec_ref_bits(_py, result);
+                    return MoltObject::none().bits();
+                }
+            };
+            let copied = if direct
+                && dict_len(dict_ptr)
+                    >= super::ops::dict_usable_capacity(dict_entries(dict_ptr).len())
+            {
+                super::ops::dict_clone_into_empty(_py, dict_ptr, out_ptr)
+            } else {
+                dict_update_apply(_py, result, dict_update_set_in_place, original)
+            };
+            if !copied {
                 dec_ref_bits(_py, result);
                 return MoltObject::none().bits();
             }

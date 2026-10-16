@@ -2,7 +2,7 @@
 //! `tarfile` module intrinsics for Molt.
 //!
 //! Implements tar format parsing (POSIX ustar and GNU extensions) with
-//! optional gzip and bzip2 decompression backed by `flate2` and `bzip2`.
+//! optional gzip and bzip2 decompression backed by the shared fallible zlib stream and `bzip2`.
 //!
 //! Modes:
 //!   "r"     — raw tar (no compression)
@@ -282,11 +282,8 @@ fn parse_tar_members(data: &[u8]) -> Vec<TarInfo> {
 // ── Decompression ─────────────────────────────────────────────────────────
 
 fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
-    use flate2::read::GzDecoder;
-    let mut decoder = GzDecoder::new(data);
-    let mut out = Vec::new();
-    decoder.read_to_end(&mut out).map_err(|e| e.to_string())?;
-    Ok(out)
+    crate::zlib::decompress_bytes(data, 31, 16384)
+        .map_err(|error| error.message("while decompressing data"))
 }
 
 fn decompress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
@@ -298,11 +295,13 @@ fn decompress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
-    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
-    enc.write_all(data).map_err(|e| e.to_string())?;
-    enc.finish().map_err(|e| e.to_string())
+    let mut output = crate::zlib::compress_bytes(data, 6, 31)
+        .map_err(|error| error.message("while compressing data"))?;
+    // This archive format policy formerly came from GzEncoder's default
+    // header, also matching CPython GzipFile: OS is unknown (255). A completed
+    // wbits=31 stream always contains the ten-byte fixed gzip header.
+    output[9] = 255;
+    Ok(output)
 }
 
 fn compress_bzip2(data: &[u8]) -> Result<Vec<u8>, String> {

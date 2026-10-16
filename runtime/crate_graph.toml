@@ -134,6 +134,10 @@ name = "molt-runtime-platform"
 runtime_layer = "core"
 layer = 0
 role = "platform and OS ABI primitive shared by CPython ABI and the runtime fan-in"
+# Path consumes the shared access/root predicates; native Tcl consumes the sole
+# process-environment writer and its locale lock. These direct downward edges
+# intentionally add path and Tk to this crate's rebuild cone (4 -> 6). Keeping
+# the providers here avoids duplicate OS policy and runtime callback indirection.
 
 # ---------------------------------------------------------------------------
 # Layer 1 -- direct consumers of the layer-0 fixpoints.

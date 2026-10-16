@@ -308,7 +308,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_hash_update",
         "molt_hash_copy",
         "molt_hash_digest",
-        "molt_hash_drop",
         "molt_compare_digest",
         "molt_pbkdf2_hmac",
         "molt_scrypt",
@@ -318,7 +317,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_hmac_update",
         "molt_hmac_copy",
         "molt_hmac_digest",
-        "molt_hmac_drop",
         "molt_compare_digest",
     ),
     "imghdr": (
@@ -419,7 +417,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_secrets_token_hex",
         "molt_secrets_token_urlsafe",
         "molt_secrets_randbits",
-        "molt_secrets_compare_digest",
+        "molt_compare_digest",
         "molt_secrets_choice",
         "molt_secrets_below",
     ),
@@ -525,6 +523,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     "struct": (
         "molt_struct_calcsize",
         "molt_struct_iter_unpack",
+        "molt_struct_unpack_iterator_type",
         "molt_struct_pack",
         "molt_struct_pack_into",
         "molt_struct_unpack",

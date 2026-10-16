@@ -28,3 +28,7 @@ doc = false
 
 [workspace]
 members = ["."]
+
+# The standalone fuzz workspace must use the same maintained stream provider.
+[patch.crates-io]
+zlib-rs = { path = "../../../vendor/rust/zlib-rs" }

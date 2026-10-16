@@ -39,8 +39,6 @@ use super::{spawned_task_count, spawned_task_inc};
 // --- Scheduler ---
 
 mod diagnostics;
-#[cfg(not(target_arch = "wasm32"))]
-use diagnostics::async_worker_threads;
 use diagnostics::debug_current_task;
 pub(crate) use diagnostics::{
     AsyncHangProbe, async_trace_enabled, record_async_poll, trace_task_result,
@@ -263,11 +261,11 @@ impl MoltScheduler {
     pub(crate) fn start_workers(
         &self,
         origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+        worker_count: usize,
     ) -> std::io::Result<()> {
         self.worker_handles.start(origin, |handles| {
-            let workers: Vec<Worker<MoltTask>> = (0..async_worker_threads())
-                .map(|_| Worker::new_fifo())
-                .collect();
+            let workers: Vec<Worker<MoltTask>> =
+                (0..worker_count).map(|_| Worker::new_fifo()).collect();
             let stealers: Vec<_> = workers.iter().map(Worker::stealer).collect();
             for (i, worker) in workers.into_iter().enumerate() {
                 let injector_clone = Arc::clone(&self.injector);

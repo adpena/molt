@@ -182,6 +182,9 @@ class OperationId(StrEnum):
     ENV_EXPANDUSER = "env.expanduser"
     ENV_EXPANDVARS = "env.expandvars"
     ENV_GET = "env.get"
+    ENV_KEYS = "env.keys"
+    ENV_POP = "env.pop"
+    ENV_SETDEFAULT = "env.setdefault"
     ENV_LEN = "env.len"
     ENV_POPITEM = "env.popitem"
     ENV_PUTENV = "env.putenv"
@@ -298,6 +301,7 @@ class OperationId(StrEnum):
     OS_MKDIR = "os.mkdir"
     OS_RMDIR = "os.rmdir"
     OS_REMOVEDIRS = "os.removedirs"
+    OS_NEED_CURRENT_DIRECTORY_FOR_EXE_PATH = "os.need_current_directory_for_exe_path"
     OS_ACCESS = "os.access"
     OS_CHMOD = "os.chmod"
     OS_LINK = "os.link"
@@ -334,17 +338,13 @@ class OperationId(StrEnum):
     OS_SYMLINK_AT = "os.symlink_at"
     OS_UTIME_AT = "os.utime_at"
     OS_SENDFILE = "os.sendfile"
-    OS_ENVIRON = "os.environ"
     OS_MAKEDIRS = "os.makedirs"
     PATHLIB_RESOLVE = "pathlib.resolve"
     PATHLIB_IS_MOUNT = "pathlib.is_mount"
     PATHLIB_ITERDIR = "pathlib.iterdir"
-    PATHLIB_RGLOB = "pathlib.rglob"
     PATHLIB_TOUCH = "pathlib.touch"
     PATHLIB_HARDLINK_TO = "pathlib.hardlink_to"
-    PATHLIB_READ_TEXT = "pathlib.read_text"
     PATHLIB_READ_BYTES = "pathlib.read_bytes"
-    PATHLIB_WRITE_TEXT = "pathlib.write_text"
     PATHLIB_WRITE_BYTES = "pathlib.write_bytes"
     PATHLIB_OWNER = "pathlib.owner"
     PATHLIB_GROUP = "pathlib.group"
@@ -468,13 +468,16 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             ),
             OperationId.DB_EXEC: (CapabilityId.DB_WRITE,),
             OperationId.DB_QUERY: (CapabilityId.DB_READ,),
-            OperationId.ENV_CLEAR: (CapabilityId.ENV_WRITE,),
+            OperationId.ENV_CLEAR: (CapabilityId.ENV_READ, CapabilityId.ENV_WRITE),
             OperationId.ENV_CONTAINS: (CapabilityId.ENV_READ,),
             OperationId.ENV_EXPANDUSER: (CapabilityId.ENV_READ,),
             OperationId.ENV_EXPANDVARS: (CapabilityId.ENV_READ,),
             OperationId.ENV_GET: (CapabilityId.ENV_READ,),
+            OperationId.ENV_KEYS: (CapabilityId.ENV_READ,),
+            OperationId.ENV_POP: (CapabilityId.ENV_READ, CapabilityId.ENV_WRITE),
+            OperationId.ENV_SETDEFAULT: (CapabilityId.ENV_READ, CapabilityId.ENV_WRITE),
             OperationId.ENV_LEN: (CapabilityId.ENV_READ,),
-            OperationId.ENV_POPITEM: (CapabilityId.ENV_WRITE,),
+            OperationId.ENV_POPITEM: (CapabilityId.ENV_READ, CapabilityId.ENV_WRITE),
             OperationId.ENV_PUTENV: (CapabilityId.ENV_WRITE,),
             OperationId.ENV_SET: (CapabilityId.ENV_WRITE,),
             OperationId.ENV_SNAPSHOT: (CapabilityId.ENV_READ,),
@@ -598,6 +601,9 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.OS_MKDIR: (CapabilityId.FS_WRITE,),
             OperationId.OS_RMDIR: (CapabilityId.FS_WRITE,),
             OperationId.OS_REMOVEDIRS: (CapabilityId.FS_WRITE,),
+            OperationId.OS_NEED_CURRENT_DIRECTORY_FOR_EXE_PATH: (
+                CapabilityId.ENV_READ,
+            ),
             OperationId.OS_ACCESS: (CapabilityId.FS_READ,),
             OperationId.OS_CHMOD: (CapabilityId.FS_WRITE,),
             OperationId.OS_LINK: (CapabilityId.FS_WRITE,),
@@ -634,17 +640,13 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.OS_SYMLINK_AT: (CapabilityId.FS_WRITE,),
             OperationId.OS_UTIME_AT: (CapabilityId.FS_WRITE,),
             OperationId.OS_SENDFILE: (CapabilityId.FS_READ,),
-            OperationId.OS_ENVIRON: (CapabilityId.ENV_READ,),
             OperationId.OS_MAKEDIRS: (CapabilityId.FS_WRITE,),
             OperationId.PATHLIB_RESOLVE: (CapabilityId.FS_READ,),
             OperationId.PATHLIB_IS_MOUNT: (CapabilityId.FS_READ,),
             OperationId.PATHLIB_ITERDIR: (CapabilityId.FS_READ,),
-            OperationId.PATHLIB_RGLOB: (CapabilityId.FS_READ,),
             OperationId.PATHLIB_TOUCH: (CapabilityId.FS_WRITE,),
             OperationId.PATHLIB_HARDLINK_TO: (CapabilityId.FS_WRITE,),
-            OperationId.PATHLIB_READ_TEXT: (CapabilityId.FS_READ,),
             OperationId.PATHLIB_READ_BYTES: (CapabilityId.FS_READ,),
-            OperationId.PATHLIB_WRITE_TEXT: (CapabilityId.FS_WRITE,),
             OperationId.PATHLIB_WRITE_BYTES: (CapabilityId.FS_WRITE,),
             OperationId.PATHLIB_OWNER: (CapabilityId.FS_READ,),
             OperationId.PATHLIB_GROUP: (CapabilityId.FS_READ,),
@@ -686,6 +688,7 @@ OPERATION_TARGETS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxyTy
         OperationId.SELECT_EPOLL: ("native",),
         OperationId.GUI_WINDOW: ("native",),
         OperationId.PROCESS_SPAWN: ("native",),
+        OperationId.OS_NEED_CURRENT_DIRECTORY_FOR_EXE_PATH: ("native",),
         OperationId.OS_LINK: ("native",),
         OperationId.OS_SYMLINK: ("native",),
         OperationId.OS_TRUNCATE: ("native",),
@@ -726,6 +729,7 @@ OPERATION_PLATFORMS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxy
         OperationId.SIGNAL_SIGPENDING: ("linux", "macos"),
         OperationId.SIGNAL_SIGWAIT: ("linux", "macos"),
         OperationId.SELECT_EPOLL: ("linux",),
+        OperationId.OS_NEED_CURRENT_DIRECTORY_FOR_EXE_PATH: ("windows",),
         OperationId.OS_GETUID: ("linux", "macos"),
         OperationId.OS_GETGID: ("linux", "macos"),
         OperationId.OS_GETEUID: ("linux", "macos"),

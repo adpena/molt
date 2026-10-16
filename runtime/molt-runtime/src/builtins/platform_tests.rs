@@ -87,35 +87,32 @@ fn dynamic_extension_admission_reports_complete_static_grants_before_path_access
 }
 
 fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
-    let _guard = crate::test_support::RuntimeTestTransaction::new();
-    with_env_projection(entries, f)
+    crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+        with_env_projection(entries, f)
+    })
 }
 
-/// Change import-path inputs under the caller's existing runtime transaction.
-/// Runtime capabilities remain those admitted at bootstrap.
 fn with_env_projection<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
-    let original = {
-        let mut env = env_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let original = env.clone();
-        env.clear();
-        for (key, value) in entries {
-            env.insert((*key).to_string(), (*value).to_string());
+    struct Restore(Vec<(String, Option<std::ffi::OsString>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (key, value) in &self.0 {
+                process_env_set(std::ffi::OsStr::new(key), value.as_deref())
+                    .expect("restore startup input");
+            }
         }
-        original
-    };
-    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-    {
-        let mut env = env_state()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *env = original;
     }
-    match out {
-        Ok(value) => value,
-        Err(payload) => std::panic::resume_unwind(payload),
+    let _restore = Restore(
+        entries
+            .iter()
+            .map(|(key, _)| ((*key).to_owned(), std::env::var_os(key)))
+            .collect(),
+    );
+    for (key, value) in entries {
+        process_env_set(std::ffi::OsStr::new(key), Some(std::ffi::OsStr::new(value)))
+            .expect("set startup input");
     }
+    f()
 }
 
 fn platform_test_path(parts: &[&str]) -> String {
@@ -627,7 +624,9 @@ fn sys_bootstrap_state_ignores_pythonpath_and_includes_module_roots_and_pwd() {
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
-            let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
+            let state = crate::with_gil_entry_nopanic!(py, {
+                sys_bootstrap_state_from_module_file(py, Some(bootstrap_module_file()))
+            });
             let path_sep = if sys_platform_str().starts_with("win") {
                 '\\'
             } else {
@@ -678,7 +677,9 @@ fn sys_bootstrap_state_omits_cwd_when_dev_untrusted() {
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
-            let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
+            let state = crate::with_gil_entry_nopanic!(py, {
+                sys_bootstrap_state_from_module_file(py, Some(bootstrap_module_file()))
+            });
             assert!(!state.include_cwd);
             assert!(!state.path.iter().any(|entry| entry.is_empty()));
             assert!(!state.path.iter().any(|entry| entry == "/tmp/molt_pwd"));
@@ -696,8 +697,9 @@ fn sys_bootstrap_state_normalizes_stdlib_root_for_stdlib_submodule() {
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
-            let state =
-                sys_bootstrap_state_from_module_file(Some(bootstrap_stdlib_submodule_file()));
+            let state = crate::with_gil_entry_nopanic!(py, {
+                sys_bootstrap_state_from_module_file(py, Some(bootstrap_stdlib_submodule_file()))
+            });
             assert_eq!(state.stdlib_root, Some(expected_stdlib_root()));
             assert!(
                 state
@@ -719,7 +721,9 @@ fn sys_bootstrap_state_falls_back_to_current_dir_when_pwd_missing() {
             ("PWD", ""),
         ],
         || {
-            let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
+            let state = crate::with_gil_entry_nopanic!(py, {
+                sys_bootstrap_state_from_module_file(py, Some(bootstrap_module_file()))
+            });
             assert!(state.include_cwd);
             assert_eq!(state.pwd, resolve_bootstrap_pwd(""));
             assert!(state.path.iter().any(|entry| entry.is_empty()));
@@ -759,7 +763,9 @@ fn sys_bootstrap_state_ignores_virtual_env_site_packages_when_present() {
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
-            let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
+            let state = crate::with_gil_entry_nopanic!(py, {
+                sys_bootstrap_state_from_module_file(py, Some(bootstrap_module_file()))
+            });
             assert!(state.venv_site_packages_entries.is_empty());
             assert!(!state.path.iter().any(|entry| entry == &site_packages_text));
         },
@@ -781,7 +787,9 @@ fn bootstrap_resolve_abspath_uses_bootstrap_pwd_for_relative_paths() {
             ("PWD", &pwd),
         ],
         || {
-            let resolved = bootstrap_resolve_abspath(&rel_path, Some(bootstrap_module_file()));
+            let resolved = crate::with_gil_entry_nopanic!(py, {
+                bootstrap_resolve_abspath(py, &rel_path, Some(bootstrap_module_file()))
+            });
             assert_eq!(resolved, expected);
         },
     );
@@ -1854,7 +1862,7 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
 
     // Extension capabilities are admitted at cold bootstrap; the projected
     // environment below independently controls import roots and cwd policy.
-    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+    crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
         with_env_projection(
             &[
                 ("PYTHONPATH", ""),
@@ -1865,8 +1873,9 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
             || {
                 crate::with_gil_entry_nopanic!(_py, {
                     assert!(has_capability(_py, "fs.read"));
-                    let bootstrap =
-                        sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
+                    let bootstrap = crate::with_gil_entry_nopanic!(py, {
+                        sys_bootstrap_state_from_module_file(py, Some(bootstrap_module_file()))
+                    });
                     assert!(bootstrap.include_cwd);
                     let payload_result = importlib_find_spec_payload(
                         _py,
@@ -2052,8 +2061,9 @@ fn importlib_search_paths_includes_bootstrap_roots_and_stdlib_candidates() {
             ("PWD", "/tmp/bootstrap_pwd"),
         ],
         || {
-            let resolved =
-                importlib_search_paths(&["src".to_string()], Some(bootstrap_module_file()));
+            let resolved = crate::with_gil_entry_nopanic!(py, {
+                importlib_search_paths(py, &["src".to_string()], Some(bootstrap_module_file()))
+            });
             assert!(resolved.iter().any(|entry| entry == "src"));
             let path_sep = if sys_platform_str().starts_with("win") {
                 '\\'
@@ -2080,6 +2090,7 @@ fn importlib_search_paths_includes_bootstrap_roots_and_stdlib_candidates() {
 
 #[test]
 fn importlib_namespace_paths_finds_namespace_dirs() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2101,8 +2112,9 @@ fn importlib_namespace_paths_finds_namespace_dirs() {
         base_one.to_string_lossy().into_owned(),
         base_two.to_string_lossy().into_owned(),
     ];
-    let resolved =
-        importlib_namespace_paths("nsdemo", &search_paths, Some(bootstrap_module_file()));
+    let resolved = crate::with_gil_entry_nopanic!(py, {
+        importlib_namespace_paths(py, "nsdemo", &search_paths, Some(bootstrap_module_file()))
+    });
     assert!(resolved.iter().any(|entry| entry == &ns_one_text));
     assert!(resolved.iter().any(|entry| entry == &ns_two_text));
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dirs");
@@ -2112,6 +2124,7 @@ fn importlib_namespace_paths_finds_namespace_dirs() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn importlib_namespace_paths_finds_zip_namespace_dirs() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2136,8 +2149,14 @@ fn importlib_namespace_paths_finds_zip_namespace_dirs() {
 
     let archive_text = archive.to_string_lossy().into_owned();
     let expected = format!("{archive_text}/nszip/pkg");
-    let resolved =
-        importlib_namespace_paths("nszip.pkg", &[archive_text], Some(bootstrap_module_file()));
+    let resolved = crate::with_gil_entry_nopanic!(py, {
+        importlib_namespace_paths(
+            py,
+            "nszip.pkg",
+            &[archive_text],
+            Some(bootstrap_module_file()),
+        )
+    });
     assert!(resolved.iter().any(|entry| entry == &expected));
 
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -2145,6 +2164,7 @@ fn importlib_namespace_paths_finds_zip_namespace_dirs() {
 
 #[test]
 fn importlib_metadata_dist_paths_finds_dist_info_dirs() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2162,10 +2182,13 @@ fn importlib_metadata_dist_paths_finds_dist_info_dirs() {
     std::fs::write(tmp.join("not_a_dist-info"), "x").expect("create plain file");
     let dist_info_text = dist_info.to_string_lossy().into_owned();
     let egg_info_text = egg_info.to_string_lossy().into_owned();
-    let resolved = importlib_metadata_dist_paths(
-        &[tmp.to_string_lossy().into_owned()],
-        Some(bootstrap_module_file()),
-    );
+    let resolved = crate::with_gil_entry_nopanic!(py, {
+        importlib_metadata_dist_paths(
+            py,
+            &[tmp.to_string_lossy().into_owned()],
+            Some(bootstrap_module_file()),
+        )
+    });
     assert!(resolved.iter().any(|entry| entry == &dist_info_text));
     assert!(resolved.iter().any(|entry| entry == &egg_info_text));
     assert!(
@@ -2259,6 +2282,7 @@ fn importlib_metadata_record_payload_parses_rows() {
 
 #[test]
 fn importlib_metadata_packages_distributions_payload_aggregates_top_level() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2285,10 +2309,13 @@ fn importlib_metadata_packages_distributions_payload_aggregates_top_level() {
     std::fs::write(dist_two.join("top_level.txt"), "pkg_two\npkg_shared\n")
         .expect("write top_level two");
 
-    let payload = importlib_metadata_packages_distributions_payload(
-        &[tmp.to_string_lossy().into_owned()],
-        Some(bootstrap_module_file()),
-    );
+    let payload = crate::with_gil_entry_nopanic!(py, {
+        importlib_metadata_packages_distributions_payload(
+            py,
+            &[tmp.to_string_lossy().into_owned()],
+            Some(bootstrap_module_file()),
+        )
+    });
     let mapping: BTreeMap<String, Vec<String>> = payload.into_iter().collect();
     assert_eq!(mapping.get("pkg_one"), Some(&vec!["demo-one".to_string()]));
     assert_eq!(mapping.get("pkg_two"), Some(&vec!["demo-two".to_string()]));
@@ -2317,8 +2344,9 @@ fn importlib_bootstrap_payload_reports_resolved_search_paths_and_env_fields() {
             ("PWD", "/tmp/bootstrap_pwd"),
         ],
         || {
-            let payload =
-                importlib_bootstrap_payload(&["src".to_string()], Some(bootstrap_module_file()));
+            let payload = crate::with_gil_entry_nopanic!(py, {
+                importlib_bootstrap_payload(py, &["src".to_string()], Some(bootstrap_module_file()))
+            });
             let path_sep = if sys_platform_str().starts_with("win") {
                 '\\'
             } else {
@@ -2354,6 +2382,7 @@ fn importlib_bootstrap_payload_reports_resolved_search_paths_and_env_fields() {
 
 #[test]
 fn importlib_metadata_entry_points_payload_aggregates_dist_entry_points() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2378,10 +2407,13 @@ fn importlib_metadata_entry_points_payload_aggregates_dist_entry_points() {
         "[demo.group]\ntwo = demo_two:value\n",
     )
     .expect("write entry_points two");
-    let payload = importlib_metadata_entry_points_payload(
-        &[tmp.to_string_lossy().into_owned()],
-        Some(bootstrap_module_file()),
-    );
+    let payload = crate::with_gil_entry_nopanic!(py, {
+        importlib_metadata_entry_points_payload(
+            py,
+            &[tmp.to_string_lossy().into_owned()],
+            Some(bootstrap_module_file()),
+        )
+    });
     assert!(payload.iter().any(|(name, value, group)| name == "one"
         && value == "demo_one:main"
         && group == "console_scripts"));
@@ -2393,6 +2425,7 @@ fn importlib_metadata_entry_points_payload_aggregates_dist_entry_points() {
 
 #[test]
 fn importlib_metadata_entry_points_select_payload_filters_by_group_and_name() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2411,24 +2444,30 @@ fn importlib_metadata_entry_points_select_payload_filters_by_group_and_name() {
     )
     .expect("write entry points");
     let search_paths = vec![tmp.to_string_lossy().into_owned()];
-    let group_filtered = importlib_metadata_entry_points_select_payload(
-        &search_paths,
-        Some(bootstrap_module_file()),
-        Some("console_scripts"),
-        None,
-    );
+    let group_filtered = crate::with_gil_entry_nopanic!(py, {
+        importlib_metadata_entry_points_select_payload(
+            py,
+            &search_paths,
+            Some(bootstrap_module_file()),
+            Some("console_scripts"),
+            None,
+        )
+    });
     assert_eq!(group_filtered.len(), 2);
     assert!(
         group_filtered
             .iter()
             .all(|(_, _, group)| group == "console_scripts")
     );
-    let name_filtered = importlib_metadata_entry_points_select_payload(
-        &search_paths,
-        Some(bootstrap_module_file()),
-        Some("console_scripts"),
-        Some("beta"),
-    );
+    let name_filtered = crate::with_gil_entry_nopanic!(py, {
+        importlib_metadata_entry_points_select_payload(
+            py,
+            &search_paths,
+            Some(bootstrap_module_file()),
+            Some("console_scripts"),
+            Some("beta"),
+        )
+    });
     assert_eq!(name_filtered.len(), 1);
     assert_eq!(name_filtered[0].0, "beta");
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -2436,6 +2475,7 @@ fn importlib_metadata_entry_points_select_payload_filters_by_group_and_name() {
 
 #[test]
 fn importlib_metadata_entry_points_filter_payload_filters_by_value() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2454,13 +2494,16 @@ fn importlib_metadata_entry_points_filter_payload_filters_by_value() {
     )
     .expect("write entry points");
     let search_paths = vec![tmp.to_string_lossy().into_owned()];
-    let filtered = importlib_metadata_entry_points_filter_payload(
-        &search_paths,
-        Some(bootstrap_module_file()),
-        Some("demo.group"),
-        None,
-        Some("demo:beta"),
-    );
+    let filtered = crate::with_gil_entry_nopanic!(py, {
+        importlib_metadata_entry_points_filter_payload(
+            py,
+            &search_paths,
+            Some(bootstrap_module_file()),
+            Some("demo.group"),
+            None,
+            Some("demo:beta"),
+        )
+    });
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].0, "beta");
     assert_eq!(filtered[0].1, "demo:beta");
@@ -2469,6 +2512,7 @@ fn importlib_metadata_entry_points_filter_payload_filters_by_value() {
 
 #[test]
 fn importlib_metadata_distributions_payload_aggregates_dist_payloads() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2494,10 +2538,13 @@ fn importlib_metadata_distributions_payload_aggregates_dist_payloads() {
     )
     .expect("write metadata two");
 
-    let payloads = importlib_metadata_distributions_payload(
-        &[tmp.to_string_lossy().into_owned()],
-        Some(bootstrap_module_file()),
-    );
+    let payloads = crate::with_gil_entry_nopanic!(py, {
+        importlib_metadata_distributions_payload(
+            py,
+            &[tmp.to_string_lossy().into_owned()],
+            Some(bootstrap_module_file()),
+        )
+    });
     assert_eq!(payloads.len(), 2);
     assert!(
         payloads
@@ -2956,4 +3003,191 @@ mod resolver_admission_tests {
             });
         });
     }
+}
+
+#[test]
+fn environment_mapping_owns_exact_objects_and_process_only_writes_do_not_publish() {
+    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(
+        "env.read,env.write",
+        |py| {
+            let raw_key = std::ffi::OsStr::new("__MOLT_ENV_OBJECT_MAPPING_TEST__");
+            let original = std::env::var_os(raw_key);
+            let key = alloc_test_string_bits(py, raw_key.to_str().unwrap());
+            let first = alloc_test_string_bits(py, "mapping");
+            let second = alloc_test_string_bits(py, "process-only");
+            #[cfg(not(windows))]
+            let (encoded_key, encoded_value) = (
+                MoltObject::from_ptr(alloc_bytes(py, raw_key.as_encoded_bytes())).bits(),
+                MoltObject::from_ptr(alloc_bytes(py, b"mapping")).bits(),
+            );
+            #[cfg(windows)]
+            let (encoded_key, encoded_value) = {
+                inc_ref_bits(py, key);
+                inc_ref_bits(py, first);
+                (key, first)
+            };
+            molt_env_mapping_set(encoded_key, encoded_value);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                std::env::var_os(raw_key).as_deref(),
+                Some(std::ffi::OsStr::new("mapping"))
+            );
+            let observed = molt_env_mapping_get(encoded_key);
+            assert_eq!(
+                observed, encoded_value,
+                "get transfers the exact stored object"
+            );
+            dec_ref_bits(py, observed);
+            molt_env_putenv(key, second);
+            assert!(!exception_pending(py));
+            assert_eq!(
+                std::env::var_os(raw_key).as_deref(),
+                Some(std::ffi::OsStr::new("process-only"))
+            );
+            let observed = molt_env_mapping_get(encoded_key);
+            assert_eq!(observed, encoded_value);
+            dec_ref_bits(py, observed);
+            molt_env_unsetenv(key);
+            assert!(!exception_pending(py));
+            let observed = molt_env_mapping_get(encoded_key);
+            assert_eq!(observed, encoded_value);
+            dec_ref_bits(py, observed);
+            molt_env_mapping_delete(encoded_key);
+            assert!(!exception_pending(py));
+            process_env_set(raw_key, original.as_deref()).expect("restore process environment");
+            for value in [key, first, second, encoded_key, encoded_value] {
+                dec_ref_bits(py, value);
+            }
+        },
+    );
+}
+
+#[test]
+fn environment_mapping_is_lazy_and_terminal_retirement_precedes_direct_mutation() {
+    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("env.write", |py| {
+        assert_eq!(
+            platform_state(py)
+                .environment_mapping
+                .load(Ordering::Acquire),
+            0
+        );
+        molt_env_mapping_init();
+        assert!(!exception_pending(py));
+        let root = platform_state(py)
+            .environment_mapping
+            .load(Ordering::Acquire);
+        assert_eq!(
+            unsafe { object_type_id(obj_from_bits(root).as_ptr().unwrap()) },
+            TYPE_ID_DICT
+        );
+        assert!(platform_clear_runtime_state(py, runtime_state(py)));
+        assert_eq!(
+            platform_state(py)
+                .environment_mapping
+                .load(Ordering::Acquire),
+            MoltObject::none().bits()
+        );
+        let key = alloc_test_string_bits(py, "__MOLT_ENV_RETIRED_TEST__");
+        let value = alloc_test_string_bits(py, "must-not-write");
+        molt_env_putenv(key, value);
+        assert!(exception_pending(py));
+        assert_eq!(std::env::var_os("__MOLT_ENV_RETIRED_TEST__"), None);
+        crate::molt_exception_clear();
+        dec_ref_bits(py, key);
+        dec_ref_bits(py, value);
+    });
+}
+
+static ENVIRONMENT_FSPATH_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+extern "C" fn denied_environment_fspath(_self: u64) -> u64 {
+    ENVIRONMENT_FSPATH_CALLS.fetch_add(1, Ordering::Relaxed);
+    crate::with_gil_entry_nopanic!(py, {
+        alloc_test_string_bits(py, "__MOLT_ENV_DENIED_CALLBACK__")
+    })
+}
+
+#[test]
+fn environment_intrinsic_admission_precedes_callbacks_and_operand_conversion() {
+    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| {
+        let function = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "denied_environment_fspath",
+                denied_environment_fspath as *const (),
+            ),
+            1,
+        );
+        assert!(!function.is_null());
+        let function = MoltObject::from_ptr(function).bits();
+        let class = loader_identity_class(py, "DeniedEnvironmentPath", builtin_classes(py).object);
+        loader_identity_class_namespace(py, class, b"__fspath__", function);
+        loader_identity_class_namespace(py, class, b"__hash__", function);
+        let operand = unsafe { call_callable0(py, class) };
+        assert!(!exception_pending(py));
+        ENVIRONMENT_FSPATH_CALLS.store(0, Ordering::Relaxed);
+        let before = std::env::var_os("__MOLT_ENV_DENIED_CALLBACK__");
+        for operand in [operand, MoltObject::from_int(42).bits()] {
+            for operation in [
+                OperationId::EnvGet,
+                OperationId::EnvSet,
+                OperationId::EnvUnset,
+                OperationId::EnvPutenv,
+                OperationId::EnvUnsetenv,
+            ] {
+                match operation {
+                    OperationId::EnvGet => molt_env_mapping_get(operand),
+                    OperationId::EnvSet => molt_env_mapping_set(operand, operand),
+                    OperationId::EnvUnset => molt_env_mapping_delete(operand),
+                    OperationId::EnvPutenv => molt_env_putenv(operand, operand),
+                    OperationId::EnvUnsetenv => molt_env_unsetenv(operand),
+                    _ => unreachable!(),
+                };
+                assert!(exception_pending(py));
+                let required = if operation == OperationId::EnvGet {
+                    "env.read"
+                } else {
+                    "env.write"
+                };
+                assert_eq!(
+                    pending_exception_kind_and_message(py),
+                    Some((
+                        "PermissionError".to_owned(),
+                        format!(
+                            "missing [{required}] capabilities for '{}'",
+                            operation.as_str()
+                        )
+                    ))
+                );
+                crate::molt_exception_clear();
+                assert_eq!(ENVIRONMENT_FSPATH_CALLS.load(Ordering::Relaxed), 0);
+                assert_eq!(std::env::var_os("__MOLT_ENV_DENIED_CALLBACK__"), before);
+                assert_eq!(
+                    platform_state(py)
+                        .environment_mapping
+                        .load(Ordering::Acquire),
+                    0,
+                    "denied access cannot initialize the secret mapping"
+                );
+            }
+        }
+        for operation in [
+            molt_env_mapping_keys as extern "C" fn() -> u64,
+            molt_env_mapping_len,
+            molt_env_mapping_items_iter,
+        ] {
+            operation();
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            assert_eq!(
+                platform_state(py)
+                    .environment_mapping
+                    .load(Ordering::Acquire),
+                0
+            );
+        }
+        for bits in [operand, class, function] {
+            dec_ref_bits(py, bits);
+        }
+    });
 }

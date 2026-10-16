@@ -85,6 +85,12 @@ fn resolve_target() -> DiagnosticsTarget {
     DiagnosticsTarget::Stderr
 }
 
+/// Freeze the process-owned diagnostic destination before guest execution.
+/// Resolving it here preserves the existing best-effort file-open contract.
+pub fn initialize() {
+    let _ = target();
+}
+
 fn target() -> &'static DiagnosticsTarget {
     static TARGET: OnceLock<DiagnosticsTarget> = OnceLock::new();
     TARGET.get_or_init(resolve_target)

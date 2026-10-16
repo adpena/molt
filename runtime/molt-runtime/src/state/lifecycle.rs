@@ -442,8 +442,13 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     if mode == RuntimeTeardownMode::ProcessExit {
         crate::object::ops::profile_epoch_clear();
     }
-    trace_shutdown("clear_resource_state");
-    crate::resource::clear_resource_state();
+    if mode == RuntimeTeardownMode::Isolate {
+        trace_shutdown("clear_thread_resource_state");
+        crate::resource::clear_thread_resource_state();
+    } else {
+        trace_shutdown("clear_resource_state");
+        crate::resource::clear_resource_state();
+    }
     trace_shutdown("done");
 }
 
@@ -1909,12 +1914,17 @@ pub(crate) mod tests {
             let outcome = crate::test_support::catch_expected_unwind(|| {
                 super::run_runtime_worker(origin, || {
                     crate::with_gil_entry_nopanic!(py, {
-                        let result = crate::call::bind::molt_call_method_ic0(
+                        let mut self_or_null = molt_codegen_abi::loaded_method_null_bits() as u64;
+                        let callable = crate::call::bind::molt_load_method(
                             MoltObject::from_int(819).bits(),
                             receiver,
                             b"cached".as_ptr(),
                             6,
+                            (&raw mut self_or_null) as usize as u64,
                         );
+                        // The load owns both words; the call adopts them.
+                        let result =
+                            crate::call::bind::molt_call_loaded_method0(callable, self_or_null);
                         assert_eq!(result, MoltObject::none().bits());
                         crate::dec_ref_bits(py, result);
                         assert!(!crate::exception_pending(py));

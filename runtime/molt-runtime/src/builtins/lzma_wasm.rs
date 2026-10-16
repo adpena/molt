@@ -75,6 +75,7 @@ pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compress(
+    _error_class: u64,
     _data_bits: u64,
     _format_bits: u64,
     _check_bits: u64,
@@ -85,6 +86,7 @@ pub extern "C" fn molt_lzma_compress(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompress(
+    _error_class: u64,
     _data_bits: u64,
     _format_bits: u64,
     _memlimit_bits: u64,
@@ -102,18 +104,17 @@ pub extern "C" fn molt_lzma_compressor_new(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_compress(_handle_bits: u64, _data_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_compressor_compress(
+    _error_class: u64,
+    _handle_bits: u64,
+    _data_bits: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_flush(_handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_compressor_flush(_error_class: u64, _handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_drop(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
@@ -123,6 +124,7 @@ pub extern "C" fn molt_lzma_decompressor_new(_format_bits: u64, _memlimit_bits: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_decompress(
+    _error_class: u64,
     _handle_bits: u64,
     _data_bits: u64,
     _max_length_bits: u64,
@@ -131,27 +133,23 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_eof(_handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_eof(_error_class: u64, _handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_needs_input(_handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_needs_input(_error_class: u64, _handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_unused_data(_handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_decompressor_unused_data(_error_class: u64, _handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_drop(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_file_open(
+    _error_class: u64,
     _filename_bits: u64,
     _mode_bits: u64,
     _format_bits: u64,
@@ -162,21 +160,24 @@ pub extern "C" fn molt_lzma_file_open(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_read(_handle_bits: u64, _size_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_file_read(
+    _error_class: u64,
+    _handle_bits: u64,
+    _size_bits: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_write(_handle_bits: u64, _data_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_file_write(
+    _error_class: u64,
+    _handle_bits: u64,
+    _data_bits: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { lzma_unavailable(_py) })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_close(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_drop(_handle_bits: u64) -> u64 {
+pub extern "C" fn molt_lzma_file_close(_error_class: u64, _handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
 }

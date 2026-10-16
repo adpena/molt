@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 362 |
-| Local path rules | 35 | 46 |
-| Unique local commands | 73 | 121 |
+| Local path rules | 35 | 47 |
+| Unique local commands | 73 | 124 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -51,7 +51,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 53 min | 3000 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 22 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 308 min | 18240 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 19 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 318 min | 18840 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 20 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
@@ -298,6 +298,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust.test.compiler-authorities` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 0 |
 | `rust.test.ir-wasm-runtime-authorities` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 0 |
 | `rust.test.runtime-cold-lifecycle` | `rust` | `linux-x86_64-rust-native-release-output` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
+| `rust.test.zlib-wasi-counters` | `rust` | `linux-x86_64-rust-wasi-dev` | `integration` | 600 s | `compiler-build-resource` | 0 |
 | `rust.test.wasi-runtime-lifecycle` | `rust` | `linux-x86_64-rust-wasi-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
 | `rust.test.runtime-extension-admission` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 0 |
 | `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
@@ -368,6 +369,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `public-contract` | 19 | 2 | no |
 | `backend-native` | 8 | 2 | yes |
 | `native-object-emission` | 5 | 1 | yes |
+| `maintained-zlib-counters` | 13 | 3 | yes |
 | `backend-llvm` | 2 | 1 | yes |
 | `tir-midend` | 9 | 2 | yes |
 | `wasm-host` | 5 | 2 | yes |

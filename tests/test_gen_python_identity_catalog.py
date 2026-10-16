@@ -77,6 +77,104 @@ def test_generated_catalog_is_current() -> None:
         assert path.read_bytes() == text.encode()
 
 
+def test_target_property_callable_catalog_has_exact_manifest_producers() -> None:
+    schema = gen.load_schema()
+    assert schema.target_properties == (
+        ("SYS_PLATFORM", "sys_platform"),
+        ("OS_NAME", "os_name"),
+    )
+    assert schema.intrinsic_callables == (
+        ("molt_sys_platform", "INTRINSIC_SYS_PLATFORM", "SYS_PLATFORM"),
+        ("molt_os_name", "INTRINSIC_OS_NAME", "OS_NAME"),
+    )
+    assert catalog.INTRINSIC_CALLABLE_IDENTITIES["molt_sys_platform"] is (
+        catalog.PythonIdentity.INTRINSIC_SYS_PLATFORM
+    )
+    assert (
+        catalog.INTRINSIC_TARGET_PROPERTIES[
+            int(catalog.PythonIdentity.INTRINSIC_OS_NAME)
+        ]
+        is catalog.PythonTargetProperty.OS_NAME
+    )
+
+
+@pytest.mark.parametrize(
+    "before,after,expected",
+    [
+        (
+            'target_property = "SYS_PLATFORM"',
+            'target_property = "SYS_PLATFROM"',
+            "unknown target property",
+        ),
+        (
+            'name = "molt_sys_platform"',
+            'name = "molt_missing_target_property"',
+            "no manifest producer",
+        ),
+        (
+            'name = "molt_sys_platform"',
+            'name = "molt_locale_setlocale"',
+            "must take no arguments",
+        ),
+        (
+            'identity = "INTRINSIC_OS_NAME"',
+            'identity = "INTRINSIC_SYS_PLATFORM"',
+            "ambiguous intrinsic identity",
+        ),
+        (
+            'identity = "INTRINSIC_OS_NAME"',
+            'identity = "BUILTIN_INT"',
+            "ambiguous intrinsic identity",
+        ),
+        (
+            'OS_NAME = "os_name"',
+            'OS_NAME = "sys_platform"',
+            "duplicate target property value",
+        ),
+        (
+            'OS_NAME = "os_name"',
+            'OS_NAME = "os_name"\nUNUSED = "unused"',
+            "orphan target properties",
+        ),
+    ],
+)
+def test_target_property_catalog_rejects_unproven_declarations(
+    tmp_path: Path, before: str, after: str, expected: str
+) -> None:
+    source = gen.SOURCE.read_text(encoding="utf-8")
+    assert before in source
+    path = tmp_path / "invalid.toml"
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    with pytest.raises(gen.SchemaError, match=expected):
+        gen.load_schema(path)
+
+
+def test_target_property_catalog_rejects_duplicate_intrinsic_row(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "duplicate.toml"
+    path.write_text(
+        gen.SOURCE.read_text(encoding="utf-8")
+        + '\n[[intrinsic_callable]]\nname = "molt_sys_platform"\n'
+        'identity = "INTRINSIC_SYS_PLATFORM"\ntarget_property = "SYS_PLATFORM"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.SchemaError, match="duplicate intrinsic callable"):
+        gen.load_schema(path)
+
+
+def test_target_property_catalog_detects_removed_manifest_producer(
+    tmp_path: Path,
+) -> None:
+    source = gen.INTRINSIC_MANIFEST.read_text(encoding="utf-8")
+    declaration = "def molt_sys_platform() -> str: ..."
+    assert declaration in source
+    manifest = tmp_path / "manifest.pyi"
+    manifest.write_text(source.replace(declaration, "", 1), encoding="utf-8")
+    with pytest.raises(gen.SchemaError, match="no manifest producer"):
+        gen.load_schema(intrinsic_manifest=manifest)
+
+
 def test_existing_identity_and_member_bits_remain_stable() -> None:
     # Pin the complete pre-migration prefixes, including both identity
     # sentinels. Higher-bit additions do not change these independent hashes.

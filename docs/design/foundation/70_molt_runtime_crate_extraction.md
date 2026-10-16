@@ -247,12 +247,15 @@ passed `python -m molt build examples/hello.py --target native --profile dev
 warning is DX evidence for guard lifecycle cleanup, not a constants authority
 failure.
 
-2026-07-08 C1 follow-up: the pure `fnmatch` matcher, byte matcher,
-normcase, and regex translation authority now lives in
-`molt-stdlib-text::fnmatch`. `molt-runtime` keeps the object/ABI entrypoints in
-`builtins/functions_fnmatch.rs` and `builtins/fnmatch.rs`, but both surfaces now
-import the same stdlib-text implementation instead of carrying duplicate
-runtime-local behavior. The old `stdlib_fs_extra`/`glob::Pattern` lane and its
+The pure `fnmatch` matcher, byte matcher, normcase, and regex translation
+authority lives in `molt-runtime-platform::fnmatch`, shared by platform path
+matching and the object/ABI entrypoints in
+`molt-runtime`'s `builtins/functions_fnmatch.rs`. This keeps platform support
+independent of the stdlib-text layer; `molt-stdlib-text` no longer owns or
+re-exports the matcher.
+
+2026-07-08 C1 follow-up (initial stdlib-text extraction): the old
+`stdlib_fs_extra`/`glob::Pattern` lane and its
 fail-closed `false` fallback are deleted, and the stale
 `functions_re::CharClassParse` alias disappeared with the old in-runtime
 matcher. Queue row

@@ -19,9 +19,11 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools.generator_io import generator_main  # noqa: E402
+from tools.intrinsic_manifest import parse_intrinsic_manifest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/molt/compiler_analysis/python_identity_catalog.toml"
+INTRINSIC_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 OUT_PYTHON = ROOT / "src/molt/compiler_analysis/python_identity_catalog_generated.py"
 OUTPUTS = (OUT_PYTHON,)
 
@@ -38,6 +40,8 @@ class Schema:
     modules: tuple[tuple[str, str], ...]
     acquisitions: tuple[tuple[str, str, str, str], ...]
     writes: tuple[tuple[str, str, tuple[str, ...]], ...]
+    target_properties: tuple[tuple[str, str], ...]
+    intrinsic_callables: tuple[tuple[str, str, str], ...]
 
 
 def _bits(raw: object, label: str) -> tuple[tuple[str, int], ...]:
@@ -79,7 +83,9 @@ def _name(raw: object, label: str, *, dotted: bool = False) -> str:
     return raw
 
 
-def load_schema(path: Path = SOURCE) -> Schema:
+def load_schema(
+    path: Path = SOURCE, *, intrinsic_manifest: Path = INTRINSIC_MANIFEST
+) -> Schema:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
@@ -92,6 +98,8 @@ def load_schema(path: Path = SOURCE) -> Schema:
         "module",
         "acquisition",
         "write",
+        "target_property",
+        "intrinsic_callable",
     }:
         raise SchemaError("unknown or missing identity-catalog top-level keys")
     if type(data["schema_version"]) is not int or data["schema_version"] != 1:
@@ -182,6 +190,64 @@ def load_schema(path: Path = SOURCE) -> Schema:
     used_guards.update(guard for _, _, guards in writes for guard in guards)
     if used_guards != member_names:
         raise SchemaError(f"orphan member guards: {sorted(member_names - used_guards)}")
+    properties = data["target_property"]
+    if not isinstance(properties, dict) or not properties:
+        raise SchemaError("target_property must be a nonempty table")
+    target_properties: list[tuple[str, str]] = []
+    property_values: set[str] = set()
+    for name, value in properties.items():
+        if re.fullmatch(r"[A-Z][A-Z0-9_]*", name) is None:
+            raise SchemaError(f"invalid target property {name!r}")
+        checked = _name(value, "target property value")
+        if checked in property_values:
+            raise SchemaError(f"duplicate target property value {checked!r}")
+        property_values.add(checked)
+        target_properties.append((name, checked))
+    producers = {
+        entry.name: entry
+        for entry in parse_intrinsic_manifest(
+            intrinsic_manifest.read_text(encoding="utf-8")
+        )
+    }
+    intrinsic_callables: list[tuple[str, str, str]] = []
+    intrinsic_names: set[str] = set()
+    intrinsic_identities: set[str] = set()
+    used_properties: set[str] = set()
+    other_callable_identities = {identity for _, identity, _, _ in builtins}
+    other_callable_identities.update(identity for _, identity in modules)
+    other_callable_identities.update(identity for _, _, identity, _ in acquisitions)
+    other_callable_identities.update(
+        {"OTHER", "UNBOUND", "INERT_VALUE", "STATIC_FALSE"}
+    )
+    for row in _rows(
+        data["intrinsic_callable"],
+        "intrinsic_callable",
+        {"name", "identity", "target_property"},
+    ):
+        name = _name(row["name"], "intrinsic callable name")
+        identity = _reference(row["identity"], identity_names, "intrinsic identity")
+        target_property = _reference(
+            row["target_property"], set(properties), "target property"
+        )
+        if name in intrinsic_names:
+            raise SchemaError(f"duplicate intrinsic callable {name!r}")
+        if identity in intrinsic_identities or identity in other_callable_identities:
+            raise SchemaError(f"ambiguous intrinsic identity {identity!r}")
+        producer = producers.get(name)
+        if producer is None:
+            raise SchemaError(f"intrinsic callable {name!r} has no manifest producer")
+        if producer.arity != 0:
+            raise SchemaError(
+                f"target property intrinsic {name!r} must take no arguments"
+            )
+        intrinsic_names.add(name)
+        intrinsic_identities.add(identity)
+        used_properties.add(target_property)
+        intrinsic_callables.append((name, identity, target_property))
+    if used_properties != set(properties):
+        raise SchemaError(
+            f"orphan target properties: {sorted(set(properties) - used_properties)}"
+        )
     return Schema(
         identities,
         members,
@@ -189,6 +255,8 @@ def load_schema(path: Path = SOURCE) -> Schema:
         tuple(modules),
         tuple(acquisitions),
         tuple(writes),
+        tuple(target_properties),
+        tuple(intrinsic_callables),
     )
 
 
@@ -198,7 +266,7 @@ def render_python(schema: Schema) -> str:
         "# src/molt/compiler_analysis/python_identity_catalog.toml. DO NOT EDIT.\n",
         '"""Closed compiler-only identities, acquisitions and mutation guards."""\n\n',
         "from __future__ import annotations\n\n",
-        "from enum import IntFlag\nfrom types import MappingProxyType\n",
+        "from enum import Enum, IntFlag\nfrom types import MappingProxyType\n",
         "from typing import Final, Mapping, TypeAlias\n\n\n",
     ]
     for name, rows in (
@@ -208,6 +276,11 @@ def render_python(schema: Schema) -> str:
         lines.append(f"class {name}(IntFlag):\n")
         lines.extend(f"    {member} = 1 << {bit}\n" for member, bit in rows)
         lines.append("\n\n")
+    lines.append("class PythonTargetProperty(Enum):\n")
+    lines.extend(
+        f"    {name} = {value!r}\n" for name, value in schema.target_properties
+    )
+    lines.append("\n\n")
     lines.extend(
         [
             "IdentityMask: TypeAlias = int\nMemberMask: TypeAlias = int\n",
@@ -230,6 +303,27 @@ def render_python(schema: Schema) -> str:
         lines.extend(f"        {key}: {value},\n" for key, value in rows)
         lines.append("    }\n)\n\n")
 
+    mapping(
+        "INTRINSIC_CALLABLE_IDENTITIES",
+        "str",
+        "PythonIdentity",
+        [
+            (repr(name), f"PythonIdentity.{identity}")
+            for name, identity, _ in schema.intrinsic_callables
+        ],
+    )
+    mapping(
+        "INTRINSIC_TARGET_PROPERTIES",
+        "IdentityMask",
+        "PythonTargetProperty",
+        [
+            (
+                f"int(PythonIdentity.{identity})",
+                f"PythonTargetProperty.{target_property}",
+            )
+            for _, identity, target_property in schema.intrinsic_callables
+        ],
+    )
     mapping(
         "BUILTIN_IDENTITIES",
         "str",

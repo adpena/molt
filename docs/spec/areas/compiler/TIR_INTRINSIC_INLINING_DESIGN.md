@@ -302,7 +302,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_id` | 1 | Low | `id()` |
 | `molt_ord` | 1 | Low | `ord()` |
 | `molt_chr` | 1 | Low | `chr()` |
-| `molt_env_get` | 1 | Low | |
+| `molt_env_mapping_get` | 1 | Low | Guarded private mapping lookup; retains the exact encoded Python value. |
 
 #### File I/O (5 functions)
 
@@ -355,7 +355,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_class_set_base` | 1 | Low | |
 | `molt_class_apply_set_name` | 1 | Low | |
 | `molt_class_layout_version` | 1 | Low | |
-| `molt_class_set_layout_version` | 1 | Low | |
 | `molt_super_new` | 1 | Low | |
 | `molt_classmethod_new` | 1 | Low | |
 | `molt_staticmethod_new` | 1 | Low | |
