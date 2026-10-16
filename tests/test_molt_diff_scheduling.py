@@ -330,7 +330,9 @@ def test_evidence_directory_keeps_one_summary_writer(
     molt_diff._emit_json(summary, args.json_output, args.json)
 
     assert writes == [env["MOLT_DIFF_SUMMARY"]]
-    assert json.loads(Path(writes[0]).read_text()) == json.loads(json.dumps(summary))
+    assert json.loads(Path(writes[0]).read_text(encoding="utf-8")) == json.loads(
+        json.dumps(summary)
+    )
     assert Path(args.log_aggregate).is_file()
     assert json.loads(capsys.readouterr().out) == json.loads(json.dumps(summary))
 
