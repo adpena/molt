@@ -118,6 +118,13 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
             false,
         ))
     };
+    if class == b.buffered_reader && is_new {
+        return Some(crate::builtins::methods::builtin_variadic_func_bits(
+            py,
+            spec,
+            fn_addr!(crate::builtins::io::buffered_reader_new_method),
+        ));
+    }
     if class == b.buffered_writer && is_new {
         return Some(crate::builtins::methods::builtin_variadic_func_bits(
             py,

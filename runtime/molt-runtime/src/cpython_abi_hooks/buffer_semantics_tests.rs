@@ -1680,7 +1680,7 @@ fn buffer_rejection_names_the_semantic_type_for_managed_and_native_objects() {
 #[test]
 fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
-    fn exercise(inject_failure: bool) {
+    fn exercise(inject_failure: bool, writable: bool, pending_error: bool) {
         crate::concurrency::gil::with_gil(|py| unsafe {
             use molt_runtime_core::OwnedRuntimeValue;
             EXPORT_RELEASES.store(0, Ordering::SeqCst);
@@ -1713,12 +1713,20 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
                 .molt_value_for_pyobj(exporter)
                 .unwrap();
             let source_owner = OwnedRuntimeValue::from_owned_bits(py.core_token(), source);
-            let input = crate::object::buffer_exports::ScopedBuffer::simple(&py, source).unwrap();
-            let scope = input.readonly_subview(0, 3).unwrap();
+            let input = (!writable)
+                .then(|| crate::object::buffer_exports::ScopedBuffer::simple(&py, source).unwrap());
+            let mut writable_input = writable.then(|| {
+                crate::object::buffer_exports::ScopedWritableBuffer::new(&py, source).unwrap()
+            });
+            let scope = if let Some(input) = writable_input.as_mut() {
+                input.writable_subview(0, 3).unwrap()
+            } else {
+                input.as_ref().unwrap().readonly_subview(0, 3).unwrap()
+            };
             let root = scope.bits();
             let root_ptr = crate::obj_from_bits(root).as_ptr().unwrap();
             assert_eq!(crate::memoryview_base_bits(root_ptr), 0);
-            assert!(crate::memoryview_readonly(root_ptr));
+            assert_eq!(crate::memoryview_readonly(root_ptr), !writable);
             let clone_owner = OwnedRuntimeValue::from_owned_bits(
                 py.core_token(),
                 crate::molt_memoryview_new(root),
@@ -1759,6 +1767,28 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(clone),
             );
             let native_child = native_child_owner.as_ptr();
+            let index = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::numbers::PyLong_FromLong(1),
+            );
+            let value = refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::numbers::PyLong_FromLong(b'Z'.into()),
+            );
+            let assigned = object::PyObject_SetItem(native_child, index.as_ptr(), value.as_ptr());
+            if writable {
+                assert_eq!(assigned, 0);
+                assert!(!crate::exception_pending(&py));
+                assert_eq!((*exporter.cast::<Exporter>()).data, *b"AZC");
+            } else {
+                assert_eq!(assigned, -1);
+                assert_ne!(
+                    errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                    0
+                );
+                errors::PyErr_Clear();
+                assert_eq!((*exporter.cast::<Exporter>()).data, *b"ABC");
+            }
+            drop(value);
+            drop(index);
             let method = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
                 native_child,
                 c"__buffer__".as_ptr(),
@@ -1834,15 +1864,17 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
                     b"AZC"
                 );
             }
-            let expected_hash_bytes = OwnedRuntimeValue::from_owned_bits(
-                py.core_token(),
-                crate::MoltObject::from_ptr(crate::alloc_bytes(&py, b"AZC")).bits(),
-            );
-            assert_eq!(
-                crate::hash_bits_signed(&py, clone),
-                crate::hash_bits_signed(&py, expected_hash_bytes.bits())
-            );
-            drop(expected_hash_bytes);
+            if !writable {
+                let expected_hash_bytes = OwnedRuntimeValue::from_owned_bits(
+                    py.core_token(),
+                    crate::MoltObject::from_ptr(crate::alloc_bytes(&py, b"AZC")).bits(),
+                );
+                assert_eq!(
+                    crate::hash_bits_signed(&py, clone),
+                    crate::hash_bits_signed(&py, expected_hash_bytes.bits())
+                );
+                drop(expected_hash_bytes);
+            }
             let iterator_owner =
                 OwnedRuntimeValue::from_owned_bits(py.core_token(), crate::molt_iter(clone));
             let iterator = iterator_owner.bits();
@@ -1854,11 +1886,28 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
                 memory::MemoryViewLease::acquire(c_child, PyBUF_SIMPLE, buffer::PyObject_GetBuffer)
                     .expect("active child exports through the real C API");
             // Scope expiry never dereferences retained raw C addresses. Their use
-            // beyond RawIOBase.write violates its lifetime precondition; release
+            // beyond the raw callback violates its lifetime precondition; release
             // remains valid and must retire only this view's counted pin.
+            let expected_error = if pending_error {
+                errors::PyErr_SetString(
+                    (&raw mut PyExc_RuntimeError).cast(),
+                    c"raw readinto callback failed".as_ptr(),
+                );
+                let error = errors::PyErr_GetRaisedException();
+                assert!(!error.is_null());
+                errors::PyErr_SetRaisedException(error);
+                error
+            } else {
+                ptr::null_mut()
+            };
             drop(scope);
             drop(input);
+            drop(writable_input);
             assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
+            let observed_error =
+                refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+            assert_eq!(observed_error.as_ptr(), expected_error);
+            drop(observed_error);
             drop(source_owner);
             drop(exporter_owner);
             assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
@@ -1919,17 +1968,21 @@ fn raw_callback_memoryviews_expire_without_extending_exporter_custody() {
             assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
         });
     }
-    let failure = crate::test_support::catch_expected_unwind(|| exercise(true));
-    let error = failure.expect_err("the selected assertion point must unwind");
-    assert_eq!(
-        error.downcast_ref::<&str>().copied(),
-        Some("scoped-view fixture owner unwind")
-    );
-    // The same real native declaration/leases/children as the full regression
-    // must retire before the fixture class is freed, even on assertion failure.
-    assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
-    assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
-    exercise(false);
+    for writable in [false, true] {
+        let failure =
+            crate::test_support::catch_expected_unwind(|| exercise(true, writable, false));
+        let error = failure.expect_err("the selected assertion point must unwind");
+        assert_eq!(
+            error.downcast_ref::<&str>().copied(),
+            Some("scoped-view fixture owner unwind")
+        );
+        // The real native declaration/leases/children retire before the class,
+        // including assertion unwind and an ordinary callback exception.
+        assert_eq!(EXPORT_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(EXPORT_FREES.load(Ordering::SeqCst), 1);
+        exercise(false, writable, false);
+        exercise(false, writable, true);
+    }
 }
 
 #[test]

@@ -91,24 +91,35 @@ pub(super) unsafe fn memory_backend_bits(handle: &MoltFileHandle) -> u64 {
 /// Copy into an admitted destination which may alias a memory backend. Callers
 /// retain its allocation and must not hold Rust references to either byte span
 /// during the copy. Only the OS-file branch creates a temporary mutable slice.
+pub(super) enum BackendReadError {
+    Pending(u64),
+    Io(std::io::Error),
+}
+impl BackendReadError {
+    pub(super) fn raise(self, py: &PyToken<'_>) -> u64 {
+        match self {
+            Self::Pending(error) => error,
+            Self::Io(error) => raise_os_error(py, error, "read"),
+        }
+    }
+}
+
 pub(super) unsafe fn backend_read_bytes(
     _py: &PyToken<'_>,
     mem_bits: u64,
     backend: &mut MoltFileBackend,
     destination: *mut u8,
     capacity: usize,
-) -> Result<usize, u64> {
+) -> Result<usize, BackendReadError> {
     unsafe {
         match backend {
-            MoltFileBackend::File(file) => {
-                match file.read(std::slice::from_raw_parts_mut(destination, capacity)) {
-                    Ok(n) => Ok(n),
-                    Err(_) => Err(raise_exception::<_>(_py, "OSError", "read failed")),
-                }
-            }
+            MoltFileBackend::File(file) => file
+                .read(std::slice::from_raw_parts_mut(destination, capacity))
+                .map_err(BackendReadError::Io),
             MoltFileBackend::Memory(mem) => {
                 let (data, len) = {
-                    let bytes = memory_backend_vec_ref_from_bits(_py, mem_bits)?;
+                    let bytes = memory_backend_vec_ref_from_bits(_py, mem_bits)
+                        .map_err(BackendReadError::Pending)?;
                     (bytes.as_ptr(), bytes.len())
                 };
                 if mem.pos >= len {
@@ -121,11 +132,11 @@ pub(super) unsafe fn backend_read_bytes(
                 mem.pos = mem.pos.saturating_add(n);
                 Ok(n)
             }
-            MoltFileBackend::Text(_) => Err(raise_exception::<_>(
+            MoltFileBackend::Text(_) => Err(BackendReadError::Pending(raise_exception::<_>(
                 _py,
                 "UnsupportedOperation",
                 "binary read on text backend",
-            )),
+            ))),
         }
     }
 }
@@ -520,7 +531,8 @@ pub(super) unsafe fn buffered_read_bytes(
                             backend,
                             tmp.as_mut_ptr(),
                             to_read,
-                        )?;
+                        )
+                        .map_err(|error| error.raise(_py))?;
                         if n == 0 {
                             at_eof = true;
                             break;
@@ -536,7 +548,8 @@ pub(super) unsafe fn buffered_read_bytes(
                         backend,
                         tmp.as_mut_ptr(),
                         tmp.len(),
-                    )?;
+                    )
+                    .map_err(|error| error.raise(_py))?;
                     if n == 0 {
                         at_eof = true;
                         break;
@@ -586,7 +599,8 @@ pub(super) unsafe fn buffered_read_bytes(
                 backend,
                 buf.as_mut_ptr(),
                 buf.len(),
-            )?;
+            )
+            .map_err(|error| error.raise(_py))?;
             if n == 0 {
                 at_eof = true;
                 handle.read_buf = buf;
@@ -636,7 +650,8 @@ pub(super) unsafe fn buffered_read_into(
             backend,
             buf.as_mut_ptr().add(written),
             buf.len() - written,
-        )?;
+        )
+        .map_err(|error| error.raise(_py))?;
         written += n;
         Ok(written)
     }
@@ -684,7 +699,8 @@ pub(super) unsafe fn file_read1_bytes(
             backend,
             buf.as_mut_ptr(),
             buf.len(),
-        )?;
+        )
+        .map_err(|error| error.raise(_py))?;
         buf.truncate(n);
         Ok((buf, n == 0))
     }
@@ -714,7 +730,8 @@ pub(super) unsafe fn handle_read_byte(
                     backend,
                     buf.as_mut_ptr(),
                     buf.len(),
-                )?;
+                )
+                .map_err(|error| error.raise(_py))?;
                 if n == 0 {
                     handle.read_buf = buf;
                     clear_read_buffer(handle);
@@ -741,7 +758,8 @@ pub(super) unsafe fn handle_read_byte(
                 backend,
                 buf.as_mut_ptr(),
                 buf.len(),
-            )?;
+            )
+            .map_err(|error| error.raise(_py))?;
             if n == 0 { Ok(None) } else { Ok(Some(buf[0])) }
         }
     }

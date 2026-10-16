@@ -103,7 +103,26 @@ pub(crate) extern "C" fn buffered_writer_new_method(args: u64, kwargs: u64) -> u
         ) else {
             return MoltObject::none().bits();
         };
-        buffered_writer::new(py, class)
+        buffered::new(py, class, false)
+    })
+}
+
+pub(crate) extern "C" fn buffered_reader_new_method(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(call) =
+            crate::builtins::native_arguments::NativeArguments::read(py, "__new__", args, kwargs)
+        else {
+            return MoltObject::none().bits();
+        };
+        let Some((class, _)) = crate::builtins::type_ops::native_constructor_receiver(
+            py,
+            builtin_classes(py).buffered_reader,
+            call.positional.first().copied(),
+            "BufferedReader",
+        ) else {
+            return MoltObject::none().bits();
+        };
+        buffered::new(py, class, true)
     })
 }
 
@@ -142,7 +161,10 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
             );
         };
         if want_write && !want_read {
-            return buffered_writer::new(_py, cls_bits);
+            return buffered::new(_py, cls_bits, false);
+        }
+        if want_read && !want_write {
+            return buffered::new(_py, cls_bits, true);
         }
         let raw_handle_ptr = match resolve_file_handle_ptr(_py, raw_bits) {
             Ok(ptr) => ptr,
@@ -246,13 +268,14 @@ pub extern "C" fn molt_buffered_init(self_bits: u64, raw_bits: u64, buffer_size_
                     ]
                     .contains(base)
                 });
-            if owner == Some(classes.buffered_writer) {
-                return buffered_writer::initialize(
+            if owner == Some(classes.buffered_writer) || owner == Some(classes.buffered_reader) {
+                return buffered::initialize(
                     py,
                     self_bits,
                     pointer,
                     raw_bits,
                     buffer_size_bits,
+                    owner == Some(classes.buffered_reader),
                 );
             }
         }

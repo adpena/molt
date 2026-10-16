@@ -97,6 +97,11 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            // BufferedReader inherits BufferedIOBase.write: the argument is
+            // unused, so rejection precedes buffer acquisition and readiness.
+            if buffered::is_reader(_py, ptr) {
+                return raise_exception(_py, "UnsupportedOperation", "write");
+            }
             // An exporter can close or detach this stream. Retain the real
             // native instance and acquire before borrowing its payload or
             // locking the backend; state Arc custody alone is insufficient.
@@ -150,10 +155,10 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
             // The exporter may reinitialize a BufferedWriter and change its
             // raw implementation. Dispatch once after that callback, retaining
             // the already acquired input rather than exporting a second time.
-            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"write"], false) {
-                return error;
-            }
-            if buffered_writer::is_writer(_py, ptr) {
+            if buffered::is_writer(_py, ptr) {
+                if let Err(error) = buffered::prepare(_py, ptr, &[b"write"], false) {
+                    return error;
+                }
                 return buffered_writer::write(_py, handle_bits, ptr, input.unwrap(), input_len);
             }
             if !(*handle_ptr).text && (*handle_ptr).buffer_size == 0 && (*handle_ptr).mem_bits == 0
@@ -446,10 +451,15 @@ pub(super) fn file_flush(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
         if handle_ptr.is_null() {
             return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
         }
-        if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"write"], false) {
+        let reader = buffered::is_reader(_py, ptr);
+        let methods: &[&[u8]] = if reader { &[b"flush"] } else { &[b"write"] };
+        if let Err(error) = buffered::prepare(_py, ptr, methods, false) {
             return error;
         }
-        if buffered_writer::is_writer(_py, ptr) {
+        if reader {
+            return buffered_reader::flush(_py, handle_bits, ptr);
+        }
+        if buffered::is_writer(_py, ptr) {
             return buffered_writer::flush(_py, handle_bits, ptr);
         }
         let handle = &mut *handle_ptr;
@@ -507,11 +517,17 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"write", b"close"], true) {
+            let reader = buffered::is_reader(_py, ptr);
+            let methods: &[&[u8]] = if reader {
+                &[b"close"]
+            } else {
+                &[b"write", b"close"]
+            };
+            if let Err(error) = buffered::prepare(_py, ptr, methods, true) {
                 return error;
             }
-            if buffered_writer::applies(ptr) {
-                return buffered_writer::close(_py, handle_bits, ptr);
+            if reader || buffered::applies(ptr) {
+                return buffered::close(_py, handle_bits, ptr);
             }
             let handle = &*handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {

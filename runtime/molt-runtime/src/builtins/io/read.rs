@@ -15,6 +15,9 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if buffered::is_reader(_py, ptr) {
+                return buffered_reader::read(_py, handle_bits, ptr, size_bits, false);
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -257,6 +260,9 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if buffered::is_reader(_py, ptr) {
+                return buffered_reader::read(_py, handle_bits, ptr, size_bits, true);
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -491,6 +497,15 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if buffered::is_reader(_py, ptr) {
+                return buffered_reader::read(
+                    _py,
+                    handle_bits,
+                    ptr,
+                    MoltObject::from_int(-1).bits(),
+                    false,
+                );
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -625,6 +640,9 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            if buffered::is_reader(_py, ptr) {
+                return buffered_reader::readline(_py, handle_bits, ptr, size_bits);
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -826,6 +844,9 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            }
+            if buffered::is_reader(_py, ptr) {
+                return buffered_reader::readlines(_py, handle_bits, hint_bits);
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -1125,6 +1146,9 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
         // Clinic acquires the writable argument before the binary operation's
         // closed/readable checks. Exporter callbacks run with no handle borrow
         // or backend lock, and the real native instance remains owned.
+        if buffered::is_reader(_py, ptr) {
+            return buffered_reader::readinto(_py, handle_bits, ptr, &buffer, name == "readinto1");
+        }
         let handle = &mut *handle_ptr;
         if let Err(bits) = file_handle_require_attached(_py, handle) {
             return bits;
@@ -1184,6 +1208,9 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if buffered::is_reader(_py, ptr) {
+                return buffered_reader::peek(_py, handle_bits, ptr, size_bits);
+            }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
@@ -1239,7 +1266,7 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
                     handle.read_buf.len(),
                 ) {
                     Ok(n) => n,
-                    Err(bits) => return bits,
+                    Err(error) => return error.raise(_py),
                 };
                 handle.read_buf.truncate(n);
                 handle.read_pos = 0;

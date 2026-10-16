@@ -164,7 +164,15 @@ impl Drop for ScopedBufferExport<'_, '_> {
     }
 }
 
-/// RawIOBase.write permits the caller to release or mutate its input on return.
+/// Permission of the span borrowed by a raw IO callback. Readinto writes into
+/// its caller's admitted storage; write only reads the supplied bytes.
+#[derive(Clone, Copy)]
+pub(crate) enum CallbackMemoryViewAccess {
+    ReadOnly,
+    Writable,
+}
+
+/// Raw IO permits the caller to release or mutate its storage on return.
 /// This guard expires every Python descendant before the caller's export drops.
 /// A native Py_buffer issued during the callback is likewise a scoped borrow:
 /// later release is safe, but dereferencing it after return violates that API.
@@ -177,14 +185,16 @@ impl<'scope> CallbackMemoryView<'scope> {
     /// and token lifetimes bound the scope guard; no storage is retained by views.
     ///
     /// # Safety
-    /// `data..data+len` must remain live until this guard drops. Callbacks may
-    /// mutate admitted source bytes but cannot relocate them. For internal IO
-    /// buffers the caller owns the moved Vec and serializes writer operations.
+    /// `data..data+len` must remain live until this guard drops. Writable access
+    /// requires exclusive write admission for the whole span. No overlapping
+    /// Rust references may survive callback entry, and the storage cannot move.
+    /// Internal IO callers own the moved Vec and serialize raw operations.
     pub(crate) unsafe fn borrow<T: ?Sized>(
         py: &'scope PyToken<'_>,
         _owner: &'scope T,
         data: *mut u8,
         len: usize,
+        access: CallbackMemoryViewAccess,
     ) -> Result<Self, u64> {
         let format = crate::alloc_string(py, b"B");
         if format.is_null() {
@@ -194,7 +204,7 @@ impl<'scope> CallbackMemoryView<'scope> {
         let _format = crate::PtrDropGuard::new(format);
         let Some(mut storage) = super::memoryview::TypedStridedStorage::one_dim(
             data,
-            true,
+            matches!(access, CallbackMemoryViewAccess::ReadOnly),
             len,
             1,
             1,
@@ -452,7 +462,13 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
             ));
         }
         unsafe {
-            CallbackMemoryView::borrow(self.py, self, self.export.data.wrapping_add(start), len)
+            CallbackMemoryView::borrow(
+                self.py,
+                self,
+                self.export.data.wrapping_add(start),
+                len,
+                CallbackMemoryViewAccess::ReadOnly,
+            )
         }
     }
 
@@ -556,6 +572,27 @@ impl<'a, 'py> ScopedWritableBuffer<'a, 'py> {
             std::ptr::NonNull::<u8>::dangling().as_ptr()
         } else {
             self.buffer.view().data
+        }
+    }
+
+    /// Reborrow admitted writable storage for one raw callback. The callback's
+    /// root and descendants expire before this buffer's counted lease drops.
+    pub(crate) fn writable_subview<'scope>(
+        &'scope mut self,
+        start: usize,
+        len: usize,
+    ) -> Result<CallbackMemoryView<'scope>, u64> {
+        if start > self.len || len > self.len - start {
+            return Err(crate::raise_exception(
+                self.buffer.py,
+                "SystemError",
+                "invalid IO buffer subspan",
+            ));
+        }
+        let py = self.buffer.py;
+        let data = self.as_mut_ptr().wrapping_add(start);
+        unsafe {
+            CallbackMemoryView::borrow(py, self, data, len, CallbackMemoryViewAccess::Writable)
         }
     }
 }
