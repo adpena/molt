@@ -184,6 +184,7 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
                 "-o",
                 str(binary),
             ],
+            env=dict(tools.environment),
             capture_output=True,
             text=True,
             encoding="utf-8",

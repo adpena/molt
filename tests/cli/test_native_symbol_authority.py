@@ -1651,6 +1651,7 @@ def _assert_real_archive_member_symbols(tmp_path, monkeypatch, tools, target):
         output = directory / "object.o"
         result = _COMMANDS.run(
             [cc, f"--target={target}", "-c", str(source_path), "-o", str(output)],
+            env=dict(tools.environment),
             capture_output=True,
             text=True,
             timeout=30,
@@ -1661,6 +1662,7 @@ def _assert_real_archive_member_symbols(tmp_path, monkeypatch, tools, target):
     archive = tmp_path / "members.a"
     result = _COMMANDS.run(
         [ar, "qcD", str(archive), *map(str, objects)],
+        env=dict(tools.environment),
         capture_output=True,
         text=True,
         timeout=30,

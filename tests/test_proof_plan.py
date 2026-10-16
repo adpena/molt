@@ -1174,6 +1174,28 @@ def test_toolchain_setup_projection_drift_is_rejected() -> None:
     assert any("uv: setup evidence token missing" in error for error in errors)
 
 
+def test_toolchain_projection_names_one_closed_provider() -> None:
+    def with_projection(name: str, projection: str) -> list[str]:
+        policies = tuple(
+            replace(policy, data={**policy.data, "projection": projection})
+            if policy.name == name
+            else policy
+            for policy in PLAN.toolchain_policies
+        )
+        return replace(PLAN, toolchain_policies=policies).validate()
+
+    assert not [error for error in PLAN.validate() if "projection" in error]
+    assert any(
+        "ld.lld: projection must be one of" in error
+        for error in with_projection("ld.lld", "homebrew")
+    )
+    # A tool-release projection must name a release that tool_releases owns.
+    assert any(
+        "git: a tool-release projection needs its executable" in error
+        for error in with_projection("git", "tool-release")
+    )
+
+
 def test_linker_process_helper_policy_requires_unique_basenames() -> None:
     policies = tuple(
         replace(

@@ -2864,14 +2864,16 @@ def project_llvm_toolchain_environment(
     result[tablegen_prefix_env_var(pin.major)] = prefix_text
     result["LLVM_CONFIG_PATH"] = str(llvm_config)
 
+    # The managed bin goes first even when PATH already lists it later: a
+    # Homebrew LLD or clang ahead of it would otherwise win (HF-231).
     bin_text = str(prefix / "bin")
-    path_parts = [part for part in result.get("PATH", "").split(os.pathsep) if part]
     normalized_bin = os.path.normcase(os.path.normpath(bin_text))
-    if all(
-        os.path.normcase(os.path.normpath(part)) != normalized_bin
-        for part in path_parts
-    ):
-        result["PATH"] = os.pathsep.join([bin_text, *path_parts])
+    path_parts = [
+        part
+        for part in result.get("PATH", "").split(os.pathsep)
+        if part and os.path.normcase(os.path.normpath(part)) != normalized_bin
+    ]
+    result["PATH"] = os.pathsep.join([bin_text, *path_parts])
     if sys.platform == "darwin":
         # Upstream clang and libclang (bindgen in llvm-sys and mlir-sys) find
         # the macOS SDK only through SDKROOT, so project the selected Xcode SDK.
@@ -2883,6 +2885,55 @@ def project_llvm_toolchain_environment(
         for key in DARWIN_SDK_ENV_KEYS:
             result[key] = selected[key]
     return result
+
+
+def llvm_toolchain_environment_delta(
+    root: Path,
+    verification: LlvmPrefixVerification,
+    *,
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    """The variables the LLVM projection sets, at their projected values.
+
+    CI's ``--github-env`` and ``tools/toolchain_env.py`` both export exactly
+    this set, so a local shell and a hosted job see the same toolchain.
+    """
+
+    pin = required_llvm_backend_pin(root)
+    if pin is None:
+        raise LlvmToolchainConfigError(
+            f"could not resolve LLVM backend feature pin under {root}"
+        )
+    projected = project_llvm_toolchain_environment(
+        root, verification, environ=dict(environ)
+    )
+    keys = (
+        "MOLT_LLVM_PREFIX",
+        pin.env_var,
+        mlir_sys_prefix_env_var(pin.major),
+        tablegen_prefix_env_var(pin.major),
+        "LLVM_CONFIG_PATH",
+        "PATH",
+        *(DARWIN_SDK_ENV_KEYS if sys.platform == "darwin" else ()),
+    )
+    return {key: projected[key] for key in keys}
+
+
+def wasm_toolchain_environment_delta(
+    installation: WasiSdkInstallation,
+    *,
+    environ: Mapping[str, str],
+    rust_target: str = "wasm32-wasip1",
+) -> dict[str, str]:
+    """The variables the WASM projection sets, at their projected values."""
+
+    projected = project_wasm_toolchain_environment(
+        installation, environ=dict(environ), rust_target=rust_target
+    )
+    keys = project_wasm_toolchain_environment(
+        installation, environ={}, rust_target=rust_target
+    )
+    return {key: projected[key] for key in keys}
 
 
 def _repo_root() -> Path:
@@ -2986,19 +3037,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"WASM toolchain verification failed: {exc}", file=sys.stderr)
             return 2
         if args.github_env is not None:
-            projected = project_wasm_toolchain_environment(
+            delta = wasm_toolchain_environment_delta(
                 wasm_verification.installation,
-                environ=dict(os.environ),
-                rust_target=args.wasi_rust_target,
-            )
-            keys = project_wasm_toolchain_environment(
-                wasm_verification.installation,
-                environ={},
+                environ=os.environ,
                 rust_target=args.wasi_rust_target,
             )
             with args.github_env.open("a", encoding="utf-8") as fh:
-                for key in keys:
-                    fh.write(f"{key}={projected[key]}\n")
+                for key, value in delta.items():
+                    fh.write(f"{key}={value}\n")
 
     verification: LlvmPrefixVerification | None = None
     if args.verify or (args.github_env is not None and not args.verify_wasm):
@@ -3015,21 +3061,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         if args.github_env is not None:
-            projected = project_llvm_toolchain_environment(
-                args.root, verification, environ=dict(os.environ)
-            )
-            keys = (
-                "MOLT_LLVM_PREFIX",
-                pin.env_var,
-                mlir_sys_prefix_env_var(pin.major),
-                tablegen_prefix_env_var(pin.major),
-                "LLVM_CONFIG_PATH",
-                "PATH",
-                *(DARWIN_SDK_ENV_KEYS if sys.platform == "darwin" else ()),
+            delta = llvm_toolchain_environment_delta(
+                args.root, verification, environ=os.environ
             )
             with args.github_env.open("a", encoding="utf-8") as fh:
-                for key in keys:
-                    fh.write(f"{key}={projected[key]}\n")
+                for key, value in delta.items():
+                    fh.write(f"{key}={value}\n")
 
     if wasm_verification is not None and args.format == "json":
         installation = wasm_verification.installation

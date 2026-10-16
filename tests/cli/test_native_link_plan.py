@@ -243,7 +243,12 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
 
     def run(command):
         result = _COMMANDS.run(
-            command, capture_output=True, text=True, timeout=30, encoding="utf-8"
+            command,
+            env=dict(tools.environment),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         return result.stdout
