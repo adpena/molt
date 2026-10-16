@@ -173,6 +173,18 @@ task IDs, and mismatched IDs at canonical locations remain visible as invalid
 records and make context health fail. Only admitted canonical records contribute
 active workers, pending requests, and proof-lane collisions.
 
+The integrator reserves finding IDs in the current canonical
+`docs/agent/V1_HANDOFF_FINDINGS.md` before workers use them in source or handoffs.
+Workers use descriptive artifact names until that reservation is published;
+private copies of the ledger do not allocate IDs. Reconcile current `origin/main`
+before assigning or merging findings, and use the existing `finding_status`
+projection to reject duplicate or resurrected rows. If a private label collides
+with an independently published finding, retain both obligations under distinct
+canonical IDs and record the private-to-canonical mapping in coordination
+evidence. Keep frozen receipts intact. `(was HF-N)` means the same finding was
+renamed and closes the old row; it must never rename a different public finding
+merely because a private label reused its number.
+
 If a worker is explicitly waiting for an ownership decision, put the request in
 that worker's existing `coordination.json`. For a new task:
 
