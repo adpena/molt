@@ -44,6 +44,12 @@ pub(crate) struct NativeBatchObjectJob {
 impl NativeBatchObjectJob {
     /// Close the object input contract before serialization. The worker receives
     /// exactly this projection, with no out-of-band whole-program context path.
+    /// The job's worker transport: the JSON a worker reads from stdin or from a
+    /// preserved replay file.
+    pub(crate) fn encode(&self) -> std::io::Result<Vec<u8>> {
+        serde_json::to_vec(self).map_err(std::io::Error::other)
+    }
+
     /// Project the whole-program `context` to the rows this job's object can
     /// consume. The shared context is borrowed, never cloned per job.
     pub(crate) fn close_dependencies(mut self, context: &NativeBackendModuleContext) -> Self {
@@ -62,8 +68,11 @@ impl NativeBatchObjectJob {
     }
 }
 
+/// A closed job encoded for its worker. The bytes stream to the worker's stdin
+/// and reach disk only when a failure preserves them for replay.
 #[derive(Debug, Clone)]
 pub(crate) struct NativeBatchJobSpec {
-    pub(crate) job_path: PathBuf,
+    pub(crate) job_name: String,
+    pub(crate) job: Vec<u8>,
     pub(crate) object_path: PathBuf,
 }

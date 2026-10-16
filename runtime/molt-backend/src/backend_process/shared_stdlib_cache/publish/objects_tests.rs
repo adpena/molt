@@ -64,8 +64,8 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
     for (field, value) in changes {
         let mut context = base_context.clone();
         context[field] = value;
-        let changed = roundtrip(&original)
-            .close_dependencies(&serde_json::from_value(context).unwrap());
+        let changed =
+            roundtrip(&original).close_dependencies(&serde_json::from_value(context).unwrap());
         assert_ne!(
             original_key,
             cache.input_key(&changed).unwrap(),

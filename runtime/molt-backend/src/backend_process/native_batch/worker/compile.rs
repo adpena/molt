@@ -31,10 +31,35 @@ fn compile_native_batch_object_job(
     write_output_path(output_path, &output.bytes)
 }
 
+/// `--native-batch-job-file JOB`: JOB names a preserved replay file, or `-` for
+/// the job its parent streams on stdin.
 pub(crate) fn compile_native_batch_object_job_file(
     job_path: &Path,
     output_path: &Path,
 ) -> io::Result<()> {
-    let job: NativeBatchObjectJob = read_json_artifact(job_path, "native batch object job")?;
+    let job: NativeBatchObjectJob = if job_path == Path::new("-") {
+        serde_json::from_reader(io::BufReader::new(io::stdin().lock())).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid native batch object job on stdin: {err}"),
+            )
+        })?
+    } else {
+        read_json_artifact(job_path, "native batch object job")?
+    };
+    compile_native_batch_object_job(job, output_path)
+}
+
+#[cfg(test)]
+pub(crate) fn compile_native_batch_object_job_bytes(
+    job: &[u8],
+    output_path: &Path,
+) -> io::Result<()> {
+    let job: NativeBatchObjectJob = serde_json::from_slice(job).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid native batch object job: {err}"),
+        )
+    })?;
     compile_native_batch_object_job(job, output_path)
 }

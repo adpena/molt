@@ -190,7 +190,10 @@ mod tests {
         let primary = AtomicPublicationError::new(
             Path::new("stdlib.a"),
             PublicationState::Replaced,
-            io::Error::new(io::ErrorKind::InvalidData, "primary post-replacement failure"),
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "primary post-replacement failure",
+            ),
         );
         let result: io::Result<()> = finish_publication_lock(
             Path::new("stdlib.a.publish.lock"),
