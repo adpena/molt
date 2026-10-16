@@ -700,6 +700,60 @@ pub extern "C" fn molt_memoryview_hex(bits: u64, sep_bits: u64, bytes_per_sep_bi
     })
 }
 
+/// A context entry retains the same view; it does not acquire a new buffer
+/// export or reject a restricted release-callback view that is still live.
+pub(crate) extern "C" fn memoryview_enter_method(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(pointer) = obj_from_bits(bits)
+            .as_ptr()
+            .filter(|&pointer| unsafe { object_type_id(pointer) == TYPE_ID_MEMORYVIEW })
+        else {
+            return raise_exception(py, "TypeError", "__enter__ expects a memoryview");
+        };
+        if unsafe { memoryview_released(pointer) } {
+            return raise_released_memoryview(py);
+        }
+        inc_ref_bits(py, bits);
+        bits
+    })
+}
+
+/// CPython's METH_VARARGS exit ignores positional exception information and
+/// rejects keywords. Its only state transition is the existing release owner.
+pub(crate) extern "C" fn memoryview_exit_method(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(call) =
+            crate::builtins::native_arguments::NativeArguments::read(py, "__exit__", args, kwargs)
+        else {
+            return MoltObject::none().bits();
+        };
+        let Some(&receiver) = call.positional.first() else {
+            return raise_exception(
+                py,
+                "TypeError",
+                "unbound method memoryview.__exit__() needs an argument",
+            );
+        };
+        if !obj_from_bits(receiver)
+            .as_ptr()
+            .is_some_and(|pointer| unsafe { object_type_id(pointer) == TYPE_ID_MEMORYVIEW })
+        {
+            return raise_exception(
+                py,
+                "TypeError",
+                &format!(
+                    "descriptor '__exit__' for 'memoryview' objects doesn't apply to a '{}' object",
+                    type_name(py, obj_from_bits(receiver))
+                ),
+            );
+        }
+        if !call.keyword_view().is_empty() {
+            return raise_exception(py, "TypeError", "__exit__() takes no keyword arguments");
+        }
+        molt_memoryview_release(receiver)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
