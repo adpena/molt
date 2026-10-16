@@ -1178,7 +1178,7 @@ dependencies = []
 [[ci_family]]
 name = "native_integration"
 description = "Native compiler/linker and supervisor receipt integration isolated from pure Python proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_cli_smoke.py", "tests/cli/test_native_link_*.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_link_selection_admission.py", "tests/llvm_sdk_test_support.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**"]
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_cli_smoke.py", "tests/cli/test_traceback_carets.py", "tests/cli/test_native_link_*.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_link_selection_admission.py", "tests/llvm_sdk_test_support.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py", "vendor/rust/object/**", "vendor/rust/cranelift-object/**"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "native-integration"
@@ -3176,7 +3176,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 cache_domain = "cargo-workspace"
 dependencies = ["native.integration.capability-manifest"]
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "--durations=20", "tests/cli/test_cli_smoke.py"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "--durations=20", "tests/cli/test_cli_smoke.py", "tests/cli/test_traceback_carets.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "llvm-strip"]
 
 [[command]]

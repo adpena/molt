@@ -245,7 +245,10 @@ def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    server_temp = tmp_path / "artifacts" / ".sccache-tmp"
+    from molt.cargo_execution_policy import sccache_server_temp_dir
+
+    server_temp = sccache_server_temp_dir(env)
+    assert server_temp is not None and server_temp != Path(env["TMPDIR"])
     assert record.read_text(encoding="utf-8").splitlines() == [str(server_temp)] * 3
     assert server_temp.is_dir()
 
@@ -274,7 +277,10 @@ def test_cli_sccache_probe_starts_a_server_with_the_durable_temp_dir(
 
     ce._maybe_enable_sccache(env)
 
-    server_temp = str((tmp_path / "artifacts").resolve() / ".sccache-tmp")
+    from molt.cargo_execution_policy import sccache_server_temp_dir
+
+    assert env["SCCACHE_DIR"] == str((tmp_path / "artifacts").resolve() / ".sccache")
+    server_temp = str(sccache_server_temp_dir(env))
     assert [
         {name: probe[name] for name in ("TMPDIR", "TMP", "TEMP")} for probe in probes
     ] == [{"TMPDIR": server_temp, "TMP": server_temp, "TEMP": server_temp}]
@@ -291,9 +297,12 @@ def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
         normalize_cargo_environment,
     )
 
+    from molt.cargo_execution_policy import sccache_server_temp_dir
+
     scratch_env = _scratch_cargo_env(tmp_path, RUSTC_WRAPPER="/opt/sccache")
     scratch = scratch_env["TMPDIR"]
-    server_temp = tmp_path / "artifacts" / ".sccache-tmp"
+    server_temp = sccache_server_temp_dir(scratch_env)
+    assert server_temp is not None and str(server_temp) != scratch
 
     pinned, applied = normalize_cargo_environment(scratch_env)
     assert applied == (
@@ -463,3 +472,33 @@ def test_sccache_clients_reach_only_their_cache_private_server(tmp_path, monkeyp
     assert policy.sccache_server_endpoint({"SCCACHE_DIR": "/c/.sccache"})[0] == (
         "SCCACHE_SERVER_PORT"
     )
+
+
+def test_the_server_temp_dir_keeps_the_startup_socket_within_sun_path(tmp_path):
+    # sccache 0.18 starts its server and waits on `<temp>/sccacheXXXXXX/sock`.
+    # A deep cache path once overflowed sun_path, so every rustc probe through
+    # sccache failed with "path must be shorter than SUN_LEN".
+    from molt import cargo_execution_policy as policy
+
+    assert policy.sccache_server_temp_dir({"SCCACHE_DIR": "/c/.sccache"}) == Path(
+        "/c/.sccache-tmp"
+    ), "beside the cache when the socket fits"
+
+    home = Path("/h")  # the policy names the directory; it creates nothing
+    deep = tmp_path / ("d" * 120) / ".sccache"
+    other = tmp_path / ("e" * 120) / ".sccache"
+    environ = {"SCCACHE_DIR": str(deep), "HOME": str(home)}
+    temp = policy.sccache_server_temp_dir(environ)
+    if os.name == "nt":
+        assert temp == deep.with_name(".sccache-tmp"), "no Unix socket on Windows"
+        return
+    assert temp is not None and temp.is_relative_to(home / ".cache" / "molt")
+    socket = os.fsencode(temp / "sccacheXXXXXX" / "sock")
+    assert len(socket) <= 103
+    assert temp == policy.sccache_server_temp_dir(environ), "stable for its cache"
+    assert temp != policy.sccache_server_temp_dir(
+        {**environ, "SCCACHE_DIR": str(other)}
+    )
+
+    with pytest.raises(ValueError, match="socket path limit"):
+        policy.sccache_server_temp_dir({**environ, "HOME": "/" + "h" * 100})

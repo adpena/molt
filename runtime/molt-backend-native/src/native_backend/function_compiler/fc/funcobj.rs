@@ -236,7 +236,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     owned_frame_entered: Option<Variable>,
     frame_homes: Option<(Variable, i64)>,
     leading_frame_entry_preemitted: Option<usize>,
-    has_frame_slot: bool,
+    frame_location_active: bool,
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
     in_loop: bool,
@@ -1208,7 +1208,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[line_val]);
             // Update frame stack line (+ column offsets) for tracebacks.
-            if has_frame_slot {
+            if frame_location_active {
                 let has_col = op.col_offset.is_some() && op.end_col_offset.is_some();
                 if has_col {
                     let col_val = builder.ins().iconst(types::I64, op.col_offset.unwrap());

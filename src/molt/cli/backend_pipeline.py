@@ -465,6 +465,9 @@ def _run_backend_pipeline(
             resolved_build_entry=resolved_build_entry,
             output_layout=output_layout,
             validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
+            compiled_source_paths=(
+                prepared_frontend_pipeline_bundle.module_source_catalog.source_paths()
+            ),
             backend_output_destination=backend_output_destination,
             prepared_backend_setup=prepared_backend_setup,
             prepared_backend_runtime_context=prepared_backend_runtime_context,

@@ -1533,6 +1533,40 @@ fn native_backend_does_not_mint_frames_for_frameless_or_inherited_bodies() {
 }
 
 #[test]
+fn native_backend_updates_the_active_frame_location_from_inherited_bodies() {
+    // A module chunk runs in its module's frame; its line and column updates
+    // are what put carets under module-level failures in tracebacks.
+    let compile = |execution_context| {
+        let _guard = acquire_backend_env_lock();
+        let mut ir = trace_probe_ir(execution_context);
+        ir.functions[0].ops.insert(
+            0,
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(3),
+                col_offset: Some(6),
+                end_col_offset: Some(11),
+                ..OpIR::default()
+            },
+        );
+        SimpleBackend::new().compile(ir).bytes
+    };
+    let symbol = b"molt_frame_set_line_col".as_slice();
+    for policy in [
+        crate::ir::ExecutionContextPolicy::Local,
+        crate::ir::ExecutionContextPolicy::Inherited,
+    ] {
+        let bytes = compile(policy);
+        assert!(
+            bytes.windows(symbol.len()).any(|window| window == symbol),
+            "{policy:?} code runs in an active frame"
+        );
+    }
+    let bytes = compile(crate::ir::ExecutionContextPolicy::None);
+    assert!(!bytes.windows(symbol.len()).any(|window| window == symbol));
+}
+
+#[test]
 fn native_backend_import_ids_are_cached_by_symbol() {
     let mut backend = SimpleBackend::new();
 

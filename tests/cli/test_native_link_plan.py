@@ -965,6 +965,10 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
             ("clang",),
             ("-Wl,-dead_strip", "-Wl,-no_deduplicate"),
         ),
+        # zig's own linker runs no identical-code folding and rejects ld64's
+        # and LLD's flags for disabling it.
+        ("darwin", ("zig", "cc"), ("-Wl,-dead_strip",)),
+        ("linux", ("zig", "cc"), ("-Wl,--gc-sections",)),
     ],
 )
 def test_native_identity_flags_are_driver_ready(

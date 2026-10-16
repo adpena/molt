@@ -49,9 +49,41 @@ static void molt_set_capability_policy() {{
     )
 
 
+def _c_string_literal(text: str) -> str:
+    """The exact WTF-8 bytes of ``text``, Molt's string encoding, as a C string
+    literal; JSON escapes are not C (a non-BMP `\\u` pair is invalid C)."""
+    parts = []
+    for byte in text.encode("utf-8", "surrogatepass"):
+        if byte in b'"\\':
+            parts.append("\\" + chr(byte))
+        elif 0x20 <= byte < 0x7F and byte != ord("?"):  # `??x` could be a trigraph
+            parts.append(chr(byte))
+        else:
+            parts.append(f"\\{byte:03o}")
+    return '"' + "".join(parts) + '"'
+
+
+def _compiled_sources_snippets(compiled_source_paths: Sequence[str]) -> tuple[str, str]:
+    """Register the program's own source files with the runtime: tracebacks may
+    show their lines without the `fs.read` capability. The set is fixed before
+    the runtime starts, and no Python-reachable call can extend it."""
+    if not compiled_source_paths:
+        return "", "    molt_register_compiled_sources(NULL, 0);\n"
+    literals = ",\n    ".join(_c_string_literal(path) for path in compiled_source_paths)
+    snippet = (
+        f"static const char* const molt_compiled_sources[] = {{\n    {literals}\n}};\n"
+    )
+    call = (
+        "    molt_register_compiled_sources(molt_compiled_sources, "
+        f"{len(compiled_source_paths)}ULL);\n"
+    )
+    return snippet, call
+
+
 def _render_native_main_stub(
     *,
     resolved_capability_policy: ResolvedRuntimePolicy,
+    compiled_source_paths: Sequence[str] = (),
     runtime_module_roots: Sequence[Path] = (),
 ) -> str:
     runtime_module_roots_literals = tuple(
@@ -207,8 +239,11 @@ extern unsigned long long molt_set_app_callable_resolver(unsigned long long fn_p
  * resolution and molt_module_ensure are in place before any import runs. */
 extern const unsigned char molt_module_registry_blob[];
 extern unsigned long long molt_module_registry_install(const unsigned char* blob);
+extern void molt_register_compiled_sources(
+    const char* const* paths, unsigned long long count);
 /* MOLT_CAPABILITY_POLICY_SNIPPET */
 /* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
+/* MOLT_COMPILED_SOURCES_SNIPPET */
 
 static int molt_finish() {
     unsigned long long pending = molt_exception_pending();
@@ -230,6 +265,7 @@ static int molt_finish() {
 int wmain(int argc, wchar_t** argv) {
     /* MOLT_CAPABILITY_POLICY_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
+    /* MOLT_COMPILED_SOURCES_CALL */
     molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
     molt_module_registry_install(molt_module_registry_blob);
     molt_runtime_init();
@@ -242,6 +278,7 @@ int wmain(int argc, wchar_t** argv) {
 int main(int argc, char** argv) {
     /* MOLT_CAPABILITY_POLICY_CALL */
     /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
+    /* MOLT_COMPILED_SOURCES_CALL */
     molt_set_app_callable_resolver((unsigned long long)(void*)molt_app_resolve_callable);
     molt_module_registry_install(molt_module_registry_blob);
     molt_runtime_init();
@@ -263,5 +300,14 @@ int main(int argc, char** argv) {
     )
     main_c_content = main_c_content.replace(
         "/* MOLT_RUNTIME_MODULE_ROOTS_CALL */", module_roots_call
+    )
+    compiled_sources_snippet, compiled_sources_call = _compiled_sources_snippets(
+        compiled_source_paths
+    )
+    main_c_content = main_c_content.replace(
+        "/* MOLT_COMPILED_SOURCES_SNIPPET */", compiled_sources_snippet
+    )
+    main_c_content = main_c_content.replace(
+        "/* MOLT_COMPILED_SOURCES_CALL */", compiled_sources_call
     )
     return main_c_content

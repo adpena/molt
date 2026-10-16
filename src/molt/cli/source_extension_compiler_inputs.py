@@ -9,10 +9,10 @@ from pathlib import Path
 import re
 from typing import Literal
 
+from molt.cli.native_link_plan import is_zig_compiler_command
 from molt.cli.compiler_target import (
     compiler_target_triple,
     source_extension_compiler_driver_mode,
-    is_zig_compiler_command,
     validate_compiler_target,
     compiler_frontend_arguments,
     compiler_argument_spans,
