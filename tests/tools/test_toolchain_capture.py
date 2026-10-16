@@ -2391,6 +2391,7 @@ def _native_build_capture_fixture(
         from dataclasses import replace
         from types import MappingProxyType
         from molt.cli import runtime_cargo_plan as plans
+        from molt.cli.cargo_resource_custody import CargoExecutableCustody
         from tests.runtime_build_identity_helper import (
             RuntimeFixtureRoot,
             runtime_cargo_plan,
@@ -2411,7 +2412,7 @@ def _native_build_capture_fixture(
             }
             projected_env = {**selected.environment, "RUSTC": str(tools["rustc"])}
             custody = tuple(
-                plans.CargoExecutableCustody.capture(
+                CargoExecutableCustody.capture(
                     row.label, tool_paths[row.label.removeprefix("tool/")]
                 )
                 if row.label in {"tool/cargo", "tool/rustc"}

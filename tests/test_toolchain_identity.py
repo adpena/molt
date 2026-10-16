@@ -601,7 +601,7 @@ def test_version_probe_hashes_once_and_closes_generation_fence(
 def test_native_content_and_cargo_custody_share_one_hash_authority(
     tmp_path, monkeypatch, header
 ):
-    from molt.cli.runtime_cargo_plan import CargoExecutableCustody
+    from molt.cli.cargo_resource_custody import CargoExecutableCustody
 
     path = tmp_path / "tool.exe"
     path.write_bytes(header + b"payload")
@@ -633,7 +633,7 @@ def test_native_content_and_cargo_custody_share_one_hash_authority(
 def test_native_consumers_reject_scripts_before_execution(
     tmp_path, monkeypatch, content, consumer
 ):
-    from molt.cli.runtime_cargo_plan import CargoExecutableCustody
+    from molt.cli.cargo_resource_custody import CargoExecutableCustody
 
     path = tmp_path / "wrapper"
     path.write_bytes(content)
@@ -744,7 +744,7 @@ def test_snapshot_discard_never_unlinks_a_replacement(tmp_path):
 
 @pytest.mark.parametrize("data", [b"#define VALUE 42\n", b"--export=example\n"])
 def test_resource_custody_does_not_claim_native_executable_admission(tmp_path, data):
-    from molt.cli.runtime_cargo_plan import (
+    from molt.cli.cargo_resource_custody import (
         CargoExecutableCustody,
         CargoFileCustody,
         CargoResourceCustody,

@@ -11,7 +11,8 @@ import pytest
 
 from molt.backend_environment import CodegenSelection
 from molt.cli import backend_binary, backend_compile, backend_execution
-from molt.cli import cache_fingerprints, cargo_source_closure, compiler_identity
+from molt.cli import cache_fingerprints, cargo_resource_custody, cargo_source_closure
+from molt.cli import compiler_identity
 from molt.cli import wrapper_build
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
@@ -446,7 +447,7 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
     # The fake Cargo plan has no mutable resource inputs of its own. LLVM
     # resources below are captured and verified by the real admission owner.
-    cargo_custody = runtime_cargo_plan.CargoResourceCustody.capture(())
+    cargo_custody = cargo_resource_custody.CargoResourceCustody.capture(())
 
     def project_tools():
         if mutate_during_admission:
@@ -536,7 +537,7 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
             c_environment={},
             partition_command=lambda: (kw["cargo_command"], ()),
             toolchain_identity=lambda: {"tools": {"rustc": "content"}},
-            verify=runtime_cargo_plan.CargoResourceCustody.capture(()).verify,
+            verify=cargo_resource_custody.CargoResourceCustody.capture(()).verify,
             link_resources=SimpleNamespace(content_identity=lambda: {}),
         ),
     )
@@ -554,7 +555,7 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
 
 
 def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypatch):
-    from molt.cli import runtime_build_identity, runtime_cargo_plan
+    from molt.cli import runtime_build_identity
 
     calls = []
 
@@ -566,7 +567,7 @@ def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypat
         calls.append("cargo-custody")
         return {"tools": {"rustc": "content"}, "cargo_configuration": "config"}
 
-    cargo_custody = runtime_cargo_plan.CargoResourceCustody.capture(())
+    cargo_custody = cargo_resource_custody.CargoResourceCustody.capture(())
 
     def verify():
         calls.append("cargo-verify")

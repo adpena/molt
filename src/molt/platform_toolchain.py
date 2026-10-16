@@ -261,6 +261,11 @@ def _darwin_developer_directory(
     return developer_dir.resolve(strict=True)
 
 
+# An Apple SDK's settings name its version and content; Clang reads the same
+# file, and each SDK version is installed whole.
+DARWIN_SDK_SETTINGS = "SDKSettings.json"
+
+
 def select_darwin_sdk(
     env: Mapping[str, str], *, developer_dir: Path | None = None
 ) -> DarwinSDK:
@@ -292,7 +297,7 @@ def select_darwin_sdk(
         raise ValueError(f"Darwin SDK directory is unavailable: {sdk}")
     sdk = sdk.resolve(strict=True)
     with open_stable_regular_file(
-        sdk / "SDKSettings.json", label="Darwin SDK settings"
+        sdk / DARWIN_SDK_SETTINGS, label="Darwin SDK settings"
     ) as opened:
         if opened.stat.st_size > 1024 * 1024:
             raise ValueError("Darwin SDK settings exceed the 1 MiB metadata budget")
