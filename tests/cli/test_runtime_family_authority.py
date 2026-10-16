@@ -11,6 +11,7 @@ from types import MappingProxyType
 
 import pytest
 
+from molt.cli import cargo_resource_custody as resource_custody
 from molt.cli import runtime_cargo_plan as plans
 from molt.cli import runtime_fingerprints as fingerprints
 from molt.cli.runtime_build_identity import (
@@ -464,7 +465,9 @@ def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         plans,
         "_rust_resource_roots",
-        lambda *args, **kwargs: (plans.CargoResourceRoot("rust/test", resources),),
+        lambda *args, **kwargs: (
+            resource_custody.CargoResourceRoot("rust/test", resources),
+        ),
     )
     return tmp_path
 
@@ -984,21 +987,23 @@ def test_link_response_projection_consumes_capture_not_a_second_read(
 def test_link_response_aliases_share_one_bounded_byte_capture(tmp_path, monkeypatch):
     response = tmp_path / "exports.rsp"
     response.write_bytes(b"--export=first\n")
-    original = plans.capture_stable_regular_file
+    original = resource_custody.capture_stable_regular_file
     captures = []
 
     def capture(path, **kwargs):
-        assert kwargs["max_bytes"] == plans.RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+        assert (
+            kwargs["max_bytes"] == resource_custody.RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+        )
         captures.append(path)
         return original(path, **kwargs)
 
-    monkeypatch.setattr(plans, "capture_stable_regular_file", capture)
+    monkeypatch.setattr(resource_custody, "capture_stable_regular_file", capture)
     roots = (
-        plans.CargoResourceRoot("ordinary-first", response),
-        plans.CargoResourceRoot("rust/link-response/first", response),
-        plans.CargoResourceRoot("rust/link-response/second", response),
+        resource_custody.CargoResourceRoot("ordinary-first", response),
+        resource_custody.CargoResourceRoot("rust/link-response/first", response),
+        resource_custody.CargoResourceRoot("rust/link-response/second", response),
     )
-    custody = plans.CargoResourceCustody.capture(roots)
+    custody = resource_custody.CargoResourceCustody.capture(roots)
     assert captures == [response]
     assert len(custody.files) == 3
     assert all(item.identity is custody.files[0].identity for item in custody.files)
@@ -2484,7 +2489,7 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
     )
     installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(plan_root))
     captured = []
-    original = plans.CargoResourceRoot.walk
+    original = resource_custody.CargoResourceRoot.walk
 
     def walk(resource):
         assert not resource.path.is_relative_to(installation.sdk), (
@@ -2493,7 +2498,7 @@ def test_selected_sdk_search_context_precedes_user_roots_without_recapture(
         captured.append(resource.path)
         return original(resource)
 
-    monkeypatch.setattr(plans.CargoResourceRoot, "walk", walk)
+    monkeypatch.setattr(resource_custody.CargoResourceRoot, "walk", walk)
     plan = _plan(
         plan_root,
         target="wasm32-wasip1",

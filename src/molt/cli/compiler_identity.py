@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING, Mapping, Sequence, cast
 from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 
 if TYPE_CHECKING:
-    from molt.cli.runtime_cargo_plan import CargoResourceCustody, RuntimeCargoPlan
+    from molt.cli.cargo_resource_custody import CargoResourceCustody
+    from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
     from molt.cli.rust_cpu_policy import RustCpuPolicy
     from molt.compiler_distribution import InstalledCompiler
     from molt.llvm_toolchain import LlvmPrefixVerification
@@ -120,7 +121,7 @@ class LlvmCompilerInputs:
 def admit_llvm_compiler_inputs(
     root: Path, env: Mapping[str, str]
 ) -> LlvmCompilerInputs:
-    from molt.cli.runtime_cargo_plan import CargoResourceCustody, CargoResourceRoot
+    from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
     from molt.llvm_toolchain import sdk_content_paths, verify_available_llvm_toolchain
 
     verification = verify_available_llvm_toolchain(root, environ=dict(env))
@@ -204,10 +205,8 @@ def backend_build_admission(
     from molt.cli.runtime_build_identity import (
         _runtime_build_environment_identity,
     )
-    from molt.cli.runtime_cargo_plan import (
-        CargoResourceCustody,
-        resolve_runtime_cargo_plan,
-    )
+    from molt.cli.cargo_resource_custody import CargoResourceCustody
+    from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
     from molt.dx import project_cargo_target_dir
     from molt.llvm_toolchain import LlvmToolchainConfigError
 
