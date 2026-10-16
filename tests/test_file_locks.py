@@ -93,9 +93,7 @@ def test_empty_file_interprocess_contention_reaches_os_lock_without_writing(
     "error_number",
     [errno.EACCES, errno.EAGAIN, errno.EBADF, errno.EINVAL, errno.ENOSPC],
 )
-def test_windows_lock_only_classifies_contention_errors(
-    tmp_path, monkeypatch, error_number
-):
+def test_windows_lock_only_classifies_contention_errors(tmp_path, error_number):
     calls = []
     error = OSError(error_number, "fixture lock failure")
 
@@ -103,16 +101,15 @@ def test_windows_lock_only_classifies_contention_errors(
         calls.append((fd, mode, length))
         raise error
 
-    monkeypatch.setattr(build_locks, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setitem(
-        sys.modules, "msvcrt", SimpleNamespace(LK_NBLCK=1, locking=lock)
+    windows = build_locks._windows_handle_lock(
+        SimpleNamespace(LK_NBLCK=1, LK_UNLCK=0, locking=lock)
     )
     with (tmp_path / "shared.lock").open("w+b") as handle:
         if error_number in (errno.EACCES, errno.EAGAIN):
-            assert build_locks._try_lock_file_handle(handle) is False
+            assert build_locks._try_lock_handle_with(handle, windows) is False
         else:
             with pytest.raises(OSError) as raised:
-                build_locks._try_lock_file_handle(handle)
+                build_locks._try_lock_handle_with(handle, windows)
             assert raised.value is error
     assert len(calls) == 1
 

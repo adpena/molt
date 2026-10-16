@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, WindowsPath
 import sys
 import time
+from typing import Any
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
@@ -988,12 +989,30 @@ def pytest_load_initial_conftests(
     install_pytest_cache_dir_arg(args)
 
 
+# The current-test record lock: molt.file_locks' self-contained record lock
+# and the host lock primitive, bound once per pytest process before any test
+# runs. Importing molt.file_locks installs its fork audit hook, so ordinary
+# package startup must not import it. A test phase must not import it either:
+# tests remove molt modules from sys.modules and replace file_locks helpers,
+# and the phase record must neither re-import the module nor follow them.
+_CURRENT_TEST_LOCK: tuple[Any, Any] | None = None
+
+
+def _bind_current_test_lock() -> None:
+    global _CURRENT_TEST_LOCK
+    if _CURRENT_TEST_LOCK is None:
+        from molt.file_locks import _HOST_HANDLE_LOCK, _exclusive_record_file
+
+        _CURRENT_TEST_LOCK = (_exclusive_record_file, _HOST_HANDLE_LOCK)
+
+
 def pytest_configure(config: object) -> None:
     """Retain completed failures in the existing stream before later termination.
 
     Workers send reports to the xdist controller; only that controller writes
     diagnostics. Keep this pytest-only object out of ordinary package startup.
     """
+    _bind_current_test_lock()
     if hasattr(config, "workerinput"):
         return
     manager = getattr(config, "pluginmanager")
@@ -1077,49 +1096,44 @@ def _write_pytest_current_test(
             )
             + "\n"
         ).encode("utf-8")
-    from molt.file_locks import (
-        _acquire_file_lock,
-        _file_lock_owned_operation,
-        _release_file_lock,
-    )
+    if _CURRENT_TEST_LOCK is None:
+        raise RuntimeError(
+            "current-test publication lock is unbound; pytest_configure binds it"
+        )
+    exclusive_record_file, host_lock = _CURRENT_TEST_LOCK
 
     # Current status is volatile, not a durable artifact generation. Lock its
     # existing inode instead of replacing a directory entry on every phase.
     # Observers use a nonblocking lock, so they never hold up a memory trip.
-    handle = _acquire_file_lock(
+    with exclusive_record_file(
         path,
+        host_lock,
         timeout_s=1.0,
-        timeout_message=f"current-test publication lock remained busy: {path}",
         poll_s=0.001,
-    )
-    try:
-        with _file_lock_owned_operation(handle, expected_lock_path=path):
-            # A fixed slot avoids filesystem resize/journal work per phase.
-            # Until the complete body is written, byte zero is invalid JSON.
-            # Process death before the one-byte commit is explicit opacity;
-            # after commit the record is ordinary schema-1 JSON plus whitespace.
-            previous_size = handle.file.seek(0, os.SEEK_END)
-            image = (
-                b"\0"
-                + data[1:]
-                + b" " * (PYTEST_CURRENT_TEST_FILE_MAX_BYTES - len(data))
-            )
-            handle.file.seek(0)
-            remaining = memoryview(image)
-            while remaining:
-                written = handle.file.write(remaining)
-                if written is None or written <= 0:
-                    raise OSError("current-test publication made no write progress")
-                remaining = remaining[written:]
-            if previous_size > PYTEST_CURRENT_TEST_FILE_MAX_BYTES:
-                # Repair a corrupt/pre-upgrade oversized inode once, while
-                # its NUL marker still prevents admitting an incomplete body.
-                handle.file.truncate(PYTEST_CURRENT_TEST_FILE_MAX_BYTES)
-            handle.file.seek(0)
-            if handle.file.write(b"{") != 1:
-                raise OSError("current-test publication commit failed")
-    finally:
-        _release_file_lock(handle)
+        timeout_message=f"current-test publication lock remained busy: {path}",
+    ) as record:
+        # A fixed slot avoids filesystem resize/journal work per phase.
+        # Until the complete body is written, byte zero is invalid JSON.
+        # Process death before the one-byte commit is explicit opacity;
+        # after commit the record is ordinary schema-1 JSON plus whitespace.
+        previous_size = record.seek(0, os.SEEK_END)
+        image = (
+            b"\0" + data[1:] + b" " * (PYTEST_CURRENT_TEST_FILE_MAX_BYTES - len(data))
+        )
+        record.seek(0)
+        remaining = memoryview(image)
+        while remaining:
+            written = record.write(remaining)
+            if written is None or written <= 0:
+                raise OSError("current-test publication made no write progress")
+            remaining = remaining[written:]
+        if previous_size > PYTEST_CURRENT_TEST_FILE_MAX_BYTES:
+            # Repair a corrupt/pre-upgrade oversized inode once, while
+            # its NUL marker still prevents admitting an incomplete body.
+            record.truncate(PYTEST_CURRENT_TEST_FILE_MAX_BYTES)
+        record.seek(0)
+        if record.write(b"{") != 1:
+            raise OSError("current-test publication commit failed")
 
 
 def pytest_runtest_logstart(nodeid: str, location: object) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
@@ -2004,19 +2005,28 @@ def test_pytest_current_test_phases_reuse_one_bounded_inode(
     assert set(current.parent.iterdir()) == {current}
 
 
+def _current_test_record_lock(wrap):
+    """The bound harness record lock, yielding ``wrap(path, record)``."""
+    exclusive, host_lock = pytest_memory_guard_bootstrap._CURRENT_TEST_LOCK
+
+    @contextlib.contextmanager
+    def wrapped(path, lock, **kwargs):
+        with exclusive(path, lock, **kwargs) as record:
+            yield wrap(path, record)
+
+    return (wrapped, host_lock)
+
+
 @pytest.mark.parametrize("failure", ["short", "zero", "body_error", "commit_zero"])
 def test_pytest_current_test_short_writes_never_commit_partial_identity(
     monkeypatch,
     tmp_path: Path,
     failure: str,
 ) -> None:
-    from molt import file_locks
-
     current = tmp_path / "pytest-memory-guard" / "current-test.json"
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
-    acquire = file_locks._acquire_file_lock
 
     class Writes:
         def __init__(self, file):
@@ -2042,14 +2052,15 @@ def test_pytest_current_test_short_writes_never_commit_partial_identity(
                 return 0
             return self.file.write(data)
 
-    def inject(path, **kwargs):
-        handle = acquire(path, **kwargs)
-        if path == current:
-            handle.file = Writes(handle.file)
-        return handle
-
     with monkeypatch.context() as fault:
-        fault.setattr(file_locks, "_acquire_file_lock", inject)
+        # The harness binds its record lock once; inject through that binding.
+        fault.setattr(
+            pytest_memory_guard_bootstrap,
+            "_CURRENT_TEST_LOCK",
+            _current_test_record_lock(
+                lambda path, record: Writes(record) if path == current else record
+            ),
+        )
 
         class Item:
             nodeid = "tests/test_memory_guard_wiring.py::complete_identity"
@@ -2089,7 +2100,8 @@ from molt import file_locks,pytest_memory_guard_bootstrap as bootstrap
 os.environ['MOLT_MEMORY_GUARD_STATE_ROOT']=sys.argv[2]
 os.environ['MOLT_PYTEST_CURRENT_TEST_FILE']=sys.argv[1]
 os.environ.pop('PYTEST_XDIST_WORKER',None)
-acquire=file_locks._acquire_file_lock
+import contextlib
+exclusive=file_locks._exclusive_record_file
 class Writes:
     def __init__(self,file):self.file=file
     def __getattr__(self,name):return getattr(self.file,name)
@@ -2100,11 +2112,13 @@ class Writes:
             if sys.argv[3] == 'crash':os._exit(73)
             assert sys.stdin.readline().strip() == 'commit'
         return count
-def intercepted(path,**kwargs):
-    handle=acquire(path,**kwargs)
-    handle.file=Writes(handle.file)
-    return handle
-file_locks._acquire_file_lock=intercepted
+@contextlib.contextmanager
+def intercepted(path,lock,**kwargs):
+    with exclusive(path,lock,**kwargs) as record:
+        yield Writes(record)
+file_locks._exclusive_record_file=intercepted
+# pytest_configure binds the record lock; this child has no pytest session.
+bootstrap._bind_current_test_lock()
 class Item:nodeid='tests/test_status_child.py::independent_current_case'
 bootstrap.pytest_runtest_call(Item())
 print('committed',flush=True)
@@ -2383,8 +2397,6 @@ def test_pytest_failure_details_survive_later_abrupt_exit(
 def test_current_test_writer_repairs_an_oversized_inode_only_once(
     monkeypatch, tmp_path
 ):
-    from molt import file_locks
-
     current = tmp_path / "pytest-memory-guard" / "current-test.json"
     current.parent.mkdir()
     current.write_bytes(
@@ -2395,7 +2407,6 @@ def test_current_test_writer_repairs_an_oversized_inode_only_once(
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
-    acquire = file_locks._acquire_file_lock
     repairs = []
 
     class Writes:
@@ -2414,17 +2425,17 @@ def test_current_test_writer_repairs_an_oversized_inode_only_once(
             repairs.append(size)
             return self.file.truncate(size)
 
-    def counted(path, **kwargs):
-        handle = acquire(path, **kwargs)
-        if path == current:
-            handle.file = Writes(handle.file)
-        return handle
-
     class Item:
         nodeid = "tests/test_status.py::repaired_current_case"
 
     with monkeypatch.context() as probe:
-        probe.setattr(file_locks, "_acquire_file_lock", counted)
+        probe.setattr(
+            pytest_memory_guard_bootstrap,
+            "_CURRENT_TEST_LOCK",
+            _current_test_record_lock(
+                lambda path, record: Writes(record) if path == current else record
+            ),
+        )
         pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
         pytest_memory_guard_bootstrap.pytest_runtest_teardown(Item(), None)
     assert repairs == [memory_guard._PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
