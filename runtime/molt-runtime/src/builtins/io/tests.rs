@@ -245,47 +245,63 @@ fn vfs_metadata_aliases_and_errno_domain() {
 
 #[test]
 fn vfs_metadata_samefile_owner_identity() {
-    let shared = MetadataBackend::new();
-    let distinct = MetadataBackend::new();
-    let mut table = crate::vfs::MountTable::new();
-    table.add_mount("/tmp", shared.clone());
-    table.add_mount("/state", shared.clone());
-    table.add_mount("/bundle", distinct.clone());
-    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
-        "fs.read,fs.tmp.read,fs.state.read,fs.bundle.read",
-        Some(crate::vfs::VfsState::from_table(table)),
-        |py| {
-            let left = io_string(py, "/tmp/value");
-            for (name, expected) in [
-                ("/state/value", true),
-                ("/tmp/other", false),
-                ("/bundle/value", false),
-            ] {
-                let right = io_string(py, name);
-                for operation in [
-                    crate::molt_os_path_samefile as extern "C" fn(u64, u64) -> u64,
-                    crate::molt_pathlib_samefile,
+    let required = ["fs.read", "fs.tmp.read", "fs.state.read", "fs.bundle.read"];
+    for mask in 0..16 {
+        let shared = MetadataBackend::new();
+        let distinct = MetadataBackend::new();
+        let mut table = crate::vfs::MountTable::new();
+        table.add_mount("/tmp", shared.clone());
+        table.add_mount("/state", shared.clone());
+        table.add_mount("/bundle", distinct.clone());
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
+            &selected_grants(&required, mask),
+            Some(crate::vfs::VfsState::from_table(table)),
+            |py| {
+                let left = io_string(py, "/tmp/value");
+                // Independent policy oracle: both paths need generic read and
+                // their own mount grants, even when the backend owner is shared.
+                for (name, expected, needed) in [
+                    ("/state/value", true, 0b0111),
+                    ("/tmp/other", false, 0b0011),
+                    ("/bundle/value", false, 0b1011),
                 ] {
-                    let before = shared.stats.load(Ordering::Relaxed)
-                        + distinct.stats.load(Ordering::Relaxed);
-                    let result = operation(left, right);
-                    assert_eq!(
-                        shared.stats.load(Ordering::Relaxed)
+                    let right = io_string(py, name);
+                    for operation in [
+                        crate::molt_os_path_samefile as extern "C" fn(u64, u64) -> u64,
+                        crate::molt_pathlib_samefile,
+                    ] {
+                        let before = shared.stats.load(Ordering::Relaxed)
+                            + distinct.stats.load(Ordering::Relaxed);
+                        let result = operation(left, right);
+                        let calls = shared.stats.load(Ordering::Relaxed)
                             + distinct.stats.load(Ordering::Relaxed)
-                            - before,
-                        2
-                    );
-                    assert!(!crate::exception_pending(py));
-                    assert_eq!(obj_from_bits(result).as_bool(), Some(expected));
-                    dec_ref_bits(py, result);
+                            - before;
+                        if mask & needed == needed {
+                            assert_eq!(calls, 2);
+                            assert!(!crate::exception_pending(py));
+                            assert_eq!(obj_from_bits(result).as_bool(), Some(expected));
+                            dec_ref_bits(py, result);
+                        } else {
+                            assert_eq!(calls, 0);
+                            let (class, message) = io_error(py);
+                            assert_eq!(class, "PermissionError");
+                            for (bit, name) in required.iter().enumerate() {
+                                assert_eq!(
+                                    message.contains(name),
+                                    needed & (1 << bit) != 0 && mask & (1 << bit) == 0,
+                                    "{message}"
+                                );
+                            }
+                        }
+                    }
+                    dec_ref_bits(py, right);
                 }
-                dec_ref_bits(py, right);
-            }
-            dec_ref_bits(py, left);
-            assert_eq!(shared.reads.load(Ordering::Relaxed), 0);
-            assert_eq!(distinct.reads.load(Ordering::Relaxed), 0);
-        },
-    );
+                dec_ref_bits(py, left);
+                assert_eq!(shared.reads.load(Ordering::Relaxed), 0);
+                assert_eq!(distinct.reads.load(Ordering::Relaxed), 0);
+            },
+        );
+    }
 }
 
 #[test]
