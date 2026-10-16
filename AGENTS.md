@@ -86,6 +86,11 @@ tests, measurements, and explicit user direction over stale prose.
 
 ## Performance is part of correctness
 
+- Ask what it costs before you design or write it. State the hot- and cold-path costs (syscalls,
+  flushes, locks, bytes written and read, process spawns, allocations, peak memory, serialization
+  round trips, work repeated on unchanged inputs) and how each scales, then choose the smallest.
+  A cost accepted to remove a larger one is a named, measured trade. Leading tools set the bar: a
+  no-change rebuild in Cargo, Go or uv costs milliseconds.
 - Measure before and after load-bearing changes. Select the metrics that expose the changed
   contract: latency, throughput, startup, allocations, bytes, peak live memory, process-tree
   RSS/commit, cache behavior, atomics, contention, code size, link time, artifact size, and failure
