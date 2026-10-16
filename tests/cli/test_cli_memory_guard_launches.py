@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,12 +37,10 @@ def test_uv_lock_check_uses_build_memory_guard(
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
+    monkeypatch.setattr(
         LOCKFILES,
-        which=lambda name: f"/usr/bin/{name}",
+        "find_executable",
+        lambda name, **_kwargs: Path(f"/usr/bin/{name}"),
     )
     monkeypatch.setattr(LOCKFILES, "_run_completed_command", fake_run)
 
@@ -69,12 +66,10 @@ def test_cargo_lock_check_uses_build_memory_guard(
         captured["kwargs"] = kwargs
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
+    monkeypatch.setattr(
         LOCKFILES,
-        which=lambda name: f"/usr/bin/{name}",
+        "find_executable",
+        lambda name, **_kwargs: Path(f"/usr/bin/{name}"),
     )
     monkeypatch.setattr(LOCKFILES, "_run_completed_command", fake_run)
 

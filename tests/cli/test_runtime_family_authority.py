@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tomllib
 from collections.abc import Mapping
@@ -13,7 +12,6 @@ from types import MappingProxyType
 import pytest
 
 from molt.cli import runtime_cargo_plan as plans
-from tests.process_guard_common import install_module_view
 from molt.cli import runtime_fingerprints as fingerprints
 from molt.cli.runtime_build_identity import (
     _capture_plan_toolchain,
@@ -438,12 +436,8 @@ def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         return path
 
     monkeypatch.setattr(plans, "resolve_executable", executable)
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        plans,
-        which=lambda value, **kwargs: str(tmp_path / value),
+    monkeypatch.setattr(
+        plans, "find_executable", lambda value, **_kwargs: tmp_path / value
     )
 
     def metadata_command(command, **kwargs):

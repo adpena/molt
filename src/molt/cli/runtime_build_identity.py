@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
+from molt import input_report as _input_report
 from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
@@ -134,6 +135,7 @@ def _runtime_tree_candidates(
     pending: list[tuple[Path, str]] = [(root, "")]
     while pending:
         directory, relative_prefix = pending.pop()
+        _input_report.report_directory(directory)
         try:
             with os.scandir(directory) as iterator:
                 entries = sorted(iterator, key=lambda entry: entry.name)
@@ -401,6 +403,11 @@ class RuntimeTreeIndex:
         captures = _capture_tree_input_files(
             tuple(files[label] for label in sorted(files))
         )
+        if _input_report.active():
+            for label, candidate in files.items():
+                _input_report.report_file(candidate.path, captures[label][1])
+            for logical_root in missing:
+                _input_report.report_probe(root_labels[logical_root])
         return cls(
             root_paths=root_labels,
             missing=frozenset(missing),

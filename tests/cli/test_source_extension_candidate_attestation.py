@@ -11,6 +11,7 @@ from molt import file_deletion
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli import source_extension_candidate_attestation as candidate_authority
 from molt.cli import source_extension_candidate_promotion as promotion
+from molt.cli import source_extension_producer
 from molt.cli import source_package_seal as seal_api
 from molt.cli import source_extension_candidate_transaction as transaction_authority
 from molt.cli import source_extension_set_validation as set_validation
@@ -180,7 +181,7 @@ def test_candidate_cli_separates_build_from_promotion(
     assert not hasattr(attest, "candidate")
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(
-        entrypoint_dispatch,
+        source_extension_producer,
         "attest_source_extension_set_candidate",
         lambda **kwargs: calls.append(kwargs) or 0,
     )
@@ -194,7 +195,7 @@ def test_candidate_cli_separates_build_from_promotion(
     assert not hasattr(publish, "build_root")
     calls.clear()
     monkeypatch.setattr(
-        entrypoint_dispatch,
+        promotion,
         "publish_source_extension_set_candidate",
         lambda **kwargs: calls.append(kwargs) or 0,
     )

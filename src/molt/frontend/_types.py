@@ -1057,6 +1057,10 @@ def _iter_intrinsic_signatures() -> Iterable[tuple[str, list[str]]]:
 def _ensure_intrinsic_arity_cache() -> dict[str, int]:
     """Return the cached runtime-name -> arity map for intrinsic callables."""
     global _INTRINSIC_ARITY_CACHE
+    from molt import input_report
+
+    for path in _intrinsic_signature_paths():
+        input_report.report_data_file(path)
     if _INTRINSIC_ARITY_CACHE is None:
         cache: dict[str, int] = {}
         for spec in BUILTIN_FUNC_SPECS.values():
@@ -1093,18 +1097,21 @@ def _builtin_func_abi_arity(spec: BuiltinFuncSpec) -> int:
 def _ensure_intrinsic_symbol_cache() -> dict[str, str]:
     """Return the cached intrinsic name -> canonical runtime symbol map."""
     global _INTRINSIC_SYMBOL_CACHE
+    from molt import input_report
+
+    generated_path = (
+        compiler_source_root()
+        / "runtime"
+        / "molt-runtime"
+        / "src"
+        / "intrinsics"
+        / "generated.rs"
+    )
+    input_report.report_data_file(generated_path)
     if _INTRINSIC_SYMBOL_CACHE is None:
         import re as _re
 
         cache: dict[str, str] = {}
-        generated_path = (
-            compiler_source_root()
-            / "runtime"
-            / "molt-runtime"
-            / "src"
-            / "intrinsics"
-            / "generated.rs"
-        )
         if generated_path.exists():
             text = generated_path.read_text(encoding="utf-8")
             entry_re = _re.compile(

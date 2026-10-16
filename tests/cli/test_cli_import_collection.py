@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Collection, Mapping, Sequence, cast
+from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
 import pytest
 
@@ -15310,12 +15310,10 @@ def test_verify_cargo_lock_uses_workspace_member_manifests_only(
 
     captured: dict[str, list[Path]] = {}
 
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
+    monkeypatch.setattr(
         LOCKFILES,
-        which=lambda name: "/usr/bin/cargo" if name == "cargo" else None,
+        "find_executable",
+        lambda name, **_kwargs: Path("/usr/bin/cargo") if name == "cargo" else None,
     )
     monkeypatch.setattr(
         LOCKFILES,
@@ -18803,8 +18801,17 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
             return cli_frontend_worker._frontend_lower_module_worker(self._payload)
 
     class _FakeExecutor:
-        def __init__(self, *, max_workers: int) -> None:
+        def __init__(
+            self,
+            *,
+            max_workers: int,
+            initializer: Callable[..., object] | None = None,
+            initargs: tuple[object, ...] = (),
+        ) -> None:
             self.max_workers = max_workers
+            # Its in-process worker starts the way a pool worker does.
+            if initializer is not None:
+                initializer(*initargs)
 
         def __enter__(self) -> "_FakeExecutor":
             return self
@@ -18959,8 +18966,17 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
             return cli_frontend_worker._frontend_lower_module_worker(self._payload)
 
     class _FakeExecutor:
-        def __init__(self, *, max_workers: int) -> None:
+        def __init__(
+            self,
+            *,
+            max_workers: int,
+            initializer: Callable[..., object] | None = None,
+            initargs: tuple[object, ...] = (),
+        ) -> None:
             self.max_workers = max_workers
+            # Its in-process worker starts the way a pool worker does.
+            if initializer is not None:
+                initializer(*initargs)
 
         def __enter__(self) -> "_FakeExecutor":
             return self
@@ -19104,8 +19120,17 @@ def test_parallel_build_allows_scoped_type_facts(
             return cli_frontend_worker._frontend_lower_module_worker(self._payload)
 
     class _FakeExecutor:
-        def __init__(self, *, max_workers: int) -> None:
+        def __init__(
+            self,
+            *,
+            max_workers: int,
+            initializer: Callable[..., object] | None = None,
+            initargs: tuple[object, ...] = (),
+        ) -> None:
             self.max_workers = max_workers
+            # Its in-process worker starts the way a pool worker does.
+            if initializer is not None:
+                initializer(*initargs)
 
         def __enter__(self) -> "_FakeExecutor":
             return self

@@ -12,7 +12,6 @@ import platform
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -1301,10 +1300,9 @@ def _llvm_config_candidates(
         for name in llvm_config_names(pin):
             candidates.append((prefix / "bin" / name, f"prefix:{prefix}"))
 
-    path_value = env.get("PATH", "")
     for name in llvm_config_names(pin):
-        if discovered := shutil.which(name, path=path_value):
-            candidates.append((Path(discovered), "PATH"))
+        if discovered := find_executable(name, environment=env, cwd=cwd):
+            candidates.append((discovered, "PATH"))
 
     if platform.system() == "Darwin":
         for homebrew_root in (Path("/opt/homebrew"), Path("/usr/local")):

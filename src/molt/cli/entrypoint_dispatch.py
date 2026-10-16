@@ -5,20 +5,13 @@ import contextlib
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, cast
 
-from molt.cli import extension_commands as _extension_commands
-from molt.cli import quality_commands as _quality_commands
-from molt.cli import script_commands as _script_commands
-from molt.cli import debug_helpers as _debug_helpers
-from molt.cli import factgraph as _factgraph
-from molt.cli import runtime_build as _runtime_build
-from molt.cli import typecheck as _typecheck
-from molt.cli.arg_helpers import (
-    _build_args_has_cache_flag,
-    _strip_leading_double_dash,
-    completion,
-)
+# Each command imports its implementation when it runs: `molt build` reaches
+# its early-cutoff check without loading the extension, packaging, script and
+# frontend stacks (HF-250). Only helpers that the parser and the build path
+# load anyway stay here.
+from molt.cli.arg_helpers import _strip_leading_double_dash
 from molt.cli.build_output_layout import (
     _BUILD_PROFILE_CHOICES,
     _DEPLOY_PROFILE_DEFAULTS,
@@ -29,30 +22,12 @@ from molt.cli.config_resolution import (
     _select_capability_input,
     resolve_stdlib_profile,
 )
-from molt.cli.deps import deps, install, install_add, vendor
-from molt.cli.dx_cli import handle_dx_command
-from molt.cli.extension_audit import extension_audit
-from molt.cli.extension_scan import extension_scan
-from molt.cli.extension_seal import extension_seal
-from molt.cli.maintenance import clean, show_config
-from molt.cli.models import BuildProfile
 from molt.cli.output import fail as _fail
 from molt.cli.progress import present_build
-from molt.cli.package_distribution import package, publish, verify
-from molt.cli.package_registry import _is_remote_registry
-from molt.cli.queue_cli import handle_queue_command
-from molt.cli.source_extension_candidate_promotion import (
-    publish_source_extension_set_candidate,
-)
-from molt.cli.source_extension_producer import (
-    attest_source_extension_set_candidate,
-    produce_source_extension_set,
-)
-from molt.target_python import _parse_target_python_version
-from molt.cli.setup_readiness import doctor, setup
-from molt.cli.toolchain_validation import update_repo, validate
-from molt.cli.wrapper_build import _build_args_has_python_version_flag
 from molt.wasm_optimization import WASM_OPT_DEV_DEFAULT, WASM_OPT_RELEASE_DEFAULT
+
+if TYPE_CHECKING:
+    from molt.cli.models import BuildProfile
 
 
 def _configured_build_target(target: str | None, build_cfg: Mapping[str, Any]) -> str:
@@ -76,6 +51,8 @@ def _dispatch_entrypoint_command(
     cfg_capabilities: Any,
 ) -> int:
     if args.command == "internal-batch-build-server":
+        from molt.cli import quality_commands as _quality_commands
+
         return _quality_commands._internal_batch_build_server(
             json_output=args.json,
             verbose=args.verbose,
@@ -83,12 +60,14 @@ def _dispatch_entrypoint_command(
         )
 
     if args.command == "internal-runtime-wasm-build":
+        from molt.cli import runtime_build as _runtime_build
+
         return _runtime_build._prebuild_runtime_wasm(
             project_root=config_root,
             kind=cast(Literal["shared", "reloc", "both"], args.kind),
             required_link_features=frozenset(args.runtime_feature),
             json_output=args.json,
-            build_profile=cast(BuildProfile, args.build_profile),
+            build_profile=cast("BuildProfile", args.build_profile),
             cargo_timeout=args.cargo_timeout,
             simd_enabled=not args.no_simd,
             freestanding=args.freestanding,
@@ -115,9 +94,13 @@ def _dispatch_entrypoint_command(
         )
 
     if args.command == "debug":
+        from molt.cli import debug_helpers as _debug_helpers
+
         return _debug_helpers._handle_debug_command(args)
 
     if args.command == "queue":
+        from molt.cli.queue_cli import handle_queue_command
+
         return handle_queue_command(args)
 
     if args.command == "build":
@@ -413,6 +396,8 @@ def _dispatch_entrypoint_command(
         )
         return build_rc
     if args.command == "factgraph":
+        from molt.cli import factgraph as _factgraph
+
         return _factgraph.run_factgraph_command(
             args=args,
             build=build_fn,
@@ -423,6 +408,8 @@ def _dispatch_entrypoint_command(
         )
     if args.command == "extension":
         if args.extension_command == "build":
+            from molt.cli import extension_commands as _extension_commands
+
             deterministic = (
                 args.deterministic
                 if args.deterministic is not None
@@ -503,6 +490,8 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         if args.extension_command == "metadata":
+            from molt.cli import extension_commands as _extension_commands
+
             return _extension_commands.extension_metadata(
                 target=args.target,
                 out_dir=args.out_dir,
@@ -512,6 +501,8 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         if args.extension_command == "produce-set":
+            from molt.cli.source_extension_producer import produce_source_extension_set
+
             return produce_source_extension_set(
                 prepared=args.prepared,
                 package=args.package,
@@ -529,6 +520,10 @@ def _dispatch_entrypoint_command(
                 json_output=args.json,
             )
         if args.extension_command == "attest-set-candidate":
+            from molt.cli.source_extension_producer import (
+                attest_source_extension_set_candidate,
+            )
+
             return attest_source_extension_set_candidate(
                 prepared=args.prepared,
                 package=args.package,
@@ -543,6 +538,10 @@ def _dispatch_entrypoint_command(
                 json_output=args.json,
             )
         if args.extension_command == "publish-set-candidate":
+            from molt.cli.source_extension_candidate_promotion import (
+                publish_source_extension_set_candidate,
+            )
+
             return publish_source_extension_set_candidate(
                 candidate=args.candidate,
                 expected_incumbent_seal_sha256=(args.expected_incumbent_seal_sha256),
@@ -552,6 +551,8 @@ def _dispatch_entrypoint_command(
                 json_output=args.json,
             )
         if args.extension_command == "audit":
+            from molt.cli.extension_audit import extension_audit
+
             require_abi = (
                 args.require_abi
                 or extension_cfg.get("require_abi")
@@ -607,6 +608,8 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         if args.extension_command == "seal":
+            from molt.cli.extension_seal import extension_seal
+
             return extension_seal(
                 path=args.path,
                 out_dir=args.out_dir,
@@ -619,6 +622,8 @@ def _dispatch_entrypoint_command(
                 verbose=args.verbose,
             )
         if args.extension_command == "scan":
+            from molt.cli.extension_scan import extension_scan
+
             fail_on_missing = args.fail_on_missing
             if not fail_on_missing:
                 fail_on_missing = _coerce_bool(
@@ -641,6 +646,8 @@ def _dispatch_entrypoint_command(
             command="extension",
         )
     if args.command == "check":
+        from molt.cli import typecheck as _typecheck
+
         deterministic = args.deterministic
         if deterministic is None:
             deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
@@ -661,6 +668,10 @@ def _dispatch_entrypoint_command(
             deterministic_warn,
         )
     if args.command == "run":
+        from molt.cli import script_commands as _script_commands
+        from molt.cli.arg_helpers import _build_args_has_cache_flag
+        from molt.cli.wrapper_build import _build_args_has_python_version_flag
+
         presentation = {
             "mode": getattr(args, "progress", "auto"),
             "headless": getattr(args, "headless", False),
@@ -729,7 +740,7 @@ def _dispatch_entrypoint_command(
                 getattr(args, "capability_manifest", None),
                 getattr(args, "require_signed_manifest", False),
                 build_args,
-                cast(BuildProfile | None, run_profile),
+                cast("BuildProfile | None", run_profile),
                 audit_log=getattr(args, "audit_log", None),
                 io_mode=getattr(args, "io_mode", None),
             )
@@ -750,7 +761,7 @@ def _dispatch_entrypoint_command(
                 getattr(args, "capability_manifest", None),
                 getattr(args, "require_signed_manifest", False),
                 build_args,
-                cast(BuildProfile | None, run_profile),
+                cast("BuildProfile | None", run_profile),
                 audit_log=getattr(args, "audit_log", None),
                 io_mode=getattr(args, "io_mode", None),
             )
@@ -766,7 +777,7 @@ def _dispatch_entrypoint_command(
             getattr(args, "capability_manifest", None),
             getattr(args, "require_signed_manifest", False),
             build_args,
-            cast(BuildProfile | None, run_profile),
+            cast("BuildProfile | None", run_profile),
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
         )
@@ -785,6 +796,10 @@ def _dispatch_entrypoint_command(
             timeout_sec=args.timeout_sec,
         )
     if args.command == "compare":
+        from molt.cli import script_commands as _script_commands
+        from molt.cli.wrapper_build import _build_args_has_python_version_flag
+        from molt.target_python import _parse_target_python_version
+
         python_exe = args.python or args.python_version
         build_args = _strip_leading_double_dash(args.build_arg)
         compare_target_python = args.python_version
@@ -834,9 +849,11 @@ def _dispatch_entrypoint_command(
             capabilities,
             build_args,
             args.rebuild,
-            cast(BuildProfile | None, compare_profile),
+            cast("BuildProfile | None", compare_profile),
         )
     if args.command == "parity-run":
+        from molt.cli import script_commands as _script_commands
+
         python_exe = args.python or args.python_version
         return _script_commands.parity_run(
             args.file,
@@ -848,6 +865,8 @@ def _dispatch_entrypoint_command(
             args.timing,
         )
     if args.command == "test":
+        from molt.cli import quality_commands as _quality_commands
+
         pytest_args = _strip_leading_double_dash(args.pytest_args)
         if args.suite == "dev" and (args.path or pytest_args) and args.verbose:
             print("Ignoring extra args for suite=dev.")
@@ -873,12 +892,14 @@ def _dispatch_entrypoint_command(
             args.path,
             args.python_version,
             pytest_args,
-            cast(BuildProfile | None, test_profile),
+            cast("BuildProfile | None", test_profile),
             trusted,
             args.json,
             args.verbose,
         )
     if args.command == "diff":
+        from molt.cli import script_commands as _script_commands
+
         diff_profile = (
             args.profile
             or diff_cfg.get("profile")
@@ -899,12 +920,14 @@ def _dispatch_entrypoint_command(
         return _script_commands.diff(
             args.path,
             args.python_version,
-            cast(BuildProfile | None, diff_profile),
+            cast("BuildProfile | None", diff_profile),
             trusted,
             args.json,
             args.verbose,
         )
     if args.command == "bench":
+        from molt.cli import quality_commands as _quality_commands
+
         return _quality_commands.bench(
             args.wasm,
             _strip_leading_double_dash(args.bench_args),
@@ -913,14 +936,20 @@ def _dispatch_entrypoint_command(
             args.verbose,
         )
     if args.command == "profile":
+        from molt.cli import quality_commands as _quality_commands
+
         return _quality_commands.profile(
             _strip_leading_double_dash(args.profile_args),
             args.json,
             args.verbose,
         )
     if args.command == "lint":
+        from molt.cli import quality_commands as _quality_commands
+
         return _quality_commands.lint(args.json, args.verbose)
     if args.command == "setup":
+        from molt.cli.setup_readiness import setup
+
         if args.install_cli_dependencies:
             return _fail(
                 "Use the packaged molt launcher with 'setup --install-cli-dependencies' "
@@ -930,10 +959,16 @@ def _dispatch_entrypoint_command(
             )
         return setup(args.json, args.verbose, args.strict)
     if args.command == "doctor":
+        from molt.cli.setup_readiness import doctor
+
         return doctor(args.json, args.verbose, args.strict)
     if args.command == "dx":
+        from molt.cli.dx_cli import handle_dx_command
+
         return handle_dx_command(args)
     if args.command == "update":
+        from molt.cli.toolchain_validation import update_repo
+
         include_manifests = args.manifests or args.all
         return update_repo(
             json_output=args.json,
@@ -944,6 +979,8 @@ def _dispatch_entrypoint_command(
             include_manifests=include_manifests,
         )
     if args.command == "validate":
+        from molt.cli.toolchain_validation import validate
+
         return validate(
             suite=cast(
                 Literal["full", "smoke", "commands", "conformance", "bench"],
@@ -960,6 +997,8 @@ def _dispatch_entrypoint_command(
             summary_out=args.summary_out,
         )
     if args.command == "package":
+        from molt.cli.package_distribution import package
+
         deterministic = args.deterministic
         if deterministic is None:
             deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
@@ -994,6 +1033,9 @@ def _dispatch_entrypoint_command(
             signing_identity=args.signing_identity,
         )
     if args.command == "publish":
+        from molt.cli.package_distribution import publish, verify
+        from molt.cli.package_registry import _is_remote_registry
+
         deterministic = args.deterministic
         if deterministic is None:
             deterministic = _coerce_bool(
@@ -1070,6 +1112,8 @@ def _dispatch_entrypoint_command(
             args.registry_timeout,
         )
     if args.command == "verify":
+        from molt.cli.package_distribution import verify
+
         require_signature = args.require_signature
         if require_signature is None:
             require_signature = False
@@ -1095,8 +1139,12 @@ def _dispatch_entrypoint_command(
             args.extension_metadata,
         )
     if args.command == "deps":
+        from molt.cli.deps import deps
+
         return deps(args.include_dev, args.json, args.verbose)
     if args.command == "install":
+        from molt.cli.deps import install, install_add
+
         pkgs = args.packages or []
         if pkgs and pkgs[0] == args._install_add_command:
             add_pkgs = pkgs[1:]
@@ -1119,6 +1167,8 @@ def _dispatch_entrypoint_command(
             sync=args.sync,
         )
     if args.command == "vendor":
+        from molt.cli.deps import vendor
+
         deterministic = args.deterministic
         if deterministic is None:
             deterministic = _coerce_bool(build_cfg.get("deterministic"), True)
@@ -1141,6 +1191,8 @@ def _dispatch_entrypoint_command(
             deterministic_warn,
         )
     if args.command == "clean":
+        from molt.cli.maintenance import clean
+
         return clean(
             args.json,
             args.verbose,
@@ -1150,8 +1202,12 @@ def _dispatch_entrypoint_command(
             list_paths=args.list_paths,
         )
     if args.command == "config":
+        from molt.cli.maintenance import show_config
+
         return show_config(config_root, config, args.json, args.verbose)
     if args.command == "completion":
+        from molt.cli.arg_helpers import completion
+
         return completion(args.shell, args.json, args.verbose, parser=parser)
 
     if args.command == "harness":
@@ -1167,6 +1223,8 @@ def _dispatch_entrypoint_command(
         return harness_main(harness_args)
 
     if args.command == "deploy":
+        from molt.cli import script_commands as _script_commands
+
         deploy_build_profile = args.build_profile
         if getattr(args, "release", False) and not deploy_build_profile:
             deploy_build_profile = "release"

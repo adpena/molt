@@ -232,6 +232,7 @@ def python_capture_authority_paths(
         "python_uv_lock_identity",
         "python_capture",
         "toolchain_identity",
+        "input_report",
         "llvm_linker_roles",
         "file_hashing",
         "exact_json",

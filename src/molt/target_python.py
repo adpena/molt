@@ -175,6 +175,9 @@ def resolve_target_python_for_oracle(
 
 def _project_requires_python(project_root: Path) -> str | None:
     pyproject = project_root / "pyproject.toml"
+    from molt import input_report
+
+    input_report.report_data_file(pyproject)
     if not pyproject.exists():
         return None
     try:

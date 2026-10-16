@@ -24,7 +24,6 @@ _BUILD_INPUT_NAMES = (
     "_collect_env_overrides",
     "_is_stdlib_path",
     "_latest_mtime",
-    "_load_molt_config",
     "_merge_module_graph_with_reason",
     "_parse_audit_log_flag",
     "_parse_io_mode_flag",

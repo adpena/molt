@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from molt import python_interpreter
+from molt import toolchain_identity
 from tests import molt_diff
 from tests.process_guard_common import install_module_view
 
@@ -125,12 +125,8 @@ def test_selector_refuses_missing_explicit_path(tmp_path: Path):
 
 def test_target_python_resolution_fails_closed_with_attempts(monkeypatch):
     target = python_interpreter.parse_target_python_version("3.13")
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        python_interpreter,
-        which=lambda _name: None,
+    monkeypatch.setattr(
+        toolchain_identity, "find_executable", lambda _name, **_kwargs: None
     )
 
     def fake_run_command(command, **_kwargs):
@@ -218,8 +214,8 @@ def test_interpreter_candidates_share_callers_remaining_probe_budget(monkeypatch
         return "", "missing", 127
 
     monkeypatch.setattr(python_interpreter, "_run_command", run)
-    install_module_view(
-        monkeypatch, "shutil", shutil, python_interpreter, which=lambda name: "uv"
+    monkeypatch.setattr(
+        toolchain_identity, "find_executable", lambda name, **_kwargs: Path("uv")
     )
     with pytest.raises(RuntimeError) as error:
         python_interpreter.resolve_target_python_command(
