@@ -985,7 +985,8 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
     path.write_text(
         "from typing import TYPE_CHECKING\ncallback()\n"
         "if TYPE_CHECKING:\n    import leaf\n"
-        "def mutate():\n    global value\n    value = 1\n"
+        "def mutate():\n    global value\n    value = 1\n",
+        encoding="utf-8",
     )
     counts = {}
     stable = PythonNamespacePremise((), 0)
@@ -1027,7 +1028,9 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
     assert summary.own_names == frozenset({"value"})
     assert summary == cold.namespace_summary
     monkeypatch.setattr(cache, "_parse_source_for_target", original_parse)
-    path.write_text("def mutate():\n    global newer\n    newer = 2\n")
+    path.write_text(
+        "def mutate():\n    global newer\n    newer = 2\n", encoding="utf-8"
+    )
     changed = cache._stdlib_intrinsic_namespace_summary(
         tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
@@ -1066,7 +1069,9 @@ def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
 
     cache = premise_source_cache
     path = tmp_path / "entry.py"
-    path.write_text("def mutate():\n    global retained\n    retained = 1\n")
+    path.write_text(
+        "def mutate():\n    global retained\n    retained = 1\n", encoding="utf-8"
+    )
     facts = cache._stdlib_intrinsic_source_facts(
         tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
@@ -1110,7 +1115,8 @@ def test_intrinsic_warmer_transports_each_modules_namespace_premise(
         path = tmp_path / f"{module}.py"
         path.write_text(
             "from typing import TYPE_CHECKING\ncallback()\n"
-            "if TYPE_CHECKING:\n    import leaf\n"
+            "if TYPE_CHECKING:\n    import leaf\n",
+            encoding="utf-8",
         )
         paths[module] = path
     premises = {
@@ -1147,7 +1153,7 @@ def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
 
     cache = premise_source_cache
     path = tmp_path / "entry.py"
-    path.write_text("pass\n")
+    path.write_text("pass\n", encoding="utf-8")
     premise = PythonNamespacePremise((), 0)
     facts = cache._stdlib_intrinsic_source_facts(
         tmp_path,

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from tests.process_guard_common import run_guarded_test_process
 
 from tools import check_stdlib_intrinsics
 
@@ -2213,7 +2213,7 @@ def test_retirement_does_not_inherit_caller_exception_handler(tmp_path, local_gu
     )
     # CPython's finalizer hook belongs to the interpreter, so observe it in an
     # isolated child rather than replacing pytest's process-wide hook.
-    observed = subprocess.run(
+    observed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -2599,7 +2599,7 @@ def test_inventory_namespace_premise_matches_actual_foreign_write(
     graph = {}
     for name, source in sources.items():
         path = tmp_path / f"{name}.py"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         graph[name] = path
     classification = classify_stdlib_module_statuses(
         graph, target_python=_DEFAULT_TARGET_PYTHON_VERSION
@@ -2618,13 +2618,16 @@ def test_inventory_rejects_source_namespace_change_during_classification(tmp_pat
 
     consumer = tmp_path / "consumer.py"
     writer = tmp_path / "writer.py"
-    consumer.write_text("flag = False\nimport writer\nif flag:\n    import provider\n")
-    writer.write_text("pass\n")
+    consumer.write_text(
+        "flag = False\nimport writer\nif flag:\n    import provider\n",
+        encoding="utf-8",
+    )
+    writer.write_text("pass\n", encoding="utf-8")
     graph = {"consumer": consumer, "writer": writer}
     inventory = stdlib_namespace_inventory(
         graph, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
-    writer.write_text("import consumer\nconsumer.flag = True\n")
+    writer.write_text("import consumer\nconsumer.flag = True\n", encoding="utf-8")
     with pytest.raises(UnresolvedStaticImportError, match="namespace changed.*writer"):
         classify_stdlib_module_statuses(
             graph,

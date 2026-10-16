@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 
 import pytest
+from tests.process_guard_common import run_guarded_test_process
 
 from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceSummary,
@@ -302,7 +303,6 @@ def test_immediate_namespace_mutation_keeps_actual_branch_imports(
     tmp_path, operation, condition
 ):
     import json
-    import subprocess
     import sys
     from molt.compiler_analysis.python_import_scan import _collect_imports
     from molt.compiler_analysis.python_namespace_graph import (
@@ -315,8 +315,10 @@ def test_immediate_namespace_mutation_keeps_actual_branch_imports(
         + operation
         + f"\nif {condition}:\n    import namespace_mutation_leaf\n"
     )
-    (tmp_path / "namespace_mutation_leaf.py").write_text("VALUE = 1\n")
-    observed = subprocess.run(
+    (tmp_path / "namespace_mutation_leaf.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
+    observed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -351,7 +353,6 @@ def test_immediate_namespace_mutation_keeps_actual_branch_imports(
 @pytest.mark.parametrize("method", ["setdefault", "pop"])
 def test_unknown_namespace_key_preserves_actual_importer_default(method):
     import json
-    import subprocess
     import sys
     from molt.compiler_analysis.python_import_scan import _collect_imports
     from molt.compiler_analysis.python_namespace_graph import (
@@ -365,7 +366,7 @@ def test_unknown_namespace_key_preserves_actual_importer_default(method):
         f"loader = globals().{method}(dynamic_key(), __import__)\n"
         "loader('math')\n"
     )
-    observed = subprocess.run(
+    observed = run_guarded_test_process(
         [
             sys.executable,
             "-I",
@@ -400,7 +401,6 @@ def test_namespace_collision_keeps_relative_import_metadata_custody(
     tmp_path, collision
 ):
     import json
-    import subprocess
     import sys
     from molt.compiler_analysis.python_import_scan import _collect_imports
     from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
@@ -412,8 +412,8 @@ def test_namespace_collision_keeps_relative_import_metadata_custody(
     for package in ("pkg", "other"):
         root = tmp_path / package
         root.mkdir()
-        (root / "__init__.py").write_text("")
-        (root / "leaf.py").write_text("VALUE = 1\n")
+        (root / "__init__.py").write_text("", encoding="utf-8")
+        (root / "leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
     source = (
         "class Collision:\n"
         "    def __hash__(self): return hash('trigger')\n"
@@ -425,7 +425,7 @@ def test_namespace_collision_keeps_relative_import_metadata_custody(
         + ("globals()[Collision()] = 1\n" if collision else "trigger = False\n")
         + "__package__ = 'pkg'\nglobals().setdefault('trigger', False)\nfrom . import leaf\n"
     )
-    observed = subprocess.run(
+    observed = run_guarded_test_process(
         [
             sys.executable,
             "-I",

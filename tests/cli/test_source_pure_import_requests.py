@@ -836,7 +836,10 @@ def closed_source_imports(paths):
     from molt.compiler_analysis.python_source_demands import PythonSourceDemands
     from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 
-    trees = {name: ast.parse(path.read_text()) for name, path in paths.items()}
+    trees = {
+        name: ast.parse(path.read_text(encoding="utf-8"))
+        for name, path in paths.items()
+    }
     writes = graph_python_namespace_writes(
         (
             write
@@ -1106,7 +1109,7 @@ def test_unrelated_member_class_is_exposure_not_an_inherited_base(
         )
         from molt.compiler_analysis.python_source_keys import python_node_source_key
 
-        tree = ast.parse(provider.read_text())
+        tree = ast.parse(provider.read_text(encoding="utf-8"))
         projection = _source_import_scan._collect_imports_for_graph(
             tree, "carrier", import_scan_mode="module_init"
         )
@@ -1266,7 +1269,7 @@ def test_operation_local_source_and_runtime_memos_bind_namespace_premise(
         tmp_path / "entry.py",
         f"{binding}\ncallback()\nif {condition}:\n    __import__('leaf')\n",
     )
-    tree = ast.parse(source.read_text())
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     resolver = _ModuleResolutionCache()
     stable = PythonNamespacePremise((), 0)
     rewritten = PythonNamespacePremise(
