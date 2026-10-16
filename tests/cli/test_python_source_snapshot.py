@@ -158,7 +158,7 @@ def test_source_catalog_requires_admitted_rows(tmp_path: Path) -> None:
     from molt.cli.module_source import _ModuleSourceCatalog
 
     path = tmp_path / "source.py"
-    path.write_text("VALUE = 1\n")
+    path.write_text("VALUE = 1\n", encoding="utf-8")
     catalog = _ModuleSourceCatalog({})
     with pytest.raises(ValueError, match="lacks captured source lease"):
         catalog.read_source("new_module", path)

@@ -15,7 +15,7 @@ from molt.cli.python_import_resolution import (
     LocalPythonModuleResolver,
     python_package_child_names,
 )
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_os_view, run_guarded_test_process
 
 import pytest
 
@@ -284,6 +284,8 @@ def test_exact_name_queries_share_one_listing_without_walking_subtrees(
         reads.append(Path(path))
         return real_scandir(path)
 
+    # A private os view keeps the probe off other threads' directory scans.
+    install_module_os_view(monkeypatch, topology)
     monkeypatch.setattr(topology.os, "scandir", record)
     cache = module_resolution._ModuleResolutionCache()
     for index in range(12):
