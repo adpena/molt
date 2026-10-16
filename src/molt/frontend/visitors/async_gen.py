@@ -40,7 +40,6 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
-    FunctionKind,
     StatefulFunctionFramePlan,
     StatefulLocalsLayout,
     async_generator_contains_return_value,
@@ -48,6 +47,7 @@ from molt.frontend.sema import (
     signature_contains_yield,
     stateful_function_frame_plan,
 )
+from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 

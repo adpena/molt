@@ -12,10 +12,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from molt.frontend._types import MoltValue
-from molt.frontend.sema import (
+from molt.frontend.sema import parse_stateful_function_type_hint
+from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
     normalize_function_kind,
-    parse_stateful_function_type_hint,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
 

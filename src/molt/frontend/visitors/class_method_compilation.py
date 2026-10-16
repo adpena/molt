@@ -35,12 +35,12 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
-    FunctionKind,
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
     signature_contains_yield,
     stateful_function_frame_plan,
 )
+from molt.compiler_analysis.python_function_kind import FunctionKind
 
 
 class ClassMethodCompilationMixin(GeneratorMixinBase):

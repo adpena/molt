@@ -25,7 +25,7 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
 )
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
-from molt.compiler_analysis import backend_ir_binary_image_analysis_payload
+from molt.compiler_analysis.backend_ir import backend_ir_binary_image_analysis_payload
 from molt.compiler_analysis.backend_ir import backend_ir_allocation_categories
 
 

@@ -12,7 +12,7 @@ import pytest
 
 from tools import gen_protocol, python_source_index
 from tools.python_source_index import PythonSourceError, PythonSourceIndex
-from molt.frontend.sema import FunctionKind
+from molt.compiler_analysis.python_function_kind import FunctionKind
 
 
 class DefaultMethods:
@@ -76,6 +76,22 @@ def test_protocol_defaults_preserve_call_shape_without_runtime_dependencies(name
 def test_live_generated_protocol_imports():
     module = importlib.import_module("molt.frontend._protocol")
     assert module._GeneratorProtocol.start_function
+
+
+def test_generated_protocol_type_only_imports_resolve():
+    module = importlib.import_module("molt.frontend._protocol")
+    path = Path(module.__file__)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # Runtime import success does not exercise TYPE_CHECKING imports. Resolve
+    # each declaration through CPython's actual import machinery independently.
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.ImportFrom) and statement.module != "__future__":
+            exec(
+                compile(
+                    ast.Module(body=[statement], type_ignores=[]), str(path), "exec"
+                ),
+                {"__name__": module.__name__},
+            )
 
 
 class WrappedMethods:

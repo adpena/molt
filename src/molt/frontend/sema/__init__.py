@@ -26,10 +26,7 @@ from molt.frontend.sema.classgraph import (
 )
 from molt.frontend.sema.constenv import collect_module_const_dicts
 from molt.frontend.sema.funcmeta import (
-    FUNCTION_KIND_VALUES,
-    STATEFUL_FUNCTION_KINDS,
     STATEFUL_FUNCTION_TAGS,
-    FunctionKind,
     StatefulFunctionFramePlan,
     StatefulFunctionTypeHint,
     StatefulLocalSlot,
@@ -39,7 +36,6 @@ from molt.frontend.sema.funcmeta import (
     collect_module_class_names,
     collect_module_func_defaults,
     collect_module_func_kinds,
-    normalize_function_kind,
     parse_stateful_function_type_hint,
     signature_contains_yield,
     stateful_function_frame_plan,
@@ -55,10 +51,7 @@ from molt.frontend.sema.result import (
 
 __all__ = [
     "ClassFacts",
-    "FUNCTION_KIND_VALUES",
     "FunctionMeta",
-    "FunctionKind",
-    "STATEFUL_FUNCTION_KINDS",
     "STATEFUL_FUNCTION_TAGS",
     "SemaResult",
     "StatefulFunctionFramePlan",
@@ -75,7 +68,6 @@ __all__ = [
     "collect_module_const_dicts",
     "collect_module_func_defaults",
     "collect_module_func_kinds",
-    "normalize_function_kind",
     "parse_stateful_function_type_hint",
     "signature_contains_yield",
     "stateful_function_frame_plan",

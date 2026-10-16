@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 from molt.cli.json_cache import _read_cached_json_object, _write_cached_json_object
 from molt.cli.runtime_paths import _build_state_root
-from molt.compiler_analysis import (
+from molt.compiler_analysis.backend_ir import (
     backend_ir_binary_image_analysis_cache_key,
     backend_ir_binary_image_analysis_payload,
 )

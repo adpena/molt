@@ -24,29 +24,11 @@ from molt.compiler_analysis.python_lexical_scope import (
 )
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
-
-
-class FunctionKind(StrEnum):
-    SYNC = "sync"
-    ASYNC = "async"
-    GENERATOR = "gen"
-    ASYNC_GENERATOR = "asyncgen"
-
-
-FUNCTION_KIND_VALUES = frozenset(kind.value for kind in FunctionKind)
-STATEFUL_FUNCTION_KINDS = frozenset(
-    {FunctionKind.ASYNC, FunctionKind.GENERATOR, FunctionKind.ASYNC_GENERATOR}
+from molt.compiler_analysis.python_function_kind import (
+    FunctionKind,
+    STATEFUL_FUNCTION_KINDS,
 )
-
-
-def normalize_function_kind(kind: object) -> FunctionKind | None:
-    if isinstance(kind, FunctionKind):
-        return kind
-    if isinstance(kind, str) and kind in FUNCTION_KIND_VALUES:
-        return FunctionKind(kind)
-    return None
 
 
 def _require_stateful_function_kind(kind: FunctionKind) -> FunctionKind:

@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from molt.frontend.sema.funcmeta import FunctionKind
+from molt.compiler_analysis.python_function_kind import FunctionKind
 
 
 @dataclass(frozen=True)

@@ -33,7 +33,7 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
-from molt.frontend.sema import normalize_function_kind
+from molt.compiler_analysis.python_function_kind import normalize_function_kind
 
 
 class StatementScopeVisitorMixin(GeneratorMixinBase):
