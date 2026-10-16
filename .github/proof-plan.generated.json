@@ -364,7 +364,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "396b920213f6313a3e9064104d58974bf5b41dc4b55631a5bf2590d3f6967b8f",
+  "authority_sha256": "3687d22b5a775d0ade779b9b0d2651249bf73b76c8189f5719359a88ed78fa76",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8357,7 +8357,7 @@
       "local.dev-tooling.3": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
       "local.dev-tooling.4": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rustfmt.py",
       "local.docs-architecture.0": "python3 tools/update_status_blocks.py --check",
-      "local.docs-architecture.1": "python3 tools/check_docs_architecture.py",
+      "local.docs-architecture.1": "python3 tools/venv_exec.py python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python3 tools/check_ecosystem_compat.py",
       "local.findings-registry.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_findings_registry.py",
       "local.frontend-diagnostics.0": "python3 tools/gen_frontend_diagnostics.py --check",
@@ -8903,7 +8903,7 @@
         "description": "Docs/spec or status-block generators: the docs-architecture contract.",
         "gates": [
           "python3 tools/update_status_blocks.py --check",
-          "python3 tools/check_docs_architecture.py"
+          "python3 tools/venv_exec.py python tools/check_docs_architecture.py"
         ],
         "globs": [
           "docs/**/*.md",

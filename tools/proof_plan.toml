@@ -4067,7 +4067,7 @@ globs = [
 ]
 gates = [
   "python3 tools/update_status_blocks.py --check",
-  "python3 tools/check_docs_architecture.py",
+  "python3 tools/venv_exec.py python tools/check_docs_architecture.py",
 ]
 
 # --- The dev tooling itself (self-gate: its own failure-mode tests) ------
