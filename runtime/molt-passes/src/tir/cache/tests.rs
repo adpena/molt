@@ -188,123 +188,6 @@ fn warm_memory_hits_share_storage_and_do_not_copy_artifact_bytes() {
 }
 
 #[test]
-fn indexed_lru_scales_with_many_metadata_entries_and_bounded_residency() {
-    const ENTRY_BYTES: usize = 1024;
-    const RESIDENT_ENTRIES: usize = 128;
-    const TOTAL_ENTRIES: usize = 20_000;
-
-    let mut cache = make_cache_with_memory_limit(ENTRY_BYTES * RESIDENT_ENTRIES);
-    let artifact = Arc::<[u8]>::from(vec![0x6b; ENTRY_BYTES]);
-    let start = std::time::Instant::now();
-    for index in 0..TOTAL_ENTRIES {
-        let hash = format!("{index:064x}");
-        let poison_path = cache.poison_path(&hash).unwrap();
-        cache.index.insert(
-            Arc::from(hash.as_str()),
-            CacheEntry {
-                metadata_key: Arc::from(hash.as_str()),
-                poison_path,
-                last_access: 0,
-                data: None,
-                memory_stamp: 0,
-                memory_lru_index: None,
-                persistent_bytes: 0,
-                poisoned: false,
-            },
-        );
-        cache.store_memory_data(&hash, Arc::clone(&artifact));
-    }
-    let elapsed = start.elapsed();
-
-    let resident_entries = cache
-        .index
-        .values()
-        .filter(|entry| entry.data.is_some())
-        .count();
-    assert_eq!(resident_entries, RESIDENT_ENTRIES);
-    assert_eq!(cache.memory_lru.len(), RESIDENT_ENTRIES);
-    assert_eq!(cache.memory_bytes(), ENTRY_BYTES * RESIDENT_ENTRIES);
-    for (heap_index, node) in cache.memory_lru.iter().enumerate() {
-        assert_eq!(
-            cache.index[node.content_hash.as_ref()].memory_lru_index,
-            Some(heap_index)
-        );
-        if heap_index > 0 {
-            let parent = (heap_index - 1) / 2;
-            assert!(!cache.memory_lru_less(heap_index, parent));
-        }
-    }
-    eprintln!(
-        "indexed LRU: inserted {TOTAL_ENTRIES} metadata rows with {RESIDENT_ENTRIES} resident artifacts in {elapsed:?}"
-    );
-    assert!(elapsed < std::time::Duration::from_secs(5));
-}
-
-#[test]
-fn memory_cache_evicts_lru_bytes_without_dropping_disk_index() {
-    let mut cache = make_cache_with_memory_limit(8);
-    let h1 = fixture_hash("fn_1", b"body 1");
-    let h2 = fixture_hash("fn_2", b"body 2");
-    let h3 = fixture_hash("fn_3", b"body 3");
-
-    cache.put(&h1, b"1111").unwrap();
-    cache.put(&h2, b"2222").unwrap();
-    assert_eq!(cache.memory_bytes(), 8);
-
-    cache.put(&h3, b"3333").unwrap();
-    assert_eq!(
-        cache.len(),
-        3,
-        "memory eviction must preserve disk index entries"
-    );
-    assert!(
-        cache.memory_bytes() <= 8,
-        "in-memory artifact bytes must stay under the configured cap"
-    );
-    assert!(
-        cache
-            .index
-            .get(h1.as_str())
-            .is_some_and(|entry| entry.data.is_none()),
-        "least-recently-used artifact bytes should be evicted first: h1={:?}, h2={:?}, h3={:?}, lru={:?}",
-        cache.index.get(h1.as_str()),
-        cache.index.get(h2.as_str()),
-        cache.index.get(h3.as_str()),
-        cache.memory_lru,
-    );
-
-    assert_eq!(cache.get(&h1).as_deref(), Some(b"1111".as_slice()));
-    assert_eq!(cache.len(), 3);
-    assert!(cache.memory_bytes() <= 8);
-}
-
-#[test]
-fn memory_cache_does_not_retain_oversized_artifacts() {
-    let mut cache = make_cache_with_memory_limit(4);
-    let hash = fixture_hash("large_func", b"body");
-
-    cache.put(&hash, b"artifact-too-large").unwrap();
-
-    assert_eq!(cache.len(), 1);
-    assert_eq!(cache.memory_bytes(), 0);
-    assert!(
-        cache
-            .index
-            .get(hash.as_str())
-            .is_some_and(|entry| entry.data.is_none())
-    );
-    assert_eq!(
-        cache.get(&hash).as_deref(),
-        Some(b"artifact-too-large".as_slice())
-    );
-    assert_eq!(
-        cache.memory_bytes(),
-        0,
-        "oversized disk hits must not be retained in memory"
-    );
-}
-
-#[test]
 fn explicit_memory_cache_env_overrides_adaptive_default() {
     let _guard = env_lock().lock().expect("env lock");
     let _env = EnvRestore::apply(&[
@@ -493,139 +376,12 @@ fn fixture_key_is_namespaced_sha256_and_process_deterministic() {
     assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
 }
 
-/// 6. save_index + load_index round-trip
-#[test]
-fn test_disk_roundtrip() {
-    let dir = tmp_cache_dir();
-
-    // Write entries to disk.
-    {
-        let mut cache = CompilationCache::open(dir.clone());
-        let h1 = fixture_hash("fn_a", b"body a");
-        let h2 = fixture_hash("fn_b", b"body b");
-        cache.put(&h1, b"artifact a").unwrap();
-        cache.put(&h2, b"artifact b").unwrap();
-        cache.save_index().unwrap();
-    }
-
-    // Open a fresh cache from the same directory — index loads from disk.
-    let mut cache2 = CompilationCache::open(dir);
-    let h1 = fixture_hash("fn_a", b"body a");
-    let h2 = fixture_hash("fn_b", b"body b");
-
-    // Entries should be present (loaded lazily from disk).
-    assert_eq!(cache2.get(&h1).as_deref(), Some(b"artifact a".as_slice()));
-    assert_eq!(cache2.get(&h2).as_deref(), Some(b"artifact b".as_slice()));
-
-    assert_eq!(cache2.len(), 2);
-}
-
 #[test]
 fn test_get_missing_artifact_file() {
     let dir = tmp_cache_dir();
     let mut cache = CompilationCache::open(dir);
     let hash = fixture_hash("missing", b"artifact");
     assert_eq!(cache.get(&hash), None);
-}
-
-#[test]
-fn canonical_artifact_is_discovered_without_an_index_row() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("concurrent", b"artifact");
-    let functions = dir.join("functions");
-    std::fs::create_dir_all(&functions).unwrap();
-    std::fs::write(
-        functions.join(format!("{hash}.bin")),
-        encode_cache_envelope(&hash, CacheEnvelopeKind::Artifact, b"artifact"),
-    )
-    .unwrap();
-
-    let mut cache = CompilationCache::open(dir);
-    assert_eq!(cache.len(), 1);
-    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
-    assert_eq!(
-        cache.len(),
-        1,
-        "a discovered artifact should restore advisory metadata"
-    );
-}
-
-#[test]
-fn concurrent_index_save_cannot_hide_an_existing_artifact() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("writer-a", b"artifact");
-    let mut writer_a = CompilationCache::open(dir.clone());
-    writer_a.put(&hash, b"artifact").unwrap();
-
-    let mut writer_b = CompilationCache::open(dir.clone());
-    writer_b.save_index().unwrap();
-
-    let mut reader = CompilationCache::open(dir);
-    assert_eq!(reader.len(), 1);
-    assert_eq!(reader.get(&hash).as_deref(), Some(b"artifact".as_slice()));
-}
-
-#[test]
-fn stale_writer_merges_global_recency_before_selecting_capacity_survivors() {
-    let dir = tmp_cache_dir();
-    let h1 = fixture_hash("global-hot", b"body");
-    let h2 = fixture_hash("global-cold", b"body");
-    let h3 = fixture_hash("global-new", b"body");
-    let mut seed = CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
-    seed.put(&h1, b"hot").unwrap();
-    seed.put(&h2, b"cold").unwrap();
-    seed.save_index().unwrap();
-
-    let mut hot_writer = CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
-    let mut stale_writer = CompilationCache::open_with_limits(dir.clone(), 1024, 2, 1024 * 1024);
-    assert_eq!(hot_writer.get(&h1).as_deref(), Some(b"hot".as_slice()));
-    hot_writer.save_index().unwrap();
-    stale_writer.touch_metadata_entry(&h2, 1);
-    stale_writer.put(&h3, b"new").unwrap();
-    stale_writer.save_index().unwrap();
-
-    let mut recovered = CompilationCache::open_with_limits(dir, 1024, 2, 1024 * 1024);
-    assert_eq!(recovered.get(&h1).as_deref(), Some(b"hot".as_slice()));
-    assert_eq!(recovered.get(&h3).as_deref(), Some(b"new".as_slice()));
-    assert!(recovered.get(&h2).is_none());
-}
-
-#[test]
-fn resident_hit_order_controls_persistent_capacity_victims() {
-    let dir = tmp_cache_dir();
-    let h1 = fixture_hash("resident-hot", b"body");
-    let h2 = fixture_hash("resident-cold", b"body");
-    let h3 = fixture_hash("resident-new", b"body");
-    let mut cache = CompilationCache::open_with_limits(dir, 1024, 2, 1024 * 1024);
-    cache.put(&h1, b"hot").unwrap();
-    cache.put(&h2, b"cold").unwrap();
-    assert_eq!(cache.get(&h1).as_deref(), Some(b"hot".as_slice()));
-
-    cache.put(&h3, b"new").unwrap();
-
-    assert_eq!(cache.get(&h1).as_deref(), Some(b"hot".as_slice()));
-    assert_eq!(cache.get(&h3).as_deref(), Some(b"new".as_slice()));
-    assert!(cache.get(&h2).is_none());
-}
-
-#[test]
-fn observing_a_committed_epoch_never_mutates_the_quiescent_namespace() {
-    let dir = tmp_cache_dir();
-    let h1 = fixture_hash("read-only-reconcile-a", b"body");
-    let h2 = fixture_hash("read-only-reconcile-b", b"body");
-    let mut reader = CompilationCache::open_with_limits(dir.clone(), 1024, 1, 1024 * 1024);
-    let mut writer = CompilationCache::open_with_limits(dir, 1024, 2, 1024 * 1024);
-    writer.put(&h1, b"one").unwrap();
-    writer.put(&h2, b"two").unwrap();
-    writer.save_index().unwrap();
-
-    // Reconciling another process's completed generation is a read path,
-    // not a capacity-enforcement transaction. In particular, this reader's
-    // smaller local bound must not silently delete the writer's second
-    // canonical artifact while the namespace epoch is even.
-    assert_eq!(reader.get(&h1).as_deref(), Some(b"one".as_slice()));
-    assert!(reader.artifact_path(&h1).unwrap().is_file());
-    assert!(reader.artifact_path(&h2).unwrap().is_file());
 }
 
 #[test]
@@ -642,7 +398,6 @@ fn same_process_concurrent_writers_use_collision_free_temp_files() {
             scope.spawn(move || {
                 let mut cache = CompilationCache::open(dir);
                 cache.put(&hash, artifact).unwrap();
-                cache.save_index().unwrap();
             });
         }
     });
@@ -675,356 +430,11 @@ fn external_poison_invalidates_an_already_resident_hit_and_equal_put() {
         Err(CompilationCacheWriteError::Integrity(_))
     ));
     assert!(resident.get(&hash).is_none());
-    assert!(resident.index[hash.as_str()].data.is_none());
+    assert!(!resident.resident.contains_key(hash.as_str()));
     assert!(matches!(
         resident.put(&hash, b"first"),
         Err(CompilationCacheWriteError::Integrity(_))
     ));
-}
-
-#[test]
-fn poison_pruning_advances_epoch_and_cannot_resurrect_remote_resident_bytes() {
-    let dir = tmp_cache_dir();
-    let h1 = fixture_hash("poison-prune-h1", b"semantic-contract");
-    let h2 = fixture_hash("poison-prune-h2", b"semantic-contract");
-    let mut resident = CompilationCache::open_with_limits(dir.clone(), 1024, 1, 1024 * 1024);
-    let mut writer = CompilationCache::open_with_limits(dir, 1024, 1, 1024 * 1024);
-
-    resident.put(&h1, b"first").unwrap();
-    assert_eq!(resident.get(&h1).as_deref(), Some(b"first".as_slice()));
-    assert!(matches!(
-        writer.put(&h1, b"second"),
-        Err(CompilationCacheWriteError::Integrity(_))
-    ));
-
-    // Capacity retirement removes both the poisoned artifact and its
-    // tombstone in a later semantic transaction. A process retaining the
-    // pre-poison bytes must invalidate them on that later generation; the
-    // absence of a sidecar is never evidence that the old bytes are sound.
-    writer.put(&h2, b"replacement").unwrap();
-    assert!(!writer.poison_path(&h1).unwrap().exists());
-    assert!(resident.get(&h1).is_none());
-    assert!(!resident.index.contains_key(h1.as_str()));
-}
-
-#[test]
-fn resident_seqlock_rejects_poison_transition_between_epoch_samples() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("resident-seqlock", b"semantic-contract");
-    let mut resident = CompilationCache::open(dir.clone());
-    let mut divergent_writer = CompilationCache::open(dir);
-    resident.put(&hash, b"first").unwrap();
-    assert_eq!(resident.get(&hash).as_deref(), Some(b"first".as_slice()));
-
-    let reader_phases = Arc::new(std::sync::Barrier::new(2));
-    let writer_phases = Arc::new(std::sync::Barrier::new(2));
-    resident.resident_epoch_barrier = Some(Arc::clone(&reader_phases));
-    divergent_writer.poison_epoch_barrier = Some(Arc::clone(&writer_phases));
-
-    std::thread::scope(|scope| {
-        let reader_hash = hash.clone();
-        let reader = scope.spawn(move || {
-            let result = resident.get(&reader_hash);
-            (resident, result)
-        });
-        reader_phases.wait();
-
-        let writer_hash = hash.clone();
-        let writer = scope.spawn(move || {
-            let result = divergent_writer.put(&writer_hash, b"second");
-            (divergent_writer, result)
-        });
-        writer_phases.wait();
-
-        // Publish the writer's odd epoch between the reader's two samples,
-        // then wait until the reader has observed it before completion.
-        reader_phases.wait();
-        reader_phases.wait();
-        writer_phases.wait();
-        reader_phases.wait();
-
-        let (_, write_result) = writer.join().unwrap();
-        assert!(matches!(
-            write_result,
-            Err(CompilationCacheWriteError::Integrity(_))
-        ));
-        let (resident, read_result) = reader.join().unwrap();
-        assert!(read_result.is_none());
-        assert!(resident.index[hash.as_str()].data.is_none());
-    });
-}
-
-#[test]
-fn interrupted_epoch_without_poison_retires_the_entire_namespace() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("epoch-before-poison", b"semantic-contract");
-    let mut resident = CompilationCache::open(dir.clone());
-    resident.put(&hash, b"first").unwrap();
-    assert_eq!(resident.get(&hash).as_deref(), Some(b"first".as_slice()));
-
-    let mut crashed_writer = CompilationCache::open(dir);
-    let transition = crashed_writer
-        .with_namespace_lock(true, |cache| cache.begin_namespace_mutation_locked())
-        .unwrap()
-        .unwrap();
-    assert_eq!(transition & 1, 1);
-    drop(crashed_writer);
-
-    assert!(resident.get(&hash).is_none());
-    assert!(!resident.index.contains_key(hash.as_str()));
-    assert!(!resident.artifact_path(&hash).unwrap().exists());
-    assert!(!resident.poison_path(&hash).unwrap().exists());
-    let live = resident.read_namespace_epoch().unwrap();
-    assert_eq!(live & 1, 0);
-    assert_eq!(resident.read_durable_namespace_epoch().unwrap(), live);
-}
-
-#[test]
-fn interrupted_epoch_enumeration_failure_stays_odd_and_serves_nothing() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("epoch-enumeration-failure", b"semantic-contract");
-    let mut cache = CompilationCache::open(dir.clone());
-    cache.put(&hash, b"artifact").unwrap();
-    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
-
-    let mut crashed_writer = CompilationCache::open(dir);
-    let transition = crashed_writer
-        .with_namespace_lock(true, |writer| writer.begin_namespace_mutation_locked())
-        .unwrap()
-        .unwrap();
-    drop(crashed_writer);
-
-    cache.namespace_reset_enumeration_error = true;
-    assert!(
-        cache.get(&hash).is_none(),
-        "resident bytes must fail closed"
-    );
-    cache.discard_resident_data();
-    assert!(cache.get(&hash).is_none(), "disk bytes must fail closed");
-    assert_eq!(cache.read_namespace_epoch().unwrap(), transition);
-    assert_eq!(cache.read_durable_namespace_epoch().unwrap(), transition);
-    assert!(cache.artifact_path(&hash).unwrap().is_file());
-}
-
-#[test]
-fn nonresident_read_with_unrecoverable_epoch_fails_closed() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("nonresident-torn-epoch", b"semantic-contract");
-    let mut writer = CompilationCache::open(dir.clone());
-    writer.put(&hash, b"artifact").unwrap();
-    let mut reader = CompilationCache::open_with_memory_limit(dir, 0);
-    assert!(reader.index[hash.as_str()].data.is_none());
-
-    let invalid = [0_u8; CACHE_NAMESPACE_EPOCH_BYTES];
-    write_all_positioned(reader.namespace_epoch.as_ref().unwrap(), &invalid, 0).unwrap();
-    reader
-        .namespace_epoch
-        .as_ref()
-        .unwrap()
-        .sync_data()
-        .unwrap();
-    #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
-    for offset in [
-        CACHE_NAMESPACE_EPOCH_LIVE_OFFSET,
-        CACHE_NAMESPACE_EPOCH_DURABLE_OFFSET,
-        CACHE_NAMESPACE_EPOCH_DURABLE_OFFSET + CACHE_NAMESPACE_EPOCH_SLOT_BYTES,
-    ] {
-        mapped_namespace_epoch_word(reader.namespace_epoch_map.as_ref().unwrap(), offset)
-            .store(0, Ordering::Release);
-    }
-
-    assert!(reader.get(&hash).is_none());
-    assert!(reader.get(&hash).is_none());
-}
-
-#[test]
-fn torn_durable_odd_slot_forces_locked_namespace_retirement() {
-    assert!(validate_namespace_epoch_slots([Some(0), None]).is_err());
-
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("torn-odd-slot", b"semantic-contract");
-    let mut resident = CompilationCache::open(dir.clone());
-    resident.put(&hash, b"first").unwrap();
-    assert_eq!(resident.get(&hash).as_deref(), Some(b"first".as_slice()));
-
-    let transition = encode_namespace_epoch_word(1);
-    #[cfg(all(any(unix, windows), target_has_atomic = "64"))]
-    mapped_namespace_epoch_word(resident.namespace_epoch_map.as_ref().unwrap(), 0)
-        .store(transition, Ordering::Release);
-    #[cfg(not(all(any(unix, windows), target_has_atomic = "64")))]
-    write_all_positioned(
-        resident.namespace_epoch.as_ref().unwrap(),
-        &transition.to_le_bytes(),
-        CACHE_NAMESPACE_EPOCH_LIVE_OFFSET as u64,
-    )
-    .unwrap();
-    let transition_bytes = transition.to_le_bytes();
-    write_all_positioned(
-        resident.namespace_epoch.as_ref().unwrap(),
-        &transition_bytes[..3],
-        (CACHE_NAMESPACE_EPOCH_DURABLE_OFFSET + CACHE_NAMESPACE_EPOCH_SLOT_BYTES) as u64,
-    )
-    .unwrap();
-    resident
-        .namespace_epoch
-        .as_ref()
-        .unwrap()
-        .sync_data()
-        .unwrap();
-    assert!(resident.read_durable_namespace_epoch().is_err());
-
-    let artifact = resident.artifact_path(&hash).unwrap();
-    let poison = resident.poison_path(&hash).unwrap();
-    std::fs::hard_link(&artifact, &poison).unwrap();
-
-    assert!(resident.get(&hash).is_none());
-    assert!(!artifact.exists());
-    assert!(!poison.exists());
-    let live = resident.read_namespace_epoch().unwrap();
-    assert_eq!(live & 1, 0);
-    assert_eq!(resident.read_durable_namespace_epoch().unwrap(), live);
-}
-
-#[test]
-fn fresh_open_retires_namespace_after_torn_epoch_before_serving_cache() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("fresh-open-torn-epoch", b"semantic-contract");
-    let mut crashed_writer = CompilationCache::open(dir.clone());
-    crashed_writer.put(&hash, b"first").unwrap();
-    let artifact = crashed_writer.artifact_path(&hash).unwrap();
-    let poison = crashed_writer.poison_path(&hash).unwrap();
-    std::fs::hard_link(&artifact, &poison).unwrap();
-
-    let epoch_file = crashed_writer.namespace_epoch.as_ref().unwrap();
-    let transition = encode_namespace_epoch_word(1).to_le_bytes();
-    write_all_positioned(
-        epoch_file,
-        &transition,
-        CACHE_NAMESPACE_EPOCH_LIVE_OFFSET as u64,
-    )
-    .unwrap();
-    write_all_positioned(
-        epoch_file,
-        &transition[..3],
-        (CACHE_NAMESPACE_EPOCH_DURABLE_OFFSET + CACHE_NAMESPACE_EPOCH_SLOT_BYTES) as u64,
-    )
-    .unwrap();
-    epoch_file.sync_data().unwrap();
-    drop(crashed_writer);
-
-    let mut recovered = CompilationCache::open(dir);
-    assert!(
-        recovered.namespace_epoch_error.is_none(),
-        "fresh open must route torn durable slots through locked recovery"
-    );
-    assert!(recovered.get(&hash).is_none());
-    assert!(!artifact.exists());
-    assert!(!poison.exists());
-    let live = recovered.read_namespace_epoch().unwrap();
-    assert_eq!(live & 1, 0);
-    assert_eq!(recovered.read_durable_namespace_epoch().unwrap(), live);
-}
-
-#[test]
-fn crash_point_poison_intents_are_fail_closed_and_finalized_on_open() {
-    for crash_point in ["linked-intent", "renamed-intent", "partial-finalize"] {
-        let dir = tmp_cache_dir();
-        let hash = fixture_hash(crash_point, b"semantic-contract");
-        let mut writer = CompilationCache::open(dir.clone());
-        writer.put(&hash, b"first").unwrap();
-        drop(writer);
-        let functions = dir.join("functions");
-        let artifact = functions.join(format!("{hash}.bin"));
-        let poison = functions.join(format!("{hash}.poison"));
-        match crash_point {
-            "linked-intent" => std::fs::hard_link(&artifact, &poison).unwrap(),
-            "renamed-intent" => std::fs::rename(&artifact, &poison).unwrap(),
-            "partial-finalize" => {
-                std::fs::rename(&artifact, &poison).unwrap();
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .truncate(true)
-                    .open(&poison)
-                    .unwrap()
-                    .write_all(b"partial")
-                    .unwrap();
-            }
-            _ => unreachable!(),
-        }
-
-        let mut recovered = CompilationCache::open(dir);
-        assert!(recovered.get(&hash).is_none(), "{crash_point}");
-        assert!(!artifact.exists(), "{crash_point}");
-        let poison_bytes = std::fs::read(&poison).unwrap();
-        assert!(matches!(
-            decode_cache_envelope(&hash, &poison_bytes),
-            Ok((CacheEnvelopeKind::Poison, _))
-        ));
-    }
-}
-
-#[test]
-fn bounded_read_rejects_an_oversized_file_before_allocation_or_decode() {
-    let dir = tmp_cache_dir();
-    let hash = fixture_hash("oversized", b"artifact");
-    let max_bytes = 512;
-    let mut cache = CompilationCache::open_with_limits(dir.clone(), 4096, 8, max_bytes);
-    let functions = dir.join("functions");
-    std::fs::create_dir_all(&functions).unwrap();
-    let artifact = functions.join(format!("{hash}.bin"));
-    let file = File::create(&artifact).unwrap();
-    file.set_len(max_bytes + 1).unwrap();
-    drop(file);
-
-    assert!(cache.get(&hash).is_none());
-    assert!(cache.stats().telemetry.corruptions > 0);
-    assert!(artifact.is_file());
-    cache.put(&hash, b"repaired").unwrap();
-    assert_eq!(cache.get(&hash).as_deref(), Some(b"repaired".as_slice()));
-}
-
-#[test]
-fn concurrent_writers_preserve_global_entry_and_byte_limits() {
-    let dir = tmp_cache_dir();
-    let sample_hash = fixture_hash("sample", b"body");
-    let envelope_bytes =
-        encode_cache_envelope(&sample_hash, CacheEnvelopeKind::Artifact, b"row-0").len() as u64;
-    let max_entries = 3;
-    let max_bytes = envelope_bytes * max_entries as u64;
-    std::thread::scope(|scope| {
-        for index in 0..12 {
-            let dir = dir.clone();
-            scope.spawn(move || {
-                let hash = fixture_hash(&format!("writer-{index}"), b"body");
-                let mut cache =
-                    CompilationCache::open_with_limits(dir, 4096, max_entries, max_bytes);
-                cache.put(&hash, format!("row-{index}").as_bytes()).unwrap();
-            });
-        }
-    });
-
-    let recovered = CompilationCache::open_with_limits(dir.clone(), 4096, max_entries, max_bytes);
-    assert!(recovered.stats().entries <= max_entries);
-    assert!(recovered.stats().persistent_bytes <= max_bytes);
-    let persisted = std::fs::read_dir(dir.join("functions"))
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.ends_with(".bin") || name.ends_with(".poison"))
-        })
-        .collect::<Vec<_>>();
-    assert!(persisted.len() <= max_entries);
-    assert!(
-        persisted
-            .iter()
-            .filter_map(|entry| entry.metadata().ok())
-            .map(|metadata| metadata.len())
-            .sum::<u64>()
-            <= max_bytes
-    );
 }
 
 #[test]
@@ -1088,9 +498,8 @@ fn memory_only_oversized_same_key_divergence_persists_bounded_poison() {
         cache.put(&hash, &second),
         Err(CompilationCacheWriteError::Integrity(_))
     ));
-    let stats = cache.stats();
-    assert!(stats.persistent_bytes <= stats.max_persistent_bytes);
-    assert!(cache.poison_path(&hash).unwrap().is_file());
+    let poison_path = cache.poison_path(&hash).unwrap();
+    assert!(std::fs::metadata(&poison_path).unwrap().len() <= 512);
 
     let mut reopened = CompilationCache::open_with_limits(dir, 4096, 8, 512);
     assert!(reopened.get(&hash).is_none());
@@ -1131,7 +540,7 @@ fn durable_poison_falls_back_to_minimal_envelope_and_retires_ordinary_artifact()
         payload.is_empty(),
         "the bounded fallback marker is sufficient"
     );
-    assert!(cache.stats().persistent_bytes <= max_persistent_bytes);
+    assert!(poison.len() as u64 <= max_persistent_bytes);
 
     let mut reopened = CompilationCache::open_with_limits(dir, 4096, 8, max_persistent_bytes);
     assert!(reopened.get(&hash).is_none());
@@ -1142,7 +551,7 @@ fn durable_poison_falls_back_to_minimal_envelope_and_retires_ordinary_artifact()
 }
 
 #[test]
-fn impossible_durable_poison_retires_namespace_and_drops_resident_payload() {
+fn impossible_durable_poison_fails_closed_and_drops_resident_payload() {
     let dir = tmp_cache_dir();
     let hash = fixture_hash("memory-only-zero-cap", b"same-contract");
     let mut cache = CompilationCache::open_with_limits(dir.clone(), 4096, 8, 0);
@@ -1154,32 +563,9 @@ fn impossible_durable_poison_retires_namespace_and_drops_resident_payload() {
         .expect_err("known divergence must fail closed even without durable capacity");
     assert!(matches!(error, CompilationCacheWriteError::Integrity(_)));
     assert!(cache.get(&hash).is_none());
-    assert!(!cache.index.contains_key(hash.as_str()));
+    assert!(!cache.resident.contains_key(hash.as_str()));
     assert!(!cache.artifact_path(&hash).unwrap().exists());
     assert!(!cache.poison_path(&hash).unwrap().exists());
-}
-
-#[test]
-fn limit_projection_keeps_hot_resident_ahead_of_cold_persistent_metadata() {
-    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 1, 2, 4096);
-    let cold = fixture_hash("cold", b"body");
-    let hot = fixture_hash("hot", b"body");
-    let newcomer = fixture_hash("new", b"body");
-    cache.put(&cold, b"c").unwrap();
-    cache.put(&hot, b"h").unwrap();
-    assert!(cache.index[cold.as_str()].data.is_none());
-    assert!(cache.index[hot.as_str()].data.is_some());
-
-    cache.touch_metadata_entry(&hot, 1);
-    cache.touch_metadata_entry(&cold, 2);
-    assert!(cache.get(&hot).is_some());
-    cache.upsert_metadata_entry(&newcomer, 3, 0, false);
-    cache.enforce_cache_limits();
-
-    assert!(!cache.index.contains_key(cold.as_str()));
-    assert!(cache.index.contains_key(hot.as_str()));
-    assert!(cache.index.contains_key(newcomer.as_str()));
-    assert!(cache.index[hot.as_str()].last_access > 3);
 }
 
 #[test]
@@ -1200,42 +586,6 @@ fn authenticated_envelope_cannot_be_replayed_under_a_different_key() {
 }
 
 #[test]
-fn persistent_entry_and_byte_limits_bound_artifacts_and_poison() {
-    let dir = tmp_cache_dir();
-    let envelope_bytes = encode_cache_envelope(
-        &fixture_hash("measure", b"body"),
-        CacheEnvelopeKind::Artifact,
-        b"1234",
-    )
-    .len() as u64;
-    let mut cache =
-        CompilationCache::open_with_limits(dir, 1024, 2, envelope_bytes.saturating_mul(2));
-    for index in 0..5 {
-        cache
-            .put(&format!("{index:064x}"), format!("row-{index}").as_bytes())
-            .unwrap();
-    }
-    let stats = cache.stats();
-    assert!(stats.entries <= 2);
-    assert!(stats.persistent_bytes <= stats.max_persistent_bytes);
-    assert!(stats.telemetry.evicted_entries >= 3);
-}
-
-#[test]
-fn index_scan_and_retained_rows_are_bounded_by_entry_limit() {
-    let dir = tmp_cache_dir();
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut index = format!("{CACHE_INDEX_HEADER}\n");
-    for row in 0..10_000 {
-        index.push_str(&format!("{row:064x}|{row}|1|artifact\n"));
-    }
-    std::fs::write(dir.join("index.txt"), index).unwrap();
-    let cache = CompilationCache::open_with_limits(dir, 0, 2, 1024);
-    assert!(cache.len() <= 2);
-    assert!(cache.stats().telemetry.dropped_index_rows > 0);
-}
-
-#[test]
 fn cache_directory_io_failure_is_typed_availability_not_integrity() {
     let cache_path = tmp_cache_dir();
     std::fs::write(&cache_path, b"not-a-directory").unwrap();
@@ -1245,37 +595,6 @@ fn cache_directory_io_failure_is_typed_availability_not_integrity() {
         cache.put(&hash, b"artifact"),
         Err(CompilationCacheWriteError::Unavailable(_))
     ));
-}
-
-#[test]
-fn index_is_versioned_strict_and_rejects_old_or_malformed_rows() {
-    let dir = tmp_cache_dir();
-    std::fs::create_dir_all(&dir).unwrap();
-    let valid = fixture_hash("valid", b"row");
-    let functions = dir.join("functions");
-    std::fs::create_dir_all(&functions).unwrap();
-    let valid_envelope = encode_cache_envelope(&valid, CacheEnvelopeKind::Artifact, b"row");
-    std::fs::write(functions.join(format!("{valid}.bin")), &valid_envelope).unwrap();
-    let malformed = format!(
-        "{CACHE_INDEX_HEADER}\n../escape|1|1|artifact\nABCDEF{}|2|1|artifact\n{valid}|not-a-time|1|artifact\n{valid}|3|1|artifact|extra\n{valid}|4|{}|artifact\n",
-        valid_envelope.len(),
-        "0".repeat(58)
-    );
-    std::fs::write(dir.join("index.txt"), malformed).unwrap();
-    let cache = CompilationCache::open(dir.clone());
-    assert_eq!(cache.len(), 1);
-    assert!(cache.index.contains_key(valid.as_str()));
-
-    std::fs::write(
-        dir.join("index.txt"),
-        format!("# hash|artifact_path|deps|last_access\n{valid}|../../escape||5\n"),
-    )
-    .unwrap();
-    std::fs::remove_file(functions.join(format!("{valid}.bin"))).unwrap();
-    assert!(
-        CompilationCache::open(dir).is_empty(),
-        "old index formats must not be parsed"
-    );
 }
 
 #[test]
@@ -1290,294 +609,416 @@ fn invalid_hashes_cannot_escape_the_canonical_artifact_directory() {
     assert!(!dir.join("escape.bin").exists());
 }
 
-#[test]
-fn sorted_index_serialization_is_process_stable() {
-    fn cache_with_metadata(dir: PathBuf, rows: &[(String, u64)]) -> CompilationCache {
-        let mut cache = CompilationCache::open(dir);
-        for (hash, last_access) in rows {
-            let poison_path = cache.poison_path(hash).unwrap();
-            cache.index.insert(
-                Arc::from(hash.as_str()),
-                CacheEntry {
-                    metadata_key: Arc::from(hash.as_str()),
-                    poison_path,
-                    last_access: *last_access,
-                    data: None,
-                    memory_stamp: 0,
-                    memory_lru_index: None,
-                    persistent_bytes: 0,
-                    poisoned: false,
-                },
-            );
-        }
-        cache
-    }
-
-    let h1 = fixture_hash("a", b"body");
-    let h2 = fixture_hash("b", b"body");
-    let dir_a = tmp_cache_dir();
-    let dir_b = tmp_cache_dir();
-    let mut cache_a = cache_with_metadata(dir_a.clone(), &[(h2.clone(), 2), (h1.clone(), 1)]);
-    let mut cache_b = cache_with_metadata(dir_b.clone(), &[(h1, 1), (h2, 2)]);
-    cache_a.save_index().unwrap();
-    cache_b.save_index().unwrap();
-    assert_eq!(
-        std::fs::read(dir_a.join("index.txt")).unwrap(),
-        std::fs::read(dir_b.join("index.txt")).unwrap()
-    );
-}
-
-#[test]
-fn self_owned_mutations_reuse_complete_inventory_without_namespace_scans() {
-    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 4096, 128, 1 << 20);
-    assert!(cache.inventory_complete);
-    let initial = cache.stats().telemetry;
-    let hashes = (0..64)
-        .map(|index| fixture_hash(&format!("self-owned-{index}"), b"artifact"))
-        .collect::<Vec<_>>();
-
-    for hash in &hashes {
-        cache.put(hash, b"artifact").unwrap();
-        assert!(cache.inventory_complete);
-    }
-    cache.put(&hashes[0], b"artifact").unwrap();
-    let after_puts = cache.stats().telemetry;
-    assert_eq!(
-        after_puts.namespace_reconciliations,
-        initial.namespace_reconciliations
-    );
-    assert_eq!(after_puts.index_loads, initial.index_loads);
-    assert_eq!(after_puts.recency_projections, initial.recency_projections);
-    assert_eq!(cache.len(), hashes.len());
-
-    for _ in 0..2 {
-        cache.save_index().unwrap();
-        assert!(cache.inventory_complete);
-        let after_save = cache.stats().telemetry;
-        assert_eq!(
-            after_save.namespace_reconciliations,
-            initial.namespace_reconciliations
-        );
-        assert_eq!(after_save.index_loads, initial.index_loads);
-    }
-    for hash in &hashes {
-        assert_eq!(cache.get(hash).as_deref(), Some(b"artifact".as_slice()));
-    }
-}
-
-#[test]
-fn observing_foreign_unsaved_artifacts_does_not_certify_capacity_inventory() {
-    let dir = tmp_cache_dir();
-    let h1 = fixture_hash("foreign-visible", b"row");
-    let h2 = fixture_hash("foreign-undiscovered", b"row");
-    let h3 = fixture_hash("local-new", b"row");
-    let envelope_bytes =
-        encode_cache_envelope(&h1, CacheEnvelopeKind::Artifact, b"row").len() as u64;
-    let max_bytes = envelope_bytes * 2;
-    let mut local = CompilationCache::open_with_limits(dir.clone(), 4096, 2, max_bytes);
-    let mut foreign = CompilationCache::open_with_limits(dir.clone(), 4096, 2, max_bytes);
-    foreign.put(&h1, b"row").unwrap();
-    foreign.put(&h2, b"row").unwrap();
-    assert!(!dir.join("index.txt").exists());
-
-    let before_read = local.stats().telemetry;
-    assert_eq!(local.get(&h1).as_deref(), Some(b"row".as_slice()));
-    assert!(!local.inventory_complete);
-    assert!(!local.index.contains_key(h2.as_str()));
-    assert_eq!(
-        local.stats().telemetry.namespace_reconciliations,
-        before_read.namespace_reconciliations
-    );
-    assert!(local.artifact_path(&h2).unwrap().is_file());
-
-    let before_put = local.stats().telemetry;
-    local.put(&h3, b"row").unwrap();
-    assert!(local.inventory_complete);
-    assert_eq!(
-        local.stats().telemetry.namespace_reconciliations,
-        before_put.namespace_reconciliations + 1
-    );
-    assert_eq!(
-        local.stats().telemetry.index_loads,
-        before_put.index_loads + 1
-    );
-    let persisted = std::fs::read_dir(dir.join("functions"))
-        .unwrap()
-        .map(|entry| entry.unwrap())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "bin")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(persisted.len(), 2);
-    assert_eq!(
-        persisted
-            .iter()
-            .map(|entry| entry.metadata().unwrap().len())
-            .sum::<u64>(),
-        max_bytes
-    );
-    assert_eq!(local.stats().persistent_bytes, max_bytes);
-    assert_eq!(local.len(), 2);
-    assert!(local.artifact_path(&h3).unwrap().is_file());
-    local.save_index().unwrap();
-    assert_eq!(
-        local.stats().telemetry.namespace_reconciliations,
-        before_put.namespace_reconciliations + 1
-    );
-}
-
-#[test]
-fn corrupt_read_invalidates_complete_inventory_before_repair() {
-    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 0, 8, 1 << 20);
-    let hash = fixture_hash("corrupt-inventory", b"artifact");
-    cache.put(&hash, b"artifact").unwrap();
-    assert!(cache.inventory_complete);
-    let artifact_path = cache.artifact_path(&hash).unwrap();
-    std::fs::write(&artifact_path, b"not-an-authenticated-envelope").unwrap();
-
-    assert!(cache.get(&hash).is_none());
-    assert!(artifact_path.is_file());
-    assert!(!cache.index.contains_key(hash.as_str()));
-    assert!(!cache.inventory_complete);
-    let before_repair = cache.stats().telemetry;
-    cache.put(&hash, b"artifact").unwrap();
-    assert!(cache.inventory_complete);
-    assert_eq!(
-        cache.stats().telemetry.namespace_reconciliations,
-        before_repair.namespace_reconciliations + 1
-    );
-    assert_eq!(
-        cache.stats().telemetry.index_loads,
-        before_repair.index_loads + 1
-    );
-    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
-    assert_eq!(
-        cache.stats().persistent_bytes,
-        std::fs::metadata(artifact_path).unwrap().len()
-    );
-}
-
-#[test]
-fn failed_artifact_mutation_invalidates_inventory_until_reconciliation() {
-    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 0, 8, 1 << 20);
-    let hash = fixture_hash("blocked-artifact", b"artifact");
-    let artifact_path = cache.artifact_path(&hash).unwrap();
-    std::fs::create_dir_all(&artifact_path).unwrap();
-    assert!(cache.inventory_complete);
-    let before_failure = cache.stats().telemetry;
-
-    assert!(matches!(
-        cache.put(&hash, b"artifact"),
-        Err(CompilationCacheWriteError::Unavailable(_))
-    ));
-    assert!(!cache.inventory_complete);
-    assert_eq!(
-        cache.stats().telemetry.namespace_reconciliations,
-        before_failure.namespace_reconciliations
-    );
-    std::fs::remove_dir(&artifact_path).unwrap();
-    cache.put(&hash, b"artifact").unwrap();
-    assert!(cache.inventory_complete);
-    assert_eq!(
-        cache.stats().telemetry.namespace_reconciliations,
-        before_failure.namespace_reconciliations + 1
-    );
-    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
-}
-
-#[test]
-fn failed_namespace_reconciliation_cannot_certify_complete_inventory() {
-    let dir = tmp_cache_dir();
-    let mut cache = CompilationCache::open_with_limits(dir.clone(), 0, 8, 1 << 20);
-    assert!(cache.inventory_complete);
-    cache.discard_local_namespace_view();
-    let functions = dir.join("functions");
-    if functions.exists() {
-        std::fs::remove_dir(&functions).unwrap();
-    }
-    std::fs::write(&functions, b"not-a-directory").unwrap();
-    let before_failure = cache.stats().telemetry;
-    let admission = cache
-        .with_namespace_lock(true, |cache| cache.prepare_namespace_mutation_locked())
+fn set_mtime(path: &std::path::Path, time: SystemTime) {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_modified(time))
         .unwrap();
+}
+
+fn tracked_files(dir: &std::path::Path) -> Vec<(String, u64)> {
+    let mut files = std::fs::read_dir(dir.join("functions"))
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let name = entry.file_name().into_string().ok()?;
+                    (name.ends_with(".bin") || name.ends_with(".poison"))
+                        .then(|| (name, entry.metadata().unwrap().len()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+#[test]
+fn memory_eviction_keeps_artifacts_on_disk() {
+    let dir = tmp_cache_dir();
+    let mut cache = CompilationCache::open_with_memory_limit(dir, 8);
+    let h1 = fixture_hash("fn_1", b"body 1");
+    let h2 = fixture_hash("fn_2", b"body 2");
+    let h3 = fixture_hash("fn_3", b"body 3");
+
+    cache.put(&h1, b"1111").unwrap();
+    cache.put(&h2, b"2222").unwrap();
+    assert_eq!(cache.stats().resident_bytes, 8);
+    cache.put(&h3, b"3333").unwrap();
+    assert!(cache.stats().resident_bytes <= 8);
     assert!(
-        admission.is_err(),
-        "an unreadable inventory must fail mutation admission"
+        !cache.resident.contains_key(h1.as_str()),
+        "the least recently used payload leaves memory first"
     );
-    assert!(!cache.inventory_complete);
-    assert_eq!(
-        cache.stats().telemetry.namespace_reconciliations,
-        before_failure.namespace_reconciliations + 1
-    );
-    assert!(cache.index.is_empty());
-    assert!(functions.is_file());
+
+    let before = cache.stats().telemetry.disk_hits;
+    assert_eq!(cache.get(&h1).as_deref(), Some(b"1111".as_slice()));
+    assert_eq!(cache.stats().telemetry.disk_hits, before + 1);
+    assert!(cache.stats().resident_bytes <= 8);
 }
 
 #[test]
-fn ordinary_miss_then_put_preserves_complete_inventory() {
-    let mut cache = CompilationCache::open_with_limits(tmp_cache_dir(), 0, 128, 1 << 20);
-    let initial = cache.stats().telemetry;
-    for index in 0..64 {
-        let hash = fixture_hash(&format!("miss-then-put-{index}"), b"artifact");
-        assert!(cache.get(&hash).is_none());
-        assert!(
-            cache.inventory_complete,
-            "an absent key is not an uncertain inventory"
-        );
-        cache.put(&hash, b"artifact").unwrap();
+fn memory_cache_does_not_retain_oversized_artifacts() {
+    let mut cache = make_cache_with_memory_limit(4);
+    let hash = fixture_hash("large_func", b"body");
+
+    cache.put(&hash, b"artifact-too-large").unwrap();
+    assert_eq!(cache.stats().resident_bytes, 0);
+    assert_eq!(
+        cache.get(&hash).as_deref(),
+        Some(b"artifact-too-large".as_slice())
+    );
+    assert_eq!(
+        cache.stats().resident_bytes,
+        0,
+        "oversized disk hits must not be retained in memory"
+    );
+}
+
+#[test]
+fn indexed_lru_scales_with_many_entries_and_bounded_residency() {
+    const ENTRY_BYTES: usize = 1024;
+    const RESIDENT_ENTRIES: usize = 128;
+    const TOTAL_ENTRIES: usize = 20_000;
+
+    let mut cache = make_cache_with_memory_limit(ENTRY_BYTES * RESIDENT_ENTRIES);
+    let artifact = Arc::<[u8]>::from(vec![0x6b; ENTRY_BYTES]);
+    let start = std::time::Instant::now();
+    for index in 0..TOTAL_ENTRIES {
+        cache.store_memory_data(&format!("{index:064x}"), Arc::clone(&artifact));
     }
-    cache.save_index().unwrap();
-    let final_stats = cache.stats().telemetry;
-    assert_eq!(
-        final_stats.namespace_reconciliations,
-        initial.namespace_reconciliations
+    let elapsed = start.elapsed();
+
+    assert_eq!(cache.resident.len(), RESIDENT_ENTRIES);
+    assert_eq!(cache.memory_lru.len(), RESIDENT_ENTRIES);
+    assert_eq!(cache.stats().resident_bytes, ENTRY_BYTES * RESIDENT_ENTRIES);
+    for (heap_index, node) in cache.memory_lru.iter().enumerate() {
+        assert_eq!(
+            cache.resident[node.content_hash.as_ref()].memory_lru_index,
+            heap_index
+        );
+        if heap_index > 0 {
+            let parent = (heap_index - 1) / 2;
+            assert!(!cache.memory_lru_less(heap_index, parent));
+        }
+    }
+    // The newest entries survive: residency is least-recently-used.
+    assert!(
+        cache
+            .resident
+            .contains_key(format!("{:064x}", TOTAL_ENTRIES - 1).as_str())
     );
-    assert_eq!(final_stats.index_loads, initial.index_loads);
-    assert_eq!(final_stats.recency_projections, initial.recency_projections);
+    assert!(!cache.resident.contains_key(format!("{:064x}", 0).as_str()));
+    eprintln!("indexed LRU: {TOTAL_ENTRIES} insertions, {RESIDENT_ENTRIES} resident, {elapsed:?}");
+    assert!(elapsed < std::time::Duration::from_secs(5));
 }
 
 #[test]
-fn recovered_startup_error_does_not_leave_successful_put_in_odd_epoch() {
+fn artifacts_survive_reopening() {
+    let dir = tmp_cache_dir();
+    let h1 = fixture_hash("fn_a", b"body a");
+    let h2 = fixture_hash("fn_b", b"body b");
+    {
+        let mut cache = CompilationCache::open(dir.clone());
+        cache.put(&h1, b"artifact a").unwrap();
+        cache.put(&h2, b"artifact b").unwrap();
+    }
+    let mut reopened = CompilationCache::open(dir);
+    assert_eq!(reopened.get(&h1).as_deref(), Some(b"artifact a".as_slice()));
+    assert_eq!(reopened.get(&h2).as_deref(), Some(b"artifact b".as_slice()));
+    assert_eq!(reopened.stats().telemetry.disk_hits, 2);
+}
+
+#[test]
+fn opening_a_cache_performs_no_io() {
+    let dir = tmp_cache_dir();
+    let mut cache = CompilationCache::open(dir.clone());
+    assert!(
+        !dir.exists(),
+        "open must not create, lock or scan the namespace"
+    );
+    assert!(cache.get(&fixture_hash("absent", b"body")).is_none());
+    assert!(!dir.exists(), "a miss must not create the namespace");
+}
+
+#[test]
+fn concurrent_identical_writers_publish_once_and_reuse() {
+    const WRITERS: usize = 8;
+    let dir = tmp_cache_dir();
+    let hash = fixture_hash("shared", b"body");
+    let barrier = Arc::new(std::sync::Barrier::new(WRITERS));
+    let telemetry = std::thread::scope(|scope| {
+        let handles = (0..WRITERS)
+            .map(|_| {
+                let dir = dir.clone();
+                let hash = hash.clone();
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    let mut cache = CompilationCache::open(dir);
+                    barrier.wait();
+                    cache.put(&hash, b"same payload").unwrap();
+                    cache.stats().telemetry
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(telemetry.iter().map(|t| t.writes).sum::<u64>(), 1);
+    assert_eq!(
+        telemetry.iter().map(|t| t.reuses).sum::<u64>(),
+        WRITERS as u64 - 1
+    );
+    assert_eq!(telemetry.iter().map(|t| t.corruptions).sum::<u64>(), 0);
+    assert_eq!(tracked_files(&dir).len(), 1);
+    let mut reader = CompilationCache::open(dir);
+    assert_eq!(
+        reader.get(&hash).as_deref(),
+        Some(b"same payload".as_slice())
+    );
+}
+
+#[test]
+fn a_held_trim_lock_never_blocks_reads_writes_or_other_trims() {
     let dir = tmp_cache_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    let functions = dir.join("functions");
-    std::fs::write(&functions, b"temporarily-not-a-directory").unwrap();
-    let mut cache = CompilationCache::open_with_limits(dir, 1024, 8, 1 << 20);
-    assert!(cache.namespace_epoch_error.is_some());
-    assert!(!cache.inventory_complete);
-    std::fs::remove_file(&functions).unwrap();
+    let held = File::create(dir.join(CACHE_TRIM_LOCK_FILE)).unwrap();
+    held.lock().unwrap();
 
-    let hash = fixture_hash("recovered-startup", b"artifact");
+    let hash = fixture_hash("unlocked", b"body");
+    let mut cache = CompilationCache::open(dir.clone());
     cache.put(&hash, b"artifact").unwrap();
-    assert!(cache.namespace_epoch_error.is_none());
-    assert_eq!(cache.read_namespace_epoch().unwrap() & 1, 0);
-    assert!(cache.inventory_complete);
-    assert_eq!(cache.get(&hash).as_deref(), Some(b"artifact".as_slice()));
-    assert!(cache.artifact_path(&hash).unwrap().is_file());
+    let mut reader = CompilationCache::open(dir.clone());
+    assert_eq!(reader.get(&hash).as_deref(), Some(b"artifact".as_slice()));
+    cache.trim().unwrap();
+    assert_eq!(
+        cache.stats().telemetry.trims,
+        0,
+        "a busy trim lock means another process is trimming"
+    );
+    assert!(!dir.join(CACHE_TRIM_STAMP_FILE).exists());
+
+    held.unlock().unwrap();
+    cache.trim().unwrap();
+    assert_eq!(cache.stats().telemetry.trims, 1);
 }
 
 #[test]
-fn foreign_mutation_admission_loads_index_only_once() {
+fn trimming_is_amortized_by_its_stamp() {
     let dir = tmp_cache_dir();
-    let mut local = CompilationCache::open_with_limits(dir.clone(), 0, 8, 1 << 20);
-    let mut foreign = CompilationCache::open_with_limits(dir, 0, 8, 1 << 20);
-    let foreign_hash = fixture_hash("foreign-mutation", b"artifact");
-    foreign.put(&foreign_hash, b"artifact").unwrap();
-    foreign.save_index().unwrap();
-    let before = local.stats().telemetry;
-    local
-        .put(&fixture_hash("local-mutation", b"artifact"), b"artifact")
+    let mut cache = CompilationCache::open(dir.clone());
+    cache
+        .put(&fixture_hash("stamp", b"body"), b"artifact")
         .unwrap();
-    assert_eq!(local.stats().telemetry.index_loads, before.index_loads + 1);
+    cache.trim_if_due().unwrap();
+    assert_eq!(cache.stats().telemetry.trims, 1);
+    cache.trim_if_due().unwrap();
     assert_eq!(
-        local.stats().telemetry.namespace_reconciliations,
-        before.namespace_reconciliations + 1
+        cache.stats().telemetry.trims,
+        1,
+        "a fresh stamp defers trims"
     );
+
+    let stamp = dir.join(CACHE_TRIM_STAMP_FILE);
+    set_mtime(&stamp, SystemTime::now() - CACHE_TRIM_INTERVAL);
+    cache.trim_if_due().unwrap();
     assert_eq!(
-        local.get(&foreign_hash).as_deref(),
-        Some(b"artifact".as_slice())
+        cache.stats().telemetry.trims,
+        2,
+        "an expired stamp trims again"
     );
+
+    set_mtime(&stamp, SystemTime::now() + 2 * CACHE_TRIM_INTERVAL);
+    cache.trim_if_due().unwrap();
+    assert_eq!(
+        cache.stats().telemetry.trims,
+        3,
+        "a far-future stamp from a skewed clock cannot disable trimming"
+    );
+}
+
+#[test]
+fn trim_bounds_concurrent_writers_to_entry_and_byte_limits() {
+    let dir = tmp_cache_dir();
+    let sample_hash = fixture_hash("sample", b"body");
+    let envelope_bytes =
+        encode_cache_envelope(&sample_hash, CacheEnvelopeKind::Artifact, b"row-00").len() as u64;
+    let max_entries = 3;
+    let max_bytes = envelope_bytes * 2;
+    std::thread::scope(|scope| {
+        for index in 0..12 {
+            let dir = dir.clone();
+            scope.spawn(move || {
+                let hash = fixture_hash(&format!("writer-{index}"), b"body");
+                let mut cache =
+                    CompilationCache::open_with_limits(dir, 4096, max_entries, max_bytes);
+                cache
+                    .put(&hash, format!("row-{index:02}").as_bytes())
+                    .unwrap();
+            });
+        }
+    });
+    assert_eq!(
+        tracked_files(&dir).len(),
+        12,
+        "writes are not bounded inline"
+    );
+
+    let mut trimmer = CompilationCache::open_with_limits(dir.clone(), 4096, max_entries, max_bytes);
+    trimmer.trim().unwrap();
+    let files = tracked_files(&dir);
+    assert!(files.len() <= max_entries);
+    assert!(files.iter().map(|(_, bytes)| bytes).sum::<u64>() <= max_bytes);
+    assert_eq!(
+        files.len(),
+        2,
+        "the byte limit binds before the entry limit"
+    );
+    assert_eq!(trimmer.stats().telemetry.evicted_entries, 10);
+}
+
+#[test]
+fn trim_evicts_least_recently_used_files_and_hits_refresh_recency() {
+    let dir = tmp_cache_dir();
+    let cold = fixture_hash("cold", b"body");
+    let hot = fixture_hash("hot", b"body");
+    let newcomer = fixture_hash("new", b"body");
+    let mut writer = CompilationCache::open_with_limits(dir.clone(), 4096, 2, 1 << 20);
+    writer.put(&cold, b"c").unwrap();
+    writer.put(&hot, b"h").unwrap();
+    writer.put(&newcomer, b"n").unwrap();
+    let now = SystemTime::now();
+    let hour = std::time::Duration::from_secs(3600);
+    set_mtime(&writer.artifact_path(&cold).unwrap(), now - 2 * hour);
+    set_mtime(&writer.artifact_path(&hot).unwrap(), now - 3 * hour);
+
+    // A fresh process hits `hot`; its stale recency is refreshed on use.
+    let mut reader = CompilationCache::open(dir.clone());
+    assert!(reader.get(&hot).is_some());
+    writer.trim().unwrap();
+
+    assert!(!writer.artifact_path(&cold).unwrap().exists());
+    assert!(writer.artifact_path(&hot).unwrap().exists());
+    assert!(writer.artifact_path(&newcomer).unwrap().exists());
+    assert_eq!(writer.stats().telemetry.evicted_entries, 1);
+}
+
+#[test]
+fn trim_retires_stale_temporaries_and_untracked_files_only() {
+    let dir = tmp_cache_dir();
+    let hash = fixture_hash("tracked", b"body");
+    let mut cache = CompilationCache::open(dir.clone());
+    cache.put(&hash, b"artifact").unwrap();
+    let functions = dir.join("functions");
+    let stale_temp = functions.join(format!(".{hash}.bin.tmp.1.1"));
+    let live_temp = functions.join(format!(".{hash}.bin.tmp.1.2"));
+    let untracked = functions.join("index.txt");
+    for path in [&stale_temp, &live_temp, &untracked] {
+        std::fs::write(path, b"x").unwrap();
+    }
+    set_mtime(
+        &stale_temp,
+        SystemTime::now() - CACHE_RECENCY_INTERVAL - std::time::Duration::from_secs(1),
+    );
+
+    cache.trim().unwrap();
+    assert!(!stale_temp.exists());
+    assert!(live_temp.exists(), "a live writer's staging file survives");
+    assert!(!untracked.exists());
+    assert!(cache.artifact_path(&hash).unwrap().exists());
+    let telemetry = cache.stats().telemetry;
+    assert_eq!(telemetry.temp_files_retired, 1);
+    assert_eq!(telemetry.untracked_files_retired, 1);
+    assert_eq!(telemetry.evicted_entries, 0);
+}
+
+#[test]
+fn trim_retires_only_stale_sibling_backend_namespaces() {
+    let root = tmp_cache_dir();
+    let name = |seed: &str| fixture_hash(seed, b"namespace");
+    let own = root.join(name("own"));
+    let stale = root.join(name("stale"));
+    let active = root.join(name("active"));
+    let not_a_namespace = root.join(name("other-cache"));
+    let foreign = root.join("python_source_closure");
+    for namespace in [&stale, &active, &foreign] {
+        std::fs::create_dir_all(namespace.join("functions")).unwrap();
+    }
+    std::fs::create_dir_all(&not_a_namespace).unwrap();
+    let artifact_file = root.join(format!("{}.artifact-x.a", name("archive")));
+    std::fs::write(&artifact_file, b"archive").unwrap();
+    // A namespace that a live backend trimmed recently.
+    std::fs::write(active.join(CACHE_TRIM_STAMP_FILE), b"").unwrap();
+    let later = SystemTime::now() + CACHE_NAMESPACE_UNUSED_LIMIT;
+    set_mtime(&active.join(CACHE_TRIM_STAMP_FILE), later);
+
+    let mut cache = CompilationCache::open(own.clone());
+    cache.namespace_root = Some(root.clone());
+    cache.put(&name("artifact"), b"artifact").unwrap();
+    cache.trim_at(later, false).unwrap();
+
+    assert!(!stale.exists(), "an unused backend namespace is retired");
+    assert!(active.exists());
+    assert!(own.exists(), "a trim never retires its own namespace");
+    assert!(
+        not_a_namespace.exists(),
+        "only namespaces with functions/ qualify"
+    );
+    assert!(foreign.exists(), "non-hash names belong to other caches");
+    assert!(artifact_file.exists());
+    assert_eq!(cache.stats().telemetry.stale_namespaces_retired, 1);
+}
+
+#[test]
+fn explicitly_placed_caches_never_sweep_their_parent() {
+    let root = tmp_cache_dir();
+    let sibling = root.join(fixture_hash("sibling", b"namespace"));
+    std::fs::create_dir_all(sibling.join("functions")).unwrap();
+    let mut cache = CompilationCache::open(root.join(fixture_hash("own", b"namespace")));
+    cache
+        .trim_at(SystemTime::now() + 2 * CACHE_NAMESPACE_UNUSED_LIMIT, false)
+        .unwrap();
+    assert!(sibling.exists());
+}
+
+#[test]
+fn torn_artifacts_read_as_misses_and_are_retired() {
+    let dir = tmp_cache_dir();
+    let hash = fixture_hash("torn", b"body");
+    let mut writer = CompilationCache::open(dir.clone());
+    writer.put(&hash, b"complete artifact").unwrap();
+    let path = writer.artifact_path(&hash).unwrap();
+    let envelope = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &envelope[..envelope.len() - 1]).unwrap();
+
+    let mut reader = CompilationCache::open(dir);
+    assert!(reader.get(&hash).is_none());
+    assert_eq!(reader.stats().telemetry.corruptions, 1);
+    assert!(!path.exists());
+    reader.put(&hash, b"complete artifact").unwrap();
+    assert_eq!(reader.stats().telemetry.writes, 1);
+}
+
+#[test]
+fn bounded_read_rejects_an_oversized_file_before_decode() {
+    let dir = tmp_cache_dir();
+    let hash = fixture_hash("oversized", b"artifact");
+    let max_bytes = 512;
+    let mut cache = CompilationCache::open_with_limits(dir.clone(), 4096, 8, max_bytes);
+    let functions = dir.join("functions");
+    std::fs::create_dir_all(&functions).unwrap();
+    let artifact = functions.join(format!("{hash}.bin"));
+    File::create(&artifact)
+        .unwrap()
+        .set_len(max_bytes + 1)
+        .unwrap();
+
+    assert!(cache.get(&hash).is_none());
+    assert_eq!(cache.stats().telemetry.corruptions, 1);
+    assert!(!artifact.exists());
+    cache.put(&hash, b"repaired").unwrap();
+    assert_eq!(cache.get(&hash).as_deref(), Some(b"repaired".as_slice()));
 }

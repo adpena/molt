@@ -539,23 +539,29 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   `MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES`, `MOLT_BACKEND_DAEMON_MAX_JOBS`,
   and `MOLT_BACKEND_DAEMON_CACHE_MB`.
 - **Backend TIR cache memory**: `runtime/molt-backend` keeps TIR artifact bytes
-  in an LRU in-memory cache while preserving the disk-backed cache index under
+  in an LRU in-memory cache in front of the disk-backed store under
   `MOLT_CACHE`. The default cap is adaptive: an explicit
   `MOLT_BACKEND_TIR_CACHE_MEMORY_MB` wins, then propagated memory-guard
   availability/reserve env (`MOLT_MEMORY_AVAILABLE_GB`,
   `MOLT_MEMORY_RESERVE_GB`, and `MOLT_CLI_*` aliases), otherwise total
   physical memory. Disk hits for oversized artifacts are returned without
   retaining them in RAM.
-- **Backend TIR cache mutation cost**: `molt-passes::tir::cache` owns the
-  shared cache inventory. Open, insertion, and index publication use the same
-  epoch-checked mutation admission. A complete local inventory is maintained
-  incrementally until a foreign commit, read-side corruption, or uncertain
-  mutation invalidates it; an advisory index read alone never certifies disk
-  capacity. Reconciliation runs under the exclusive odd-epoch transaction,
-  and failures remain fail-closed. Uncontended insertions do not rescan the
-  namespace; resident recency is projected only for eviction or index saving.
-  `CompilationCacheStats.telemetry` exposes index loads, namespace
-  reconciliations, and recency projections for structural cost regressions.
+- **Backend TIR cache concurrency**: `molt-passes::tir::cache` is a lock-free
+  content-addressed store, the design of Go's build cache
+  (`cmd/go/internal/cache`). Each artifact is an authenticated envelope (key,
+  payload length, SHA-256) published by a no-clobber hard link, and every read
+  verifies it, so opening, reading and writing take no lock and flush nothing;
+  crash residue reads as a miss. A different payload for an existing key
+  quarantines the key with a `<hash>.poison` sidecar and fails the compile with
+  an integrity error. `MOLT_BACKEND_TIR_CACHE_DISK_MB` and
+  `MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES` are enforced by a trim that runs at most
+  hourly per namespace under a non-blocking `.trim.lock`: it evicts by file
+  modification time (refreshed on use at most hourly) and retires sibling
+  backend namespaces unused for five days. The previous design serialized every
+  insertion through one exclusive namespace lock with four `F_FULLFSYNC`
+  flushes (20 ms median each on the build volume), so parallel compiles ran one
+  at a time. `CompilationCacheStats.telemetry` counts hits, writes, reuses,
+  quarantines, trims and evictions.
 - **One-shot backend stdin limit**: non-daemon backend IR reads from stdin are
   bounded by `MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES` and default to the same
   512 MiB ceiling as daemon requests. Msgpack and NDJSON stdin paths stream

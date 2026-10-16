@@ -6,9 +6,9 @@ use molt_backend::SimpleIR;
 
 use super::super::super::io_limits::write_json_artifact;
 use super::super::super::native_batch::{
-    NativeBatchObjectJob, append_referenced_external_declarations, batch_external_function_names,
-    create_native_batch_temp_dir, finish_native_batch_temp_dir,
-    release_native_backend_batch_memory_to_os, run_native_batch_worker_with_failure_artifacts,
+    NativeBatchObjectJob, NativeBatchWork, append_referenced_external_declarations,
+    batch_external_function_names, create_native_batch_temp_dir, finish_native_batch_temp_dir,
+    release_native_backend_batch_memory_to_os, run_native_batch_workers,
 };
 use super::super::publish::StdlibObjectCache;
 use super::plan::{StdlibBatchPlan, log_stdlib_batch, stdlib_batch_ops_budget};
@@ -83,24 +83,31 @@ pub(super) fn compile_batched_stdlib_cache_archive(
         release_native_backend_batch_memory_to_os();
         let admission_elapsed = started.elapsed();
         let codegen_started = Instant::now();
-        let mut paths = Vec::with_capacity(total);
-        for (index, (job, object, key, hit)) in specs.into_iter().enumerate() {
-            if !hit {
-                eprintln!(
+        // Cache misses compile in parallel worker processes on the request's
+        // pool; hits and publication keep batch order.
+        let works: Vec<NativeBatchWork<'_>> = specs
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, _, hit))| !hit)
+            .map(|(index, (job, object, _, _))| NativeBatchWork {
+                job_path: job,
+                object_path: object,
+                progress: format!(
                     "{log_prefix}: compiling stdlib object miss {}/{}",
                     index + 1,
                     total
-                );
-                run_native_batch_worker_with_failure_artifacts(
-                    "native stdlib batch worker",
-                    &job,
-                    &object,
-                )?;
+                ),
+            })
+            .collect();
+        run_native_batch_workers("native stdlib batch worker", &works)?;
+        release_native_backend_batch_memory_to_os();
+        let mut paths = Vec::with_capacity(total);
+        for (_, object, key, hit) in specs {
+            if !hit {
                 emitted_bytes += match (cache, key) {
                     (Some(cache), Some(key)) => cache.publish(&key, &object)?,
                     _ => std::fs::metadata(&object)?.len(),
                 };
-                release_native_backend_batch_memory_to_os();
             }
             paths.push(object);
         }
