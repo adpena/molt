@@ -3,6 +3,7 @@ use crate::builtins::attr::{
     class_namespace_lookup_mro_pure, descriptor_call1, descriptor_has_get,
 };
 use crate::builtins::exceptions::ExceptionValue;
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::cell::Cell;
 
 /// The builtin `__getattribute__` a receiver kind uses when its class defines
@@ -285,10 +286,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                 return Ok(Some(func_bits));
             }
             if name == "__init_subclass__"
-                && matches!(
-                    std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
-                    Some("1")
-                )
+                && runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_INIT_SUBCLASS)
             {
                 let builtins = builtin_classes(_py);
                 eprintln!(

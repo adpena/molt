@@ -67,6 +67,7 @@
 //! generated heap-kind authority tracks every cycle-capable owner; exact dicts and
 //! tuples are dynamically projected with CPython-compatible timing.
 
+use crate::runtime_flags::{self, RuntimeFlag};
 #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -874,8 +875,7 @@ fn profile_gc_untrack(count: u64) {
 /// `MOLT_TRACE_GC=1` enables collector tracing (candidate/unreachable/collected
 /// counts) to stderr. Diagnostic-only; never part of observable program behavior.
 fn gc_trace_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_GC").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_GC)
 }
 
 /// Optional type-filtered reference-deduction ledger for cycle-collector
@@ -4844,11 +4844,7 @@ mod tests {
         // Force-enable the alloc/dealloc counters so DEALLOC_COUNT is a live signal
         // (otherwise `profile_hit` is a no-op and the deallocation is invisible to the
         // counter, though `gc_is_tracked` below remains an unconditional proof).
-        // SAFETY: the runtime test transaction holds process-state custody.
-        unsafe {
-            std::env::set_var("MOLT_PROFILE", "1");
-        }
-        crate::state::metrics::init_profile_enabled_from_env();
+        crate::state::metrics::enable_profile_for_test();
         crate::with_gil_entry_nopanic!(_py, {
             // a = []; b = []
             let a_ptr = alloc_list(_py, &[]);
@@ -4956,11 +4952,7 @@ mod tests {
     #[test]
     fn collect_spares_externally_reachable_cycle() {
         let _lock = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
-        // SAFETY: the runtime test transaction holds process-state custody.
-        unsafe {
-            std::env::set_var("MOLT_PROFILE", "1");
-        }
-        crate::state::metrics::init_profile_enabled_from_env();
+        crate::state::metrics::enable_profile_for_test();
         crate::with_gil_entry_nopanic!(_py, {
             let a_ptr = alloc_list(_py, &[]);
             let b_ptr = alloc_list(_py, &[]);

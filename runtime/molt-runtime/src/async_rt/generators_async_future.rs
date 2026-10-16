@@ -4,6 +4,7 @@
 //! I/O futures, threads, processes, and async generators.
 
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
 const ASYNC_SLEEP_YIELD_SENTINEL: f64 = -1.0;
@@ -13,7 +14,7 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(future_bits);
         let Some(ptr) = obj.as_ptr() else {
-            if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+            if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE) {
                 eprintln!(
                     "Molt awaitable debug: bits=0x{:x} type={}",
                     future_bits,
@@ -28,7 +29,7 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
             let header = header_from_obj_ptr(ptr);
             let poll_fn_addr = crate::object::object_poll_fn(ptr);
             if poll_fn_addr == 0 {
-                if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+                if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE) {
                     let mut class_name = None;
                     if object_type_id(ptr) == TYPE_ID_OBJECT {
                         let class_bits = object_class_bits(ptr);
@@ -107,7 +108,7 @@ pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
 fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
     let obj = obj_from_bits(future_bits);
     let Some(ptr) = obj.as_ptr() else {
-        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE) {
             eprintln!(
                 "Molt awaitable debug: poll bits=0x{:x} type={}",
                 future_bits,
@@ -121,7 +122,7 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
         let header = header_from_obj_ptr(ptr);
         let poll_fn_addr = crate::object::object_poll_fn(ptr);
         if poll_fn_addr == 0 {
-            if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok() {
+            if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE) {
                 let mut class_name = None;
                 if object_type_id(ptr) == TYPE_ID_OBJECT {
                     let class_bits = object_class_bits(ptr);
@@ -629,7 +630,7 @@ pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
 pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_task_new(poll_fn_addr, closure_size, TASK_KIND_FUTURE);
-        if std::env::var("MOLT_DEBUG_AWAITABLE").is_ok()
+        if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE)
             && let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
         {
             unsafe {

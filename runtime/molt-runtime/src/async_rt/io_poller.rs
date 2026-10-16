@@ -1,7 +1,8 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,13 +29,11 @@ use crate::{IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE};
 #[cfg(molt_has_net_io)]
 use crate::{IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, raise_os_error};
 fn trace_io_poller() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_IO_POLLER").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_IO_POLLER)
 }
 
 fn trace_io_wait_errors() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_IO_WAIT_ERRORS").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_IO_WAIT_ERRORS)
 }
 #[cfg(molt_has_net_io)]
 mod blocking;

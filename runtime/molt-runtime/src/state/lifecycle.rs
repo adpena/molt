@@ -1,4 +1,5 @@
 mod module_retirement;
+use crate::runtime_flags::{self, RuntimeFlag};
 use module_retirement::ModuleRetirement;
 
 use crate::PyToken;
@@ -51,7 +52,6 @@ use crate::{
     molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
     runtime_state,
 };
-use std::sync::OnceLock;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 #[cfg(test)]
@@ -538,13 +538,7 @@ fn runtime_class_roots(py: &PyToken<'_>, state: &RuntimeState) -> Vec<u64> {
 }
 
 fn trace_shutdown_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_SHUTDOWN").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SHUTDOWN)
 }
 
 fn trace_shutdown(step: &str) {

@@ -5,6 +5,7 @@ use crate::object::layout::{
     function_code_bits, function_entry_custody,
 };
 use crate::object::ops::string_obj_to_owned;
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, PyToken, TYPE_ID_CODE,
     TYPE_ID_FUNCTION, exception_pending, function_arity, function_execution_closure_bits,
@@ -248,27 +249,11 @@ fn should_force_trampoline_for_fixed_arity_call(
 }
 
 fn trace_call_vec_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_CALL_FUNCTION_VEC")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_VEC)
 }
 
 fn assert_no_pending_on_success_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_ASSERT_NO_PENDING_ON_SUCCESS")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_ASSERT_NO_PENDING_ON_SUCCESS)
 }
 
 unsafe fn enforce_no_pending_on_success(_py: &PyToken<'_>, result: u64, context: &str) -> u64 {
@@ -353,12 +338,7 @@ unsafe fn maybe_call_function_obj_trampoline(
         };
         let force_trampoline =
             fixed_arity_call_requires_trampoline(fn_ptr, tramp_ptr, task_trampoline_needed);
-        if matches!(
-            std::env::var("MOLT_TRACE_TRAMPOLINE_POLICY")
-                .ok()
-                .as_deref(),
-            Some("1")
-        ) {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TRAMPOLINE_POLICY) {
             eprintln!(
                 "[molt trampoline policy] fn_ptr={fn_ptr} tramp_ptr={tramp_ptr} nargs={} reserved_info={reserved_info:?} force_trampoline={}",
                 args.len(),
@@ -397,12 +377,7 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
         #[cfg(target_arch = "wasm32")]
         let tramp_ptr = normalized_function_trampoline_ptr(func_ptr, fn_ptr);
         #[cfg(target_arch = "wasm32")]
-        if matches!(
-            std::env::var("MOLT_TRACE_CALL_FUNCTION_OBJ1")
-                .ok()
-                .as_deref(),
-            Some("1")
-        ) {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_OBJ1) {
             let name_bits = function_name_bits(_py, func_ptr);
             let mut name = if name_bits != 0 {
                 string_obj_to_owned(obj_from_bits(name_bits))
@@ -677,12 +652,7 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    if matches!(
-                        std::env::var("MOLT_TRACE_CALL_FUNCTION_OBJ0")
-                            .ok()
-                            .as_deref(),
-                        Some("1")
-                    ) {
+                    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_OBJ0) {
                         let name_bits = function_name_bits(_py, func_ptr);
                         let name = if name_bits != 0 {
                             string_obj_to_owned(obj_from_bits(name_bits))
@@ -726,12 +696,7 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
-                    if matches!(
-                        std::env::var("MOLT_TRACE_CALL_FUNCTION_OBJ0")
-                            .ok()
-                            .as_deref(),
-                        Some("1")
-                    ) {
+                    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_OBJ0) {
                         let name_bits = function_name_bits(_py, func_ptr);
                         let name = if name_bits != 0 {
                             string_obj_to_owned(obj_from_bits(name_bits))
@@ -770,10 +735,7 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
             }
         };
         let res = enforce_no_pending_on_success(_py, res, "call_function_obj0");
-        if matches!(
-            std::env::var("MOLT_TRACE_CALL_RETURN").ok().as_deref(),
-            Some("1")
-        ) {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_RETURN) {
             let name_bits = function_name_bits(_py, func_ptr);
             let name = if name_bits != 0 {
                 string_obj_to_owned(obj_from_bits(name_bits))
@@ -2727,12 +2689,7 @@ unsafe fn invoke_function_trampoline(
             pending => pending,
         };
         #[cfg(target_arch = "wasm32")]
-        if matches!(
-            std::env::var("MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE")
-                .ok()
-                .as_deref(),
-            Some("1")
-        ) {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE) {
             let name_bits = function_name_bits(_py, func_ptr);
             let name = if name_bits != 0 {
                 string_obj_to_owned(obj_from_bits(name_bits))
@@ -2944,6 +2901,7 @@ mod tests {
         fixed_arity_trampoline_target_ptr, should_force_trampoline_for_fixed_arity_call,
     };
     use crate::object::builders::{alloc_dict_with_pairs, alloc_list, alloc_tuple};
+    use crate::runtime_flags::{self, RuntimeFlag};
     use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
     use molt_obj_model::MoltObject;
     fn int(v: i64) -> u64 {
@@ -3085,16 +3043,6 @@ mod tests {
             dec_ref_bits(_py, empty_tuple_bits);
             dec_ref_bits(_py, name_bits);
         });
-    }
-
-    struct EnvGuard(&'static str);
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            unsafe {
-                std::env::remove_var(self.0);
-            }
-        }
     }
 
     #[test]
@@ -4148,16 +4096,16 @@ mod tests {
         ));
     }
 
-    fn spawn_child(test_name: &str, envs: &[(&str, &str)]) -> std::process::Output {
+    fn spawn_child(test_name: &str, flags: &[(RuntimeFlag, &str)]) -> std::process::Output {
         let exe = std::env::current_exe().expect("current test executable");
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("--exact")
             .arg(test_name)
             .arg("--nocapture")
             .arg("--test-threads=1");
-        cmd.env("MOLT_ASSERT_CHILD", "1");
-        for (key, value) in envs {
-            cmd.env(key, value);
+        cmd.env(RuntimeFlag::MOLT_ASSERT_CHILD.name(), "1");
+        for (flag, value) in flags {
+            cmd.env(flag.name(), value);
         }
         crate::test_support::captured_runtime_children::capture(
             &mut cmd,
@@ -4169,12 +4117,12 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri does not support spawning child test processes")]
     fn assert_no_pending_on_success_traps_stale_exception() {
-        if std::env::var("MOLT_ASSERT_CHILD").as_deref() == Ok("1") {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_ASSERT_CHILD) {
             return;
         }
         let output = spawn_child(
             "call::function::tests::assert_no_pending_on_success_child",
-            &[("MOLT_ASSERT_NO_PENDING_ON_SUCCESS", "1")],
+            &[(RuntimeFlag::MOLT_ASSERT_NO_PENDING_ON_SUCCESS, "1")],
         );
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -4183,14 +4131,11 @@ mod tests {
 
     #[test]
     fn assert_no_pending_on_success_child() {
-        if std::env::var("MOLT_ASSERT_CHILD").as_deref() != Ok("1") {
+        // The parent starts this child with both flags set.
+        if !runtime_flags::enabled(RuntimeFlag::MOLT_ASSERT_CHILD) {
             return;
         }
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        unsafe {
-            std::env::set_var("MOLT_ASSERT_NO_PENDING_ON_SUCCESS", "1");
-        }
-        let _guard = EnvGuard("MOLT_ASSERT_NO_PENDING_ON_SUCCESS");
         crate::with_gil_entry_nopanic!(_py, {
             let kind_bits = string_bits("RuntimeError");
             let msg_bits = string_bits("stale pending");

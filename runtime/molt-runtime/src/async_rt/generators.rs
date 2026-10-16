@@ -1,7 +1,7 @@
 use crate::PyToken;
 #[cfg(test)]
 use crate::missing_bits;
-use std::sync::OnceLock;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 use molt_obj_model::MoltObject;
 
@@ -34,33 +34,20 @@ use crate::{
 };
 
 pub(crate) fn promise_trace_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_PROMISE)
 }
 
 pub(crate) fn sleep_trace_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| matches!(std::env::var("MOLT_TRACE_SLEEP").ok().as_deref(), Some("1")))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SLEEP)
 }
 
 pub(crate) fn asyncio_connect_trace_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        let value = std::env::var("MOLT_TRACE_ASYNCIO_CONNECT").unwrap_or_default();
-        let trimmed = value.trim().to_ascii_lowercase();
-        !trimmed.is_empty() && trimmed != "0" && trimmed != "false"
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ASYNCIO_CONNECT)
 }
 
 #[inline]
 pub(crate) fn debug_current_task() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_CURRENT_TASK)
 }
 
 unsafe fn generator_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
@@ -237,10 +224,7 @@ fn task_new_with_context(
             "task closure size exceeds the active address space",
         );
     };
-    let trace_alloc = matches!(
-        std::env::var("MOLT_TRACE_GENERATOR_ALLOC").ok().as_deref(),
-        Some("1")
-    );
+    let trace_alloc = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_GENERATOR_ALLOC);
     if trace_alloc {
         eprintln!(
             "molt_task_new enter poll_fn=0x{:x} closure_size={} kind={}",
@@ -448,10 +432,7 @@ pub extern "C" fn molt_is_generator(obj_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let trace = matches!(
-            std::env::var("MOLT_TRACE_GENERATOR_STATE").ok().as_deref(),
-            Some("1")
-        );
+        let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_GENERATOR_STATE);
         let Some(ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, "TypeError", "expected generator");
         };
@@ -1122,10 +1103,7 @@ fn asyncgen_running_message(op: i64) -> &'static str {
 }
 
 fn asyncgen_close_trace_enabled() -> bool {
-    matches!(
-        std::env::var("MOLT_TRACE_ASYNCGEN_CLOSE").as_deref(),
-        Ok("1")
-    )
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ASYNCGEN_CLOSE)
 }
 
 // Async-generator operation awaitable payload: the generator, the operation

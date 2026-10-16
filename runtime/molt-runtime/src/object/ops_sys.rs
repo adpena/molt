@@ -11,6 +11,7 @@ use crate::object::ops::{range_components_bigint, range_len_bigint};
 use crate::object::ops_string::{
     push_wtf8_codepoint, utf8_codepoint_count_cached, wtf8_codepoint_at,
 };
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -21,7 +22,6 @@ use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
 use std::io::{BufRead, BufReader};
-use std::sync::OnceLock;
 
 #[path = "ops_sys_time.rs"]
 mod ops_sys_time;
@@ -260,8 +260,7 @@ pub(crate) fn gc_int_arg(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<i6
 }
 
 pub(crate) fn trace_sys_version() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_SYS_VERSION").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SYS_VERSION)
 }
 
 pub(crate) fn env_sys_version_info() -> Option<PythonVersionInfo> {
@@ -1023,8 +1022,7 @@ pub(crate) fn with_process_argv<R>(_py: &PyToken<'_>, project: impl FnOnce(&[Vec
 
 #[inline]
 fn trace_len_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_LEN").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_LEN)
 }
 
 /// Consume Python's __len__ result at its index-conversion boundary. The
@@ -2308,7 +2306,7 @@ pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
                     args.push(decoded);
                 }
             }
-            let trace_argv = matches!(std::env::var("MOLT_TRACE_ARGV").ok().as_deref(), Some("1"));
+            let trace_argv = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ARGV);
             if trace_argv {
                 eprintln!("molt_set_argv argc={argc} argv0={:?}", args.first());
             }

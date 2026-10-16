@@ -1,3 +1,4 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -239,10 +240,7 @@ pub(crate) fn await_waiter_register(_py: &PyToken<'_>, waiter_ptr: *mut u8, awai
             waiter_ptr as usize, awaited_ptr as usize
         );
     }
-    if matches!(
-        std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
-        Some("1")
-    ) {
+    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_PROMISE) {
         let poll_fn = crate::object::object_poll_fn(awaited_ptr);
         if poll_fn == promise_poll_fn_addr() {
             eprintln!(
@@ -315,10 +313,7 @@ pub(crate) fn await_waiter_clear(_py: &PyToken<'_>, waiter_ptr: *mut u8) {
         dec_ref_ptr(_py, awaited_key.0);
         dec_ref_ptr(_py, waiter_ptr);
     }
-    if matches!(
-        std::env::var("MOLT_TRACE_PROMISE").ok().as_deref(),
-        Some("1")
-    ) {
+    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_PROMISE) {
         let poll_fn = crate::object::object_poll_fn(awaited_key.0);
         if poll_fn == promise_poll_fn_addr() {
             eprintln!(

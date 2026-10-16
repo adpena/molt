@@ -1,7 +1,7 @@
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -49,8 +49,7 @@ pub(super) static ATTR_LOOKUP_TRACE_LINES: AtomicUsize = AtomicUsize::new(0);
 /// loop showed `getenv` internals as the dominant frame. Cache it once.
 #[inline]
 pub(super) fn trace_attr_lookup_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_ATTR_LOOKUP").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ATTR_LOOKUP)
 }
 
 /// Cached `MOLT_DEBUG_BOUND_METHOD` flag. Read during bound-method resolution
@@ -58,8 +57,7 @@ pub(super) fn trace_attr_lookup_enabled() -> bool {
 /// var directly there takes the libc environ lock per method bind.
 #[inline]
 pub(crate) fn debug_bound_method_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("MOLT_DEBUG_BOUND_METHOD").is_some())
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_BOUND_METHOD)
 }
 
 pub(super) fn attributes_state(_py: &PyToken<'_>) -> &'static AttributesRuntimeState {

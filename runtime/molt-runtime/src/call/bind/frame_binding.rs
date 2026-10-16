@@ -3,6 +3,7 @@
 //! State stays with its existing owner; calls preserve transaction and drop order.
 
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 /// A Python frame's declared parameter layout (CPython `co_varnames`):
 /// positional parameters, keyword-only parameters, `*args`, then `**kwargs`.
@@ -227,8 +228,7 @@ unsafe fn function_kwdefault_owned(
 }
 
 fn trace_function_bind_meta_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_FUNCTION_BIND_META").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_FUNCTION_BIND_META)
 }
 
 /// One callback-free projection of binder-relevant metadata. Ordinary calls
@@ -933,12 +933,7 @@ unsafe fn bind_python_frame<'a, 'py>(
             }
             let name = string_obj_to_owned(obj_from_bits(arg_names[idx]))
                 .unwrap_or_else(|| "?".to_string());
-            if matches!(
-                std::env::var("MOLT_TRACE_CALL_BIND_MISSING")
-                    .ok()
-                    .as_deref(),
-                Some("1")
-            ) {
+            if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALL_BIND_MISSING) {
                 let func_name_bits = function_name_bits(_py, func_ptr);
                 let func_name = if func_name_bits == 0 || obj_from_bits(func_name_bits).is_none() {
                     "<function>".to_string()

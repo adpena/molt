@@ -1,6 +1,7 @@
 use super::*;
 use crate::TYPE_ID_OBJECT;
 use crate::object::seq_access::snapshot;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 fn compute_mro(class_bits: u64, bases: &[u64]) -> Option<Vec<u64>> {
     let mut seqs = Vec::with_capacity(bases.len() + 1);
@@ -342,10 +343,7 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
 pub(crate) unsafe fn class_apply_descriptor_names(_py: &PyToken<'_>, class_ptr: *mut u8) -> bool {
     unsafe {
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let trace_set_name = matches!(
-            std::env::var("MOLT_TRACE_SET_NAME").ok().as_deref(),
-            Some("1")
-        );
+        let trace_set_name = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SET_NAME);
         let dict_bits = class_dict_bits(class_ptr);
         let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
             return false;

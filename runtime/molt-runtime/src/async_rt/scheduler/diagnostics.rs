@@ -1,4 +1,5 @@
 use crate::PyToken;
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     ASYNC_PENDING_COUNT, ASYNC_POLL_COUNT, header_from_obj_ptr, profile_hit, runtime_state,
 };
@@ -7,14 +8,12 @@ use std::sync::{Mutex, OnceLock};
 
 #[inline]
 pub(super) fn debug_current_task() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_CURRENT_TASK)
 }
 
 #[inline]
 pub(crate) fn trace_task_result() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_TASK_RESULT").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TASK_RESULT)
 }
 
 pub(crate) struct AsyncHangProbe {
@@ -51,12 +50,7 @@ pub(crate) fn async_hang_probe(_py: &PyToken<'_>) -> Option<&'static AsyncHangPr
 }
 
 pub(crate) fn async_trace_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        let value = std::env::var("MOLT_ASYNC_TRACE").unwrap_or_default();
-        let trimmed = value.trim().to_ascii_lowercase();
-        !trimmed.is_empty() && trimmed != "0" && trimmed != "false"
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_ASYNC_TRACE)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

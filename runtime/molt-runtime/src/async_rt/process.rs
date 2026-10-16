@@ -1,5 +1,6 @@
 use super::process_task_state;
 use super::wake_await_waiters;
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 
 mod child_resources;
@@ -31,8 +32,6 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Condvar;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
@@ -188,13 +187,7 @@ impl ProcessTaskState {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn trace_process_spawn() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_PROCESS_SPAWN").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_PROCESS_SPAWN)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -241,7 +234,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         let mut overlay_env = false;
         if let Some(entries) = env_entries.as_mut() {
             entries.retain(|(key, value)| {
-                if key == "MOLT_ENV_OVERLAY" && value == "1" {
+                if key == RuntimeFlag::MOLT_ENV_OVERLAY.name() && value == "1" {
                     overlay_env = true;
                     false
                 } else {
@@ -362,7 +355,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         let mut overlay_env = false;
         if let Some(entries) = env_entries.as_mut() {
             entries.retain(|(key, value)| {
-                if key == "MOLT_ENV_OVERLAY" && value == "1" {
+                if key == RuntimeFlag::MOLT_ENV_OVERLAY.name() && value == "1" {
                     overlay_env = true;
                     false
                 } else {

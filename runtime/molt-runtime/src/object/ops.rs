@@ -1,5 +1,6 @@
 // Re-export iter impl functions for backward compatibility with crate::object::ops::* paths
 use crate::object::{ClassEdgeOwnership, object_replace_class_edge};
+use crate::runtime_flags::{self, RuntimeFlag};
 
 #[cfg(test)]
 mod profile_epoch_tests;
@@ -473,26 +474,22 @@ pub(super) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option
 
 #[inline]
 fn debug_index_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_INDEX").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_INDEX)
 }
 
 #[inline]
 fn debug_index_list_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_INDEX_LIST").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_INDEX_LIST)
 }
 
 #[inline]
 fn debug_store_index_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_STORE_INDEX").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_STORE_INDEX)
 }
 
 #[inline]
 fn debug_subscript_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_SUBSCRIPT").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_SUBSCRIPT)
 }
 
 pub(super) fn range_len_bigint(start: &BigInt, stop: &BigInt, step: &BigInt) -> BigInt {
@@ -1091,7 +1088,7 @@ pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
         return;
     }
     emit_leak_breakdown(
-        "MOLT_ASSERT_NO_LEAK",
+        RuntimeFlag::MOLT_ASSERT_NO_LEAK.name(),
         live,
         crate::EXPECTED_LIVE_OBJECTS,
         allocs,
@@ -1487,7 +1484,7 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
                             ptr as usize, bits, type_id
                         );
                     }
-                    if std::env::var("MOLT_TRACE_INVALID_DECREF").as_deref() == Ok("1") {
+                    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_INVALID_DECREF) {
                         let bt = std::backtrace::Backtrace::force_capture();
                         eprintln!("molt invalid dec_ref backtrace:\n{bt}");
                     }
@@ -2338,7 +2335,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     };
     let bases_vec = bases.to_vec();
     let attrs_vec = attrs.to_vec();
-    let debug_class_def = std::env::var("MOLT_DEBUG_CLASS_DEF").as_deref() == Ok("1");
+    let debug_class_def = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_CLASS_DEF);
     let class_bits = molt_class_new(name_bits);
     if class_bits == none {
         return class_bits;

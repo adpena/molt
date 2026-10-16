@@ -2,13 +2,13 @@
 //! No Python lookup, hashing, allocation, retain or release is performed here.
 //! Raw keys are inspected only while the caller keeps their dictionary alive.
 
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use std::sync::OnceLock;
 
 #[inline(always)]
 pub(crate) fn enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_FIELD").is_ok())
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_FIELD)
 }
 
 fn name_filter() -> Option<&'static [u8]> {

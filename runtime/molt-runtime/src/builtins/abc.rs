@@ -1,4 +1,5 @@
 use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
+use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
 
 use super::methods::is_not_implemented_bits;
@@ -747,7 +748,7 @@ fn abc_subclasscheck_impl_inner(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let debug = std::env::var("MOLT_DEBUG_COLLECTIONS_ABC_TYPES").as_deref() == Ok("1");
+        let debug = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_COLLECTIONS_ABC_TYPES);
         let trace_stage = |stage: &str| {
             if debug {
                 eprintln!("molt collections_abc runtime types stage={stage}");

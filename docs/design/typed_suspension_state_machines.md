@@ -16,7 +16,7 @@ runtime call.
 |---|---|
 | Read or write a local in a stateful body | `LOAD_CLOSURE`/`STORE_CLOSURE`: one runtime entry; an incref on load; incref + decref on store; a raw int is boxed first (`lowering/local_bindings.py:1001-1014`, `function_abi.rs:1837-1877`) |
 | `yield` | a `(value, done)` tuple allocation (`async_gen.py:833-903`, `ops_iter.rs:1622-1625`) |
-| Resume (`molt_generator_send`) | a runtime entry; `std::env::var("MOLT_TRACE_GENERATOR_STATE")`; an exception-stack swap through a thread-local `HashMap`; a context stack behind a global `Mutex<HashMap>` locked twice; 4 incref + 4 decref and a vector push (`generators.rs:449-555`, `exceptions.rs:2575-2584`, `context.rs:46-60`, `frames/namespace.rs:258-288`); WASM adds two environment lookups per poll (`poll.rs:447,455`) |
+| Resume (`molt_generator_send`) | a runtime entry; an exception-stack swap through a thread-local `HashMap`; a context stack behind a global `Mutex<HashMap>` locked twice; 4 incref + 4 decref and a vector push (`generators.rs:449-555`, `exceptions.rs:2575-2584`, `context.rs:46-60`, `frames/namespace.rs:258-288`). Debug flags cost one bit test since HF-F235 (`runtime_flags.rs`); before it, each resume read `MOLT_TRACE_GENERATOR_STATE` from the environment and each WASM poll read two more names |
 | `await` | a generic call to `molt_get_awaitable`, `molt_future_poll`, two new frame slots per site |
 
 Two spill mechanisms choose what crosses a suspension: per-site scratch cells
@@ -127,9 +127,10 @@ monkeypatching.
 Each phase is one complete migration across the frontend, TIR, verifier, all backends and the
 runtime layout authority.
 
-0. **Per-resume runtime cost (HF-230)**: read debug knobs once, not per resume; keep the
-   exception state in the task header, not a thread-local map; replace the global context mutex.
-   Independent of the transform; measure resume latency before and after.
+0. **Per-resume runtime cost (HF-230)**: keep the exception state in the task header, not a
+   thread-local map; replace the global context mutex. Independent of the transform; measure
+   resume latency before and after. The debug-flag half is done: HF-F235 reads every runtime
+   flag once, through the generated closed type `RuntimeFlag`.
 1. **Typed slots and the `ObjOrNull` spill rule**: closes HF-216's remaining item.
 2. **The TIR transform** replaces both frontend spill mechanisms (HF-104 becomes a verifier fact).
 3. **Locals in SSA within an activation and lazy frame materialization**, shared with HF-185.

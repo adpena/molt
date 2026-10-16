@@ -1,3 +1,4 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
 
 use crate::{
@@ -438,7 +439,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             #[cfg(target_arch = "wasm32")]
             {
                 let normalized_poll_fn_addr = normalize_wasm_poll_fn_addr(poll_fn_addr);
-                if std::env::var("MOLT_WASM_POLL_DEBUG").as_deref() == Ok("1") {
+                if runtime_flags::enabled(RuntimeFlag::MOLT_WASM_POLL_DEBUG) {
                     if normalized_poll_fn_addr == poll_fn_addr {
                         eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x}");
                     } else {
@@ -456,10 +457,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                 }
                 let argument = poll_argument(normalized_poll_fn_addr, task_ptr);
                 let res = crate::molt_call_indirect1(normalized_poll_fn_addr, argument);
-                if matches!(
-                    std::env::var("MOLT_TRACE_POLL_RETURN").ok().as_deref(),
-                    Some("1")
-                ) {
+                if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_POLL_RETURN) {
                     let known_kind = if poll_fn_addr == async_sleep_poll_fn_addr() {
                         "async_sleep"
                     } else if poll_fn_addr == promise_poll_fn_addr() {
@@ -601,7 +599,7 @@ pub(crate) unsafe fn poll_future_with_task_stack(
     poll_fn_addr: u64,
 ) -> i64 {
     unsafe {
-        let debug_task = std::env::var("MOLT_DEBUG_CURRENT_TASK").as_deref() == Ok("1");
+        let debug_task = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_CURRENT_TASK);
         let task_scope = crate::CurrentTaskScope::enter(_py, task_ptr);
         let prev_task = task_scope.previous();
         if debug_task && prev_task.is_null() {

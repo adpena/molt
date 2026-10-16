@@ -1,5 +1,6 @@
 use super::*;
 use crate::object::native_instance::{self, NativePayload};
+use crate::runtime_flags::{self, RuntimeFlag};
 
 pub(super) type VfsWritebackEntry = (Arc<dyn crate::vfs::VfsBackend>, String);
 
@@ -263,7 +264,7 @@ pub(crate) unsafe fn file_handle_close_detached(
     identity: usize,
 ) -> bool {
     unsafe {
-        let debug_close = std::env::var("MOLT_DEBUG_FILE_CLOSE").as_deref() == Ok("1");
+        let debug_close = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_FILE_CLOSE);
         let Some(handle) = handle_ptr.as_mut() else {
             return false;
         };

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 pub(super) fn importlib_find_in_path_payload(
     _py: &PyToken<'_>,
@@ -932,15 +933,7 @@ pub(super) fn importlib_transaction_resolved_name(
 }
 
 fn importlib_transaction_trace_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_IMPORT_TRANSACTION")
-                .ok()
-                .as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_IMPORT_TRANSACTION)
 }
 
 fn importlib_transaction_fromlist_trace_display(_py: &PyToken<'_>, fromlist_bits: u64) -> String {

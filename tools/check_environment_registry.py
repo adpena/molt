@@ -109,6 +109,7 @@ ROOT = Path(__file__).resolve().parents[1]
 from tools._io_utf8 import force_utf8_stdio  # noqa: E402
 from tools import gen_environment_registry as _gen  # noqa: E402
 from molt.environment_registry import (  # noqa: E402
+    RUNTIME_FLAG_OWNER_ROOT,
     EnvironmentRegistry,
     EnvironmentRegistryError,
 )
@@ -143,6 +144,8 @@ DOC_FILES = ("README.md", "AGENTS.md", "CONTRIBUTING.md")
 DOC_HISTORY_ROOTS = ("docs",)
 # The registry's generated projection names every retired variable by design.
 REGISTRY_PROJECTION = "src/molt/_environment_registry.py"
+# The generated closed flag type spells each runtime flag's name once.
+RUNTIME_FLAG_PROJECTION = "runtime/molt-runtime/src/runtime_flags_generated.rs"
 # Append-only ledgers this gate must not force edits to.
 DOC_SKIP_FILES = frozenset(
     {"docs/agent/CLAIMS.md", "docs/agent/V1_HANDOFF_FINDINGS.md"}
@@ -1253,6 +1256,9 @@ def _finish_results(
 # literals that depend on helper roles.
 
 RUST_READ_CALLS = frozenset({"var", "var_os", "option_env!", "env!", "required_env"})
+# Generated closed key types: `RuntimeFlag::MOLT_X` names the variable.
+RUST_TYPED_KEY_TYPES = frozenset({"RuntimeFlag"})
+FORM_TYPED_KEY = "typed-key"
 RUST_SET_CALLS = frozenset({"set_var", "env"})
 RUST_UNSET_CALLS = frozenset({"remove_var", "env_remove"})
 _RUST_PUNCT2 = frozenset(
@@ -1583,6 +1589,26 @@ def _scan_rust_file(job: tuple[str, str]) -> _ModuleResult | None:
         return best
 
     for index, tok in enumerate(tokens):
+        if (
+            tok.kind == "ident"
+            and tok.text in RUST_TYPED_KEY_TYPES
+            and index + 2 < len(tokens)
+            and tokens[index + 1].text == "::"
+            and tokens[index + 2].kind == "ident"
+            and EXACT.match(tokens[index + 2].text)
+        ):
+            sites.append(
+                Site(
+                    rel,
+                    tokens[index + 2].line,
+                    tokens[index + 2].text,
+                    ACCESS_REFERENCE,
+                    FORM_TYPED_KEY,
+                    "rust",
+                    enforced,
+                )
+            )
+            continue
         if tok.kind != "string":
             continue
         text = tok.text
@@ -2049,6 +2075,7 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
     rust_paths = [
         (_rel(path, root), str(root))
         for path in _iter_files(ENFORCED_RUST_ROOTS, frozenset({".rs"}), root)
+        if _rel(path, root) != RUNTIME_FLAG_PROJECTION
     ]
     worker_count = (
         workers if workers is not None else max(1, min(8, os.cpu_count() or 1))
@@ -2090,9 +2117,26 @@ def check(
     violations: list[Violation] = []
     by_name = scan.by_name()
     retired_suffixes = {row.suffix: row for row in registry.retired_suffixes}
+    runtime_flags = frozenset(registry.runtime_flag_names)
 
     for site in scan.sites:
         name = site.name
+        if (
+            name in runtime_flags
+            and site.path.startswith(RUNTIME_FLAG_OWNER_ROOT)
+            and site.access != ACCESS_MENTION
+            and site.form != FORM_TYPED_KEY
+        ):
+            violations.append(
+                Violation(
+                    "runtime-flag-spelled",
+                    name,
+                    site.path,
+                    site.line,
+                    f"{name} is a runtime flag; name it RuntimeFlag::{name} and read it "
+                    f"with runtime_flags::enabled, never by string",
+                )
+            )
         if site.access == ACCESS_SUFFIX:
             if name in retired_suffixes and site.language != "doc":
                 row = retired_suffixes[name]

@@ -10,6 +10,7 @@ use crate::object::{
     ClassEdgeOwnership, ObjectAuxPreselection, alloc_object_with_aux,
     object_init_class_edge_unpublished,
 };
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, MoltHeader, PtrSlot, RuntimeState,
     TRACEBACK_SUPPRESS_COUNT, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE,
@@ -1965,7 +1966,7 @@ pub(crate) fn exception_move_detached_edges(
 fn exception_slot_is_valid(ptr: PtrSlot) -> bool {
     let bits = MoltObject::from_ptr(ptr.0).bits();
     let Some(live_ptr) = maybe_ptr_from_bits(bits) else {
-        if std::env::var("MOLT_TRACE_EXC_VALID").as_deref() == Ok("1") {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_EXC_VALID) {
             eprintln!(
                 "[EXC_VALID] ptr=0x{:x} bits=0x{:x} -> not a pointer",
                 ptr.0 as usize, bits
@@ -1983,7 +1984,7 @@ fn exception_slot_is_valid(ptr: PtrSlot) -> bool {
                     ),
                 )
             });
-    if !valid && std::env::var("MOLT_TRACE_EXC_VALID").as_deref() == Ok("1") {
+    if !valid && runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_EXC_VALID) {
         eprintln!(
             "[EXC_VALID] ptr=0x{:x} type_id={} expected={} -> INVALID",
             ptr.0 as usize, tid, TYPE_ID_EXCEPTION

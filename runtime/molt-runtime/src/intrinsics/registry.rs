@@ -3,6 +3,7 @@ use crate::object::ops::{
     DICT_STRING_BINDING_LIMIT, ExactStringLookup, dict_bind_string_entries,
     dict_exact_string_lookup, hash_string_bytes,
 };
+use crate::runtime_flags::{self, RuntimeFlag};
 // `resolve_symbol` address-takes every intrinsic via `resolve_core_symbol`, so
 // production artifacts must keep it unreachable. Unit tests are the only direct
 // resolver users; shipped native and wasm artifacts install a per-app resolver.
@@ -704,12 +705,7 @@ fn bind_names<'a, 'py>(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let trace = matches!(
-            std::env::var("MOLT_TRACE_REQUIRE_INTRINSIC")
-                .ok()
-                .as_deref(),
-            Some("1")
-        );
+        let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_REQUIRE_INTRINSIC);
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             if trace {
@@ -1458,12 +1454,7 @@ pub(crate) fn test_app_resolver_address() -> &'static AtomicUsize {
 pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let _ = namespace_bits;
-        let trace = matches!(
-            std::env::var("MOLT_TRACE_REQUIRE_INTRINSIC")
-                .ok()
-                .as_deref(),
-            Some("1")
-        );
+        let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_REQUIRE_INTRINSIC);
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             if trace {

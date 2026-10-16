@@ -1,14 +1,14 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{GilGuard, MoltObject, PyToken, dec_ref_bits, runtime_state};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Mutex, OnceLock};
 
 pub(super) fn debug_oom() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| matches!(std::env::var("MOLT_DEBUG_OOM").ok().as_deref(), Some("1")))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_OOM)
 }
 
 #[derive(Clone, Copy)]
@@ -200,38 +200,32 @@ pub(super) fn exceptions_state(_py: &PyToken<'_>) -> &'static ExceptionsRuntimeS
 
 #[inline]
 pub(super) fn debug_exception_flow() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_FLOW").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_EXCEPTION_FLOW)
 }
 
 #[inline]
 pub(super) fn debug_exception_clear() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_CLEAR").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_EXCEPTION_CLEAR)
 }
 
 #[inline]
 pub(super) fn debug_exception_raise() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_RAISE").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_EXCEPTION_RAISE)
 }
 
 #[inline]
 pub(super) fn debug_exception_pending() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_PENDING").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_EXCEPTION_PENDING)
 }
 
 #[inline]
 pub(super) fn debug_exception_rc() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_RC").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_EXCEPTION_RC)
 }
 
 #[inline]
 pub(super) fn trace_exception_stack() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_TRACE_EXCEPTION_STACK").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_EXCEPTION_STACK)
 }
 
 /// Cached `MOLT_DEBUG_EXCEPTIONS` flag. `record_exception_with_caller_frame`
@@ -240,8 +234,7 @@ pub(super) fn trace_exception_stack() -> bool {
 /// exception-heavy loops. Cache it like the sibling flags above.
 #[inline]
 pub(super) fn debug_exceptions() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTIONS").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_EXCEPTIONS)
 }
 
 thread_local! {

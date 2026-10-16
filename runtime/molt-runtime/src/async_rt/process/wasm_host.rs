@@ -5,6 +5,7 @@ use super::{
     ProcessWaiterId,
 };
 use crate::libc_compat as libc;
+use crate::runtime_flags::RuntimeFlag;
 use crate::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -106,7 +107,7 @@ fn env_from_bits_wasm(
                 crate::object::seq_access::tuple_pair(pair_ptr).expect("dict-items pair");
             let key = string_from_bits_wasm(_py, key_bits, "env key")?;
             let value = string_from_bits_wasm(_py, val_bits, "env value")?;
-            if key == "MOLT_ENV_OVERLAY" && value == "1" {
+            if key == RuntimeFlag::MOLT_ENV_OVERLAY.name() && value == "1" {
                 overlay = true;
             } else {
                 out.push((key, value));

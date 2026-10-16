@@ -2,6 +2,7 @@ use super::arguments::CallArgumentView;
 use super::frame_binding::function_binding_meta;
 use super::*;
 use crate::call::type_policy::{ObjectConstructorCall, object_constructor_extra_args_allowed};
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{dict_update_apply, dict_update_set_in_place};
 
 /// Builtin binders read a borrowed view of the call's argument vector; the
@@ -158,10 +159,7 @@ pub(super) unsafe fn builtin_call_binding(
             return Some(BuiltinCallBinding::Arguments(
                 |_py, func_ptr, args, _storage| {
                     let fn_ptr = function_fn_ptr(func_ptr);
-                    if matches!(
-                        std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
-                        Some("1")
-                    ) {
+                    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TYPE_NEW_INIT) {
                         // `__molt_bind_kind__` is the dispatch authority; the raw
                         // function pointer is only a diagnostic label.
                         let kind = if fn_ptr == fn_key!(molt_type_new) {
@@ -204,10 +202,7 @@ pub(super) unsafe fn builtin_call_binding(
                             args.pos.len(),
                             args.kw_names.len(),
                         );
-                        if matches!(
-                            std::env::var("MOLT_TRACE_TYPE_NEW_INIT_BT").ok().as_deref(),
-                            Some("1")
-                        ) {
+                        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TYPE_NEW_INIT_BT) {
                             eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
                         }
                     }
@@ -705,7 +700,7 @@ pub(super) unsafe fn bind_positional_builtin_call(
         }
 
         // Diagnostic: log what function failed to bind
-        if std::env::var("MOLT_DEBUG_BIND").is_ok() {
+        if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_BIND) {
             let func_name = crate::type_name(_py, molt_obj_model::MoltObject::from_bits(func_bits));
             eprintln!(
                 "[bind] missing required arguments: func={} pos_given={} missing={}",
@@ -1195,10 +1190,7 @@ unsafe fn bind_builtin_type_new_init(
         let names = ["name", "bases", "dict"];
         for (idx, val) in values.iter().enumerate() {
             if val.is_none() {
-                if matches!(
-                    std::env::var("MOLT_TRACE_TYPE_NEW_INIT").ok().as_deref(),
-                    Some("1")
-                ) {
+                if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TYPE_NEW_INIT) {
                     eprintln!(
                         "molt bind: type.__new__/__init__ missing {} (pos_len={} kw_len={})",
                         names[idx],

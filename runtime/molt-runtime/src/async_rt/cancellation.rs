@@ -1,9 +1,9 @@
 use crate::PyToken;
 use crate::builtins::exceptions::record_exception_owned;
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use crate::object::heap_lifecycle::DetachedEdgeSink;
@@ -73,13 +73,11 @@ pub(crate) struct CancelTokenEntry {
 }
 
 fn trace_cancel_msg() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_CANCEL_MSG").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CANCEL_MSG)
 }
 
 fn trace_cancel_token() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_CANCEL_TOKEN").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CANCEL_TOKEN)
 }
 
 pub(crate) fn default_cancel_tokens() -> HashMap<u64, CancelTokenEntry> {

@@ -38,6 +38,9 @@ KINDS: tuple[str, ...] = (
     "list",
 )
 NAME_PREFIX = "MOLT_"
+# A ``bool`` variable owned under this root is a runtime flag: ``molt-runtime``
+# names it by the generated closed type ``RuntimeFlag`` and reads it once.
+RUNTIME_FLAG_OWNER_ROOT = "runtime/molt-runtime/src/"
 
 
 class EnvironmentRegistryError(RuntimeError):
@@ -144,6 +147,19 @@ class EnvironmentRegistry:
     @functools.cached_property
     def retired_by_name(self) -> dict[str, RetiredVariable]:
         return {row.name: row for row in self.retired}
+
+    @functools.cached_property
+    def runtime_flag_names(self) -> tuple[str, ...]:
+        """The ``RuntimeFlag`` members, sorted: every ``bool`` variable whose
+        owner is under :data:`RUNTIME_FLAG_OWNER_ROOT`."""
+
+        return tuple(
+            sorted(
+                row.name
+                for row in self.variables
+                if row.kind == "bool" and row.owner.startswith(RUNTIME_FLAG_OWNER_ROOT)
+            )
+        )
 
     @functools.cached_property
     def root_fallback_families(self) -> dict[str, EnvironmentFamily]:

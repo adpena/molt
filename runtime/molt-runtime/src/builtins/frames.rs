@@ -1,6 +1,7 @@
 use crate::PyToken;
 use crate::builtins::exceptions::raise_exception;
 use crate::builtins::numbers::{index_bigint_from_obj, index_i64_integral_bits};
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     FRAME_STACK, MoltHeader, TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TYPE_ID_CODE,
     TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FRAME_BINDINGS, TYPE_ID_MODULE,
@@ -659,7 +660,7 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let debug = std::env::var("MOLT_DEBUG_LOCALS").as_deref() == Ok("1");
+        let debug = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_LOCALS);
         if debug {
             let (depth, top_locals, top_code) = FRAME_STACK.with(|stack| {
                 let stack = stack.borrow();

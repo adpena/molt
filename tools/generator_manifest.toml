@@ -645,6 +645,7 @@ tool = "tools/gen_environment_registry.py"
 outputs = [
   "src/molt/_environment_registry.py",
   "docs/environment-variables.generated.md",
+  "runtime/molt-runtime/src/runtime_flags_generated.rs",
 ]
 source = "src/molt/environment_registry.toml + src/molt/environment_registry.py + tools/generator_io.py"
 check_mode = true
@@ -652,8 +653,16 @@ toolchains = []
 check_command = "tools/gen_environment_registry.py --check"
 idempotent = true
 sync_test = "tests/test_environment_registry.py"
-closed_domains = []
+closed_domains = ["RuntimeFlag"]
 discovery_only = false
+
+[[closed_domain]]
+name = "RuntimeFlag"
+enum_file = "runtime/molt-runtime/src/runtime_flags_generated.rs"
+enum_name = "RuntimeFlag"
+owned_by = "tools/gen_environment_registry.py"
+source_table = "src/molt/environment_registry.toml"
+audited_defaults = []
 
 [[closed_domain]]
 name = "CompatibilityError"

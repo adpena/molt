@@ -6,6 +6,7 @@ use crate::object::layout::{
     code_set_frame_slot_id, code_set_signature_bits,
 };
 use crate::object::{ClassEdgeOwnership, MoltAuxWord, object_init_class_edge_unpublished};
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 
 #[unsafe(no_mangle)]
@@ -406,13 +407,7 @@ pub(crate) fn alloc_set_with_entries(_py: &PyToken<'_>, entries: &[u64]) -> *mut
 
 #[inline]
 fn debug_list_builder_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_DEBUG_LIST_BUILDER").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_LIST_BUILDER)
 }
 
 /// Cached `MOLT_TRACE_CALLARGS` flag. `PtrDropGuard::drop` runs on every
@@ -422,8 +417,7 @@ fn debug_list_builder_enabled() -> bool {
 /// ETL loop showed `getenv` internals as a dominant frame. Cache it once.
 #[inline]
 fn trace_callargs_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_CALLARGS").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALLARGS)
 }
 
 #[unsafe(no_mangle)]

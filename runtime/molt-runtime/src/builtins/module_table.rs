@@ -48,6 +48,7 @@
 //! Platform note: everything here is target-neutral by construction (atomics +
 //! GIL discipline; thread ids from `crate::concurrency::current_thread_id`);
 //! there are no host-OS branches, so Windows/macOS/Linux share one code path.
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -1329,8 +1330,7 @@ fn ensure_parent_ready(_py: &PyToken<'_>, row: &RegistryRow) -> bool {
 /// The Uninit→Ready init transaction body.  Caller has already won the CAS
 /// into `Initializing` and set `owners[id]`.
 fn trace_ensure() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_MODULE_ENSURE").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_MODULE_ENSURE)
 }
 
 fn run_init_transaction(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_flags::{self, RuntimeFlag};
 
 struct FileMode {
     options: OpenOptions,
@@ -419,7 +420,7 @@ fn open_impl(
         }
     }
 
-    let debug_open_fd = std::env::var("MOLT_DEBUG_OPEN_FD").as_deref() == Ok("1");
+    let debug_open_fd = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_OPEN_FD);
 
     let mode_obj = obj_from_bits(mode_bits);
     if mode_obj.is_none() {
@@ -1060,7 +1061,7 @@ fn alloc_stdio_handle(
     errors: &str,
     write_through: bool,
 ) -> u64 {
-    let trace_stdio = std::env::var("MOLT_TRACE_STDIO_BUILD").as_deref() == Ok("1");
+    let trace_stdio = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_STDIO_BUILD);
     // Native hosts give each stream a private duplicate that the handle owns
     // and closes. WASI has no `dup`: the stream borrows the host descriptor and
     // must never close it, or host output after runtime teardown is lost.
@@ -1215,7 +1216,7 @@ fn cached_stdio_handle(
     slot: &AtomicU64,
     make_handle: impl FnOnce() -> u64,
 ) -> u64 {
-    let trace_stdio = std::env::var("MOLT_TRACE_STDIO_BUILD").as_deref() == Ok("1");
+    let trace_stdio = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_STDIO_BUILD);
     let cached_bits = slot.load(Ordering::Acquire);
     if cached_bits != 0 && !obj_from_bits(cached_bits).is_none() {
         inc_ref_bits(_py, cached_bits);

@@ -1,3 +1,4 @@
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{MoltObject, PyToken, alloc_list, raise_exception};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1182,7 +1183,7 @@ mod bootstrap_failure_tests {
                     molt_runtime_core::host_capabilities_generated::MAXIMUM_BUILTIN_CAPABILITY_TIER,
                 )
                 .env(
-                    "MOLT_THREAD_ISOLATED",
+                    RuntimeFlag::MOLT_THREAD_ISOLATED.name(),
                     if mode == "spawn-failure-isolate" {
                         "1"
                     } else {
@@ -2368,13 +2369,7 @@ pub(crate) fn configured_thread_stack_size() -> Option<usize> {
 /// `payload_bits` must reference a valid thread payload tuple allocated by this runtime.
 pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let isolated_override = matches!(
-            std::env::var("MOLT_THREAD_ISOLATED")
-                .ok()
-                .as_deref()
-                .map(|value| value.to_ascii_lowercase()),
-            Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
-        );
+        let isolated_override = runtime_flags::enabled(RuntimeFlag::MOLT_THREAD_ISOLATED);
         let operation = if isolated_override {
             crate::OperationId::ThreadSpawnIsolated
         } else {
@@ -2448,13 +2443,7 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
         {
             return err;
         }
-        let isolated_override = matches!(
-            std::env::var("MOLT_THREAD_ISOLATED")
-                .ok()
-                .as_deref()
-                .map(|value| value.to_ascii_lowercase()),
-            Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
-        );
+        let isolated_override = runtime_flags::enabled(RuntimeFlag::MOLT_THREAD_ISOLATED);
         if isolated_override {
             return raise_exception::<_>(
                 _py,

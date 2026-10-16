@@ -1,4 +1,5 @@
 use crate::PyToken;
+use crate::runtime_flags::{self, RuntimeFlag};
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
@@ -1099,10 +1100,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 if res != pending_bits_i64() && !exception_pending(_py) {
                     crate::task_last_exception_drop(_py, task_ptr);
                 }
-                if matches!(
-                    std::env::var("MOLT_TRACE_BLOCK_ON_RESULT").ok().as_deref(),
-                    Some("1")
-                ) {
+                if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BLOCK_ON_RESULT) {
                     let pending_kind = if exception_pending(_py) {
                         let exc_bits = crate::exception_last_bits_noinc(_py)
                             .unwrap_or_else(|| MoltObject::none().bits());
@@ -1144,10 +1142,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                         (None, None) => None,
                     };
                     let awaited_ptr = task_waiting_on_future(_py, task_ptr);
-                    if matches!(
-                        std::env::var("MOLT_TRACE_BLOCK_ON").ok().as_deref(),
-                        Some("1")
-                    ) {
+                    if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BLOCK_ON) {
                         if let Some(ptr) = awaited_ptr {
                             let poll_fn = crate::object::object_poll_fn(ptr);
                             let poll_kind = |addr: u64| -> &'static str {
@@ -1195,10 +1190,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                                         }
                                     }
                                 }
-                                if matches!(
-                                    std::env::var("MOLT_TRACE_BLOCK_ON_CHAIN").ok().as_deref(),
-                                    Some("1")
-                                ) {
+                                if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BLOCK_ON_CHAIN) {
                                     let mut cursor = ptr;
                                     for depth in 0..8 {
                                         let cursor_poll = crate::object::object_poll_fn(cursor);
@@ -1345,12 +1337,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             let _gil = GilGuard::new();
             let _py = _gil.token();
             let _py = &_py;
-            let trace_epilogue = matches!(
-                std::env::var("MOLT_TRACE_BLOCK_ON_EPILOGUE")
-                    .ok()
-                    .as_deref(),
-                Some("1")
-            );
+            let trace_epilogue = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BLOCK_ON_EPILOGUE);
             let trace_step = |label: &str| {
                 if !trace_epilogue {
                     return;
@@ -1469,10 +1456,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             let handlers_active = exception_handler_active();
             let generator_raise = generator_raise_active();
             let task_raise = task_raise_active();
-            let trace_block_on = matches!(
-                std::env::var("MOLT_TRACE_BLOCK_ON").ok().as_deref(),
-                Some("1")
-            );
+            let trace_block_on = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BLOCK_ON);
             if prev_task.is_null() && trace_block_on {
                 eprintln!(
                     "molt async trace: block_on_exit pending={} handlers={} gen_raise={} task_raise={}",

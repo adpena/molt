@@ -4,6 +4,7 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::format_exception_with_traceback;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -48,23 +49,11 @@ pub use type_attributes::*;
 pub use type_protocol::*;
 
 fn trace_module_cache() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_MODULE_CACHE").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_MODULE_CACHE)
 }
 
 fn trace_name_error() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_NAME_ERROR").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_NAME_ERROR)
 }
 
 /// Diagnostic level shared by `MOLT_TRACE_MODULE_ATTRS` and
@@ -115,8 +104,7 @@ unsafe fn traced_module_attr(module_ptr: *mut u8, attr_bits: u64) -> Option<(Str
 }
 
 fn trace_get_attr() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_GET_ATTR").is_ok())
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_GET_ATTR)
 }
 
 fn debug_module_get_attr() -> bool {
@@ -125,34 +113,16 @@ fn debug_module_get_attr() -> bool {
 }
 
 fn trace_sys_module() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_SYS_MODULE").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SYS_MODULE)
 }
 
 fn trace_op_silent() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_OP_SILENT").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_OP_SILENT)
 }
 
 #[cfg(unix)]
 fn trace_op_sigtrap_enabled() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_OP_SIGTRAP").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_OP_SIGTRAP)
 }
 
 fn trace_module_globals_mode() -> TraceMode {
@@ -161,13 +131,11 @@ fn trace_module_globals_mode() -> TraceMode {
 }
 
 fn trace_bad_module_name() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_BAD_MODULE_NAME").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BAD_MODULE_NAME)
 }
 
 fn trace_bad_module_name_backtrace() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_BAD_MODULE_NAME_BT").as_deref() == Ok("1"))
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BAD_MODULE_NAME_BT)
 }
 
 fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {

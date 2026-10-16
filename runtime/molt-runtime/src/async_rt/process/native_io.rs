@@ -1,5 +1,6 @@
 use super::stdio::NativeProcessStdio;
 use super::{ProcessRegistryEntry, ProcessState};
+use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 use std::io::{Read, Write};
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -7,13 +8,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 pub(super) fn trace_process_io() -> bool {
-    static TRACE: OnceLock<bool> = OnceLock::new();
-    *TRACE.get_or_init(|| {
-        matches!(
-            std::env::var("MOLT_TRACE_PROCESS_IO").ok().as_deref(),
-            Some("1")
-        )
-    })
+    runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_PROCESS_IO)
 }
 
 pub(super) fn ignore_sigpipe() {
