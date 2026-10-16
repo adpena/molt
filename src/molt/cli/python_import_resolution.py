@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import RLock
 from typing import Literal
+from collections.abc import Iterable
 
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.compiler_analysis import python_binding_flow, python_namespace_writes
@@ -44,17 +45,22 @@ from molt.compiler_analysis.python_lexical_scope import python_eager_nodes
 _BYTECODE_CACHE_DIR = "__pycache__"
 
 
-def python_package_child_names(init: Path) -> frozenset[str]:
+def python_package_child_names(package_paths: Iterable[Path]) -> frozenset[str]:
     """All names an import can bind on a package, independent of reachability."""
     names: set[str] = set()
-    try:
-        with os.scandir(init.parent) as entries:
-            for entry in entries:
-                name = entry.name if entry.is_dir() else entry.name.partition(".")[0]
-                if name.isidentifier() and name != "__init__":
-                    names.add(name)
-    except OSError as exc:
-        raise ValueError(f"cannot list Python package {init.parent}: {exc}") from exc
+    for package_path in package_paths:
+        try:
+            with os.scandir(package_path) as entries:
+                for entry in entries:
+                    name = (
+                        entry.name if entry.is_dir() else entry.name.partition(".")[0]
+                    )
+                    if name.isidentifier() and name != "__init__":
+                        names.add(name)
+        except OSError as exc:
+            raise ValueError(
+                f"cannot list Python package {package_path}: {exc}"
+            ) from exc
     return frozenset(names)
 
 
