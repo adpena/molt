@@ -2418,6 +2418,9 @@ class _Analyzer:
         self.scopes: list[_Scope] = []
         self.slot_names: list[str] = []
         self.slot_owner_scope_ids: list[int] = []
+        # Each class's implicit `__class__` cell (PEP 3135), by class scope id.
+        self._class_cell_slots: dict[int, int] = {}
+        self._class_cell_slot_mask = 0
         self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
         self.source_attributes: dict[
             PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
@@ -2610,20 +2613,11 @@ class _Analyzer:
         }
         lexical_slots: set[int] = set()
         for name in dependencies.lexical:
-            slot = None
-            visible: _Scope | None = parent_scope
-            while visible is not None:
-                candidate = (
-                    visible.slots.get(name)
-                    if visible.kind != "class"
-                    or annotation_scope
-                    and visible is parent_scope
-                    else None
-                )
-                if candidate is not None:
-                    slot = candidate
-                    break
-                visible = visible.parent
+            slot = self._enclosing_slot(
+                parent_scope,
+                name,
+                annotation_owner=parent_scope if annotation_scope else None,
+            )
             if slot is None:
                 continue
             if slot in self.module_slots:
@@ -2880,6 +2874,8 @@ class _Analyzer:
         )
 
     def _slot_uses_lexical_storage(self, slot: int) -> bool:
+        if self._class_cell_slot_mask & (1 << slot):
+            return True
         owner = self.scopes[self.slot_owner_scope_ids[slot]]
         return owner.kind not in ("module", "class")
 
@@ -2911,16 +2907,52 @@ class _Analyzer:
             slot = self._module_slot(name)
         else:
             slot = scope.slots.get(name)
-            parent = scope.parent
-            while slot is None and parent is not None:
-                if (
-                    parent.kind != "class"
-                    or scope.kind == "annotation"
-                    and parent is scope.parent
-                ):
-                    slot = parent.slots.get(name)
-                parent = parent.parent
+            if slot is None:
+                slot = self._enclosing_slot(
+                    scope.parent,
+                    name,
+                    annotation_owner=scope.parent
+                    if scope.kind == "annotation"
+                    else None,
+                )
         self._scope_slot_cache[cache_key] = slot
+        return slot
+
+    def _enclosing_slot(
+        self, parent: _Scope | None, name: str, *, annotation_owner: _Scope | None
+    ) -> int | None:
+        """The slot `name` names in the enclosing scopes, innermost first.
+
+        A class namespace is invisible to the scopes nested in it, with two
+        exceptions: an annotation scope sees its owning class, and every nested
+        scope (nested classes included) sees the class's implicit `__class__`
+        cell, as CPython's symtable passes `__class__` to a class's children.
+        """
+        while parent is not None:
+            if parent.kind != "class" or parent is annotation_owner:
+                slot = parent.slots.get(name)
+                if slot is not None:
+                    return slot
+            if parent.kind == "class" and name == "__class__":
+                return self._class_cell_slot(parent)
+            parent = parent.parent
+        return None
+
+    def _class_cell_slot(self, class_scope: _Scope) -> int:
+        """The class's implicit `__class__` cell, a closure cell of its methods.
+
+        Class creation fills it, outside the analyzed flow, so it is exposed to
+        callbacks: a read before class creation may find it unbound.
+        """
+        slot = self._class_cell_slots.get(class_scope.scope_id)
+        if slot is None:
+            slot = len(self.slot_names)
+            self.slot_names.append(f"{class_scope.scope_id}:__class__ cell")
+            self.slot_owner_scope_ids.append(class_scope.scope_id)
+            self._class_cell_slots[class_scope.scope_id] = slot
+            self._class_cell_slot_mask |= 1 << slot
+            self.callback_slot_mask |= 1 << slot
+            self.states.set_taint_domain(self._callback_taint_domain())
         return slot
 
     def _name_uses_activation_namespace(
