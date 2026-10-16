@@ -261,7 +261,9 @@ pub(super) fn zip_archive_has_prefix(path: &str, prefix: &str) -> bool {
         let Ok(file) = archive.by_index(idx) else {
             continue;
         };
-        let name = file.name();
+        let Ok(name) = file.name() else {
+            continue;
+        };
         if name.starts_with(&normalized) {
             return true;
         }
@@ -285,7 +287,10 @@ pub(super) fn zip_archive_build_index(path: &str) -> Option<ZipArchiveIndex> {
         let Ok(file) = archive.by_index(idx) else {
             continue;
         };
-        let mut name = file.name().replace('\\', "/");
+        let Ok(name) = file.name() else {
+            continue;
+        };
+        let mut name = name.replace('\\', "/");
         if name.is_empty() {
             continue;
         }

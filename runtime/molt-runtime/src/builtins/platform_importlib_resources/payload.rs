@@ -65,7 +65,10 @@ pub(super) fn zip_archive_resources_path_payload(
         let Ok(file) = archive.by_index(idx) else {
             continue;
         };
-        let mut name = file.name().replace('\\', "/");
+        let Ok(name) = file.name() else {
+            continue;
+        };
+        let mut name = name.replace('\\', "/");
         if name.is_empty() {
             continue;
         }
