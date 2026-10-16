@@ -4573,3 +4573,39 @@ def test_overlapping_await_queries_reuse_canonical_dependency_traversal(outer_fi
     assert authority.node_visits == visits
     # A flag-only cache must not suppress the ordinary lexical dependency walk.
     assert authority.project((expression,)).direct == frozenset({"callback"})
+
+
+@pytest.mark.parametrize(
+    "source,lookup",
+    [
+        # PEP 3135: a method reads its class's implicit cell, never a global.
+        ("class A:\n    def f(self):\n        return __class__\n", "lexical"),
+        # A function nested in a method reaches the cell through it.
+        (
+            "class A:\n    def f(self):\n        def g():\n"
+            "            return __class__\n        return g\n",
+            "lexical",
+        ),
+        # An inlined comprehension reads the method's free cell.
+        (
+            "class A:\n    def f(self):\n        return [__class__ for _ in (0,)]\n",
+            "lexical",
+        ),
+        # The class body itself does not see its own cell.
+        ("class A:\n    x = __class__\n", "class_global"),
+    ],
+)
+def test_class_cell_reads_follow_cpython_symtable(source: str, lookup: str) -> None:
+    tree = ast.parse(source)
+    read = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "__class__"
+    )
+    fact = analyze_python_source_bindings(source).expression_fact(read)
+    assert fact is not None
+    assert fact.name_lookup == lookup
+    if lookup == "lexical":
+        # Class creation fills the cell outside the analyzed flow: a read may
+        # find it unbound, but is never proven unbound.
+        assert fact.identities != int(PythonIdentity.UNBOUND)
