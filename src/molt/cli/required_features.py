@@ -174,14 +174,17 @@ def reachability_profile_feature_refusal(
     target_triple: str | None = None,
     extra_roots: Iterable[str] = (),
 ) -> str | None:
-    """Truthful compile-time refusal when reached code needs an excluded feature.
+    """Report all target and profile requirements absent from reached code's runtime.
 
     The reachability ceiling check (``RequiredLinkFeatures <= LinkFeatures(P)``):
     compute the link-affecting features the *reached* SimpleIR needs and, for any
     that the selected profile's ceiling omits, return a refusal that names the
     exact reached intrinsic symbols (the ``molt_*`` names whose definitions the
-    excluded feature provides) and the actionable remedy. Returns ``None`` when
-    every required feature is within the ceiling (the build may proceed).
+    excluded feature provides) and the actionable remedy. Independently report
+    every reached intrinsic with no provider on the selected target. Both checks
+    use one reachability closure; neither failure category hides the other, and
+    neither symbol list is truncated. Returns ``None`` when all required symbols
+    have target providers and their features are within the profile ceiling.
 
     This converts what would otherwise be a raw ``undefined symbol: molt_re_*``
     linker error - the native backend takes the address of each reached
@@ -190,65 +193,64 @@ def reachability_profile_feature_refusal(
     link error" contract.
     """
     reached_symbols = reached_intrinsic_symbols(functions, extra_roots=extra_roots)
-    unavailable_symbols = sorted(
-        symbol
-        for symbol in reached_symbols
-        if not runtime_symbol_available_on_target(symbol, target_triple=target_triple)
-    )
+    unavailable_symbols: list[str] = []
+    blocked: dict[str, list[str]] = {}
+    for symbol in reached_symbols:
+        if not runtime_symbol_available_on_target(symbol, target_triple=target_triple):
+            unavailable_symbols.append(symbol)
+        feature = link_affecting_feature_gate_for_symbol(symbol)
+        if feature is not None and feature not in profile_features:
+            blocked.setdefault(feature, []).append(symbol)
+
+    if not unavailable_symbols and not blocked:
+        return None
+
+    messages: list[str] = []
     if unavailable_symbols:
         arch = (
             target_triple.split("-", 1)[0] if target_triple is not None else "unknown"
         )
         details = ", ".join(
             f"{symbol} (unsupported on {', '.join(unsupported_target_arches_for_symbol(symbol))})"
-            for symbol in unavailable_symbols[:8]
+            for symbol in sorted(unavailable_symbols)
         )
-        suffix = "" if len(unavailable_symbols) <= 8 else ", ..."
-        return (
+        messages.append(
             f"target {target_triple!r} (architecture {arch}) has no runtime provider "
-            f"for reached intrinsic symbols: {details}{suffix}; choose a supported "
+            f"for reached intrinsic symbols: {details}; choose a supported "
             "target or remove the reached operation"
         )
 
-    by_feature: dict[str, set[str]] = {}
-    for symbol in reached_symbols:
-        feature = link_affecting_feature_gate_for_symbol(symbol)
-        if feature is not None:
-            by_feature.setdefault(feature, set()).add(symbol)
-    blocked = {
-        feature: symbols
-        for feature, symbols in by_feature.items()
-        if feature not in profile_features
-    }
-    if not blocked:
-        return None
+    if blocked:
+        excluded_features = sorted(blocked)
+        lines: list[str] = []
+        for feature in excluded_features:
+            symbols = sorted(blocked[feature])
+            plural = "intrinsic" if len(symbols) == 1 else "intrinsics"
+            lines.append(f"  {feature}: reached {plural} {', '.join(symbols)}")
 
-    excluded_features = sorted(blocked)
-    lines: list[str] = []
-    for feature in excluded_features:
-        symbols = sorted(blocked[feature])
-        sample = ", ".join(symbols[:6])
-        if len(symbols) > 6:
-            sample += f", ... (+{len(symbols) - 6} more)"
-        plural = "intrinsic" if len(symbols) == 1 else "intrinsics"
-        lines.append(f"  {feature}: reached {plural} {sample}")
-
-    feature_phrase = (
-        f"the {excluded_features[0]!r} runtime feature"
-        if len(excluded_features) == 1
-        else "runtime features " + ", ".join(repr(f) for f in excluded_features)
-    )
-    return (
-        f"Profile '{profile_name}' excludes {feature_phrase} that this program's "
-        f"statically retained code requires.\n"
-        f"These runtime intrinsics are referenced by retained function bodies, so their "
-        f"symbols would be undefined at link under '{profile_name}':\n"
-        + "\n".join(lines)
-        + "\n\nRequirements follow the static link closure, including published "
-        "functions and module-registry roots; they do not prove execution. "
-        "Remove the dependency that retains these bodies, or rebuild with the "
-        "full stdlib profile, which includes these features:\n"
-        "    --stdlib-profile full\n"
-        "or set the environment knob the build reads as its canonical profile:\n"
-        "    MOLT_STDLIB_PROFILE=full"
-    )
+        feature_phrase = (
+            f"the {excluded_features[0]!r} runtime feature"
+            if len(excluded_features) == 1
+            else "runtime features " + ", ".join(repr(f) for f in excluded_features)
+        )
+        messages.append(
+            f"Profile '{profile_name}' excludes {feature_phrase} that this program's "
+            f"statically retained code requires.\n"
+            "These runtime intrinsics are referenced by retained function bodies, so their "
+            f"symbols would be undefined at link under '{profile_name}':\n"
+            + "\n".join(lines)
+            + "\n\nRequirements follow the static link closure, including published "
+            "functions and module-registry roots; they do not prove execution. "
+            "Remove the dependency that retains these bodies, or rebuild with the "
+            "full stdlib profile for features supported by the selected target:\n"
+            "    --stdlib-profile full\n"
+            "or set the environment knob the build reads as its canonical profile:\n"
+            "    MOLT_STDLIB_PROFILE=full"
+            + (
+                "\nThe full stdlib profile does not provide symbols unavailable "
+                "on the selected target."
+                if unavailable_symbols
+                else ""
+            )
+        )
+    return "\n\n".join(messages)
