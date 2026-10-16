@@ -215,6 +215,233 @@ pub(crate) fn io_clear_runtime_state(
     changed
 }
 
+/// One selected mount route. A mounted miss never retries the host filesystem.
+pub(crate) type VfsPathRoute = (String, Arc<dyn crate::vfs::VfsBackend>, String);
+
+pub(crate) fn selected_vfs_route(
+    py: &PyToken<'_>,
+    path: &std::path::Path,
+) -> Result<Option<VfsPathRoute>, u64> {
+    let Some(vfs) = runtime_state(py).get_vfs() else {
+        return Ok(None);
+    };
+    if let Some(path) = path.to_str() {
+        return Ok(vfs.resolve(path));
+    }
+    // The VFS namespace is UTF-8, while native POSIX paths are arbitrary bytes.
+    // Normalize in bytes before selecting a mount; never replace invalid bytes
+    // with U+FFFD and accidentally select a different mounted filename.
+    let raw = molt_runtime_platform::path_text::path_normpath_raw(
+        path.as_os_str().as_encoded_bytes(),
+        b'/',
+    );
+    match std::str::from_utf8(&raw) {
+        Ok(path) => Ok(vfs.resolve(path)),
+        Err(error) => {
+            let prefix =
+                std::str::from_utf8(&raw[..error.valid_up_to()]).expect("valid UTF-8 prefix");
+            if vfs.resolve(prefix).is_some() {
+                Err(raise_exception::<u64>(
+                    py,
+                    "UnicodeError",
+                    "mounted VFS paths must be valid UTF-8",
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn admit_metadata_routes(
+    py: &PyToken<'_>,
+    operation: OperationId,
+    routes: [Option<&VfsPathRoute>; 2],
+) -> Result<(), u64> {
+    let mut capabilities: [&'static str; 4] = [""; 4];
+    let mut count = 0;
+    for (prefix, _, _) in routes.into_iter().flatten() {
+        let requirement = crate::vfs::caps::mount_requirements(prefix, true, false)
+            .map_err(|error| raise_exception::<u64>(py, "PermissionError", &error.to_string()))?;
+        for &capability in requirement.capabilities() {
+            capabilities[count] = capability;
+            count += 1;
+        }
+    }
+    crate::require_operation_with_capabilities(
+        py,
+        operation,
+        crate::audit::AuditArgs::None,
+        &capabilities[..count],
+    )
+}
+
+/// Canonical POSIX errno after the host/VFS boundary. Native Windows errors
+/// cross the existing Win32 mapping exactly once; VFS errors are already errno.
+#[derive(Debug)]
+pub(crate) struct PathIoError {
+    pub errno: i32,
+    message: String,
+}
+impl PathIoError {
+    pub(crate) fn canonical(errno: i32, message: &str) -> Self {
+        Self {
+            errno,
+            message: message.into(),
+        }
+    }
+    pub(crate) fn from_native(error: std::io::Error) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let raw = error.raw_os_error();
+        #[cfg(windows)]
+        let errno = raw
+            .map(crate::windows_abi::winerror_to_errno)
+            .unwrap_or(libc::EIO);
+        #[cfg(target_arch = "wasm32")]
+        let errno = libc::metadata_error_errno(&error);
+        #[cfg(all(not(windows), not(target_arch = "wasm32")))]
+        let errno = raw.unwrap_or(libc::EIO);
+        Self {
+            errno,
+            message: error.to_string(),
+        }
+    }
+    pub(crate) fn raise(&self, py: &PyToken<'_>, operation: &str) -> u64 {
+        raise_os_error_errno::<u64>(
+            py,
+            i64::from(self.errno),
+            &format!("{operation}: {}", self.message),
+        )
+    }
+}
+
+fn metadata_vfs_error(error: crate::vfs::VfsError) -> PathIoError {
+    let message = error.to_string();
+    let errno = match error {
+        crate::vfs::VfsError::NotFound => libc::ENOENT,
+        crate::vfs::VfsError::PermissionDenied => libc::EACCES,
+        crate::vfs::VfsError::ReadOnly => libc::EROFS,
+        crate::vfs::VfsError::NotDirectory => libc::ENOTDIR,
+        crate::vfs::VfsError::IsDirectory => libc::EISDIR,
+        crate::vfs::VfsError::AlreadyExists => libc::EEXIST,
+        _ => libc::EIO,
+    };
+    PathIoError { errno, message }
+}
+
+fn metadata_on_route(
+    path: &std::path::Path,
+    route: Option<&VfsPathRoute>,
+    follow: bool,
+) -> Result<molt_runtime_platform::stat_support::PathMetadata, PathIoError> {
+    use molt_runtime_platform::stat_support::PathMetadata;
+    match route {
+        Some((_, backend, relative)) => backend
+            .stat(relative)
+            .map(|value| {
+                PathMetadata::from_virtual(
+                    value.is_file,
+                    value.is_dir,
+                    value.readonly,
+                    value.size,
+                    value.mtime,
+                )
+            })
+            .map_err(metadata_vfs_error),
+        None => if follow {
+            std::fs::metadata(path)
+        } else {
+            std::fs::symlink_metadata(path)
+        }
+        .map(|metadata| PathMetadata::from_host(&metadata))
+        .map_err(PathIoError::from_native),
+    }
+}
+
+fn validate_metadata_path(py: &PyToken<'_>, path: &std::path::Path) -> Result<(), u64> {
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "embedded null byte",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Admission errors remain outside the OS-result domain: predicate suppression
+/// may consume a filesystem failure, never a missing capability.
+pub(crate) fn path_metadata(
+    py: &PyToken<'_>,
+    path: &std::path::Path,
+    follow: bool,
+    operation: OperationId,
+) -> Result<Result<molt_runtime_platform::stat_support::PathMetadata, PathIoError>, u64> {
+    validate_metadata_path(py, path)?;
+    let route = selected_vfs_route(py, path)?;
+    admit_metadata_routes(py, operation, [route.as_ref(), None])?;
+    Ok(metadata_on_route(path, route.as_ref(), follow))
+}
+
+pub(crate) fn path_read_link(
+    py: &PyToken<'_>,
+    path: &std::path::Path,
+    operation: OperationId,
+) -> Result<Result<std::path::PathBuf, PathIoError>, u64> {
+    validate_metadata_path(py, path)?;
+    let route = selected_vfs_route(py, path)?;
+    admit_metadata_routes(py, operation, [route.as_ref(), None])?;
+    Ok(match route {
+        Some((_, backend, relative)) => match backend.stat(&relative) {
+            Ok(_) => Err(PathIoError {
+                errno: libc::EINVAL,
+                message: "not a symbolic link".into(),
+            }),
+            Err(error) => Err(metadata_vfs_error(error)),
+        },
+        None => std::fs::read_link(path).map_err(PathIoError::from_native),
+    })
+}
+
+pub(crate) fn paths_same_file(
+    py: &PyToken<'_>,
+    left: &std::path::Path,
+    right: &std::path::Path,
+    operation: OperationId,
+) -> Result<Result<bool, PathIoError>, u64> {
+    validate_metadata_path(py, left)?;
+    validate_metadata_path(py, right)?;
+    let left_route = selected_vfs_route(py, left)?;
+    let right_route = selected_vfs_route(py, right)?;
+    admit_metadata_routes(py, operation, [left_route.as_ref(), right_route.as_ref()])?;
+    let compare = || {
+        let left_metadata = metadata_on_route(left, left_route.as_ref(), true)?;
+        let right_metadata = metadata_on_route(right, right_route.as_ref(), true)?;
+        match (&left_route, &right_route) {
+            (Some((_, left_backend, left_name)), Some((_, right_backend, right_name))) => {
+                Ok(Arc::ptr_eq(left_backend, right_backend) && left_name == right_name)
+            }
+            (None, None) => {
+                #[cfg(unix)]
+                {
+                    Ok(left_metadata.fields[1..3] == right_metadata.fields[1..3])
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (left_metadata, right_metadata);
+                    Ok(
+                        std::fs::canonicalize(left).map_err(PathIoError::from_native)?
+                            == std::fs::canonicalize(right).map_err(PathIoError::from_native)?,
+                    )
+                }
+            }
+            _ => Ok(false),
+        }
+    };
+    Ok(compare())
+}
+
 fn raise_vfs_error(py: &PyToken<'_>, error: crate::vfs::VfsError, path: &str) -> u64 {
     let message = format!("{error}: '{path}'");
     let kind = match error {
@@ -237,6 +464,298 @@ mod tests {
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
+
+    struct MetadataBackend {
+        inner: crate::vfs::tmp::TmpFs,
+        stats: std::sync::atomic::AtomicUsize,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    impl MetadataBackend {
+        fn new() -> std::sync::Arc<Self> {
+            use crate::vfs::VfsBackend;
+            let backend = std::sync::Arc::new(Self {
+                inner: crate::vfs::tmp::TmpFs::new(1),
+                stats: std::sync::atomic::AtomicUsize::new(0),
+                reads: std::sync::atomic::AtomicUsize::new(0),
+            });
+            backend.inner.open_write("value", b"fixture").unwrap();
+            backend.inner.open_write("other", b"second").unwrap();
+            backend
+                .inner
+                .open_write("valid-\u{fffd}", b"unicode")
+                .unwrap();
+            backend
+        }
+    }
+    impl crate::vfs::VfsBackend for MetadataBackend {
+        fn open_read(&self, path: &str) -> Result<Vec<u8>, crate::vfs::VfsError> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.open_read(path)
+        }
+        fn open_write(&self, path: &str, data: &[u8]) -> Result<(), crate::vfs::VfsError> {
+            self.inner.open_write(path, data)
+        }
+        fn open_append(&self, path: &str, data: &[u8]) -> Result<(), crate::vfs::VfsError> {
+            self.inner.open_append(path, data)
+        }
+        fn stat(&self, path: &str) -> Result<crate::vfs::VfsStat, crate::vfs::VfsError> {
+            self.stats.fetch_add(1, Ordering::Relaxed);
+            self.inner.stat(path)
+        }
+        fn readdir(&self, path: &str) -> Result<Vec<String>, crate::vfs::VfsError> {
+            self.inner.readdir(path)
+        }
+        fn mkdir(&self, path: &str) -> Result<(), crate::vfs::VfsError> {
+            self.inner.mkdir(path)
+        }
+        fn unlink(&self, path: &str) -> Result<(), crate::vfs::VfsError> {
+            self.inner.unlink(path)
+        }
+        fn rename(&self, from: &str, to: &str) -> Result<(), crate::vfs::VfsError> {
+            self.inner.rename(from, to)
+        }
+        fn exists(&self, path: &str) -> bool {
+            self.inner.exists(path)
+        }
+        fn is_readonly(&self) -> bool {
+            self.inner.is_readonly()
+        }
+    }
+
+    fn metadata_mount(backend: std::sync::Arc<MetadataBackend>) -> crate::vfs::VfsState {
+        let mut table = crate::vfs::MountTable::new();
+        table.add_mount("/tmp", backend);
+        crate::vfs::VfsState::from_table(table)
+    }
+
+    fn assert_metadata_error(py: &crate::PyToken<'_>, class: &str, errno: i32) {
+        let error = crate::molt_exception_last();
+        assert_eq!(crate::type_name(py, obj_from_bits(error)), class);
+        dec_ref_bits(py, error);
+        assert_eq!(io_error_errno(py), i64::from(errno));
+    }
+
+    #[test]
+    fn vfs_metadata_admission_and_call_budget() {
+        enum Observation {
+            Stat,
+            Predicate(bool),
+            ReadlinkError,
+        }
+        let required = ["fs.read", "fs.tmp.read"];
+        for mask in 0..4 {
+            let backend = MetadataBackend::new();
+            crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
+                &selected_grants(&required, mask),
+                Some(metadata_mount(backend.clone())),
+                |py| {
+                    let path = io_string(py, "/tmp/value");
+                    let operations: [(fn(u64) -> u64, Observation); 13] = [
+                        (|p| crate::molt_os_stat(p), Observation::Stat),
+                        (|p| crate::molt_os_lstat(p), Observation::Stat),
+                        (|p| crate::molt_path_exists(p), Observation::Predicate(true)),
+                        (|p| crate::molt_path_isfile(p), Observation::Predicate(true)),
+                        (|p| crate::molt_path_isdir(p), Observation::Predicate(false)),
+                        (
+                            |p| crate::molt_path_islink(p),
+                            Observation::Predicate(false),
+                        ),
+                        (|p| crate::molt_path_readlink(p), Observation::ReadlinkError),
+                        (
+                            |p| {
+                                crate::molt_os_stat_at(
+                                    p,
+                                    crate::MoltObject::none().bits(),
+                                    crate::MoltObject::from_bool(true).bits(),
+                                )
+                            },
+                            Observation::Stat,
+                        ),
+                        (
+                            |p| {
+                                crate::molt_os_stat_at(
+                                    p,
+                                    crate::MoltObject::from_int(-1).bits(),
+                                    crate::MoltObject::from_bool(false).bits(),
+                                )
+                            },
+                            Observation::Stat,
+                        ),
+                        (
+                            |p| crate::molt_os_lstat_at(p, crate::MoltObject::none().bits()),
+                            Observation::Stat,
+                        ),
+                        (
+                            |p| crate::molt_os_lstat_at(p, crate::MoltObject::from_int(-1).bits()),
+                            Observation::Stat,
+                        ),
+                        (
+                            |p| crate::molt_os_readlink_at(p, crate::MoltObject::none().bits()),
+                            Observation::ReadlinkError,
+                        ),
+                        (
+                            |p| {
+                                crate::molt_os_readlink_at(
+                                    p,
+                                    crate::MoltObject::from_int(-1).bits(),
+                                )
+                            },
+                            Observation::ReadlinkError,
+                        ),
+                    ];
+                    for (operation, expected) in operations {
+                        let before = backend.stats.load(Ordering::Relaxed);
+                        let result = operation(path);
+                        if mask == 3 {
+                            assert_eq!(backend.stats.load(Ordering::Relaxed) - before, 1);
+                            match expected {
+                                Observation::ReadlinkError => {
+                                    assert_metadata_error(py, "OSError", libc::EINVAL)
+                                }
+                                Observation::Stat => {
+                                    assert!(!crate::exception_pending(py));
+                                    let pointer = obj_from_bits(result).as_ptr().unwrap();
+                                    assert_eq!(
+                                        unsafe {
+                                            crate::object::layout::tuple_storage_len(pointer)
+                                        },
+                                        10
+                                    );
+                                    let fields = unsafe {
+                                        std::slice::from_raw_parts(
+                                            crate::object::layout::tuple_storage_items(pointer),
+                                            10,
+                                        )
+                                    };
+                                    assert_eq!(crate::to_i64(obj_from_bits(fields[6])), Some(7));
+                                    assert_eq!(
+                                        crate::to_i64(obj_from_bits(fields[0])).unwrap() & 0o170000,
+                                        0o100000
+                                    );
+                                    dec_ref_bits(py, result);
+                                }
+                                Observation::Predicate(value) => {
+                                    assert!(!crate::exception_pending(py));
+                                    assert_eq!(obj_from_bits(result).as_bool(), Some(value));
+                                    dec_ref_bits(py, result);
+                                }
+                            }
+                        } else {
+                            assert_eq!(backend.stats.load(Ordering::Relaxed), before);
+                            let (class, message) = io_error(py);
+                            assert_eq!(class, "PermissionError");
+                            for (bit, name) in required.iter().enumerate() {
+                                assert_eq!(
+                                    message.contains(name),
+                                    mask & (1 << bit) == 0,
+                                    "{message}"
+                                );
+                            }
+                        }
+                        assert_eq!(backend.reads.load(Ordering::Relaxed), 0);
+                    }
+                    dec_ref_bits(py, path);
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn vfs_metadata_aliases_and_errno_domain() {
+        let backend = MetadataBackend::new();
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
+            "fs.read,fs.tmp.read",
+            Some(metadata_mount(backend.clone())),
+            |py| {
+                for (name, operation, class, errno) in [
+                    (
+                        "/tmp/missing",
+                        crate::molt_os_stat as extern "C" fn(u64) -> u64,
+                        "FileNotFoundError",
+                        libc::ENOENT,
+                    ),
+                    (
+                        "/tmp/missing",
+                        crate::molt_path_readlink,
+                        "FileNotFoundError",
+                        libc::ENOENT,
+                    ),
+                    (
+                        "/tmp/value",
+                        crate::molt_path_readlink,
+                        "OSError",
+                        libc::EINVAL,
+                    ),
+                ] {
+                    let path = io_string(py, name);
+                    let before = backend.stats.load(Ordering::Relaxed);
+                    operation(path);
+                    assert_metadata_error(py, class, errno);
+                    assert_eq!(backend.stats.load(Ordering::Relaxed) - before, 1);
+                    dec_ref_bits(py, path);
+                }
+                // A real U+FFFD name exists. Raw non-UTF8 bytes must not alias it.
+                let invalid =
+                    crate::MoltObject::from_ptr(crate::alloc_bytes(py, b"/tmp/valid-\xff")).bits();
+                let before = backend.stats.load(Ordering::Relaxed);
+                crate::molt_os_stat(invalid);
+                assert_eq!(io_error(py).0, "UnicodeError");
+                assert_eq!(backend.stats.load(Ordering::Relaxed), before);
+                dec_ref_bits(py, invalid);
+                let valid = io_string(py, "/tmp/valid-\u{fffd}");
+                let result = crate::molt_os_stat(valid);
+                assert!(!crate::exception_pending(py));
+                dec_ref_bits(py, result);
+                dec_ref_bits(py, valid);
+                assert_eq!(backend.reads.load(Ordering::Relaxed), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn vfs_metadata_samefile_owner_identity() {
+        let shared = MetadataBackend::new();
+        let distinct = MetadataBackend::new();
+        let mut table = crate::vfs::MountTable::new();
+        table.add_mount("/tmp", shared.clone());
+        table.add_mount("/state", shared.clone());
+        table.add_mount("/bundle", distinct.clone());
+        crate::test_support::RuntimeTestTransaction::with_explicit_capabilities_and_vfs(
+            "fs.read,fs.tmp.read,fs.state.read,fs.bundle.read",
+            Some(crate::vfs::VfsState::from_table(table)),
+            |py| {
+                let left = io_string(py, "/tmp/value");
+                for (name, expected) in [
+                    ("/state/value", true),
+                    ("/tmp/other", false),
+                    ("/bundle/value", false),
+                ] {
+                    let right = io_string(py, name);
+                    for operation in [
+                        crate::molt_os_path_samefile as extern "C" fn(u64, u64) -> u64,
+                        crate::molt_pathlib_samefile,
+                    ] {
+                        let before = shared.stats.load(Ordering::Relaxed)
+                            + distinct.stats.load(Ordering::Relaxed);
+                        let result = operation(left, right);
+                        assert_eq!(
+                            shared.stats.load(Ordering::Relaxed)
+                                + distinct.stats.load(Ordering::Relaxed)
+                                - before,
+                            2
+                        );
+                        assert!(!crate::exception_pending(py));
+                        assert_eq!(obj_from_bits(result).as_bool(), Some(expected));
+                        dec_ref_bits(py, result);
+                    }
+                    dec_ref_bits(py, right);
+                }
+                dec_ref_bits(py, left);
+                assert_eq!(shared.reads.load(Ordering::Relaxed), 0);
+                assert_eq!(distinct.reads.load(Ordering::Relaxed), 0);
+            },
+        );
+    }
 
     #[test]
     fn iobase_finalization_uses_published_base_and_preserves_pending_error() {

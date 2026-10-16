@@ -272,6 +272,7 @@ class OperationId(StrEnum):
     OS_LSTAT_AT = "os.lstat_at"
     OS_RENAME_AT = "os.rename_at"
     OS_REPLACE_AT = "os.replace_at"
+    OS_STAT = "os.stat"
     OS_STAT_AT = "os.stat_at"
     PKGUTIL_ITER_MODULES = "pkgutil.iter.modules"
     PKGUTIL_WALK_PACKAGES = "pkgutil.walk.packages"
@@ -565,6 +566,7 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
             OperationId.OS_LSTAT_AT: (CapabilityId.FS_READ,),
             OperationId.OS_RENAME_AT: (CapabilityId.FS_WRITE,),
             OperationId.OS_REPLACE_AT: (CapabilityId.FS_WRITE,),
+            OperationId.OS_STAT: (CapabilityId.FS_READ,),
             OperationId.OS_STAT_AT: (CapabilityId.FS_READ,),
             OperationId.PKGUTIL_ITER_MODULES: (CapabilityId.FS_READ,),
             OperationId.PKGUTIL_WALK_PACKAGES: (CapabilityId.FS_READ,),

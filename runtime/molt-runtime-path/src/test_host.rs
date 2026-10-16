@@ -164,13 +164,13 @@ pub extern "C" fn __molt_path_exception_pending() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_raise_os_error(
-    err_kind: u32,
+    raw_error: i64,
     err_msg_ptr: *const u8,
     err_msg_len: usize,
     ctx_ptr: *const u8,
     ctx_len: usize,
 ) -> u64 {
-    let _ = (err_kind, err_msg_ptr, err_msg_len, ctx_ptr, ctx_len);
+    let _ = (raw_error, err_msg_ptr, err_msg_len, ctx_ptr, ctx_len);
     unexpected("__molt_path_raise_os_error")
 }
 
@@ -512,3 +512,27 @@ pub extern "C" fn molt_runtime_target_at_least(major: i64, minor: i64) -> i64 {
 }
 
 unexpected_u64!(__molt_path_path_result(data: *const u8, len: usize, bytes: bool));
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_metadata(
+    path: *const u8,
+    len: usize,
+    follow: bool,
+    operation: *const std::ffi::c_void,
+    suppress: bool,
+    out: *mut molt_runtime_platform::stat_support::PathMetadata,
+) -> i32 {
+    let _ = (path, len, follow, operation, suppress, out);
+    unexpected("__molt_path_metadata")
+}
+unexpected_u64!(
+    __molt_path_samefile(
+        left: *const u8,
+        left_len: usize,
+        right: *const u8,
+        right_len: usize,
+        operation: *const std::ffi::c_void,
+    )
+);
+
+unexpected_u64!(__molt_path_readlink(path: *const u8, len: usize, bytes: bool));

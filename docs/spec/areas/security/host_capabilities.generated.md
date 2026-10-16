@@ -244,6 +244,7 @@ This is the generated human projection of the canonical built-in host permission
 | `os.lstat_at` | `fs.read` | all | all | all | all |
 | `os.rename_at` | `fs.write` | all | all | all | all |
 | `os.replace_at` | `fs.write` | all | all | all | all |
+| `os.stat` | `fs.read` | all | all | all | all |
 | `os.stat_at` | `fs.read` | all | all | all | all |
 | `pkgutil.iter.modules` | `fs.read` | all | all | all | all |
 | `pkgutil.walk.packages` | `fs.read` | all | all | all | all |

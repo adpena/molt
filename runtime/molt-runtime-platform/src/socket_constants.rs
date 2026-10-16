@@ -44,6 +44,8 @@ pub fn collect_errno_constants() -> Vec<(&'static str, i64)> {
         ("EINTR", libc::EINTR as i64),
         ("EINVAL", libc::EINVAL as i64),
         ("EISDIR", libc::EISDIR as i64),
+        ("ELOOP", libc::ELOOP as i64),
+        ("EROFS", libc::EROFS as i64),
         ("ENOENT", libc::ENOENT as i64),
         ("ENOTDIR", libc::ENOTDIR as i64),
         ("EPERM", libc::EPERM as i64),

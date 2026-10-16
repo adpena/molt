@@ -261,10 +261,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_os_pathsep",
             crate::molt_os_pathsep as *const (),
         )),
-        "molt_os_readlink" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_os_readlink",
-            crate::molt_os_readlink as *const (),
-        )),
         "molt_os_removedirs" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_os_removedirs",
             crate::molt_os_removedirs as *const (),
@@ -360,18 +356,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_os_makedirs" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_os_makedirs",
             crate::molt_os_makedirs as *const (),
-        )),
-        "molt_os_path_exists" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_os_path_exists",
-            crate::molt_os_path_exists as *const (),
-        )),
-        "molt_os_path_isfile" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_os_path_isfile",
-            crate::molt_os_path_isfile as *const (),
-        )),
-        "molt_os_path_isdir" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_os_path_isdir",
-            crate::molt_os_path_isdir as *const (),
         )),
         _ => None,
     }

@@ -4154,12 +4154,6 @@ runtime_name = "molt_os_read"
 callable_arity = 2
 
 [[import]]
-name = "os_readlink"
-type = 2
-runtime_name = "molt_os_readlink"
-callable_arity = 1
-
-[[import]]
 name = "os_removedirs"
 type = 2
 runtime_name = "molt_os_removedirs"

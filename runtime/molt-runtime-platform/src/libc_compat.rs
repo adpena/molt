@@ -97,6 +97,9 @@ pub const EHOSTUNREACH: i32 = 113;
 pub const EINPROGRESS: i32 = 115;
 pub const EINTR: i32 = 4;
 pub const EIO: i32 = 5;
+// Synthetic POSIX domain exported by Molt, not raw WASI preview1 errno.
+pub const ELOOP: i32 = 40;
+pub const EROFS: i32 = 30;
 pub const EISCONN: i32 = 106;
 pub const EISDIR: i32 = 21;
 pub const EINVAL: i32 = 22;
@@ -167,4 +170,27 @@ unsafe extern "C" {
     pub fn __wasilibc_get_environ() -> *mut *mut c_char;
     pub fn setenv(name: *const c_char, value: *const c_char, overwrite: c_int) -> c_int;
     pub fn unsetenv(name: *const c_char) -> c_int;
+}
+
+/// Convert native WASI metadata errors to the existing exported POSIX domain.
+/// Preserve a typed known error; unmodeled native kinds are explicitly EIO.
+pub fn metadata_error_errno(error: &std::io::Error) -> i32 {
+    use std::io::ErrorKind;
+    #[cfg(target_os = "wasi")]
+    match error.raw_os_error() {
+        Some(::libc::ELOOP) => return ELOOP,
+        Some(::libc::EROFS) => return EROFS,
+        _ => (),
+    }
+    match error.kind() {
+        ErrorKind::NotFound => ENOENT,
+        ErrorKind::PermissionDenied => EACCES,
+        ErrorKind::AlreadyExists => EEXIST,
+        ErrorKind::InvalidInput => EINVAL,
+        ErrorKind::NotADirectory => ENOTDIR,
+        ErrorKind::IsADirectory => EISDIR,
+        ErrorKind::ReadOnlyFilesystem => EROFS,
+        ErrorKind::Unsupported => ENOSYS,
+        _ => EIO,
+    }
 }

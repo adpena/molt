@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 
 
@@ -36,6 +37,60 @@ try:
         fstat_result = os.fstat(fd)
         print("fstat_shape", len(fstat_result), type(fstat_result).__name__)
         print("fstat_size", fstat_result[6])
+        print("stat_fd_size", os.stat(fd).st_size)
+        print(
+            "fd_predicates",
+            os.path.exists(fd),
+            os.path.isfile(fd),
+            os.path.isdir(fd),
+        )
+        # Metadata must borrow the descriptor; it remains usable by its owner.
+        print("fd_still_open", handle.read())
+
+    class PathLike:
+        def __init__(self, path):
+            self.path = path
+            self.calls = 0
+
+        def __fspath__(self):
+            self.calls += 1
+            return self.path
+
+    for operation in (os.stat, os.lstat, os.path.exists, os.path.isfile, os.path.isdir):
+        path = PathLike(initial)
+        result = operation(path)
+        print("path_protocol", path.calls, type(result).__name__)
+
+    for predicate in (os.path.exists, os.path.isfile, os.path.isdir, os.path.islink):
+        print("nul_predicate", predicate(initial + "\0"))
+        try:
+            predicate(object())
+        except TypeError:
+            print("invalid_path_type", "TypeError")
+
+    link = os.path.join(root, "link.txt")
+    if os.name != "nt":
+        # Native Windows link creation requires an independently granted host
+        # privilege; the ordinary Unix differential cell exercises real links.
+        os.symlink("alpha.txt", link)
+        try:
+            print(
+                "link_kinds",
+                stat.S_ISREG(os.stat(link).st_mode),
+                stat.S_ISLNK(os.lstat(link).st_mode),
+            )
+            print(
+                "link_predicates",
+                os.path.exists(link),
+                os.path.isfile(link),
+                os.path.isdir(link),
+                os.path.islink(link),
+            )
+            for path in (link, os.fsencode(link)):
+                target = os.readlink(path)
+                print("link_flavor", type(target).__name__, target)
+        finally:
+            os.unlink(link)
 
     follow_false = os.stat(initial, follow_symlinks=False)
     print("follow_symlinks_false_size", follow_false[6])

@@ -54,6 +54,9 @@ _MOLT_PATH_MAKEDIRS = _require_intrinsic("molt_path_makedirs")
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir")
 _MOLT_PATH_ISFILE = _require_intrinsic("molt_path_isfile")
 _MOLT_PATH_ISLINK = _require_intrinsic("molt_path_islink")
+_MOLT_OS_STAT = _require_intrinsic("molt_os_stat")
+_MOLT_OS_LSTAT = _require_intrinsic("molt_os_lstat")
+_MOLT_OS_FSTAT = _require_intrinsic("molt_os_fstat")
 _MOLT_OS_OPEN = _require_intrinsic("molt_os_open")
 _MOLT_OS_CLOSE = _require_intrinsic("molt_os_close")
 _MOLT_OS_READ = _require_intrinsic("molt_os_read")
@@ -69,9 +72,6 @@ _MOLT_OS_CHDIR = _require_intrinsic("molt_os_chdir")
 _MOLT_OS_CPU_COUNT = _require_intrinsic("molt_os_cpu_count")
 _MOLT_OS_LINK = _require_intrinsic("molt_os_link")
 _MOLT_OS_MAKEDIRS = _require_intrinsic("molt_os_makedirs")
-_MOLT_OS_PATH_EXISTS = _require_intrinsic("molt_os_path_exists")
-_MOLT_OS_PATH_ISFILE = _require_intrinsic("molt_os_path_isfile")
-_MOLT_OS_PATH_ISDIR = _require_intrinsic("molt_os_path_isdir")
 _MOLT_OS_TRUNCATE = _require_intrinsic("molt_os_truncate")
 _MOLT_OS_UMASK = _require_intrinsic("molt_os_umask")
 _MOLT_OS_UNAME = _require_intrinsic("molt_os_uname")
@@ -123,7 +123,7 @@ _MOLT_OS_MKDIR_V2 = _require_intrinsic("molt_os_mkdir")
 _MOLT_OS_RMDIR_V2 = _require_intrinsic("molt_os_rmdir")
 _MOLT_OS_CHMOD_V2 = _require_intrinsic("molt_os_chmod")
 _MOLT_OS_SYMLINK_V2 = _require_intrinsic("molt_os_symlink")
-_MOLT_OS_READLINK_V2 = _require_intrinsic("molt_os_readlink")
+_MOLT_PATH_READLINK = _require_intrinsic("molt_path_readlink")
 _MOLT_CAP_REQUIRE = _require_intrinsic("molt_capabilities_require")
 _MOLT_REQUIRE_OPERATION = _require_intrinsic("molt_capabilities_require_operation")
 _MOLT_OS_WIFEXITED = _require_intrinsic("molt_os_wifexited")
@@ -1207,33 +1207,19 @@ class _Path:
 
     @staticmethod
     def exists(path: Any) -> bool:
-        _require_cap("fs.read")
-        if callable(_MOLT_OS_PATH_EXISTS):
-            return bool(_MOLT_OS_PATH_EXISTS(path))
-        intrinsic = _require_callable_intrinsic(_MOLT_PATH_EXISTS, "molt_path_exists")
-        return bool(intrinsic(path))
+        return bool(_MOLT_PATH_EXISTS(path))
 
     @staticmethod
     def isdir(path: Any) -> bool:
-        _require_cap("fs.read")
-        if callable(_MOLT_OS_PATH_ISDIR):
-            return bool(_MOLT_OS_PATH_ISDIR(path))
-        intrinsic = _require_callable_intrinsic(_MOLT_PATH_ISDIR, "molt_path_isdir")
-        return bool(intrinsic(path))
+        return bool(_MOLT_PATH_ISDIR(path))
 
     @staticmethod
     def isfile(path: Any) -> bool:
-        _require_cap("fs.read")
-        if callable(_MOLT_OS_PATH_ISFILE):
-            return bool(_MOLT_OS_PATH_ISFILE(path))
-        intrinsic = _require_callable_intrinsic(_MOLT_PATH_ISFILE, "molt_path_isfile")
-        return bool(intrinsic(path))
+        return bool(_MOLT_PATH_ISFILE(path))
 
     @staticmethod
     def islink(path: Any) -> bool:
-        _require_cap("fs.read")
-        intrinsic = _require_callable_intrinsic(_MOLT_PATH_ISLINK, "molt_path_islink")
-        return bool(intrinsic(path))
+        return bool(_MOLT_PATH_ISLINK(path))
 
     @staticmethod
     def unlink(path: Any) -> None:
@@ -1387,10 +1373,9 @@ def remove(path: Any) -> None:
 
 
 def readlink(path: Any, *, dir_fd: int | None = None) -> str | bytes:
-    _require_cap("fs.read")
     if dir_fd is not None:
         return _MOLT_OS_READLINK_AT(path, dir_fd)
-    return _MOLT_OS_READLINK_V2(path)
+    return _MOLT_PATH_READLINK(path)
 
 
 def symlink(
@@ -1508,30 +1493,23 @@ def set_inheritable(fd: int, inheritable: bool) -> None:
 def stat(
     path: Any, *, dir_fd: int | None = None, follow_symlinks: bool = True
 ) -> stat_result:
-    _require_cap("fs.read")
     if dir_fd is not None:
         return _expect_stat_result(
             _MOLT_OS_STAT_AT(path, dir_fd, bool(follow_symlinks)), "stat"
         )
     if bool(follow_symlinks):
-        intrinsic = _require_os_intrinsic("molt_os_stat")
-        return _expect_stat_result(intrinsic(path), "stat")
-    intrinsic = _require_os_intrinsic("molt_os_lstat")
-    return _expect_stat_result(intrinsic(path), "lstat")
+        return _expect_stat_result(_MOLT_OS_STAT(path), "stat")
+    return _expect_stat_result(_MOLT_OS_LSTAT(path), "lstat")
 
 
 def lstat(path: Any, *, dir_fd: int | None = None) -> stat_result:
-    _require_cap("fs.read")
     if dir_fd is not None:
         return _expect_stat_result(_MOLT_OS_LSTAT_AT(path, dir_fd), "lstat")
-    intrinsic = _require_os_intrinsic("molt_os_lstat")
-    return _expect_stat_result(intrinsic(path), "lstat")
+    return _expect_stat_result(_MOLT_OS_LSTAT(path), "lstat")
 
 
 def fstat(fd: int) -> stat_result:
-    _require_cap("fs.read")
-    intrinsic = _require_os_intrinsic("molt_os_fstat")
-    return _expect_stat_result(intrinsic(fd), "fstat")
+    return _expect_stat_result(_MOLT_OS_FSTAT(fd), "fstat")
 
 
 def rename(

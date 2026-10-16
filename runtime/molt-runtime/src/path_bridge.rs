@@ -36,7 +36,7 @@ pub extern "C" fn __molt_path_exception_pending() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_raise_os_error(
-    err_kind: u32,
+    raw_error: i64,
     err_msg_ptr: *const u8,
     err_msg_len: usize,
     ctx_ptr: *const u8,
@@ -48,30 +48,11 @@ pub extern "C" fn __molt_path_raise_os_error(
         };
         let ctx =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ctx_ptr, ctx_len)) };
-        let kind = match err_kind {
-            0 => std::io::ErrorKind::NotFound,
-            1 => std::io::ErrorKind::PermissionDenied,
-            2 => std::io::ErrorKind::ConnectionRefused,
-            3 => std::io::ErrorKind::ConnectionReset,
-            4 => std::io::ErrorKind::ConnectionAborted,
-            5 => std::io::ErrorKind::NotConnected,
-            6 => std::io::ErrorKind::AddrInUse,
-            7 => std::io::ErrorKind::AddrNotAvailable,
-            8 => std::io::ErrorKind::BrokenPipe,
-            9 => std::io::ErrorKind::AlreadyExists,
-            10 => std::io::ErrorKind::WouldBlock,
-            11 => std::io::ErrorKind::InvalidInput,
-            12 => std::io::ErrorKind::InvalidData,
-            13 => std::io::ErrorKind::TimedOut,
-            14 => std::io::ErrorKind::WriteZero,
-            15 => std::io::ErrorKind::Interrupted,
-            16 => std::io::ErrorKind::Unsupported,
-            17 => std::io::ErrorKind::UnexpectedEof,
-            18 => std::io::ErrorKind::OutOfMemory,
-            _ => std::io::ErrorKind::Other,
+        let err = match i32::try_from(raw_error) {
+            Ok(raw) => std::io::Error::from_raw_os_error(raw),
+            Err(_) => std::io::Error::other(err_msg.to_string()),
         };
-        let err = std::io::Error::new(kind, err_msg.to_string());
-        raise_os_error::<u64>(_py, err, ctx)
+        return crate::builtins::io::PathIoError::from_native(err).raise(_py, ctx);
     })
 }
 
@@ -826,5 +807,98 @@ pub unsafe extern "C" fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32 
             *out = value;
         }
         1
+    })
+}
+
+/// Fixed stack receiver; -1 is a raised error, 0 an explicitly suppressed OS
+/// failure, 1 initialized metadata. Policy failures are never suppressed.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_metadata(
+    path: *const u8,
+    len: usize,
+    follow: bool,
+    operation: *const std::ffi::c_void,
+    suppress: bool,
+    out: *mut molt_runtime_platform::stat_support::PathMetadata,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(py, {
+        let path = unsafe {
+            std::ffi::OsStr::from_encoded_bytes_unchecked(std::slice::from_raw_parts(path, len))
+        };
+        let operation = unsafe { *operation.cast::<OperationId>() };
+        match crate::builtins::io::path_metadata(py, std::path::Path::new(path), follow, operation)
+        {
+            Err(_) => -1,
+            Ok(Ok(metadata)) => {
+                unsafe {
+                    out.write(metadata);
+                }
+                1
+            }
+            Ok(Err(_)) if suppress => 0,
+            Ok(Err(error)) => {
+                error.raise(py, operation.as_str());
+                -1
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_samefile(
+    left: *const u8,
+    left_len: usize,
+    right: *const u8,
+    right_len: usize,
+    operation: *const std::ffi::c_void,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let left = unsafe {
+            std::ffi::OsStr::from_encoded_bytes_unchecked(std::slice::from_raw_parts(
+                left, left_len,
+            ))
+        };
+        let right = unsafe {
+            std::ffi::OsStr::from_encoded_bytes_unchecked(std::slice::from_raw_parts(
+                right, right_len,
+            ))
+        };
+        let operation = unsafe { *operation.cast::<OperationId>() };
+        match crate::builtins::io::paths_same_file(
+            py,
+            std::path::Path::new(left),
+            std::path::Path::new(right),
+            operation,
+        ) {
+            Err(error) => error,
+            Ok(Ok(same)) => MoltObject::from_bool(same).bits(),
+            Ok(Err(error)) => error.raise(py, operation.as_str()),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_path_readlink(path: *const u8, len: usize, bytes: bool) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let path = unsafe {
+            std::ffi::OsStr::from_encoded_bytes_unchecked(std::slice::from_raw_parts(path, len))
+        };
+        match crate::builtins::io::path_read_link(
+            py,
+            std::path::Path::new(path),
+            OperationId::OsReadlink,
+        ) {
+            Err(error) => error,
+            Ok(Ok(value)) => crate::builtins::io::path_result_bits(
+                py,
+                &value,
+                if bytes {
+                    crate::builtins::io::PathFlavor::Bytes
+                } else {
+                    crate::builtins::io::PathFlavor::Str
+                },
+            ),
+            Ok(Err(error)) => error.raise(py, "readlink"),
+        }
     })
 }

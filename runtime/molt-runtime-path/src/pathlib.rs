@@ -10,6 +10,7 @@ use crate::libc_compat as libc;
 
 use crate::bridge::*;
 use molt_obj_model::MoltObject;
+use molt_runtime_core::host_capabilities_generated::OperationId;
 use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
 use std::fs;
@@ -337,34 +338,38 @@ pub extern "C" fn molt_pathlib_resolve(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "pathlib.is_mount", audit_path_arg(path_bits)) {
-            return error;
-        }
-        let s = match path_from_bits(_py, path_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let path = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        let p = Path::new(&s);
-        if !p.is_dir() {
+        let metadata = match path_metadata(_py, &path, true, OperationId::PathlibIsMount, true) {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => return bool_bits(false),
+            Err(error) => return error,
+        };
+        if metadata.virtual_file {
+            return raise_exception::<u64>(
+                _py,
+                "NotImplementedError",
+                "virtual filesystem has no native mount topology",
+            );
+        }
+        if !metadata.is_dir() {
             return bool_bits(false);
         }
-        // A mount point has a different device than its parent
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            let meta = match fs::metadata(p) {
-                Ok(m) => m,
-                Err(_) => return bool_bits(false),
+            let Some(parent) = path.parent() else {
+                return bool_bits(true);
             };
-            let parent = match p.parent() {
-                Some(pp) => pp,
-                None => return bool_bits(true),
+            let parent = match path_metadata(_py, parent, true, OperationId::PathlibIsMount, true) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => return bool_bits(false),
+                Err(error) => return error,
             };
-            let parent_meta = match fs::metadata(parent) {
-                Ok(m) => m,
-                Err(_) => return bool_bits(false),
-            };
-            bool_bits(meta.dev() != parent_meta.dev() || meta.ino() == parent_meta.ino())
+            bool_bits(
+                metadata.fields[2] != parent.fields[2] || metadata.fields[1] == parent.fields[1],
+            )
         }
         #[cfg(not(unix))]
         {
@@ -530,21 +535,25 @@ pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u6
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "pathlib.owner", audit_path_arg(path_bits)) {
-            return error;
-        }
         let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            let meta = match fs::metadata(&s) {
-                Ok(m) => m,
-                Err(err) => return raise_os_error::<u64>(_py, err, "owner"),
+            let meta = match path_metadata(_py, &s, true, OperationId::PathlibOwner, false) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => return MoltObject::none().bits(),
+                Err(error) => return error,
             };
-            let uid = meta.uid();
+            if meta.virtual_file {
+                return raise_exception::<u64>(
+                    _py,
+                    "NotImplementedError",
+                    "virtual filesystem has no user/group identity",
+                );
+            }
+            let uid = meta.fields[4] as libc::uid_t;
             let pw = unsafe { libc::getpwuid(uid) };
             if pw.is_null() {
                 return raise_exception::<u64>(_py, "KeyError", &format!("no user with uid {uid}"));
@@ -575,21 +584,25 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "pathlib.group", audit_path_arg(path_bits)) {
-            return error;
-        }
         let s = match path_from_bits(_py, path_bits) {
             Ok(s) => s,
             Err(bits) => return bits,
         };
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
-            let meta = match fs::metadata(&s) {
-                Ok(m) => m,
-                Err(err) => return raise_os_error::<u64>(_py, err, "group"),
+            let meta = match path_metadata(_py, &s, true, OperationId::PathlibGroup, false) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => return MoltObject::none().bits(),
+                Err(error) => return error,
             };
-            let gid = meta.gid();
+            if meta.virtual_file {
+                return raise_exception::<u64>(
+                    _py,
+                    "NotImplementedError",
+                    "virtual filesystem has no user/group identity",
+                );
+            }
+            let gid = meta.fields[5] as libc::gid_t;
             let gr = unsafe { libc::getgrgid(gid) };
             if gr.is_null() {
                 return raise_exception::<u64>(
@@ -624,40 +637,15 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        if let Err(error) = require_operation(_py, "pathlib.samefile", audit_path_arg(path_bits)) {
-            return error;
-        }
-        let s = match path_from_bits(_py, path_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let left = match path_from_bits(_py, path_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        let other = match path_from_bits(_py, other_bits) {
-            Ok(s) => s,
-            Err(bits) => return bits,
+        let right = match path_from_bits(_py, other_bits) {
+            Ok(path) => path,
+            Err(error) => return error,
         };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let m1 = match fs::metadata(&s) {
-                Ok(m) => m,
-                Err(err) => return raise_os_error::<u64>(_py, err, "samefile"),
-            };
-            let m2 = match fs::metadata(&other) {
-                Ok(m) => m,
-                Err(err) => return raise_os_error::<u64>(_py, err, "samefile"),
-            };
-            bool_bits(m1.dev() == m2.dev() && m1.ino() == m2.ino())
-        }
-        #[cfg(not(unix))]
-        {
-            // Fall back to canonical path comparison
-            let c1 = fs::canonicalize(&s);
-            let c2 = fs::canonicalize(&other);
-            match (c1, c2) {
-                (Ok(a), Ok(b)) => bool_bits(a == b),
-                (Err(err), _) | (_, Err(err)) => raise_os_error::<u64>(_py, err, "samefile"),
-            }
-        }
+        paths_same_file(_py, &left, &right, OperationId::PathlibSamefile)
     })
 }
 

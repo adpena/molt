@@ -2174,11 +2174,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_os_readlink",
-        import: WasmRuntimeImport::OsReadlink,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_os_removedirs",
         import: WasmRuntimeImport::OsRemovedirs,
         arity: 1,
@@ -11454,21 +11449,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 3,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_os_path_exists",
-        import: WasmRuntimeImport::OsPathExists,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_os_path_isfile",
-        import: WasmRuntimeImport::OsPathIsfile,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_os_path_isdir",
-        import: WasmRuntimeImport::OsPathIsdir,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_sys_path",
         import: WasmRuntimeImport::SysPath,
         arity: 0,
@@ -13050,7 +13030,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_os_pathsep" => Some(WasmRuntimeImport::OsPathsep),
         "molt_os_pipe" => Some(WasmRuntimeImport::OsPipe),
         "molt_os_read" => Some(WasmRuntimeImport::OsRead),
-        "molt_os_readlink" => Some(WasmRuntimeImport::OsReadlink),
         "molt_os_removedirs" => Some(WasmRuntimeImport::OsRemovedirs),
         "molt_os_rename" => Some(WasmRuntimeImport::OsRename),
         "molt_os_replace" => Some(WasmRuntimeImport::OsReplace),
@@ -15202,9 +15181,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_sys_displayhook_write" => Some(WasmRuntimeImport::SysDisplayhookWrite),
         "molt_sys_excepthook_write" => Some(WasmRuntimeImport::SysExcepthookWrite),
         "molt_os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
-        "molt_os_path_exists" => Some(WasmRuntimeImport::OsPathExists),
-        "molt_os_path_isfile" => Some(WasmRuntimeImport::OsPathIsfile),
-        "molt_os_path_isdir" => Some(WasmRuntimeImport::OsPathIsdir),
         "molt_sys_path" => Some(WasmRuntimeImport::SysPath),
         "molt_tokenize_scan" => Some(WasmRuntimeImport::TokenizeScan),
         "molt_codecs_charmap_build" => Some(WasmRuntimeImport::CodecsCharmapBuild),

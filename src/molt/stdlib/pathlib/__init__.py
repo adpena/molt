@@ -411,22 +411,15 @@ class Path:
         return int(_MOLT_PATHLIB_WRITE_BYTES(self, view))
 
     def exists(self) -> bool:
-        capabilities.require("fs.read")
-        result = _MOLT_PATH_EXISTS(self)
-        if result is None:
-            return False
-        return bool(result)
+        return bool(_MOLT_PATH_EXISTS(self))
 
     def is_dir(self) -> bool:
-        capabilities.require("fs.read")
         return bool(_MOLT_PATH_ISDIR(self))
 
     def is_file(self) -> bool:
-        capabilities.require("fs.read")
         return bool(_MOLT_PATH_ISFILE(self))
 
     def is_symlink(self) -> bool:
-        capabilities.require("fs.read")
         return bool(_MOLT_PATH_ISLINK(self))
 
     def is_mount(self) -> bool:
@@ -434,7 +427,6 @@ class Path:
         return bool(_MOLT_PATHLIB_IS_MOUNT(self))
 
     def readlink(self) -> Path:
-        capabilities.require("fs.read")
         value = _MOLT_PATH_READLINK(self)
         if not isinstance(value, str):
             raise RuntimeError("path readlink intrinsic returned invalid value")
@@ -586,12 +578,10 @@ class Path:
         _MOLT_PATH_RMDIR(self)
 
     def stat(self) -> _os.stat_result:
-        capabilities.require("fs.read")
         raw = _MOLT_OS_STAT(self)
         return _os.stat_result(raw)
 
     def lstat(self) -> _os.stat_result:
-        capabilities.require("fs.read")
         raw = _MOLT_OS_LSTAT(self)
         return _os.stat_result(raw)
 

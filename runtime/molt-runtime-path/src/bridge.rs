@@ -5,6 +5,7 @@
 //! Each function has a corresponding `#[no_mangle]` shim in
 //! `molt-runtime/src/path_bridge.rs`.
 
+use molt_runtime_core::host_capabilities_generated::OperationId;
 use molt_runtime_core::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -22,7 +23,7 @@ unsafe extern "C" {
     fn __molt_path_exception_pending() -> i32;
 
     fn __molt_path_raise_os_error(
-        err_kind: u32,
+        raw_error: i64,
         err_msg_ptr: *const u8,
         err_msg_len: usize,
         ctx_ptr: *const u8,
@@ -48,10 +49,10 @@ pub fn raise_os_error<T: ExceptionSentinel>(
     err: std::io::Error,
     ctx: &str,
 ) -> T {
-    let kind = err.kind() as u32;
+    let raw_error = err.raw_os_error().map(i64::from).unwrap_or(i64::MIN);
     let msg = err.to_string();
     let bits = unsafe {
-        __molt_path_raise_os_error(kind, msg.as_ptr(), msg.len(), ctx.as_ptr(), ctx.len())
+        __molt_path_raise_os_error(raw_error, msg.as_ptr(), msg.len(), ctx.as_ptr(), ctx.len())
     };
     T::from_bits(bits)
 }
@@ -401,4 +402,73 @@ pub fn type_name(_py: &CoreGilToken, obj: MoltObject) -> String {
     } else {
         "<unknown>".to_string()
     }
+}
+
+unsafe extern "C" {
+    fn __molt_path_metadata(
+        path: *const u8,
+        len: usize,
+        follow: bool,
+        operation: *const std::ffi::c_void,
+        suppress: bool,
+        out: *mut molt_runtime_platform::stat_support::PathMetadata,
+    ) -> i32;
+    fn __molt_path_readlink(path: *const u8, len: usize, bytes: bool) -> u64;
+    fn __molt_path_samefile(
+        left: *const u8,
+        left_len: usize,
+        right: *const u8,
+        right_len: usize,
+        operation: *const std::ffi::c_void,
+    ) -> u64;
+}
+
+pub fn path_metadata(
+    _py: &CoreGilToken,
+    path: &std::path::Path,
+    follow: bool,
+    operation: OperationId,
+    suppress: bool,
+) -> Result<Option<molt_runtime_platform::stat_support::PathMetadata>, u64> {
+    let raw = path.as_os_str().as_encoded_bytes();
+    let mut out = std::mem::MaybeUninit::uninit();
+    match unsafe {
+        __molt_path_metadata(
+            raw.as_ptr(),
+            raw.len(),
+            follow,
+            std::ptr::from_ref(&operation).cast(),
+            suppress,
+            out.as_mut_ptr(),
+        )
+    } {
+        1 => Ok(Some(unsafe { out.assume_init() })),
+        0 => Ok(None),
+        _ => Err(MoltObject::none().bits()),
+    }
+}
+
+pub fn paths_same_file(
+    _py: &CoreGilToken,
+    left: &std::path::Path,
+    right: &std::path::Path,
+    operation: OperationId,
+) -> u64 {
+    let left = left.as_os_str().as_encoded_bytes();
+    let right = right.as_os_str().as_encoded_bytes();
+    unsafe {
+        __molt_path_samefile(
+            left.as_ptr(),
+            left.len(),
+            right.as_ptr(),
+            right.len(),
+            std::ptr::from_ref(&operation).cast(),
+        )
+    }
+}
+
+/// Return the canonical metadata-route readlink result in the caller's flavor.
+pub fn path_read_link(_py: &CoreGilToken, path: &std::path::Path, bytes: bool) -> u64 {
+    let raw = path.as_os_str().as_encoded_bytes();
+    unsafe { __molt_path_readlink(raw.as_ptr(), raw.len(), bytes) }
 }

@@ -744,6 +744,87 @@ def _os_module(monkeypatch, behavior):
 
 
 @pytest.mark.parametrize(
+    "operation,intrinsic,kwargs,arguments",
+    [
+        ("path.exists", "molt_path_exists", {}, ()),
+        ("path.isdir", "molt_path_isdir", {}, ()),
+        ("path.isfile", "molt_path_isfile", {}, ()),
+        ("path.islink", "molt_path_islink", {}, ()),
+        ("readlink", "molt_path_readlink", {}, ()),
+        ("readlink", "molt_os_readlink_at", {"dir_fd": 7}, (7,)),
+        ("stat", "molt_os_stat", {}, ()),
+        ("stat", "molt_os_lstat", {"follow_symlinks": False}, ()),
+        ("stat", "molt_os_stat_at", {"dir_fd": 7}, (7, True)),
+        ("lstat", "molt_os_lstat", {}, ()),
+        ("lstat", "molt_os_lstat_at", {"dir_fd": 7}, (7,)),
+        ("fstat", "molt_os_fstat", {}, ()),
+    ],
+)
+def test_os_metadata_uses_one_selected_runtime_admission(
+    monkeypatch, operation, intrinsic, kwargs, arguments
+):
+    # The runtime selects the mount after fspath and reports the complete grant
+    # set. A facade-level fs.read check would hide the mount-specific refusal.
+    refusal = PermissionError(
+        "missing [fs.read] capabilities"
+        if operation == "fstat"
+        else "missing [fs.read, fs.tmp.read] capabilities"
+    )
+    path = 7 if operation == "fstat" else b"/tmp/raw/\xff"
+    seen = []
+
+    def denied(*args):
+        seen.append(args)
+        raise refusal
+
+    module = _os_module(
+        monkeypatch,
+        {intrinsic: denied, "molt_capabilities_require": _unused},
+    )
+    owner = module.path if operation.startswith("path.") else module
+    with pytest.raises(PermissionError) as caught:
+        getattr(owner, operation.split(".")[-1])(path, **kwargs)
+    assert caught.value is refusal
+    assert seen == [(path, *arguments)]
+
+
+@pytest.mark.parametrize(
+    "method,intrinsic",
+    [
+        ("exists", "molt_path_exists"),
+        ("is_dir", "molt_path_isdir"),
+        ("is_file", "molt_path_isfile"),
+        ("is_symlink", "molt_path_islink"),
+        ("readlink", "molt_path_readlink"),
+        ("stat", "molt_os_stat"),
+        ("lstat", "molt_os_lstat"),
+    ],
+)
+def test_pathlib_metadata_preserves_selected_mount_denial(
+    monkeypatch, method, intrinsic
+):
+    refusal = PermissionError("missing [fs.read, fs.bundle.read] capabilities")
+    seen = []
+
+    def denied(path):
+        seen.append(path)
+        raise refusal
+
+    module = _load(
+        monkeypatch,
+        "_molt_pathlib_metadata",
+        "pathlib/__init__.py",
+        PATHLIB_HOOKS,
+        {intrinsic: denied},
+    )
+    path = module.Path("/bundle/selected")
+    with pytest.raises(PermissionError) as caught:
+        getattr(path, method)()
+    assert caught.value is refusal
+    assert seen == [path]
+
+
+@pytest.mark.parametrize(
     "operation,intrinsic,result",
     [
         ("path.getatime", "molt_os_path_getatime", 1.5),
@@ -753,7 +834,7 @@ def _os_module(monkeypatch, behavior):
         ("path.realpath", "molt_os_path_realpath", b"/raw/\xff"),
         ("chdir", "molt_os_chdir", None),
         ("removedirs", "molt_os_removedirs", None),
-        ("readlink", "molt_os_readlink", b"../\xff"),
+        ("readlink", "molt_path_readlink", b"../\xff"),
     ],
 )
 def test_os_path_facades_preserve_the_runtime_path_protocol(
