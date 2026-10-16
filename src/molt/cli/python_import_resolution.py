@@ -14,7 +14,7 @@ from typing import Literal
 
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.compiler_analysis import python_binding_flow, python_namespace_writes
-from molt.compiler_analysis.python_binding_facts import MemberMask
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     PythonBindingIndex,
@@ -80,21 +80,6 @@ class PythonImportPolicy:
             raise ValueError(
                 "local import inventory is only a source dependency policy"
             )
-
-
-@dataclass(frozen=True, slots=True)
-class LocalPythonNamespacePremise:
-    """One module's namespace premise, verified over a closed graph (HF-226).
-
-    ``foreign_writes`` lists, sorted, the names graph code outside the module
-    writes into its namespace: named writes and submodule bindings; ``None``
-    when a written name is computed. ``member_writes`` lists the canonical
-    members code anywhere in the graph writes. The binding flow keeps every
-    other global and member fact across callbacks.
-    """
-
-    foreign_writes: tuple[str, ...] | None
-    member_writes: MemberMask
 
 
 def _local_import_binding_policy() -> PythonBindingPolicy:
@@ -695,7 +680,7 @@ def analyze_local_imports(
     *,
     expected_nonliteral_dynamic_imports: int | None = None,
     nonliteral_dynamic_import_targets: tuple[str, ...] = (),
-    namespace_premise: LocalPythonNamespacePremise | None = None,
+    namespace_premise: PythonNamespacePremise | None = None,
 ) -> LocalPythonImportAnalysis:
     """Project source requests; demand binding facts only for semantic queries.
 

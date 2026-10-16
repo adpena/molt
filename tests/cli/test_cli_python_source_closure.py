@@ -11,9 +11,9 @@ import pytest
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli import python_source_closure as graph
 from molt.cli.python_import_resolution import (
-    LocalPythonNamespacePremise,
     PythonImportPolicy,
 )
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from tests.process_guard_common import install_module_view
 
 
@@ -1404,7 +1404,7 @@ def test_source_discovery_cache_rows_cannot_be_reused_as_semantic_edges(
         graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
     )
     variants = cache["entries"]["src/pkg/entry.py"]
-    premise = LocalPythonNamespacePremise((), 0)
+    premise = PythonNamespacePremise((), 0)
     source_key = graph._analysis_policy_digest("pkg.entry", False, source, premise)
     semantic_key = graph._analysis_policy_digest("pkg.entry", False, semantic, premise)
     assert source_key != semantic_key
