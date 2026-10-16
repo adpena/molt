@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+import tomllib
 from types import SimpleNamespace
 import sys
 
@@ -281,6 +282,107 @@ def test_bindgen_inputs_survive_filter_and_selected_driver_reaches_supervisor(
         env, cwd=tmp_path
     )
     assert identities != after
+
+
+def test_native_dependency_config_is_bound_before_tool_identity_and_cache_selection(
+    tmp_path, monkeypatch
+):
+    source = Path(__file__).resolve().parents[2]
+    raw = (source / ".cargo/config.toml").read_bytes()
+    assert tomllib.loads(raw.decode("utf-8"))["env"]["AWS_LC_SYS_USE_SYSTEM"] == "0"
+    (tmp_path / ".cargo").mkdir()
+    (tmp_path / ".cargo/config.toml").write_bytes(raw)
+    cargo = _tool(tmp_path, "cargo")
+    inherited = {
+        "CARGO": str(cargo),
+        "PATH": str(tmp_path),
+        "CARGO_HOME": str(tmp_path / "cargo-home"),
+        "AWS_LC_SYS_SMALL": "1",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu": "1",
+        "AWS_LC_SYS_CMAKE_BUILDER": "1",
+        "AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu": "",
+        "HOST_CFLAGS_aarch64_unknown_linux_gnu": "-include /inactive.h",
+        "TARGET_CFLAGS_aarch64_unknown_linux_gnu": "",
+    }
+    before = dict(inherited)
+    env, contract = execution_environment._deterministic_execution_environment(
+        inherited, override_names=["AWS_LC_SYS_SMALL"]
+    )
+    assert env == inherited
+
+    def select(**kwargs):
+        assert kwargs["env"]["AWS_LC_SYS_USE_SYSTEM"] == "0"
+        assert kwargs["env"]["AWS_LC_SYS_SMALL"] == "1"
+        return {}, {"bound_names": []}
+
+    monkeypatch.setattr(
+        toolchain_capture, "select_cargo_build_tool_environment", select
+    )
+    env, contract = execution_environment._bind_cargo_build_tool_environment(
+        command_admission.envelope_for_command(
+            ["cargo", "build", "--target", "x86_64-unknown-linux-gnu"]
+        ),
+        env,
+        contract,
+        cwd=tmp_path,
+    )
+    assert inherited == before
+    assert env["AWS_LC_SYS_USE_SYSTEM"] == "0"
+    assert env["AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu"] == "1"
+    assert env["AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu"] == ""
+    assert env["HOST_CFLAGS_aarch64_unknown_linux_gnu"] == "-include /inactive.h"
+    assert env["TARGET_CFLAGS_aarch64_unknown_linux_gnu"] == ""
+    assert "AWS_LC_SYS_USE_SYSTEM" in contract["passed_names"]
+    assert contract["override_names"] == ["AWS_LC_SYS_SMALL"]
+    assert set(command_identity.compile_environment_selection(env)) >= {
+        "AWS_LC_SYS_USE_SYSTEM",
+        "AWS_LC_SYS_SMALL",
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu",
+        "AWS_LC_SYS_CMAKE_BUILDER",
+        "AWS_LC_SYS_CMAKE_BUILDER_x86_64_unknown_linux_gnu",
+        "HOST_CFLAGS_aarch64_unknown_linux_gnu",
+        "TARGET_CFLAGS_aarch64_unknown_linux_gnu",
+    }
+
+
+def test_native_dependency_queue_rejection_preserves_caller_and_precedes_tool_capture(
+    tmp_path, monkeypatch
+):
+    cargo = _tool(tmp_path, "cargo")
+    (tmp_path / ".cargo").mkdir()
+    (tmp_path / ".cargo/config.toml").write_text(
+        '[env]\nAWS_LC_SYS_USE_SYSTEM="0"\n', encoding="utf-8"
+    )
+    inherited = {
+        "CARGO": str(cargo),
+        "PATH": str(tmp_path),
+        "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu": "1",
+        "AWS_LC_SYS_INCLUDES_aarch64_unknown_linux_gnu": "/unowned/include",
+    }
+    contract = {"passed_names": sorted(inherited), "override_names": []}
+    before = dict(inherited)
+    before_contract = dict(contract)
+
+    def forbidden(**_kwargs):
+        pytest.fail("unsupported provider must fail before build-tool capture")
+
+    monkeypatch.setattr(
+        toolchain_capture, "select_cargo_build_tool_environment", forbidden
+    )
+    with pytest.raises(ValueError, match="AWS-LC") as raised:
+        execution_environment._bind_cargo_build_tool_environment(
+            command_admission.envelope_for_command(
+                ["cargo", "build", "--target", "aarch64-unknown-linux-gnu"]
+            ),
+            inherited,
+            contract,
+            cwd=tmp_path,
+        )
+    assert "AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu" in str(raised.value)
+    assert "AWS_LC_SYS_INCLUDES_aarch64_unknown_linux_gnu" in str(raised.value)
+    assert inherited == before
+    assert contract == before_contract
+    assert not (tmp_path / "cargo-home").exists()
 
 
 @pytest.mark.skipif(
@@ -1186,8 +1288,9 @@ def test_cargo_and_native_build_environment_have_one_identity_authority():
 
 
 @pytest.mark.parametrize("operation", ["c", "c++"])
+@pytest.mark.parametrize("unowned_flags", [False, True])
 def test_locator_publishes_captured_physical_rust_and_native_build_selections(
-    tmp_path, monkeypatch, operation
+    tmp_path, monkeypatch, operation, unowned_flags
 ):
     import hashlib
     import json
@@ -1198,6 +1301,17 @@ def test_locator_publishes_captured_physical_rust_and_native_build_selections(
     identity, tools, env, command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, operation=operation
     )
+    env.update(
+        {
+            "AWS_LC_SYS_USE_SYSTEM": "0",
+            "AWS_LC_SYS_TARGET_"
+            + ("CC" if operation == "c" else "CXX"): "/inactive-cross-only-driver",
+            "AWS_LC_SYS_"
+            + ("CC" if operation == "c" else "CXX"): "/ineffective-private-driver",
+        }
+    )
+    if unowned_flags:
+        env["HOST_CFLAGS_x86_64_unknown_linux_gnu"] = "-include /not-captured.h"
     observed = []
 
     def capture(plan, name, _envelope, _exact, **kwargs):
@@ -1232,9 +1346,19 @@ def test_locator_publishes_captured_physical_rust_and_native_build_selections(
         if operation == "c"
         else {"host": ["c++"]},
     }
-    _, _, _, updates = execution_environment._locate_toolchain_watch_roots(
-        envelope, command, cwd=tmp_path, env=env, supervisor_binary=tools["rustc"]
-    )
+
+    def locate():
+        return execution_environment._locate_toolchain_watch_roots(
+            envelope, command, cwd=tmp_path, env=env, supervisor_binary=tools["rustc"]
+        )
+
+    if unowned_flags:
+        before = dict(env)
+        with pytest.raises(ValueError, match="HOST_CFLAGS_x86_64_unknown_linux_gnu"):
+            locate()
+        assert env == before
+        return
+    _, _, _, updates = locate()
     assert [name for name, _ in observed] == ["cargo", "rustc"]
     assert observed[1][1]["CARGO"] == str(tools["cargo"])
     assert updates[

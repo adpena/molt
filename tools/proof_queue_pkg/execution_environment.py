@@ -16,6 +16,10 @@ import tomllib
 from typing import Callable, Mapping, Sequence, cast
 
 from molt.exact_json import canonical_json_sha256
+from molt.cargo_execution_policy import (
+    cargo_native_dependency_environment_name,
+    validate_cargo_native_dependency_environment,
+)
 from molt import file_publication
 from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.rust_toolchain import cargo_config_arguments
@@ -56,6 +60,7 @@ def _environment_name_class(name: str) -> str | None:
     if (
         upper in command_identity._ENVIRONMENT_BUILD_NAMES
         or command_identity._runtime_c_environment_name(upper)
+        or cargo_native_dependency_environment_name(upper)
     ):
         return "build-toolchain"
     if any(
@@ -281,6 +286,26 @@ def _bind_cargo_build_tool_environment(
         cwd=cwd,
         env=selected,
         native_required=bool(envelope.get("cargo_native_units")),
+    )
+    from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
+
+    # Publish effective dependency inputs before identity/reuse capture. This
+    # is the same Cargo [env] resolver the staged runtime build uses; binding
+    # a default only after capture would attest a different compilation input.
+    configured = capture_cargo_configuration_inputs(
+        cwd,
+        env=selected,
+        cargo_command=command if invocation is not None else ["cargo"],
+    )[1]
+    selected = {
+        name: value
+        for name, value in selected.items()
+        if not cargo_native_dependency_environment_name(name)
+    }
+    selected.update(
+        (name, value)
+        for name, value in configured.items()
+        if cargo_native_dependency_environment_name(name)
     )
     updates, selection = toolchain_capture.select_cargo_build_tool_environment(
         cwd=cwd,
@@ -870,11 +895,21 @@ def _locate_toolchain_watch_roots(
         if name in {"rustc", "cargo"}:
             updates = {name.upper(): str(identity["content_path"])}
             if name == "rustc":
-                updates.update(
-                    toolchain_capture.native_build_environment(
-                        identity["link_selection"]
-                    )
+                selection = cast(Mapping[str, object], identity["link_selection"])
+                selected_target = selection["target"] or selection["compiler_host"]
+                assert isinstance(selected_target, str)
+                compiler_host = selection["compiler_host"]
+                assert isinstance(compiler_host, str)
+                native_environment = toolchain_capture.native_build_environment(
+                    selection
                 )
+                validate_cargo_native_dependency_environment(
+                    {**env, **native_environment},
+                    target=selected_target,
+                    compiler_host=compiler_host,
+                    native_bound=True,
+                )
+                updates.update(native_environment)
                 from molt.rust_toolchain import rust_toolchain_library_environment
 
                 updates.update(

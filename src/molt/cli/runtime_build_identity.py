@@ -28,6 +28,7 @@ from molt.cli.runtime_identity_schema import (
     _runtime_toolchain_build_python,
 )
 from molt.dx import _memory_bounded_worker_count
+from molt.cargo_execution_policy import cargo_native_dependency_environment_name
 from molt.file_publication import metadata_is_link_like
 from molt.python_environment_identity import (
     python_capture_authority_paths,
@@ -835,10 +836,13 @@ def _runtime_build_environment_identity(
         "CRATE_CC_NO_DEFAULTS",
     }
     exact_names.update(cargo_plan.profile_environment(cargo_profile))
+    exact_names.update(
+        name for name in env if cargo_native_dependency_environment_name(name)
+    )
     return {
         name: hashlib.sha256(env[name].encode("utf-8")).hexdigest()
         for name in sorted(exact_names)
-        if env.get(name, "")
+        if env.get(name, "") or cargo_native_dependency_environment_name(name)
     }
 
 

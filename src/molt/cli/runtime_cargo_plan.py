@@ -25,6 +25,7 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, cast
 
 from molt import process_guard
+from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from molt.cli.cargo_target_cfg import (
     RustcTargetMetadata,
     cargo_target_query_arguments,
@@ -2251,6 +2252,10 @@ def capture_cargo_configuration_inputs(
     environment, forced_environment, environment_resources = _apply_cargo_environment(
         configuration, cli, environment, environment_origins
     )
+    validate_cargo_native_dependency_environment(
+        environment,
+        target=cargo_requested_target(configuration, cli, environment, command_target),
+    )
     return (
         root,
         environment,
@@ -2357,6 +2362,9 @@ def resolve_runtime_cargo_plan(
     target = (
         cargo_requested_target(configuration, cli, environment, command_target)
         or host_target
+    )
+    validate_cargo_native_dependency_environment(
+        environment, target=target, compiler_host=host_target
     )
     if requested_target is None and target != host_target:
         raise ValueError(
@@ -2531,6 +2539,9 @@ def resolve_runtime_cargo_plan(
             environment[f"{role.upper()}_{target.replace('-', '_')}"] = selected
     _select_host_c_tools(
         tools, environment, root=root, target=target, host_target=host_target
+    )
+    validate_cargo_native_dependency_environment(
+        environment, target=target, compiler_host=host_target, native_bound=True
     )
     if flag_plan.dependency_linker is not None:
         tools["linker"] = flag_plan.dependency_linker

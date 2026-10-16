@@ -30,6 +30,7 @@ from molt.python_environment_identity import (
     validate_python_environment_location,
 )
 from molt.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
+from molt.cargo_execution_policy import cargo_native_dependency_environment_name
 from tools import proof_plan
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
@@ -1223,6 +1224,7 @@ def compile_environment_selection(
         and (
             name in COMPILE_ENVIRONMENT_NAMES
             or _runtime_c_environment_name(name)
+            or cargo_native_dependency_environment_name(name)
             or name in configured
             or name.startswith(COMPILE_ENVIRONMENT_PREFIXES)
         )

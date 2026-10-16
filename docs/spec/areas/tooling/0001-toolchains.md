@@ -1007,6 +1007,24 @@ helper allowlist. These are development-proof costs and do not add checks or
 instrumentation to emitted guests. A resource-guarded benchmark alone does not
 claim this full process closure.
 
+The native TLS dependency uses the lockfile's AWS-LC source by default.
+`.cargo/config.toml` owns `AWS_LC_SYS_USE_SYSTEM=0`; the existing Cargo `[env]`
+projection carries it into staged runtime builds as well as repository Cargo
+commands. This keeps the normal assembly implementation and avoids adopting an
+ambient crypto library through pkg-config. The upstream
+[provider selection](https://docs.rs/crate/aws-lc-sys/0.45.0/source/builder/main.rs)
+distinguishes explicit source, automatic discovery and required system providers.
+Custom system providers are unqualified raw-Cargo cells.
+
+Effective AWS-LC controls and the builder's role-specific target aliases enter
+both runtime cache and proof environment identities, including empty values and
+target overrides. Target selection uses
+the upstream lowercase triple with hyphens replaced by underscores. Controls
+that select uncaptured providers, private tools or extra generation capabilities
+fail together before compilation. Use the captured CC/CXX/CFLAGS boundary for
+native tool inputs. These selections affect development builds; emitted programs
+perform no provider discovery or proof validation.
+
 ### Compiler host hash seeds
 
 The CLI preserves normal CPython startup semantics and does not restart Python
