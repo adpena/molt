@@ -365,7 +365,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "e1eb37a34bd906b11704f43e2e4d1d0d6bfb0be1983888e81e57bc7afc394b47",
+  "authority_sha256": "b70ce12516b67de951da2c0bfcae66c8776331c4889562d417549c2571c79911",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -592,6 +592,7 @@
         "tests/test_bench_harness.py",
         "tests/test_manifest_pipeline_e2e.py",
         "tests/cli/test_cli_smoke.py",
+        "tests/cli/test_traceback_carets.py",
         "tests/cli/test_native_link_*.py",
         "tests/cli/test_native_symbol_authority.py",
         "tests/cli/test_link_selection_admission.py",
@@ -6427,7 +6428,8 @@
         "pytest",
         "-q",
         "--durations=20",
-        "tests/cli/test_cli_smoke.py"
+        "tests/cli/test_cli_smoke.py",
+        "tests/cli/test_traceback_carets.py"
       ],
       "cache_domain": "cargo-workspace",
       "cargo_native_units": {

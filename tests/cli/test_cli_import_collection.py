@@ -8400,27 +8400,25 @@ def test_case_exact_file_refreshes_stale_directory_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Each lookup operation lists a directory afresh. A file created after an
+    # earlier operation is found even when the directory's stat token did not
+    # change, as on a filesystem with coarse timestamps.
+    from molt.cli import python_import_topology
+
     package_dir = tmp_path / "nativepkg" / "ndimage"
     package_dir.mkdir(parents=True)
-    existing = package_dir / "_nd_image.so"
+    (package_dir / "_nd_image.so").write_bytes(b"host artifact")
     staged = package_dir / "_nd_image.molt.wasm"
-    existing.write_bytes(b"host artifact")
-    original_stat = cli_module_resolution.os.stat
-    pinned_stat = original_stat(package_dir)
-    package_dir_text = os.path.normcase(os.path.abspath(os.fspath(package_dir)))
+    directory_state = python_import_topology._directory_state
+    pinned = directory_state(package_dir)
+    assert pinned is not None
 
-    def fake_stat(
-        path: os.PathLike[str] | str,
-        *args: Any,
-        **kwargs: Any,
-    ) -> os.stat_result:
-        path_text = os.path.normcase(os.path.abspath(os.fspath(path)))
-        if path_text == package_dir_text:
-            return pinned_stat
-        return original_stat(path, *args, **kwargs)
+    def coarse_directory_state(path: Path):
+        return pinned if path == package_dir else directory_state(path)
 
-    cli_module_resolution._case_exact_dir_entries_cached.cache_clear()
-    install_module_view(monkeypatch, "os", os, cli_module_resolution, stat=fake_stat)
+    monkeypatch.setattr(
+        python_import_topology, "_directory_state", coarse_directory_state
+    )
 
     assert not cli_module_resolution._case_exact_file(staged)
     staged.write_bytes(b"wasm artifact")
@@ -12785,6 +12783,36 @@ def test_render_native_main_stub_embeds_runtime_module_roots_before_init(
     assert stub_content.index(
         "molt_set_runtime_module_roots();", native_main_start
     ) < stub_content.index("molt_runtime_init();", native_main_start)
+
+
+def test_render_native_main_stub_registers_compiled_sources_before_init() -> None:
+    # Tracebacks show the program's own source lines without `fs.read`; the
+    # stub fixes that set before the runtime starts, in exact WTF-8 bytes.
+    import codecs
+    import re
+
+    paths = ("/src/app.py", '/src/we"ird?\\dir/caf\u00e9_\U0001f600.py')
+    stub_content = cli_native_main_stub._render_native_main_stub(
+        resolved_capability_policy=CapabilityManifest().resolve(),
+        compiled_source_paths=paths,
+    )
+
+    array = stub_content[stub_content.index("molt_compiled_sources[] = {") :]
+    array = array[: array.index("};")]
+    literals = re.findall(r'"((?:[^"\\]|\\.)*)"', array)
+    decoded = tuple(codecs.escape_decode(literal)[0] for literal in literals)
+    assert decoded == tuple(path.encode("utf-8") for path in paths)
+    for entry in ("int main", "int wmain"):
+        start = stub_content.index(entry)
+        assert stub_content.index(
+            "molt_register_compiled_sources(molt_compiled_sources, 2ULL);", start
+        ) < stub_content.index("molt_runtime_init();", start)
+
+    empty = cli_native_main_stub._render_native_main_stub(
+        resolved_capability_policy=CapabilityManifest().resolve(),
+    )
+    assert "molt_register_compiled_sources(NULL, 0);" in empty
+    assert "molt_compiled_sources[]" not in empty
 
 
 def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(

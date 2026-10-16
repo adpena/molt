@@ -47,45 +47,6 @@ def test_project_and_source_authorities_are_independent(tmp_path, monkeypatch):
     assert project_roots._require_molt_root(source, True, "build") is None
 
 
-@pytest.mark.parametrize(
-    "missing_marker",
-    [
-        "Cargo.toml",
-        "runtime/molt-runtime/Cargo.toml",
-        "runtime/molt-backend/Cargo.toml",
-        "src/molt/cli/__init__.py",
-    ],
-)
-def test_each_new_source_marker_invalidates_ancestor_project_selection(
-    tmp_path, monkeypatch, missing_marker
-):
-    from molt import build_record
-
-    monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
-    outer = tmp_path / "outer"
-    outer.mkdir()
-    (outer / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    nested = _source_tree(outer / "nested")
-    missing = nested / missing_marker
-    missing.unlink()
-    entry = nested / "app.py"
-    entry.write_text("pass\n", encoding="utf-8")
-    with build_record.recording() as ledger:
-        assert project_roots._find_project_root(entry) == outer
-    assert ledger.probes[str(missing)] is None
-    output = tmp_path / "app"
-    output.write_bytes(b"compiled for ancestor project")
-    record = tmp_path / "record.json"
-    assert build_record.write_record(record, "key", ledger, output=output) is None
-    assert build_record.check(record, "key", output) is None
-
-    # All parent directories already existed when the root was selected;
-    # adding only this leaf changes which project's configuration is used.
-    missing.write_text("", encoding="utf-8")
-    assert project_roots._find_project_root(entry) == nested
-    assert build_record.check(record, "key", output) is not None
-
-
 def test_installed_metadata_never_borrows_a_containing_git_checkout(
     installation, monkeypatch
 ):

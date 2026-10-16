@@ -30,7 +30,7 @@ from molt import file_publication, input_report
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.input_report import ProbeOutcome, StatToken, resolved_probe, stat_token
 
-_SCHEMA = "molt-build-record-v4"
+_SCHEMA = "molt-build-record-v3"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -86,8 +86,10 @@ class InputLedger:
     directories: dict[str, StatToken] = field(default_factory=dict)
     probes: dict[str, ProbeOutcome] = field(default_factory=dict)
     refusals: list[str] = field(default_factory=list)
-    # ("file" | "directory", absolute path) seen by the audit
+    # ("file" | "directory" | "written", absolute path) seen by the audit
     # hook; resolved against the excluded roots when the record is written.
+    # A written path is a file this build opened for writing or a directory it
+    # created: the build's own product, never an input.
     observed: set[tuple[str, str]] = field(default_factory=set)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -222,24 +224,26 @@ def _executed_source(name: str) -> str:
     return name
 
 
-def resolve_observed(
-    ledger: InputLedger,
-    excluded_roots: tuple[Path, ...],
-    *,
-    published_output: Path | None = None,
-) -> None:
+def resolve_observed(ledger: InputLedger, excluded_roots: tuple[Path, ...]) -> None:
     """Turn the audit hook's observations into inputs.
 
-    Only named product roots and the successfully published output are products.
-    Pre-syscall audit events cannot prove write or directory-creation ownership.
-    Explicit input reports are never excluded, even for the published output.
+    Excluded roots hold content-verified caches and build products. A path the
+    build wrote, and anything under a directory it created, is its own product.
+    Explicit reports are never excluded.
     """
-    output = None if published_output is None else os.path.realpath(published_output)
-    roots = tuple({os.path.realpath(root) + os.sep for root in excluded_roots})
+    written = {
+        os.path.realpath(name) for kind, name in ledger.observed if kind == "written"
+    }
+    roots = tuple(
+        {os.path.realpath(root) + os.sep for root in excluded_roots}
+        | {name + os.sep for name in written}
+    )
     for kind, observed in sorted(ledger.observed):
+        if kind == "written":
+            continue
         name = _executed_source(observed)
         real = os.path.realpath(name)
-        if (kind == "file" and real == output) or (real + os.sep).startswith(roots):
+        if real in written or (real + os.sep).startswith(roots):
             continue
         if real.startswith(("/dev/", "/proc/", "/sys/")):
             continue
@@ -350,8 +354,6 @@ def check(path: Path, key: str, output: Path) -> str | None:
         metadata = os.stat(path)
         with open(path, "rb") as handle:
             payload = json.loads(handle.read())
-        if not isinstance(payload, dict):
-            return "unreadable record: expected a JSON object"
         if payload.get("schema") != _SCHEMA or payload.get("key") != key:
             return "no record for this request"
         recorded_output, output_token = payload["output"]
@@ -369,15 +371,7 @@ def check(path: Path, key: str, output: Path) -> str | None:
         return None
     except FileNotFoundError:
         return "no record for this request"
-    except (
-        OSError,
-        ValueError,
-        TypeError,
-        KeyError,
-        IndexError,
-        OverflowError,
-        RecursionError,
-    ) as error:
+    except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
         return f"unreadable record: {error}"
 
 

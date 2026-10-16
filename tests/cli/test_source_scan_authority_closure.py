@@ -1526,9 +1526,9 @@ def test_generated_package_discovery_uses_original_paths_and_reuses_child_invent
     visits = []
     child_names = discovery.python_package_child_names
 
-    def counted(paths):
+    def counted(paths, *, import_topology):
         visits.append(tuple(paths))
-        return child_names(paths)
+        return child_names(paths, import_topology=import_topology)
 
     monkeypatch.setattr(discovery, "python_package_child_names", counted)
     monkeypatch.setattr(

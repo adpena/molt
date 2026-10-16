@@ -32,6 +32,9 @@ SCCACHE_SERVER_ENDPOINT_ENV_NAMES = ("SCCACHE_SERVER_UDS", "SCCACHE_SERVER_PORT"
 _UNIX_SOCKET_PATH_LIMIT = 103
 # The pinned sccache serves Unix sockets on POSIX hosts only.
 _SCCACHE_SERVER_SOCKETS = os.name != "nt"
+# A client that starts the server waits for it on `<temp dir>/sccacheXXXXXX/sock`
+# (a tempfile directory with the prefix "sccache"), 19 bytes past the temp dir.
+_SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES = len("/sccacheXXXXXX/sock")
 TEMPORARY_DIRECTORY_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
 DIRECT_RUSTC_INCREMENTAL_POLICY = "direct-rustc-enables-incremental"
 CARGO_WRAPPER_ENV_NAMES = (
@@ -250,6 +253,11 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
 
     Molt sets ``SCCACHE_DIR`` wherever it selects sccache; without it the
     cache, and its server, are not Molt's to configure.
+
+    A client that starts the server waits for it on a Unix socket inside this
+    directory, so the socket path must fit ``sun_path``. When the directory
+    beside a deep cache would not, the server uses a durable directory named
+    by the cache path under the user's cache home instead.
     """
 
     raw = environ.get("SCCACHE_DIR", "").strip()
@@ -258,7 +266,26 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
     cache = Path(os.path.abspath(Path(raw).expanduser()))
     if not cache.name:
         raise ValueError(f"SCCACHE_DIR must name a directory below a root: {raw!r}")
-    return cache.with_name(f"{cache.name}-tmp")
+    beside = cache.with_name(f"{cache.name}-tmp")
+    if not _SCCACHE_SERVER_SOCKETS or _startup_socket_fits(beside):
+        return beside
+    home = Path(environ.get("HOME") or os.path.expanduser("~"))
+    digest = hashlib.sha256(os.fsencode(cache)).hexdigest()[:16]
+    short = home / ".cache" / "molt" / "sccache-tmp" / digest
+    if not _startup_socket_fits(short):
+        raise ValueError(
+            "sccache cannot start a server for SCCACHE_DIR "
+            f"{cache}: its startup socket under {short} exceeds the "
+            f"{_UNIX_SOCKET_PATH_LIMIT}-byte socket path limit"
+        )
+    return short
+
+
+def _startup_socket_fits(temporary: Path) -> bool:
+    return (
+        len(os.fsencode(temporary)) + _SCCACHE_STARTUP_SOCKET_SUFFIX_BYTES
+        <= _UNIX_SOCKET_PATH_LIMIT
+    )
 
 
 def sccache_server_endpoint(environ: Mapping[str, str]) -> tuple[str, str] | None:

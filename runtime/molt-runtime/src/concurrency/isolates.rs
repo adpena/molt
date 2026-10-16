@@ -587,13 +587,14 @@ mod bootstrap_failure_tests {
         );
         assert!(!callback.is_null());
         let callback = MoltObject::from_ptr(callback).bits();
-        assert_eq!(
-            crate::builtins::atexit::molt_atexit_register(
+        // The registry owns its reference; the result carries none.
+        assert!(
+            obj_from_bits(crate::builtins::atexit::molt_atexit_register(
                 callback,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
-            ),
-            callback
+            ))
+            .is_none()
         );
         dec_ref_bits(py, callback);
     }
@@ -1948,13 +1949,14 @@ mod bootstrap_failure_tests {
                             "isolate atexit callback allocation failed"
                         );
                         let callback = MoltObject::from_ptr(callback).bits();
-                        assert_eq!(
-                            crate::builtins::atexit::molt_atexit_register(
+                        // The registry owns its reference; the result carries none.
+                        assert!(
+                            obj_from_bits(crate::builtins::atexit::molt_atexit_register(
                                 callback,
                                 MoltObject::none().bits(),
                                 MoltObject::none().bits(),
-                            ),
-                            callback
+                            ))
+                            .is_none()
                         );
                         dec_ref_bits(py, callback);
                         assert!(!exception_pending(py));

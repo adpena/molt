@@ -217,7 +217,9 @@ def test_actual_native_finalization_consumer_rejects_before_publication(
         assert "native candidate validation failed" in error
         assert len(published) == 1 and published[0] != output
         assert output.read_bytes() == b"previous-generation"
-        assert candidate.read_bytes() == payload
+        # A rejected private candidate is discarded like a published one; the
+        # error carries the diagnosis, and no staging binary leaks.
+        assert not candidate.exists()
         assert selection_output.read_bytes() == b"previous-selection"
 
 

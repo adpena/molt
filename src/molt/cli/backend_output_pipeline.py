@@ -45,6 +45,7 @@ def _emit_backend_pipeline_outputs(
     output_layout: _BuildOutputLayout,
     backend_output_destination: Path | None,
     validate_inputs: Callable[[], None],
+    compiled_source_paths: tuple[str, ...],
     prepared_backend_setup: _PreparedBackendSetup,
     prepared_backend_runtime_context: _PreparedBackendRuntimeContext,
     prepared_backend_compile: _PreparedBackendCompile,
@@ -441,6 +442,7 @@ def _emit_backend_pipeline_outputs(
             stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
             stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
             native_artifact_plan=native_artifact_plan,
+            compiled_source_paths=compiled_source_paths,
             bolt_requested=bolt_requested,
         )
     )

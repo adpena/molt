@@ -270,13 +270,14 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
         let py = execution.token();
         crate::runtime_state(&py).gc.set_enabled(false);
         let callback = runtime_function(&py, atexit_callback as *const (), 0);
-        assert_eq!(
-            crate::builtins::atexit::molt_atexit_register(
+        // The registry owns its reference; the result carries none.
+        assert!(
+            obj_from_bits(crate::builtins::atexit::molt_atexit_register(
                 callback,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
-            ),
-            callback,
+            ))
+            .is_none()
         );
         dec_ref_bits(&py, callback);
 

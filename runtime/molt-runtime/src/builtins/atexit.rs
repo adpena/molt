@@ -292,7 +292,9 @@ fn atexit_register_impl(
             return raise_exit_registry_error(_py, error, "atexit callback registration failed");
         }
         if entry.is_none() {
-            return func_bits;
+            // The registry owns its references; `atexit.register` returns
+            // `func` itself, so the intrinsic result carries no reference.
+            return MoltObject::none().bits();
         }
         let Some(required_capacity) = required_capacity else {
             if let Some(entry) = entry.take() {
