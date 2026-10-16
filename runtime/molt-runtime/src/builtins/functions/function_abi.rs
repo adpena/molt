@@ -2520,14 +2520,16 @@ mod function_type_execution_kind_tests {
                         )
                     }
                 } else {
-                    let builder = crate::molt_callargs_new(3, 1);
-                    if direct_new {
-                        crate::molt_callargs_push_pos(builder, class);
+                    unsafe {
+                        let builder = crate::molt_callargs_new(3, 1);
+                        if direct_new {
+                            crate::molt_callargs_push_pos(builder, class);
+                        }
+                        crate::molt_callargs_push_pos(builder, code_bits);
+                        crate::molt_callargs_push_pos(builder, globals_bits);
+                        crate::molt_callargs_push_kw(builder, name, closure_bits);
+                        crate::molt_call_bind(callable, builder)
                     }
-                    crate::molt_callargs_push_pos(builder, code_bits);
-                    crate::molt_callargs_push_pos(builder, globals_bits);
-                    crate::molt_callargs_push_kw(builder, name, closure_bits);
-                    crate::molt_call_bind(callable, builder)
                 };
                 dec_ref_bits(_py, name);
                 assert!(!exception_pending(_py));
