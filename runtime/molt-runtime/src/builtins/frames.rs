@@ -660,6 +660,62 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        // This operation publishes an executable module's namespace, not an
+        // optimized function's locals. CPython prepares __builtins__ once at
+        // execution entry; neither global reads nor FunctionType may fill it.
+        let dict_ptr = match globals_namespace_storage_ptr(_py, dict_bits) {
+            Ok(Some(ptr)) => ptr,
+            Ok(None) => {
+                return raise_exception::<_>(
+                    _py,
+                    "SystemError",
+                    "module locals is not a dictionary",
+                );
+            }
+            Err(()) => return MoltObject::none().bits(),
+        };
+        let builtins_bits = frame_stack_active_builtins_bits();
+        // CPython initializes its native builtins without executing Python
+        // module code. Our source facade must preserve that public dictionary:
+        // adding a self key would make a deleted __builtins__ name resolve via
+        // builtin fallback in every other module. Only its exact in-flight
+        // ModuleTable owner has this bootstrap privilege.
+        let builtin_bootstrap = dict_bits == builtins_bits
+            && crate::builtins::module_table::module_execution_owns_initializing_globals(
+                _py, "builtins", dict_bits,
+            );
+        if !builtin_bootstrap {
+            let key = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.dunder_builtins_name,
+                b"__builtins__",
+            );
+            if key == 0 {
+                return MoltObject::none().bits();
+            }
+            match unsafe { dict_get_in_place(_py, dict_ptr, key) } {
+                Ok(Some(_)) => {} // Preserve even an explicit Python None.
+                Ok(None) => {
+                    if builtins_bits == 0 {
+                        return raise_exception::<_>(
+                            _py,
+                            "SystemError",
+                            "module execution has no captured builtins namespace",
+                        );
+                    }
+                    // No FRAME_STACK borrow survives dictionary equality or
+                    // allocation, which may enter Python before publication.
+                    inc_ref_bits(_py, builtins_bits);
+                    let inserted =
+                        unsafe { crate::dict_set_in_place(_py, dict_ptr, key, builtins_bits) };
+                    dec_ref_bits(_py, builtins_bits);
+                    if !inserted {
+                        return MoltObject::none().bits();
+                    }
+                }
+                Err(()) => return MoltObject::none().bits(),
+            }
+        }
         let debug = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_LOCALS);
         if debug {
             let (depth, top_locals, top_code) = FRAME_STACK.with(|stack| {

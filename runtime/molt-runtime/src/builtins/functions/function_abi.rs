@@ -864,18 +864,93 @@ pub extern "C" fn molt_func_new_closure(
     })
 }
 
+/// CPython's function.__new__ Clinic declaration: every parameter can be
+/// positional or named; 3.13 added kwdefaults as the sixth optional parameter.
+fn function_type_parameter_names(py: &PyToken<'_>) -> &'static [&'static str] {
+    const NAMES: [&str; 6] = [
+        "code",
+        "globals",
+        "name",
+        "argdefs",
+        "closure",
+        "kwdefaults",
+    ];
+    if crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+        &NAMES
+    } else {
+        &NAMES[..5]
+    }
+}
+
+pub(crate) unsafe fn function_type_new_from_call(
+    py: &PyToken<'_>,
+    args: &[u64],
+    keywords: crate::builtins::native_arguments::NativeKeywords<'_>,
+) -> u64 {
+    unsafe fn bind<const N: usize>(
+        py: &PyToken<'_>,
+        args: &[u64],
+        keywords: crate::builtins::native_arguments::NativeKeywords<'_>,
+        names: [&str; N],
+    ) -> u64 {
+        let Some(bound) =
+            crate::builtins::native_arguments::bind_named(py, "function", args, keywords, names, 2)
+        else {
+            return MoltObject::none().bits();
+        };
+        let values: [u64; N] =
+            std::array::from_fn(|index| bound[index].unwrap_or_else(|| MoltObject::none().bits()));
+        // Binding pins admitted values across mapping callbacks and keeps them
+        // alive until the constructor has acquired its own metadata/closure.
+        unsafe { function_type_new_from_args(py, &values) }
+    }
+
+    let names = function_type_parameter_names(py);
+    // Valid positional construction retains its allocation-free argument path.
+    if keywords.is_empty() && (2..=names.len()).contains(&args.len()) {
+        return unsafe { function_type_new_from_args(py, args) };
+    }
+    unsafe {
+        if names.len() == 5 {
+            bind::<5>(
+                py,
+                args,
+                keywords,
+                names.try_into().expect("3.12 function signature"),
+            )
+        } else {
+            bind::<6>(
+                py,
+                args,
+                keywords,
+                names.try_into().expect("3.13+ function signature"),
+            )
+        }
+    }
+}
+
 pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]) -> u64 {
     unsafe {
-        if args.len() < 2 || args.len() > 5 {
-            let msg = format!("function expected 2 to 5 arguments, got {}", args.len());
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        if !(2..=function_type_parameter_names(_py).len()).contains(&args.len()) {
+            return function_type_new_from_call(
+                _py,
+                args,
+                crate::builtins::native_arguments::NativeKeywords::empty(),
+            );
         }
-        let Some(code_ptr) = obj_from_bits(args[0]).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "arg 1 (code) must be code");
+        let Some(code_ptr) = obj_from_bits(args[0])
+            .as_ptr()
+            .filter(|&ptr| object_type_id(ptr) == TYPE_ID_CODE)
+        else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!(
+                    "function() argument 'code' must be code, not {}",
+                    type_name(_py, obj_from_bits(args[0])),
+                ),
+            );
         };
-        if object_type_id(code_ptr) != TYPE_ID_CODE {
-            return raise_exception::<_>(_py, "TypeError", "arg 1 (code) must be code");
-        }
         let Some(callable_identity) = crate::object::layout::code_callable_identity(code_ptr)
         else {
             return raise_exception::<_>(
@@ -899,7 +974,14 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception::<_>(_py, "TypeError", "arg 2 (globals) must be dict");
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!(
+                    "function() argument 'globals' must be dict, not {}",
+                    type_name(_py, obj_from_bits(args[1])),
+                ),
+            );
         };
 
         let none_bits = MoltObject::none().bits();
@@ -977,15 +1059,36 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             _ => {}
         }
         let closure_bits = args.get(4).copied().unwrap_or(none_bits);
-        let closure_to_store = if obj_from_bits(closure_bits).is_none() {
+        let closure = if obj_from_bits(closure_bits).is_none() {
             if required_cells != 0 {
                 return raise_exception::<_>(_py, "TypeError", "arg 5 (closure) must be tuple");
             }
-            0
+            None
         } else {
             let Some(closure) = crate::object::cells::inspect_cell_tuple(closure_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "arg 5 (closure) must be tuple");
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "arg 5 (closure) must be None or tuple",
+                );
             };
+            Some(closure)
+        };
+        let kwdefaults_bits = args.get(5).copied().unwrap_or(none_bits);
+        if !obj_from_bits(kwdefaults_bits).is_none() {
+            match crate::builtins::frames::globals_namespace_storage_ptr(_py, kwdefaults_bits) {
+                Ok(Some(_)) => {}
+                Err(()) => return MoltObject::none().bits(),
+                Ok(None) => {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "arg 6 (kwdefaults) must be None or dict",
+                    );
+                }
+            }
+        }
+        let closure_to_store = if let Some(closure) = closure {
             let supplied_cells = closure.len;
             if supplied_cells != required_cells {
                 let code_name = string_obj_to_owned(obj_from_bits(code_name_bits(code_ptr)))
@@ -1001,6 +1104,8 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
             closure_bits
+        } else {
+            0
         };
 
         let func_ptr = alloc_function_obj(_py, callable_identity.fn_ptr, callable_identity.arity);
@@ -1054,7 +1159,7 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             || !set_attr(b"__qualname__", name_bits)
             || !set_attr(b"__module__", module_bits)
             || !set_attr(b"__defaults__", defaults_bits)
-            || !set_attr(b"__kwdefaults__", none_bits)
+            || !set_attr(b"__kwdefaults__", kwdefaults_bits)
             || !set_attr(b"__doc__", none_bits)
         {
             dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
@@ -2366,6 +2471,64 @@ mod function_type_execution_kind_tests {
                 FunctionCallAbi::LexicalClosureFirst
             );
             assert_eq!(unsafe { function_closure_bits(rebound) }, closure_bits);
+
+            // Vector binding, public type calls and the published __new__
+            // descriptor lend the same tuple; no route may copy or steal it.
+            for route in 0..3 {
+                let before = unsafe { (*header_from_obj_ptr(closure)).ref_count_snapshot() };
+                let class = builtin_classes(_py).function;
+                let direct_new = route == 2;
+                let callable = if direct_new {
+                    let name = attr_name_bits_from_bytes(_py, b"__new__").unwrap();
+                    let method = crate::molt_get_attr_name(class, name);
+                    dec_ref_bits(_py, name);
+                    method
+                } else {
+                    class
+                };
+                let name = attr_name_bits_from_bytes(_py, b"closure").unwrap();
+                let result = if route == 0 {
+                    unsafe {
+                        function_type_new_from_call(
+                            _py,
+                            &[code_bits, globals_bits],
+                            crate::builtins::native_arguments::NativeKeywords::vector(
+                                &[name],
+                                &[closure_bits],
+                            ),
+                        )
+                    }
+                } else {
+                    let builder = crate::molt_callargs_new(3, 1);
+                    if direct_new {
+                        crate::molt_callargs_push_pos(builder, class);
+                    }
+                    crate::molt_callargs_push_pos(builder, code_bits);
+                    crate::molt_callargs_push_pos(builder, globals_bits);
+                    crate::molt_callargs_push_kw(builder, name, closure_bits);
+                    crate::molt_call_bind(callable, builder)
+                };
+                dec_ref_bits(_py, name);
+                assert!(!exception_pending(_py));
+                let function = obj_from_bits(result).as_ptr().unwrap();
+                assert_eq!(unsafe { function_closure_bits(function) }, closure_bits);
+                assert_eq!(
+                    unsafe { function_call_abi(function) },
+                    FunctionCallAbi::LexicalClosureFirst
+                );
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(closure)).ref_count_snapshot() },
+                    before + 1
+                );
+                dec_ref_bits(_py, result);
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(closure)).ref_count_snapshot() },
+                    before
+                );
+                if direct_new {
+                    dec_ref_bits(_py, callable);
+                }
+            }
 
             for bits in [
                 rebound_bits,

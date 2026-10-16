@@ -242,10 +242,10 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         self.module_frame_entered = True
         code_symbol = self.current_func_name
         self._register_code_symbol(code_symbol)
-        # The module/code objects precede frame entry. Import metadata does not:
-        # entering first captures the canonical builtins namespace before a
-        # ModuleSpec import can recursively initialize importlib.machinery.
-        # This bootstrap path therefore needs the lexical module dictionary.
+        # The module/code objects precede frame entry. Capture builtins before
+        # runtime metadata construction; the final FRAME_LOCALS_SET then
+        # prepares and publishes this module's namespace before source code or
+        # native providers can observe it. Bootstrap uses its lexical dictionary.
         globals_dict = self._emit_module_globals_dict()
         if not self.module_frame_emitted:
             self.module_frame_emitted = True
@@ -315,8 +315,8 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         self.function_exception_label = self.next_label()
         self._emit_checked_frame_entry(code_symbol, self.function_exception_label)
         self._emit_module_metadata()
-        # Module-scope locals() must behave like globals(); pin the module dict on
-        # the frame entry so builtins.locals/globals work even via getattr aliases.
+        # Prepare missing __builtins__ once and pin module locals as globals.
+        # The checked boundary precedes source/native provider execution.
         assert self.function_exception_label is not None
         assert self.module_obj is not None
         assert self.current_func_name is not None

@@ -48,6 +48,406 @@ unsafe fn empty_type(_py: &PyToken<'_>, name: &[u8], meta: u64, bases: &[u64]) -
     }
 }
 
+unsafe fn function_constructor_call(
+    py: &PyToken<'_>,
+    direct_new: bool,
+    positional: &[u64],
+    keywords: &[(&[u8], u64)],
+) -> u64 {
+    unsafe {
+        let class = builtin_classes(py).function;
+        let callable = if direct_new {
+            let name = crate::attr_name_bits_from_bytes(py, b"__new__").unwrap();
+            let result = crate::molt_get_attr_name(class, name);
+            dec_ref_bits(py, name);
+            assert!(!exception_pending(py));
+            result
+        } else {
+            class
+        };
+        let builder = molt_callargs_new(
+            positional.len() as u64 + u64::from(direct_new),
+            keywords.len() as u64,
+        );
+        if direct_new {
+            molt_callargs_push_pos(builder, class);
+        }
+        for &value in positional {
+            molt_callargs_push_pos(builder, value);
+        }
+        for &(name, value) in keywords {
+            let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+            molt_callargs_push_kw(builder, key, value);
+            dec_ref_bits(py, key);
+        }
+        let result = molt_call_bind(callable, builder);
+        if direct_new {
+            dec_ref_bits(py, callable);
+        }
+        result
+    }
+}
+
+#[test]
+fn function_type_constructor_keywords_share_clinic_error_precedence() {
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let marker = MoltObject::from_int(7).bits();
+            for minor in [12, 13, 14, 15] {
+                transaction.with_target_python_minor(py, minor, || {
+                    for direct_new in [false, true] {
+                        let maximum = if minor == 12 { 5 } else { 6 };
+                        for (positional, keywords, expected) in [
+                            (
+                                vec![],
+                                vec![(b"unexpected".as_slice(), marker)],
+                                "function() missing required argument 'code' (pos 1)".to_owned(),
+                            ),
+                            (
+                                vec![marker],
+                                vec![(b"code".as_slice(), marker)],
+                                "function() missing required argument 'globals' (pos 2)".to_owned(),
+                            ),
+                            (
+                                vec![marker, marker],
+                                vec![(b"code".as_slice(), marker), (b"unexpected", marker)],
+                                "argument for function() given by name ('code') and position (1)"
+                                    .to_owned(),
+                            ),
+                            (
+                                vec![marker; 7],
+                                vec![],
+                                format!("function() takes at most {maximum} arguments (7 given)"),
+                            ),
+                            (
+                                vec![marker, marker],
+                                vec![(b"unexpected".as_slice(), marker)],
+                                if minor == 12 {
+                                    "'unexpected' is an invalid keyword argument for function()"
+                                        .to_owned()
+                                } else {
+                                    "function() got an unexpected keyword argument 'unexpected'"
+                                        .to_owned()
+                                },
+                            ),
+                            (
+                                vec![marker, marker],
+                                vec![(b"kwdefaults".as_slice(), marker)],
+                                if minor == 12 {
+                                    "'kwdefaults' is an invalid keyword argument for function()"
+                                        .to_owned()
+                                } else {
+                                    "function() argument 'code' must be code, not int".to_owned()
+                                },
+                            ),
+                        ] {
+                            let result =
+                                function_constructor_call(py, direct_new, &positional, &keywords);
+                            assert!(obj_from_bits(result).is_none());
+                            let error =
+                                crate::exception_last_bits_noinc(py).expect("binding failure");
+                            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                                py,
+                                error,
+                                "TypeError"
+                            ));
+                            assert_eq!(
+                                crate::format_exception_message(
+                                    py,
+                                    obj_from_bits(error).as_ptr().unwrap()
+                                ),
+                                expected
+                            );
+                            crate::molt_exception_clear();
+                            dec_ref_bits(py, result);
+                        }
+                    }
+                });
+            }
+        }
+    });
+}
+
+extern "C" fn function_constructor_probe() -> u64 {
+    MoltObject::none().bits()
+}
+
+#[test]
+fn function_type_new_descriptor_requires_positional_subtype_and_lambda_alias() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let class = builtin_classes(py).function;
+            let new_name = crate::attr_name_bits_from_bytes(py, b"__new__").unwrap();
+            let constructor = crate::molt_get_attr_name(class, new_name);
+            assert!(!exception_pending(py));
+            for (receiver, expected) in [
+                (None, "function.__new__(): not enough arguments"),
+                (
+                    Some(MoltObject::from_int(7).bits()),
+                    "function.__new__(X): X is not a type object (int)",
+                ),
+                (
+                    Some(builtin_classes(py).dict),
+                    "function.__new__(dict): dict is not a subtype of function",
+                ),
+            ] {
+                let builder = molt_callargs_new(1, 0);
+                if let Some(receiver) = receiver {
+                    molt_callargs_push_pos(builder, receiver);
+                }
+                let result = molt_call_bind(constructor, builder);
+                assert!(obj_from_bits(result).is_none());
+                let error = crate::exception_last_bits_noinc(py).expect("receiver failure");
+                assert_eq!(
+                    crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                    expected
+                );
+                crate::molt_exception_clear();
+                dec_ref_bits(py, result);
+            }
+            let builder = molt_callargs_new(0, 1);
+            let receiver_name = crate::attr_name_bits_from_bytes(py, b"type").unwrap();
+            molt_callargs_push_kw(builder, receiver_name, class);
+            let result = molt_call_bind(constructor, builder);
+            let error = crate::exception_last_bits_noinc(py).expect("receiver is positional-only");
+            assert_eq!(
+                crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                "function.__new__(): not enough arguments"
+            );
+            crate::molt_exception_clear();
+            dec_ref_bits(py, result);
+            dec_ref_bits(py, receiver_name);
+
+            let payload = crate::builtins::types::molt_types_bootstrap();
+            assert!(!exception_pending(py));
+            let dictionary = obj_from_bits(payload).as_ptr().unwrap();
+            for spelling in [b"FunctionType".as_slice(), b"LambdaType".as_slice()] {
+                let key = crate::attr_name_bits_from_bytes(py, spelling).unwrap();
+                assert_eq!(dict_get_in_place(py, dictionary, key).unwrap(), Some(class));
+                dec_ref_bits(py, key);
+            }
+            for bits in [payload, constructor, new_name] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn function_type_constructor_binds_named_defaults_and_retains_identity_by_target() {
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let source = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::provenance::abi::expose_function_address(
+                    function_constructor_probe as *const (),
+                ),
+                0,
+            );
+            assert!(!source.is_null());
+            let code = crate::object::layout::ensure_function_code_bits(py, source);
+            let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let name = crate::attr_name_bits_from_bytes(py, b"renamed").unwrap();
+            let defaults = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+            let closure = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+            let kwdefaults = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            for minor in [12, 13, 14, 15] {
+                transaction.with_target_python_minor(py, minor, || {
+                    for direct_new in [false, true] {
+                        let keywords = [
+                            (b"code".as_slice(), code),
+                            (b"globals", globals),
+                            (b"name", name),
+                            (b"argdefs", defaults),
+                            (b"closure", closure),
+                            (b"kwdefaults", kwdefaults),
+                        ];
+                        let count = if minor == 12 { 5 } else { 6 };
+                        for positional_count in [0, 2, count] {
+                            let positional: Vec<_> = keywords[..positional_count]
+                                .iter()
+                                .map(|(_, value)| *value)
+                                .collect();
+                            let result = function_constructor_call(
+                                py,
+                                direct_new,
+                                &positional,
+                                &keywords[positional_count..count],
+                            );
+                            assert!(!exception_pending(py));
+                            let function = obj_from_bits(result).as_ptr().unwrap();
+                            assert_eq!(object_type_id(function), TYPE_ID_FUNCTION);
+                            assert_eq!(crate::function_code_bits(function), code);
+                            assert_eq!(crate::function_globals_bits(function), globals);
+                            assert_eq!(crate::function_closure_bits(function), closure);
+                            use crate::object::function_metadata::FunctionMetadataField as Field;
+                            assert_eq!(Field::Name.load(function), Some(name));
+                            assert_eq!(Field::Defaults.load(function), Some(defaults));
+                            assert_eq!(
+                                Field::KeywordDefaults.load(function),
+                                Some(if minor == 12 {
+                                    MoltObject::none().bits()
+                                } else {
+                                    kwdefaults
+                                })
+                            );
+                            assert_eq!(
+                                crate::function_dict_bits(function),
+                                0,
+                                "typed constructor metadata must preserve the lazy public dictionary"
+                            );
+                            dec_ref_bits(py, result);
+                        }
+                        if minor >= 13 {
+                            let invalid_closure = MoltObject::from_ptr(alloc_tuple(
+                                py,
+                                &[MoltObject::from_int(7).bits()],
+                            )).bits();
+                            let result = function_constructor_call(
+                                py,
+                                direct_new,
+                                &[code, globals],
+                                &[
+                                    (b"closure", invalid_closure),
+                                    (b"kwdefaults", MoltObject::from_int(7).bits()),
+                                ],
+                            );
+                            assert!(obj_from_bits(result).is_none());
+                            let error = crate::exception_last_bits_noinc(py).expect("invalid kwdefaults");
+                            assert_eq!(
+                                crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                                "arg 6 (kwdefaults) must be None or dict",
+                                "kwdefaults type admission precedes closure length/cell validation"
+                            );
+                            crate::molt_exception_clear();
+                            dec_ref_bits(py, invalid_closure);
+                            dec_ref_bits(py, result);
+                        }
+                    }
+                });
+            }
+            for bits in [
+                MoltObject::from_ptr(source).bits(),
+                globals,
+                name,
+                defaults,
+                closure,
+                kwdefaults,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn function_type_constructor_retains_dict_subclass_keyword_defaults_for_invocation() {
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let flag = crate::attr_name_bits_from_bytes(py, b"flag").unwrap();
+            let positional_names = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
+            let keyword_names = MoltObject::from_ptr(alloc_tuple(py, &[flag])).bits();
+            let source = super::test_support::metadata_function(
+                py,
+                super::test_support::compiled_identity_returns_owned_arg as *const (),
+                1,
+                &[
+                    (b"__molt_arg_names__", positional_names),
+                    (b"__molt_kwonly_names__", keyword_names),
+                ],
+                false,
+            );
+            let code = crate::object::layout::ensure_function_code_bits(
+                py,
+                obj_from_bits(source).as_ptr().unwrap(),
+            );
+            let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+            let classes = builtin_classes(py);
+            let subclass = empty_type(
+                py,
+                b"FunctionKeywordDefaults",
+                classes.type_obj,
+                &[classes.dict],
+            );
+            let mapping = molt_call_bind(subclass, molt_callargs_new(0, 0));
+            assert!(!exception_pending(py));
+            let mapping_ptr = obj_from_bits(mapping).as_ptr().unwrap();
+            assert_eq!(object_type_id(mapping_ptr), TYPE_ID_OBJECT);
+            let storage = crate::object::ops::dict_backing_bits(py, mapping)
+                .unwrap()
+                .unwrap();
+            let storage_ptr = obj_from_bits(storage).as_ptr().unwrap();
+            let baseline = (*crate::header_from_obj_ptr(mapping_ptr)).ref_count_snapshot();
+            for minor in [13, 14, 15] {
+                transaction.with_target_python_minor(py, minor, || {
+                    for direct_new in [false, true] {
+                        assert!(dict_set_in_place(
+                            py,
+                            storage_ptr,
+                            flag,
+                            MoltObject::from_int(73).bits()
+                        ));
+                        let result = function_constructor_call(
+                            py,
+                            direct_new,
+                            &[code, globals],
+                            &[(b"kwdefaults", mapping)],
+                        );
+                        assert!(!exception_pending(py));
+                        let function = obj_from_bits(result).as_ptr().unwrap();
+                        use crate::object::function_metadata::FunctionMetadataField as Field;
+                        assert_eq!(Field::KeywordDefaults.load(function), Some(mapping));
+                        assert_eq!(
+                            (*crate::header_from_obj_ptr(mapping_ptr)).ref_count_snapshot(),
+                            baseline + 1
+                        );
+                        let initial = molt_call_bind(result, molt_callargs_new(0, 0));
+                        assert!(!exception_pending(py));
+                        assert_eq!(initial, MoltObject::from_int(73).bits());
+                        assert!(dict_set_in_place(
+                            py,
+                            storage_ptr,
+                            flag,
+                            MoltObject::from_int(101).bits()
+                        ));
+                        let changed = molt_call_bind(result, molt_callargs_new(0, 0));
+                        assert!(!exception_pending(py));
+                        assert_eq!(
+                            changed,
+                            MoltObject::from_int(101).bits(),
+                            "invocation reads the retained mapping's current backing storage"
+                        );
+                        for bits in [initial, changed, result] {
+                            dec_ref_bits(py, bits);
+                        }
+                        assert_eq!(
+                            (*crate::header_from_obj_ptr(mapping_ptr)).ref_count_snapshot(),
+                            baseline
+                        );
+                    }
+                });
+            }
+            for bits in [
+                flag,
+                positional_names,
+                keyword_names,
+                source,
+                globals,
+                subclass,
+                mapping,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
 #[test]
 fn type_call_dispatch_publishes_cells_for_direct_and_metaclass_winner_paths() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();

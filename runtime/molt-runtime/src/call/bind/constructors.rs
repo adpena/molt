@@ -390,6 +390,17 @@ pub(super) unsafe fn call_type_with_arguments(
                 return crate::object::ops::zip_new_impl(_py, pos_args, strict);
             }
 
+            if class_bits == builtins.function && !kw_names.is_empty() {
+                return crate::builtins::functions::function_type_new_from_call(
+                    _py,
+                    pos_args,
+                    crate::builtins::native_arguments::NativeKeywords::mapping(
+                        arguments.constructor_mapping(),
+                        kw_names,
+                    ),
+                );
+            }
+
             if !kw_names.is_empty() {
                 let class_name = class_name_for_error(class_bits);
                 let msg = format!("{class_name}() takes no keyword arguments");

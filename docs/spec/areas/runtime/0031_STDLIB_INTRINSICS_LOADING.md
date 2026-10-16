@@ -121,6 +121,9 @@ dictionary miss remains a miss. Exception class cache lookup never mutates the
 Python namespace, so even constructing/raising a deleted exception cannot
 resurrect its binding.
 
+Executable source-module namespace preparation and constructor capture follow
+[the runtime frame contract](0024_RUNTIME_STATE_LIFECYCLE.md).
+
 ## Runtime Registry
 
 One runtime registry dictionary backs intrinsic resolution. The first module

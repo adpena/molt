@@ -125,18 +125,6 @@ local function molt_globals_builtin(): any
 	return context.globals[context.depth]
 end
 
-local function molt_frame_locals_set(context: any, locals_value: any): nil
-	local index = context.depth
-	if index < 1 then
-		molt_frame_invariant("frame_locals_set requires an active Python execution frame")
-	end
-	if type(locals_value) ~= "table" then
-		molt_frame_invariant("frame_locals_set requires a locals dictionary")
-	end
-	context.locals[index] = locals_value
-	return nil
-end
-
 local function molt_frame_exit(context: any, entry_depth: number, code: any, owner: any): nil
 	local index = context.depth
 	local thread = coroutine.running()
@@ -507,6 +495,42 @@ local function molt_frame_namespace_get(namespace: any, name: any): (boolean, an
 	end
 	local value = rawget(namespace, name)
 	return value ~= nil, value
+end
+
+-- Only admitted module execution binds its namespace as frame locals.
+-- Its builtins are the value captured at entry, never a later cache read.
+local function molt_frame_locals_set(context: any, locals_value: any): nil
+	local index = context.depth
+	if index < 1 then
+		molt_frame_invariant("frame_locals_set requires an active Python execution frame")
+	end
+	if type(locals_value) ~= "table" then
+		molt_frame_invariant("frame_locals_set requires a locals dictionary")
+	end
+	local ordered = molt_dict_is_ordered(locals_value)
+	local present: boolean
+	if ordered then
+		-- None is a present value in the ordered dictionary's private storage.
+		present = molt_dict_contains(locals_value, "__builtins__")
+	else
+		if getmetatable(locals_value) ~= nil then
+			molt_frame_invariant("frame_locals_set requires a module namespace dictionary")
+		end
+		present = molt_frame_namespace_get(locals_value, "__builtins__")
+	end
+	if not present then
+		local builtins = context.builtins[index]
+		if builtins == nil then
+			molt_frame_invariant("module execution has no captured builtins namespace")
+		end
+		if ordered then
+			molt_dict_set(locals_value, "__builtins__", builtins)
+		else
+			rawset(locals_value, "__builtins__", builtins)
+		end
+	end
+	context.locals[index] = locals_value
+	return nil
 end
 
 local function molt_frame_effective_builtins(globals: any): any

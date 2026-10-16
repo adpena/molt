@@ -943,18 +943,37 @@ pub(crate) fn module_execution_owns_initializing_namespace(
     if module_bits == 0 || is_none_bits(module_bits) {
         return false;
     }
-    let Some(id) = module_id_of(name) else {
-        return false;
-    };
-    let Some(table) = module_table(_py) else {
-        return false;
-    };
+    initializing_namespace_bits(_py, name) == Some(module_bits)
+}
+
+fn initializing_namespace_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    let id = module_id_of(name)?;
+    let table = module_table(_py)?;
     let idx = id as usize;
-    matches!(
+    if !matches!(
         table.states[idx].load(Ordering::Acquire),
         STATE_INITIALIZING | STATE_EXECUTION_RESERVED
-    ) && table.owners[idx].load(Ordering::Acquire) == crate::concurrency::current_thread_id()
-        && table.slots[idx].load(Ordering::Acquire) == module_bits
+    ) || table.owners[idx].load(Ordering::Acquire) != crate::concurrency::current_thread_id()
+    {
+        return None;
+    }
+    let bits = table.slots[idx].load(Ordering::Acquire);
+    (bits != 0 && !is_none_bits(bits)).then_some(bits)
+}
+
+/// The globals projection of the same execution-owned namespace. This grants
+/// no privilege to another module with the same spelling or dictionary shape.
+pub(crate) fn module_execution_owns_initializing_globals(
+    _py: &PyToken<'_>,
+    name: &str,
+    globals_bits: u64,
+) -> bool {
+    initializing_namespace_bits(_py, name)
+        .and_then(|bits| obj_from_bits(bits).as_ptr())
+        .is_some_and(|ptr| unsafe {
+            crate::object_type_id(ptr) == crate::TYPE_ID_MODULE
+                && crate::module_dict_bits(ptr) == globals_bits
+        })
 }
 
 /// ABI entry: `ensure(const ModuleId)` — what compiled literal import sites
@@ -2704,6 +2723,32 @@ mod tests {
                     module_execution_owns_initializing_namespace(_py, "builtins", builtins_bits),
                     namespace_published
                 );
+                assert_eq!(
+                    module_execution_owns_initializing_globals(_py, "builtins", dict_bits),
+                    namespace_published
+                );
+                if namespace_published {
+                    // The source-backed facade is the native CPython builtins
+                    // namespace, not an ordinary Python module to self-seed.
+                    for bits in [dict_bits, dict_bits] {
+                        inc_ref_bits(_py, bits);
+                    }
+                    crate::builtins::frames::frame_stack_push_owned(
+                        _py, 0, dict_bits, dict_bits, 0,
+                    );
+                    crate::builtins::frames::molt_frame_locals_set(dict_bits);
+                    assert!(!exception_pending(_py));
+                    let key = MoltObject::from_ptr(alloc_string(_py, b"__builtins__")).bits();
+                    assert!(
+                        unsafe {
+                            crate::dict_get_in_place(_py, dict_ptr, key)
+                                .expect("dictionary lookup succeeds")
+                        }
+                        .is_none()
+                    );
+                    crate::builtins::frames::frame_stack_pop(_py);
+                    dec_ref_bits(_py, key);
+                }
                 for through_frame in [false, true] {
                     let value = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                     assert!(is_none_bits(value));
@@ -2753,6 +2798,9 @@ mod tests {
                         "builtins",
                         builtins_bits
                     ));
+                    assert!(!module_execution_owns_initializing_globals(
+                        _py, "builtins", dict_bits,
+                    ));
                     let foreign = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                     table.owners[idx].store(owner, Ordering::Release);
                     assert!(is_none_bits(foreign));
@@ -2779,6 +2827,11 @@ mod tests {
                 _py,
                 "builtins",
                 unrelated_bits
+            ));
+            assert!(!module_execution_owns_initializing_globals(
+                _py,
+                "builtins",
+                unsafe { crate::module_dict_bits(unrelated_ptr) },
             ));
             for through_frame in [false, true] {
                 let replacement = lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
@@ -2809,6 +2862,9 @@ mod tests {
                     _py,
                     "builtins",
                     builtins_bits
+                ));
+                assert!(!module_execution_owns_initializing_globals(
+                    _py, "builtins", dict_bits,
                 ));
                 for through_frame in [false, true] {
                     let missing = lookup_test_global(_py, builtins_bits, name_bits, through_frame);

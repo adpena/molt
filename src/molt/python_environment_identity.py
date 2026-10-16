@@ -210,6 +210,7 @@ def python_capture_authority_paths(
         "memory_guard_paths",
         "process_spawn",
         "dx",
+        "cargo_execution_policy",
         "default_paths",
         "environment_registry",
         "_environment_registry",
