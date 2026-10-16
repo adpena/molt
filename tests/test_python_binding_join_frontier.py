@@ -15,10 +15,10 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonParameterRef,
     python_static_value_key,
 )
-from molt.compiler_analysis.python_value_identity import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
     OTHER_IDENTITY,
-    UNBOUND_IDENTITY,
     PythonIdentity,
+    UNBOUND_IDENTITY,
 )
 from molt.compiler_analysis.static_truth import (
     ExpressionKind,

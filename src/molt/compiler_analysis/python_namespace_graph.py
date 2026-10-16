@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-from molt.compiler_analysis.python_binding_facts import NO_INVALID_MEMBERS, MemberMask
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    MemberMask,
+    NO_INVALID_MEMBERS,
+)
 from molt.compiler_analysis.python_binding_flow import python_canonical_member_writes
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 

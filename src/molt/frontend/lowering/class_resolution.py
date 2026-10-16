@@ -18,7 +18,9 @@ from molt.compiler_analysis.python_lexical_scope import (
     function_parameter_names,
     python_scope_declarations,
 )
-from molt.compiler_analysis.python_value_identity import PythonIdentity
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    PythonIdentity,
+)
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     python_node_source_key,

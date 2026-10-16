@@ -298,7 +298,9 @@ def test_finite_namespace_key_count_does_not_multiply_flow_states() -> None:
     ),
 )
 def test_namespace_syntax_and_method_alias_share_exact_publication(write: str) -> None:
-    from molt.compiler_analysis.python_value_identity import PythonIdentity
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        PythonIdentity,
+    )
 
     tree = ast.parse(write + "\nsafe_alias\n")
     index = analyze_python_bindings(tree, source_digest=python_ast_digest(tree))

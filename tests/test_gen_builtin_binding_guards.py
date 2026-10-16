@@ -12,7 +12,9 @@ from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_ALL_MASK,
     BUILTIN_BINDING_GUARD_BITS,
 )
-from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_NAMES,
+)
 from molt.frontend._types import BUILTIN_FUNC_SPECS, BUILTIN_TYPE_TAGS
 
 

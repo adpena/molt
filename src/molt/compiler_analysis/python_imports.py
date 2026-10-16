@@ -341,8 +341,10 @@ def parse_module_spec_parent(
 
     from molt.compiler_analysis.python_binding_facts import PythonNodeKey
     from molt.compiler_analysis.python_value_identity import (
-        PythonIdentity,
         identity_fact_is_exact,
+    )
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        PythonIdentity,
     )
     from molt.compiler_analysis.python_effects_generated import (
         NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
@@ -598,7 +600,9 @@ def _dunder_globals_states_from_expression(
         from molt.compiler_analysis.python_binding_facts import (
             current_globals_dict_is_exact,
         )
-        from molt.compiler_analysis.python_value_identity import PythonIdentity
+        from molt.compiler_analysis.python_identity_catalog_generated import (
+            PythonIdentity,
+        )
 
         fact = expression_fact(expression)
         if fact is not None and (
@@ -921,7 +925,9 @@ def _analyze_module_import_flow_uncached(
         PythonNodeKey,
         globals_mutation_call_identity,
     )
-    from molt.compiler_analysis.python_value_identity import PythonIdentity
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        PythonIdentity,
+    )
     from molt.compiler_analysis.python_effects_generated import (
         NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
         RAISES,

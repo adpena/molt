@@ -20,7 +20,9 @@ from __future__ import annotations
 import ast
 from typing import Callable
 
-from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    UNBOUND_IDENTITY,
+)
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     ClassId,

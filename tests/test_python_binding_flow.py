@@ -16,10 +16,12 @@ from threading import Event
 import pytest
 
 from molt.compiler_analysis import python_binding_flow
-from molt.compiler_analysis.python_binding_facts import PythonMember
-from molt.compiler_analysis.python_value_identity import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
     OTHER_IDENTITY,
     PythonIdentity,
+    PythonMember,
+)
+from molt.compiler_analysis.python_value_identity import (
     identity_fact_is_exact,
     identity_fact_may_be,
 )
@@ -4324,7 +4326,7 @@ def test_canonical_member_writes_of_a_computed_name_change_every_member() -> Non
 
 
 def test_binding_analysis_import_excludes_codegen_and_command_layers():
-    import subprocess
+    from tests.process_guard_common import run_custody_subject_process
     import sys
     from pathlib import Path
 
@@ -4339,8 +4341,9 @@ def test_binding_analysis_import_excludes_codegen_and_command_layers():
         "    assert not name.startswith(('molt.frontend', 'molt.cli', "
         "'molt.compiler_analysis.backend_ir', 'molt.compiler_analysis.validation')), name\n"
     )
-    child = subprocess.run(
+    child = run_custody_subject_process(
         [sys.executable, "-I", "-B", "-c", script],
+        timeout=30.0,
         text=True,
         capture_output=True,
         check=False,

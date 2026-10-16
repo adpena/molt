@@ -613,7 +613,7 @@ def test_numeric_unary_retains_exact_kind_without_inventing_a_value(
 
 
 def test_unknown_shape_retains_value_identity_through_join_and_publication() -> None:
-    from molt.compiler_analysis.python_value_identity import (
+    from molt.compiler_analysis.python_identity_catalog_generated import (
         PythonIdentity,
         OTHER_IDENTITY,
     )
@@ -768,7 +768,7 @@ def test_comprehension_backedges_keep_eager_import_branches(generators: str) -> 
 
 
 def test_expired_element_candidates_survive_selection_and_unknown_join() -> None:
-    from molt.compiler_analysis.python_value_identity import (
+    from molt.compiler_analysis.python_identity_catalog_generated import (
         OTHER_IDENTITY,
         PythonIdentity,
     )
@@ -838,7 +838,7 @@ def test_expired_element_candidates_survive_selection_and_unknown_join() -> None
 
 
 def test_possible_element_candidates_cover_items_and_unknown_expansion() -> None:
-    from molt.compiler_analysis.python_value_identity import (
+    from molt.compiler_analysis.python_identity_catalog_generated import (
         OTHER_IDENTITY,
         PythonIdentity,
     )
@@ -902,7 +902,7 @@ def test_possible_element_candidates_cover_items_and_unknown_expansion() -> None
 
 
 def test_possible_element_widening_is_idempotent_and_stack_safe() -> None:
-    from molt.compiler_analysis.python_value_identity import (
+    from molt.compiler_analysis.python_identity_catalog_generated import (
         OTHER_IDENTITY,
         PythonIdentity,
     )

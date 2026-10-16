@@ -6,10 +6,10 @@ from itertools import product
 import pytest
 
 from molt.compiler_analysis import python_binding_flow as flow
-from molt.compiler_analysis.python_value_identity import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
     OTHER_IDENTITY,
-    UNBOUND_IDENTITY,
     PythonIdentity,
+    UNBOUND_IDENTITY,
 )
 from molt.compiler_analysis.static_truth import (
     ExpressionSequenceItem,

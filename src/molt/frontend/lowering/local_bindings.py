@@ -22,7 +22,9 @@ from typing import (
 )
 
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_NAMES,
+)
 from molt.compiler_analysis.static_truth import static_expression_result
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,

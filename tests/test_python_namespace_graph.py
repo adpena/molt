@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.compiler_analysis.python_binding_facts import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
     ALL_INVALID_MEMBERS,
     PythonMember,
 )
