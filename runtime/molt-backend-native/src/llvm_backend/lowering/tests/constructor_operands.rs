@@ -1493,6 +1493,7 @@ extern "C" {
     fn fam_dynamic_call() -> u64;
     fn fam_call_bind_pending() -> u64;
     fn fam_dict() -> u64;
+    fn fam_dict_discard();
     fn fam_alias() -> u64;
     fn fam_alias_discard();
     fn fam_task() -> u64;
@@ -1617,31 +1618,35 @@ fn main() {
         for (failure, dict_failure, insert_failure) in
             [(0, 0, 0), (1, 0, 0), (2, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0, 2)]
         {
-            let success = failure == 0 && dict_failure == 0 && insert_failure == 0;
-            let case = format!("dict {failure}/{dict_failure}/{insert_failure}");
-            fam_reset(failure);
-            fam_inject(0, dict_failure, insert_failure);
-            let result = fam_dict();
-            assert_eq!(result, if success { 0x400 } else { NONE }, "{case}");
-            let attempts = if failure != 0 { failure } else { 2 };
-            assert_eq!(fam_attempts(), attempts,
-                "{case}: all distinct operands precede the full-pairs constructor");
-            let inserts = if dict_failure != 0 || failure != 0 {
-                0
-            } else if insert_failure != 0 {
-                insert_failure
-            } else {
-                2
-            };
-            assert_eq!(fam_inserts(), inserts, "{case}");
-            if success {
-                assert_eq!(
-                    fam_first_refs(),
-                    3,
-                    "{case}: only the dict still references the repeated value"
-                );
+            for discarded in [false, true] {
+                let success = failure == 0 && dict_failure == 0 && insert_failure == 0;
+                let case = format!("dict {failure}/{dict_failure}/{insert_failure} discard={discarded}");
+                fam_reset(failure);
+                fam_inject(0, dict_failure, insert_failure);
+                let result = if discarded { fam_dict_discard(); NONE } else { fam_dict() };
+                assert_eq!(result, if success && !discarded { 0x400 } else { NONE }, "{case}");
+                let attempts = if failure != 0 { failure } else { 2 };
+                assert_eq!(fam_attempts(), attempts,
+                    "{case}: all distinct operands precede the full-pairs constructor");
+                let inserts = if dict_failure != 0 || failure != 0 {
+                    0
+                } else if insert_failure != 0 {
+                    insert_failure
+                } else {
+                    2
+                };
+                assert_eq!(fam_inserts(), inserts, "{case}");
+                if discarded {
+                    assert_eq!(fam_live(), 0, "{case}: discarding the dict retires its owner and every retained entry");
+                } else if success {
+                    assert_eq!(
+                        fam_first_refs(),
+                        3,
+                        "{case}: only the dict still references the repeated value"
+                    );
+                }
+                settle(&case, result, success);
             }
-            settle(&case, result, success);
         }
 
         for failure in [0, 1] {
@@ -2339,6 +2344,18 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
                 &[],
             )]
         }),
+        family_function(
+            "fam_dict_discard",
+            false,
+            |_, [first, second, _], results| {
+                vec![family_op(
+                    OpCode::BuildDict,
+                    vec![first, first, second, first],
+                    results,
+                    &[],
+                )]
+            },
+        ),
         family_function("fam_alias", true, |_, [first, _, none], results| {
             vec![family_op(
                 OpCode::Copy,
