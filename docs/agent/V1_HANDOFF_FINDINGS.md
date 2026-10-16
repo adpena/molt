@@ -66,14 +66,22 @@ parent integrator continues to own preserved WIP reconciliation. Coordination re
 write scopes and private receipts; this ledger owns release status.
 `tools/finding_status.py` counts its open and fixed rows and reports identity
 defects; no prose here repeats that count. Rows are obligations, not a
-completion percentage. The current convergence candidate reconciles the
+completion percentage. Published integration `41bd5b020` reconciles the
 captured SSL, source-input/custody, JSON, compiler and runtime donors with
-published main. Original donor commits, index and physical bytes remain
+current main. Original donor commits, index and physical bytes remain
 preserved. Source integration is distinct from consumer qualification and
 publication: changed bare C-ABI and managed-WASM consumers must exercise their
 actual contracts before landing. Private coordination records identify exact
 source versions, restore locations, qualification and ownership; do not replay
 stale donor files over the current authority.
+
+The integrated native runtime, compiler graph and managed-WASM lifecycle gates
+pass at `121d94a98`; the final frontend-only correction preserves those Rust
+inputs. Standalone C-ABI consumers pass at `b8baad5f4` with the same ABI owner
+inputs. Frontend source backends retain an unknown runtime OS, and exception
+availability requires positive target facts. These are bounded implementation
+qualifications, not acceptance of the complete target/version/profile or
+performance matrix. The open requirements below continue to hold v1.0.
 
 Land complete semantic families once their actual consumers pass. An unrelated
 open finding does not hold an independently complete repair; an incomplete
