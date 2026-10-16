@@ -82,18 +82,29 @@ def test_explicit_off_is_silent_noop(monkeypatch, capsys):
     assert "WARNING" not in err and "RUSTC_WRAPPER" not in env
 
 
-def test_respects_preset_wrapper(monkeypatch):
-    called = {"n": 0}
-
-    def _boom(env):
-        called["n"] += 1
-        return None
-
-    monkeypatch.setattr(dx, "pinned_sccache", _boom)
-    env = {"MOLT_USE_SCCACHE": "1", "RUSTC_WRAPPER": "/custom/wrap"}
+@pytest.mark.parametrize(
+    "wrapper_env",
+    [
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+    ],
+)
+def test_respects_preset_wrapper(monkeypatch, wrapper_env):
+    monkeypatch.setattr(
+        dx,
+        "pinned_sccache",
+        lambda _env: pytest.fail("explicit wrapper must bypass default discovery"),
+    )
+    env = {
+        "MOLT_USE_SCCACHE": "1",
+        wrapper_env: "/custom/wrap",
+        "CARGO_INCREMENTAL": "1",
+    }
+    expected = dict(env)
     dx._ensure_sccache_wrapper(env)
-    assert env["RUSTC_WRAPPER"] == "/custom/wrap"
-    assert called["n"] == 0  # short-circuits before discovery
+    assert env == expected
 
 
 def test_windows_auto_disables_sccache(monkeypatch, capsys):
@@ -442,9 +453,7 @@ def test_sccache_clients_reach_only_their_cache_private_server(tmp_path, monkeyp
     assert 49152 <= int(port) < 65535 and int(port) != 4226
     assert (name, port) == policy.sccache_server_endpoint({"SCCACHE_DIR": str(deep)})
 
-    from molt import dx
-
-    monkeypatch.setattr(dx, "_SCCACHE_SERVER_SOCKETS", False)
+    monkeypatch.setattr(policy, "_SCCACHE_SERVER_SOCKETS", False)
     assert policy.sccache_server_endpoint({"SCCACHE_DIR": "/c/.sccache"})[0] == (
         "SCCACHE_SERVER_PORT"
     )
