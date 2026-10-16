@@ -1605,7 +1605,9 @@ def test_provider_wasi_requires_actual_checked_image_and_four_passes(
     code = gate.main(
         ["--policy", "zlib-wasi", "--profile", "dev-fast", "--receipt-root", str(root)]
     )
-    aggregate = json.loads(next(root.glob("*/aggregate.json")).read_text())
+    aggregate = json.loads(
+        next(root.glob("*/aggregate.json")).read_text(encoding="utf-8")
+    )
     assert len(builds) == 1
     argv = builds[0]
     assert argv[argv.index("-p") + 1] == "zlib-rs@0.6.8"

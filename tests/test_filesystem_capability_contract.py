@@ -544,7 +544,7 @@ def test_rotating_uses_position_without_seeking_and_skips_empty_format(
 def test_rotating_forwards_original_failure_once(monkeypatch, tmp_path, stage):
     _, handlers = _logging_handlers_module(monkeypatch)
     path = tmp_path / "failure.log"
-    path.write_text("prior\n")
+    path.write_text("prior\n", encoding="utf-8")
     handler = handlers.RotatingFileHandler(path, maxBytes=1, backupCount=1, delay=True)
     error = OSError("rotation refusal")
     seen = []
@@ -562,7 +562,7 @@ def test_rotating_forwards_original_failure_once(monkeypatch, tmp_path, stage):
         setattr(handler, stage, reject)
     handler.emit(SimpleNamespace())
     assert seen == [error]
-    assert path.read_text() == "prior\n"
+    assert path.read_text(encoding="utf-8") == "prior\n"
     assert not (tmp_path / "failure.log.1").exists()
     handler.close()
 
@@ -686,7 +686,7 @@ def test_pathlib_text_methods_use_selected_open_and_preserve_failure_order(
     assert path.read_text(encoding="latin-1") == "caf\xe9\n"
     assert calls == [("w", "latin-1", None, "\r\n"), ("r", "latin-1", None, None)]
     with pytest.raises(TypeError, match="data must be str"):
-        path.write_text(42)
+        path.write_text(42, encoding="utf-8")
     assert len(calls) == 2
     assert target.read_bytes() == b"caf\xe9\r\n"
     with pytest.raises(LookupError):
@@ -700,7 +700,7 @@ def test_pathlib_text_methods_use_selected_open_and_preserve_failure_order(
 def _os_module(monkeypatch, behavior):
     # Unexercised imports fail on invocation. Deriving only the import inventory
     # keeps this loader separate from the independent boundary assertions below.
-    tree = ast.parse((STDLIB / "os.py").read_text())
+    tree = ast.parse((STDLIB / "os.py").read_text(encoding="utf-8"))
     hooks = {
         node.args[0].value
         for node in ast.walk(tree)
@@ -1130,7 +1130,7 @@ def test_urllib_proxy_constructor_captures_route_and_empty_handler_never_reads_e
 def test_urllib_private_splitport_uses_cpython_parser(monkeypatch, host):
     import urllib.parse as oracle
 
-    tree = ast.parse((STDLIB / "urllib/parse.py").read_text())
+    tree = ast.parse((STDLIB / "urllib/parse.py").read_text(encoding="utf-8"))
     hooks = {
         node.args[0].value
         for node in ast.walk(tree)
@@ -1152,7 +1152,7 @@ def test_shutil_which_selects_inputs_after_aggregate_admission(
     denial = PermissionError(
         "missing [env.read, fs.read] capabilities for 'shutil.which'"
     )
-    tree = ast.parse((STDLIB / "shutil.py").read_text())
+    tree = ast.parse((STDLIB / "shutil.py").read_text(encoding="utf-8"))
     hooks = {
         node.args[0].value
         for node in ast.walk(tree)
@@ -1211,7 +1211,7 @@ def test_windows_which_current_directory_query_is_selected_and_conditional(
     monkeypatch, mode, needed
 ):
     events = []
-    tree = ast.parse((STDLIB / "shutil.py").read_text())
+    tree = ast.parse((STDLIB / "shutil.py").read_text(encoding="utf-8"))
     hooks = {
         node.args[0].value
         for node in ast.walk(tree)
