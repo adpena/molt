@@ -10,7 +10,11 @@ from molt.memory_guard_paths import (
     memory_guard_state_root,
     pytest_guard_summary_dir,
 )
-from molt.dx import development_artifact_env, project_cargo_target_dir, proof_scratch_root
+from molt.dx import (
+    development_artifact_env,
+    project_cargo_target_dir,
+    proof_scratch_root,
+)
 from molt.cli.runtime_paths import _build_state_root_cached
 from tools.build_control_path import build_control_output
 from tools.harness_memory_guard import canonical_harness_env
