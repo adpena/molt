@@ -129,6 +129,7 @@ import argparse
 import filecmp
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -179,6 +180,7 @@ from tools.molt_dev_detached import (  # noqa: E402
     cmd_detached_verify,
 )
 from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
+from tools import venv_exec  # noqa: E402
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
@@ -800,26 +802,22 @@ class Marker:
 # --------------------------------------------------------------------------
 
 
-def _has_venv_python(venv: Path) -> bool:
-    """True if ``venv`` holds an interpreter in its POSIX or Windows layout."""
-    return (venv / "bin" / "python").exists() or (
-        venv / "Scripts" / "python.exe"
-    ).exists()
+def _resolve_repo_venv(repo: Path, env: dict[str, str]) -> Path | None:
+    """Use the shared explicit selectors, then the checkout or main-worktree venv.
 
-
-def _resolve_repo_venv(repo: Path) -> Path | None:
-    """Resolve the repository virtualenv for gate subprocesses, worktree-aware.
-
-    Worktrees do not carry a .venv; the canonical venv lives in the MAIN
-    checkout. Resolution order (first hit wins): the repo's own .venv, the
-    main checkout's .venv (via `git rev-parse --git-common-dir`, whose parent
-    is the main worktree), an already-set MOLT_VENV. Returns None if nothing
-    resolves — gates that need the venv then fail loudly with venv_exec's own
-    diagnostic, which names the remedy.
+    An existing or explicitly selected environment is returned even when broken:
+    validation must diagnose it rather than silently choose another interpreter.
+    Only an absent automatic checkout default permits main-worktree discovery.
     """
+    selected = venv_exec.resolve_venv(repo_root=repo, env=env)
     own = repo / ".venv"
-    if _has_venv_python(own):
-        return own
+    if (
+        env.get("MOLT_VENV")
+        or env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+        or own.exists()
+        or own.is_symlink()
+    ):
+        return selected
     proc = _run_driver_command(
         ["git", "rev-parse", "--git-common-dir"],
         cwd=repo,
@@ -830,12 +828,9 @@ def _resolve_repo_venv(repo: Path) -> Path | None:
         if not common.is_absolute():
             common = (repo / common).resolve()
         main_repo = common.parent
-        cand = main_repo / ".venv"
-        if _has_venv_python(cand):
-            return cand
-    envv = os.environ.get("MOLT_VENV")
-    if envv and _has_venv_python(Path(envv)):
-        return Path(envv)
+        candidate = main_repo / ".venv"
+        if candidate.exists() or candidate.is_symlink():
+            return venv_exec.resolve_venv(repo_root=main_repo, env=env)
     return None
 
 
@@ -843,19 +838,47 @@ def run_gate(cmd: str, repo: Path, env: dict[str, str]) -> int:
     """Run one gate command string in the repo with the given env.
 
     The command is a shell string from the manifest (so it can use
-    pipes/&&); it runs with shell=True and cwd=repo. Output streams live to the
-    caller's stdout/stderr (no capture) so a long gate is observable.
+    pipes/&&); it runs through the platform shell with cwd=repo. Output streams
+    live to the caller's stdout/stderr (no capture) so a long gate is observable.
 
-    MOLT_VENV is injected (worktree-aware, see _resolve_repo_venv) so manifest
-    gates routed through tools/venv_exec.py resolve the canonical pinned
-    toolchain from ANY worktree — gate verdicts must never depend on host
-    PATH state.
+    Activate the selected project environment once for the complete shell command,
+    including compound commands and child tools. A generic non-Python gate can run
+    without a project environment, but a bare Python gate cannot use host PATH as
+    a substitute. Explicit invalid selections always fail before shell launch.
     """
     _say(f"    gate: {cmd}")
-    if "MOLT_VENV" not in env:
-        venv = _resolve_repo_venv(repo)
-        if venv is not None:
-            env = {**env, "MOLT_VENV": str(venv)}
+    try:
+        words = shlex.split(cmd, posix=os.name != "nt")
+    except ValueError:
+        # The shell owns syntax errors; environment admission must not replace
+        # its error status with a parser-specific exception.
+        words = []
+    head = words[0].lower() if words else ""
+    if os.name == "nt" and len(head) >= 2 and head[0] == head[-1] == '"':
+        head = head[1:-1]
+    python_gate = head in {"python", "python3", "python.exe", "python3.exe"}
+    venv = _resolve_repo_venv(repo, env)
+    if venv is None and python_gate:
+        venv = venv_exec.resolve_venv(repo_root=repo, env=env)
+    if venv is not None:
+        try:
+            venv_exec.venv_python(venv)
+            if python_gate:
+                alias = (
+                    head + ".exe"
+                    if os.name == "nt" and not head.endswith(".exe")
+                    else head
+                )
+                executable = venv_exec.venv_bin_dir(venv) / alias
+                if not executable.is_file() or not os.access(executable, os.X_OK):
+                    raise venv_exec.VenvExecError(
+                        f"virtualenv command {head!r} not executable under "
+                        f"{venv_exec.venv_bin_dir(venv)}; use the project Python alias"
+                    )
+            env = venv_exec.venv_env(venv=venv, env=env)
+            env["MOLT_VENV"] = str(venv)
+        except venv_exec.VenvExecError as exc:
+            raise DriverError(str(exc)) from exc
     return _run_live_gate(cmd, repo=repo, env=env)
 
 
@@ -867,7 +890,7 @@ def run_gate(cmd: str, repo: Path, env: dict[str, str]) -> int:
 def _verify_no_dropped_commits(
     git: Git,
     source_shas: list[str],
-    pre_patch_ids: dict[str, str],
+    pre_patch_ids: dict[str, str | None],
     new_range: str,
     upstream_ref: str,
 ) -> None:
@@ -1848,10 +1871,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
     """
     repo = Path(args.repo).resolve()
     env = dict(os.environ)
-    venv = _resolve_repo_venv(repo)
-    if venv is not None:
-        env["MOLT_VENV"] = str(venv)
-    python = "python3 tools/venv_exec.py python"
+    python = "python"
     steps = (
         ("pin text encodings", f"{python} tools/encoding_gate.py --fix"),
         ("format Python", f"{python} -m ruff format ."),
