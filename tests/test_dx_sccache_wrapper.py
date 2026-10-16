@@ -275,6 +275,7 @@ def test_cli_sccache_probe_starts_a_server_with_the_durable_temp_dir(
 def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
     from molt.cargo_execution_policy import (
         SCCACHE_INCREMENTAL_POLICY,
+        SCCACHE_SERVER_ENDPOINT_POLICY,
         SCCACHE_SERVER_TEMP_POLICY,
         normalize_cargo_environment,
     )
@@ -284,7 +285,11 @@ def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
     server_temp = tmp_path / "artifacts" / ".sccache-tmp"
 
     pinned, applied = normalize_cargo_environment(scratch_env)
-    assert applied == (SCCACHE_INCREMENTAL_POLICY, SCCACHE_SERVER_TEMP_POLICY)
+    assert applied == (
+        SCCACHE_INCREMENTAL_POLICY,
+        SCCACHE_SERVER_TEMP_POLICY,
+        SCCACHE_SERVER_ENDPOINT_POLICY,
+    )
     assert {pinned[name] for name in ("TMPDIR", "TMP", "TEMP")} == {str(server_temp)}
     assert scratch_env["TMPDIR"] == scratch  # the caller's mapping is unchanged
     # Every process given this environment can use its temp dir: the runtime
@@ -409,3 +414,37 @@ def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
 
     with pytest.raises(tool_releases.ToolReleaseError, match="not a directory"):
         cargo_execution.pinned_sccache({"MOLT_TARGET_ROOT": str(invalid)})
+
+
+def test_sccache_clients_reach_only_their_cache_private_server(tmp_path, monkeypatch):
+    from molt import cargo_execution_policy as policy
+
+    assert policy.sccache_server_endpoint({"SCCACHE_DIR": "/c/.sccache"}) == (
+        "SCCACHE_SERVER_UDS",
+        "/c/.sccache-server.sock",
+    ), "a socket beside the cache when its path fits"
+    cache = tmp_path / "artifacts" / ".sccache"
+    env = {"SCCACHE_DIR": str(cache), "RUSTC_WRAPPER": "/opt/sccache"}
+    pinned, _ = policy.sccache_client_environment(env)
+    # Never the shared default port another server (a VM's forward) may hold.
+    endpoint = policy.sccache_server_endpoint(env)
+    assert endpoint is not None and pinned[endpoint[0]] == endpoint[1]
+    assert pinned.get("SCCACHE_SERVER_PORT") != "4226"
+
+    chosen = {**env, "SCCACHE_SERVER_PORT": "5000"}
+    kept, _ = policy.sccache_client_environment(chosen)
+    assert kept["SCCACHE_SERVER_PORT"] == "5000"
+    assert "SCCACHE_SERVER_UDS" not in kept
+
+    deep = tmp_path / ("d" * 120) / ".sccache"
+    name, port = policy.sccache_server_endpoint({"SCCACHE_DIR": str(deep)})
+    assert name == "SCCACHE_SERVER_PORT"
+    assert 49152 <= int(port) < 65535 and int(port) != 4226
+    assert (name, port) == policy.sccache_server_endpoint({"SCCACHE_DIR": str(deep)})
+
+    from molt import dx
+
+    monkeypatch.setattr(dx, "_SCCACHE_SERVER_SOCKETS", False)
+    assert policy.sccache_server_endpoint({"SCCACHE_DIR": "/c/.sccache"})[0] == (
+        "SCCACHE_SERVER_PORT"
+    )

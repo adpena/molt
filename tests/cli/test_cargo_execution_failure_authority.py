@@ -292,6 +292,10 @@ def test_retry_stats_preserves_wrapped_attempt_context_and_direct_retry_policy(
         tempfile_runner=build,
     )
     assert len(builds) == 2
+    from molt.cargo_execution_policy import sccache_server_endpoint
+
+    endpoint = sccache_server_endpoint(environment)
+    assert endpoint is not None
     assert builds[0] == (
         tmp_path,
         {
@@ -300,6 +304,7 @@ def test_retry_stats_preserves_wrapped_attempt_context_and_direct_retry_policy(
             **dict.fromkeys(
                 ("TMPDIR", "TMP", "TEMP"), str(tmp_path / "selected-cache-tmp")
             ),
+            endpoint[0]: endpoint[1],
         },
     )
     assert builds[1] == (

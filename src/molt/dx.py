@@ -85,6 +85,11 @@ CANONICAL_RUN_ENV_KEYS = (
     "MOLT_SESSION_ID",
     "MOLT_SESSION_ID_GENERATED",
 )
+SCCACHE_SERVER_ENDPOINT_ENV_NAMES = ("SCCACHE_SERVER_UDS", "SCCACHE_SERVER_PORT")
+# sun_path holds 104 bytes on macOS and 108 on Linux, terminator included.
+_UNIX_SOCKET_PATH_LIMIT = 103
+# The pinned sccache serves Unix sockets on POSIX hosts only.
+_SCCACHE_SERVER_SOCKETS = os.name != "nt"
 DX_ENV_KEYS = (
     *CANONICAL_RUN_ENV_KEYS,
     GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
@@ -94,6 +99,8 @@ DX_ENV_KEYS = (
     "MOLT_DIFF_ALLOW_RUSTC_WRAPPER",
     "SCCACHE_DIR",
     "SCCACHE_CACHE_SIZE",
+    "SCCACHE_SERVER_UDS",
+    "SCCACHE_SERVER_PORT",
     "MOLT_CACHE_MAX_GB",
     "MOLT_CACHE_MAX_AGE_DAYS",
     "UV_LINK_MODE",
@@ -1633,6 +1640,37 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
     env["CARGO_INCREMENTAL"] = "0"
 
 
+def sccache_server_endpoint(environ: Mapping[str, str]) -> tuple[str, str] | None:
+    """Return the private server endpoint of ``SCCACHE_DIR``'s clients.
+
+    sccache's default endpoint, TCP 127.0.0.1:4226, is shared by every sccache
+    on the host. Any server listening there answers Molt's clients and runs
+    their compiles in its own environment: on 2026-10-16 a Lima Linux guest
+    forwarded its port 4226 to the macOS host, and every macOS rustc probe
+    through sccache failed with "Compiler not supported". Each cache therefore
+    gets its own Unix socket beside it, or, where a socket cannot hold the path
+    or the platform has none, a port derived from the cache path. An endpoint
+    the caller already chose is kept; without ``SCCACHE_DIR`` the server is not
+    Molt's to configure.
+    """
+
+    if any(environ.get(name) for name in SCCACHE_SERVER_ENDPOINT_ENV_NAMES):
+        return None
+    raw = environ.get("SCCACHE_DIR", "").strip()
+    if not raw:
+        return None
+    cache = Path(os.path.abspath(Path(raw).expanduser()))
+    if not cache.name:
+        return None
+    if _SCCACHE_SERVER_SOCKETS:
+        socket = cache.with_name(f"{cache.name}-server.sock")
+        if len(os.fsencode(socket)) <= _UNIX_SOCKET_PATH_LIMIT:
+            return "SCCACHE_SERVER_UDS", str(socket)
+    digest = hashlib.sha256(os.fsencode(cache)).digest()
+    # The IANA dynamic range, away from sccache's default.
+    return "SCCACHE_SERVER_PORT", str(49152 + int.from_bytes(digest[:2]) % 16383)
+
+
 def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     ext_root = Path(env[ARTIFACT_ROOT_ENV]).expanduser()
     env.setdefault(
@@ -1646,6 +1684,11 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
     env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
+    # Shells that start or stop the server (tools/throughput_env.sh) must reach
+    # the same private endpoint as the CLI's clients.
+    endpoint = sccache_server_endpoint(env)
+    if endpoint is not None:
+        env.setdefault(*endpoint)
     env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
     env.setdefault("MOLT_CACHE_MAX_AGE_DAYS", DEFAULT_MOLT_CACHE_MAX_AGE_DAYS)
     _ensure_sccache_wrapper(env)

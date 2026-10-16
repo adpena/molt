@@ -19,12 +19,14 @@ from .disk_capacity import (
     FreeSpaceMeasurement,
     require_build_capacity,
 )
+from .dx import sccache_server_endpoint
 from .source_root import compiler_source_root
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
 SCCACHE_INCREMENTAL_POLICY = "sccache-disables-incremental"
 SCCACHE_SERVER_TEMP_POLICY = "sccache-server-temp-dir"
+SCCACHE_SERVER_ENDPOINT_POLICY = "sccache-server-private-endpoint"
 TEMPORARY_DIRECTORY_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
 DIRECT_RUSTC_INCREMENTAL_POLICY = "direct-rustc-enables-incremental"
 CARGO_WRAPPER_ENV_NAMES = (
@@ -109,24 +111,28 @@ def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
 
 def sccache_client_environment(
     environ: Mapping[str, str],
-) -> tuple[dict[str, str], bool]:
-    """Return ``environ`` with the sccache server temp dir in every temp variable.
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Return ``environ`` with the sccache server's temp dir and endpoint pinned.
 
-    Every process that may start the shared server (a Cargo child whose
-    compiler wrapper is sccache, a rustc probe through that wrapper, or an
-    sccache probe) runs with this environment, so the directory exists
-    whenever the environment names it. The second value says whether the
-    directory was pinned.
+    Every process that may start or reach the shared server (a Cargo child
+    whose compiler wrapper is sccache, a rustc probe through that wrapper, or
+    an sccache probe) runs with this environment, so the directory exists
+    whenever the environment names it and every client reaches the same
+    private server. The second value names the policies applied.
     """
 
     child = dict(environ)
     temporary = sccache_server_temp_dir(child)
     if temporary is None:
-        return child, False
+        return child, ()
     temporary.mkdir(parents=True, exist_ok=True)
     for name in TEMPORARY_DIRECTORY_ENV_NAMES:
         child[name] = str(temporary)
-    return child, True
+    endpoint = sccache_server_endpoint(child)
+    if endpoint is None:
+        return child, (SCCACHE_SERVER_TEMP_POLICY,)
+    child[endpoint[0]] = endpoint[1]
+    return child, (SCCACHE_SERVER_TEMP_POLICY, SCCACHE_SERVER_ENDPOINT_POLICY)
 
 
 def normalize_cargo_environment(
@@ -150,9 +156,7 @@ def normalize_cargo_environment(
     if sccache_compiler_wrappers(child):
         child["CARGO_INCREMENTAL"] = "0"
         child, pinned = sccache_client_environment(child)
-        if pinned:
-            return child, (SCCACHE_INCREMENTAL_POLICY, SCCACHE_SERVER_TEMP_POLICY)
-        return child, (SCCACHE_INCREMENTAL_POLICY,)
+        return child, (SCCACHE_INCREMENTAL_POLICY, *pinned)
     if default_incremental is not None and "CARGO_INCREMENTAL" not in child:
         child["CARGO_INCREMENTAL"] = default_incremental
         return child, (DIRECT_RUSTC_INCREMENTAL_POLICY,)
