@@ -1,0 +1,351 @@
+# Compiler-only Python identity, acquisition and mutation authority.
+# Bit positions are stable cache identities; never renumber an existing entry.
+schema_version = 1
+
+[identity_bits]
+IMPORTLIB_MODULE = 0
+IMPORTLIB_IMPORT_MODULE = 1
+IMPORTLIB_MACHINERY_MODULE = 2
+MODULE_SPEC_CLASS = 3
+MODULE_SPEC_INSTANCE = 4
+BUILTINS_MODULE = 5
+BUILTINS_IMPORT = 6
+SYS_MODULE = 7
+SYS_MODULES = 8
+INSPECT_MODULE = 9
+INSPECT_CURRENTFRAME = 10
+CURRENT_MODULE = 11
+CURRENT_GLOBALS = 12
+CURRENT_LOCALS = 13
+CURRENT_FRAME = 14
+BUILTIN_GLOBALS = 15
+BUILTIN_LOCALS = 16
+BUILTIN_VARS = 17
+BUILTIN_SETATTR = 18
+BUILTIN_EVAL = 19
+BUILTIN_EXEC = 20
+USER_FUNCTION = 21
+USER_CLASS = 22
+INERT_VALUE = 23
+IMPORTLIB_UTIL_MODULE = 24
+IMPORTLIB_FIND_SPEC = 25
+TYPING_MODULE = 26
+STATIC_FALSE = 27
+INTRINSICS_MODULE = 28
+INTRINSICS_REQUIRE = 29
+OTHER = 30
+UNBOUND = 31
+GLOBALS_SETITEM = 32
+GLOBALS_DELITEM = 33
+BUILTIN_BOOL = 34
+BUILTIN_INT = 35
+BUILTIN_FLOAT = 36
+BUILTIN_COMPLEX = 37
+BUILTIN_STR = 38
+BUILTIN_BYTES = 39
+BUILTIN_BYTEARRAY = 40
+BUILTIN_TUPLE = 41
+BUILTIN_LIST = 42
+BUILTIN_SET = 43
+BUILTIN_FROZENSET = 44
+BUILTIN_DICT = 45
+BUILTIN_RANGE = 46
+BUILTIN_LEN = 47
+BUILTIN_OPEN = 48
+
+[member_bits]
+IMPORTLIB_IMPORT_MODULE = 0
+IMPORTLIB_MACHINERY = 1
+MACHINERY_MODULE_SPEC = 2
+BUILTINS_IMPORT = 3
+SYS_MODULES = 4
+INSPECT_CURRENTFRAME = 5
+MODULE_SPEC_CLASS = 6
+IMPORT_HOOKS = 7
+IMPORTLIB_UTIL = 8
+UTIL_FIND_SPEC = 9
+TYPING_TYPE_CHECKING = 10
+INTRINSICS_REQUIRE = 11
+SYS_PLATFORM = 12
+BUILTINS_BOOL = 13
+BUILTINS_INT = 14
+BUILTINS_FLOAT = 15
+BUILTINS_COMPLEX = 16
+BUILTINS_STR = 17
+BUILTINS_BYTES = 18
+BUILTINS_BYTEARRAY = 19
+BUILTINS_TUPLE = 20
+BUILTINS_LIST = 21
+BUILTINS_SET = 22
+BUILTINS_FROZENSET = 23
+BUILTINS_DICT = 24
+BUILTINS_RANGE = 25
+BUILTINS_LEN = 26
+BUILTINS_OPEN = 27
+BUILTINS_GLOBALS = 28
+BUILTINS_LOCALS = 29
+BUILTINS_VARS = 30
+BUILTINS_SETATTR = 31
+BUILTINS_EVAL = 32
+BUILTINS_EXEC = 33
+
+[[builtin]]
+name = "__import__"
+identity = "BUILTINS_IMPORT"
+guard = "BUILTINS_IMPORT"
+shape = false
+
+[[builtin]]
+name = "globals"
+identity = "BUILTIN_GLOBALS"
+guard = "BUILTINS_GLOBALS"
+shape = false
+
+[[builtin]]
+name = "locals"
+identity = "BUILTIN_LOCALS"
+guard = "BUILTINS_LOCALS"
+shape = false
+
+[[builtin]]
+name = "vars"
+identity = "BUILTIN_VARS"
+guard = "BUILTINS_VARS"
+shape = false
+
+[[builtin]]
+name = "setattr"
+identity = "BUILTIN_SETATTR"
+guard = "BUILTINS_SETATTR"
+shape = false
+
+[[builtin]]
+name = "eval"
+identity = "BUILTIN_EVAL"
+guard = "BUILTINS_EVAL"
+shape = false
+
+[[builtin]]
+name = "exec"
+identity = "BUILTIN_EXEC"
+guard = "BUILTINS_EXEC"
+shape = false
+
+[[builtin]]
+name = "bool"
+identity = "BUILTIN_BOOL"
+guard = "BUILTINS_BOOL"
+shape = true
+
+[[builtin]]
+name = "bytearray"
+identity = "BUILTIN_BYTEARRAY"
+guard = "BUILTINS_BYTEARRAY"
+shape = true
+
+[[builtin]]
+name = "bytes"
+identity = "BUILTIN_BYTES"
+guard = "BUILTINS_BYTES"
+shape = true
+
+[[builtin]]
+name = "complex"
+identity = "BUILTIN_COMPLEX"
+guard = "BUILTINS_COMPLEX"
+shape = true
+
+[[builtin]]
+name = "dict"
+identity = "BUILTIN_DICT"
+guard = "BUILTINS_DICT"
+shape = true
+
+[[builtin]]
+name = "float"
+identity = "BUILTIN_FLOAT"
+guard = "BUILTINS_FLOAT"
+shape = true
+
+[[builtin]]
+name = "frozenset"
+identity = "BUILTIN_FROZENSET"
+guard = "BUILTINS_FROZENSET"
+shape = true
+
+[[builtin]]
+name = "int"
+identity = "BUILTIN_INT"
+guard = "BUILTINS_INT"
+shape = true
+
+[[builtin]]
+name = "len"
+identity = "BUILTIN_LEN"
+guard = "BUILTINS_LEN"
+shape = true
+
+[[builtin]]
+name = "list"
+identity = "BUILTIN_LIST"
+guard = "BUILTINS_LIST"
+shape = true
+
+[[builtin]]
+name = "open"
+identity = "BUILTIN_OPEN"
+guard = "BUILTINS_OPEN"
+shape = true
+
+[[builtin]]
+name = "range"
+identity = "BUILTIN_RANGE"
+guard = "BUILTINS_RANGE"
+shape = true
+
+[[builtin]]
+name = "set"
+identity = "BUILTIN_SET"
+guard = "BUILTINS_SET"
+shape = true
+
+[[builtin]]
+name = "str"
+identity = "BUILTIN_STR"
+guard = "BUILTINS_STR"
+shape = true
+
+[[builtin]]
+name = "tuple"
+identity = "BUILTIN_TUPLE"
+guard = "BUILTINS_TUPLE"
+shape = true
+
+[[module]]
+name = "__future__"
+identity = "OTHER"
+
+[[module]]
+name = "importlib"
+identity = "IMPORTLIB_MODULE"
+
+[[module]]
+name = "importlib.util"
+identity = "IMPORTLIB_UTIL_MODULE"
+
+[[module]]
+name = "importlib.machinery"
+identity = "IMPORTLIB_MACHINERY_MODULE"
+
+[[module]]
+name = "builtins"
+identity = "BUILTINS_MODULE"
+
+[[module]]
+name = "sys"
+identity = "SYS_MODULE"
+
+[[module]]
+name = "inspect"
+identity = "INSPECT_MODULE"
+
+[[module]]
+name = "typing"
+identity = "TYPING_MODULE"
+
+[[module]]
+name = "typing_extensions"
+identity = "TYPING_MODULE"
+
+[[module]]
+name = "_intrinsics"
+identity = "INTRINSICS_MODULE"
+
+[[acquisition]]
+owner = "IMPORTLIB_MODULE"
+name = "import_module"
+identity = "IMPORTLIB_IMPORT_MODULE"
+guard = "IMPORTLIB_IMPORT_MODULE"
+
+[[acquisition]]
+owner = "IMPORTLIB_MODULE"
+name = "util"
+identity = "IMPORTLIB_UTIL_MODULE"
+guard = "IMPORTLIB_UTIL"
+
+[[acquisition]]
+owner = "IMPORTLIB_MODULE"
+name = "machinery"
+identity = "IMPORTLIB_MACHINERY_MODULE"
+guard = "IMPORTLIB_MACHINERY"
+
+[[acquisition]]
+owner = "IMPORTLIB_UTIL_MODULE"
+name = "find_spec"
+identity = "IMPORTLIB_FIND_SPEC"
+guard = "UTIL_FIND_SPEC"
+
+[[acquisition]]
+owner = "IMPORTLIB_MACHINERY_MODULE"
+name = "ModuleSpec"
+identity = "MODULE_SPEC_CLASS"
+guard = "MACHINERY_MODULE_SPEC"
+
+[[acquisition]]
+owner = "SYS_MODULE"
+name = "modules"
+identity = "SYS_MODULES"
+guard = "SYS_MODULES"
+
+[[acquisition]]
+owner = "INSPECT_MODULE"
+name = "currentframe"
+identity = "INSPECT_CURRENTFRAME"
+guard = "INSPECT_CURRENTFRAME"
+
+[[acquisition]]
+owner = "TYPING_MODULE"
+name = "TYPE_CHECKING"
+identity = "STATIC_FALSE"
+guard = "TYPING_TYPE_CHECKING"
+
+[[acquisition]]
+owner = "INTRINSICS_MODULE"
+name = "require_intrinsic"
+identity = "INTRINSICS_REQUIRE"
+guard = "INTRINSICS_REQUIRE"
+
+[[write]]
+owner = "MODULE_SPEC_CLASS"
+name = "*"
+guards = ["MODULE_SPEC_CLASS"]
+
+[[write]]
+owner = "BUILTINS_MODULE"
+name = "__import__"
+guards = ["IMPORT_HOOKS"]
+
+[[write]]
+owner = "SYS_MODULE"
+name = "meta_path"
+guards = ["IMPORT_HOOKS"]
+
+[[write]]
+owner = "SYS_MODULE"
+name = "modules"
+guards = ["IMPORT_HOOKS"]
+
+[[write]]
+owner = "SYS_MODULE"
+name = "path_hooks"
+guards = ["IMPORT_HOOKS"]
+
+[[write]]
+owner = "SYS_MODULE"
+name = "path_importer_cache"
+guards = ["IMPORT_HOOKS"]
+
+[[write]]
+owner = "SYS_MODULE"
+name = "platform"
+guards = ["SYS_PLATFORM"]

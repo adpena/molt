@@ -12,8 +12,10 @@ from __future__ import annotations
 from molt.opcode_literal_payloads import integer_literal_bytes
 
 import ast
-from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
-from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_NAMES,
+    UNBOUND_IDENTITY,
+)
 from typing import (
     Any,
 )

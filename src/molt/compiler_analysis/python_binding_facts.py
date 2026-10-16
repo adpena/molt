@@ -15,13 +15,16 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Final, Literal, Mapping, TypeAlias
 
 from molt.compiler_analysis.literal_identity import literal_identity_key
-from molt.compiler_analysis.python_value_identity import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_NAMES_BY_IDENTITY,
     IdentityMask,
+    MemberMask,
     PythonIdentity,
+)
+from molt.compiler_analysis.python_value_identity import (
     identity_fact_is_exact,
     identity_fact_may_be,
 )
-from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from molt.compiler_analysis.python_effects_generated import EffectMask
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
@@ -180,66 +183,6 @@ class PythonIterationFact:
                 self.module_metadata_effects | other.module_metadata_effects
             ),
         )
-
-
-class PythonMember(IntFlag):
-    """Canonical object members whose identity can be invalidated by mutation."""
-
-    IMPORTLIB_IMPORT_MODULE = 1 << 0
-    IMPORTLIB_MACHINERY = 1 << 1
-    MACHINERY_MODULE_SPEC = 1 << 2
-    BUILTINS_IMPORT = 1 << 3
-    SYS_MODULES = 1 << 4
-    INSPECT_CURRENTFRAME = 1 << 5
-    MODULE_SPEC_CLASS = 1 << 6
-    IMPORT_HOOKS = 1 << 7
-    IMPORTLIB_UTIL = 1 << 8
-    UTIL_FIND_SPEC = 1 << 9
-    TYPING_TYPE_CHECKING = 1 << 10
-    INTRINSICS_REQUIRE = 1 << 11
-    SYS_PLATFORM = 1 << 12
-    BUILTINS_BOOL = 1 << 13
-    BUILTINS_INT = 1 << 14
-    BUILTINS_FLOAT = 1 << 15
-    BUILTINS_COMPLEX = 1 << 16
-    BUILTINS_STR = 1 << 17
-    BUILTINS_BYTES = 1 << 18
-    BUILTINS_BYTEARRAY = 1 << 19
-    BUILTINS_TUPLE = 1 << 20
-    BUILTINS_LIST = 1 << 21
-    BUILTINS_SET = 1 << 22
-    BUILTINS_FROZENSET = 1 << 23
-    BUILTINS_DICT = 1 << 24
-    BUILTINS_RANGE = 1 << 25
-    BUILTINS_LEN = 1 << 26
-    BUILTINS_OPEN = 1 << 27
-    BUILTINS_GLOBALS = 1 << 28
-    BUILTINS_LOCALS = 1 << 29
-    BUILTINS_VARS = 1 << 30
-    BUILTINS_SETATTR = 1 << 31
-    BUILTINS_EVAL = 1 << 32
-    BUILTINS_EXEC = 1 << 33
-
-
-MemberMask: TypeAlias = int
-NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = sum(int(member) for member in PythonMember)
-
-BUILTIN_SHAPE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
-    {
-        name: PythonIdentity[f"BUILTIN_{name.upper()}"]
-        for name in sorted(BUILTIN_SHAPE_NAMES)
-    }
-)
-BUILTIN_SHAPE_MEMBERS: Final[Mapping[str, PythonMember]] = MappingProxyType(
-    {
-        name: PythonMember[f"BUILTINS_{name.upper()}"]
-        for name in sorted(BUILTIN_SHAPE_NAMES)
-    }
-)
-_BUILTIN_SHAPE_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
-    {int(identity): name for name, identity in BUILTIN_SHAPE_IDENTITIES.items()}
-)
 
 
 def current_globals_dict_is_exact(
@@ -707,7 +650,7 @@ class PythonCallSiteFact:
         return identity_fact_may_be(self.callee_identities, identity)
 
     def exact_builtin_name(self) -> str | None:
-        return _BUILTIN_SHAPE_NAMES_BY_IDENTITY.get(self.callee_identities)
+        return BUILTIN_SHAPE_NAMES_BY_IDENTITY.get(self.callee_identities)
 
     def possible_import_call_kinds(self) -> tuple[PythonImportCallKind, ...]:
         kinds: list[PythonImportCallKind] = []
@@ -956,10 +899,6 @@ class PythonBindingIndex(PythonBindingFacts):
 
 
 __all__ = [
-    "ALL_INVALID_MEMBERS",
-    "BUILTIN_SHAPE_IDENTITIES",
-    "BUILTIN_SHAPE_MEMBERS",
-    "MemberMask",
     "PythonBindingFacts",
     "PythonBindingIndex",
     "PythonBindingTelemetry",
@@ -968,7 +907,6 @@ __all__ = [
     "PythonCompletionFlow",
     "PythonExpressionFact",
     "PythonImportCallKind",
-    "PythonMember",
     "PythonNodeKey",
     "PythonParameterRef",
     "PythonStaticValue",

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 
-from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_NAMES,
+)
 
 from typing import (
     Any,

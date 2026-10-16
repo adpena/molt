@@ -18,12 +18,29 @@ from bisect import bisect_left, bisect_right
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, replace
-from functools import reduce
-from operator import or_
 from threading import Event, RLock
 from types import MappingProxyType
 from typing import Final, Literal, Sequence, cast
 
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    ALL_INVALID_MEMBERS,
+    ANY_CANONICAL_MODULE_IDENTITY,
+    BUILTIN_IDENTITIES,
+    BUILTIN_SHAPE_IDENTITIES,
+    CANONICAL_FROM_IMPORT_IDENTITIES,
+    CANONICAL_IMPORT_IDENTITIES,
+    CANONICAL_MEMBER_IDENTITIES,
+    CANONICAL_MEMBER_WRITES,
+    CANONICAL_WILDCARD_WRITES,
+    IdentityMask,
+    MemberMask,
+    NO_IDENTITIES,
+    NO_INVALID_MEMBERS,
+    OTHER_IDENTITY,
+    PythonIdentity,
+    PythonMember,
+    UNBOUND_IDENTITY,
+)
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
 from molt.compiler_analysis.python_source_keys import (
@@ -34,11 +51,6 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 from molt.compiler_analysis.python_binding_facts import (
-    ALL_INVALID_MEMBERS,
-    BUILTIN_SHAPE_IDENTITIES,
-    BUILTIN_SHAPE_MEMBERS,
-    NO_INVALID_MEMBERS,
-    MemberMask,
     PythonBindingFacts,
     PythonBindingIndex,
     PythonBindingTelemetry,
@@ -48,7 +60,6 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonExpressionFact,
     PythonIterationFact,
     PythonStringAlternatives,
-    PythonMember,
     PythonModuleMetadataProof,
     NO_MODULE_METADATA_PROOF,
     PythonNameLookup,
@@ -63,11 +74,6 @@ from molt.compiler_analysis.python_binding_facts import (
     same_python_static_value,
 )
 from molt.compiler_analysis.python_value_identity import (
-    NO_IDENTITIES,
-    OTHER_IDENTITY,
-    UNBOUND_IDENTITY,
-    IdentityMask,
-    PythonIdentity,
     exact_identity,
     possible_identity,
 )
@@ -229,122 +235,34 @@ _CALLEE_RETENTION_FORBIDDEN_EFFECTS: Final[EffectMask] = (
     _CALLEE_ELISION_FORBIDDEN_EFFECTS
     & ~(READS_FRAME_STATE | READS_GLOBAL_NAMESPACE | REFLECTS_NAMESPACE)
 )
-_BUILTIN_IDENTITIES: Final[dict[str, tuple[PythonIdentity, PythonMember]]] = {
-    "__import__": (PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),
-    "globals": (PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),
-    "locals": (PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),
-    "vars": (PythonIdentity.BUILTIN_VARS, PythonMember.BUILTINS_VARS),
-    "setattr": (PythonIdentity.BUILTIN_SETATTR, PythonMember.BUILTINS_SETATTR),
-    "eval": (PythonIdentity.BUILTIN_EVAL, PythonMember.BUILTINS_EVAL),
-    "exec": (PythonIdentity.BUILTIN_EXEC, PythonMember.BUILTINS_EXEC),
-    **{
-        name: (identity, BUILTIN_SHAPE_MEMBERS[name])
-        for name, identity in BUILTIN_SHAPE_IDENTITIES.items()
-    },
-}
-_CANONICAL_IMPORT_IDENTITIES: Final[dict[str, PythonIdentity]] = {
-    "__future__": PythonIdentity.OTHER,
-    "importlib": PythonIdentity.IMPORTLIB_MODULE,
-    "importlib.util": PythonIdentity.IMPORTLIB_UTIL_MODULE,
-    "importlib.machinery": PythonIdentity.IMPORTLIB_MACHINERY_MODULE,
-    "builtins": PythonIdentity.BUILTINS_MODULE,
-    "sys": PythonIdentity.SYS_MODULE,
-    "inspect": PythonIdentity.INSPECT_MODULE,
-    "typing": PythonIdentity.TYPING_MODULE,
-    "typing_extensions": PythonIdentity.TYPING_MODULE,
-    "_intrinsics": PythonIdentity.INTRINSICS_MODULE,
-}
-_CANONICAL_FROM_IMPORT_IDENTITIES: Final[
-    dict[tuple[str, str], tuple[PythonIdentity, PythonMember]]
-] = {
-    ("importlib", "import_module"): (
-        PythonIdentity.IMPORTLIB_IMPORT_MODULE,
-        PythonMember.IMPORTLIB_IMPORT_MODULE,
-    ),
-    ("importlib", "util"): (
-        PythonIdentity.IMPORTLIB_UTIL_MODULE,
-        PythonMember.IMPORTLIB_UTIL,
-    ),
-    ("importlib", "machinery"): (
-        PythonIdentity.IMPORTLIB_MACHINERY_MODULE,
-        PythonMember.IMPORTLIB_MACHINERY,
-    ),
-    ("importlib.util", "find_spec"): (
-        PythonIdentity.IMPORTLIB_FIND_SPEC,
-        PythonMember.UTIL_FIND_SPEC,
-    ),
-    ("importlib.machinery", "ModuleSpec"): (
-        PythonIdentity.MODULE_SPEC_CLASS,
-        PythonMember.MACHINERY_MODULE_SPEC,
-    ),
-    ("sys", "modules"): (PythonIdentity.SYS_MODULES, PythonMember.SYS_MODULES),
-    ("inspect", "currentframe"): (
-        PythonIdentity.INSPECT_CURRENTFRAME,
-        PythonMember.INSPECT_CURRENTFRAME,
-    ),
-    ("typing", "TYPE_CHECKING"): (
-        PythonIdentity.STATIC_FALSE,
-        PythonMember.TYPING_TYPE_CHECKING,
-    ),
-    ("typing_extensions", "TYPE_CHECKING"): (
-        PythonIdentity.STATIC_FALSE,
-        PythonMember.TYPING_TYPE_CHECKING,
-    ),
-    ("_intrinsics", "require_intrinsic"): (
-        PythonIdentity.INTRINSICS_REQUIRE,
-        PythonMember.INTRINSICS_REQUIRE,
-    ),
-    **{
-        ("builtins", name): declaration
-        for name, declaration in _BUILTIN_IDENTITIES.items()
-    },
-}
-
-
-_SYS_IMPORT_HOOK_MEMBERS: Final = frozenset(
-    {"meta_path", "path_hooks", "path_importer_cache", "modules"}
-)
-# A namespace reached by a computed ``sys.modules`` key is some module.
-_ANY_CANONICAL_MODULE_IDENTITY: Final[IdentityMask] = reduce(
-    or_, (int(identity) for identity in _CANONICAL_IMPORT_IDENTITIES.values()), 0
-)
-
-
 def _canonical_member_declarations(
     base: IdentityMask, member: str
 ) -> Iterator[tuple[PythonIdentity, PythonIdentity, PythonMember]]:
     """Use the same identity/guard declarations for acquisition and mutation."""
-    for module, owner in _CANONICAL_IMPORT_IDENTITIES.items():
+    for owner, identity, guard in CANONICAL_MEMBER_IDENTITIES.get(member, ()):
         if base & int(owner):
-            declaration = _CANONICAL_FROM_IMPORT_IDENTITIES.get((module, member))
-            if declaration is not None:
-                identity, guard = declaration
-                yield owner, identity, guard
+            yield owner, identity, guard
 
 
 def _member_write_mask(base: IdentityMask, member: str) -> MemberMask:
     """Canonical members a write of ``member`` on ``base`` can change."""
     members = 0
-    for _owner, _identity, guard in _canonical_member_declarations(base, member):
-        members |= int(guard)
-    if base & int(PythonIdentity.MODULE_SPEC_CLASS):
-        members |= int(PythonMember.MODULE_SPEC_CLASS)
-    if base & int(PythonIdentity.BUILTINS_MODULE) and member == "__import__":
-        members |= int(PythonMember.IMPORT_HOOKS)
-    if base & int(PythonIdentity.SYS_MODULE) and member in _SYS_IMPORT_HOOK_MEMBERS:
-        members |= int(PythonMember.IMPORT_HOOKS)
-    if base & int(PythonIdentity.SYS_MODULE) and member == "platform":
-        members |= int(PythonMember.SYS_PLATFORM)
+    for owner, guards in CANONICAL_MEMBER_WRITES.get(member, ()):
+        if base & int(owner):
+            members |= guards
+    for owner, guards in CANONICAL_WILDCARD_WRITES:
+        if base & int(owner):
+            members |= guards
     return members
 
 
 def _canonical_spelling_identity(module: str) -> IdentityMask:
     """The canonical identity a dotted module or member spelling names."""
-    identity = _CANONICAL_IMPORT_IDENTITIES.get(module)
+    identity = CANONICAL_IMPORT_IDENTITIES.get(module)
     if identity is not None:
         return int(identity)
     owner, _, member = module.rpartition(".")
-    declaration = _CANONICAL_FROM_IMPORT_IDENTITIES.get((owner, member))
+    declaration = CANONICAL_FROM_IMPORT_IDENTITIES.get((owner, member))
     return int(declaration[0]) if declaration is not None else NO_IDENTITIES
 
 
@@ -356,7 +274,7 @@ def python_canonical_member_writes(module: str | None, name: str | None) -> Memb
     Shares ``_member_write_mask`` with the flow's own direct stores.
     """
     base = (
-        _ANY_CANONICAL_MODULE_IDENTITY
+        ANY_CANONICAL_MODULE_IDENTITY
         if module is None
         else _canonical_spelling_identity(module)
     )
@@ -384,20 +302,20 @@ def python_dynamic_import_facts_required(
     module_identities = _DYNAMIC_IMPORT_MODULE_IDENTITIES
     for node in ast.walk(tree) if nodes is None else nodes:
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            declaration = _BUILTIN_IDENTITIES.get(node.id)
+            declaration = BUILTIN_IDENTITIES.get(node.id)
             if declaration is not None and int(declaration[0]) & call_identities:
                 return True
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 module = alias.name if alias.asname else alias.name.split(".", 1)[0]
                 if (
-                    int(_CANONICAL_IMPORT_IDENTITIES.get(module, PythonIdentity.OTHER))
+                    int(CANONICAL_IMPORT_IDENTITIES.get(module, PythonIdentity.OTHER))
                     & module_identities
                 ):
                     return True
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                declaration = _CANONICAL_FROM_IMPORT_IDENTITIES.get(
+                declaration = CANONICAL_FROM_IMPORT_IDENTITIES.get(
                     (node.module or "", alias.name)
                 )
                 if declaration is not None and int(declaration[0]) & (
@@ -2992,7 +2910,7 @@ class _Analyzer:
         result = resolution.result
         lexical_cell = slot is not None and self._slot_uses_lexical_storage(slot)
         if value & UNBOUND_IDENTITY and not lexical_cell:
-            declaration = _BUILTIN_IDENTITIES.get(name)
+            declaration = BUILTIN_IDENTITIES.get(name)
             fallback = (
                 self._guarded_member_identity(
                     state_id,
@@ -5365,7 +5283,7 @@ class _Analyzer:
         )
 
     def _import_identity(self, module: str, state_id: int) -> IdentityMask:
-        identity = _CANONICAL_IMPORT_IDENTITIES.get(module)
+        identity = CANONICAL_IMPORT_IDENTITIES.get(module)
         if identity is None:
             return OTHER_IDENTITY
         return (
@@ -5885,7 +5803,7 @@ class _Analyzer:
                 for alias in node.names
             )
             canonical_statement = canonical_before_import and all(
-                module in _CANONICAL_IMPORT_IDENTITIES for module in identity_modules
+                module in CANONICAL_IMPORT_IDENTITIES for module in identity_modules
             )
             if not canonical_statement:
                 state_id = self._apply_effects(state_id, effects)
@@ -5917,8 +5835,8 @@ class _Analyzer:
                 and all(
                     alias.name != "*"
                     and (
-                        node.module in _CANONICAL_IMPORT_IDENTITIES
-                        or f"{node.module}.{alias.name}" in _CANONICAL_IMPORT_IDENTITIES
+                        node.module in CANONICAL_IMPORT_IDENTITIES
+                        or f"{node.module}.{alias.name}" in CANONICAL_IMPORT_IDENTITIES
                     )
                     for alias in node.names
                 )

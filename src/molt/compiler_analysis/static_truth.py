@@ -18,7 +18,7 @@ from molt.compiler_analysis.literal_identity import (
     same_literal_value,
 )
 
-from molt.compiler_analysis.python_value_identity import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
     IdentityMask,
     OTHER_IDENTITY,
     PythonIdentity,

@@ -6,10 +6,11 @@ import pytest
 
 from molt.compiler_analysis import python_binding_flow
 from molt.compiler_analysis.python_binding_facts import (
-    BUILTIN_SHAPE_IDENTITIES,
     PythonIterationFact,
 )
-from molt.compiler_analysis.python_value_identity import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_IDENTITIES,
+    BUILTIN_SHAPE_NAMES,
     OTHER_IDENTITY,
     PythonIdentity,
 )
@@ -18,7 +19,6 @@ from molt.compiler_analysis.python_binding_flow import (
     analyze_python_source_bindings,
 )
 from molt.compiler_analysis.python_builtin_shapes import (
-    BUILTIN_SHAPE_NAMES,
     builtin_call_shape,
     builtin_method_call_shape,
 )

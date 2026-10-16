@@ -12,7 +12,8 @@ import ast
 from dataclasses import dataclass, replace
 from typing import Final, cast
 
-from molt.compiler_analysis.python_value_identity import (
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_NAMES,
     IdentityMask,
     OTHER_IDENTITY,
     PythonIdentity,
@@ -41,26 +42,6 @@ from molt.compiler_analysis.static_truth import (
     join_static_expression_results,
 )
 
-
-BUILTIN_SHAPE_NAMES: Final[frozenset[str]] = frozenset(
-    {
-        "bool",
-        "int",
-        "float",
-        "complex",
-        "str",
-        "bytes",
-        "bytearray",
-        "tuple",
-        "list",
-        "set",
-        "frozenset",
-        "dict",
-        "range",
-        "len",
-        "open",
-    }
-)
 
 _SCALAR_KINDS: Final[frozenset[ExpressionKind]] = frozenset(
     {"NoneType", "bool", "int", "float", "complex", "str", "bytes"}
@@ -1129,7 +1110,6 @@ def builtin_method_call_shape(
 
 
 __all__ = [
-    "BUILTIN_SHAPE_NAMES",
     "BuiltinCallShape",
     "BuiltinMethodCallShape",
     "builtin_call_shape",

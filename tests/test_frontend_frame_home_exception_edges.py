@@ -7,7 +7,9 @@ import pytest
 
 from molt.compiler_analysis.python_binding_flow import analyze_python_bindings
 from molt.compiler_analysis.python_source_keys import python_ast_digest
-from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    UNBOUND_IDENTITY,
+)
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend._types import MoltOp, MoltValue
 

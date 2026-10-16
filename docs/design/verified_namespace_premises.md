@@ -76,6 +76,13 @@ or mutates an import-hook object (`sys.modules`, `sys.meta_path`, `sys.path_hook
    names, so a callback leaves every other global, the module metadata and unwritten members intact.
    `python_canonical_member_writes` maps a summarized write to members through the same
    `_member_write_mask` the flow uses for its own direct stores.
+   The compiler-only `python_identity_catalog.toml` generates closed `PythonIdentity` and
+   `PythonMember` types, stable raw-mask assignments, canonical acquisition tables and member-write
+   guards in `python_identity_catalog_generated.py`. Builtin shape names project from those same
+   declarations. `python_value_identity.py` owns queries on those masks, while binding flow owns
+   source-ordered transfer; neither maintains a second acquisition or guard registry. The runtime's
+   builtin-specialization guard bits remain their separate `runtime/builtin_binding_guards.toml`
+   contract. Catalog generation adds no work to emitted binaries.
 3. **The import flow asks the binding flow.** `PythonBindingFacts.callbacks_rewrite_metadata` says
    whether any callback can rebind `__name__`, `__package__`, `__spec__` or `__path__`. Without it,
    every callback summary in the import flow leaves the metadata states unchanged.

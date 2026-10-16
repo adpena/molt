@@ -39,7 +39,9 @@ from molt.compiler_analysis.static_truth import (
     static_if_live_branch,
 )
 from molt.compiler_analysis.python_binding_facts import PythonParameterRef
-from molt.compiler_analysis.python_value_identity import PythonIdentity
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    PythonIdentity,
+)
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingFlowPolicy,
     PythonBindingPolicy,
