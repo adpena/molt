@@ -254,6 +254,10 @@ compilation and final linking. An explicit argv sysroot wins over `SDKROOT`;
 version and digest come from one stable read of `SDKSettings.json` (a 1 MiB
 metadata budget), following
 [Clang's SDK metadata boundary](https://clang.llvm.org/doxygen/DarwinSDKInfo_8cpp_source.html).
+The runtime's C resource custody uses the same identity: an `SDKROOT` that holds
+`SDKSettings.json` is captured as that file and its root directory, not as each
+of its files, because Xcode and the Command Line Tools install an SDK version
+whole. Any other `SDKROOT` keeps whole-tree content custody.
 The [Apple developer override](https://developer.apple.com/documentation/xcode/configuring-command-line-tools-settings)
 and [rustc's PATH-selected SDK discovery](https://github.com/rust-lang/rust/blob/master/compiler/rustc_codegen_ssa/src/back/apple.rs)
 guide selector precedence and portable cross-compilation shims. SDK-only users

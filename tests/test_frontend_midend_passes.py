@@ -4938,7 +4938,18 @@ def test_unknown_target_platform_does_not_inherit_host_exception_namespace(
 ) -> None:
     import sys
 
-    monkeypatch.setattr(sys, "platform", host_platform)
+    # Every loaded Molt module that reads `sys` sees the faked host; pytest and
+    # the rest of the process keep the real platform.
+    readers = sorted(
+        (
+            module
+            for name, module in tuple(sys.modules.items())
+            if name.split(".", 1)[0] == "molt" and getattr(module, "sys", None) is sys
+        ),
+        key=lambda module: module.__name__,
+    )
+    assert readers, "the host-platform fake must reach the compiler"
+    install_module_view(monkeypatch, "sys", sys, *readers, platform=host_platform)
     gen = SimpleTIRGenerator(target_sys_platform=None)
     assert not gen._builtin_exception_is_available("WindowsError")
 

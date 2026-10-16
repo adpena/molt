@@ -25,10 +25,12 @@ from molt.cli.runtime_identity_schema import (
 from molt.exact_json import canonical_json_sha256
 from molt.rust_toolchain import cargo_configuration_paths
 from tests.python_environment_test_support import runtime_identity_manifest
-from molt.cli.runtime_cargo_plan import (
+from molt.cli.cargo_resource_custody import (
     CargoExecutableCustody,
     CargoResourceCustody,
     CargoResourceRoot,
+)
+from molt.cli.runtime_cargo_plan import (
     RuntimeCargoPlan,
     _CargoEnvironment,
     _pin_cargo_command,

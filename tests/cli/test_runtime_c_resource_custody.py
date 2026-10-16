@@ -8,9 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
 from molt.cli.runtime_cargo_plan import (
-    CargoResourceCustody,
-    CargoResourceRoot,
     _CargoEnvironment,
     _resolve_c_build_resources,
     _c_tool_environment_names,
@@ -494,10 +493,10 @@ def test_a_process_reuses_a_current_capture_and_recaptures_a_changed_one(
 def test_settled_directory_tokens_detect_a_new_resource(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.cli import runtime_cargo_plan
+    from molt.cli import cargo_resource_custody
 
     # Close the racy window so the directory-token proof itself is exercised.
-    monkeypatch.setattr(runtime_cargo_plan, "DIGEST_RACY_WINDOW_NS", 0)
+    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
     root = tmp_path / "sdk"
     (root / "include").mkdir(parents=True)
     (root / "include" / "api.h").write_bytes(b"header")
@@ -517,3 +516,123 @@ def test_a_freshly_changed_tree_is_always_walked_exactly(tmp_path: Path) -> None
     (root / "api.h").write_bytes(b"header")
     walk = CargoResourceRoot("c/SDKROOT", root).walk()
     assert walk.racy
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows always walks exactly")
+def test_root_sets_that_share_a_root_walk_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import cargo_resource_custody
+
+    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
+    monkeypatch.setattr(cargo_resource_custody, "_WALKED_ROOTS", {})
+    shared, other = tmp_path / "sdk", tmp_path / "libdir"
+    for directory in (shared, other):
+        directory.mkdir()
+        (directory / "a.h").write_bytes(directory.name.encode())
+    time.sleep(0.01)
+    sdk = CargoResourceRoot("c/SDKROOT", shared)
+    libdir = CargoResourceRoot("rust/lib", other)
+    alone = CargoResourceCustody.capture((sdk,))
+    pair = CargoResourceCustody.capture((libdir, sdk))
+    assert pair.walks[1] is alone.walks[0], "the second root set reuses the SDK walk"
+    assert (
+        pair.file_identity(shared / "a.h").sha256 == hashlib.sha256(b"sdk").hexdigest()
+    )
+
+    (shared / "b.h").write_bytes(b"new")
+    widened = CargoResourceCustody.capture((sdk, libdir))
+    assert widened.walks[0] is not alone.walks[0], "a new entry changes the token"
+    assert widened.walks[1] is pair.walks[0], "the unchanged root keeps its walk"
+    assert {item.entrypoint.name for item in widened.files} == {"a.h", "b.h"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows always walks exactly")
+def test_a_recording_receives_each_shared_walk_once_with_captured_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import input_report
+    from molt.cli import cargo_resource_custody
+
+    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
+    monkeypatch.setattr(cargo_resource_custody, "_WALKED_ROOTS", {})
+    monkeypatch.setattr(cargo_resource_custody, "_CAPTURED_RESOURCES", {})
+    root, other = tmp_path / "sdk", tmp_path / "include"
+    root.mkdir()
+    other.mkdir()
+    header = root / "api.h"
+    header.write_bytes(b"header")
+    (other / "extra.h").write_bytes(b"extra")
+    time.sleep(0.01)
+    sdk = CargoResourceRoot("c/SDKROOT", root)
+
+    class Sink:
+        def __init__(self) -> None:
+            self.files: list[tuple[str, object, object]] = []
+
+        def file(self, path, token, sha256) -> None:
+            self.files.append((os.fspath(path), token, sha256))
+
+        def directory(self, path, token) -> None:
+            pass
+
+        def probe(self, path, outcome) -> None:
+            pass
+
+        def refuse(self, reason) -> None:
+            pass
+
+        def observe(self, entry) -> None:
+            pass
+
+    def record(sink: Sink) -> None:
+        input_report.install_sink(sink, os.fspath(tmp_path / "workers"))
+        try:
+            CargoResourceCustody.capture((sdk,))
+            CargoResourceCustody.capture((sdk, CargoResourceRoot("c/CPATH", other)))
+        finally:
+            input_report.remove_sink()
+
+    first, second = Sink(), Sink()
+    record(first)
+    digest = hashlib.sha256(b"header").hexdigest()
+    token = input_report.stat_token(header)
+    assert first.files.count((os.fspath(header), token, digest)) == 1, first.files
+    record(second)
+    assert second.files.count((os.fspath(header), token, digest)) == 1, (
+        "a new recording receives the reused capture again"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows always walks exactly")
+def test_an_apple_sdk_root_is_identified_by_its_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import cargo_resource_custody
+
+    monkeypatch.setattr(cargo_resource_custody, "DIGEST_RACY_WINDOW_NS", 0)
+    sdk = tmp_path / "MacOSX.sdk"
+    (sdk / "usr/include").mkdir(parents=True)
+    settings = sdk / "SDKSettings.json"
+    settings.write_bytes(b'{"Version": "26.5"}')
+    (sdk / "usr/include/stdio.h").write_bytes(b"int printf(const char *, ...);\n")
+    time.sleep(0.01)
+    plan = _resolve_c_build_resources(
+        _CargoEnvironment({"SDKROOT": str(sdk)}), target=TARGET
+    )
+    custody = CargoResourceCustody.capture(plan.roots)
+    assert [item.entrypoint for item in custody.files] == [settings]
+    digest = custody.content_identity()["digest"]
+
+    # Each SDK version is installed whole: its settings name its headers and
+    # entries, so neither is an input of its own.
+    (sdk / "usr/include/stdio.h").write_bytes(b"int printf(const char *);\n")
+    (sdk / "SDKSettings.plist").write_bytes(b"<plist/>")
+    custody.verify()
+
+    settings.write_bytes(b'{"Version": "26.6"}')
+    with pytest.raises(ValueError, match="changed since identity capture"):
+        custody.verify()
+    assert (
+        CargoResourceCustody.capture(plan.roots).content_identity()["digest"] != digest
+    )
