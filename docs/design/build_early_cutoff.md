@@ -53,21 +53,27 @@ ledger two ways:
   directories, lookups with their resolved target), runtime source trees,
   backend sources, Cargo resource custodies, Cargo configuration lookups,
   frontend data files behind process-global caches (on every use), project-root
-  probes, lockfile gate inputs, rustup selection files, link tools, and the
+  probes (including all four Molt source markers from their shared authority),
+  lockfile gate inputs, rustup selection files, link tools, and the
   macOS `xcode-select` link. Every executable search on the native build
   path goes through `toolchain_identity.executable_candidates`, which reports
   each searched directory and the selected entry: a program added to an
   earlier directory, or a retargeted link, selects another executable.
-- A `sys.addaudithook` observer sees every file the process opens, every
-  directory it lists or creates and every program it starts. Process-pool
+- A `sys.addaudithook` observer sees readable file opens, directory listings
+  and started programs. Read/write and append opens retain input dependencies.
+  Audit events happen before their syscalls and never grant product ownership:
+  failed writes and existing-directory `mkdir(exist_ok=True)` cannot erase a
+  prior read or exclude the directory's children. Process-pool
   workers log their facts to a directory the recording process merges; a
-  forked child drops the copied ledger and logs its own. A bytecode read stands
-  for its source. A path the build wrote, and anything under a directory it
-  created, is its own product. Reads under named product roots (the Molt
+  forked child drops the copied ledger and resets its reporting lock before
+  logging its own facts. A bytecode read stands for its source.
+  Reads under named product roots (the Molt
   cache, Cargo target and build state roots, the backend daemon's socket
   directory, the artifact root under the output directory) are not inputs. A
   source checkout, a user directory, the temporary directory and the shared
-  scratch root are never excluded: projects live there too. A path that no
+  scratch root are never excluded: projects live there too. The successfully
+  published binary is excluded as one file, preserving explicit input reports
+  and every dependency on its parent directory. A path that no
   longer exists becomes an absence probe plus its parent directory.
 
 **Refusals.** No record for non-native targets, directory outputs, requests
@@ -91,7 +97,9 @@ record. An `rsync -a` keeps an old mtime but cannot keep ctime.
 **Check.** Stat every recorded directory, probe and file, then the output.
 A changed token on a file with a recorded digest falls back to a digest
 compare. A hit when the output still holds the binary the build published
-does nothing else: there is no artifact store and no copy.
+does nothing else: there is no artifact store and no copy. Malformed JSON,
+including valid JSON scalars and arrays, is a cache miss. The v4 record key
+retires records produced under inferred write ownership.
 
 **Trimming.** A hit refreshes its record's mtime at most once an hour; records
 unused for a week are deleted, at most once an hour.
@@ -113,6 +121,14 @@ unused for a week are deleted, at most once an hour.
   the racy rule; git, ninja, make and Cargo share this limit.
 - A process that writes the output while the build that publishes it runs
   can leave a record of the wrong bytes, as with make and ninja.
+- Read-back of a fresh product outside the named product roots and the declared
+  output remains an input and may conservatively refuse the record. Such a
+  producer must use existing product custody; audit events cannot prove it.
+- The audit hook is a backstop for named-path reads, not a complete dependency
+  protocol for arbitrary descriptor I/O. Integer-descriptor opens and directory
+  listings carry no pathname; relative `os.open(..., dir_fd=...)` audit events
+  omit their directory descriptor. A semantic reader using these forms needs
+  explicit input authority before that path can claim early-cutoff coverage.
 
 ## Review history
 
