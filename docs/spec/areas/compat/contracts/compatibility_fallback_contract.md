@@ -1,67 +1,54 @@
-# Compatibility & Fallback Contract
+# Compatibility Diagnostics Contract
+
 **Spec ID:** 0211
-**Status:** Draft (implementation-targeting)
+**Status:** Active
 **Owner:** frontend + runtime + tooling
-**Goal:** Provide a deterministic, production-grade policy for handling unsupported Python constructs with explicit fallback tiers, standardized warnings, and clear error behavior.
 
----
+Molt targets full CPython `>=3.12` parity within the
+[verified subset](verified_subset_contract.md). Unsupported implementations and
+unqualified cells remain release work. The
+[dynamic-semantics policy](dynamic_execution_policy_contract.md) owns justified
+restrictions on excessive dynamism.
 
-## 1. Principles
-- **Determinism first:** Unsupported features never silently degrade.
-- **Explicit policy:** Users select fallback behavior via CLI flags or config.
-- **Actionable guidance:** Every fallback warning includes the performance impact and a Molt-native alternative.
-- **Hard errors when required:** If policy forbids fallback, compilation fails with a detailed error.
-- **No implicit CPython fallback:** `molt run` / `molt build` never fall back to CPython.
-- **No host CPython in binaries:** compiled artifacts are self-contained; the bridge is tooling-only and treated as unavailable for production builds.
-- **Parity scope:** full CPython `>=3.12` parity for the verified subset that Molt compiles.
-- **Dynamic policy alignment:** unrestricted `eval`/`exec`, runtime monkeypatching, and unrestricted reflection stay deferred unless explicitly re-approved under [dynamic_execution_policy_contract.md](dynamic_execution_policy_contract.md).
+**No host CPython in binaries:** compiled outputs execute without a host or
+fallback interpreter. The [Python execution boundary](cpython_bridge_policy.md)
+also applies to explicitly selected compatibility policies.
 
----
+## Policy and outcomes
 
-## 2. Tiers & Outcomes
-| Tier | Meaning | Behavior |
-| --- | --- | --- |
-| **native** | Fully supported by Molt | Compiles to optimized IR/runtime ops. |
-| **guarded** | Supported with runtime guards | Compiles; emits guard + deopt path. |
-| **bridge** | Execute via CPython/worker bridge | Emits warning; bridge must be enabled by policy. |
-| **unsupported** | No safe fallback | Hard error with explicit guidance. |
+`molt build --fallback {error|bridge}` and `[tool.molt.build].fallback` select
+how existing frontend compatibility sites handle unavailable implementations:
 
----
+| Policy | Unsupported operation |
+| --- | --- |
+| `error` (default) | Fail compilation with the feature, location and available guidance. |
+| `bridge` | Permit the existing frontend's deferred compatibility paths with warnings. A path lowered to `bridge_unavailable` fails when reached; other unsupported sites can still reject compilation. |
 
-## 3. Policy Controls
-- CLI flag: `molt build --fallback {error|bridge}`
-  - `error` (default): Any non-native tier fails compilation.
-  - `bridge`: Allows bridge-tier constructs with warnings in tooling-only flows; compiled binaries treat bridge as unavailable and fail with a bridge-unavailable error.
+The option does not enable execution through CPython. Native/WASM lower the
+unavailable marker to their runtime boundary; native currently prints
+`Molt bridge unavailable: ...` and exits with status 1. Other shipped backend
+implementations and target qualification remain governed by their owning cells.
 
----
+Supported generic calls and guarded specialization retain Molt runtime dispatch
+and the required Python effects. A guard does not imply a CPython deoptimization
+path, and `error` does not prohibit supported guarded operations.
 
-## 4. Standardized Diagnostics
-All non-native features must emit a warning (or error) with:
-- Feature identifier (e.g., `with`, `open()`, `match`, `async for`).
-- Source location (file:line:col).
-- Tier selected (`guarded` or `bridge`).
-- **Impact**: perf/memory risk (Low/Med/High).
-- **Replacement guidance**: Molt-native alternative or refactor suggestion.
+## Diagnostics
 
-**Format (example):**
-```
-[MOLT_COMPAT] tier=bridge impact=high feature=open() location=app.py:12:8
-  fallback: CPython bridge
-  replace: use io.open or moltlib.io.stream
-```
+`molt.compat.CompatibilityReporter` owns compatibility warnings and errors.
+Warnings identify the tier, impact, feature and source location; available detail
+and replacement guidance follow. Errors include the verified-subset boundary
+and a specific replacement or default workaround. Running reference CPython
+separately is development guidance, never an emitted fallback path.
 
----
+`MOLT_COMPAT_WARNINGS=0` suppresses warnings. It grants no capability and changes
+neither compilation refusal nor an unavailable operation's runtime behavior.
 
-## 5. First-pass Implementation Rules
-- Frontend must detect unsupported constructs during AST lowering.
-- The compiler selects the **best available tier** based on the feature and policy.
-- If the policy forbids fallback, compilation fails with a `MOLT_COMPAT_ERROR`.
-- If the policy allows fallback but no bridge is wired, compilation fails with a
-  `MOLT_COMPAT_BRIDGE_UNAVAILABLE` error.
+## Authorities
 
----
-
-## 6. Roadmap Hooks
-- TODO(syntax, owner:frontend, milestone:M2, priority:P2, status:missing): full `with`/contextlib lowering with exception flow.
-- TODO(type-coverage, owner:frontend, milestone:TC3, priority:P2, status:missing): full import/module fallback classification.
-- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge contract and enforcement hooks.
+- CLI selection: `molt.cli.entrypoint_parser` and `entrypoint_dispatch`.
+- Diagnostics: `molt.compat`.
+- Frontend unavailable operation: `frontend/lowering/emission_core.py`.
+- Native/WASM runtime boundary: `molt_bridge_unavailable` in
+  `runtime/molt-runtime/src/builtins/platform.rs` and the generated WASM ABI.
+- Extension support: [libmolt ABI contract](libmolt_extension_abi_contract.md).

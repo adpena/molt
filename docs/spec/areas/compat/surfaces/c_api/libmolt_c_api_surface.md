@@ -10,7 +10,7 @@ performance-first C-extension compatibility without embedding CPython.
 ## 1. Principles
 - Native Molt execution is the default and fastest path.
 - `libmolt` is the primary C-extension compatibility path.
-- CPython bridge modes are explicit, opt-in escape hatches only.
+- Extensions execute against Molt; the [Python execution boundary](../../contracts/cpython_bridge_policy.md) excludes a host interpreter.
 - No CPython ABI compatibility; extensions must be recompiled.
 - Capability gating and determinism rules apply to all extensions.
 
@@ -340,6 +340,9 @@ Extensions should declare:
 
 ---
 
-## 9. Relationship to Bridge Modes
-- The CPython bridge remains an explicit, capability-gated escape hatch.
-- `libmolt` is the primary compatibility path and the performance default.
+## 9. Execution boundary
+
+Source-recompiled extensions use the [libmolt ABI contract](../../contracts/libmolt_extension_abi_contract.md).
+Runtime/C-API bridges preserve Molt object ownership and do not delegate to a
+host CPython interpreter. Missing extension support remains a compatibility
+obligation under the [Python execution boundary](../../contracts/cpython_bridge_policy.md).

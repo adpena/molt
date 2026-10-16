@@ -229,7 +229,7 @@ uv run --python 3.14 python3 tools/bench.py --compare cpython
 ### C-extension trampoline attestation
 
 Use `tools/benchmark_cext_trampoline.py` when changing C-extension ingress,
-execution custody, or CPython bridge allocation. The tool builds one release
+execution custody, or C-API object bridge allocation. The tool builds one release
 test executable with the allocation probe, binds its path, size, and SHA-256,
 then launches that exact binary directly in independent processes. The tool
 measures both sealed admitted calls and the nested checked boundary used by

@@ -2,12 +2,12 @@
 **Spec ID:** 0212
 **Status:** Draft
 **Owner:** runtime
-**Goal:** Define the subset of `Python.h` exposed by Molt's runtime for C extensions and the Bridge.
+**Goal:** Define the subset of `Python.h` exposed by Molt's runtime for source-recompiled C extensions.
 
 ## 1. Strategy
 - **Binary Compatibility:** Molt does *not* aim for ABI compatibility with `libpython.so`. Extensions must be recompiled against `libmolt`.
 - **Source Compatibility:** We aim for source compatibility for a high-value subset of the Limited API (Py_LIMITED_API).
-- **Primary Path:** `libmolt` is the primary C-extension compatibility path; CPython bridge modes are explicit, opt-in escape hatches.
+- **Execution Path:** extensions are rebuilt against `libmolt` and execute without host CPython; see the [Python execution boundary](../../contracts/cpython_bridge_policy.md).
 - **V0 Contract:** The target surface area and semantics are defined in
   `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`.
 - **Current Status:** A `libmolt` C-API bootstrap surface is implemented with

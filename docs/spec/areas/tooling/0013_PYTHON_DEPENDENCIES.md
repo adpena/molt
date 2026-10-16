@@ -12,20 +12,17 @@
 - Vendored into the build graph using `uv.lock` as the source of truth.
 - Deterministic builds require exact hashes in lockfiles.
 
-### 1.2 Tier B: Molt Packages (Native/WASM)
-- High-impact libraries gain native implementations (Rust or WASM).
-- Examples: `molt_json`, `molt_msgpack`, `molt_cbor`, data/IO connectors.
-- Capability gating enforced at package boundaries.
+### 1.2 Tier B: Native/WASM Packages
+- Compile upstream package source and reuse its native kernels through supported compiler/runtime primitives and ABIs.
+- Package compatibility does not require Molt-specific substitutes for upstream libraries.
+- Capability gating is enforced at package boundaries.
 - C-extension compatibility is achieved by recompiling against `libmolt`
   (see `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`).
 
-### 1.3 Tier C: CPython Bridge (Explicit Escape Hatch)
-- Primary C-extension strategy is to recompile against `libmolt` (Tier B).
-- The CPython bridge is opt-in and capability-gated, never the default.
-- When enabled, run in a CPython worker process with Arrow IPC and structured codecs.
-- Deterministic mode restricts nondeterministic APIs unless explicitly allowed.
- - See `docs/spec/areas/compat/contracts/cpython_bridge_policy.md` for bridge modes,
-   capability rules, and performance guardrails.
+### 1.3 Tier C: Unresolved Compatibility
+- Existing Tier C classifications identify dependencies requiring further source, ABI or packaging work; they do not provide an execution fallback.
+- Rebuild compatible extensions against `libmolt`; report unsupported inputs as blockers.
+- The [Python execution boundary](../compat/contracts/cpython_bridge_policy.md) excludes embedded and worker-process CPython from compiled execution.
 
 ---
 
@@ -35,8 +32,9 @@
 3) Classify dependencies into Tier A/B/C.
 4) Compile Tier A in-process.
 5) Bind Tier B as Molt Packages.
-6) Route Tier C through the CPython bridge only when explicitly enabled; otherwise
-   fail fast with a compatibility error.
+6) Resolve Tier C blockers through source compilation or supported extension
+   rebuilding before claiming support; a tier override supplies neither an ABI
+   implementation nor a host interpreter.
 
 ---
 
@@ -69,15 +67,17 @@ Each dependency should declare:
 
 ---
 
-## 5. CPython Bridge Constraints
-- CPython bridge must be isolated and capability-scoped.
-- All data must cross via Arrow IPC or MsgPack/CBOR.
-- Bridge is opt-in and explicitly disabled in strict deterministic builds.
+## 5. Execution boundary
+
+Pinned CPython may run as a development-side reference or build tool. Shipped
+programs and their extensions execute within Molt without a host Python runtime.
+Explicit application IPC retains its own contract and cannot silently replace an
+unsupported Python dependency.
 
 ---
 
 ## 6. Acceptance Criteria
 - Common pure-Python libraries compile and run without modification.
-- C-extension packages have a documented fallback path via the bridge.
+- Supported C-extension packages have a qualified source-rebuild and libmolt execution path.
 - Deterministic builds fail fast on unsupported or unpinned dependencies.
 - High-value C-extensions can be recompiled against `libmolt` with stable ABI tags.

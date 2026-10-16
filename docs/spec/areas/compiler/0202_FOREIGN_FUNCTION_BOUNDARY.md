@@ -1,60 +1,32 @@
-# Molt Foreign Function Boundary (FFB) v0.1
-**Status:** Draft
-**Goal:** Define safe, performant interop with non-Molt code while preserving correctness.
+# Molt Foreign Function Boundary
 
-Molt’s long-term stance:
-- Tier 0: no CPython C-extension loading.
-- Tier 1: `libmolt` C-API for recompiled extensions (primary path).
-- Tier 2: optional CPython bridge mode with strict constraints.
-- See `docs/spec/areas/compat/contracts/cpython_bridge_policy.md` for the PyO3 bridge spec and
-  capability-gated CPython fallback design.
+**Status:** Active contract; implementation and target qualification tracked separately
+**Owner:** compiler + runtime + tooling
 
-## Interop modes
-A) Molt Packages (preferred): Rust/WASM components with declared effects + ABI
-B) `libmolt` extensions (preferred for C-extensions): recompiled against `libmolt` with declared capabilities
-C) WASM modules: portable sandbox + capability boundary
-D) Legacy CPython extensions: bridge-only; opaque calls with conservative assumptions
+Molt compiles admitted package source and rebuilds native extensions against
+[`libmolt`](../compat/contracts/libmolt_extension_abi_contract.md). Rust/WASM
+components and target host imports retain their explicit ABI, ownership and
+capability contracts. The [Python execution boundary](../compat/contracts/cpython_bridge_policy.md)
+excludes embedded CPython and Python-worker fallback from emitted programs.
 
-## Core contract: Effects + Ownership
-Effects (conservative categories):
-- `pure`, `alloc`, `io`, `mutates(args=[...])`, `throws(types=[...])`, `nondet`
-Unknown → assume worst-case: `io + nondet + mutates(all) + throws(any)`.
+## Effects and ownership
 
-Ownership:
-- who allocates/frees
-- whether foreign code retains references (if yes → values are pinned/escaped)
+Foreign calls declare allocation, I/O, mutation, exceptions and nondeterminism.
+Unknown effects remain conservative: optimizations cannot reorder, eliminate or
+specialize through them without a valid proof. The boundary records allocation
+and deallocation ownership, retained references, callback/reentry behavior,
+buffer extent and lifetime, and error transfer. Capability checks precede the
+protected operation.
 
-## Compiler rules at the boundary
-- No reordering/elimination across unknown effects
-- No alias assumptions unless declared
-- Guarded specialization only with explicit contracts
+Shared compiler/runtime and C-API primitives provide ecosystem compatibility.
+Keep upstream native kernels and Python APIs; do not substitute a Molt-specific
+NumPy, pandas or other package implementation. Missing source or ABI support is
+an explicit compatibility obligation.
 
-## WASM ABI sketch (recommended baseline)
-- strings/bytes: ptr+len in linear memory (UTF-8)
-- results: ok(ptr,len) or err(code,ptr,len)
-- capability table for FS/network; deterministic mode optional
+## Qualification
 
-## Pandas and the “super useful” question
-Reality: pandas depends heavily on native vectorized kernels (numpy/Cython). Molt cannot reliably “introspect compiled C” and safely optimize through it.
-
-Molt strategies that *do* make it useful for pandas-like workloads:
-1) Molt-native columnar stack (Arrow-like) + Rust kernels + pandas-subset API
-2) WASM analytics kernels (portable) called from Molt-compiled orchestration
-3) Bridge via process boundary: call CPython/pandas worker over Arrow IPC (migration path)
-
-Recommendation: implement (3) early for practicality; (1) as the long-term win.
-
-## Web development usefulness
-Molt can deliver immediate wins by compiling:
-- routing, middleware, business logic
-- serialization
-- DB row mapping fast paths
-- async I/O without a CPython-style GIL
-
-DB drivers: prefer Molt-native Rust clients; allow legacy behind FFB in Tier 1 bridge mode.
-
-## Validation requirements
-- Declared effect signatures (or worst-case default)
-- ABI fuzz tests
-- differential tests vs reference implementations
-- stress tests for concurrency + memory safety
+Use the owning ABI and capability authorities for each target. Validate actual
+source-recompiled extensions against the selected CPython reference, including
+callback order, failure transfer, cleanup and concurrency. Fuzz malformed ABI
+inputs and measure boundary costs before selecting specialization or batching.
+Development-side reference execution adds no interpreter dependency to guests.

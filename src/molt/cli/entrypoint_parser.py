@@ -100,7 +100,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--fallback",
         choices=["error", "bridge"],
         default=None,
-        help="Fallback policy for unsupported constructs.",
+        help=(
+            "Unsupported-construct policy: error at compile time (default), or "
+            "bridge diagnostics with unavailable-path failure; no host Python."
+        ),
     )
     build_parser.add_argument(
         "--type-facts",
