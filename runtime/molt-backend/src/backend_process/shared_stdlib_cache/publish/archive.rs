@@ -14,9 +14,9 @@ pub(crate) fn publish_shared_stdlib_cache_archive(
     partition_manifest: &str,
 ) -> io::Result<()> {
     with_shared_stdlib_cache_publish_lock(stdlib_path, || {
-        // A pre-transfer failure preserves the prior generation. A successful
-        // replacement followed by a durability failure does not: invalidate its
-        // now-mixed sidecars while still holding the publication lock.
+        // A pre-transfer failure preserves the prior generation. A replacement
+        // followed by a sidecar failure does not: invalidate its now-mixed
+        // sidecars while still holding the publication lock.
         if let Err(error) = publish_archive(stdlib_path) {
             // The shared archive writer keeps the typed replacement state in
             // its io::Error. Preserve it while invalidating only a committed
@@ -148,7 +148,7 @@ mod tests {
                 Err(AtomicPublicationError::new(
                     destination,
                     PublicationState::Replaced,
-                    io::Error::other("injected post-replacement durability failure"),
+                    io::Error::other("injected post-replacement failure"),
                 )
                 .into())
             },

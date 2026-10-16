@@ -190,7 +190,7 @@ mod tests {
         let primary = AtomicPublicationError::new(
             Path::new("stdlib.a"),
             PublicationState::Replaced,
-            io::Error::new(io::ErrorKind::InvalidData, "primary durability failure"),
+            io::Error::new(io::ErrorKind::InvalidData, "primary post-replacement failure"),
         );
         let result: io::Result<()> = finish_publication_lock(
             Path::new("stdlib.a.publish.lock"),
@@ -205,7 +205,7 @@ mod tests {
         let detail = error.to_string();
         for expected in [
             "destination replaced",
-            "primary durability failure",
+            "primary post-replacement failure",
             "injected unlock failure",
             "stdlib.a.publish.lock",
         ] {
