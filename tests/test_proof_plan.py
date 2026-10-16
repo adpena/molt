@@ -1623,7 +1623,12 @@ def test_runtime_import_conformance_receivers_execute_both_targets() -> None:
             "replace-builtins",
         )
     )
-    assert row.evidence_outputs == ("proof-receipts/evidence/import-from-codec",)
+    assert not row.evidence_outputs
+    assert row.data["env"]["MOLT_DIFF_MEASURE_RSS"] == "0"
+    assert "MOLT_DIFF_RESULTS_JSONL" not in row.data["env"]
+    assert "--json-output" not in row.argv
+    assert "--log-aggregate" not in row.argv
+    assert "--json" in row.argv
     for option, value in (
         ("--target", "native,wasm"),
         ("--jobs", "1"),
@@ -1631,8 +1636,7 @@ def test_runtime_import_conformance_receivers_execute_both_targets() -> None:
         ("--stdlib-profile", "full"),
         ("--python-version", "3.12"),
         ("--molt-target-python", "3.12"),
-        ("--json-output", "proof-receipts/evidence/import-from-codec/summary.json"),
-        ("--log-aggregate", "proof-receipts/evidence/import-from-codec/output.log"),
+        ("--evidence-dir", "runtime-import"),
     ):
         assert row.argv[row.argv.index(option) + 1] == value
     assert "--no-retry-oom" in row.argv

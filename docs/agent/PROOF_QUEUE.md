@@ -399,6 +399,17 @@ dyld behavior is unchanged.
 Without selection, existing unqueued cross-platform payload placement remains
 unchanged; no drive is auto-selected.
 
+For differential diagnostics, `tests/molt_diff.py --evidence-dir <purpose>`
+writes `summary.json`, `results.jsonl` and `output.log` under
+`proof_scratch_root/differential/<purpose>`. The purpose is a portable relative
+path. Queued runs use their fresh admitted scratch root; direct runs use the
+canonical development scratch root. CI obtains that same root from
+`tools/build_control_path.py` for artifact retention. Explicit summary, results
+or aggregate-log selectors cannot be combined with this option; all conflicts
+are reported before evidence creation. `--json` independently emits the summary
+to standard output. Semantic conformance cells can omit optional RSS timing
+without disabling the mandatory process-tree memory guard.
+
 Physical build storage and proof evidence are separate authorities. Use
 `--cargo-output-root` (submission field `cargo_output_root`) to select an existing
 absolute output directory for a Cargo proof. The selection is frozen at

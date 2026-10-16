@@ -1101,7 +1101,7 @@ dependencies = []
 [[ci_family]]
 name = "wasm"
 description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
-inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py", "tools/compat/**", "tools/gen_reconstructed_function_fixtures.py", "tests/fixtures/reconstructed_functions/**", "tests/reconstructed_function_test_support.py", "tests/differential/stdlib/json_encoder_hooks.py"]
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py", "tools/compat/**", "tools/build_control_path.py", "tools/gen_reconstructed_function_fixtures.py", "tests/fixtures/reconstructed_functions/**", "tests/reconstructed_function_test_support.py", "tests/differential/stdlib/json_encoder_hooks.py"]
 executor = "github-job"
 workflow = ".github/workflows/molt-wasm-ci.yml"
 job = "wasm-build"
@@ -2847,7 +2847,6 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld"
 [[command]]
 id = "wasm.test.runtime-import-conformance"
 cargo_native_units = { target = ["c", "c++"] }
-evidence_outputs = ["proof-receipts/evidence/import-from-codec"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2856,8 +2855,8 @@ timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_DIFF_BUILD_TIMEOUT", "MOLT_COMPAT_WASM_BUILD_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = []
-env = { MOLT_BACKEND_DAEMON = "0", MOLT_BACKEND_PROFILE = "dev", MOLT_DIFF_TIMEOUT = "60", MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC = "60", MOLT_DIFF_RESULTS_JSONL = "proof-receipts/evidence/import-from-codec/results.jsonl" }
-argv = ["python3", "tools/venv_exec.py", "python3", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "dev", "--stdlib-profile", "full", "--target", "native,wasm", "--jobs", "1", "--no-retry-oom", "--files-from", "tests/fixtures/reconstructed_functions/TESTS.txt", "--json-output", "proof-receipts/evidence/import-from-codec/summary.json", "--log-aggregate", "proof-receipts/evidence/import-from-codec/output.log", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"]
+env = { MOLT_BACKEND_DAEMON = "0", MOLT_BACKEND_PROFILE = "dev", MOLT_DIFF_TIMEOUT = "60", MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC = "60", MOLT_DIFF_MEASURE_RSS = "0" }
+argv = ["python3", "tools/venv_exec.py", "python3", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "dev", "--stdlib-profile", "full", "--target", "native,wasm", "--jobs", "1", "--no-retry-oom", "--files-from", "tests/fixtures/reconstructed_functions/TESTS.txt", "--evidence-dir", "runtime-import", "--json", "tests/differential/stdlib/json_encoder_hooks.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 
 [[command]]

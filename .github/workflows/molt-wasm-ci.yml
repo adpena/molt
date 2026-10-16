@@ -104,7 +104,7 @@ jobs:
           name: proof-receipt-wasm
           path: |
             proof-receipts/wasm.json
-            proof-receipts/evidence/import-from-codec/
+            ${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/differential/runtime-import/', steps.build-control.outputs.proof_scratch_root) || '' }}
             proof-receipts/evidence/split-runtime/
             ${{ steps.build-control.outputs.root }}/build_failures/*.json
             ${{ steps.build-control.outputs.root }}/runtime_wasm_generations/*.json
@@ -119,7 +119,7 @@ jobs:
           name: proof-diagnostics-wasm
           path: |
             proof-receipts/wasm.json
-            proof-receipts/evidence/import-from-codec/
+            ${{ steps.build-control.outputs.proof_scratch_root != '' && format('{0}/differential/runtime-import/', steps.build-control.outputs.proof_scratch_root) || '' }}
             proof-receipts/evidence/split-runtime/
             ${{ steps.build-control.outputs.profile_log }}
             ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}

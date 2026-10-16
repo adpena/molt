@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import gc
+import json
 import sys
 import signal
 import weakref
@@ -19,7 +20,156 @@ for _path in (_ROOT, _ROOT / "tests", _ROOT / "src"):
         sys.path.insert(0, str(_path))
 
 import molt_diff  # noqa: E402
-from tests.process_guard_common import install_module_view  # noqa: E402
+from tests.process_guard_common import (  # noqa: E402
+    install_module_view,
+    run_guarded_test_process,
+)
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_evidence_directory_uses_configured_run_scratch(tmp_path, queued):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    artifact_root = tmp_path / "artifacts"
+    env = {
+        "MOLT_EXT_ROOT": str(artifact_root),
+        "MOLT_TARGET_ROOT": str(tmp_path / "tools"),
+        "MOLT_USE_SCCACHE": "0",
+    }
+    if queued:
+        env["MOLT_PROOF_SCRATCH_ROOT"] = str(tmp_path / "proof-scratch")
+    molt_diff._configure_diff_artifact_environment(repo_root=repo, environment=env)
+    args = SimpleNamespace(
+        evidence_dir="runtime/import", json_output=None, log_aggregate=None, json=True
+    )
+
+    molt_diff._configure_diff_evidence(args, repo_root=repo, environment=env)
+
+    root = tmp_path / "proof-scratch" if queued else Path(env["MOLT_DIFF_TMPDIR"])
+    evidence = root / "differential" / "runtime" / "import"
+    assert evidence.is_dir()
+    assert env["MOLT_DIFF_SUMMARY"] == str(evidence / "summary.json")
+    assert env["MOLT_DIFF_RESULTS_JSONL"] == str(evidence / "results.jsonl")
+    assert args.log_aggregate == str(evidence / "output.log")
+    assert args.json_output is None
+    assert args.json is True
+    assert not list(repo.iterdir())
+
+
+@pytest.mark.parametrize(
+    "selectors",
+    [
+        ("--json-output",),
+        ("--log-aggregate",),
+        ("MOLT_DIFF_SUMMARY",),
+        ("MOLT_DIFF_RESULTS_JSONL",),
+        (
+            "--json-output",
+            "--log-aggregate",
+            "MOLT_DIFF_SUMMARY",
+            "MOLT_DIFF_RESULTS_JSONL",
+        ),
+    ],
+)
+def test_evidence_directory_reports_all_competing_owners(tmp_path, selectors):
+    env = {"MOLT_PROOF_SCRATCH_ROOT": str(tmp_path / "scratch")}
+    env.update({name: "elsewhere" for name in selectors if not name.startswith("--")})
+    args = SimpleNamespace(
+        evidence_dir="runtime-import",
+        json_output="elsewhere" if "--json-output" in selectors else None,
+        log_aggregate="elsewhere" if "--log-aggregate" in selectors else None,
+    )
+    original_env = dict(env)
+    original_args = vars(args).copy()
+
+    with pytest.raises(ValueError) as error:
+        molt_diff._configure_diff_evidence(args, repo_root=tmp_path, environment=env)
+
+    assert all(selector in str(error.value) for selector in selectors)
+    assert env == original_env and vars(args) == original_args
+    assert not (tmp_path / "scratch").exists()
+
+
+@pytest.mark.parametrize(
+    "purpose", ["/absolute", "../escape", "a/../escape", r"C:\escape"]
+)
+def test_evidence_directory_rejects_nonportable_purposes(tmp_path, purpose):
+    env = {"MOLT_PROOF_SCRATCH_ROOT": str(tmp_path / "scratch")}
+    args = SimpleNamespace(evidence_dir=purpose, json_output=None, log_aggregate=None)
+
+    with pytest.raises(ValueError, match="portable relative"):
+        molt_diff._configure_diff_evidence(args, repo_root=tmp_path, environment=env)
+
+    assert not (tmp_path / "scratch").exists()
+
+
+def test_explicit_artifact_paths_keep_the_existing_mode(tmp_path):
+    args = SimpleNamespace(
+        evidence_dir=None, json_output="summary.json", log_aggregate="output.log"
+    )
+    env = {"MOLT_DIFF_SUMMARY": "original", "MOLT_DIFF_RESULTS_JSONL": "results"}
+    original_env = dict(env)
+    original_args = vars(args).copy()
+
+    molt_diff._configure_diff_evidence(args, repo_root=tmp_path, environment=env)
+
+    assert env == original_env and vars(args) == original_args
+
+
+def test_evidence_directory_rejects_a_link_outside_owned_scratch(tmp_path):
+    scratch = tmp_path / "scratch"
+    outside = tmp_path / "outside"
+    scratch.mkdir()
+    outside.mkdir()
+    try:
+        (scratch / "differential").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable on this host")
+    args = SimpleNamespace(
+        evidence_dir="runtime-import", json_output=None, log_aggregate=None
+    )
+    env = {"MOLT_PROOF_SCRATCH_ROOT": str(scratch)}
+
+    with pytest.raises(ValueError, match="link|junction"):
+        molt_diff._configure_diff_evidence(args, repo_root=tmp_path, environment=env)
+
+    assert not list(outside.iterdir())
+
+
+def test_cli_evidence_directory_reports_every_conflict_before_execution(tmp_path):
+    env = {
+        **molt_diff.os.environ,
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        "MOLT_TARGET_ROOT": str(tmp_path / "tools"),
+        "MOLT_USE_SCCACHE": "0",
+        "MOLT_DIFF_SUMMARY": str(tmp_path / "old-summary.json"),
+        "MOLT_DIFF_RESULTS_JSONL": str(tmp_path / "old-results.jsonl"),
+    }
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            str(_ROOT / "tests/molt_diff.py"),
+            "--evidence-dir",
+            "runtime-import",
+            "--json-output",
+            str(tmp_path / "explicit-summary.json"),
+            "--log-aggregate",
+            str(tmp_path / "explicit-output.log"),
+            str(_ROOT / "examples/hello.py"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (
+        "conflicts with explicit artifact paths: --json-output, --log-aggregate, "
+        "MOLT_DIFF_SUMMARY, MOLT_DIFF_RESULTS_JSONL"
+    ) in result.stderr
+    assert not (tmp_path / "explicit-summary.json").exists()
+    assert not (tmp_path / "explicit-output.log").exists()
 
 
 def _started(summary: dict) -> list[dict]:
@@ -38,6 +188,7 @@ def suite(tmp_path, monkeypatch):
         guard_signal=None,
         original_trip_outcome=molt_diff._memory_guard_trip_outcome,
         original_run_single=molt_diff._diff_run_single,
+        original_emit_json=molt_diff._emit_json,
     )
     for name in (
         "_ensure_diff_run_lock",
@@ -148,6 +299,40 @@ def suite(tmp_path, monkeypatch):
     monkeypatch.setattr(molt_diff.concurrent.futures, "ProcessPoolExecutor", Executor)
     monkeypatch.setattr(molt_diff.concurrent.futures, "wait", complete_one)
     return state
+
+
+def test_evidence_directory_keeps_one_summary_writer(
+    suite, tmp_path, monkeypatch, capsys
+):
+    args = SimpleNamespace(
+        evidence_dir="runtime-import", json_output=None, log_aggregate=None, json=True
+    )
+    env = {"MOLT_PROOF_SCRATCH_ROOT": str(tmp_path / "proof-scratch")}
+    molt_diff._configure_diff_evidence(args, repo_root=tmp_path, environment=env)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    writes = []
+
+    def emit(summary, path, stdout):
+        if path:
+            writes.append(path)
+        suite.original_emit_json(summary, path, stdout)
+
+    monkeypatch.setattr(molt_diff, "_emit_json", emit)
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=1,
+        log_aggregate=Path(args.log_aggregate),
+        failures_output=tmp_path / "failures.txt",
+    )
+    capsys.readouterr()
+    molt_diff._emit_json(summary, args.json_output, args.json)
+
+    assert writes == [env["MOLT_DIFF_SUMMARY"]]
+    assert json.loads(Path(writes[0]).read_text()) == json.loads(json.dumps(summary))
+    assert Path(args.log_aggregate).is_file()
+    assert json.loads(capsys.readouterr().out) == json.loads(json.dumps(summary))
 
 
 @pytest.mark.parametrize("jobs", (1, 2))
