@@ -203,6 +203,12 @@ resolved through `python_binding_flow` (HF-203). Attribute and property keys
 are typed fields of the op format (HF-202). Compiler options are a typed request
 struct, not process environment (HF-211).
 
+Backend language and runtime OS are separate facts. Native and WASM requests
+carry their selected runtime platform; Rust, Luau and MLIR source emission
+preserves an unknown OS until one is selected. Platform-specific namespace and
+optimization decisions require positive target facts and never inherit the
+compiler host.
+
 ### E. Verification that matches the claim
 
 Every shipped contract has meaningful tests in its claimed proof cells
