@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use molt_backend::SimpleIR;
+use molt_backend::{NativeBackendModuleContext, SimpleIR};
 
 use super::super::super::{
     NativeApplicationArtifactOptions, NativeBatchJobSpec, NativeBatchObjectJob,
@@ -43,7 +43,7 @@ pub(super) fn materialize_native_application_batch_jobs(
             &NativeBatchObjectJob {
                 ir: batch_ir,
                 code_slots: (batch_idx == 0).then(|| std::mem::take(&mut options.code_slots)),
-                module_context: plan.module_context.clone(),
+                module_context: NativeBackendModuleContext::default(),
                 codegen_environment:
                     molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,
                 target_triple: options.target_triple.map(str::to_owned),
@@ -63,7 +63,7 @@ pub(super) fn materialize_native_application_batch_jobs(
                     None
                 },
             }
-            .close_dependencies(),
+            .close_dependencies(&plan.module_context),
         )?;
         batch_specs.push(NativeBatchJobSpec {
             job_path,
