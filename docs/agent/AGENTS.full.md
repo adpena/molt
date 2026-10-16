@@ -1095,11 +1095,11 @@ working in this repo:
 - Never build coverage or implementations that rely on host Python in any way.
 - Always assume compiled Molt binaries will run in environments with no Python installation at all.
 - Stdlib modules must be Rust-native intrinsics for compiled binaries; any Python stdlib files may only be thin, intrinsic-forwarding wrappers with zero host-Python imports.
-- Absolutely no CPython stdlib imports or `_py_*` fallback modules in compiled binaries (tooling-only shims are allowed).
+- Emitted programs execute admitted compiled Python and Molt runtime code without an ambient host interpreter. Module spelling does not establish execution custody; see the canonical Python execution boundary.
 - Intrinsics are mandatory: missing intrinsics must raise immediately (standardized `RuntimeError`), and differential tests should fail fast when intrinsics are missing.
 
 ## Intrinsics & Stdlib Lowering (Non-Negotiable)
-- All stdlib behavior must lower into Rust intrinsics; Python stdlib files are only thin wrappers for argument normalization, error mapping, and capability gating.
+- Stdlib behavior may be compiled Python algorithms or runtime primitives. Choose the owner from semantics and measured performance; source classification does not attest target parity.
 - Load intrinsics via `src/molt/stdlib/_intrinsics.py` (module `globals()` first, then `builtins._molt_intrinsics`); do not invent alternative registries or hidden import-time side effects.
 - Required behavior must use `require_intrinsic` or explicit `RuntimeError`/`ImportError` when missing; optional features must be explicit and capability-gated with clear errors, never silent fallback to host Python.
 - Standardize intrinsic naming and registration through `runtime/molt-runtime/src/intrinsics/manifest.pyi`, and regenerate `src/molt/_intrinsics.pyi` plus `runtime/molt-runtime/src/intrinsics/generated.rs` via `tools/gen_intrinsics.py`.
@@ -1472,7 +1472,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 
 ## Tooling Add-ons (Optional)
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks. Hooks are read-only by default; run explicit format/fix commands before staging when a check fails.
-- `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
+- `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (`--critical-allowlist` for gating, and `--update-doc` to refresh docs).
 - `python3 tools/check_dynamic_policy.py`: enforce dynamic-execution policy guardrails (no accidental policy drift for `eval`/`exec`, monkeypatching, or unrestricted reflection lanes).
 - `python3 tools/gen_stdlib_stubs.py --write`: write a stub for each stdlib union module Molt lacks and hold every stub to the one template (`--check` names drift).
 - `python3 tools/gen_stdlib_module_union.py --write`: regenerate the stdlib module union list used by stub syncing and checks, offline, from the pinned CPython snapshot `config/cpython_stdlib_snapshot.json`; `--refresh-sources` re-fetches that snapshot after a pin in `config/cpython_regrtest_sources.toml` moves.

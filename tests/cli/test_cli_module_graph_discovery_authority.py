@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 import inspect
 from pathlib import Path
@@ -12,7 +14,6 @@ import molt.cli as cli
 from molt.cli import module_graph
 from molt.cli import module_graph_discovery
 from molt.cli import module_graph_cache
-from molt.cli import module_import_scanner
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 
 _MODULE_GRAPH_DISCOVERY_NAMES = (
@@ -66,7 +67,7 @@ def test_cli_module_graph_discovery_authority_is_single_home() -> None:
 def test_scan_mode_projects_explicit_source_depth(
     full_scan: bool, module_name: str
 ) -> None:
-    assert module_import_scanner._module_import_scan_mode(
+    assert _source_import_scan._module_import_scan_mode(
         module_name, full_scan=full_scan
     ) == ("full" if full_scan else "module_init")
 
@@ -139,7 +140,7 @@ def test_initialization_seed_does_not_grant_dynamic_import_custody(
             with pytest.raises(
                 UnresolvedStaticImportError, match="runtime import custody"
             ):
-                module_import_scanner._collect_imports(
+                _source_import_scan._collect_imports(
                     ast.parse(entry.read_text(encoding="utf-8")),
                     module_name="pkg",
                     is_package=True,
@@ -180,7 +181,7 @@ def test_core_initialization_does_not_activate_undemanded_class_methods(
         ("import api\n", {"entry", "api"}),
         (
             "from api import Counter\nx = Counter()\nx.most_common()\n",
-            {"entry", "api", "heap", "classdep"},
+            {"entry", "api", "heap"},
         ),
         (
             "import api as library\nf = library.helper\nf()\n",
@@ -194,6 +195,10 @@ def test_core_initialization_does_not_activate_undemanded_class_methods(
 def test_deferred_source_demand_closes_only_live_source_owners(
     tmp_path: Path, entry_source: str, expected: set[str]
 ) -> None:
+    import json
+    import subprocess
+    import sys
+
     (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
     (tmp_path / "api.py").write_text(
         "class Counter:\n"
@@ -208,6 +213,33 @@ def test_deferred_source_demand_closes_only_live_source_owners(
     )
     for name in ("heap", "classdep", "helperdep", "deaddep", "callbackdep"):
         (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    observed_modules = {
+        "entry",
+        "api",
+        "heap",
+        "classdep",
+        "helperdep",
+        "deaddep",
+        "callbackdep",
+    }
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\n"
+            "sys.path.insert(0,sys.argv[1])\n"
+            "import entry\n"
+            "print(json.dumps(sorted(set(sys.modules)&set(json.loads(sys.argv[2])))))\n",
+            str(tmp_path),
+            json.dumps(sorted(observed_modules)),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert set(json.loads(executed.stdout)) == expected
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
     result = module_graph_discovery._discover_module_graph_from_paths(
@@ -313,33 +345,148 @@ def test_import_call_result_selects_members_like_an_import_alias(
     assert set(result.graph) == expected
 
 
-def test_module_getattr_demands_lazy_returned_class(tmp_path: Path) -> None:
-    (tmp_path / "api.py").write_text(
-        "def __getattr__(name):\n    from lazy import Result\n    return Result\n",
-        encoding="utf-8",
+@pytest.mark.parametrize(
+    ("hook", "entry_source", "expected"),
+    [
+        ("class", "import api\n", {"entry", "api"}),
+        ("class", "import api\napi.Result\n", {"entry", "api", "lazy"}),
+        ("class", "import api\napi.Result()\n", {"entry", "api", "lazy"}),
+        (
+            "class",
+            "import api\napi.Result().run()\n",
+            {"entry", "api", "lazy", "dependency"},
+        ),
+        (
+            "class",
+            "from api import Result as Selected\nSelected().run()\n",
+            {"entry", "api", "lazy", "dependency"},
+        ),
+        (
+            "alias",
+            "import api\napi.Result().run()\n",
+            {"entry", "api", "lazy", "dependency"},
+        ),
+        (
+            "imported",
+            "import api\napi.Result().run()\n",
+            {"entry", "api", "helper", "lazy", "dependency"},
+        ),
+        (
+            "instance",
+            "import api\napi.result.run()\n",
+            {"entry", "api", "lazy", "dependency"},
+        ),
+        (
+            "callback",
+            "import api\napi.callback()\n",
+            {"entry", "api", "lazy", "dependency"},
+        ),
+        (
+            "generator",
+            "import api\napi.items()\n",
+            {"entry", "api", "lazy"},
+        ),
+        (
+            "generator",
+            "import api\nnext(api.items())\n",
+            {"entry", "api", "lazy", "dependency"},
+        ),
+    ],
+)
+def test_module_getattr_demands_lazy_returned_class(
+    tmp_path: Path, monkeypatch, hook: str, entry_source: str, expected: set[str]
+) -> None:
+    import json
+    import subprocess
+    import sys
+    from molt.cli import module_resolution
+
+    direct = (
+        "def resolve(name):\n"
+        "    if name != 'Result':\n        raise AttributeError(name)\n"
+        "    from lazy import Result\n    return Result\n"
     )
+    if hook == "alias":
+        api = direct + "__getattr__ = resolve\n"
+    elif hook == "imported":
+        api = "from helper import resolve as __getattr__\n"
+    else:
+        selected, returned = {
+            "class": ("Result", "Result"),
+            "instance": ("result", "Result()"),
+            "callback": ("callback", "callback"),
+            "generator": ("items", "items"),
+        }[hook]
+        imported = "Result" if hook == "instance" else selected
+        api = (
+            "def __getattr__(name):\n"
+            f"    if name != {selected!r}:\n        raise AttributeError(name)\n"
+            f"    from lazy import {imported}\n    return {returned}\n"
+        )
+    (tmp_path / "api.py").write_text(api, encoding="utf-8")
+    (tmp_path / "helper.py").write_text(direct, encoding="utf-8")
     (tmp_path / "lazy.py").write_text(
-        "class Result:\n    def run(self):\n        import dependency\n",
+        "class Result:\n"
+        "    def run(self):\n        import dependency\n"
+        "    def unused(self):\n        import unused_dependency\n"
+        "def callback():\n    import dependency\n"
+        "def items():\n    import dependency\n    yield 1\n",
         encoding="utf-8",
     )
     (tmp_path / "dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "unused_dependency.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "entry.py").write_text(entry_source, encoding="utf-8")
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\n"
+            "sys.path.insert(0,sys.argv[1])\n"
+            "import entry\n"
+            "print(json.dumps(sorted(set(sys.modules)&set(json.loads(sys.argv[2])))))\n",
+            str(tmp_path),
+            json.dumps(
+                ["entry", "api", "helper", "lazy", "dependency", "unused_dependency"]
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert set(json.loads(executed.stdout)) == expected
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
-    for source, expected in (
-        ("import api\n", {"entry", "api"}),
-        ("import api\napi.Result().run()\n", {"entry", "api", "lazy", "dependency"}),
-    ):
-        (tmp_path / "entry.py").write_text(source, encoding="utf-8")
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "lazy-module-return",
+    )
+    parse = module_resolution._parse_source_for_target
+    parses = []
+
+    def observe_parse(*args, **kwargs):
+        parses.append(kwargs["filename"])
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(module_resolution, "_parse_source_for_target", observe_parse)
+    for warm in (False, True):
+        parses.clear()
         result = module_graph_discovery._discover_module_graph_from_paths(
             (tmp_path / "entry.py",),
             [tmp_path],
             [tmp_path],
             stdlib,
-            None,
+            tmp_path,
             set(),
             full_scan_roots=True,
         )
         assert set(result.graph) == expected
+        if warm:
+            assert not parses
+        else:
+            assert len(parses) == len(set(parses))
 
 
 @pytest.mark.parametrize(
@@ -718,7 +865,7 @@ def test_source_change_during_body_scan_refuses_fixpoint(tmp_path, monkeypatch):
         (tmp_path / f"{name}.py").write_text("VALUE = 1\n", encoding="utf-8")
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
-    collect = module_import_scanner._collect_imports_for_graph
+    collect = _source_import_scan._collect_imports_for_graph
 
     def mutate(*args, **kwargs):
         result = collect(*args, **kwargs)
@@ -726,7 +873,7 @@ def test_source_change_during_body_scan_refuses_fixpoint(tmp_path, monkeypatch):
             api.write_text("def live():\n    import other\n", encoding="utf-8")
         return result
 
-    monkeypatch.setattr(module_import_scanner, "_collect_imports_for_graph", mutate)
+    monkeypatch.setattr(_source_import_scan, "_collect_imports_for_graph", mutate)
     with pytest.raises(PythonSourceChangedError, match="source changed"):
         module_graph_discovery._discover_module_graph_from_paths(
             (tmp_path / "entry.py",),
@@ -806,3 +953,1003 @@ def test_deferred_assignment_publication_operations(tmp_path, publication, invok
         full_scan_roots=True,
     )
     assert ("dependency" in result.graph) is invoke
+
+
+@pytest.mark.parametrize("consume", [False, True])
+def test_generator_source_demand_is_resumed_not_its_creation(tmp_path, consume):
+    """Real import side effects distinguish factory creation from iteration."""
+    import sys
+
+    package = "_molt_generator_demand_oracle"
+    leaf = tmp_path / (package + ".py")
+    leaf.write_text("VALUE = 17\n", encoding="utf-8")
+    source = f"items = (__import__({package!r}) for item in (1,))\n" + (
+        "list(items)\n" if consume else ""
+    )
+    entry = tmp_path / "entry.py"
+    entry.write_text(source, encoding="utf-8")
+    old = sys.modules.pop(package, None)
+    sys.path.insert(0, str(tmp_path))
+    try:
+        exec(compile(source, str(entry), "exec", dont_inherit=True), {})
+        assert (package in sys.modules) is consume
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop(package, None)
+        if old is not None:
+            sys.modules[package] = old
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=False,
+    )
+    assert (package in result.graph) is consume
+    owners = result.scan_authority.by_module["entry"].deferred_owners
+    assert any(key[-1] == "GeneratorExp" for key, _args in owners) is consume
+
+
+@pytest.mark.parametrize("write_kind", ["named", "computed", "canonical-member"])
+def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
+    tmp_path, monkeypatch, write_kind
+):
+    import json
+    import subprocess
+    import sys
+    import time
+    from molt.cli import module_resolution
+
+    if write_kind == "canonical-member":
+        sources = {
+            "entry": "import api\napi.run()\n",
+            "api": "import typing\nfrom helper import trigger\ndef run():\n    trigger()\n    if typing.TYPE_CHECKING:\n        import late_leaf\n",
+            "helper": "def trigger():\n    import writer\n",
+            "writer": "import typing\ntyping.TYPE_CHECKING = True\n",
+            "typing": "TYPE_CHECKING = False\n",
+            "late_leaf": "VALUE = 1\n",
+        }
+        required = {"api", "helper", "writer", "typing", "late_leaf"}
+    else:
+        assignment = (
+            "api.callback = callback"
+            if write_kind == "named"
+            else "api.__dict__[choose()] = callback"
+        )
+        sources = {
+            "entry": "import api\napi.run()\n",
+            "api": "from original import callback\ndef run():\n    import writer\n    callback()\n",
+            "original": "def callback():\n    import original_leaf\n",
+            "writer": "import api\nfrom replacement import callback\ndef choose(): return 'callback'\n"
+            + assignment
+            + "\n",
+            "replacement": "def callback():\n    import late_leaf\n",
+            "original_leaf": "VALUE = 1\n",
+            "late_leaf": "VALUE = 1\n",
+        }
+        required = {"api", "original", "writer", "replacement", "late_leaf"}
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    (tmp_path / "never_reached.py").write_text(
+        "raise AssertionError\n", encoding="utf-8"
+    )
+    script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps(sorted(set(sys.modules)&set(json.loads(sys.argv[2])))))\n"
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            script,
+            str(tmp_path),
+            json.dumps(sorted(sources)),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert required <= set(json.loads(executed.stdout))
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-delta",
+    )
+    load = module_graph_discovery._load_module_import_scan
+    parse = module_resolution._parse_source_for_target
+    loads = []
+    parses = []
+
+    def observe_load(path, **kwargs):
+        loads.append(
+            (
+                kwargs["module_name"],
+                kwargs.get("source_owner"),
+                kwargs.get("namespace_premise"),
+            )
+        )
+        return load(path, **kwargs)
+
+    def observe_parse(*args, **kwargs):
+        parses.append(kwargs["filename"])
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module_graph_discovery, "_load_module_import_scan", observe_load
+    )
+    monkeypatch.setattr(module_resolution, "_parse_source_for_target", observe_parse)
+    for warm in (False, True):
+        loads.clear()
+        parses.clear()
+        started = time.perf_counter()
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            stdlib,
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert required <= result.graph.keys()
+        assert "never_reached" not in result.graph
+        assert not any("never_reached" in path for path in parses)
+        api_premises = {
+            premise
+            for module, owner, premise in loads
+            if module == "api" and owner is None
+        }
+        assert len(api_premises) == 2
+        assert (
+            len(
+                {
+                    premise
+                    for module, owner, premise in loads
+                    if module == "api" and owner is not None
+                }
+            )
+            == 2
+        )
+        final = result.scan_authority.by_module["api"].namespace_premise
+        assert final is not None
+        if write_kind == "named":
+            assert final.foreign_writes == ("callback",)
+        elif write_kind == "computed":
+            assert final.foreign_writes is None
+        else:
+            assert final.member_writes
+        if write_kind != "canonical-member":
+            assert (
+                sum(module == "entry" and owner is None for module, owner, _ in loads)
+                == 1
+            )
+        if warm:
+            assert not parses
+        else:
+            assert len(parses) == len(set(parses))
+        print(
+            "HF226_NAMESPACE_DELTA",
+            write_kind,
+            "warm",
+            warm,
+            "loads",
+            len(loads),
+            "parses",
+            len(parses),
+            "seconds",
+            time.perf_counter() - started,
+        )
+
+
+def test_package_child_bindings_bound_callback_namespace_without_scanning_children(
+    tmp_path,
+):
+    import json
+    import subprocess
+    import sys
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (tmp_path / "entry.py").write_text("import pkg\npkg.run()\n", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "marker = False\ndef run():\n    from helper import trigger\n    trigger()\n    if marker:\n        import late_leaf\n",
+        encoding="utf-8",
+    )
+    (package / "marker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (package / "unused.py").write_text("raise AssertionError\n", encoding="utf-8")
+    (tmp_path / "helper.py").write_text(
+        "def trigger():\n    import pkg.marker\n", encoding="utf-8"
+    )
+    (tmp_path / "late_leaf.py").write_text("VALUE = 1\n", encoding="utf-8")
+    script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps('late_leaf' in sys.modules))\n"
+    actual = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script, str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(actual.stdout) is True
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert {"late_leaf", "pkg.marker"} <= result.graph.keys()
+    assert "pkg.unused" not in result.graph
+    assert (
+        "marker"
+        in result.scan_authority.by_module["pkg"].namespace_premise.foreign_writes
+    )
+
+
+def test_artifact_owned_source_gap_widens_namespace_without_interpreting_it(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from molt.cli.models import _ImportAdmissionPolicy
+
+    sources = {
+        "entry": "import api\nimport native\napi.run()\n",
+        "api": "from typing import TYPE_CHECKING\ndef run():\n    if TYPE_CHECKING:\n        import late_leaf\n",
+        "typing": "TYPE_CHECKING = False\n",
+        "native": "import api\napi.TYPE_CHECKING = True\n",
+        "late_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps('late_leaf' in sys.modules))\n"
+    actual = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script, str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(actual.stdout) is True
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        import_admission_policy=_ImportAdmissionPolicy(
+            native_artifact_source_packages=frozenset({"native"})
+        ),
+        full_scan_roots=True,
+    )
+    assert "native" not in result.graph
+    assert "late_leaf" in result.graph
+    premise = result.scan_authority.by_module["api"].namespace_premise
+    assert premise.foreign_writes is None and premise.member_writes
+
+
+def test_late_foreign_all_write_wakes_previously_excluded_star_reader(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    sources = {
+        "entry": "import api\nimport writer\nimport consumer\nconsumer.run()\n",
+        "api": "__all__ = ['unused']\ndef callback():\n    import selected\ndef unused():\n    import unused_leaf\n",
+        "writer": "import api\napi.__all__ = ['callback']\n",
+        "consumer": "from api import *\ndef run():\n    callback()\n",
+        "selected": "VALUE = 1\n",
+        "unused_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    script = "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps(sorted(set(sys.modules)&{'selected','unused_leaf'})))\n"
+    actual = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script, str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(actual.stdout) == ["selected"]
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (tmp_path / "entry.py",),
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        full_scan_roots=True,
+    )
+    assert "selected" in result.graph
+    assert (
+        "__all__"
+        in result.scan_authority.by_module["api"].namespace_premise.foreign_writes
+    )
+
+
+def test_precomputed_namespace_mismatch_reprojects_identified_bytes(tmp_path):
+    from molt.cli import module_resolution
+    from molt.cli.module_source import PythonSourceSnapshot
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.target_python import TargetPythonVersion
+
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "from typing import TYPE_CHECKING\ncallback()\nif TYPE_CHECKING:\n    import lazy\n",
+        encoding="utf-8",
+    )
+    cache = module_resolution._ModuleResolutionCache()
+    target = TargetPythonVersion(3, 12, 0)
+    snapshot = PythonSourceSnapshot.capture(path)
+    unknown = module_graph_discovery._load_module_import_scan(
+        path,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        source_snapshot=snapshot,
+        target_python=target,
+    )
+    assert "lazy" in unknown.scan.imports
+    precomputed = module_graph_discovery._bind_precomputed_module_import_scan(
+        path,
+        module_name="entry",
+        import_scan_mode="full",
+        scan=unknown.scan,
+        snapshot=snapshot,
+        target_python=target,
+    )
+    precise = module_graph_discovery._load_module_import_scan(
+        path,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        source_snapshot=snapshot,
+        target_python=target,
+        precomputed_scan=precomputed,
+        namespace_premise=PythonNamespacePremise((), 0),
+    )
+    assert "lazy" not in precise.scan.imports
+    assert precise.snapshot is snapshot
+    assert (
+        precise.scan.source_requests.namespace_summary
+        == unknown.scan.source_requests.namespace_summary
+    )
+    assert len(cache.ast_cache) == 1
+
+
+def test_matching_precomputed_scan_keeps_bytes_until_graph_fixpoint(
+    tmp_path, monkeypatch
+):
+    from molt.cli import module_resolution
+    from molt.cli.module_source import PythonSourceChangedError, PythonSourceSnapshot
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.target_python import TargetPythonVersion
+
+    entry = tmp_path / "entry.py"
+    entry.write_text("from api import live\nlive()\n", encoding="utf-8")
+    (tmp_path / "api.py").write_text(
+        "def live():\n    import selected\n", encoding="utf-8"
+    )
+    (tmp_path / "selected.py").write_text("VALUE = 1\n", encoding="utf-8")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    target = TargetPythonVersion(3, 12, 0)
+    premise = PythonNamespacePremise((), 0)
+    snapshot = PythonSourceSnapshot.capture(entry)
+    prepared = module_graph_discovery._load_module_import_scan(
+        entry,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+        target_python=target,
+        namespace_premise=premise,
+    )
+    precomputed = module_graph_discovery._bind_precomputed_module_import_scan(
+        entry,
+        module_name="entry",
+        import_scan_mode="full",
+        scan=prepared.scan,
+        snapshot=snapshot,
+        is_package=False,
+        target_python=target,
+        namespace_premise=premise,
+    )
+    collect = _source_import_scan._collect_imports_for_graph
+
+    def mutate(*args, **kwargs):
+        result = collect(*args, **kwargs)
+        if kwargs.get("source_owner") is not None:
+            entry.write_text("import replaced\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(_source_import_scan, "_collect_imports_for_graph", mutate)
+    with pytest.raises(PythonSourceChangedError, match="source changed"):
+        module_graph_discovery._discover_module_graph_from_paths(
+            (entry,),
+            [tmp_path],
+            [tmp_path],
+            stdlib,
+            None,
+            set(),
+            full_scan_roots=True,
+            precomputed_scans_by_path={entry.resolve(): precomputed},
+            target_python=target,
+        )
+
+
+@pytest.mark.parametrize("explicit_input", ["source", "tree"])
+def test_matching_precomputed_scan_cannot_override_explicit_source(
+    tmp_path, explicit_input
+):
+    from molt.cli import module_resolution
+    from molt.cli.module_source import PythonSourceSnapshot
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+    from molt.target_python import TargetPythonVersion
+
+    path = tmp_path / "entry.py"
+    path.write_text("import stored\n", encoding="utf-8")
+    target = TargetPythonVersion(3, 12, 0)
+    premise = PythonNamespacePremise((), 0)
+    snapshot = PythonSourceSnapshot.capture(path)
+    cache = module_resolution._ModuleResolutionCache()
+    prepared = module_graph_discovery._load_module_import_scan(
+        path,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        source_snapshot=snapshot,
+        target_python=target,
+        namespace_premise=premise,
+    )
+    precomputed = module_graph_discovery._bind_precomputed_module_import_scan(
+        path,
+        module_name="entry",
+        import_scan_mode="full",
+        scan=prepared.scan,
+        snapshot=snapshot,
+        is_package=False,
+        target_python=target,
+        namespace_premise=premise,
+    )
+    source = "import supplied\n"
+    explicit = (
+        {"source": source}
+        if explicit_input == "source"
+        else {"tree": ast.parse(source)}
+    )
+    loaded = module_graph_discovery._load_module_import_scan(
+        path,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=cache,
+        project_root=None,
+        target_python=target,
+        namespace_premise=premise,
+        precomputed_scan=precomputed,
+        **explicit,
+    )
+    assert set(loaded.scan.imports) == {"supplied"}
+
+
+@pytest.mark.parametrize(
+    "activation",
+    ["unused", "called", "decorated", "unstarted-generator", "resumed-generator"],
+)
+def test_foreign_namespace_writes_require_actual_source_body_custody(
+    tmp_path, monkeypatch, activation
+):
+    import json
+    import subprocess
+    import sys
+    from molt.cli import module_resolution
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    write = "sys.modules[choose_module()].__dict__[choose_name()] = callback"
+    writer = (
+        "import sys\nfrom replacement import callback\n"
+        "def choose_module(): return 'api'\n"
+        "def choose_name(): return 'callback'\n"
+    )
+    if activation == "decorated":
+        writer += "def activate(fn):\n    fn()\n    return fn\n@activate\n"
+    writer += "def install():\n    " + write + "\n"
+    if "generator" in activation:
+        writer += "    yield 1\n"
+    invoke = {
+        "unused": "",
+        "called": "    writer.install()\n",
+        "decorated": "",
+        "unstarted-generator": "    writer.install()\n",
+        "resumed-generator": "    next(writer.install())\n",
+    }[activation]
+    sources = {
+        "entry": "import api\napi.run()\n",
+        "api": "def callback():\n    pass\ndef unused():\n    import unused_leaf\ndef run():\n    import writer\n"
+        + invoke
+        + "    callback()\n",
+        "writer": writer,
+        "replacement": "def callback():\n    import late_leaf\n",
+        "late_leaf": "VALUE = 1\n",
+        "unused_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\nprint(json.dumps(sorted(set(sys.modules)&set(json.loads(sys.argv[2])))))\n",
+            str(tmp_path),
+            json.dumps(sorted(sources)),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    actual = set(json.loads(executed.stdout))
+    writes_execute = activation in {"called", "decorated", "resumed-generator"}
+    assert ("late_leaf" in actual) is writes_execute
+    assert "unused_leaf" not in actual
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "writer-owner",
+    )
+    install = next(
+        node
+        for node in ast.parse(writer).body
+        if isinstance(node, ast.FunctionDef) and node.name == "install"
+    )
+    install_key = python_node_source_key(install)
+    load = module_graph_discovery._load_module_import_scan
+    parse = module_resolution._parse_source_for_target
+    body_loads = []
+    parses = []
+
+    def observe_load(path, **kwargs):
+        if (
+            kwargs.get("module_name") == "writer"
+            and kwargs.get("source_owner") == install_key
+        ):
+            body_loads.append(kwargs.get("namespace_premise"))
+        return load(path, **kwargs)
+
+    def observe_parse(*args, **kwargs):
+        parses.append(kwargs["filename"])
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module_graph_discovery, "_load_module_import_scan", observe_load
+    )
+    monkeypatch.setattr(module_resolution, "_parse_source_for_target", observe_parse)
+    for _warm in (False, True):
+        body_loads.clear()
+        parses.clear()
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert actual <= result.graph.keys()
+        premise = result.scan_authority.by_module["api"].namespace_premise
+        assert premise is not None
+        assert len(body_loads) == int(writes_execute)
+        if _warm:
+            assert not parses
+        if writes_execute:
+            assert premise.foreign_writes is None
+            assert body_loads[0].foreign_writes is None
+        else:
+            assert premise.foreign_writes == ()
+            assert "late_leaf" not in result.graph
+            assert "unused_leaf" not in result.graph
+
+
+@pytest.mark.parametrize(
+    ("invoke", "subclass"), [(False, False), (True, False), (True, True)]
+)
+def test_star_custom_method_keeps_its_actual_hook_writer_provenance(
+    tmp_path, monkeypatch, invoke, subclass
+):
+    import json
+    import subprocess
+    import sys
+    from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+
+    (tmp_path / "entry.py").write_text(
+        "from exports import *\n" + ("hooks.register()\n" if invoke else ""),
+        encoding="utf-8",
+    )
+    (tmp_path / "exports.py").write_text(
+        "import sys\n"
+        "class Finder:\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n        return None\n"
+        + ("class Hooks(list):\n" if subclass else "class Hooks:\n")
+        + "    def register(self):\n        sys.meta_path.append(Finder())\n"
+        "hooks = Hooks()\n__all__ = ['hooks']\n",
+        encoding="utf-8",
+    )
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nbefore=len(sys.meta_path)\nimport entry\nprint(json.dumps(len(sys.meta_path)-before))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(executed.stdout) == int(invoke)
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "custom-hook-writer",
+    )
+    for _warm in (False, True):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        premise = result.scan_authority.by_module["entry"].namespace_premise
+        assert premise is not None
+        assert bool(premise.member_writes & PythonMember.IMPORT_HOOKS) is invoke
+
+
+@pytest.mark.parametrize(
+    ("expression", "method"),
+    [
+        (None, None),
+        ("f'{formatter}.cache'", "format"),
+        ("f'{formatter!s}.cache'", "str"),
+        ("f'{formatter!r}.cache'", "repr"),
+        ("f'{0:{formatter}}.cache'", "format"),
+    ],
+)
+def test_disjoint_import_cache_key_keeps_actual_format_callback_custody(
+    tmp_path, monkeypatch, expression, method
+):
+    import json
+    import subprocess
+    import sys
+
+    sources = {
+        "entry": ("import sys\n" if expression else "")
+        + "from formatter_provider import formatter\n"
+        + (f"sys.modules[{expression}] = None\n" if expression else "")
+        + "import consumer\n",
+        "formatter_provider": "events = []\nclass Formatter:\n"
+        + "".join(
+            f"    def {special}(self{', spec' if special == '__format__' else ''}):\n"
+            f"        events.append({event!r})\n"
+            "        import typing\n        typing.TYPE_CHECKING = True\n"
+            "        import formatting_leaf\n        return '1'\n"
+            for special, event in (
+                ("__format__", "format"),
+                ("__str__", "str"),
+                ("__repr__", "repr"),
+            )
+        )
+        + "formatter = Formatter()\n",
+        # Observe the actual module-initialization binding. A deferred global
+        # read deliberately also admits reconstructed activation namespaces.
+        "consumer": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import late_leaf\n",
+        "typing": "TYPE_CHECKING = False\n",
+        "formatting_leaf": "VALUE = 1\n",
+        "late_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry,formatter_provider\nprint(json.dumps([formatter_provider.events, sorted(set(sys.modules)&{'formatting_leaf','late_leaf'})]))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    events, imported = json.loads(executed.stdout)
+    assert events == ([] if method is None else [method])
+    assert set(imported) == (
+        set() if method is None else {"formatting_leaf", "late_leaf"}
+    )
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "format-writer-custody",
+    )
+    for _warm in (False, True):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert ("formatting_leaf" in result.graph) is (method is not None)
+        assert ("late_leaf" in result.graph) is (method is not None)
+
+
+@pytest.mark.parametrize("publication", ["local", "imported", "global_fallback"])
+def test_class_mapping_call_keeps_source_candidates_without_module_universe(
+    tmp_path, monkeypatch, publication
+):
+    import json
+    import subprocess
+    import sys
+
+    sources = {
+        "entry": "import holder\n",
+        "actions": "def action():\n    import leaf\n",
+        "holder": "def unrelated():\n    import unused_leaf\n"
+        + (
+            "def install():\n    global action\n    from actions import action\ninstall()\n"
+            if publication == "global_fallback"
+            else ""
+        )
+        + "class Base:\n    pass\nclass D(Base):\n"
+        + {
+            "local": "    def action():\n        import leaf\n",
+            "imported": "    from actions import action\n",
+            "global_fallback": "    if False:\n        action = None\n",
+        }[publication]
+        + "    alias = action\n    alias()\n",
+        "leaf": "VALUE = 1\n",
+        "unused_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    executed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps(sorted(set(sys.modules)&{'leaf','unused_leaf'})))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(executed.stdout) == ["leaf"]
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "class-source-mapping-custody",
+    )
+    for _warm in (False, True):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert "leaf" in result.graph
+        if publication != "global_fallback":
+            assert "unused_leaf" not in result.graph
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        "globals()['callback']",
+        "globals().get('callback')",
+        "globals().__getitem__('callback')",
+    ],
+)
+def test_current_namespace_read_keeps_imported_callable_source(
+    tmp_path, monkeypatch, read
+):
+    import json
+    import subprocess
+    import sys
+
+    sources = {
+        "entry": "import holder\n",
+        "holder": "from actions import action\nglobals()['callback'] = action\n"
+        + read
+        + "()\n",
+        "actions": "def action():\n    import namespace_callback_leaf\n",
+        "namespace_callback_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps('namespace_callback_leaf' in sys.modules))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(observed.stdout) is True
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-callable-source-custody",
+    )
+    for _warm in (False, True):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert "namespace_callback_leaf" in result.graph
+
+
+@pytest.mark.parametrize("publication", ["container", "local", "parameter", "starred"])
+def test_named_source_writer_keeps_only_published_callable_availability(
+    tmp_path, monkeypatch, publication
+):
+    import json
+    import subprocess
+    import sys
+
+    if publication == "container":
+        body = (
+            "state = set()\ndef replace_state():\n    global state\n    state = set()\n"
+            "def run():\n    if 'x' in state:\n        raise AssertionError\n"
+        )
+    else:
+        body = (
+            "from actions import callback as selected\ndef original():\n    pass\n"
+            "callback = original\n"
+            + (
+                "def install(value):\n    global callback\n    callback = value\n"
+                if publication in {"parameter", "starred"}
+                else "def install():\n    global callback\n    callback = selected\n"
+            )
+            + "def run():\n    alias = callback\n    install("
+            + (
+                "*(selected,)"
+                if publication == "starred"
+                else "selected"
+                if publication == "parameter"
+                else ""
+            )
+            + ")\n    alias()\n    callback()\n"
+        )
+    sources = {
+        "entry": "import holder\nholder.run()\n",
+        "holder": body + "def unrelated():\n    import unrelated_leaf\n",
+        "actions": "def callback():\n    import chosen_leaf\n",
+        "chosen_leaf": "VALUE = 1\n",
+        "unrelated_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps(sorted(set(sys.modules)&{'chosen_leaf','unrelated_leaf'})))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    expected = [] if publication == "container" else ["chosen_leaf"]
+    assert json.loads(observed.stdout) == expected
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "named-source-writer-availability",
+    )
+    for _warm in (False, True):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert "unrelated_leaf" not in result.graph
+        assert ("chosen_leaf" in result.graph) is (publication != "container")
+
+
+def test_starred_class_base_keeps_actual_subclass_hook_source(tmp_path, monkeypatch):
+    import json
+    import subprocess
+    import sys
+
+    sources = {
+        "entry": "import holder\n",
+        "holder": "from bases import Base\nclass D(*(Base,)):\n    pass\n",
+        "bases": "class Base:\n    def __init_subclass__(cls, **kwargs):\n"
+        "        import subclass_leaf\ndef unrelated():\n    import unrelated_leaf\n",
+        "subclass_leaf": "VALUE = 1\n",
+        "unrelated_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps(sorted(set(sys.modules)&{'subclass_leaf','unrelated_leaf'})))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(observed.stdout) == ["subclass_leaf"]
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "starred-base-source-custody",
+    )
+    for _warm in (False, True):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert "subclass_leaf" in result.graph
+        assert "unrelated_leaf" not in result.graph

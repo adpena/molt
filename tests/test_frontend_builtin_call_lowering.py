@@ -217,10 +217,8 @@ def test_channel_spelling_does_not_create_a_suspension_point(expression: str) ->
     )
     call = ast.parse(expression, mode="eval").body
     assert not generator._expr_may_yield(call)
-    assert not generator._expr_needs_async(call)
     awaited = ast.parse(f"await {expression}", mode="eval").body
     assert generator._expr_may_yield(awaited)
-    assert generator._expr_needs_async(awaited)
 
 
 @pytest.mark.parametrize(

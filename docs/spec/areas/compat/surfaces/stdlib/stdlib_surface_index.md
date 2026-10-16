@@ -38,5 +38,5 @@ For stdlib surfaces, coverage rows should include or clearly document:
 - `python3 tools/gen_stdlib_stubs.py --write`
 - `python3 tools/check_stdlib_intrinsics.py --update-doc`
 - `python3 tools/gen_compat_platform_availability.py --write`
-- `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
+- `python3 tools/check_stdlib_intrinsics.py`
 - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`

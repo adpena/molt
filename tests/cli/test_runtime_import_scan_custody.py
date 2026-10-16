@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 from pathlib import Path
 
@@ -12,11 +14,11 @@ from molt.cli.models import (
     _ModuleSourceScanAuthority,
     _RuntimeImportScanCustody,
 )
-from molt.cli.module_import_scanner import (
+from molt.cli.module_import_scanner import _complete_import_scan
+from molt.compiler_analysis.python_import_scan import (
     _DynamicRelativeImportDiscovery,
     _collect_import_scan_requests,
     _collect_import_star_modules,
-    _complete_import_scan,
     _collect_imports,
     _collect_imports_for_graph,
     _sealed_import_modules,
@@ -1146,7 +1148,7 @@ def test_persisted_scan_retains_explicit_dynamic_star_provenance(
 ) -> None:
     import json
     from molt.cli import module_graph_cache, module_source
-    from molt.cli.models import _ImportScanRequests
+    from molt.compiler_analysis.python_imports import _ImportScanRequests
 
     owner = tmp_path / "entry.py"
     owner.write_text(
@@ -1317,7 +1319,6 @@ def test_star_requests_share_one_cached_custodied_graph_pass(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from molt.cli import module_import_scanner as scanner
     from molt.cli.module_graph_discovery import _load_module_import_scan
 
     source = "__import__('bundle', fromlist=('*',))\n"
@@ -1338,7 +1339,7 @@ def test_star_requests_share_one_cached_custodied_graph_pass(
     via.mkdir()
     raw_path = via / ".." / owner.name
     cache = _ModuleResolutionCache()
-    original = scanner._collect_imports
+    original = _source_import_scan._collect_imports
     calls = 0
 
     def collect(*args, **kwargs):
@@ -1346,7 +1347,7 @@ def test_star_requests_share_one_cached_custodied_graph_pass(
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(scanner, "_collect_imports", collect)
+    monkeypatch.setattr(_source_import_scan, "_collect_imports", collect)
     for path in (raw_path, owner):
         loaded = _load_module_import_scan(
             path,

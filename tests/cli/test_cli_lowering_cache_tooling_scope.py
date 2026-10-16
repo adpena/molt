@@ -205,6 +205,8 @@ def test_frontend_drivers_and_explicit_local_coverage_scope() -> None:
     assert root / "src" / "molt" / "target_python.py" in (
         CF._frontend_semantic_tooling_sources(root).paths
     )
+    for owner in ("python_import_scan.py", "python_source_demands.py"):
+        assert root / "src" / "molt" / "compiler_analysis" / owner in inputs.paths
     missing_drivers = sorted(frontend_drivers - scoped)
     assert not missing_drivers, (
         f"frontend drivers fell out of the lowering scope: {missing_drivers}"

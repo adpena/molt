@@ -9,6 +9,8 @@ release, descriptors, iteration, context managers, or comparison callbacks.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_function_kind import FunctionKind
+
 import ast
 from molt.python_private_names import (
     python_import_binding,
@@ -45,6 +47,8 @@ from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
+    PythonSourceProjection,
+    python_source_projection_key,
     _PythonAstDigestAdmission,
     python_source_digest,
     python_node_source_key,
@@ -58,6 +62,9 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonCompletion,
     PythonCompletionFlow,
     PythonExpressionFact,
+    PythonFunctionResult,
+    PythonElementProtocol,
+    PythonSourceElement,
     PythonIterationFact,
     PythonStringAlternatives,
     PythonModuleMetadataProof,
@@ -84,6 +91,7 @@ from molt.compiler_analysis.python_builtin_shapes import (
     builtin_call_shape,
     builtin_method_call_shape,
     builtin_method_descriptor_known,
+    builtin_method_writes_receiver,
 )
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
@@ -113,6 +121,7 @@ from molt.compiler_analysis.python_effects_generated import (
 )
 from molt.compiler_analysis.static_truth import (
     StaticExpressionResult,
+    SourceDemandPhase,
     UNKNOWN_EXPRESSION_RESULT,
     expression_result_for_owned_binding,
     expression_result_without_mutable_contents,
@@ -140,6 +149,7 @@ from molt.compiler_analysis.python_lexical_scope import (
     python_scope_declarations,
     function_annotation_expressions,
     function_parameter_names,
+    function_parameter_nodes,
     type_parameter_expressions,
 )
 from molt.compiler_analysis.python_source_keys import (
@@ -204,10 +214,16 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 56
+_ANALYSIS_SCHEMA: Final = 59
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+)
+# A descriptor boundary can also retire operands. Other callback categories
+# (including the unknown mask) require the general object protocol instead.
+_NON_DESCRIPTOR_CALLBACK_EFFECTS: Final[EffectMask] = (
+    NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+    & ~(INVOKES_DESCRIPTOR | EXECUTES_ARBITRARY_PYTHON | _RELEASE_CALLBACK_EFFECTS)
 )
 # Scopes whose own locals the frontend binds in a running frame's homes.
 _FRAME_LOCAL_SCOPE_KINDS: Final[frozenset[str]] = frozenset(
@@ -346,6 +362,9 @@ class PythonBindingFlowPolicy:
     # Canonical members that code anywhere in that graph, this module included,
     # writes (``python_canonical_member_writes``). Callbacks change only these.
     callback_member_writes: MemberMask = ALL_INVALID_MEMBERS
+    # A graph writer may have run before this module starts. This is separate
+    # from future callbacks; standalone analysis keeps its initial premise.
+    entry_invalid_members: MemberMask = NO_INVALID_MEMBERS
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +386,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             analyze_deferred_bodies=self.analyze_deferred_bodies,
             foreign_namespace_writes=self.foreign_namespace_writes,
             callback_member_writes=self.callback_member_writes,
+            entry_invalid_members=self.entry_invalid_members,
         )
 
 
@@ -570,6 +590,7 @@ class _BindingState:
     taint_epoch: int = 0
     maybe_invalidated_members: MemberMask = 0
     definitely_invalidated_members: MemberMask = 0
+    namespace_values_unknown: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1417,6 +1438,7 @@ class _StatePool:
                     taint_epoch=state.taint_epoch,
                     maybe_invalidated_members=state.maybe_invalidated_members,
                     definitely_invalidated_members=state.definitely_invalidated_members,
+                    namespace_values_unknown=state.namespace_values_unknown,
                 )
             )
         return self.intern(
@@ -1426,6 +1448,7 @@ class _StatePool:
                 taint_epoch=state.taint_epoch,
                 maybe_invalidated_members=state.maybe_invalidated_members,
                 definitely_invalidated_members=state.definitely_invalidated_members,
+                namespace_values_unknown=state.namespace_values_unknown,
             )
         )
 
@@ -1714,6 +1737,7 @@ class _StatePool:
                 taint_epoch=state.taint_epoch + 1,
                 maybe_invalidated_members=state.maybe_invalidated_members,
                 definitely_invalidated_members=state.definitely_invalidated_members,
+                namespace_values_unknown=state.namespace_values_unknown,
             )
         )
 
@@ -1766,6 +1790,21 @@ class _StatePool:
                 taint_epoch=state.taint_epoch,
                 maybe_invalidated_members=maybe,
                 definitely_invalidated_members=definitely,
+                namespace_values_unknown=state.namespace_values_unknown,
+            )
+        )
+
+    def invalidate_namespace_values(self, state_id: int) -> int:
+        state = self._states[state_id]
+        if state.namespace_values_unknown:
+            return state_id
+        return self.intern(
+            _BindingState(
+                parents=(state_id,),
+                taint_epoch=state.taint_epoch,
+                maybe_invalidated_members=state.maybe_invalidated_members,
+                definitely_invalidated_members=state.definitely_invalidated_members,
+                namespace_values_unknown=True,
             )
         )
 
@@ -1784,6 +1823,7 @@ class _StatePool:
                 taint_epoch=state.taint_epoch,
                 maybe_invalidated_members=maybe,
                 definitely_invalidated_members=definitely,
+                namespace_values_unknown=state.namespace_values_unknown,
             )
         )
 
@@ -1794,6 +1834,7 @@ class _StatePool:
         maybe_invalidated_members: MemberMask,
         definitely_invalidated_members: MemberMask,
         taint_epoch: int,
+        namespace_values_unknown: bool,
     ) -> int:
         state = self._states[state_id]
         maybe = state.maybe_invalidated_members | maybe_invalidated_members
@@ -1801,10 +1842,12 @@ class _StatePool:
             state.definitely_invalidated_members & definitely_invalidated_members
         )
         epoch = max(state.taint_epoch, taint_epoch)
+        unknown = state.namespace_values_unknown or namespace_values_unknown
         if (
             maybe == state.maybe_invalidated_members
             and definitely == state.definitely_invalidated_members
             and epoch == state.taint_epoch
+            and unknown == state.namespace_values_unknown
         ):
             return state_id
         return self.intern(
@@ -1813,6 +1856,7 @@ class _StatePool:
                 taint_epoch=epoch,
                 maybe_invalidated_members=maybe,
                 definitely_invalidated_members=definitely,
+                namespace_values_unknown=unknown,
             )
         )
 
@@ -1834,17 +1878,20 @@ class _StatePool:
         maybe_invalidated = 0
         definitely_invalidated = ALL_INVALID_MEMBERS
         taint_epoch = 0
+        namespace_values_unknown = False
         for state_id in parents:
             state = self._states[state_id]
             maybe_invalidated |= state.maybe_invalidated_members
             definitely_invalidated &= state.definitely_invalidated_members
             taint_epoch = max(taint_epoch, state.taint_epoch)
+            namespace_values_unknown |= state.namespace_values_unknown
         return self.intern(
             _BindingState(
                 parents=parents,
                 taint_epoch=taint_epoch,
                 maybe_invalidated_members=maybe_invalidated,
                 definitely_invalidated_members=definitely_invalidated,
+                namespace_values_unknown=namespace_values_unknown,
             )
         )
 
@@ -1855,6 +1902,7 @@ class _StatePool:
         right = self._states[right_id]
         if (
             left.maybe_invalidated_members != right.maybe_invalidated_members
+            or left.namespace_values_unknown != right.namespace_values_unknown
             or left.definitely_invalidated_members
             != right.definitely_invalidated_members
         ):
@@ -1902,6 +1950,7 @@ _ScopeKind = Literal[
 @dataclass(slots=True)
 class _Scope:
     scope_id: int
+    source: PythonSourceKey
     parent: _Scope | None
     kind: _ScopeKind
     name: str
@@ -1915,6 +1964,10 @@ class _Scope:
     needs_annotation_namespace: bool = False
     escaped_deferred: frozenset[DeferredExecution] = frozenset()
     escaped_source_origins: frozenset[PythonSourceKey] = frozenset()
+    returned_source_origins: frozenset[PythonSourceKey] = frozenset()
+    returned_exposed_source_origins: frozenset[PythonSourceKey] = frozenset()
+    yielded_source_origins: frozenset[PythonSourceKey] = frozenset()
+    yielded_exposed_source_origins: frozenset[PythonSourceKey] = frozenset()
     escaped_metadata_effects: EffectMask = NO_EFFECTS
     module_metadata_effects: EffectMask = NO_EFFECTS
     deferred_execution: frozenset[DeferredExecution] = frozenset()
@@ -2010,12 +2063,47 @@ def _operand_dispatch_deferred(
     """
     if not effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS:
         return frozenset()
-    return frozenset(
-        DeferredExecution(ref.source, "escape")
+    legacy = frozenset(
+        DeferredExecution(
+            ref.source,
+            "escape"
+            if ref.source[-1] == "Module"
+            else "release"
+            if not effects & ~_RELEASE_CALLBACK_EFFECTS
+            else "protocol",
+        )
         for operand in operands
         for ref in (operand.exposed_deferred if reaches_contents else operand.deferred)
         if ref.phase == "escape"
     )
+    phase: SourceDemandPhase = (
+        "release"
+        if not effects & ~_RELEASE_CALLBACK_EFFECTS
+        else "descriptor"
+        if effects & INVOKES_DESCRIPTOR
+        and not effects & _NON_DESCRIPTOR_CALLBACK_EFFECTS
+        else "protocol"
+    )
+    sources = frozenset(
+        DeferredExecution(source, phase)
+        for operand in operands
+        for source in (
+            operand.exposed_source_origins
+            if reaches_contents
+            else operand.source_origins
+        )
+    )
+    if phase == "descriptor" and effects & _RELEASE_CALLBACK_EFFECTS:
+        sources |= frozenset(
+            DeferredExecution(source, "release")
+            for operand in operands
+            for source in (
+                operand.exposed_source_origins
+                if reaches_contents
+                else operand.source_origins
+            )
+        )
+    return legacy | sources
 
 
 def _result_after_retained_boundary(
@@ -2106,6 +2194,7 @@ class _HistorySummary:
     maybe_suffix: tuple[MemberMask, ...]
     definitely_suffix: tuple[MemberMask, ...]
     taint_epoch_suffix: tuple[int, ...]
+    namespace_unknown_suffix: tuple[bool, ...]
     taint_indices: tuple[int, ...]
     slot_events: dict[
         int,
@@ -2126,17 +2215,21 @@ class _HistorySummary:
         maybe_suffix = [0] * count
         definitely_suffix = [ALL_INVALID_MEMBERS] * count
         taint_epoch_suffix = [0] * count
+        namespace_unknown_suffix = [False] * count
         maybe = 0
         definitely = ALL_INVALID_MEMBERS
         taint_epoch = 0
+        namespace_unknown = False
         for index in range(count - 1, -1, -1):
             state = pool.get(states[index])
             maybe |= state.maybe_invalidated_members
             definitely &= state.definitely_invalidated_members
             taint_epoch = max(taint_epoch, state.taint_epoch)
+            namespace_unknown |= state.namespace_values_unknown
             maybe_suffix[index] = maybe
             definitely_suffix[index] = definitely
             taint_epoch_suffix[index] = taint_epoch
+            namespace_unknown_suffix[index] = namespace_unknown
 
         events: dict[int, list[tuple[int, IdentityMask]]] = {}
         taint_indices: list[int] = []
@@ -2185,6 +2278,7 @@ class _HistorySummary:
             tuple(maybe_suffix),
             tuple(definitely_suffix),
             tuple(taint_epoch_suffix),
+            tuple(namespace_unknown_suffix),
             tuple(taint_indices),
             slot_events,
             {},
@@ -2203,11 +2297,12 @@ class _HistorySummary:
         for item in fields(self):
             setattr(self, item.name, getattr(current, item.name))
 
-    def properties(self, start: int) -> tuple[MemberMask, MemberMask, int]:
+    def properties(self, start: int) -> tuple[MemberMask, MemberMask, int, bool]:
         return (
             self.maybe_suffix[start],
             self.definitely_suffix[start],
             self.taint_epoch_suffix[start],
+            self.namespace_unknown_suffix[start],
         )
 
     def binding(self, pool: _StatePool, start: int, slot: int) -> IdentityMask:
@@ -2327,9 +2422,17 @@ class _Analyzer:
         self.source_attributes: dict[
             PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
         ] = {}
+        self.source_elements: dict[PythonSourceKey, PythonSourceElement] = {}
+        self.source_calls: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
+        self.source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
+        self.source_parameters: dict[
+            PythonSourceKey, tuple[tuple[PythonSourceKey, ...], PythonSourceKey | None]
+        ] = {}
+        self.source_function_results: dict[PythonSourceKey, PythonFunctionResult] = {}
         self.source_namespaces: dict[
             PythonSourceKey, dict[str, frozenset[PythonSourceKey]]
         ] = {}
+        self.source_bases: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
         self.source_namespace_exposure: dict[
             PythonSourceKey, frozenset[PythonSourceKey]
         ] = {}
@@ -2647,6 +2750,7 @@ class _Analyzer:
             return existing
         scope = _Scope(
             scope_id=len(self.scopes),
+            source=python_node_source_key(source_node),
             parent=parent,
             kind=kind,
             name=name,
@@ -2705,6 +2809,18 @@ class _Analyzer:
         self._scope_slot_cache.clear()
         return slot
 
+    def _ensure_module_read_slots(self) -> None:
+        """Actual namespace writes must reach undeclared builtin/global reads."""
+        if self._module_read_slots_prepared:
+            return
+        assert self._dependency_authority is not None
+        reads = self._dependency_authority.project(
+            self._module_tree.body, variable_annotations=not self._future_annotations
+        )
+        for name in sorted(reads.lexical | reads.globals):
+            self._ensure_module_slot(name)
+        self._module_read_slots_prepared = True
+
     def _callback_taint_domain(self) -> int:
         """Slots a callback can rebind: module globals, then captured cells."""
         module = (
@@ -2723,7 +2839,13 @@ class _Analyzer:
         that reflects its own namespace dynamically keeps the whole namespace.
         """
         foreign = self.policy.foreign_namespace_writes
-        own = python_namespace_summary(tree).own_names if foreign is not None else None
+        own = (
+            python_namespace_summary(
+                tree, target_python=self.policy.target_python
+            ).own_names
+            if foreign is not None
+            else None
+        )
         if foreign is None or own is None:
             return
         names = own | frozenset(foreign)
@@ -2940,6 +3062,24 @@ class _Analyzer:
             and self.states.get(state_id).taint_epoch != 0
             and not resolution.clean
         )
+        if self._callback_module_names is None and (
+            invalidated
+            or activation_lookup
+            or scope.namespace_can_call(
+                name, namespace_tainted=self.states.get(state_id).taint_epoch != 0
+            )
+        ):
+            # Source availability is distinct from exact activation identity.
+            # An unverified callback may install any module-owned callable.
+            # Closed source writers publish their actual value origins at the
+            # write/argument boundary instead of inventing a whole namespace.
+            # Storage taint alone grants no callable source availability.
+            # An opaque FunctionType activation alone proves no such writer.
+            result = replace(
+                result,
+                deferred=result.deferred
+                | {DeferredExecution(self._module_source, "escape")},
+            )
         if activation_lookup:
             value |= OTHER_IDENTITY
             invalidated = True
@@ -3000,6 +3140,35 @@ class _Analyzer:
             deferred_complete=True,
             attribute_hooks=frozenset(),
         )
+
+    def _source_element_result(
+        self,
+        source: PythonSourceKey,
+        owner: StaticExpressionResult,
+        selected: StaticExpressionResult,
+        *,
+        protocol: PythonElementProtocol,
+    ) -> StaticExpressionResult:
+        # Exact tuple/list projections already carry their selected element.
+        # Unknown source-call values need a typed contents projection rather
+        # than inheriting the container/callee identity as the selected value.
+        if (
+            owner.kind != "unknown"
+            or not owner.source_origins
+            or (
+                selected.source_origins
+                and not selected.source_origins & owner.source_origins
+            )
+        ):
+            return selected
+        previous = self.source_elements.get(source)
+        self.source_elements[source] = PythonSourceElement(
+            source,
+            protocol,
+            owner.source_origins
+            | (previous.origins if previous is not None else frozenset()),
+        )
+        return replace(selected, source_origins=frozenset({source}))
 
     def _record_expression(
         self,
@@ -3270,6 +3439,205 @@ class _Analyzer:
             state_id, _member_write_mask(base, member), definite=True
         )
 
+    def _current_globals_item(
+        self,
+        state_id: int,
+        key: StaticExpressionResult,
+        default: StaticExpressionResult | None = None,
+    ) -> StaticExpressionResult | None:
+        """Select namespace contents through the existing source-point storage.
+
+        A bounded namespace has no escaping mapping or computed-key writer.
+        Unknown loader-supplied values remain unknown; absence is not invented.
+        An actual stored self-reference retains its mapping provenance.
+        """
+        if (
+            self._callback_module_names is None
+            or not key.value_known
+            or type(key.value) is not str
+        ):
+            return None
+        slot = self._module_slot(key.value)
+        resolution = (
+            self.states._binding_resolution(state_id, slot).public()
+            if slot is not None
+            else _UNBOUND_BINDING_RESOLUTION
+        )
+        if (
+            self.states.get(state_id).namespace_values_unknown
+            or key.value in self._callback_module_names
+        ) and (not resolution.present or not resolution.clean):
+            return None
+        result = (
+            replace(resolution.result, identities=resolution.identities)
+            if resolution.present
+            else UNKNOWN_EXPRESSION_RESULT
+        )
+        if default is not None and (
+            not resolution.present or resolution.identities & UNBOUND_IDENTITY
+        ):
+            result = join_static_expression_results((result, default))
+        return expression_result_for_publication(result)
+
+    def _current_globals_method(
+        self,
+        state_id: int,
+        scope: _Scope,
+        node: ast.Call,
+        receiver: StaticExpressionResult,
+        arguments: tuple[StaticExpressionResult, ...],
+        prior_effects: EffectMask,
+    ) -> _CallSemantics | None:
+        """Native namespace selection/mutation shares ordinary slot transfer."""
+        assert isinstance(node.func, ast.Attribute)
+        if (
+            not current_globals_dict_is_exact(receiver.identities, receiver)
+            or any(isinstance(argument, ast.Starred) for argument in node.args)
+            or len(arguments) != len(node.args) + len(node.keywords)
+        ):
+            return None
+        method = node.func.attr
+        positional = arguments[: len(node.args)]
+        inert_none = StaticExpressionResult.scalar(None, evaluation_required=True)
+        result = inert_none
+        effects = READS_OBJECT_STATE | RAISES
+
+        def callbacks() -> None:
+            nonlocal state_id, effects
+            if self.states.get(state_id).namespace_values_unknown:
+                boundary = (
+                    EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+                )
+                state_id = self._apply_effects(state_id, boundary)
+                effects |= boundary
+
+        keyed = method in {"get", "__getitem__", "pop", "setdefault"}
+        if keyed:
+            maximum = 1 if method == "__getitem__" else 2
+            if node.keywords or not 1 <= len(positional) <= maximum:
+                return None
+            callbacks()
+            default = (
+                positional[1]
+                if len(positional) == 2
+                else None
+                if method in {"__getitem__", "pop"}
+                else inert_none
+            )
+            selected = self._current_globals_item(state_id, positional[0], default)
+            if selected is None:
+                if method in {"get", "__getitem__"}:
+                    return None
+                selected = join_static_expression_results(
+                    (
+                        replace(
+                            UNKNOWN_EXPRESSION_RESULT,
+                            exposes_module_globals=receiver.exposes_module_globals,
+                        ),
+                        *((default,) if default is not None else ()),
+                    )
+                )
+            result = selected
+            if method in {"pop", "setdefault"}:
+                key = positional[0].value if positional[0].value_known else None
+                slot = self._module_slot(key) if isinstance(key, str) else None
+                present = (
+                    self.states._binding_resolution(state_id, slot).public()
+                    if slot is not None
+                    else _UNBOUND_BINDING_RESOLUTION
+                )
+                if method == "pop" or (
+                    not present.present or present.identities & UNBOUND_IDENTITY
+                ):
+                    state_id, written = self._store_namespace_key(
+                        state_id,
+                        key if isinstance(key, str) else None,
+                        UNBOUND_IDENTITY if method == "pop" else result.identities,
+                        None,
+                        UNKNOWN_EXPRESSION_RESULT if method == "pop" else result,
+                        scope=scope,
+                    )
+                    effects |= written
+        elif method in {"update", "__ior__", "__init__"}:
+            if len(positional) > 1 or (
+                method == "__ior__" and (len(positional) != 1 or node.keywords)
+            ):
+                return None
+            callbacks()
+
+            def publish(key: PythonStaticValue, value: StaticExpressionResult) -> None:
+                nonlocal state_id, effects
+                state_id, written = self._store_namespace_key(
+                    state_id, key, value.identities, None, value, scope=scope
+                )
+                effects |= written
+
+            def publish_mapping(mapping: ast.expr) -> None:
+                if isinstance(mapping, ast.Dict):
+                    for key, value in zip(mapping.keys, mapping.values, strict=True):
+                        if key is None:
+                            publish_mapping(value)
+                        else:
+                            fact = self._known_expression_result(key)
+                            publish(
+                                fact.value
+                                if fact.value_known and type(fact.value) is str
+                                else None,
+                                self._known_expression_result(value),
+                            )
+                else:
+                    publish(None, UNKNOWN_EXPRESSION_RESULT)
+
+            for mapping in node.args:
+                if prior_effects & (
+                    _CALLEE_RETENTION_FORBIDDEN_EFFECTS | WRITES_OBJECT_STATE
+                ):
+                    publish(None, UNKNOWN_EXPRESSION_RESULT)
+                else:
+                    publish_mapping(mapping)
+            for index, keyword in enumerate(node.keywords, start=len(node.args)):
+                if keyword.arg is None:
+                    if prior_effects & (
+                        _CALLEE_RETENTION_FORBIDDEN_EFFECTS | WRITES_OBJECT_STATE
+                    ):
+                        publish(None, UNKNOWN_EXPRESSION_RESULT)
+                    else:
+                        publish_mapping(keyword.value)
+                else:
+                    publish(keyword.arg, arguments[index])
+            if method == "__ior__":
+                result = receiver
+        elif builtin_method_writes_receiver("dict", method) and method in {
+            "clear",
+            "popitem",
+        }:
+            if positional or node.keywords:
+                return None
+            state_id, written = self._store_namespace_key(
+                state_id, None, OTHER_IDENTITY, None, scope=scope
+            )
+            effects |= written
+            if method == "popitem":
+                result = replace(
+                    UNKNOWN_EXPRESSION_RESULT,
+                    exposes_module_globals=receiver.exposes_module_globals,
+                )
+        else:
+            return None
+        key = self._node_key(node)
+        self.assignment_effects[key] = (
+            self.assignment_effects.get(key, NO_EFFECTS) | effects
+        )
+        return _CallSemantics(
+            result.identities,
+            effects,
+            state_id,
+            result,
+            True,
+            effects,
+            callee_release_safe=True,
+        )
+
     def _call_semantics(
         self,
         state_id: int,
@@ -3350,6 +3718,11 @@ class _Analyzer:
                 receiver_result = expression_result_without_mutable_contents(
                     receiver_result
                 )
+            namespace_call = self._current_globals_method(
+                state_id, scope, node, receiver_result, argument_results, prior_effects
+            )
+            if namespace_call is not None:
+                return namespace_call
             method_shape = builtin_method_call_shape(
                 receiver_result,
                 node.func.attr,
@@ -3668,7 +4041,9 @@ class _Analyzer:
                 ),
                 deferred=frozenset(
                     DeferredExecution(
-                        ref.source,
+                        ref.source
+                        if ref.phase == "resume"
+                        else python_node_source_key(node),
                         ref.phase
                         if node.attr == "__call__"
                         else "factory"
@@ -3738,7 +4113,22 @@ class _Analyzer:
                     assignment_target.index_result,
                     slice_parts=assignment_target.slice_parts,
                 )
-                result_override = shape.result
+                result_override = (
+                    shape.result
+                    if assignment_target.slice_parts is not None
+                    else self._source_element_result(
+                        python_node_source_key(node),
+                        assignment_target.owner_result,
+                        shape.result,
+                        protocol=PythonElementProtocol.SUBSCRIPT,
+                    )
+                )
+                if assignment_target.is_exact_globals_dict:
+                    selected = self._current_globals_item(
+                        state_id, assignment_target.index_result
+                    )
+                    if selected is not None:
+                        result_override = selected
                 identities = result_override.identities
                 if result_override.value_known and type(result_override.value) in {
                     str,
@@ -3847,7 +4237,10 @@ class _Analyzer:
                 result.exposes_module_globals for result in argument_results
             )
             deferred_execution |= frozenset(
-                ref
+                DeferredExecution(
+                    ref.source,
+                    "escape" if ref.source == self._module_source else "call",
+                )
                 for ref in callee_result.result.deferred
                 if ref.phase in {"call", "escape"}
             )
@@ -3859,12 +4252,6 @@ class _Analyzer:
                 and callee_fact.binding_invalidated
                 and callee_fact.name_lookup in {"global", "class_global"}
             )
-            if incomplete_module_callee:
-                # A callback can store a different module-defined callable.
-                # Surviving candidates do not prove foreign globals ownership.
-                deferred_execution |= frozenset(
-                    {DeferredExecution(self._module_source, "escape")}
-                )
             deferred_factory_only = (
                 not incomplete_module_callee
                 and callee_result.identities == int(PythonIdentity.USER_FUNCTION)
@@ -3907,8 +4294,15 @@ class _Analyzer:
             state_id = call_semantics.state_id
             result_override = call_semantics.result
             if callee_result.result.source_origins:
+                # A call's value is not its callee. Retain the source relation
+                # while deferred jobs publish their actual return origins.
+                call_source = python_node_source_key(node)
+                self.source_calls[call_source] = (
+                    self.source_calls.get(call_source, frozenset())
+                    | callee_result.result.source_origins
+                )
                 result_override = replace(
-                    result_override, source_origins=callee_result.result.source_origins
+                    result_override, source_origins=frozenset({call_source})
                 )
             if callee_result.identities & _DYNAMIC_IMPORT_CALL_IDENTITIES:
                 # An import call returns a module, as an import statement binds
@@ -3937,7 +4331,9 @@ class _Analyzer:
                     )
                     if executes_protocol:
                         deferred_execution |= frozenset(
-                            ref for ref in argument.deferred if ref.phase == "resume"
+                            DeferredExecution(ref.source, "iterate")
+                            for ref in argument.deferred
+                            if ref.phase in {"resume", "escape"}
                         )
                 else:
                     deferred_execution |= frozenset(
@@ -3949,7 +4345,11 @@ class _Analyzer:
                     DeferredExecution(ref.source, "escape")
                     for ref in receiver_result.exposed_deferred
                 )
-            if callee_result.identities == int(PythonIdentity.BUILTIN_SETATTR):
+            if callee_result.identities == int(
+                PythonIdentity.BUILTIN_SETATTR
+            ) or current_globals_dict_is_exact(
+                receiver_result.identities, receiver_result
+            ):
                 module_metadata_effects |= invocation_effects & WRITES_MODULE_METADATA
             namespace_escape = (
                 not deferred_factory_only
@@ -3966,7 +4366,10 @@ class _Analyzer:
                 module_metadata_effects |= WRITES_MODULE_METADATA
             returned_deferred = frozenset(
                 DeferredExecution(
-                    ref.source, "resume" if ref.phase == "factory" else "escape"
+                    ref.source
+                    if ref.phase == "factory"
+                    else python_node_source_key(node),
+                    "resume" if ref.phase == "factory" else "escape",
                 )
                 for ref in callee_result.result.deferred
             )
@@ -4312,6 +4715,7 @@ class _Analyzer:
                     static_expression_result(
                         node, fact_result=self._known_expression_result
                     ),
+                    source_origins=frozenset({python_node_source_key(node)}),
                     deferred=frozenset(
                         {DeferredExecution(python_node_source_key(node), "resume")}
                     ),
@@ -4324,11 +4728,9 @@ class _Analyzer:
                 node.value,
                 fact_result=self._known_expression_result,
             )
-            deferred_execution |= frozenset(
-                ref
-                for ref in value.result.deferred
-                if ref.phase in {"resume", "escape"}
-            )
+            deferred_execution |= PythonIterationFact.from_result(
+                value.result, boundary
+            ).deferred_execution
             result_override = value.result
             effects = value.effects | boundary
             state_id = self._apply_effects(value.state_id, boundary)
@@ -4420,6 +4822,24 @@ class _Analyzer:
                 effects |= result.effects
                 if isinstance(node, (ast.Yield, ast.YieldFrom)):
                     scope.escaped_deferred |= result.result.exposed_deferred
+                    yielded = (
+                        self._source_element_result(
+                            python_source_projection_key(
+                                node, PythonSourceProjection.YIELD_FROM_ELEMENTS
+                            ),
+                            result.result,
+                            PythonIterationFact.from_result(
+                                result.result, NO_EFFECTS
+                            ).element_result,
+                            protocol=PythonElementProtocol.ITERATE,
+                        )
+                        if isinstance(node, ast.YieldFrom)
+                        else result.result
+                    )
+                    scope.yielded_source_origins |= yielded.source_origins
+                    scope.yielded_exposed_source_origins |= (
+                        yielded.exposed_source_origins
+                    )
                     if result.result.exposes_module_globals:
                         scope.escaped_metadata_effects |= WRITES_MODULE_METADATA
                 if isinstance(node, (ast.Await, ast.YieldFrom)):
@@ -4429,8 +4849,30 @@ class _Analyzer:
                             for ref in result.result.deferred
                         )
                     )
+                    if result.result.source_origins:
+                        source = python_node_source_key(node)
+                        self.source_completions[source] = (
+                            self.source_completions.get(source, frozenset())
+                            | result.result.source_origins
+                        )
+                        result_override = replace(
+                            result_override, source_origins=frozenset({source})
+                        )
                     deferred_execution |= frozenset(
-                        ref
+                        DeferredExecution(
+                            source,
+                            "await" if isinstance(node, ast.Await) else "iterate",
+                        )
+                        for source in result.result.source_origins
+                    ) | frozenset(
+                        DeferredExecution(
+                            ref.source,
+                            "escape"
+                            if ref.source[-1] == "Module"
+                            else "await"
+                            if isinstance(node, ast.Await)
+                            else "iterate",
+                        )
                         for ref in result.result.deferred
                         if ref.phase in {"resume", "escape"}
                     )
@@ -4667,6 +5109,26 @@ class _Analyzer:
             frozenset(),
         )
         deferred = isinstance(node, ast.GeneratorExp)
+        generator_kind = FunctionKind.GENERATOR
+        if deferred:
+            assert isinstance(node, ast.GeneratorExp)
+            assert self._dependency_authority is not None
+            if (
+                any(generator.is_async for generator in generators)
+                or self._dependency_authority.summary(node).contains_await
+            ):
+                generator_kind = FunctionKind.ASYNC_GENERATOR
+            self.source_function_results.setdefault(
+                python_node_source_key(node),
+                PythonFunctionResult(
+                    python_node_source_key(node),
+                    generator_kind,
+                    frozenset(),
+                    frozenset(),
+                    frozenset(),
+                    frozenset(),
+                ),
+            )
         scope = self._new_scope(
             parent=parent,
             source_node=node,
@@ -4697,11 +5159,39 @@ class _Analyzer:
                     | SUSPENDS
                     | RAISES
                 )
-            iteration = PythonIterationFact.from_result(result, effects)
+            iteration = PythonIterationFact.from_result(
+                result, effects, asynchronous=bool(generator.is_async)
+            )
+            iteration = replace(
+                iteration,
+                element_result=self._source_element_result(
+                    python_node_source_key(generator.target),
+                    result,
+                    iteration.element_result,
+                    protocol=PythonElementProtocol.ASYNC_ITERATE
+                    if generator.is_async
+                    else PythonElementProtocol.ITERATE,
+                ),
+            )
             scope.deferred_execution |= iteration.deferred_execution
             return iteration
 
         first_iteration = iteration_for(generators[0], first_iterable.result)
+        if deferred:
+            self._record_operation_execution(
+                parent,
+                frozenset(
+                    DeferredExecution(
+                        ref.source,
+                        "escape"
+                        if ref.phase == "escape"
+                        else "get_async_iter"
+                        if generators[0].is_async
+                        else "get_iter",
+                    )
+                    for ref in first_iteration.deferred_execution
+                ),
+            )
         immediate_effects = first_iterable.effects | first_iteration.effects
         immediate_state = self._apply_effects(
             first_iterable.state_id, first_iteration.effects
@@ -4727,6 +5217,24 @@ class _Analyzer:
                 effects |= evaluated.effects
                 if index == 0:
                     key_result = evaluated.result
+            if isinstance(node, ast.GeneratorExp):
+                source = python_node_source_key(node)
+                previous = self.source_function_results.get(
+                    source,
+                    PythonFunctionResult(
+                        source,
+                        generator_kind,
+                        frozenset(),
+                        frozenset(),
+                        frozenset(),
+                        frozenset(),
+                    ),
+                )
+                self.source_function_results[source] = previous._replace(
+                    yielded=previous.yielded | key_result.source_origins,
+                    yielded_exposed=previous.yielded_exposed
+                    | key_result.exposed_source_origins,
+                )
             if isinstance(node, (ast.DictComp, ast.SetComp)):
                 # Insertion hashes after dict value evaluation, and equality can
                 # revisit keys retained from an earlier comprehension iteration.
@@ -5034,9 +5542,19 @@ class _Analyzer:
         # Receiver/index identity and exact builtin type are retained across
         # RHS and in-place operator callbacks. Do not re-evaluate either source.
         if isinstance(target.node, ast.Subscript) and target.is_exact_globals_dict:
-            return self._store_namespace_key(
+            state_id, effects = self._store_namespace_key(
                 state_id, target.static_index, value, static_value, result, scope=scope
             )
+            # Exact dict ownership removes receiver dispatch, not hashing or
+            # comparison of the already evaluated key. Stores and deletes use
+            # this same boundary, including augmented assignment publication.
+            self._record_operation_execution(
+                scope,
+                _operand_dispatch_deferred(
+                    effects, target.index_result, reaches_contents=True
+                ),
+            )
+            return state_id, effects
         strings = (
             frozenset((target.static_index,))
             if isinstance(target.static_index, str)
@@ -5100,8 +5618,15 @@ class _Analyzer:
             else None
         )
         if not strings:
+            self._ensure_module_read_slots()
+            state_id = self.states.invalidate_namespace_values(state_id)
+            state_id = self.states.taint_slots(state_id, self.module_slot_mask)
             return self._apply_effects(state_id, UNKNOWN_EFFECTS), UNKNOWN_EFFECTS
         effects = WRITES_GLOBAL_NAMESPACE | WRITES_OBJECT_STATE | RAISES
+        if self.states.get(state_id).namespace_values_unknown:
+            boundary = EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK | RAISES
+            state_id = self._apply_effects(state_id, boundary)
+            effects |= boundary
         if strings & _METADATA_NAMES:
             effects |= WRITES_MODULE_METADATA
         state_id, release_effects = self._replace_bindings(
@@ -5210,6 +5735,13 @@ class _Analyzer:
                 ):
                     effects |= RAISES
                 for element, item_result in zip(target.elts, selected, strict=True):
+                    if not isinstance(element, ast.Starred):
+                        item_result = self._source_element_result(
+                            python_node_source_key(element),
+                            result,
+                            item_result,
+                            protocol=PythonElementProtocol.ITERATE,
+                        )
                     item_static = (
                         cast(str | int, item_result.value)
                         if item_result.value_known
@@ -5230,7 +5762,16 @@ class _Analyzer:
             state_id = self._apply_effects(state_id, effects)
             for element in target.elts:
                 state_id, element_effects = self.assign_target(
-                    element, OTHER_IDENTITY, state_id, scope
+                    element,
+                    OTHER_IDENTITY,
+                    state_id,
+                    scope,
+                    result=self._source_element_result(
+                        python_node_source_key(element),
+                        result,
+                        UNKNOWN_EXPRESSION_RESULT,
+                        protocol=PythonElementProtocol.ITERATE,
+                    ),
                 )
                 effects |= element_effects
             return state_id, effects
@@ -5350,6 +5891,13 @@ class _Analyzer:
         ):
             # Namespace publication is the value authority, including aliases,
             # descriptors and conditional assignments, not just method syntax.
+            # A custom mapping can discard or replace the value, so this is
+            # candidate availability only. Preserve its named publication even
+            # when the storage/type authority must forget the selected value.
+            namespace = self.source_namespaces.setdefault(scope.source, {})
+            namespace[name] = (
+                namespace.get(name, frozenset()) | result.exposed_source_origins
+            )
             scope.escaped_deferred |= result.exposed_deferred
             scope.escaped_source_origins |= result.exposed_source_origins
             if result.exposes_module_globals:
@@ -5364,6 +5912,10 @@ class _Analyzer:
                 frozenset(
                     DeferredExecution(ref.source, "escape")
                     for ref in result.exposed_deferred
+                )
+                | frozenset(
+                    DeferredExecution(source, "escape")
+                    for source in result.exposed_source_origins
                 ),
                 module_metadata_effects=(
                     WRITES_MODULE_METADATA
@@ -5599,14 +6151,9 @@ class _Analyzer:
                 self.assignment_effects.get(self._node_key(node.target), NO_EFFECTS)
                 & WRITES_MODULE_METADATA
             )
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            deferred_execution |= frozenset(
-                DeferredExecution(ref.source, "escape")
-                for item in node.items
-                for ref in self._known_expression_result(
-                    item.context_expr
-                ).exposed_deferred
-            )
+        # Implicit context protocol calls are projected at their own execution
+        # phases. Escaping the receiver here would execute unrelated methods
+        # and erase the distinction between entry, binding and exit handlers.
         scope.deferred_execution |= deferred_execution
         self.statements[key] = PythonStatementFact(
             key,
@@ -5849,7 +6396,10 @@ class _Analyzer:
                     state_id, self.policy.callback_member_writes
                 )
             if any(alias.name == "*" for alias in node.names):
-                state_id = self._widen_exposed_bindings(state_id)
+                # IMPORT_STAR writes this module now, independently of which
+                # globals later callbacks are allowed to replace.
+                self._namespace_observation_epoch += 1
+                state_id = self.states.taint_slots(state_id, self.module_slot_mask)
             for alias in node.names:
                 if alias.name == "*":
                     continue
@@ -6016,6 +6566,23 @@ class _Analyzer:
                 _argument_crossed_boundaries,
             ) = self._eval_call_arguments(node, state_id, definition_scope)
             effects |= argument_effects
+            owner_key = python_node_source_key(node)
+            base_results = (
+                self._source_element_result(
+                    python_node_source_key(base),
+                    self._known_expression_result(base.value),
+                    PythonIterationFact.from_result(
+                        self._known_expression_result(base.value), NO_EFFECTS
+                    ).element_result,
+                    protocol=PythonElementProtocol.ITERATE,
+                )
+                if isinstance(base, ast.Starred)
+                else self._known_expression_result(base)
+                for base in node.bases
+            )
+            self.source_bases[owner_key] = self.source_bases.get(
+                owner_key, frozenset()
+            ) | frozenset().union(*(base.source_origins for base in base_results))
             assert self._dependency_authority is not None
             declarations = self._dependency_authority.declarations(node)
             class_scope = self._new_scope(
@@ -6246,6 +6813,10 @@ class _Analyzer:
                 result = self.eval_expr(node.value, state_id, scope)
                 state_id, effects = result.state_id, result.effects
                 scope.escaped_deferred |= result.result.exposed_deferred
+                scope.returned_source_origins |= result.result.source_origins
+                scope.returned_exposed_source_origins |= (
+                    result.result.exposed_source_origins
+                )
                 if result.result.exposes_module_globals:
                     scope.escaped_metadata_effects |= WRITES_MODULE_METADATA
             evaluated = self._normal_flow(state_id, effects)
@@ -6345,6 +6916,18 @@ class _Analyzer:
             iteration = PythonIterationFact.from_result(
                 iterable_result,
                 iteration_effects,
+                asynchronous=isinstance(node, ast.AsyncFor),
+            )
+            iteration = replace(
+                iteration,
+                element_result=self._source_element_result(
+                    python_node_source_key(node.target),
+                    iterable_result,
+                    iteration.element_result,
+                    protocol=PythonElementProtocol.ASYNC_ITERATE
+                    if isinstance(node, ast.AsyncFor)
+                    else PythonElementProtocol.ITERATE,
+                ),
             )
             scope.deferred_execution |= iteration.deferred_execution
             iteration_key = self._node_key(node)
@@ -6640,6 +7223,16 @@ class _Analyzer:
         node = job.node
         arguments = node.args
         parameters = function_parameter_names(arguments)
+        parameter_nodes = function_parameter_nodes(arguments)
+        self.source_parameters[python_node_source_key(node)] = (
+            tuple(
+                python_node_source_key(arg)
+                for arg in (*arguments.posonlyargs, *arguments.args)
+            ),
+            python_node_source_key(arguments.vararg)
+            if arguments.vararg is not None
+            else None,
+        )
         body = (
             node.body
             if isinstance(node.body, list)
@@ -6675,7 +7268,7 @@ class _Analyzer:
             state_id = self.states.set_binding(
                 state_id, scope.slots[local_name], UNBOUND_IDENTITY
             )
-        for parameter in parameters:
+        for parameter, parameter_node in zip(parameters, parameter_nodes, strict=True):
             slot = scope.slots.get(parameter)
             if slot is not None:
                 default_result = parameter_defaults.get(
@@ -6687,7 +7280,11 @@ class _Analyzer:
                     slot,
                     identities,
                     PythonParameterRef(parameter),
-                    expression_result_without_value_facts(default_result),
+                    replace(
+                        expression_result_without_value_facts(default_result),
+                        source_origins=default_result.source_origins
+                        | {python_node_source_key(parameter_node)},
+                    ),
                 )
         observed: list[int] = [state_id]
         self._observed_stack.append(_ObservedStateFrame(observed))
@@ -6695,6 +7292,32 @@ class _Analyzer:
         self._active_lexical_history = observed
         try:
             self.exec_statements(body, state_id, scope)
+            source = python_node_source_key(node)
+            has_yield = self._dependency_authority.summary(node).contains_yield
+            function_kind = (
+                (FunctionKind.ASYNC_GENERATOR if has_yield else FunctionKind.ASYNC)
+                if isinstance(node, ast.AsyncFunctionDef)
+                else (FunctionKind.GENERATOR if has_yield else FunctionKind.SYNC)
+            )
+            previous = self.source_function_results.get(
+                source,
+                PythonFunctionResult(
+                    source,
+                    function_kind,
+                    frozenset(),
+                    frozenset(),
+                    frozenset(),
+                    frozenset(),
+                ),
+            )
+            self.source_function_results[source] = previous._replace(
+                returned=previous.returned | scope.returned_source_origins,
+                returned_exposed=previous.returned_exposed
+                | scope.returned_exposed_source_origins,
+                yielded=previous.yielded | scope.yielded_source_origins,
+                yielded_exposed=previous.yielded_exposed
+                | scope.yielded_exposed_source_origins,
+            )
         finally:
             self._active_lexical_history = previous_history
             self._observed_stack.pop()
@@ -6721,11 +7344,56 @@ class _Analyzer:
                 scope.module_metadata_effects | scope.escaped_metadata_effects,
             )
         ]
+        # Result origins are source values rather than lexical scopes. Keep
+        # their conservative effect projection in this same effect worklist;
+        # changing value identity must not turn every known call into an opaque
+        # metadata mutation. The escaped callee/receiver summary includes all
+        # source-owned values it can return or expose.
+        result_sources = dict(self.source_calls)
+        result_sources.update(
+            (source, element.origins)
+            for source, element in self.source_elements.items()
+        )
+        result_sources.update(self.source_completions)
+        result_sources.update(
+            (source, origins)
+            for source, (_name, origins) in self.source_attributes.items()
+        )
+        result_indices: dict[PythonSourceKey, int] = {}
+        for source in result_sources:
+            result_indices[source] = len(effects)
+            effects.extend((NO_EFFECTS, NO_EFFECTS))
         dependents: list[set[int]] = [set() for _ in effects]
 
         def indices(ref: DeferredExecution) -> tuple[int, ...]:
-            escaped = int(ref.phase == "escape")
+            escaped = int(
+                ref.phase
+                in {
+                    "escape",
+                    "release",
+                    "protocol",
+                    "descriptor",
+                    "iterate",
+                    "async_iterate",
+                    "get_iter",
+                    "get_async_iter",
+                    "next",
+                    "async_next",
+                }
+            )
+            if ref.source in result_indices:
+                return (result_indices[ref.source] + escaped,)
             return tuple(2 * owner + escaped for owner in owners.get(ref.source, ()))
+
+        for source, origins in result_sources.items():
+            target = result_indices[source]
+            dependents[target].add(target + 1)
+            for origin in origins:
+                sources = indices(DeferredExecution(origin, "escape"))
+                if not sources:
+                    effects[target] |= WRITES_MODULE_METADATA
+                for dependency in sources:
+                    dependents[dependency].add(target)
 
         for scope in self.scopes:
             direct = 2 * scope.scope_id
@@ -6814,12 +7482,15 @@ class _Analyzer:
             summary = _HistorySummary.build(self.states, summary_states)
             self._history_summaries[history_key] = summary
         summary.refresh(self.states)
-        maybe, definitely, taint_epoch = summary.properties(summary_start)
+        maybe, definitely, taint_epoch, namespace_unknown = summary.properties(
+            summary_start
+        )
         state_id = self.states.overlay_summary_properties(
             state_id,
             maybe_invalidated_members=maybe,
             definitely_invalidated_members=definitely,
             taint_epoch=taint_epoch,
+            namespace_values_unknown=namespace_unknown,
         )
         updates: list[
             tuple[int, IdentityMask, PythonStaticValue, StaticExpressionResult, int]
@@ -6892,15 +7563,27 @@ class _Analyzer:
         )
         self.module_scope = module
         self._module_source = python_node_source_key(tree)
+        self._module_tree = tree
+        self._module_read_slots_prepared = False
         self.module_slots = list(module.slots.values())
         self.module_slot_mask = sum(1 << slot for slot in self.module_slots)
         self._configure_callback_namespace(tree)
+        if self._star_import_origins:
+            # Star imports can shadow otherwise undeclared globals, including
+            # builtin fallbacks. Give actual global reads storage so the
+            # explicit import write reaches them even with a bounded callback
+            # domain. The lexical authority excludes nested local reads.
+            self._ensure_module_read_slots()
         self.states.set_taint_domain(self._callback_taint_domain())
-        observed: list[int] = [0]
+        entry_state = self.states.invalidate_members(
+            0, self.policy.entry_invalid_members
+        )
+        self._module_history = [entry_state]
+        observed: list[int] = [entry_state]
         self._observed_stack.append(_ObservedStateFrame(observed))
         self._active_lexical_history = observed
         try:
-            module_flow = self.exec_statements(tree.body, 0, module)
+            module_flow = self.exec_statements(tree.body, entry_state, module)
             if module_flow.normal is not None:
                 namespace = self.source_namespaces.setdefault(
                     python_node_source_key(tree), {}
@@ -7006,6 +7689,21 @@ class _Analyzer:
                 (owner, name, origins)
                 for owner, (name, origins) in sorted(self.source_attributes.items())
             ),
+            source_bases=tuple(sorted(self.source_bases.items())),
+            source_elements=tuple(
+                value for _owner, value in sorted(self.source_elements.items())
+            ),
+            source_calls=tuple(sorted(self.source_calls.items())),
+            source_parameters=tuple(
+                (owner, positional, vararg)
+                for owner, (positional, vararg) in sorted(
+                    self.source_parameters.items()
+                )
+            ),
+            source_function_results=tuple(
+                value for _owner, value in sorted(self.source_function_results.items())
+            ),
+            source_completions=tuple(sorted(self.source_completions.items())),
             target_python=self.policy.target_python,
             target_sys_platform=self.policy.target_sys_platform,
             expressions=tuple(

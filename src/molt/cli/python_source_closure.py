@@ -26,10 +26,14 @@ from molt.compiler_analysis.python_namespace_graph import (
 )
 from molt.compiler_analysis.python_namespace_writes import (
     PythonNamespaceWrite,
+    decode_python_namespace_write,
+    python_namespace_write_payload,
     python_namespace_summary,
     python_package_name,
 )
 from molt.cli.python_import_resolution import (
+    python_package_child_names,
+    _local_import_binding_policy,
     LocalPythonModuleResolver,
     LocalPythonModuleSource,
     LocalPythonImportAnalysis,
@@ -243,9 +247,7 @@ def _analysis_payload(
     analysis: LocalPythonImportAnalysis, writes: tuple[PythonNamespaceWrite, ...]
 ) -> dict[str, object]:
     return {
-        "namespace_writes": [
-            [write.module, write.name, write.construct, write.line] for write in writes
-        ],
+        "namespace_writes": [python_namespace_write_payload(write) for write in writes],
         "requests": [
             {**asdict(request), "candidates": list(request.candidates)}
             for request in analysis.requests
@@ -267,21 +269,11 @@ def _analysis_payload(
 def _cached_namespace_writes(rows: object) -> tuple[PythonNamespaceWrite, ...] | None:
     if not isinstance(rows, list):
         return None
-    writes: list[PythonNamespaceWrite] = []
-    for row in rows:
-        if not isinstance(row, list) or len(row) != 4:
-            return None
-        module, name, construct, line = row
-        if (
-            not (module is None or isinstance(module, str) and module)
-            or not (name is None or isinstance(name, str) and name)
-            or construct not in ("attribute", "setattr", "namespace", "import_hooks")
-            or type(line) is not int
-            or line < 0
-        ):
-            return None
-        writes.append(PythonNamespaceWrite(module, name, construct, line))
-    return tuple(writes)
+    try:
+        writes = tuple(decode_python_namespace_write(row) for row in rows)
+    except ValueError:
+        return None
+    return writes if len(set(writes)) == len(writes) else None
 
 
 def _cached_analysis(
@@ -386,24 +378,6 @@ def _cached_analysis(
         ),
         writes,
     )
-
-
-def _package_child_names(init: Path) -> frozenset[str]:
-    """Names the import system can bind on a regular package: its children.
-
-    Every entry that can import as a submodule counts, reached or not, so the
-    premise never depends on which children this graph happens to import.
-    """
-    try:
-        entries = tuple(init.parent.iterdir())
-    except OSError as exc:
-        raise ValueError(f"cannot list Python package {init.parent}: {exc}") from exc
-    names: set[str] = set()
-    for entry in entries:
-        name = entry.name if entry.is_dir() else entry.name.partition(".")[0]
-        if name.isidentifier() and name != "__init__":
-            names.add(name)
-    return frozenset(names)
 
 
 def _read_python_import_manifest(
@@ -625,7 +599,7 @@ def local_python_import_closure(
                     dynamic_import_overrides.get(source, (None, ()))
                 )
                 if is_package and source not in package_children:
-                    package_children[source] = _package_child_names(source)
+                    package_children[source] = python_package_child_names(source)
                 premise = graph_writes.premise(
                     source, package_children.get(source, frozenset())
                 )
@@ -665,6 +639,7 @@ def local_python_import_closure(
                         writes = python_namespace_summary(
                             parsed.tree,
                             package=python_package_name(module, is_package=is_package),
+                            target_python=_local_import_binding_policy().target_python,
                         ).foreign_writes
                     del parsed
                 writes_by_source[module_source] = writes

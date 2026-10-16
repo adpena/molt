@@ -1079,3 +1079,197 @@ def test_scalar_operator_effects_preserve_runtime_errors(expression, error) -> N
     assert result.evaluation_required
     assert effects & RAISES
     assert not effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+
+
+def test_definition_phase_projection_matches_actual_host_execution():
+    import sys
+    from molt.compiler_analysis.python_lexical_scope import python_eager_nodes
+    from molt.compiler_analysis.python_lexical_scope import python_execution_regions
+
+    source = """
+events = []
+def mark(label, value=0):
+    events.append(label)
+    return value
+def decorate(value):
+    return lambda function: function
+try:
+    @decorate(mark('decorator'))
+    def function[T: mark('bound')](arg: mark('annotation') = mark('default')):
+        mark('function_body')
+    class C(mark('base', object)):
+        mark('class_body')
+        def method(self, arg=mark('method_default')):
+            mark('method_body')
+    generator = (mark('generator_body') for item in mark('generator_iter', (1,)))
+    eager = [mark('list_body') for item in mark('list_iter', (1,))]
+    type Alias[T: mark('alias_bound')] = mark('alias_body')
+except Exception:
+    raise
+"""
+    namespace = {}
+    exec(
+        compile(source, "<definition-phase-oracle>", "exec", dont_inherit=True),
+        namespace,
+    )
+    observed = namespace["events"]
+    expected = [
+        "decorator",
+        "default",
+        "base",
+        "class_body",
+        "method_default",
+        "generator_iter",
+        "list_iter",
+        "list_body",
+    ]
+    if sys.version_info[:2] < (3, 14):
+        expected.insert(2, "annotation")
+    assert observed == expected
+    tree = ast.parse(source)
+
+    def marker(node):
+        return (
+            node.args[0].value
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "mark"
+            else None
+        )
+
+    assert [
+        name
+        for node in python_eager_nodes(tree, target_python=sys.version_info[:2])
+        if (name := marker(node)) is not None
+    ] == observed
+    regions = python_execution_regions(
+        tree, target_python=sys.version_info[:2], include_deferred=True
+    )
+    assert [
+        name
+        for region in regions
+        if region.owner is None and (name := marker(region.node)) is not None
+    ] == observed
+    owners = {
+        name: region.owner
+        for region in regions
+        if (name := marker(region.node)) is not None
+    }
+    assert all(
+        owner is not None for name, owner in owners.items() if name not in observed
+    )
+    assert {
+        name: (owner[0], owner[-1])
+        for name, owner in owners.items()
+        if name in {"function_body", "method_body", "generator_body"}
+        and owner is not None
+    } == {
+        "function_body": (10, "FunctionDef"),
+        "method_body": (14, "FunctionDef"),
+        "generator_body": (16, "GeneratorExp"),
+    }
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("nested_target", [False, True])
+def test_context_execution_phases_match_cpython_order_and_owner(
+    asynchronous, nested_target
+):
+    import asyncio
+    import inspect
+    import sys
+    from types import SimpleNamespace
+    from molt.compiler_analysis.python_lexical_scope import python_execution_regions
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    events = []
+    prefix = "async_" if asynchronous else ""
+
+    class EnteredValue:
+        def __init__(self, label):
+            self.label = label
+
+        def __iter__(self):
+            events.append(("manager", self.label, prefix + "context_unpack"))
+            # Nested unpack of an exact tuple has no user callback. The source
+            # phase denotes root iteration, not a complete nested heap trace.
+            return iter((1, (2, 3)) if nested_target else (1, 2))
+
+    class Manager:
+        def __init__(self, label):
+            self.label = label
+
+        def __enter__(self):
+            events.append(("manager", self.label, "context_enter"))
+            return EnteredValue(self.label)
+
+        def __exit__(self, *_error):
+            events.append(("manager", self.label, "context_exit"))
+
+        async def __aenter__(self):
+            events.append(("manager", self.label, "async_context_enter"))
+            return EnteredValue(self.label)
+
+        async def __aexit__(self, *_error):
+            events.append(("manager", self.label, "async_context_exit"))
+
+    def acquire(label):
+        events.append(("acquire", label, "evaluate"))
+        return Manager(label)
+
+    def target(label):
+        events.append(("target", label, "evaluate"))
+        return SimpleNamespace()
+
+    def body():
+        events.append(("body", "", "evaluate"))
+
+    outer_rest = "(target('outer_nested').value, spare)" if nested_target else "spare"
+    inner_rest = "(target('inner_nested').value, spare)" if nested_target else "spare"
+    statement = (
+        f"{'async ' if asynchronous else ''}with acquire('outer') as "
+        f"(target('outer').value, {outer_rest}), acquire('inner') as "
+        f"[target('inner').value, {inner_rest}]:\n    body()\n"
+    )
+    source = (
+        "async def run():\n"
+        + "".join("    " + line for line in statement.splitlines(True))
+        if asynchronous
+        else statement
+    )
+    namespace: dict[str, object] = {"acquire": acquire, "target": target, "body": body}
+    exec(compile(source, "<context-phase-oracle>", "exec"), namespace)
+    if asynchronous:
+        run = namespace["run"]
+        assert inspect.iscoroutinefunction(run)
+        asyncio.run(run())
+
+    tree = ast.parse(source)
+    projected = []
+    owners = set()
+    for region in python_execution_regions(
+        tree, target_python=sys.version_info[:2], include_deferred=asynchronous
+    ):
+        node = region.node
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"acquire", "target", "body"}
+        ):
+            continue
+        if node.args:
+            label_node = node.args[0]
+            assert isinstance(label_node, ast.Constant)
+            label = label_node.value
+        else:
+            label = ""
+        projected.append(
+            (
+                node.func.id if region.phase == "evaluate" else "manager",
+                label,
+                region.phase,
+            )
+        )
+        owners.add(region.owner)
+    assert projected == events
+    assert owners == {python_node_source_key(tree.body[0]) if asynchronous else None}

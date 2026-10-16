@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 from pathlib import Path
 from unittest.mock import Mock
@@ -12,17 +14,22 @@ from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_import_scanner as scanner
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.models import (
-    _ImportScanRequests,
     _BinaryImageScope,
     _CompleteImportScan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalPackageNativeArtifactPlan,
-    _ImportDiscoveryProjection,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
     _PreparedEntryModuleGraph,
     _RuntimeImportSupportPolicy,
 )
+from molt.compiler_analysis.python_imports import (
+    _ImportScanRequests,
+    _ImportDiscoveryProjection,
+)
+from molt.compiler_analysis.python_namespace_writes import python_namespace_summary
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
 from molt.cli.module_resolution import _ModuleResolutionCache
 from molt.target_python import (
     TargetPythonVersion,
@@ -69,7 +76,7 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
     def forbidden(*args, **kwargs):
         raise AssertionError("warm graph receipt must not repeat source scans")
 
-    monkeypatch.setattr(scanner, "_collect_import_scan_requests", forbidden)
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", forbidden)
     for full in (first_full, not first_full):
         result = _discover(helper, tmp_path, full=full, project=tmp_path)
         assert result.scan_authority == expected[full].scan_authority
@@ -109,6 +116,50 @@ def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) ->
                 (_ModuleSourceScanAuthority("helper", other, "full"),)
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        (None, PythonNamespacePremise((), 0), None),
+        (
+            PythonNamespacePremise(("a",), 0),
+            PythonNamespacePremise(("b",), int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(("a", "b"), int(PythonMember.IMPORT_HOOKS)),
+        ),
+        (
+            PythonNamespacePremise(None, 0),
+            PythonNamespacePremise(("b",), int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(None, int(PythonMember.IMPORT_HOOKS)),
+        ),
+    ],
+)
+def test_scan_authority_merge_and_payload_preserve_namespace_proof(
+    tmp_path, left, right, expected
+) -> None:
+    source = _source(tmp_path / "owner.py", "pass\n")
+    first = _ModuleGraphScanAuthority(
+        (_ModuleSourceScanAuthority("owner", source, "full", namespace_premise=left),)
+    )
+    second = _ModuleGraphScanAuthority(
+        (
+            _ModuleSourceScanAuthority(
+                "owner", source, "module_init", namespace_premise=right
+            ),
+        )
+    )
+    merged = first.merged(second)
+    assert merged == second.merged(first)
+    assert merged.by_module["owner"].namespace_premise == expected
+    row = merged.payload()[0]
+    assert row["namespace_premise"] == (
+        None
+        if expected is None
+        else {
+            "foreign_writes": expected.foreign_writes,
+            "member_writes": expected.member_writes,
+        }
+    )
 
 
 @pytest.mark.parametrize("left_mode", ["module_init", "full"])
@@ -156,6 +207,12 @@ def test_complete_precomputed_scan_rejects_mode_path_and_content_drift(
 ) -> None:
     source = _source(tmp_path / "entry.py", "pass\n")
     expected_scan = _CompleteImportScan(
+        _ImportScanRequests(
+            (),
+            (),
+            dynamic_relative_import_candidates=("pkg.child",),
+            requires_runtime_package_anchor=True,
+        ),
         (),
         (),
         ("pkg.child",),
@@ -208,6 +265,7 @@ def test_persisted_import_scan_roundtrip_preserves_dynamic_discovery_fact(
         (),
         ("pkg.child",),
         True,
+        namespace_summary=python_namespace_summary(ast.parse(source.read_bytes())),
     )
 
     graph_cache._write_persisted_import_scan(
@@ -766,7 +824,7 @@ def test_graph_cache_binds_admitted_source_generation(
     def forbidden(*args, **kwargs):
         raise AssertionError("generation-specific graph receipt should be warm")
 
-    monkeypatch.setattr(scanner, "_collect_import_scan_requests", forbidden)
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", forbidden)
     for generation in (first, second):
         assert discover(generation).graph["support"] == generation != original
 
@@ -792,10 +850,12 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
         source_arguments=(),
         target_python: TargetPythonVersion,
         ast_digest_admission: _PythonAstDigestAdmission,
+        namespace_premise,
     ) -> _ImportDiscoveryProjection:
         assert source_owner is None
         assert source_arguments == ()
         assert ast_digest_admission.tree is tree
+        assert namespace_premise is None
         calls.append(target_python.tag)
         return _ImportDiscoveryProjection((target_python.tag,))
 
@@ -813,7 +873,7 @@ def test_complete_scan_collector_forwards_and_keys_target_python(
         ).imports == (target.tag,)
     assert calls == ["py312", "py313"]
 
-    monkeypatch.setattr(scanner, "_collect_imports_for_graph", collector)
+    monkeypatch.setattr(_source_import_scan, "_collect_imports_for_graph", collector)
     target = TargetPythonVersion(3, 13, 0)
     loaded = discovery._load_module_import_scan(
         source,
@@ -860,7 +920,9 @@ def test_generated_package_graph_cache_validates_source_role_authority(
                 module_name="pkg",
                 import_scan_mode="full",
                 is_package=True,
-                scan=_CompleteImportScan(("pkg.child",), ()),
+                scan=_CompleteImportScan(
+                    _ImportScanRequests(("pkg.child",), ()), ("pkg.child",), ()
+                ),
                 target_python=PYTHON,
             ),
         }
@@ -887,9 +949,61 @@ def test_generated_package_graph_cache_validates_source_role_authority(
     def cold_scan(*args, **kwargs):
         raise AssertionError("cold source scan")
 
-    monkeypatch.setattr(scanner, "_collect_import_scan_requests", cold_scan)
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", cold_scan)
     warm = discover()
     assert warm.graph == first.graph
     assert warm.scan_authority == first.scan_authority
     assert not hasattr(graph_cache, "_read_persisted_module_graph")
     assert not hasattr(graph_cache, "_write_persisted_module_graph")
+
+
+def test_precomputed_star_scan_recompletes_package_exports_without_reparsing_entry(
+    tmp_path, monkeypatch
+):
+    entry = _source(tmp_path / "entry.py", "from pkg import *\n")
+    package = _source(tmp_path / "pkg" / "__init__.py", "__all__ = ['first']\n")
+    _source(tmp_path / "pkg" / "first.py", "pass\n")
+    _source(tmp_path / "pkg" / "second.py", "pass\n")
+    first = discovery._load_module_import_scan(
+        entry,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=_ModuleResolutionCache(),
+        project_root=None,
+        roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        stdlib_allowlist=set(),
+        target_python=PYTHON,
+    )
+    record = discovery._bind_precomputed_module_import_scan(
+        entry,
+        module_name="entry",
+        import_scan_mode="full",
+        scan=first.scan,
+        snapshot=first.snapshot,
+        target_python=PYTHON,
+    )
+    package.write_text("__all__ = ['second']\n", encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("precomputed entry source was rescanned")
+
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", forbidden)
+    second = discovery._load_module_import_scan(
+        entry,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        resolution_cache=_ModuleResolutionCache(),
+        project_root=None,
+        precomputed_scan=record,
+        roots=[tmp_path],
+        stdlib_root=tmp_path / "stdlib",
+        stdlib_allowlist=set(),
+        target_python=PYTHON,
+    )
+    assert "pkg.first" in first.scan.imports and "pkg.second" not in first.scan.imports
+    assert (
+        "pkg.second" in second.scan.imports and "pkg.first" not in second.scan.imports
+    )

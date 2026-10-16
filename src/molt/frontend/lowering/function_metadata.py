@@ -8,6 +8,8 @@ call, function, class, and module visitors.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+
 from molt.compiler_analysis.python_lexical_scope import (
     expression_contains_yield,
 )
@@ -530,7 +532,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
     ) -> dict[str, Any] | None:
         if module_name is None:
             module_name = self.module_name
-        normalized = self._normalize_allowlist_module(module_name)
+        normalized = normalize_stdlib_module_name(module_name)
         if normalized is not None:
             module_name = normalized
         module_defaults = self.known_func_defaults.get(module_name)
@@ -549,7 +551,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
     ) -> FunctionKind | None:
         if module_name is None:
             module_name = self.module_name
-        normalized = self._normalize_allowlist_module(module_name)
+        normalized = normalize_stdlib_module_name(module_name)
         if normalized is not None:
             module_name = normalized
         module_kinds = self.known_func_kinds.get(module_name)
@@ -563,7 +565,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         candidate_modules = set(self.known_func_defaults) | set(self.known_func_kinds)
         for raw_module_name in sorted(candidate_modules):
             module_name = (
-                self._normalize_allowlist_module(raw_module_name) or raw_module_name
+                normalize_stdlib_module_name(raw_module_name) or raw_module_name
             )
             symbol_prefix = f"{self._sanitize_module_name(module_name)}__"
             if not func_symbol.startswith(symbol_prefix):
@@ -656,7 +658,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
     ) -> str | None:
         if module_name is None:
             module_name = self.module_name
-        normalized = self._normalize_allowlist_module(module_name)
+        normalized = normalize_stdlib_module_name(module_name)
         if normalized is not None:
             module_name = normalized
         if not self._is_linkable_module_function_symbol(module_name, func_id):

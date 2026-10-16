@@ -6,6 +6,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from molt.cli import module_import_scanner as _module_import_scanner
+from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 
 
 @functools.lru_cache(maxsize=4096)
@@ -40,8 +41,8 @@ def _module_dependencies_from_imports(
                 candidate in module_graph or candidate in known_module_set
             ) and candidate != module_name:
                 deps.add(candidate)
-            if candidate.startswith("molt.stdlib."):
-                stdlib_candidate = candidate[len("molt.stdlib.") :]
+            stdlib_candidate = normalize_stdlib_module_name(candidate)
+            if stdlib_candidate is not None and stdlib_candidate != candidate:
                 if (
                     stdlib_candidate in module_graph
                     or stdlib_candidate in known_module_set

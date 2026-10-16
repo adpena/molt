@@ -121,8 +121,10 @@ def test_dev_py_lint_uses_documented_stdlib_intrinsic_gates(monkeypatch) -> None
         if len(args) > 1 and args[1] == "tools/check_stdlib_intrinsics.py"
     ]
 
-    assert any("--fallback-intrinsic-backed-only" in args for args in stdlib_calls)
-    assert any("--critical-allowlist" in args for args in stdlib_calls)
+    # Critical-root validation includes the complete source audit. Dispatch it
+    # once instead of repeating the full inventory for the default command.
+    assert len(stdlib_calls) == 1
+    assert "--critical-allowlist" in stdlib_calls[0]
     assert any(
         len(args) > 1 and args[1] == "tools/check_subprocess_guard_coverage.py"
         for args in calls

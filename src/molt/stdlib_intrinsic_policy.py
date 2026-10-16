@@ -1,8 +1,27 @@
 from __future__ import annotations
 
 import ast
-import hashlib
-from molt.python_private_names import python_source_field
+from molt.compiler_analysis.python_import_scan import (
+    _collect_imports_for_graph,
+    _collect_import_scan_requests,
+)
+from molt.compiler_analysis.python_source_keys import (
+    _PythonAstDigestAdmission,
+    python_node_source_key,
+)
+from molt.compiler_analysis.python_imports import (
+    _ImportScanRequests,
+)
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    graph_python_namespace_writes,
+)
+from molt.compiler_analysis.python_namespace_writes import (
+    PythonNamespaceSummary,
+    python_namespace_summary,
+    python_package_name,
+)
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -11,12 +30,10 @@ from typing import Mapping, cast
 
 from molt.target_python import TargetPythonVersion, _parse_source_for_target
 from molt.compiler_analysis.python_imports import (
-    ModuleImportContext,
     StaticImportRequest,
     StaticImportPlan,
     UnresolvedStaticImportError,
-    module_import_context_with_metadata_proof,
-    plan_static_import_request,
+    normalize_stdlib_module_name,
     require_static_import_modules,
 )
 
@@ -336,21 +353,67 @@ class StdlibFacadeEvidence:
 
 
 @dataclass(frozen=True)
-class StdlibModuleImportEvidence:
-    """Intrinsic relationships are evidence, not runtime graph admission.
+class StdlibImportSite:
+    line: int
+    # None denotes an actual dynamic-import call whose static request is opaque.
+    request: StaticImportRequest | None
+    plan: StaticImportPlan
+    # The from-list candidates in plan are not required module owners.
+    owner_plan: StaticImportPlan
 
-    Only individually resolved sites contribute proven edges. Unresolved sites
-    remain explicit obligations and cannot promote a compiled Python module or
-    a private support fragment through a guessed package or runtime catalog.
-    ``private_imports`` holds each resolved ``from owner import _name`` as
-    ``(owner, _name)``: the reads another module makes of a private binding.
-    """
+    @property
+    def unresolved(self) -> bool:
+        return self.request is None or any(
+            plan.errors or plan.requires_runtime
+            for plan in (self.plan, self.owner_plan)
+        )
+
+
+@dataclass(frozen=True)
+class StdlibModuleImportEvidence:
+    """Source-bound plans, not runtime graph admission or cached closure results."""
 
     source_path: Path
-    proven_modules: frozenset[str]
-    unresolved_sites: tuple[tuple[int, StaticImportRequest, StaticImportPlan], ...]
+    source_scan: _ImportScanRequests
     facade: StdlibFacadeEvidence | None
     private_imports: frozenset[tuple[str, str]]
+    completed_sites: tuple[StdlibImportSite, ...] | None = None
+    completed_imports: frozenset[str] | None = None
+
+    @property
+    def sites(self) -> tuple[StdlibImportSite, ...]:
+        if self.completed_sites is not None:
+            return self.completed_sites
+        return tuple(
+            StdlibImportSite(
+                site.line,
+                site.request,
+                site.plan,
+                site.owner_plan,
+            )
+            for site in self.source_scan.source_sites
+        )
+
+    @property
+    def proven_modules(self) -> frozenset[str]:
+        if self.completed_imports is not None:
+            return self.completed_imports
+        return frozenset(
+            module
+            for site in self.sites
+            if not site.unresolved
+            for module in site.plan.modules
+        )
+
+    @property
+    def unresolved_sites(
+        self,
+    ) -> tuple[tuple[int, StaticImportRequest, StaticImportPlan], ...]:
+        return tuple(
+            (site.line, site.request, site.plan)
+            for site in self.sites
+            if site.unresolved and site.request is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -360,6 +423,7 @@ class StdlibModuleIntrinsicFacts:
     status: str
     import_evidence: StdlibModuleImportEvidence
     intrinsic_use: StdlibModuleIntrinsicUse
+    namespace_summary: PythonNamespaceSummary
 
 
 @dataclass(frozen=True)
@@ -410,15 +474,21 @@ class StdlibIntrinsicClassification:
             {
                 "module": module_name,
                 "path": str(evidence.source_path),
-                "line": line,
-                "name": request.name,
-                "level": request.level,
-                "fromlist": list(request.fromlist),
-                "requires_runtime": plan.requires_runtime,
-                "errors": list(plan.errors),
+                "line": site.line,
+                "name": site.request.name
+                if site.request is not None
+                else "<opaque import call>",
+                "level": site.request.level if site.request is not None else None,
+                "fromlist": list(site.request.fromlist)
+                if site.request is not None
+                else [],
+                "requires_runtime": site.plan.requires_runtime,
+                "requires_runtime_execution": site.plan.requires_runtime_execution,
+                "errors": list(site.plan.errors),
             }
             for module_name, evidence in sorted(self.import_evidence.items())
-            for line, request, plan in evidence.unresolved_sites
+            for site in evidence.sites
+            if site.unresolved
         ]
 
 
@@ -516,13 +586,13 @@ def stdlib_module_import_evidence(
     ).import_evidence
 
 
-def stdlib_module_intrinsic_facts(
+def _stdlib_module_source_tree(
     module_name: str,
     path: Path,
     *,
     target_python: TargetPythonVersion,
     source: str | bytes | None = None,
-) -> StdlibModuleIntrinsicFacts:
+) -> ast.Module:
     try:
         if source is None:
             source = path.read_bytes()
@@ -544,13 +614,88 @@ def stdlib_module_intrinsic_facts(
             f"Python {target_python.short}) cannot parse source: {exc.msg}"
         ) from exc
 
-    # The parsed bytes and the target Python determine the AST, so their digest
-    # is the analysis identity; walking the tree to hash it costs ~7 ms a module.
-    source_digest = hashlib.sha256(
-        source
-        if isinstance(source, bytes)
-        else source.encode("utf-8", errors="surrogatepass")
-    ).hexdigest()
+    return tree
+
+
+def stdlib_module_namespace_summary(
+    module_name: str,
+    path: Path,
+    *,
+    target_python: TargetPythonVersion,
+) -> PythonNamespaceSummary:
+    tree = _stdlib_module_source_tree(module_name, path, target_python=target_python)
+    return python_namespace_summary(
+        tree,
+        package=python_package_name(module_name, is_package=path.name == "__init__.py"),
+        target_python=target_python.feature_version,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StdlibNamespaceInventory:
+    module_graph: Mapping[str, Path]
+    summaries: Mapping[str, PythonNamespaceSummary]
+    premises: Mapping[str, PythonNamespacePremise]
+
+
+def stdlib_namespace_inventory(
+    module_graph: Mapping[str, Path],
+    *,
+    target_python: TargetPythonVersion,
+    namespace_provider: Callable[[str, Path], PythonNamespaceSummary] | None = None,
+) -> StdlibNamespaceInventory:
+    """Derive one premise over an explicit complete inventory, without discovery.
+
+    Only summaries survive each source visit; no whole-inventory AST retention
+    or binding-analysis warmup is needed. Package bindings include extension
+    modules and namespace descendants from the same supplied topology.
+    """
+    summaries = {
+        name: (
+            namespace_provider(name, path)
+            if namespace_provider is not None
+            else stdlib_module_namespace_summary(
+                name, path, target_python=target_python
+            )
+        )
+        for name, path in module_graph.items()
+        if path and path.suffix == ".py"
+    }
+    writes = graph_python_namespace_writes(
+        (write for summary in summaries.values() for write in summary.foreign_writes),
+        module_graph.get,
+    )
+    children: dict[str, set[str]] = {}
+    for name in module_graph:
+        parent, _, child = name.rpartition(".")
+        while parent:
+            children.setdefault(parent, set()).add(child)
+            parent, _, child = parent.rpartition(".")
+    return StdlibNamespaceInventory(
+        MappingProxyType(dict(module_graph)),
+        MappingProxyType(summaries),
+        MappingProxyType(
+            {
+                name: writes.premise(
+                    module_graph[name], frozenset(children.get(name, ()))
+                )
+                for name in summaries
+            }
+        ),
+    )
+
+
+def stdlib_module_intrinsic_facts(
+    module_name: str,
+    path: Path,
+    *,
+    target_python: TargetPythonVersion,
+    source: str | bytes | None = None,
+    namespace_premise: PythonNamespacePremise | None = None,
+) -> StdlibModuleIntrinsicFacts:
+    tree = _stdlib_module_source_tree(
+        module_name, path, target_python=target_python, source=source
+    )
     use = _intrinsic_use_from_tree(tree)
     return StdlibModuleIntrinsicFacts(
         _stdlib_module_intrinsic_status_from_tree(tree, path.name, use),
@@ -558,10 +703,17 @@ def stdlib_module_intrinsic_facts(
             module_name,
             path,
             tree,
-            source_digest=source_digest,
             target_python=target_python,
+            namespace_premise=namespace_premise,
         ),
         use,
+        python_namespace_summary(
+            tree,
+            package=python_package_name(
+                module_name, is_package=path.name == "__init__.py"
+            ),
+            target_python=target_python.feature_version,
+        ),
     )
 
 
@@ -570,89 +722,39 @@ def _stdlib_module_import_evidence_from_tree(
     path: Path,
     tree: ast.Module,
     *,
-    source_digest: str,
     target_python: TargetPythonVersion,
+    namespace_premise: PythonNamespacePremise | None = None,
 ) -> StdlibModuleImportEvidence:
-    imports: set[str] = set()
-    unresolved_sites: list[tuple[int, StaticImportRequest, StaticImportPlan]] = []
-    base_context = ModuleImportContext(
-        module_name,
-        is_package=path.name == "__init__.py",
-        target_python=target_python.feature_version,
-    )
-    from molt.compiler_analysis.python_binding_flow import (
-        PythonBindingPolicy,
-        analyze_python_bindings,
-    )
-
-    bindings = analyze_python_bindings(
+    admission = _PythonAstDigestAdmission(tree)
+    projection = _collect_imports_for_graph(
         tree,
-        source_digest=source_digest,
-        policy=PythonBindingPolicy(
-            target_python=target_python.feature_version,
-            module_name=module_name,
-            module_is_package=path.name == "__init__.py",
-        ),
+        module_name,
+        path.name == "__init__.py",
+        target_python=target_python,
+        namespace_premise=namespace_premise,
+        ast_digest_admission=admission,
     )
-    import_flow = bindings.module_import_flow
+    scan = _collect_import_scan_requests(
+        projection,
+        tree,
+        source_path=path,
+        module_name=module_name,
+        import_scan_mode="full",
+        target_python=target_python,
+        namespace_premise=namespace_premise,
+        ast_digest_admission=admission,
+    )
     facade_imports = _pure_facade_imports(tree)
+    facade_keys = {python_node_source_key(node) for node in facade_imports or ()}
     facade_bindings: list[StdlibFacadeBinding] = []
     private_imports: set[tuple[str, str]] = set()
-
-    def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
-        contexts = tuple(
-            base_context.with_state(state) for state in import_flow.states_for(node)
-        )
-        if isinstance(node, ast.ImportFrom) and node.level:
-            fact = bindings.statement_fact(node)
-            return tuple(
-                module_import_context_with_metadata_proof(
-                    context, fact.module_metadata_at_entry if fact is not None else None
-                )
-                for context in contexts
-            )
-        return contexts
-
-    def record_request(node: ast.AST, request: StaticImportRequest) -> None:
-        plan = plan_static_import_request(request, contexts_for(node))
-        if plan.requires_runtime or plan.errors:
-            unresolved_sites.append((getattr(node, "lineno", 0), request, plan))
-        else:
-            imports.update(plan.modules)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                record_request(node, StaticImportRequest.statement(alias.name))
+    # Export bindings and owner plans come from the canonical source producer.
+    for site in scan.source_sites:
+        if not site.bindings:
             continue
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        record_request(
-            node,
-            StaticImportRequest.statement(
-                node.module or "",
-                level=node.level,
-                fromlist=tuple(
-                    python_source_field(alias, "name") for alias in node.names
-                ),
-            ),
-        )
-        is_facade_import = facade_imports is not None and node in facade_imports
-        private_names = [
-            alias.name
-            for alias in node.names
-            if alias.name.startswith("_") and alias.name != "*"
-        ]
-        if not is_facade_import and not private_names:
-            continue
-        # Resolve the owner request itself. A fromlist candidate such as
-        # weakref.WeakSet is not evidence that WeakSet is an owner module.
-        owner_plan = plan_static_import_request(
-            StaticImportRequest.statement(node.module or "", level=node.level),
-            contexts_for(node),
-        )
+        owner_plan = site.owner_plan
         owner = (
-            owner_plan.modules[0]
+            normalize_stdlib_module_name(owner_plan.modules[0]) or owner_plan.modules[0]
             if len(owner_plan.modules) == 1
             and not owner_plan.errors
             and not owner_plan.requires_runtime
@@ -660,23 +762,22 @@ def _stdlib_module_import_evidence_from_tree(
             else None
         )
         if owner is not None:
-            private_imports.update((owner, name) for name in private_names)
-        if is_facade_import:
+            private_imports.update(
+                (owner, name)
+                for _export, name in site.bindings
+                if name.startswith("_") and name != "*"
+            )
+        if site.source in facade_keys:
             facade_bindings.extend(
-                StdlibFacadeBinding(
-                    alias.asname or alias.name, owner, alias.name, node.lineno
-                )
-                for alias in node.names
+                StdlibFacadeBinding(export, owner, name, site.line)
+                for export, name in site.bindings
             )
     return StdlibModuleImportEvidence(
         path,
-        frozenset(imports),
-        tuple(unresolved_sites),
-        (
-            StdlibFacadeEvidence(tuple(facade_bindings))
-            if facade_imports is not None
-            else None
-        ),
+        scan,
+        StdlibFacadeEvidence(tuple(facade_bindings))
+        if facade_imports is not None
+        else None,
         frozenset(private_imports),
     )
 
@@ -690,14 +791,16 @@ def stdlib_module_static_imports(
     evidence = stdlib_module_import_evidence(
         module_name, path, target_python=target_python
     )
-    for line, request, plan in evidence.unresolved_sites:
-        require_static_import_modules(
-            plan,
-            consumer=(
-                f"stdlib intrinsic support graph ({module_name}: "
-                f"{path}:{line}, {request.name!r})"
-            ),
-        )
+    for site in evidence.sites:
+        if site.unresolved:
+            require_static_import_modules(
+                site.plan,
+                consumer=(
+                    f"stdlib intrinsic support graph ({module_name}: "
+                    f"{path}:{site.line}, "
+                    f"{site.request.name if site.request else '<opaque import call>'!r})"
+                ),
+            )
     return evidence.proven_modules
 
 
@@ -779,38 +882,46 @@ def _closed_intrinsic_statuses(
         evidence_by_module[module_name] = replace(
             evidence, facade=StdlibFacadeEvidence(tuple(bindings))
         )
-    imports_by_module = {
-        name: evidence.proven_modules for name, evidence in evidence_by_module.items()
-    }
-    changed = True
-    while changed:
-        changed = False
-        for module_name in imports_by_module:
-            if _is_intrinsic_status(closed.get(module_name)):
-                continue
-            if closed.get(module_name) != STATUS_PYTHON_COMPILED:
-                continue
-            facade = evidence_by_module[module_name].facade
-            if facade is not None:
-                if facade.resolved and all(
-                    owner in evidence_by_module
-                    and _is_intrinsic_status(closed.get(owner))
-                    for owner in facade.owners
-                ):
-                    closed[module_name] = STATUS_INTRINSIC_SUPPORT
-                    changed = True
-                # Pure forwarding has one all-owner authority. Falling through
-                # to an any-edge rule would admit mixed owners or bootstrap a
-                # forwarding cycle without an independently intrinsic anchor.
-                continue
-            if _is_private_support_module(module_name) and any(
-                _is_intrinsic_status(closed.get(owner))
-                and module_name in owner_imports
-                and _module_family_matches(owner, module_name)
-                for owner, owner_imports in imports_by_module.items()
+    # Each promotion and dependency edge is processed once. Facades wait for
+    # every owner; private support needs an independently anchored family edge.
+    facade_waiters: dict[str, list[str]] = {}
+    remaining: dict[str, int] = {}
+    private_children: dict[str, set[str]] = {}
+    for name, evidence in evidence_by_module.items():
+        if closed.get(name) != STATUS_PYTHON_COMPILED:
+            continue
+        facade = evidence.facade
+        if facade is not None:
+            if facade.resolved and all(
+                owner in evidence_by_module for owner in facade.owners
             ):
-                closed[module_name] = STATUS_INTRINSIC_SUPPORT
-                changed = True
+                remaining[name] = len(facade.owners)
+                for owner in facade.owners:
+                    facade_waiters.setdefault(owner, []).append(name)
+    for owner, evidence in evidence_by_module.items():
+        for imported in evidence.proven_modules:
+            child = normalize_stdlib_module_name(imported) or imported
+            if (
+                child in evidence_by_module
+                and evidence_by_module[child].facade is None
+                and _is_private_support_module(child)
+                and _module_family_matches(owner, child)
+            ):
+                private_children.setdefault(owner, set()).add(child)
+    ready = deque(
+        name for name, status in closed.items() if _is_intrinsic_status(status)
+    )
+    while ready:
+        owner = ready.popleft()
+        for child in facade_waiters.get(owner, ()):
+            remaining[child] -= 1
+            if remaining[child] == 0 and closed[child] == STATUS_PYTHON_COMPILED:
+                closed[child] = STATUS_INTRINSIC_SUPPORT
+                ready.append(child)
+        for child in private_children.get(owner, ()):
+            if closed[child] == STATUS_PYTHON_COMPILED:
+                closed[child] = STATUS_INTRINSIC_SUPPORT
+                ready.append(child)
     return StdlibIntrinsicClassification(
         MappingProxyType(closed),
         MappingProxyType(evidence_by_module),
@@ -824,17 +935,70 @@ def classify_stdlib_module_statuses(
     module_graph: Mapping[str, Path],
     *,
     target_python: TargetPythonVersion,
-    facts_provider: Callable[[str, Path], StdlibModuleIntrinsicFacts] | None = None,
+    facts_provider: Callable[
+        [str, Path, PythonNamespacePremise], StdlibModuleIntrinsicFacts
+    ]
+    | None = None,
+    namespace_inventory: StdlibNamespaceInventory | None = None,
 ) -> StdlibIntrinsicClassification:
+    inventory = namespace_inventory or stdlib_namespace_inventory(
+        module_graph, target_python=target_python
+    )
+    if inventory.module_graph != module_graph:
+        raise ValueError(
+            "namespace inventory does not match the classified module graph"
+        )
     facts = {
         module_name: (
-            facts_provider(module_name, path)
+            facts_provider(module_name, path, inventory.premises[module_name])
             if facts_provider is not None
             else stdlib_module_intrinsic_facts(
-                module_name, path, target_python=target_python
+                module_name,
+                path,
+                target_python=target_python,
+                namespace_premise=inventory.premises[module_name],
             )
         )
         for module_name, path in module_graph.items()
         if path and path.suffix == ".py"
     }
+    for name, fact in facts.items():
+        if fact.namespace_summary != inventory.summaries[name]:
+            raise UnresolvedStaticImportError(
+                f"stdlib namespace changed during classification: {name}: {module_graph[name]}"
+            )
+    from molt.cli.module_import_scanner import _complete_import_scan
+    from molt.cli.module_resolution import _ModuleResolutionCache
+
+    resolution = _ModuleResolutionCache()
+    requests = {name: fact.import_evidence.source_scan for name, fact in facts.items()}
+    for name, fact in facts.items():
+        scan = _complete_import_scan(
+            requests[name],
+            source_path=module_graph[name],
+            roots=None,
+            stdlib_root=None,
+            stdlib_allowlist=None,
+            resolution_cache=resolution,
+            target_python=target_python,
+            module_graph=module_graph,
+            source_requests=requests,
+        )
+        sites = tuple(
+            StdlibImportSite(site.line, site.request, site.plan, site.owner_plan)
+            for site in scan.source_sites
+        )
+        facts[name] = replace(
+            fact,
+            import_evidence=replace(
+                fact.import_evidence,
+                completed_sites=sites,
+                completed_imports=frozenset(
+                    module
+                    for site in sites
+                    if not site.unresolved
+                    for module in site.plan.modules
+                ),
+            ),
+        )
     return _closed_intrinsic_statuses(module_graph, facts)

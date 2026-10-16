@@ -14,7 +14,7 @@ globals change only through:
 This module is the one authority for that syntax. It is conservative by
 spelling: it never narrows on a construct it cannot see. A module whose own code
 reflects its namespace dynamically (an escaping ``globals()``, a non-literal
-key, ``exec``/``eval`` on its own globals, star imports) reports no own-name
+key, ``exec``/``eval`` on its own globals) reports no own-name
 bound, and the binding flow then keeps its whole-namespace callback model.
 Design: ``docs/design/verified_namespace_premises.md``.
 """
@@ -23,12 +23,28 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import Final, Literal, TypeAlias
+from typing import Final, Literal, NamedTuple, TypeAlias, cast, get_args
 
 from molt.python_private_names import python_import_binding
+from molt.compiler_analysis.python_builtin_shapes import builtin_method_writes_receiver
+from molt.compiler_analysis.python_lexical_scope import (
+    LexicalDefinitionNode,
+    definition_evaluation_regions,
+    definition_lexical_regions,
+    module_annotation_execution,
+)
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    decode_python_source_key,
+    python_node_source_key,
+)
+from molt.compiler_analysis.python_value_identity import (
+    canonical_import_binding_candidates,
+)
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 1
+SUMMARY_SCHEMA: Final = 2
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -41,6 +57,10 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # a mutation of ``sys.modules``, ``sys.meta_path``, ``sys.path_hooks`` or
     # ``sys.path_importer_cache``: it changes what later imports bind
     "import_hooks",
+    # A sys.modules entry changes canonical acquisition, not the mapping object.
+    "import_binding",
+    # A computed cache key proven disjoint from canonical-provider names.
+    "import_binding_disjoint",
 ]
 
 # Calls that only read their argument. A module or namespace passed to any other
@@ -90,7 +110,6 @@ _WHOLE_READ_CALLS: Final = frozenset(
 _IMPORT_HOOK_OBJECTS: Final = frozenset(
     {"sys.modules", "sys.meta_path", "sys.path_hooks", "sys.path_importer_cache"}
 )
-_LIST_READ_METHODS: Final = frozenset({"index", "count", "copy", "__contains__"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,14 +127,57 @@ class PythonNamespaceWrite:
     name: str | None
     construct: PythonNamespaceWriteConstruct
     line: int
+    source_owner: PythonSourceKey | None = None
+
+
+def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
+    return [
+        write.module,
+        write.name,
+        write.construct,
+        write.line,
+        None if write.source_owner is None else list(write.source_owner),
+    ]
+
+
+def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
+    if not isinstance(raw, list) or len(raw) != 5:
+        raise ValueError("invalid foreign namespace write")
+    module, name, construct, line, owner = raw
+    if (
+        module is not None
+        and type(module) is not str
+        or name is not None
+        and type(name) is not str
+        or construct not in get_args(PythonNamespaceWriteConstruct)
+        or type(line) is not int
+        or line < 1
+    ):
+        raise ValueError("invalid foreign namespace write")
+    source_owner = None if owner is None else decode_python_source_key(owner)
+    if construct in {"import_binding", "import_binding_disjoint"} and (
+        module != "sys.modules"
+        or construct == "import_binding_disjoint"
+        and name is not None
+    ):
+        raise ValueError("invalid import binding write")
+    if source_owner is not None and source_owner[-1] not in {
+        "FunctionDef",
+        "AsyncFunctionDef",
+        "Lambda",
+        "GeneratorExp",
+        "TypeAlias",
+    }:
+        raise ValueError("invalid namespace write source owner")
+    return PythonNamespaceWrite(module, name, construct, line, source_owner)
 
 
 @dataclass(frozen=True, slots=True)
 class PythonNamespaceSummary:
     """Writes this module's code performs on module namespaces.
 
-    ``own_names`` lists the globals the module's deferred code and
-    own-namespace item writes may rebind, so callbacks can rebind them; ``None``
+    ``own_names`` lists the globals the module's deferred code may rebind,
+    including deferred own-namespace item writes; ``None``
     when the module reflects its own namespace dynamically (first site in
     ``own_reflection_line``). ``foreign_writes`` lists named writes to other
     modules' namespaces in source order, one row per distinct write.
@@ -127,7 +189,10 @@ class PythonNamespaceSummary:
 
 
 def python_namespace_summary(
-    tree: ast.Module, *, package: str | None = None
+    tree: ast.Module,
+    *,
+    package: str | None = None,
+    target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version,
 ) -> PythonNamespaceSummary:
     """Summarize ``tree``; ``package`` resolves its relative imports.
 
@@ -135,7 +200,7 @@ def python_namespace_summary(
     part of the summary never depends on it.
     """
 
-    collector = _NamespaceWriteCollector(tree, package)
+    collector = _NamespaceWriteCollector(tree, package, target_python)
     collector.collect()
     return PythonNamespaceSummary(
         None if collector.own_reflection_line else frozenset(collector.own_names),
@@ -180,53 +245,83 @@ def _literal_module_name(node: ast.expr | None) -> str | None:
     return key
 
 
-_DEFERRED_SCOPES: Final = (
-    ast.FunctionDef,
-    ast.AsyncFunctionDef,
-    ast.Lambda,
-    ast.ClassDef,
-)
+_LEXICAL_DEFINITIONS: Final = get_args(LexicalDefinitionNode)
 _HOOK_ATTRIBUTES: Final = frozenset(
     spelling.rpartition(".")[2] for spelling in _IMPORT_HOOK_OBJECTS
 )
 _CANDIDATE_CALLS: Final = frozenset(
     {"setattr", "delattr", "vars", "globals", "locals", "exec", "eval"}
 )
-# (node, parent, grandparent, in module scope)
-_Site: TypeAlias = tuple[ast.AST, ast.AST | None, ast.AST | None, bool]
+
+
+class _Site(NamedTuple):
+    node: ast.AST
+    parent: ast.AST | None
+    grandparent: ast.AST | None
+    module_scope: bool
+    source_owner: PythonSourceKey | None
+    executing: bool
+    callback_deferred: bool
 
 
 class _NamespaceWriteCollector:
     """One traversal finds candidate sites; classification runs once imports are known."""
 
-    def __init__(self, tree: ast.Module, package: str | None) -> None:
+    def __init__(
+        self, tree: ast.Module, package: str | None, target_python: tuple[int, int]
+    ) -> None:
         self.tree = tree
         self.package = package
+        self.future, self.eager_annotations = module_annotation_execution(
+            tree, target_python=target_python
+        )
         # Names an import binds anywhere in the module, flow-insensitively: a
         # parameter that shadows one is read as a module reference, which can
         # only add writes.
         self.references: dict[str, str] = {}
+        self.has_star_import = False
         self.own_names: set[str] = set()
         self.own_reflection_line = 0
         self.writes: dict[
-            tuple[str | None, str | None, PythonNamespaceWriteConstruct],
+            tuple[
+                str | None,
+                str | None,
+                PythonNamespaceWriteConstruct,
+                PythonSourceKey | None,
+            ],
             PythonNamespaceWrite,
         ] = {}
 
     def collect(self) -> None:
         sites: list[_Site] = []
         names: list[_Site] = []
-        stack: list[_Site] = [(self.tree, None, None, True)]
+        stack = [_Site(self.tree, None, None, True, None, True, False)]
+        roots: dict[ast.AST, tuple[PythonSourceKey | None, bool, bool]] = {}
         while stack:
             site = stack.pop()
-            node, parent, _grandparent, module_scope = site
+            node = site.node
+            if node in roots:
+                owner, scope, callback_deferred = roots.pop(node)
+                site = site._replace(
+                    source_owner=owner,
+                    module_scope=scope,
+                    executing=True,
+                    callback_deferred=callback_deferred,
+                )
+            parent, module_scope = site.parent, site.module_scope
             if isinstance(node, ast.Attribute):
+                sites.append(site)
+            elif isinstance(node, ast.Subscript) and isinstance(
+                node.ctx, (ast.Store, ast.Del)
+            ):
                 sites.append(site)
             elif isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name) and node.func.id in _CANDIDATE_CALLS:
                     sites.append(site)
             elif isinstance(node, ast.Name):
-                if isinstance(node.ctx, ast.Load):
+                if isinstance(node.ctx, ast.Load) or (
+                    isinstance(parent, ast.AugAssign) and parent.target is node
+                ):
                     names.append(site)
                 continue
             elif isinstance(node, ast.Import):
@@ -239,26 +334,75 @@ class _NamespaceWriteCollector:
                 owner = _absolute_module(node.module or "", node.level, self.package)
                 for alias in node.names:
                     if alias.name == "*":
-                        self._reflects_own_namespace(node)
+                        # IMPORT_STAR is a module-initialization store, not a
+                        # future callback writer. Binding flow owns its direct
+                        # shadowing effects. Its unknown imported references
+                        # still need conservative foreign-write classification.
+                        self.has_star_import = True
                     elif owner is not None:
                         self.references[alias.asname or alias.name] = (
                             f"{owner}.{alias.name}"
                         )
                 continue
             elif isinstance(node, ast.Global):
-                if not module_scope:
+                if site.callback_deferred:
                     self.own_names.update(node.names)
                 continue
-            # Comprehensions stay in module scope: PEP 709 inlines them, and
-            # reading one's ``locals()`` as the module's can only add names.
-            child_scope = module_scope and not isinstance(node, _DEFERRED_SCOPES)
+            definition = isinstance(node, _LEXICAL_DEFINITIONS)
+            if definition and site.executing:
+                definition_node = cast(LexicalDefinitionNode, node)
+                immediate, deferred = definition_evaluation_regions(
+                    definition_node,
+                    eager_annotations=self.eager_annotations,
+                    future_annotations=self.future,
+                )
+                lexical = definition_lexical_regions(
+                    definition_node,
+                    eager_annotations=self.eager_annotations,
+                    future_annotations=self.future,
+                )
+                body = set(lexical.body)
+                for child in immediate:
+                    # Class statements execute now, in their class namespace.
+                    roots[child] = (
+                        site.source_owner,
+                        False
+                        if lexical.kind == "class" and child in body
+                        else module_scope,
+                        site.callback_deferred,
+                    )
+                for child in deferred:
+                    executable_body = child in body or (
+                        isinstance(node, ast.TypeAlias) and child is node.value
+                    )
+                    # Lazy annotation/bound expression keys are not source-body
+                    # jobs. Keep their writes with the enclosing executable
+                    # owner until that protocol has real scheduling authority.
+                    roots[child] = (
+                        python_node_source_key(node)
+                        if executable_body
+                        else site.source_owner,
+                        False,
+                        True,
+                    )
             for child in ast.iter_child_nodes(node):
-                stack.append((child, node, parent, child_scope))
+                stack.append(
+                    _Site(
+                        child,
+                        node,
+                        parent,
+                        False if definition else module_scope,
+                        site.source_owner,
+                        site.executing and not definition,
+                        site.callback_deferred,
+                    )
+                )
         for site in sites:
             if isinstance(site[0], ast.Attribute):
                 self._visit_attribute(site)
-            else:
+            elif isinstance(site[0], ast.Call):
                 self._visit_call(site)
+            self._visit_star_hook_mutation(site)
         hook_names = {
             name
             for name, spelling in self.references.items()
@@ -271,20 +415,67 @@ class _NamespaceWriteCollector:
                 assert isinstance(node, ast.Name)
                 if node.id in hook_names:
                     self._import_hook_use(site, self.references[node.id])
+        if self.has_star_import:
+            for site in names:
+                node, parent = site.node, site.parent
+                if isinstance(parent, ast.AugAssign) and parent.target is node:
+                    self._record("sys", None, "import_hooks", site)
+
+    def _star_bound_root(self, node: ast.AST) -> bool:
+        """A receiver may come from a star import, including a shadowed alias."""
+        if not self.has_star_import:
+            return False
+        while isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+        ):
+            return self._star_bound_root(node.func.value)
+        return isinstance(node, ast.Name)
+
+    def _visit_star_hook_mutation(self, site: _Site) -> None:
+        node, parent = site.node, site.parent
+        if isinstance(node, ast.Subscript):
+            mutates = isinstance(node.ctx, (ast.Store, ast.Del))
+        elif isinstance(node, ast.Attribute):
+            mutates = (
+                isinstance(parent, ast.Call)
+                and parent.func is node
+                and (
+                    builtin_method_writes_receiver("list", node.attr)
+                    or builtin_method_writes_receiver("dict", node.attr)
+                )
+            )
+        else:
+            return
+        if mutates and self._star_bound_root(node.value):
+            # The imported value could be sys.modules or an import-hook list.
+            # Its native receiver mutations share the builtin capability
+            # authority. Custom callbacks retain their own source execution;
+            # calling an unrelated method is not a native hook-container write.
+            self._record("sys", None, "import_hooks", site)
 
     def _record(
         self,
         module: str | None,
         name: str | None,
         construct: PythonNamespaceWriteConstruct,
-        node: ast.AST,
+        site: _Site,
+        *,
+        node: ast.AST | None = None,
     ) -> None:
+        if not site.executing:
+            return
         # The traversal is not in source order; keep each write's first site.
-        key = (module, name, construct)
-        line = getattr(node, "lineno", 0)
+        key = (module, name, construct, site.source_owner)
+        line = getattr(site.node if node is None else node, "lineno", 0)
         known = self.writes.get(key)
         if known is None or line < known.line:
-            self.writes[key] = PythonNamespaceWrite(module, name, construct, line)
+            self.writes[key] = PythonNamespaceWrite(
+                module, name, construct, line, site.source_owner
+            )
 
     def _reflects_own_namespace(self, node: ast.AST) -> None:
         line = getattr(node, "lineno", 0) or 1
@@ -309,6 +500,11 @@ class _NamespaceWriteCollector:
         A ``sys.modules`` entry is a module whose name the key computes.
         """
 
+        if self._star_bound_root(node):
+            # Star exports can supply module aliases or shadow explicit
+            # imports. The receiver's module is unproved, but its written
+            # member remains named when the syntax names it.
+            return True, None
         reference = self._reference(node)
         if reference is not None:
             return True, reference
@@ -329,14 +525,14 @@ class _NamespaceWriteCollector:
         return False, None
 
     def _visit_attribute(self, site: _Site) -> None:
-        node, parent, grandparent, _module_scope = site
+        node, parent = site.node, site.parent
         assert isinstance(node, ast.Attribute)
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             is_module, module = self._module_receiver(node.value)
             if is_module:
                 # ``__class__`` and ``__dict__`` replacement change every name.
                 name = None if node.attr in {"__class__", "__dict__"} else node.attr
-                self._record(module, name, "attribute", node)
+                self._record(module, name, "attribute", site)
             return
         if node.attr == "__dict__":
             is_module, module = self._module_receiver(node.value)
@@ -347,21 +543,23 @@ class _NamespaceWriteCollector:
                 is_module, module = self._module_receiver(node.value)
                 if is_module:
                     name = _literal_string(parent.args[0]) if parent.args else None
-                    self._record(module, name, "setattr", parent)
+                    self._record(module, name, "setattr", site, node=parent)
         elif node.attr in _HOOK_ATTRIBUTES:
             spelling = self._reference(node)
             if spelling in _IMPORT_HOOK_OBJECTS:
                 self._import_hook_use(site, spelling)
 
     def _visit_call(self, site: _Site) -> None:
-        node, _parent, _grandparent, module_scope = site
+        if not site.executing:
+            return
+        node, module_scope = site.node, site.module_scope
         assert isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         func = node.func.id
         if func in {"setattr", "delattr"} and node.args:
             is_module, module = self._module_receiver(node.args[0])
             if is_module:
                 name = _literal_string(node.args[1]) if len(node.args) > 1 else None
-                self._record(module, name, "setattr", node)
+                self._record(module, name, "setattr", site)
         elif func == "vars" and node.args:
             is_module, module = self._module_receiver(node.args[0])
             if is_module:
@@ -377,7 +575,7 @@ class _NamespaceWriteCollector:
     def _consumer(site: _Site) -> tuple[ast.AST, ast.AST | None, ast.AST | None]:
         """The expression as its consumer sees it, that consumer, and its parent."""
 
-        node, parent, grandparent, _module_scope = site
+        node, parent, grandparent = site.node, site.parent, site.grandparent
         if isinstance(parent, ast.Starred):
             # A starred operand's consumer is the call or display around it;
             # neither reads the value as a receiver.
@@ -422,12 +620,30 @@ class _NamespaceWriteCollector:
     def _namespace_use(self, site: _Site, module: str | None) -> None:
         writes, name = self._item_write(site)
         if writes:
-            self._record(module, name, "namespace", site[0])
+            self._record(module, name, "namespace", site)
 
     def _own_namespace_use(self, site: _Site) -> None:
         writes, name = self._item_write(site)
         if not writes:
             return
+        if not site.callback_deferred:
+            value, parent, grandparent = self._consumer(site)
+            if (
+                isinstance(parent, ast.Subscript)
+                and parent.value is value
+                and isinstance(parent.ctx, (ast.Store, ast.Del))
+            ) or (
+                isinstance(parent, ast.Attribute)
+                and parent.value is value
+                and isinstance(grandparent, ast.Call)
+                and grandparent.func is parent
+                and builtin_method_writes_receiver("dict", parent.attr)
+            ):
+                # An immediate native mapping operation changes the current
+                # binding state; it does not grant future callbacks the same
+                # write. Binding flow owns that operation. Mapping escapes
+                # still expose every name, including in module initialization.
+                return
         if name is None:
             self._reflects_own_namespace(site[0])
         else:
@@ -438,14 +654,62 @@ class _NamespaceWriteCollector:
         if isinstance(parent, ast.Subscript) and parent.value is value:
             if isinstance(parent.ctx, ast.Load):
                 return
-        elif isinstance(parent, ast.Attribute) and parent.value is value:
-            if (
-                isinstance(grandparent, ast.Call)
-                and grandparent.func is parent
-                and parent.attr in _READ_METHODS | _LIST_READ_METHODS
-            ):
+            if spelling == "sys.modules":
+                self._record_import_binding(site, parent.slice)
                 return
+        elif isinstance(parent, ast.Attribute) and parent.value is value:
+            if isinstance(grandparent, ast.Call) and grandparent.func is parent:
+                if not (
+                    builtin_method_writes_receiver("list", parent.attr)
+                    or builtin_method_writes_receiver("dict", parent.attr)
+                ):
+                    return
+                if spelling == "sys.modules":
+                    if parent.attr in _ITEM_WRITE_METHODS:
+                        self._record_import_binding(
+                            site,
+                            grandparent.args[0] if grandparent.args else None,
+                        )
+                    elif parent.attr in {"update", "__ior__", "__init__"}:
+                        for argument in grandparent.args:
+                            self._record_import_binding_mapping(site, argument)
+                        for keyword in grandparent.keywords:
+                            if keyword.arg is None:
+                                self._record_import_binding_mapping(site, keyword.value)
+                            else:
+                                self._record_import_binding(site, keyword.arg)
+                    else:
+                        self._record_import_binding(site, None)
+                    return
         elif self._reads_whole(value, parent):
             return
+        if spelling == "sys.modules":
+            self._record_import_binding(site, None)
+            return
         module, _, name = spelling.rpartition(".")
-        self._record(module, name, "import_hooks", site[0])
+        self._record(module, name, "import_hooks", site)
+
+    def _record_import_binding_mapping(self, site: _Site, mapping: ast.expr) -> None:
+        if isinstance(mapping, ast.Dict):
+            for key in mapping.keys:
+                self._record_import_binding(site, key)
+        else:
+            self._record_import_binding(site, None)
+
+    def _record_import_binding(self, site: _Site, key: ast.expr | str | None) -> None:
+        name: str | None
+        if isinstance(key, str):
+            name = key
+        elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+            name = key.value
+        elif isinstance(key, ast.JoinedStr) and not any(
+            isinstance(part, ast.FormattedValue) for part in key.values
+        ):
+            candidates = canonical_import_binding_candidates(key)
+            name = candidates[0] if candidates else None
+        else:
+            if not canonical_import_binding_candidates(key):
+                self._record("sys.modules", None, "import_binding_disjoint", site)
+                return
+            name = None
+        self._record("sys.modules", name, "import_binding", site)

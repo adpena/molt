@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 from pathlib import Path
 
@@ -7,7 +9,6 @@ import pytest
 
 from molt.cli import (
     module_graph_discovery,
-    module_import_scanner,
     module_resolution,
     module_stdlib_policy,
 )
@@ -15,7 +16,7 @@ from molt.cli import (
 
 def _imports(source: str, *, module: str = "pkg.consumer") -> set[str]:
     return set(
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source),
             module_name=module,
             is_package=False,
@@ -111,7 +112,7 @@ def test_helper_wrapper_keeps_complete_import_request_payload(setup, namespace) 
         + f"    return runtime_import(name, {namespace}, locals(), children, level)\n"
         "load('sibling', ('leaf',), 1)\n"
     )
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), "pkg.consumer"
     )
     # Deferred functions can run with replaced activation globals. Preserve the
@@ -179,7 +180,7 @@ def test_deferred_relative_statement_keeps_lexical_dependency_discovery() -> Non
     from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 
     source = "def load():\n    from .sibling import leaf\n"
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), "pkg.consumer"
     )
     assert {"pkg.sibling", "pkg.sibling.leaf"} <= set(

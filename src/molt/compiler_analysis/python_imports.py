@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import get_args, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from molt.compiler_analysis.python_binding_facts import (
@@ -12,7 +12,10 @@ if TYPE_CHECKING:
         PythonNodeKey,
         PythonModuleMetadataProof,
         PythonStatementFact,
+        PythonFunctionResult,
+        PythonSourceElement,
     )
+    from molt.compiler_analysis.python_namespace_writes import PythonNamespaceSummary
 
 import ast
 from molt.python_private_names import python_import_binding
@@ -20,7 +23,7 @@ from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_effects import (
@@ -37,11 +40,25 @@ from molt.compiler_analysis.python_source_keys import (
 
 
 from molt.compiler_analysis.static_truth import (
+    SourceDemandPhase,
     ExpressionResultLookup,
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
     static_expression_result,
 )
+
+
+def normalize_stdlib_module_name(module_name: str | None) -> str | None:
+    """Project an explicit Molt stdlib alias to its runtime module identity.
+
+    Bare molt.stdlib is the bootstrap namespace, not an allowlist alias.
+    Dependency consumers retain that namespace independently.
+    """
+    if not module_name or module_name == "molt.stdlib":
+        return None
+    if module_name.startswith("molt.stdlib."):
+        return module_name[len("molt.stdlib.") :]
+    return module_name
 
 
 StaticValueKind = Literal["known", "none", "absent", "invalid", "unknown"]
@@ -2368,3 +2385,128 @@ def require_static_import_modules(
             f"{consumer} cannot resolve import: {', '.join(plan.errors)}"
         )
     return plan.modules
+
+
+@dataclass(frozen=True, slots=True)
+class _StaticSourcePath:
+    """An unevaluated path operation; filesystem effects belong to completion."""
+
+    operation: Literal[
+        "path", "join", "os_join", "posix_join", "nt_join", "resolve", "absolute"
+    ]
+    parts: tuple[str | _StaticSourcePath, ...]
+
+
+class _StaticSourceExecutionRequest(NamedTuple):
+    module_name: str | None
+    path: str | _StaticSourcePath
+
+
+@dataclass(frozen=True, slots=True)
+class SourceImportSite:
+    source: PythonSourceKey
+    request: StaticImportRequest | None
+    plan: StaticImportPlan
+    owner_plan: StaticImportPlan
+
+    bindings: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def line(self) -> int:
+        return self.source[0]
+
+    @property
+    def unresolved(self) -> bool:
+        return self.request is None or any(
+            plan.errors or plan.requires_runtime
+            for plan in (self.plan, self.owner_plan)
+        )
+
+
+SourceExportStatus = Literal["absent", "known", "unknown", "incomplete"]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAllExports:
+    status: SourceExportStatus
+    names: tuple[str, ...] = ()
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.status not in get_args(SourceExportStatus)
+            or self.status != "known"
+            and self.names
+            or self.status in {"known", "absent"}
+            and self.reason is not None
+            or self.reason is not None
+            and type(self.reason) is not str
+        ):
+            raise ValueError("incoherent source exports")
+
+
+class _SourceValueDemand(NamedTuple):
+    source: PythonSourceKey
+    phase: SourceDemandPhase
+
+
+class _SourceImportBinding(NamedTuple):
+    source: PythonSourceKey
+    modules: tuple[str, ...]
+    attribute: str | None
+
+
+class _SourceValueSummary(NamedTuple):
+    """Immutable source-owned values; no AST or resolved filesystem edges."""
+
+    namespaces: tuple[
+        tuple[
+            PythonSourceKey,
+            tuple[tuple[str, frozenset[PythonSourceKey]], ...],
+            frozenset[PythonSourceKey],
+        ],
+        ...,
+    ] = ()
+    attributes: tuple[tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...] = ()
+    elements: tuple[PythonSourceElement, ...] = ()
+    calls: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()
+    parameters: tuple[
+        tuple[PythonSourceKey, tuple[PythonSourceKey, ...], PythonSourceKey | None], ...
+    ] = ()
+    functions: tuple[PythonFunctionResult, ...] = ()
+    bases: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()
+    completions: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()
+
+
+class _ImportScanRequests(NamedTuple):
+    """Source-only requests, before package exports and filesystem resolution."""
+
+    imports: tuple[str, ...]
+    source_executions: tuple[_StaticSourceExecutionRequest, ...]
+    star_modules: tuple[str, ...] = ()
+    dynamic_relative_import_candidates: tuple[str, ...] = ()
+    requires_runtime_package_anchor: bool = False
+    # Keep call-star discovery distinct even when its base is also imported.
+    dynamic_star_modules: tuple[str, ...] = ()
+    source_demands: tuple[_SourceValueDemand, ...] = ()
+    source_bindings: tuple[_SourceImportBinding, ...] = ()
+    source_values: _SourceValueSummary = _SourceValueSummary()
+    source_sites: tuple[SourceImportSite, ...] = ()
+    all_exports: SourceAllExports = SourceAllExports("absent")
+    namespace_summary: PythonNamespaceSummary | None = None
+
+
+class _ImportDiscoveryProjection(NamedTuple):
+    """Graph-only candidates kept separate from runtime import semantics."""
+
+    imports: tuple[str, ...]
+    dynamic_relative_import_candidates: tuple[str, ...] = ()
+    requires_runtime_package_anchor: bool = False
+    star_modules: tuple[str, ...] = ()
+    dynamic_star_modules: tuple[str, ...] = ()
+    source_demands: tuple[_SourceValueDemand, ...] = ()
+    source_bindings: tuple[_SourceImportBinding, ...] = ()
+    source_values: _SourceValueSummary = _SourceValueSummary()
+    source_sites: tuple[SourceImportSite, ...] = ()
+    all_exports: SourceAllExports = SourceAllExports("absent")
+    namespace_summary: PythonNamespaceSummary | None = None

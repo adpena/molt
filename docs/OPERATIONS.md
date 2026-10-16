@@ -219,23 +219,24 @@ Use this section when `python3 tools/check_stdlib_intrinsics.py` fails in CI or
 on-call triage.
 
 For agent triage, add `--json-out <local-report.json>`. The
-`molt.stdlib-intrinsics-audit.v3` report contains `ok`, `analysis_complete`, and
+`molt.stdlib-intrinsics-audit.v4` report contains `ok`, `analysis_complete`, and
 one ordered `diagnostics` list matching the console. Policy failures report all
 evaluated gates in one scan; source or manifest evaluation failures replace any
 stale report with `analysis_complete: false` and no fabricated coverage. Always
 check the exit status and these fields before consuming module counts.
-`facades` records static forwarding evidence, not runtime conformance. Public
-and private forwarding modules require all resolved implementation owners to be
-intrinsic-backed. Pure imports can forward a provider's target-dependent
-`__all__`; they do not evaluate exports during classification. Missing owners,
-mixed unproved owners, and unanchored forwarding cycles remain unadmitted.
+`facades` records static forwarding evidence, not runtime conformance. Classifying
+a forwarding module as intrinsic support requires all its resolved implementation
+owners to have that backing. Mixed or unproved owners and unanchored cycles can
+remain `python-compiled`; this classification does not decide runtime admission.
+Pure imports can forward a provider's target-dependent `__all__` without executing
+exports during classification. Actual import custody is checked separately.
 `--update-doc` publishes the generated public audit only when every gate passes.
 
 ### Standard First Commands
 Run these first to establish current state:
 ```bash
 python3 tools/gen_stdlib_stubs.py --check
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 python3 tools/check_stdlib_intrinsics.py --critical-allowlist
 cat tools/stdlib_intrinsics_ratchet.json
 python3 tools/check_stdlib_intrinsics.py --update-doc
@@ -277,7 +278,7 @@ uv run --python 3.12 pytest -q \
 `stdlib intrinsics lint failed: stdlib top-level coverage gate violated`
 ```bash
 python3 tools/gen_stdlib_stubs.py --write
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 ```
 
 `stdlib intrinsics lint failed: top-level module/package duplicate mapping`
@@ -317,7 +318,7 @@ PY
 `stdlib intrinsics lint failed: stdlib submodule coverage gate violated`
 ```bash
 python3 tools/gen_stdlib_stubs.py --write
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 ```
 
 `stdlib intrinsics lint failed: submodule/package duplicate mapping`
@@ -360,7 +361,7 @@ PY
 `stdlib intrinsics lint failed: unknown intrinsic names`
 ```bash
 python3 tools/gen_intrinsics.py --write
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 ```
 
 `stdlib intrinsics lint failed: unknown strict-import modules requested`
@@ -380,44 +381,16 @@ ls src/molt/stdlib/builtins.py src/molt/stdlib/sys.py src/molt/stdlib/types.py
 ls src/molt/stdlib/importlib/__init__.py src/molt/stdlib/importlib/machinery.py src/molt/stdlib/importlib/util.py
 ```
 
-`stdlib intrinsics lint failed: bootstrap strict closure must be implemented`
-```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-```
-
 `stdlib intrinsics lint failed: bootstrap modules must be implemented`
 ```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-```
-
-`stdlib intrinsics lint failed: strict-import allowlist violated (roots imported a stub or policy-gate stdlib module)`
-```bash
-python3 tools/check_stdlib_intrinsics.py --critical-allowlist
-```
-
-`stdlib intrinsics lint failed: strict-import roots used forbidden fallback patterns`
-```bash
-rg -n "require_optional_intrinsic|load_intrinsic|except\\s+(ImportError|ModuleNotFoundError|Exception|BaseException)" src/molt/stdlib
-python3 tools/check_stdlib_intrinsics.py --critical-allowlist
-```
-
-`stdlib intrinsics lint failed: intrinsic-backed modules used forbidden fallback patterns`
-```bash
-rg -n "require_optional_intrinsic|load_intrinsic|except\\s+(ImportError|ModuleNotFoundError|Exception|BaseException)" src/molt/stdlib
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-```
-
-`stdlib intrinsics lint failed: all-stdlib fallback gate violated`
-```bash
 python3 tools/check_stdlib_intrinsics.py
-rg -n "require_optional_intrinsic|load_intrinsic|except\\s+(ImportError|ModuleNotFoundError|Exception|BaseException)" src/molt/stdlib
 ```
 
-`stdlib intrinsics lint failed: intrinsic runtime fallback gate violated`
-```bash
-rg -n "except .*:\\s*$|pass$" src/molt/stdlib/json/__init__.py
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-```
+The source audit inventories candidate imports; it does not require optional
+imports to succeed or classify exception handlers as forbidden. Required symbols
+and module custody are checked by compilation/link admission. Use API differential
+tests for exception propagation and target behavior; see
+[the source authority](internals/source_scan_authority.md#what-source-inventory-establishes).
 
 `stdlib intrinsics lint failed: required intrinsics nothing reads (delete each requirement; an intrinsic must be read to count)`
 ```bash
@@ -428,7 +401,7 @@ python3 tools/check_stdlib_intrinsics.py --json-out /tmp/audit.json
 
 `stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated` (or `stub ratchet gate violated`)
 ```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 cat tools/stdlib_intrinsics_ratchet.json
 # Lower modules first, then tighten max_intrinsic_partial or max_stub.
 ```
@@ -443,7 +416,7 @@ print("covered_count", len(covered))
 for name in sorted(covered):
     print(name)
 PY
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 ```
 
 `stdlib intrinsics lint failed: full-coverage intrinsic contract has non-attested modules`
@@ -470,7 +443,7 @@ PY
 
 `stdlib intrinsics lint failed: full-coverage modules must remain intrinsic-backed`
 ```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only --json-out /tmp/stdlib_intrinsics.json
+python3 tools/check_stdlib_intrinsics.py --json-out /tmp/stdlib_intrinsics.json
 python3 - <<'PY'
 import json
 payload = json.load(open("/tmp/stdlib_intrinsics.json"))
@@ -484,12 +457,12 @@ PY
 `stdlib intrinsics lint failed: full-coverage intrinsic contract references unknown intrinsics`
 ```bash
 python3 tools/gen_intrinsics.py --write
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 ```
 
 `stdlib intrinsics lint failed: full-coverage intrinsic contract violated`
 ```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only --json-out /tmp/stdlib_intrinsics.json
+python3 tools/check_stdlib_intrinsics.py --json-out /tmp/stdlib_intrinsics.json
 python3 - <<'PY'
 import json
 payload = json.load(open("/tmp/stdlib_intrinsics.json"))
@@ -497,22 +470,16 @@ print(payload.get("full_coverage_required_intrinsics", {}))
 PY
 ```
 
-`Host fallback imports (\`_py_*\`) are forbidden in stdlib modules.` (file-level scan error)
-```bash
-rg -n "import _py_|from _py_|__import__\\(|import_module\\(" src/molt/stdlib
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-```
-
 `stdlib intrinsics lint failed: ...` (dynamic message, e.g. baseline invalid/missing)
 ```bash
 python3 tools/gen_stdlib_module_union.py --write
 python3 tools/gen_stdlib_stubs.py --write
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 ```
 
 `stdlib intrinsics lint failed:` (file-level scan errors block)
 ```bash
-python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
+python3 tools/check_stdlib_intrinsics.py
 uv run --python 3.12 ruff format src/molt/stdlib tools/check_stdlib_intrinsics.py
 ```
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+
 import ast
 import contextlib
 import re
@@ -18,7 +21,6 @@ from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ImportScanMode,
     _CompleteImportScan,
-    _ImportScanRequests,
     _DiscoveredModuleGraph,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
@@ -26,6 +28,19 @@ from molt.cli.models import (
     _ImportAdmissionPolicy,
     _RuntimeImportScanCustody,
 )
+from molt.compiler_analysis.python_imports import _ImportScanRequests
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    PythonGraphNamespaceIndex,
+    PythonGraphNamespaceWrites,
+    UNKNOWN_GRAPH_NAMESPACE_WRITES,
+    graph_python_namespace_writes,
+)
+from molt.compiler_analysis.python_namespace_writes import (
+    PythonNamespaceSummary,
+    PythonNamespaceWrite,
+)
+from molt.cli.python_import_resolution import python_package_child_names
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     _PythonAstDigestAdmission,
@@ -43,18 +58,11 @@ from molt.target_python import (
 PLATFORM_EXCLUDED_SUBMODULES = ("urllib3.contrib.emscripten",)
 
 
-class _SourceValueJob(NamedTuple):
-    """Resolve one demanded source value of a module."""
+class _SourceScanJob(NamedTuple):
+    """Project one admitted source context under its latest namespace premise."""
 
     module_name: str
     source: PythonSourceKey | None
-
-
-class _SourceBodyJob(NamedTuple):
-    """Scan one function, lambda or type-alias body that a demand reaches."""
-
-    module_name: str
-    source: PythonSourceKey
     arguments: tuple[str, ...] = ()
 
 
@@ -78,6 +86,7 @@ def _bind_precomputed_module_import_scan(
     snapshot: _module_source.PythonSourceSnapshot,
     is_package: bool | None = None,
     target_python: TargetPythonVersion,
+    namespace_premise: PythonNamespacePremise | None = None,
 ) -> _PrecomputedModuleImportScan:
     if snapshot.path != path:
         raise ValueError(f"cannot bind source scan snapshot: {path}")
@@ -88,6 +97,7 @@ def _bind_precomputed_module_import_scan(
             import_scan_mode,
             is_package,
             scan.requires_runtime_package_anchor,
+            namespace_premise=namespace_premise,
         ),
         snapshot.sha256,
         target_python.tag,
@@ -443,9 +453,7 @@ def _discover_module_graph_from_paths(
             seed_entries.append((path, None))
     seed_entries = list(dict.fromkeys(seed_entries))
     # Entry seeds, then source-demand jobs the scan discovers.
-    queue: list[tuple[Path, str | None] | _SourceValueJob | _SourceBodyJob] = list(
-        reversed(seed_entries)
-    )
+    queue: list[tuple[Path, str | None] | _SourceScanJob] = list(reversed(seed_entries))
     queued_entries = {
         (resolution_cache.resolved_path(path), forced_name)
         for path, forced_name in seed_entries
@@ -468,53 +476,68 @@ def _discover_module_graph_from_paths(
             candidate, roots, stdlib_root, stdlib_allowlist
         )
 
-    # Value candidates and body requests are states of this same discovery
-    # worklist. Keys are finite source identities; aliases never grow name paths.
-    value_candidates: dict[
-        tuple[str, PythonSourceKey | None], set[tuple[str, PythonSourceKey | None]]
-    ] = {}
-    value_users: dict[
-        tuple[str, PythonSourceKey | None], set[tuple[str, PythonSourceKey | None]]
-    ] = {}
-    value_phases: dict[
-        tuple[str, PythonSourceKey | None], set[tuple[str, tuple[str, ...]]]
-    ] = {}
-    pending_modules: dict[str, set[tuple[str, PythonSourceKey | None]]] = {}
-    # Star-import aliases per importing module, and the modules whose namespace
-    # escaped. A star import copies names; it exposes nothing until a read or
-    # the importing namespace itself selects them.
-    star_aliases: dict[str, set[PythonSourceKey]] = {}
-    escaped_modules: set[str] = set()
-    namespaces = {}
-    attributes = {}
-    import_bindings = {}
-    value_jobs: set[tuple[str, PythonSourceKey | None]] = set()
-    body_jobs: set[tuple[str, PythonSourceKey, tuple[str, ...]]] = set()
-    scanned_bodies: dict[str, set[tuple[PythonSourceKey, tuple[str, ...]]]] = {}
-    activated: set[tuple[tuple[str, PythonSourceKey | None], str, tuple[str, ...]]] = (
-        set()
-    )
     source_generations: dict[
         str, tuple[str, _module_source.PythonSourceSnapshot | None]
     ] = {}
+    scanned_bodies: dict[str, set[tuple[PythonSourceKey, tuple[str, ...]]]] = {}
+    scan_premises: dict[_SourceScanJob, PythonNamespacePremise | None] = {}
+    queued_scans: set[_SourceScanJob] = set()
+    namespace_index = PythonGraphNamespaceIndex()
+    namespace_summaries: dict[str, PythonNamespaceSummary] = {}
+    pending_namespace_writes: dict[
+        str, dict[PythonSourceKey | None, list[PythonNamespaceWrite]]
+    ] = {}
+    modules_by_source: dict[Path, set[str]] = {}
+    package_children: dict[Path, frozenset[str]] = {}
 
-    def queue_value(value: tuple[str, PythonSourceKey | None]) -> None:
-        if value not in value_jobs:
-            value_jobs.add(value)
-            queue.append(_SourceValueJob(*value))
+    def queue_scan(module, owner=None, arguments=()):
+        job = _SourceScanJob(module, owner, arguments)
+        if job not in queued_scans:
+            queued_scans.add(job)
+            queue.append(job)
 
-    def demand(value, phase, arguments=()):
-        phases = value_phases.setdefault(value, set())
-        if (phase, arguments) not in phases:
-            phases.add((phase, arguments))
-            queue_value(value)
+    def namespace_premise(path: Path, is_package: bool) -> PythonNamespacePremise:
+        path = resolution_cache.resolved_path(path)
+        bounded = namespace_index.premise(path, frozenset())
+        if not is_package or bounded.foreign_writes is None:
+            return bounded
+        if path not in package_children:
+            try:
+                package_children[path] = python_package_child_names(path)
+            except (OSError, ValueError):
+                merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
+                return namespace_index.premise(path, frozenset())
+        return namespace_index.premise(path, package_children[path])
 
-    def watch(origin, user):
-        value_users.setdefault(origin, set()).add(user)
-        if origin not in value_candidates:
-            value_candidates[origin] = set()
-            queue_value(origin)
-        return value_candidates[origin]
+    def merge_namespace_writes(batch: PythonGraphNamespaceWrites) -> None:
+        changed = namespace_index.merge(batch)
+        affected = (
+            set(scan_sources)
+            if changed is None
+            else set().union(*(modules_by_source.get(path, ()) for path in changed))
+        )
+        for module in affected:
+            prior = scan_sources[module]
+            premise = namespace_premise(prior.source_path, bool(prior.is_package))
+            if prior.namespace_premise == premise:
+                continue
+            scan_sources[module] = replace(prior, namespace_premise=premise)
+            if _SourceScanJob(module, None) in scan_premises:
+                queue_scan(module)
+            for owner, arguments in scanned_bodies.get(module, ()):
+                queue_scan(module, owner, arguments)
+
+    if runtime_import_custody is not None and graph:
+        # A catalog proves dispatch custody, not current namespace writers for
+        # the source rows whose previous projections are being reused.
+        namespace_index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES)
+        for module, path in graph.items():
+            source = scan_sources[module]
+            modules_by_source.setdefault(source.source_path, set()).add(module)
+            scan_sources[module] = replace(
+                source,
+                namespace_premise=namespace_premise(path, bool(source.is_package)),
+            )
 
     def admit_imports(names, source_path):
         for name in names:
@@ -538,6 +561,10 @@ def _discover_module_graph_from_paths(
                 resolved = resolve_candidate(candidate)
                 if resolved is None:
                     continue
+                if import_admission_policy.owns_source_closure_with_native_artifact_plan(
+                    candidate, resolved
+                ):
+                    merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
                 from_entry_path = (
                     allow_entry_external_imports
                     and resolution_cache.resolved_path(source_path)
@@ -558,142 +585,60 @@ def _discover_module_graph_from_paths(
                     queued_entries.add(entry)
                     queue.append((resolved, admitted_name))
 
-    def select_member(owner, name, user, *, from_import=False, visiting=frozenset()):
-        owner_module, owner_source = owner
-        result = set()
-        pending_modules.setdefault(owner_module, set()).add(user)
-        namespace, bases = namespaces.get(owner, ({}, frozenset()))
-        if owner_source is None:
-            # Final namespace facts supply candidates, not initialization-order
-            # proof. A cycle may read a later export while the hook is installed.
-            for origin in namespace.get("__getattr__", ()):
-                demand((owner_module, origin), "call", (name,))
-        if namespace.get(name):
-            for origin in namespace[name]:
-                result.update(watch((owner_module, origin), user))
-        elif owner_source is None:
-            child = f"{owner_module}.{name}"
-            if from_import:
-                admit_imports((child,), graph[user[0]])
-            if child in graph or child in seen_import_names:
-                result.update(watch((child, None), user))
-        elif owner_source[-1] == "ClassDef":
-            # Unknown instance/descriptor use is bounded by this class family.
-            demand(owner, "escape")
-            for base in bases:
-                for candidate in watch((owner_module, base), user):
-                    if candidate != owner:
-                        demand(candidate, "escape")
+    demands = PythonSourceDemands(
+        admit_imports=lambda module, names: admit_imports(names, graph[module]),
+        queue_body=queue_scan,
+    )
+
+    def activate_namespace_writes(module_name, source_owner):
+        by_owner = pending_namespace_writes.get(module_name, {})
+        if scan_sources[module_name].mode == "full":
+            writes = [write for rows in by_owner.values() for write in rows]
+            by_owner.clear()
         else:
-            demand(owner, "escape")
-        if owner_source is None:
-            # No namespace summary spells a star-bound name; select it from each
-            # star-imported module. Star-import cycles stop at a visited module.
-            visiting = visiting | {owner_module}
-            for alias in tuple(star_aliases.get(owner_module, ())):
-                for candidate in tuple(watch((owner_module, alias), user)):
-                    if candidate[0] not in visiting:
-                        result.update(
-                            select_member(candidate, name, user, visiting=visiting)
-                        )
-        return result
+            writes = by_owner.pop(source_owner, ())
+        if writes:
+            merge_namespace_writes(
+                graph_python_namespace_writes(
+                    writes,
+                    lambda name: (
+                        resolution_cache.resolved_path(resolved)
+                        if (resolved := resolve_candidate(name)) is not None
+                        else None
+                    ),
+                )
+            )
 
-    def activate(origin, phase, arguments=()):
-        if phase == "read" or (origin, phase, arguments) in activated:
-            return
-        activated.add((origin, phase, arguments))
-        module_name, owner = origin
-        if module_name not in graph:
-            return
-        if owner is None or owner[-1] in {"Module", "ClassDef"}:
-            namespace, bases = namespaces.get(origin, ({}, frozenset()))
-            for values in namespace.values():
-                for value in values:
-                    demand((module_name, value), "escape")
-            for value in bases:
-                demand((module_name, value), "escape")
-            if owner is None:
-                # An escaped namespace exposes its star-bound names as well.
-                escaped_modules.add(module_name)
-                for alias in tuple(star_aliases.get(module_name, ())):
-                    demand((module_name, alias), "escape")
-        elif owner[-1] in {"FunctionDef", "AsyncFunctionDef", "Lambda", "TypeAlias"}:
-            if (
-                scan_sources[module_name].mode != "full"
-                and (module_name, owner, arguments) not in body_jobs
-            ):
-                body_jobs.add((module_name, owner, arguments))
-                queue.append(_SourceBodyJob(module_name, owner, arguments))
-
-    def process_value(value):
-        value_jobs.discard(value)
-        module_name, source = value
-        pending_modules.setdefault(module_name, set()).add(value)
-        if module_name not in graph:
-            return
-        candidates = set()
-        if source is None or source[-1] == "Module":
-            candidates.add((module_name, None))
-        elif source[-1] in {
-            "FunctionDef",
-            "AsyncFunctionDef",
-            "Lambda",
-            "ClassDef",
-            "TypeAlias",
-        }:
-            candidates.add(value)
-        elif value in attributes:
-            name, owners = attributes[value]
-            for owner in owners:
-                for candidate in tuple(watch((module_name, owner), value)):
-                    candidates.update(select_member(candidate, name, value))
-        elif value in import_bindings:
-            binding = import_bindings[value]
-            for imported in binding.modules:
-                for candidate in tuple(watch((imported, None), value)):
-                    if binding.attribute in {None, "*"}:
-                        candidates.add(candidate)
-                    else:
-                        candidates.update(
-                            select_member(
-                                candidate, binding.attribute, value, from_import=True
-                            )
-                        )
-        known = value_candidates.setdefault(value, set())
-        added = candidates - known
-        known.update(added)
-        if added:
-            for user in value_users.get(value, ()):
-                queue_value(user)
-        for candidate in tuple(known):
-            for phase, arguments in value_phases.get(value, ()):
-                activate(candidate, phase, arguments)
-
-    def accept_source_scan(module_name, path, scan, generation=None, snapshot=None):
+    def accept_source_scan(
+        module_name, path, scan, generation=None, snapshot=None, *, source_owner=None
+    ):
         if generation is not None:
             prior = source_generations.setdefault(module_name, (generation, snapshot))
             if generation != prior[0]:
                 raise _module_source.PythonSourceChangedError(
                     f"source changed during deferred discovery: {path}"
                 )
-        for owner, names, bases in scan.source_values.namespaces:
-            value = (module_name, None if owner[-1] == "Module" else owner)
-            namespaces[value] = (dict(names), bases)
-        for owner, name, origins in scan.source_values.attributes:
-            attributes[(module_name, owner)] = (name, origins)
-        for binding in scan.source_bindings:
-            key = (module_name, binding.source)
-            import_bindings[key] = binding
-            queue_value(key)
-            if binding.attribute == "*":
-                star_aliases.setdefault(module_name, set()).add(binding.source)
-                if module_name in escaped_modules:
-                    demand(key, "escape")
-        for request in scan.source_demands:
-            demand((module_name, request.source), request.phase)
-        if scan.source_values.namespaces or scan.source_values.attributes:
-            for value in pending_modules.pop(module_name, ()):
-                queue_value(value)
+            if prior[1] is None and snapshot is not None:
+                source_generations[module_name] = (generation, snapshot)
+        if source_owner is None:
+            summary = scan.source_requests.namespace_summary
+            if summary is None:
+                merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
+            elif module_name not in namespace_summaries:
+                namespace_summaries[module_name] = summary
+                by_owner: dict[PythonSourceKey | None, list[PythonNamespaceWrite]] = {}
+                for write in summary.foreign_writes:
+                    by_owner.setdefault(write.source_owner, []).append(write)
+                pending_namespace_writes[module_name] = by_owner
+            elif summary != namespace_summaries[module_name]:
+                raise ValueError(f"source namespace summary changed: {path}")
+        activate_namespace_writes(module_name, source_owner)
+        demands.accept(
+            module_name,
+            scan.source_requests,
+            full=scan_sources[module_name].mode == "full",
+        )
+        demands.drain()
         for requested_name, execution_path in scan.source_executions:
             execution_name = requested_name or resolution_cache.module_name_from_path(
                 execution_path, module_roots, stdlib_root
@@ -708,6 +653,10 @@ def _discover_module_graph_from_paths(
                 allow_entry_external_imports
                 and resolution_cache.resolved_path(path) in resolved_entry_paths
             )
+            if import_admission_policy.owns_source_closure_with_native_artifact_plan(
+                execution_name, execution_path
+            ):
+                merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
             if not import_admission_policy.admits_import(
                 execution_name, execution_path, from_entry_path=from_entry_path
             ):
@@ -735,17 +684,24 @@ def _discover_module_graph_from_paths(
 
     while queue:
         job = queue.pop()
-        if isinstance(job, _SourceValueJob):
-            process_value((job.module_name, job.source))
-            continue
-        if isinstance(job, _SourceBodyJob):
+        if isinstance(job, _SourceScanJob):
+            queued_scans.discard(job)
             path = graph[job.module_name]
+            # Rows were captured with the initial module syntax. Publish the
+            # reached owner's writes before projecting its body, so the first
+            # projection already carries the writer's widened premise.
+            activate_namespace_writes(job.module_name, job.source)
             authority = scan_sources[job.module_name]
+            premise = authority.namespace_premise
+            if job in scan_premises and scan_premises[job] == premise:
+                continue
             loaded = _load_module_import_scan(
                 path,
                 module_name=job.module_name,
                 is_package=bool(authority.is_package),
-                import_scan_mode="module_init",
+                import_scan_mode=authority.mode
+                if job.source is None
+                else "module_init",
                 source_owner=job.source,
                 source_arguments=job.arguments,
                 source_snapshot=source_generations.get(job.module_name, (None, None))[
@@ -757,10 +713,14 @@ def _discover_module_graph_from_paths(
                 stdlib_root=stdlib_root,
                 stdlib_allowlist=stdlib_allowlist,
                 target_python=target_python,
+                runtime_import_custody=runtime_import_custody,
+                namespace_premise=premise,
             )
-            scanned_bodies.setdefault(job.module_name, set()).add(
-                (job.source, job.arguments)
-            )
+            scan_premises[job] = premise
+            if job.source is not None:
+                scanned_bodies.setdefault(job.module_name, set()).add(
+                    (job.source, job.arguments)
+                )
             scan_sources[job.module_name] = replace(
                 authority,
                 requires_runtime_package_anchor=authority.requires_runtime_package_anchor
@@ -772,6 +732,7 @@ def _discover_module_graph_from_paths(
                 loaded.scan,
                 loaded.snapshot.sha256 if loaded.snapshot is not None else None,
                 loaded.snapshot,
+                source_owner=job.source,
             )
             continue
         path, forced_module_name = job
@@ -803,7 +764,7 @@ def _discover_module_graph_from_paths(
             is_package = bool(admitted_source.is_package)
         else:
             is_package = path.name == "__init__.py"
-        import_scan_mode = _module_import_scanner._module_import_scan_mode(
+        import_scan_mode = _source_import_scan._module_import_scan_mode(
             module_name,
             full_scan=(
                 full_scan_roots
@@ -817,8 +778,16 @@ def _discover_module_graph_from_paths(
         )
         if precomputed_scan is not None:
             is_package = bool(precomputed_scan.authority.is_package)
+        premise = namespace_premise(path, is_package)
         scan_sources[module_name] = _ModuleSourceScanAuthority(
-            module_name, path, import_scan_mode, is_package
+            module_name,
+            path,
+            import_scan_mode,
+            is_package,
+            namespace_premise=premise,
+        )
+        modules_by_source.setdefault(resolution_cache.resolved_path(path), set()).add(
+            module_name
         )
         imports: tuple[str, ...]
         dynamic_relative_import_candidates: tuple[str, ...] = ()
@@ -831,6 +800,7 @@ def _discover_module_graph_from_paths(
             # Artifact-owned closures must not be reinterpreted as source scans,
             # nor may this exclusion publish an empty strict source record.
             imports = ()
+            merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
             # Explicit execution roots carry caller custody independently of
             # the artifact's exclusion from source interpretation.
             if precomputed_scan is not None:
@@ -866,9 +836,12 @@ def _discover_module_graph_from_paths(
                     target_python=target_python,
                     runtime_import_custody=runtime_import_custody,
                     precomputed_scan=precomputed_scan,
+                    namespace_premise=premise,
                 )
             except (OSError, SyntaxError, UnicodeDecodeError):
+                merge_namespace_writes(UNKNOWN_GRAPH_NAMESPACE_WRITES)
                 continue
+            scan_premises[_SourceScanJob(module_name, None)] = premise
             imports = loaded_scan.scan.imports
             dynamic_relative_import_candidates = (
                 loaded_scan.scan.dynamic_relative_import_candidates
@@ -883,8 +856,10 @@ def _discover_module_graph_from_paths(
             import_scan_mode,
             is_package,
             requires_runtime_package_anchor,
+            namespace_premise=scan_sources[module_name].namespace_premise,
         )
         accepted_scan = _CompleteImportScan(
+            _ImportScanRequests((), ()),
             imports,
             source_executions,
             dynamic_relative_import_candidates,
@@ -979,6 +954,7 @@ def _load_module_imports(
     stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
+    namespace_premise: PythonNamespacePremise | None = None,
 ) -> tuple[str, ...]:
     return _load_module_import_scan(
         path,
@@ -993,6 +969,7 @@ def _load_module_imports(
         stdlib_allowlist=stdlib_allowlist,
         target_python=target_python,
         runtime_import_custody=runtime_import_custody,
+        namespace_premise=namespace_premise,
     ).scan.imports
 
 
@@ -1019,6 +996,7 @@ def _load_module_import_scan(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
     precomputed_scan: _PrecomputedModuleImportScan | None = None,
+    namespace_premise: PythonNamespacePremise | None = None,
 ) -> _LoadedModuleImportScan:
     """Admit source-only requests, then resolve filesystem edges in this operation."""
     if runtime_import_custody is not None and not runtime_import_custody.owns(
@@ -1053,9 +1031,38 @@ def _load_module_import_scan(
             import_scan_mode=import_scan_mode,
             target_python=target_python,
         )
-        return _LoadedModuleImportScan(
-            precomputed_scan.scan, False, False, source, tree
-        )
+        if (
+            source is None
+            and tree is None
+            and precomputed_scan.authority.namespace_premise == namespace_premise
+        ):
+            snapshot = source_snapshot or _module_source.PythonSourceSnapshot.capture(
+                path
+            )
+            if snapshot.path != path:
+                raise ValueError("source scan snapshot does not match supplied source")
+            if snapshot.sha256 != precomputed_scan.source_sha256:
+                raise _module_source.PythonSourceChangedError(
+                    f"precomputed source scan lost custody: {module_name!r}; "
+                    f"source changed or became unavailable: {path}"
+                )
+            completed = _module_import_scanner._complete_import_scan(
+                precomputed_scan.scan.source_requests,
+                source_path=path,
+                roots=roots,
+                stdlib_root=stdlib_root,
+                stdlib_allowlist=stdlib_allowlist,
+                resolution_cache=resolution_cache,
+                target_python=target_python,
+            )
+            return _LoadedModuleImportScan(
+                completed,
+                False,
+                False,
+                snapshot.text if retain_source else None,
+                None,
+                snapshot,
+            )
     # Explicit source or AST is operation-local and must not be overridden by disk.
     if tree is not None or source is not None:
         project_root = None
@@ -1093,6 +1100,7 @@ def _load_module_import_scan(
             source_arguments=source_arguments,
             snapshot=snapshot,
             target_python=target_python,
+            namespace_premise=namespace_premise,
         )
         if persisted is not None:
             return _LoadedModuleImportScan(
@@ -1118,7 +1126,7 @@ def _load_module_import_scan(
     import_projection = resolution_cache.collect_graph_imports(
         path,
         tree,
-        collector=_module_import_scanner._collect_imports_for_graph,
+        collector=_source_import_scan._collect_imports_for_graph,
         target_python=target_python,
         module_name=module_name,
         is_package=is_package,
@@ -1127,8 +1135,9 @@ def _load_module_import_scan(
         source_arguments=source_arguments,
         runtime_import_custody=runtime_import_custody,
         ast_digest_admission=ast_digest_admission,
+        namespace_premise=namespace_premise,
     )
-    requests = _module_import_scanner._collect_import_scan_requests(
+    requests = _source_import_scan._collect_import_scan_requests(
         import_projection,
         tree,
         source_path=path,
@@ -1139,6 +1148,7 @@ def _load_module_import_scan(
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
         source=source,
+        namespace_premise=namespace_premise,
     )
     if project_root is not None and snapshot is not None:
         with contextlib.suppress(OSError):
@@ -1153,6 +1163,7 @@ def _load_module_import_scan(
                 scan=requests,
                 snapshot=snapshot,
                 target_python=target_python,
+                namespace_premise=namespace_premise,
             )
     return _LoadedModuleImportScan(
         complete(requests), False, source_parsed, source, tree, snapshot

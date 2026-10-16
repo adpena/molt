@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, replace
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_SHAPE_NAMES,
@@ -52,30 +52,91 @@ _REFERENCE_FREE_KINDS: Final[frozenset[ExpressionKind]] = frozenset(
 _BUILTIN_CONTAINER_KINDS: Final[frozenset[ExpressionKind]] = frozenset(
     {"bytearray", "tuple", "list", "set", "frozenset", "dict", "range"}
 )
-_METHODS_BY_KIND: Final[dict[ExpressionKind, frozenset[str]]] = {
-    "list": frozenset(
-        {
-            "append",
-            "insert",
-            "extend",
-            "remove",
-            "count",
-            "index",
-            "pop",
-            "clear",
-            "reverse",
-        }
+# Direct native receiver writes are separate from callbacks invoked by a method.
+# List/dict rows cover their native callable descriptors, including slot methods;
+# other kinds retain the currently modeled descriptor subset.
+_METHODS_BY_KIND: Final[dict[ExpressionKind, dict[str, bool]]] = {
+    "list": {
+        "__add__": False,
+        "__class_getitem__": False,
+        "__contains__": False,
+        "__delitem__": True,
+        "__eq__": False,
+        "__ge__": False,
+        "__getattribute__": False,
+        "__getitem__": False,
+        "__gt__": False,
+        "__iadd__": True,
+        "__imul__": True,
+        "__init__": True,
+        "__iter__": False,
+        "__le__": False,
+        "__len__": False,
+        "__lt__": False,
+        "__mul__": False,
+        "__ne__": False,
+        "__new__": False,
+        "__repr__": False,
+        "__reversed__": False,
+        "__rmul__": False,
+        "__setitem__": True,
+        "__sizeof__": False,
+        "append": True,
+        "clear": True,
+        "copy": False,
+        "count": False,
+        "extend": True,
+        "index": False,
+        "insert": True,
+        "pop": True,
+        "remove": True,
+        "reverse": True,
+        "sort": True,
+    },
+    "dict": {
+        "__class_getitem__": False,
+        "__contains__": False,
+        "__delitem__": True,
+        "__eq__": False,
+        "__ge__": False,
+        "__getattribute__": False,
+        "__getitem__": False,
+        "__gt__": False,
+        "__init__": True,
+        "__ior__": True,
+        "__iter__": False,
+        "__le__": False,
+        "__len__": False,
+        "__lt__": False,
+        "__ne__": False,
+        "__new__": False,
+        "__or__": False,
+        "__repr__": False,
+        "__reversed__": False,
+        "__ror__": False,
+        "__setitem__": True,
+        "__sizeof__": False,
+        "clear": True,
+        "copy": False,
+        "fromkeys": False,
+        "get": False,
+        "items": False,
+        "keys": False,
+        "pop": True,
+        "popitem": True,
+        "setdefault": True,
+        "update": True,
+        "values": False,
+    },
+    "tuple": dict.fromkeys(("count", "index"), False),
+    "str": dict.fromkeys(
+        ("find", "split", "replace", "startswith", "endswith", "count", "join"), False
     ),
-    "dict": frozenset({"get", "pop", "setdefault", "keys", "values", "items"}),
-    "tuple": frozenset({"count", "index"}),
-    "str": frozenset(
-        {"find", "split", "replace", "startswith", "endswith", "count", "join"}
+    "bytes": dict.fromkeys(
+        ("find", "split", "replace", "startswith", "endswith", "count", "join"), False
     ),
-    "bytes": frozenset(
-        {"find", "split", "replace", "startswith", "endswith", "count", "join"}
-    ),
-    "bytearray": frozenset(
-        {"find", "split", "replace", "startswith", "endswith", "count", "join"}
+    "bytearray": dict.fromkeys(
+        ("find", "split", "replace", "startswith", "endswith", "count", "join"), False
     ),
 }
 
@@ -104,6 +165,16 @@ class BuiltinMethodCallShape:
 
 def builtin_method_descriptor_known(kind: ExpressionKind, method: str) -> bool:
     return method in _METHODS_BY_KIND.get(kind, ())
+
+
+def builtin_method_writes_receiver(kind: Literal["list", "dict"], method: str) -> bool:
+    """Whether a native hook-container method directly changes its receiver.
+
+    This does not prove callback freedom or describe custom/subclass receivers.
+    A reached replacement of a standard import-hook object invalidates that
+    premise separately. Unsupported native descriptors cannot mutate storage.
+    """
+    return _METHODS_BY_KIND[kind].get(method, False)
 
 
 def _normal_result(
@@ -1114,5 +1185,6 @@ __all__ = [
     "BuiltinMethodCallShape",
     "builtin_call_shape",
     "builtin_method_descriptor_known",
+    "builtin_method_writes_receiver",
     "builtin_method_call_shape",
 ]

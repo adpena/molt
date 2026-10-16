@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.python_shape_test_support import has_unknown_shape
+
 import ast
 from molt.compiler_analysis.python_lexical_scope import (
     PythonDependencyAuthority,
@@ -36,34 +38,13 @@ from molt.compiler_analysis.python_effects_generated import (
 )
 from molt.compiler_analysis.python_source_keys import (
     python_ast_digest,
+    python_node_source_key,
     python_source_digest,
 )
 from molt.compiler_analysis.static_truth import (
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
 )
-
-
-def _has_unknown_shape(result: StaticExpressionResult) -> bool:
-    # Provenance is orthogonal to shape; preserve all prior shape/lifetime checks.
-    from dataclasses import replace
-
-    pending = [result]
-    while pending:
-        current = pending.pop()
-        if (
-            replace(
-                current,
-                identities=UNKNOWN_EXPRESSION_RESULT.identities,
-                exposes_module_globals=False,
-                element_result=None,
-            )
-            != UNKNOWN_EXPRESSION_RESULT
-        ):
-            return False
-        if current.element_result is not None:
-            pending.append(current.element_result)
-    return True
 
 
 def _last_call(source: str):
@@ -192,7 +173,7 @@ def test_frame_callbacks_expire_local_value_facts(target, boundary) -> None:
     fact = index.expression_fact(read)
     assert fact is not None
     assert fact.binding_invalidated is (target >= (3, 13))
-    assert (_has_unknown_shape(fact.result)) is (target >= (3, 13))
+    assert (has_unknown_shape(fact.result)) is (target >= (3, 13))
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
@@ -220,7 +201,7 @@ def test_frame_local_facts_survive_inert_operations_and_fresh_stores(
     )
     fact = index.expression_fact(ast.parse(source).body[0].body[-1].value)
     assert fact is not None and not fact.binding_invalidated
-    assert not _has_unknown_shape(fact.result)
+    assert not has_unknown_shape(fact.result)
 
 
 @pytest.mark.parametrize("target", [(3, 13), (3, 14)])
@@ -233,7 +214,7 @@ def test_frame_callback_store_cannot_hide_displaced_finalizer_reentry(target) ->
     )
     fact = index.expression_fact(ast.parse(source).body[0].body[-1].value)
     assert fact is not None and fact.binding_invalidated
-    assert _has_unknown_shape(fact.result)
+    assert has_unknown_shape(fact.result)
 
 
 @pytest.mark.parametrize("target", ["Alias = A", "del Alias", "(Alias := A)"])
@@ -701,6 +682,7 @@ def test_prepared_mapping_store_delete_do_not_prove_later_lookup_values() -> Non
 def test_prepared_namespace_uses_classderef_reads_but_not_deref_writes() -> None:
     scope = python_binding_flow._Scope(
         scope_id=1,
+        source=python_node_source_key(ast.parse("class Prepared:\n    pass\n").body[0]),
         parent=None,
         kind="class",
         name="Prepared",
@@ -1006,7 +988,7 @@ def test_partial_namespace_binding_projects_builtin_fallback_on_normal_load(
     index = analyze_python_source_bindings(source)
     fact = index.expression_fact(assignment.value)
     assert fact is not None
-    assert _has_unknown_shape(index.expression_result(assignment.value))
+    assert has_unknown_shape(index.expression_result(assignment.value))
     if builtin_identity is None:
         assert fact.identities & OTHER_IDENTITY
         assert fact.identities & int(PythonIdentity.UNBOUND)
@@ -1075,7 +1057,7 @@ def test_partial_lexical_cell_absence_raises_without_builtin_fallback(
     if foreign_cell:
         # FunctionType can supply an arbitrary compatible closure cell; the
         # lexical slot still must not fall through to builtin lookup.
-        assert _has_unknown_shape(result)
+        assert has_unknown_shape(result)
         assert fact.identities & OTHER_IDENTITY
     else:
         assert result.kind == "tuple"
@@ -1119,10 +1101,10 @@ def test_class_preparation_and_nested_activation_widen_captured_payload() -> Non
     assert not direct_result.release_may_call
     # Foreign __build_class__/metaclass preparation can supply a mapping whose
     # value takes precedence over the enclosing activation's closure cell.
-    assert _has_unknown_shape(inline_result)
+    assert has_unknown_shape(inline_result)
     inline_fact = index.expression_fact(reads[1])
     assert inline_fact is not None and inline_fact.name_lookup == "class_lexical"
-    assert _has_unknown_shape(nested_result)
+    assert has_unknown_shape(nested_result)
     nested_fact = index.expression_fact(reads[2])
     assert nested_fact is not None
     assert nested_fact.identities & OTHER_IDENTITY
@@ -1173,7 +1155,7 @@ def test_comprehension_activation_separates_first_iterator_from_captured_body(
     fact = index.expression_fact(comprehension.elt)
     assert fact is not None
     if isinstance(comprehension, ast.GeneratorExp):
-        assert _has_unknown_shape(body)
+        assert has_unknown_shape(body)
         assert fact.identities & OTHER_IDENTITY
         assert fact.identities & int(PythonIdentity.UNBOUND)
     else:
@@ -1219,7 +1201,7 @@ def test_nonlocal_write_releases_foreign_cell_before_reading_its_new_value() -> 
     assert fact is not None
     assert fact.identities & OTHER_IDENTITY
     assert fact.binding_invalidated
-    assert _has_unknown_shape(result)
+    assert has_unknown_shape(result)
 
     # STORE_DEREF publishes first; releasing the arbitrary old cell value can
     # overwrite it again. A strong write is not a callback-free lifetime proof.
@@ -1315,7 +1297,7 @@ def test_binding_result_join_keeps_bound_unknown_alternatives_widening(
 
     joined = pool.join(*branches)
     assert pool.static_value(joined, 0) is None
-    assert _has_unknown_shape(pool.result(joined, 0))
+    assert has_unknown_shape(pool.result(joined, 0))
 
 
 def test_callback_capable_method_keeps_binding_invalidated() -> None:
@@ -1329,7 +1311,7 @@ def test_callback_capable_method_keeps_binding_invalidated() -> None:
 
     assert fact is not None
     assert fact.binding_invalidated
-    assert _has_unknown_shape(fact.result)
+    assert has_unknown_shape(fact.result)
 
 
 def test_append_retains_nested_argument_until_receiver_drop() -> None:
@@ -3698,7 +3680,7 @@ def test_selected_mutable_result_expires_contents_after_sibling_retirement() -> 
     selected = index.expression_fact(ast.parse(source).body[2].value)
     assert selected is not None and selected.result.items is None
     possible = selected.result.element_result
-    assert possible is not None and _has_unknown_shape(possible)
+    assert possible is not None and has_unknown_shape(possible)
     assert possible.identities & OTHER_IDENTITY
     assert possible.release_may_call and not possible.fresh_container
     assert not index.calls[-1].callee_is(PythonIdentity.BUILTINS_IMPORT)
@@ -3803,7 +3785,7 @@ def test_generator_value_exposure_is_deferred_without_yield_value_guarantees() -
     assert generator.exposes_module_globals and argument.exposes_module_globals
     yielded = generator.result.element_result
     assert yielded is not None and yielded.exposes_module_globals
-    assert _has_unknown_shape(yielded) and yielded.identities == OTHER_IDENTITY
+    assert has_unknown_shape(yielded) and yielded.identities == OTHER_IDENTITY
     assert generator.result.kind == "unknown" and generator.result.release_may_call
 
 
@@ -3823,7 +3805,7 @@ def test_deferred_generator_does_not_capture_stale_importer_identity() -> None:
     iteration = index.iteration_fact(tree.body[-1])
     assert iteration is not None
     yielded = iteration.element_result
-    assert _has_unknown_shape(yielded)
+    assert has_unknown_shape(yielded)
     assert yielded.identities == OTHER_IDENTITY
     call = index.call_fact(tree.body[-1].body[0].value)
     assert call is not None and not call.callee_is(PythonIdentity.BUILTINS_IMPORT)
@@ -3844,7 +3826,7 @@ def test_unknown_binding_and_iteration_keep_namespace_exposure_only(
     call = tree.body[-1].body[0].value if iteration else tree.body[-1].value
     argument = index.expression_fact(call.args[0])
     assert argument is not None and argument.exposes_module_globals
-    assert _has_unknown_shape(argument.result)
+    assert has_unknown_shape(argument.result)
     assert argument.result.release_may_call
     assert not identity_fact_is_exact(
         argument.identities, PythonIdentity.CURRENT_GLOBALS
@@ -3879,7 +3861,7 @@ def test_deferred_capture_retains_namespace_exposure_without_value_proof(
     index = analyze_python_source_bindings(source)
     argument = index.expression_fact(call.args[0])
     assert argument is not None and argument.exposes_module_globals
-    assert _has_unknown_shape(argument.result) and argument.result.release_may_call
+    assert has_unknown_shape(argument.result) and argument.result.release_may_call
 
 
 @pytest.mark.parametrize(
@@ -4220,6 +4202,87 @@ def test_namespace_premise_keeps_type_checking_across_callbacks(source: str) -> 
     assert _last_test_truth(source, **_NO_FOREIGN_WRITES) is False
 
 
+def test_namespace_entry_writes_precede_the_first_canonical_acquisition() -> None:
+    import builtins
+
+    source = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n    observed = 'late'\n"
+        "else:\n    observed = 'early'\n"
+    )
+    imported = ModuleType("typing")
+    imported.TYPE_CHECKING = True
+
+    def acquire(name, globals=None, locals=None, fromlist=(), level=0):
+        assert name == "typing" and fromlist == ("TYPE_CHECKING",) and level == 0
+        return imported
+
+    namespace = {"__builtins__": vars(builtins) | {"__import__": acquire}}
+    exec(compile(source, "<prior-member-write>", "exec"), namespace)
+    assert namespace["observed"] == "late"
+    assert _last_test_truth(source, **_NO_FOREIGN_WRITES) is False
+    assert (
+        _last_test_truth(
+            source,
+            **_NO_FOREIGN_WRITES,
+            entry_invalid_members=int(PythonMember.TYPING_TYPE_CHECKING),
+        )
+        is None
+    )
+    # Policy cache identity must not let the widened entry poison a pristine one.
+    assert _last_test_truth(source, **_NO_FOREIGN_WRITES) is False
+
+
+def test_star_initialization_rebinds_globals_outside_callback_domain(
+    monkeypatch,
+) -> None:
+    import sys
+
+    exports = ModuleType("star_initialization_exports")
+    exports.__dict__.update(__all__=("TYPE_CHECKING",), TYPE_CHECKING=True)
+    monkeypatch.setitem(sys.modules, exports.__name__, exports)
+    source = (
+        "from typing import TYPE_CHECKING\n"
+        "from star_initialization_exports import *\n"
+        "seen = False\n"
+        "if TYPE_CHECKING:\n    seen = True\n"
+    )
+    namespace = {}
+    exec(compile(source, "<star-initialization-oracle>", "exec"), namespace)
+    assert namespace["seen"] is True
+    assert _last_test_truth(source, **_NO_FOREIGN_WRITES) is None
+
+
+@pytest.mark.parametrize("placement", ["immediate", "deferred", "annotation"])
+def test_star_initialization_shadows_undeclared_builtin_reads(
+    monkeypatch, placement
+) -> None:
+    import sys
+
+    exports = ModuleType("star_builtin_exports")
+    exports.__dict__.update(__all__=("len",), len=lambda value: 17)
+    monkeypatch.setitem(sys.modules, exports.__name__, exports)
+    body = {
+        "immediate": "seen = len(())\n",
+        "deferred": "def run():\n    return len(())\nseen = run()\n",
+        "annotation": "value: len(())\nseen = __annotations__['value']\n",
+    }[placement]
+    source = "from star_builtin_exports import *\n" + body
+    namespace = {}
+    exec(compile(source, "<star-builtin-oracle>", "exec", dont_inherit=True), namespace)
+    assert namespace["seen"] == 17
+    index = _module_facts(source, **_NO_FOREIGN_WRITES)
+    call = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "len"
+    )
+    fact = index.call_fact(call)
+    assert fact is not None and not fact.callee_is(PythonIdentity.BUILTIN_LEN)
+
+
 @pytest.mark.parametrize(
     "separator", ["x = load()\n", "import os\n", "for item in items:\n    use(item)\n"]
 )
@@ -4349,3 +4412,164 @@ def test_binding_analysis_import_excludes_codegen_and_command_layers():
         check=False,
     )
     assert child.returncode == 0, child.stderr
+
+
+def test_call_result_source_is_distinct_from_callee_and_tracks_real_returns():
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = (
+        "def target(): return 7\n"
+        "def make(): return target\n"
+        "function = make()\n"
+        "answer = function()\n"
+    )
+    namespace = {}
+    exec(
+        compile(source, "<return-source-oracle>", "exec", dont_inherit=True), namespace
+    )
+    assert namespace["function"] is namespace["target"]
+    assert namespace["answer"] == 7
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    target, make, assignment, invocation = tree.body
+    call_key = python_node_source_key(assignment.value)
+    assert index.expression_result(assignment.value).source_origins == {call_key}
+    assert dict(index.source_calls)[call_key] == {python_node_source_key(make)}
+    returns = {
+        result.owner: (result.kind, result.returned)
+        for result in index.source_function_results
+    }
+    from molt.compiler_analysis.python_function_kind import FunctionKind
+
+    assert returns[python_node_source_key(make)] == (
+        FunctionKind.SYNC,
+        {python_node_source_key(target)},
+    )
+    assert index.expression_result(invocation.value.func).source_origins == {call_key}
+
+
+def test_generator_call_result_retains_suspension_not_a_returned_callable():
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = "def generator():\n    yield 3\nvalue = generator()\n"
+    namespace = {}
+    exec(
+        compile(source, "<generator-source-oracle>", "exec", dont_inherit=True),
+        namespace,
+    )
+    assert namespace["value"].gi_frame is not None
+    assert next(namespace["value"]) == 3
+    namespace["value"].close()
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    from molt.compiler_analysis.python_function_kind import FunctionKind
+
+    assert index.source_function_results == (
+        (
+            python_node_source_key(tree.body[0]),
+            FunctionKind.GENERATOR,
+            frozenset(),
+            frozenset(),
+            frozenset(),
+            frozenset(),
+        ),
+    )
+
+
+def test_source_demand_activation_joins_each_new_incidence_once(tmp_path, monkeypatch):
+    from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+    from molt.stdlib_intrinsic_policy import stdlib_module_intrinsic_facts
+    from molt.target_python import TargetPythonVersion
+
+    facts = stdlib_module_intrinsic_facts(
+        "entry",
+        tmp_path / "entry.py",
+        source="def target(): pass\n",
+        target_python=TargetPythonVersion(3, 12, 0),
+    )
+    scan = facts.import_evidence.source_scan
+    [function] = scan.source_values.functions
+    owner = function.owner
+    authority = PythonSourceDemands(
+        admit_imports=lambda _module, _names: None,
+        queue_body=lambda _module, _owner, _arguments: None,
+    )
+    authority.accept("entry", scan, full=True)
+    authority.drain()
+    activate = authority.activate
+    visits = Counter()
+
+    def observe(origin, phase, arguments=()):
+        visits[(origin, phase, arguments)] += 1
+        activate(origin, phase, arguments)
+
+    monkeypatch.setattr(authority, "activate", observe)
+    value = ("entry", owner)
+    for index in range(16):
+        authority.demand(value, "call", (str(index),))
+        authority.drain()
+        # A dependency wake without new facts must not replay historical work.
+        authority.queue_value(value)
+        authority.drain()
+    assert len(visits) == 16
+    assert set(visits.values()) == {1}
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(await callback() for item in ())",
+        "(item for item in () if False and await callback())",
+        "(item for item in await callback())",
+        "((await callback() for inner in ()) for item in ())",
+        "((lambda value=await callback(): value) for item in ())",
+        "([inner async for inner in callback()] for item in ())",
+    ],
+)
+def test_generator_source_kind_matches_cpython_code_scope(expression):
+    import inspect
+    from types import CodeType
+    from molt.compiler_analysis.python_function_kind import FunctionKind
+
+    source = f"async def make():\n    return {expression}\n"
+    tree = ast.parse(source)
+    generator = tree.body[0].body[0].value
+    assert isinstance(generator, ast.GeneratorExp)
+    module_code = compile(source, "<genexpr-scope-oracle>", "exec", dont_inherit=True)
+    function_code = next(c for c in module_code.co_consts if isinstance(c, CodeType))
+    generator_code = next(c for c in function_code.co_consts if isinstance(c, CodeType))
+    expected = (
+        FunctionKind.ASYNC_GENERATOR
+        if generator_code.co_flags & inspect.CO_ASYNC_GENERATOR
+        else FunctionKind.GENERATOR
+    )
+    assert generator_code.co_flags & (inspect.CO_GENERATOR | inspect.CO_ASYNC_GENERATOR)
+    facts = analyze_python_source_bindings(source)
+    kinds = {result.owner: result.kind for result in facts.source_function_results}
+    assert kinds[python_node_source_key(generator)] == expected
+
+
+@pytest.mark.parametrize("outer_first", [False, True])
+def test_overlapping_await_queries_reuse_canonical_dependency_traversal(outer_first):
+    source = (
+        "async def make():\n    return " + "(" * 64 + "await callback()" + "+1)" * 64
+    )
+    expression = ast.parse(source).body[0].body[0].value
+    pending = []
+    current = expression
+    while isinstance(current, ast.BinOp):
+        pending.append(current)
+        current = current.left
+    pending.append(current)
+    authority = PythonDependencyAuthority(
+        eager_annotations=True, future_annotations=False
+    )
+    for node in pending if outer_first else reversed(pending):
+        assert authority.expression_contains_await(node)
+    assert authority.node_visits <= sum(1 for _ in ast.walk(expression))
+    visits = authority.node_visits
+    for node in pending:
+        assert authority.expression_contains_await(node)
+    assert authority.node_visits == visits
+    # A flag-only cache must not suppress the ordinary lexical dependency walk.
+    assert authority.project((expression,)).direct == frozenset({"callback"})

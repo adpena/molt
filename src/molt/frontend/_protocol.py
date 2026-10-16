@@ -690,10 +690,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp
     ) -> bool: ...
 
-    def _comprehension_requires_async(
-        self, generators: Sequence[ast.comprehension], exprs: Sequence[ast.AST | None]
-    ) -> bool: ...
-
     @contextmanager
     def _comprehension_scope(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp
@@ -1705,8 +1701,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _expr_may_yield(self, node: ast.AST) -> bool: ...
 
-    def _expr_needs_async(self, node: ast.AST) -> bool: ...
-
     def _expression_has_invalidated_binding(self, node: ast.expr) -> bool | None: ...
 
     def _expression_runs_no_python(self, node: ast.expr) -> bool: ...
@@ -2185,9 +2179,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _new_tracked_ops(
         self, initial: list[MoltOp] | None = ..., *, count_function: bool = ...
     ) -> _TrackedOpsList: ...
-
-    @staticmethod
-    def _normalize_allowlist_module(module_name: str | None) -> str | None: ...
 
     def _normalize_compare_for_induction(
         self, compare_op: str, lhs_is_iv: bool

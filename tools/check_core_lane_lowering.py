@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import sys
-from collections import deque
 from pathlib import Path
 
 
@@ -22,169 +20,14 @@ SRC_ROOT = ROOT / "src"
 
 from tools import check_stdlib_intrinsics as stdlib_audit  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
+from molt.stdlib_intrinsic_policy import stdlib_module_intrinsic_facts  # noqa: E402
+from molt.compiler_analysis.python_imports import (  # noqa: E402
+    normalize_stdlib_module_name,
+    UnresolvedStaticImportError,
+)
+from molt.cli.module_dependencies import _module_dependencies_from_imports  # noqa: E402
 
 DEFAULT_CORE_MANIFEST = ROOT / "tests" / "differential" / "basic" / "CORE_TESTS.txt"
-
-
-def _canonical_module(name: str, known: set[str]) -> str | None:
-    if name in known:
-        return name
-    root = name.split(".", 1)[0]
-    if root in known:
-        return root
-    return None
-
-
-def _module_package_parts(module: str, path: Path) -> list[str]:
-    if module == "molt.stdlib":
-        return []
-    parts = module.split(".")
-    if path.name == "__init__.py":
-        return parts
-    return parts[:-1]
-
-
-def _resolve_from_target(
-    *,
-    current_module: str,
-    current_path: Path,
-    level: int,
-    module: str | None,
-    name: str | None,
-) -> str | None:
-    package_parts = _module_package_parts(current_module, current_path)
-    if level <= 0:
-        if module is None:
-            return name
-        if name is None:
-            return module
-        return f"{module}.{name}"
-    if level > len(package_parts) + 1:
-        return None
-    anchor = package_parts[: len(package_parts) - level + 1]
-    suffix: list[str] = []
-    if module:
-        suffix.extend(module.split("."))
-    if name:
-        suffix.append(name)
-    parts = anchor + suffix
-    if not parts:
-        return None
-    return ".".join(parts)
-
-
-def _imports_from_ast(
-    *,
-    tree: ast.AST,
-    current_module: str,
-    current_path: Path,
-    known_modules: set[str],
-) -> set[str]:
-    out: set[str] = set()
-
-    def _static_bool(expr: ast.expr) -> bool | None:
-        if isinstance(expr, ast.Constant) and isinstance(expr.value, bool):
-            return expr.value
-        if isinstance(expr, ast.Name) and expr.id == "TYPE_CHECKING":
-            return False
-        if isinstance(expr, ast.Attribute) and expr.attr == "TYPE_CHECKING":
-            return False
-        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
-            val = _static_bool(expr.operand)
-            return None if val is None else not val
-        if isinstance(expr, ast.BoolOp):
-            values = [_static_bool(value) for value in expr.values]
-            if isinstance(expr.op, ast.And):
-                if any(value is False for value in values):
-                    return False
-                if all(value is True for value in values):
-                    return True
-                return None
-            if isinstance(expr.op, ast.Or):
-                if any(value is True for value in values):
-                    return True
-                if all(value is False for value in values):
-                    return False
-                return None
-        return None
-
-    def _collect_stmt_list(statements: list[ast.stmt]) -> None:
-        for stmt in statements:
-            if isinstance(stmt, ast.Import):
-                for alias in stmt.names:
-                    resolved = _canonical_module(alias.name, known_modules)
-                    if resolved:
-                        out.add(resolved)
-                continue
-            if isinstance(stmt, ast.ImportFrom):
-                module_name = _resolve_from_target(
-                    current_module=current_module,
-                    current_path=current_path,
-                    level=stmt.level,
-                    module=stmt.module,
-                    name=None,
-                )
-                if module_name:
-                    resolved = _canonical_module(module_name, known_modules)
-                    if resolved:
-                        out.add(resolved)
-                for alias in stmt.names:
-                    if alias.name == "*":
-                        continue
-                    target = _resolve_from_target(
-                        current_module=current_module,
-                        current_path=current_path,
-                        level=stmt.level,
-                        module=stmt.module,
-                        name=alias.name,
-                    )
-                    if not target:
-                        continue
-                    resolved = _canonical_module(target, known_modules)
-                    if resolved:
-                        out.add(resolved)
-                continue
-            if isinstance(stmt, ast.If):
-                truth = _static_bool(stmt.test)
-                if truth is True:
-                    _collect_stmt_list(stmt.body)
-                elif truth is False:
-                    _collect_stmt_list(stmt.orelse)
-                else:
-                    _collect_stmt_list(stmt.body)
-                    _collect_stmt_list(stmt.orelse)
-                continue
-            if isinstance(stmt, ast.Try):
-                _collect_stmt_list(stmt.body)
-                for handler in stmt.handlers:
-                    _collect_stmt_list(handler.body)
-                _collect_stmt_list(stmt.orelse)
-                _collect_stmt_list(stmt.finalbody)
-                continue
-            if isinstance(
-                stmt,
-                (
-                    ast.FunctionDef,
-                    ast.AsyncFunctionDef,
-                    ast.ClassDef,
-                ),
-            ):
-                continue
-            child_bodies: list[list[ast.stmt]] = []
-            for field_name in ("body", "orelse", "finalbody"):
-                child = getattr(stmt, field_name, None)
-                if (
-                    isinstance(child, list)
-                    and child
-                    and all(isinstance(item, ast.stmt) for item in child)
-                ):
-                    child_bodies.append(child)
-            for child_body in child_bodies:
-                _collect_stmt_list(child_body)
-
-    if isinstance(tree, ast.Module):
-        _collect_stmt_list(tree.body)
-    return out
 
 
 def _collect_manifest_tests(manifest: Path) -> list[Path]:
@@ -204,10 +47,11 @@ def _collect_manifest_tests(manifest: Path) -> list[Path]:
     return tests
 
 
-def _collect_seed_modules(manifest: Path, known_modules: set[str]) -> set[str]:
+def _collect_seed_modules(manifest: Path, known_modules: dict[str, Path]) -> set[str]:
     seeds: set[str] = set()
     admitted = 0
     excluded = 0
+    paths = known_modules
     for test_path in _collect_manifest_tests(manifest):
         if test_path.suffix != ".py":
             continue
@@ -219,59 +63,65 @@ def _collect_seed_modules(manifest: Path, known_modules: set[str]) -> set[str]:
             print(f"[SKIP] {test_path} ({reason})")
             continue
         admitted += 1
-        tree = ast.parse(test_path.read_text(encoding="utf-8"), filename=str(test_path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    resolved = _canonical_module(alias.name, known_modules)
-                    if resolved:
-                        seeds.add(resolved)
-            elif isinstance(node, ast.ImportFrom):
-                if node.level != 0 or not node.module:
-                    continue
-                resolved = _canonical_module(node.module, known_modules)
-                if resolved:
-                    seeds.add(resolved)
+        evidence = stdlib_module_intrinsic_facts(
+            "__main__",
+            test_path,
+            target_python=stdlib_audit._DEFAULT_TARGET_PYTHON_VERSION,
+        ).import_evidence
+        from molt.cli.module_import_scanner import _complete_import_scan
+        from molt.cli.module_resolution import _ModuleResolutionCache
+
+        completed = _complete_import_scan(
+            evidence.source_scan,
+            source_path=test_path,
+            roots=None,
+            stdlib_root=None,
+            stdlib_allowlist=None,
+            resolution_cache=_ModuleResolutionCache(),
+            target_python=stdlib_audit._DEFAULT_TARGET_PYTHON_VERSION,
+            module_graph=paths,
+        )
+        for site in completed.source_sites:
+            owner_plan = site.owner_plan
+            if (
+                site.request is not None
+                and owner_plan.modules
+                and not owner_plan.errors
+                and not owner_plan.requires_runtime
+                and all(
+                    not raw.startswith("molt.stdlib.")
+                    and (normalize_stdlib_module_name(raw) or raw).split(".", 1)[0]
+                    not in known_modules
+                    for raw in owner_plan.modules
+                )
+            ):
+                # This catalog cannot complete a project package's exports.
+                # Its unknown star topology is not a missing stdlib provider.
+                continue
+            if site.unresolved:
+                raise UnresolvedStaticImportError(
+                    f"core-lane source {test_path}:{site.line} requires runtime import custody"
+                )
+            for raw_owner in site.owner_plan.modules:
+                owner = normalize_stdlib_module_name(raw_owner) or raw_owner
+                if owner.split(".", 1)[0] in known_modules or raw_owner.startswith(
+                    "molt.stdlib."
+                ):
+                    # Preserve a named absent descendant as an exact inventory
+                    # fact. Its runtime ImportError may be intentional Python.
+                    seeds.add(owner)
+            seeds.update(
+                _module_dependencies_from_imports("__main__", paths, site.plan.modules)
+            )
     print(f"core-lane source admission: admitted={admitted} excluded={excluded}")
     return seeds
-
-
-def _build_stdlib_dep_graph(
-    audit_map: dict[str, tuple[str, Path]],
-) -> dict[str, set[str]]:
-    known_modules = set(audit_map)
-    deps: dict[str, set[str]] = {}
-    for module, (_, path) in audit_map.items():
-        text = path.read_text(encoding="utf-8")
-        tree = ast.parse(text, filename=str(path))
-        deps[module] = _imports_from_ast(
-            tree=tree,
-            current_module=module,
-            current_path=path,
-            known_modules=known_modules,
-        )
-    return deps
-
-
-def _closure(seeds: set[str], deps: dict[str, set[str]]) -> set[str]:
-    seen: set[str] = set()
-    queue: deque[str] = deque(sorted(seeds))
-    while queue:
-        module = queue.popleft()
-        if module in seen:
-            continue
-        seen.add(module)
-        for dep in sorted(deps.get(module, ())):
-            if dep not in seen:
-                queue.append(dep)
-    return seen
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Ensure compiled core-lane imports resolve only to implemented "
-            "stdlib modules."
+            "Inventory core-lane stdlib source candidates and unresolved import custody; "
+            "runtime qualification is separate."
         )
     )
     parser.add_argument(
@@ -280,52 +130,21 @@ def main() -> int:
         default=DEFAULT_CORE_MANIFEST,
         help="Path to a differential lane manifest (default: core lane).",
     )
-    parser.add_argument(
-        "--allow-status",
-        action="append",
-        default=[],
-        help=(
-            "Allowed audit status (repeatable). Default: every implemented "
-            "status (intrinsic-backed, intrinsic-partial, intrinsic-support, "
-            "python-compiled)."
-        ),
-    )
     args = parser.parse_args()
 
-    allow_statuses = set(args.allow_status) or {
-        stdlib_audit.STATUS_INTRINSIC,
-        stdlib_audit.STATUS_INTRINSIC_PARTIAL,
-        stdlib_audit.STATUS_INTRINSIC_SUPPORT,
-        stdlib_audit.STATUS_PYTHON_COMPILED,
-    }
-    audit_map = stdlib_audit.stdlib_module_statuses()
-    dep_graph = _build_stdlib_dep_graph(audit_map)
-    seed_modules = _collect_seed_modules(args.manifest, set(audit_map))
-
-    if not seed_modules:
-        print(f"core-lane lowering gate: no stdlib imports in {args.manifest}")
-        return 0
-
-    imported_closure = _closure(seed_modules, dep_graph)
-    violations: list[tuple[str, str, Path]] = []
-    for module in sorted(imported_closure):
-        status, path = audit_map[module]
-        if status not in allow_statuses:
-            violations.append((module, status, path))
-
-    if violations:
-        print("core-lane lowering gate failed:")
-        print(f"- manifest: {args.manifest}")
-        print(f"- allowed statuses: {', '.join(sorted(allow_statuses))}")
-        print("- violating modules:")
-        for module, status, path in violations:
-            print(f"  - {module}: {status} ({path.relative_to(ROOT)})")
+    try:
+        inventory = stdlib_audit.stdlib_module_statuses()
+        candidates = _collect_seed_modules(
+            args.manifest, {name: path for name, (_status, path) in inventory.items()}
+        )
+    except (OSError, UnicodeError, RuntimeError, UnresolvedStaticImportError) as exc:
+        print(f"core-lane source inventory failed: {exc}")
         return 1
-
-    print("core-lane lowering gate: ok")
+    print("core-lane source inventory: ok (runtime qualification is separate)")
     print(f"- manifest: {args.manifest}")
-    print(f"- seed modules: {', '.join(sorted(seed_modules))}")
-    print(f"- closure size: {len(imported_closure)} modules")
+    for name in sorted(candidates):
+        status = inventory[name][0] if name in inventory else "absent"
+        print(f"- {name}: {status}")
     return 0
 
 

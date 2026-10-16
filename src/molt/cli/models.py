@@ -1,4 +1,12 @@
 from __future__ import annotations
+from molt.compiler_analysis.python_imports import (
+    SourceImportSite,
+    SourceAllExports,
+    _ImportScanRequests,
+    _SourceImportBinding,
+    _SourceValueDemand,
+    _SourceValueSummary,
+)
 
 import ast
 import hashlib
@@ -6,7 +14,7 @@ import json
 import os
 import subprocess
 from concurrent.futures import Future
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
@@ -35,6 +43,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.frontend import ClassId, ClassInfo
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
@@ -90,6 +99,7 @@ class _ModuleSourceScanAuthority:
     is_package: bool | None = None
     requires_runtime_package_anchor: bool = False
     deferred_owners: frozenset[tuple[PythonSourceKey, tuple[str, ...]]] = frozenset()
+    namespace_premise: PythonNamespacePremise | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in {"module_init", "full"}:
@@ -129,6 +139,10 @@ class _ModuleGraphScanAuthority:
         return source.mode
 
     def merged(self, other: "_ModuleGraphScanAuthority") -> "_ModuleGraphScanAuthority":
+        from molt.compiler_analysis.python_namespace_graph import (
+            join_python_namespace_premises,
+        )
+
         sources = {source.module_name: source for source in self.sources}
         ranks = {"module_init": 0, "full": 1}
         for source in other.sources:
@@ -144,17 +158,22 @@ class _ModuleGraphScanAuthority:
                     or source.requires_runtime_package_anchor
                 )
                 deferred_owners = prior.deferred_owners | source.deferred_owners
+                namespace_premise = join_python_namespace_premises(
+                    prior.namespace_premise, source.namespace_premise
+                )
                 if ranks[prior.mode] >= ranks[source.mode]:
                     source = prior
                 if (
                     deferred_owners != source.deferred_owners
                     or requires_runtime_package_anchor
                     != source.requires_runtime_package_anchor
+                    or namespace_premise != source.namespace_premise
                 ):
                     source = replace(
                         source,
                         requires_runtime_package_anchor=requires_runtime_package_anchor,
                         deferred_owners=deferred_owners,
+                        namespace_premise=namespace_premise,
                     )
             sources[source.module_name] = source
         return _ModuleGraphScanAuthority(
@@ -192,67 +211,18 @@ class _ModuleGraphScanAuthority:
                 "requires_runtime_package_anchor": (
                     source.requires_runtime_package_anchor
                 ),
+                "namespace_premise": (
+                    None
+                    if source.namespace_premise is None
+                    else asdict(source.namespace_premise)
+                ),
             }
             for source in sorted(self.sources, key=lambda source: source.module_name)
         ]
 
 
-@dataclass(frozen=True, slots=True)
-class _StaticSourcePath:
-    """An unevaluated path operation; filesystem effects belong to completion."""
-
-    operation: Literal[
-        "path", "join", "os_join", "posix_join", "nt_join", "resolve", "absolute"
-    ]
-    parts: tuple[str | _StaticSourcePath, ...]
-
-
-class _StaticSourceExecutionRequest(NamedTuple):
-    module_name: str | None
-    path: str | _StaticSourcePath
-
-
-class _SourceValueDemand(NamedTuple):
-    source: PythonSourceKey
-    phase: Literal["read", "call", "escape"]
-
-
-class _SourceImportBinding(NamedTuple):
-    source: PythonSourceKey
-    modules: tuple[str, ...]
-    attribute: str | None
-
-
-class _SourceValueSummary(NamedTuple):
-    """Immutable source-owned values; no AST or resolved filesystem edges."""
-
-    namespaces: tuple[
-        tuple[
-            PythonSourceKey,
-            tuple[tuple[str, frozenset[PythonSourceKey]], ...],
-            frozenset[PythonSourceKey],
-        ],
-        ...,
-    ] = ()
-    attributes: tuple[tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...] = ()
-
-
-class _ImportScanRequests(NamedTuple):
-    """Source-only requests, before package exports and filesystem resolution."""
-
-    imports: tuple[str, ...]
-    source_executions: tuple[_StaticSourceExecutionRequest, ...]
-    star_modules: tuple[str, ...] = ()
-    dynamic_relative_import_candidates: tuple[str, ...] = ()
-    requires_runtime_package_anchor: bool = False
-    # Keep call-star discovery distinct even when its base is also imported.
-    dynamic_star_modules: tuple[str, ...] = ()
-    source_demands: tuple[_SourceValueDemand, ...] = ()
-    source_bindings: tuple[_SourceImportBinding, ...] = ()
-    source_values: _SourceValueSummary = _SourceValueSummary()
-
-
 class _CompleteImportScan(NamedTuple):
+    source_requests: _ImportScanRequests
     imports: tuple[str, ...]
     source_executions: tuple[tuple[str | None, Path], ...]
     dynamic_relative_import_candidates: tuple[str, ...] = ()
@@ -260,19 +230,8 @@ class _CompleteImportScan(NamedTuple):
     source_demands: tuple[_SourceValueDemand, ...] = ()
     source_bindings: tuple[_SourceImportBinding, ...] = ()
     source_values: _SourceValueSummary = _SourceValueSummary()
-
-
-class _ImportDiscoveryProjection(NamedTuple):
-    """Graph-only candidates kept separate from runtime import semantics."""
-
-    imports: tuple[str, ...]
-    dynamic_relative_import_candidates: tuple[str, ...] = ()
-    requires_runtime_package_anchor: bool = False
-    star_modules: tuple[str, ...] = ()
-    dynamic_star_modules: tuple[str, ...] = ()
-    source_demands: tuple[_SourceValueDemand, ...] = ()
-    source_bindings: tuple[_SourceImportBinding, ...] = ()
-    source_values: _SourceValueSummary = _SourceValueSummary()
+    source_sites: tuple[SourceImportSite, ...] = ()
+    star_exports: tuple[tuple[str, SourceAllExports], ...] = ()
 
 
 @dataclass(frozen=True)

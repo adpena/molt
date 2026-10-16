@@ -53,8 +53,132 @@ live candidate resolution; no persisted whole-graph receipt can hide a newly
 created module or a higher-priority shadow. An imports-only tuple cannot stand
 in for a complete source scan.
 
+The graph's existing queue also converges namespace premises. A module publishes
+its syntax-only writer summary once, retaining source execution owners. Immediate
+writes join at initialization; deferred writes join when that existing body
+context is reached. Full inventories retain all owners. The shared namespace index
+wakes affected module scans and reached deferred contexts when that premise
+grows. A context already scanned under the same premise is not repeated.
+Package-child bindings use the same resolver authority as tooling closures.
+Uninspected native/artifact/catalog owners retain unknown writes. The final
+per-source authority carries the actual premise into runtime-import policy;
+compiler discovery cannot hand that consumer a narrower or invented proof.
+This is compiler/development analysis and adds no work to the emitted binary.
+
+Native current-globals dictionary selection uses the binding authority's current
+module slots. A literal-key read does not inherit access to the whole dictionary;
+actual stored self-references retain that access. Native mutation methods share
+the existing namespace-store transfer. Unknown writes invalidate actual module
+bindings, including undeclared global/builtin reads, independently of the future
+callback domain. The binding state and history joins retain unmodeled namespace
+contents so a later read cannot lose aliases or custom-key callbacks. Unknown
+owners, escaping namespaces and unproved activation mappings remain conservative.
+Exact dictionary ownership does not remove the evaluated key's hashing and
+comparison demands; syntax stores, deletes and augmented assignments retain
+those demands at their shared publication boundary.
+Source writers publish their actual value origins; storage uncertainty alone
+does not expose every function in a verified module. Starred call arguments and
+class bases use their evaluated operand facts through that same publication
+boundary.
+
+`compiler_analysis/python_import_scan.py` is the sole source-import producer.
+It projects `PythonBindingIndex` origins and the shared lexical execution regions
+into typed import sites, requests, source keys, value
+bindings, execution demands, export facts, and unevaluated loader/runpy paths.
+The CLI scanner owns topology completion and runtime import custody; policy and
+core-lane admission consume these facts instead of resolving imports again.
+
+`compiler_analysis/python_source_demands.py` owns the existing value-candidate
+and activation worklist used by compiler discovery.
+Aliases and imported members resolve through the same namespaces. Availability-only
+`expose` requests retain source closure without claiming execution. Calling a
+generator/coroutine factory creates a suspended value; resumption executes its
+body. Call results retain evaluated callee relations and direct versus contained
+return/yield origins. Subscription, unpacking and iteration targets project
+elements rather than treating the container as its selected value.
+One typed function-result record keeps final return origins separate from yielded
+origins. Element records declare subscription, synchronous iteration or
+asynchronous iteration explicitly; consumers do not infer the protocol from a
+method spelling or execute every possible protocol.
+Class values, instances and suspended results remain distinct: constructing an
+instance does not execute every method, and retaining a callable does not call it.
+Descriptor dispatch selects attribute hooks and descriptor-valued members without
+activating unrelated iterator methods. Its canonical class demand receives later
+namespace-origin deltas through the same worklist. Unknown or mixed callback
+effects retain generic protocol activation rather than claiming descriptor-only
+dispatch.
+Inherited protocol members use the same namespace dependencies as ordinary lookup.
+Evaluated class-base expressions have their own typed source relation. Namespace
+exposure describes escape reachability; a nested or member class is not an
+inherited owner merely because it appears in that exposure.
+Iteration does not call functions stored in a container.
+
+Iterator acquisition and advancement are separate typed demands for synchronous
+and asynchronous protocols. Acquisition invokes `__iter__` or `__aiter__`;
+advancement follows the returned carrier, with asynchronous next results awaited.
+A generator factory is not its returned generator object. Source discovery must
+not execute an uncalled factory or advance an iterator just because a generator
+expression captures it. These distinctions follow
+[CPython comprehension generation](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Python/compile.c#L5334-L5443)
+and [PEP 525](https://peps.python.org/pep-0525/#support-for-asynchronous-iteration-protocol).
+
+Await and delegation expressions consume completion values; forwarded yields
+remain separate. A delegated element has a typed projected source identity so it
+cannot alias the same expression's completion. Await drives the iterator returned
+by `__await__` directly, as in
+[CPython's awaitable admission](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/genobject.c#L951-L1004).
+Async context methods are called before awaiting their result; an ordinary
+function returning an awaitable is valid under
+[PEP 492](https://peps.python.org/pep-0492/#asynchronous-context-managers-and-async-with).
+Arbitrary custom iterator exception payloads are not exact completion facts;
+their actual opaque escapes retain conservative source availability.
+
+Generator-expression kind is a syntactic property of its own code scope, as in
+[CPython's symbol table](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Python/symtable.c#L2417-L2485).
+An await in a dead branch of that scope still marks it asynchronous; an await
+only in the outermost iterable belongs to the enclosing scope. Reuse cached
+lexical facts rather than deriving the code kind from optimized effects.
+
+Execution regions retain evaluation order and the sync/async context entry,
+exit and unpack phases needed for import discovery. They do not store exception
+handler provenance. The binding authority's `PythonCompletionFlow` independently
+owns real completion/reachability semantics; removing a source lint does not
+remove that analysis. Context protocol behavior follows
+[PEP 343](https://peps.python.org/pep-0343/), with suspension and close governed by
+[PEP 342](https://peps.python.org/pep-0342/).
+
+Candidate/demand activation joins process newly added candidates or demands;
+a dependency wake does not replay the full historical Cartesian product. A
+candidate/demand relation may itself be a product, and namespace resolution has
+its own work; this is not a global linear-complexity claim.
+An unadmitted module retains its waiting values until admission. Subsequent
+deferred-body receipts do not wake all previously admitted module values:
+changed facts wake their registered users. Source-value summaries are published
+by the module scan rather than repeated with each deferred body.
+
 The persisted scan contains only source-pure requests: unexpanded imports,
-star-package names, dynamic-relative facts, and unevaluated loader/runpy paths.
+star-package names, dynamic-relative facts, source values/demands, and
+unevaluated loader/runpy paths. Intrinsic classification metadata references the
+same source-request cache record; it does not persist another import-site copy.
+The decoder validates every nested collection's declared list/row shape before
+accepting it. An empty object or string cannot erase sites, namespace members,
+base origins, attribute origins, or call/return relations. Invalid source records
+regenerate from captured source; no completed custody verdict is cached.
+Package `__all__` facts distinguish absent, known, unknown and incomplete source.
+A module attribute hook prevents a proof of absent `__all__`; it may supply the
+attribute at import time. A read or parse failure is not an empty export set. Statement and literal dynamic
+star imports use the same completion, and existing declared package children
+remain dependencies. Unknown/incomplete exports remain explicit obligations.
+
+This follows [PEP 562](https://peps.python.org/pep-0562/): a module attribute
+hook may supply a missing attribute, while direct global lookup bypasses the
+hook. The worklist uses monotone joins, as described by
+[MLIR data-flow analysis](https://mlir.llvm.org/docs/Tutorials/DataFlowAnalysis/);
+unknown information cannot be treated as an empty or proven-absent value.
+Source summaries establish discovery obligations, not target
+execution qualification. Unknown calls that can reach mutable module globals
+still conservatively expose namespace members; tighter effects and cold/warm
+consumer costs remain part of the owning convergence work.
 One completion step resolves current package exports, children, loader targets,
 directory entry points, ordered roots, and stdlib policy. Path operations remain
 ordered requests, so resolving a symlink before joining a parent segment is
@@ -71,6 +195,11 @@ Wrapper run/deploy commands resolve a fresh entry snapshot and target parse for
 each operation. A resolved entry is not a process-lifetime source cache: changing
 the file does not refresh its retained AST, and reusing that admission after
 mutation must fail the strict precomputed-scan content check.
+Even a matching precomputed premise retains a captured byte generation through
+the operation's final content fence. Explicit supplied source or AST takes
+precedence over a precomputed disk projection. Source-slice generation transfer
+uses current graph authority after validating the slice's source/root custody;
+an earlier slice receipt cannot erase a subsequently widened namespace premise.
 
 Wrapper cache publication retains the complete pre-build input payload and key.
 Its entry fences resolve the original selector with the child's explicit
@@ -120,8 +249,11 @@ operation still resolves missing members, namespaces, and package shadows live.
 Git clean-scope results and WASM tool digests cannot outlive that operation:
 process-wide caching would otherwise conceal edits from later builds.
 
-Precomputed records carry both imports and source-execution edges, with source
-content, target, mode, and capability identity. Selected native helper slices are
+Precomputed records retain source requests with source content, target, mode,
+and capability identity. Every reuse recompletes package exports and filesystem
+edges in the current operation; a valid entry digest is not authority for stale
+package topology. Native-artifact-owned exclusions keep their explicit source
+execution roots without reinterpreting their implementation as Python source. Selected native helper slices are
 scanned from their emitted generated source. Unsliced initialization scans remain
 initialization scans. A previously admitted real source is not silently replaced
 by a narrower helper slice.
@@ -155,3 +287,77 @@ Package roles come from exact admitted or precomputed source authority when
 present; generated filenames never redefine that role.
 Native-artifact package support parsing and collection use the artifact admission
 request's selected Python target.
+
+## What source inventory establishes
+
+Source inventory describes candidates, explicit uncertainty and ownership. It
+cannot infer that every candidate import must succeed, or decide whether
+catching an exception violates an API contract. Retained IR, generated
+intrinsic target/profile availability and the linker establish required runtime
+symbols. The admitted import plan and finite source-backed runtime catalog
+establish module custody. Neither exception syntax nor a capability grant
+establishes either fact.
+
+Compiled Python algorithms are supported implementation owners. CPython's pinned
+[heapq](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Lib/heapq.py#L581-L597),
+[bisect](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Lib/bisect.py#L102-L108)
+and [JSON decoder](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Lib/json/decoder.py#L5-L8)
+select optional accelerators with Python exception handling. Compiling the
+surviving algorithm is compatible with Molt's
+[execution boundary](../spec/areas/compat/contracts/cpython_bridge_policy.md).
+An intentionally absent closed-world module may raise the proper Python
+exception; admitted compiled code may catch it. Unknown import custody remains
+explicit and requires the existing admission boundary. Source status, candidate
+closure and a full-coverage manifest do not qualify target behavior.
+
+The audit therefore has no guarded-import or JSON pass-handler veto, and source
+requests carry no handler/effect rows or call-owner fields used only by those
+vetoes. Cache schema changes reject replaced records; current-schema records
+also reject retired fields. Intrinsic-read classification, missing/unread
+requirements, union coverage, collisions, ratchets and full-coverage manifest
+checks retain their existing owners. Do not build a contextual heap interpreter
+or a provider-obligation registry solely to reproduce the deleted lint.
+
+## Activation semantics and qualification
+
+Function objects and code objects have separate identities. The runtime's
+`CodeCallableIdentity` in
+[`object/layout.rs`](../../runtime/molt-runtime/src/object/layout.rs) describes
+executable entry and physical call ABI. Construction in
+[`function_abi.rs`](../../runtime/molt-runtime/src/builtins/functions/function_abi.rs)
+validates code, globals and closure before publication; frames retain globals
+and separately captured builtins. Code replacement in
+[`attributes/mutation.rs`](../../runtime/molt-runtime/src/builtins/attributes/mutation.rs)
+preserves the function's activation namespace and compatible closure.
+
+CPython's pinned
+[`PyFunction_NewWithQualName`, `func_new_impl`, `func_set_code`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/funcobject.c)
+and
+[`LOAD_GLOBAL`](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Python/bytecodes.c#L1220-L1268)
+are the reference. Globals remain live mappings. A function captures the
+builtins mapping object: replacing `globals['__builtins__']` does not retarget
+it, while mutation of the captured mapping remains observable. Dictionary
+subclasses and closure-cell order require their actual mapping/positional
+semantics; module publication unions are not point-sensitive heap facts.
+
+Eight reconstructed-function cases remain native/WASM qualification obligations:
+explicit globals, dictionary-subclass lookup, helper-returned callable,
+same code under two globals, nested def, nested lambda, compatible code
+replacement retaining globals and a nonempty closure, and captured builtins.
+Their existing CPython observations, propagating counterparts and code-read-only
+controls are retained in `tests/test_check_stdlib_intrinsics.py`. Source inventory
+success does not establish their runtime behavior. Existing runtime differentials
+`tests/differential/basic/globals_callable.py` and
+`tests/differential/basic/closure_cell_protocol.py` own the overlapping execution
+families; qualify exact source/backend/profile cells before closing the finding.
+
+JSON exception behavior belongs to public API differential tests, including
+malformed data and user hooks that raise. Exact exception identity, callback
+order, one invocation and absence of retry/silent success are observable
+obligations; a `pass` statement or `_MOLT_*` spelling is not their oracle.
+
+All source scanning, cache validation and these policy tools run on the
+compiler/development side. They add no exception-provenance table or analysis
+work to emitted programs. Measure compiler latency and retained memory when
+changing this analysis, and qualify guest performance separately through
+[`tools/PERF_AUTHORITY.md`](../../tools/PERF_AUTHORITY.md).

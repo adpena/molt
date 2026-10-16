@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 import inspect
 from pathlib import Path
@@ -9,7 +11,7 @@ import pytest
 import molt.cli as cli
 from molt.cli import module_graph
 from molt.cli import module_import_scanner
-from molt.cli.models import _StaticSourceExecutionRequest
+from molt.compiler_analysis.python_imports import _StaticSourceExecutionRequest
 from molt.compiler_analysis import python_binding_flow, python_source_keys
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 from molt.target_python import TargetPythonVersion
@@ -67,9 +69,41 @@ _MODULE_IMPORT_SCANNER_DEFINITIONS = (
 )
 
 
+_SOURCE_IMPORT_NAMES = (
+    "_DynamicRelativeImportDiscovery",
+    "_IMPORT_SCAN_MODES",
+    "_StaticImportCallPayload",
+    "_collect_import_scan_requests",
+    "_collect_import_star_modules",
+    "_collect_imports",
+    "_collect_imports_for_graph",
+    "_collect_static_source_execution_requests",
+    "_full_static_scan_nodes",
+    "_module_import_scan_mode",
+    "_module_init_scan_nodes",
+    "_scan_nodes_for_import_mode",
+    "_sealed_import_modules",
+    "_source_body",
+    "_source_expression_result",
+    "_source_may_use_static_source_execution",
+    "_source_parameter_bindings",
+    "_static_module_all_exports",
+    "_static_scan_nodes",
+    "_static_string_sequence",
+    "_validate_import_scan_mode",
+)
+
+
 def test_cli_module_import_scanner_authority_is_single_home() -> None:
     for name in _MODULE_IMPORT_SCANNER_NAMES:
-        assert hasattr(module_import_scanner, name)
+        owner = (
+            _source_import_scan
+            if name in _SOURCE_IMPORT_NAMES
+            else module_import_scanner
+        )
+        assert hasattr(owner, name)
+        if owner is _source_import_scan:
+            assert name not in vars(module_import_scanner)
         assert not hasattr(module_graph, name)
         assert not hasattr(cli, name)
 
@@ -87,7 +121,7 @@ def test_default_argument_dunder_import_helper_is_in_static_closure() -> None:
         "load('pkg.leaf')\n"
     )
 
-    assert "pkg.leaf" in module_import_scanner._collect_imports(tree)
+    assert "pkg.leaf" in _source_import_scan._collect_imports(tree)
 
 
 def test_direct_synthetic_scans_retain_digest_fallback(
@@ -109,9 +143,9 @@ def test_direct_synthetic_scans_retain_digest_fallback(
         return digest(candidate)
 
     monkeypatch.setattr(python_source_keys, "python_ast_digest", record_digest)
-    assert "pkg" in module_import_scanner._collect_imports(tree)
-    assert module_import_scanner._collect_import_star_modules(tree) == ("pkg",)
-    assert module_import_scanner._collect_static_source_execution_requests(
+    assert "pkg" in _source_import_scan._collect_imports(tree)
+    assert _source_import_scan._collect_import_star_modules(tree) == ("pkg",)
+    assert _source_import_scan._collect_static_source_execution_requests(
         tree, source_path=tmp_path / "entry.py"
     ) == (_StaticSourceExecutionRequest("loaded", "loaded.py"),)
     assert calls == 3
@@ -124,12 +158,12 @@ def test_static_scan_uses_selected_target_annotation_policy() -> None:
         "from . import *\n"
     )
 
-    eager = module_import_scanner._collect_import_star_modules(
+    eager = _source_import_scan._collect_import_star_modules(
         tree,
         module_name="pkg.entry",
         target_python=TargetPythonVersion(3, 13, 0),
     )
-    deferred = module_import_scanner._collect_import_star_modules(
+    deferred = _source_import_scan._collect_import_star_modules(
         tree,
         module_name="pkg.entry",
         target_python=TargetPythonVersion(3, 14, 0),
@@ -146,7 +180,7 @@ def test_iterating_a_constant_display_keeps_relative_imports_static(
     iterable: str,
 ) -> None:
     tree = ast.parse(f"for ta in {iterable}:\n    pass\nfrom . import lib\n")
-    assert "pkg.lib" in module_import_scanner._collect_imports(
+    assert "pkg.lib" in _source_import_scan._collect_imports(
         tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
     )
 
@@ -166,7 +200,7 @@ def test_constant_iteration_does_not_erase_body_callback_custody() -> None:
         "from . import lib\n"
     )
     with pytest.raises(UnresolvedStaticImportError):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             static, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )
 
@@ -176,7 +210,7 @@ def test_constant_iteration_does_not_erase_body_callback_custody() -> None:
         "from . import lib\n"
     )
     try:
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             dynamic, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )
     except UnresolvedStaticImportError:
@@ -195,7 +229,7 @@ def test_iterating_a_name_bound_to_a_constant_display_stays_static() -> None:
         "    pass\n"
         "from . import umath\n"
     )
-    assert "pkg.umath" in module_import_scanner._collect_imports(
+    assert "pkg.umath" in _source_import_scan._collect_imports(
         tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
     )
 
@@ -206,11 +240,11 @@ def test_static_and_context_scans_share_one_binding_fixpoint(
     flow = python_binding_flow
     monkeypatch.setattr(flow, "_CORE_CACHE", flow._BindingCache())
     tree = ast.parse("if True:\n    from . import child\n")
-    module_import_scanner._static_scan_nodes(tree, include_function_bodies=False)
+    _source_import_scan._static_scan_nodes(tree, include_function_bodies=False)
     core = next(iter(flow._CORE_CACHE._ready.values()))
     assert not core.projections._ready
     for name in ("first", "second"):
-        assert f"{name}.child" in module_import_scanner._collect_imports(
+        assert f"{name}.child" in _source_import_scan._collect_imports(
             tree, module_name=name, is_package=True, import_scan_mode="module_init"
         )
     assert flow.python_binding_core_computations() == 1
@@ -238,7 +272,7 @@ def test_builtin_binding_does_not_survive_unknown_callbacks() -> None:
         "from . import umath\n"
     )
     with pytest.raises(UnresolvedStaticImportError):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             static, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )
 
@@ -250,7 +284,7 @@ def test_builtin_binding_does_not_survive_unknown_callbacks() -> None:
         "from . import umath\n"
     )
     try:
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             rebound, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )
     except UnresolvedStaticImportError:
@@ -281,7 +315,7 @@ def test_callback_bearing_finally_retains_runtime_import_custody() -> None:
         "from . import umath\n"
     )
     with pytest.raises(UnresolvedStaticImportError):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )
 
@@ -297,10 +331,10 @@ def test_prior_import_requires_custody_even_when_its_handler_raises() -> None:
         "from . import umath\n"
     )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
     )
     assert "pkg.multiarray" in projection.imports
@@ -316,7 +350,7 @@ def test_prior_import_requires_custody_even_when_its_handler_raises() -> None:
         "from . import umath\n"
     )
     try:
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             falls_through,
             module_name="pkg",
             is_package=True,
@@ -333,7 +367,7 @@ def test_rebound_package_path_is_not_builtin_iteration_provenance() -> None:
         "__path__ = discover()\nfor path in __path__:\n    pass\nfrom . import child\n"
     )
     with pytest.raises(UnresolvedStaticImportError):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )
 
@@ -354,6 +388,6 @@ def test_callback_can_replace_a_previously_builtin_iterable() -> None:
         "from . import child\n"
     )
     with pytest.raises(UnresolvedStaticImportError):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree, module_name="pkg", is_package=True, import_scan_mode="module_init"
         )

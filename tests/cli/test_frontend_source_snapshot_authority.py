@@ -1,4 +1,9 @@
 from __future__ import annotations
+from molt.compiler_analysis.python_imports import (
+    _ImportScanRequests,
+    _StaticSourceExecutionRequest,
+)
+from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
 import os
@@ -13,14 +18,12 @@ import pytest
 from molt.cli import cache_fingerprints as fingerprints
 from molt.cli import module_graph_cache as scans
 from molt.cli import module_cache
-from molt.cli import module_import_scanner
 from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_resolution
 from molt.cli import module_graph
 from molt.cli import python_source_closure as source_closure
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.models import (
-    _ImportScanRequests,
     ImportScanMode,
     _CompleteImportScan,
     _ImportAdmissionPolicy,
@@ -429,7 +432,7 @@ def test_cold_discovery_produces_complete_scan_once(
     assert counts == {"reads": 1, "writes": 1}
 
 
-def test_complete_cold_scan_hashes_one_exact_ast_generation(
+def test_complete_cold_scan_hashes_each_source_generation_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, compiler_sources: Path
 ) -> None:
     package = tmp_path / "pkg"
@@ -469,7 +472,14 @@ def test_complete_cold_scan_hashes_one_exact_ast_generation(
 
     assert "pkg.child" in loaded.scan.imports
     assert loaded.scan.source_executions == (("loaded", executed.resolve()),)
-    assert len(digested_trees) == 1
+    # Completion proves current exports from a distinct package generation.
+    # Both actual inputs are hashed once; re-hashing either must fail this test.
+    from collections import Counter
+
+    assert Counter(ast.dump(tree) for tree in digested_trees) == Counter(
+        ast.dump(ast.parse(path.read_text(encoding="utf-8")))
+        for path in (source, package / "__init__.py")
+    )
 
 
 def test_malformed_execution_projection_rejects_entire_scan(
@@ -623,7 +633,7 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
     ):
         monkeypatch.setattr(scans, name, forbidden)
     for name in ("_collect_imports", "_collect_static_source_execution_requests"):
-        monkeypatch.setattr(module_import_scanner, name, forbidden)
+        monkeypatch.setattr(_source_import_scan, name, forbidden)
     monkeypatch.setattr(cache, "read_module_source", forbidden)
     monkeypatch.setattr(cache, "parse_module_ast", forbidden)
     load_scan = discovery._load_module_import_scan
@@ -653,7 +663,13 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
                 snapshot=PythonSourceSnapshot.capture(owner),
                 module_name="owner",
                 import_scan_mode="full",
-                scan=_CompleteImportScan((), (("target", target),)),
+                scan=_CompleteImportScan(
+                    _ImportScanRequests(
+                        (), (_StaticSourceExecutionRequest("target", str(target)),)
+                    ),
+                    (),
+                    (("target", target),),
+                ),
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
             ),
             target: discovery._bind_precomputed_module_import_scan(
@@ -661,7 +677,7 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
                 snapshot=PythonSourceSnapshot.capture(target),
                 module_name="target",
                 import_scan_mode="module_init",
-                scan=_CompleteImportScan((), ()),
+                scan=_CompleteImportScan(_ImportScanRequests((), ()), (), ()),
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
             ),
         },

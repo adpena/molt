@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
+
+from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 import builtins as py_builtins
 import contextlib
 import hashlib
@@ -79,8 +83,10 @@ from molt.cli.models import (
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
     _FrontendWorkerResourceDecision,
-    _ImportScanRequests,
     _StagedExternalPackageNativeArtifact,
+)
+from molt.compiler_analysis.python_imports import (
+    _ImportScanRequests,
     _StaticSourceExecutionRequest,
 )
 from molt.cli.native_link_plan import resolve_native_target_spec
@@ -1406,7 +1412,7 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     selected_target = TargetPythonVersion(3, target_minor, 0)
     collected_targets: list[TargetPythonVersion] = []
     parsed_targets: list[TargetPythonVersion] = []
-    original_collect = cli_module_import_scanner._collect_imports
+    original_collect = _source_import_scan._collect_imports
     original_parse = cli_external_native._parse_source_for_target
 
     def collect_selected(*args, target_python, **kwargs):
@@ -1417,7 +1423,7 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
         parsed_targets.append(target_python)
         return original_parse(*args, target_python=target_python, **kwargs)
 
-    monkeypatch.setattr(cli_module_import_scanner, "_collect_imports", collect_selected)
+    monkeypatch.setattr(_source_import_scan, "_collect_imports", collect_selected)
     monkeypatch.setattr(cli_external_native, "_parse_source_for_target", parse_selected)
     external_root = tmp_path / "site"
     # The runtime-imported package-internal submodule has NO Python importer.
@@ -11389,8 +11395,8 @@ def test_collect_imports_module_init_scan_skips_function_body_imports() -> None:
     tree = ast.parse(
         "import os\ndef f() -> None:\n    import warnings\nclass C:\n    import re\n"
     )
-    full = cli_module_import_scanner._collect_imports(tree)
-    module_init = cli_module_import_scanner._collect_imports(
+    full = _source_import_scan._collect_imports(tree)
+    module_init = _source_import_scan._collect_imports(
         tree, import_scan_mode="module_init"
     )
     assert "warnings" in full
@@ -11411,7 +11417,7 @@ def test_collect_imports_prunes_type_checking_branches() -> None:
     )
 
     for mode in ("full", "module_init"):
-        imports = cli_module_import_scanner._collect_imports(
+        imports = _source_import_scan._collect_imports(
             tree, import_scan_mode=cast(Any, mode)
         )
         assert "os" in imports
@@ -11433,7 +11439,7 @@ def test_collect_imports_prunes_boolean_static_guard_branches() -> None:
     )
 
     imports = set(
-        cli_module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree,
             module_name="pkg",
             import_scan_mode="module_init",
@@ -11460,7 +11466,7 @@ def test_collect_imports_prunes_type_checking_alias_branches() -> None:
     )
 
     for mode in ("full", "module_init"):
-        imports = cli_module_import_scanner._collect_imports(
+        imports = _source_import_scan._collect_imports(
             tree, import_scan_mode=cast(Any, mode)
         )
         assert "os" in imports
@@ -11480,7 +11486,7 @@ def test_collect_imports_type_checking_alias_rebind_stops_pruning() -> None:
         "    import warnings\n"
     )
 
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
 
     assert "typing" in imports
     assert "typing.TYPE_CHECKING" in imports
@@ -11490,7 +11496,7 @@ def test_collect_imports_type_checking_alias_rebind_stops_pruning() -> None:
 def test_molt_os_module_init_retains_reentrant_type_checking_branch() -> None:
     tree = ast.parse((ROOT / "src/molt/stdlib/os.py").read_text(encoding="utf-8"))
 
-    imports = cli_module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         tree,
         module_name="os",
         import_scan_mode="module_init",
@@ -11522,7 +11528,7 @@ def test_collect_imports_resolves_module_constant_via_helper_call() -> None:
         "    return importlib.import_module(module_name)\n"
         "_probe(MODULE_NAME)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "_socket" in imports
 
 
@@ -11534,9 +11540,7 @@ def test_collect_imports_module_init_scan_resolves_top_level_helper_call() -> No
         "    return importlib.import_module(module_name)\n"
         "_probe(MODULE_NAME)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(
-        tree, import_scan_mode="module_init"
-    )
+    imports = _source_import_scan._collect_imports(tree, import_scan_mode="module_init")
     assert "_socket" in imports
 
 
@@ -11548,7 +11552,7 @@ def test_collect_imports_resolves_helper_call_nested_in_expression() -> None:
         "    return importlib.import_module(module_name)\n"
         "print(_probe(MODULE_NAME))\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "_socket" in imports
 
 
@@ -11556,7 +11560,7 @@ def test_collect_imports_resolves_name_argument_for_import_module() -> None:
     tree = ast.parse(
         "import importlib\nTARGET = 'pathlib'\nimportlib.import_module(TARGET)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" in imports
 
 
@@ -11571,7 +11575,7 @@ def test_collect_imports_resolves_canonical_importlib_wrapper() -> None:
         "_bootstrap_external = load('importlib._bootstrap_external')\n"
     )
 
-    imports = cli_module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         tree,
         module_name="importlib",
         is_package=True,
@@ -11592,7 +11596,7 @@ def test_collect_imports_resolves_canonical_relative_importlib_wrapper() -> None
         "value = load('.machinery', package='importlib')\n"
     )
 
-    imports = cli_module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         tree,
         module_name="importlib",
         is_package=True,
@@ -11610,7 +11614,7 @@ def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> No
         importlib_init.read_text(encoding="utf-8"), filename=str(importlib_init)
     )
 
-    imports = cli_module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         tree,
         module_name="importlib",
         is_package=True,
@@ -11627,7 +11631,7 @@ def test_collect_imports_resolves_aliased_importlib_import_module() -> None:
     tree = ast.parse(
         "import importlib as loader\nTARGET = 'pathlib'\nloader.import_module(TARGET)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" in imports
 
 
@@ -11637,7 +11641,7 @@ def test_collect_imports_resolves_from_import_import_module_alias() -> None:
         "TARGET = 'pathlib'\n"
         "load_module(TARGET)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" in imports
 
 
@@ -11645,7 +11649,7 @@ def test_collect_imports_does_not_resolve_future_importlib_alias() -> None:
     tree = ast.parse(
         "TARGET = 'pathlib'\nloader.import_module(TARGET)\nimport importlib as loader\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" not in imports
 
 
@@ -11658,7 +11662,7 @@ def test_collect_imports_importlib_rebinding_blocks_static_resolution() -> None:
         "importlib.import_module = fake\n"
         "importlib.import_module(TARGET)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" not in imports
 
 
@@ -11669,7 +11673,7 @@ def test_collect_imports_function_local_importlib_alias_does_not_leak() -> None:
         "TARGET = 'pathlib'\n"
         "loader.import_module(TARGET)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" not in imports
 
 
@@ -11683,7 +11687,7 @@ def test_collect_imports_function_local_rebinding_does_not_poison_module_alias()
         "    importlib.import_module = lambda name: None\n"
         "importlib.import_module(TARGET)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" in imports
 
 
@@ -11693,7 +11697,7 @@ def test_collect_imports_resolves_importlib_rhs_before_alias_rebind() -> None:
         "TARGET = 'pathlib'\n"
         "importlib = importlib.import_module(TARGET)\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "pathlib" in imports
 
 
@@ -11743,7 +11747,7 @@ def test_collect_static_source_execution_preserves_loader_name_and_path(
         "importlib.util.spec_from_file_location('loaded_name', path)\n"
     )
 
-    requests = cli_module_import_scanner._collect_static_source_execution_requests(
+    requests = _source_import_scan._collect_static_source_execution_requests(
         tree, source_path=entry
     )
     assert requests == (_StaticSourceExecutionRequest("loaded_name", str(target)),)
@@ -11814,7 +11818,7 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
         "_load(('ma', 'th'))\n"
         "_load(('sy', 's'))\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(tree)
     assert "math" in imports
     assert "sys" in imports
 
@@ -11834,7 +11838,7 @@ def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
 
     admission = _PythonAstDigestAdmission(tree)
     # Populate immutable lexical facts once before repeated projections.
-    cli_module_import_scanner._collect_imports(tree, ast_digest_admission=admission)
+    _source_import_scan._collect_imports(tree, ast_digest_admission=admission)
     module_tree_walks = 0
     original_walk = cli_module_import_scanner.ast.walk
 
@@ -11846,9 +11850,7 @@ def test_collect_imports_avoids_module_tree_walk_for_invalidated_nested_scan(
 
     monkeypatch.setattr(cli_module_import_scanner.ast, "walk", wrapped_walk)
 
-    imports = cli_module_import_scanner._collect_imports(
-        tree, ast_digest_admission=admission
-    )
+    imports = _source_import_scan._collect_imports(tree, ast_digest_admission=admission)
     uses_runtime_import_protocol = (
         cli_module_import_scanner._tree_uses_runtime_import_protocol(
             tree,
@@ -13528,7 +13530,7 @@ def test_shared_module_resolution_cache_reuses_graph_import_scans(
     stdlib_allowlist = cli_module_stdlib_policy._stdlib_allowlist()
 
     collect_calls = 0
-    original_collect = cli_module_import_scanner._collect_imports
+    original_collect = _source_import_scan._collect_imports
 
     def wrapped_collect(
         *args: object,
@@ -13539,7 +13541,7 @@ def test_shared_module_resolution_cache_reuses_graph_import_scans(
         collect_calls += 1
         return original_collect(*args, target_python=target_python, **kwargs)
 
-    monkeypatch.setattr(cli_module_import_scanner, "_collect_imports", wrapped_collect)
+    monkeypatch.setattr(_source_import_scan, "_collect_imports", wrapped_collect)
     monkeypatch.setattr(
         cli_module_graph_cache,
         "_read_persisted_import_scan_record",
@@ -13564,14 +13566,14 @@ def test_shared_module_resolution_cache_reuses_graph_import_scans(
         tree = cache.parse_module_ast(
             module_path, source, filename=str(module_path)
         ).tree
-        import_scan_mode = cli_module_import_scanner._module_import_scan_mode(
+        import_scan_mode = _source_import_scan._module_import_scan_mode(
             module_name=module_name,
             full_scan=cache.resolved_path(module_path) == cache.resolved_path(entry),
         )
         cache.collect_graph_imports(
             module_path,
             tree,
-            collector=cli_module_import_scanner._collect_imports_for_graph,
+            collector=_source_import_scan._collect_imports_for_graph,
             module_name=module_name,
             is_package=module_path.name == "__init__.py",
             import_scan_mode=import_scan_mode,
@@ -13611,7 +13613,7 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
         raise AssertionError("warm source requests must not be re-extracted")
 
     monkeypatch.setattr(
-        cli_module_import_scanner, "_collect_import_scan_requests", fail_requests
+        _source_import_scan, "_collect_import_scan_requests", fail_requests
     )
 
     discovery_result = cli_module_graph_discovery._discover_module_graph(
@@ -13934,15 +13936,13 @@ def test_warm_source_requests_resolve_new_higher_priority_module(
     new_dependency = higher / "dependency.py"
     new_dependency.write_text("VALUE = 2\n", encoding="utf-8")
     requested: list[Path] = []
-    collect = cli_module_import_scanner._collect_import_scan_requests
+    collect = _source_import_scan._collect_import_scan_requests
 
     def record(*args: Any, **kwargs: Any):
         requested.append(kwargs["source_path"])
         return collect(*args, **kwargs)
 
-    monkeypatch.setattr(
-        cli_module_import_scanner, "_collect_import_scan_requests", record
-    )
+    monkeypatch.setattr(_source_import_scan, "_collect_import_scan_requests", record)
     second = discover()
     assert second.graph["dependency"] == new_dependency
     assert "dependency" in second.explicit_imports
@@ -13987,7 +13987,9 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
             entry,
             module_name="main",
             import_scan_mode="full",
-            scan=_CompleteImportScan(("pkg.helper",), ()),
+            scan=_CompleteImportScan(
+                _ImportScanRequests(("pkg.helper",), ()), ("pkg.helper",), ()
+            ),
             snapshot=cli_module_source.PythonSourceSnapshot.capture(entry),
             target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         ),
@@ -15451,7 +15453,7 @@ def test_load_module_imports_reuses_persisted_cache(
         raise AssertionError("unexpected import scan")
 
     monkeypatch.setattr(
-        cli_module_import_scanner, "_collect_import_scan_requests", fail_collect
+        _source_import_scan, "_collect_import_scan_requests", fail_collect
     )
     cached_imports = cli_module_graph_discovery._load_module_import_scan(
         module_path,
@@ -19151,7 +19153,7 @@ def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> No
 def test_typing_module_init_imports_collections_abc_without_warnings_regex() -> None:
     tree = ast.parse((ROOT / "src/molt/stdlib/typing.py").read_text(encoding="utf-8"))
 
-    imports = cli_module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         tree,
         module_name="typing",
         import_scan_mode="module_init",
@@ -19222,13 +19224,13 @@ def test_source_owned_stdlib_body_scan_retains_exact_deferred_imports(
             for node in owner.body
             if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name == name
         )
-    initial = cli_module_import_scanner._collect_imports_for_graph(
+    initial = _source_import_scan._collect_imports_for_graph(
         tree,
         module_name=module_name,
         is_package=relative_path.endswith("__init__.py"),
         import_scan_mode="module_init",
     )
-    body = cli_module_import_scanner._collect_imports_for_graph(
+    body = _source_import_scan._collect_imports_for_graph(
         tree,
         module_name=module_name,
         is_package=relative_path.endswith("__init__.py"),
@@ -19263,7 +19265,7 @@ def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
         if not path.exists():
             path = stdlib_root.joinpath(*module_name.split("."), "__init__.py")
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        projection = cli_module_import_scanner._collect_imports_for_graph(
+        projection = _source_import_scan._collect_imports_for_graph(
             tree,
             module_name=module_name,
             is_package=path.name == "__init__.py",
@@ -19281,10 +19283,10 @@ def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
                 in projection.dynamic_relative_import_candidates
             )
             with pytest.raises(
-                cli_module_import_scanner.UnresolvedStaticImportError,
+                UnresolvedStaticImportError,
                 match="requires explicit runtime import custody",
             ):
-                cli_module_import_scanner._collect_imports(
+                _source_import_scan._collect_imports(
                     tree,
                     module_name=module_name,
                     is_package=True,
@@ -32639,9 +32641,7 @@ def test_expression_result_reachability_preserves_condition_imports(
         f"if {condition}:\n    import selected_true\nelse:\n    import selected_false\n"
     )
     for mode in ("full", "module_init"):
-        imports = cli_module_import_scanner._collect_imports(
-            tree, import_scan_mode=mode
-        )
+        imports = _source_import_scan._collect_imports(tree, import_scan_mode=mode)
         assert ("selected_true" in imports) is live
         assert ("selected_false" in imports) is not live
         if "condition_pkg" in condition:
@@ -32654,7 +32654,7 @@ def test_type_checking_from_import_retains_runtime_closure(module: str, mode: st
     tree = ast.parse(
         f"from {module} import TYPE_CHECKING\nif TYPE_CHECKING:\n    import dead\n"
     )
-    imports = cli_module_import_scanner._collect_imports(tree, import_scan_mode=mode)
+    imports = _source_import_scan._collect_imports(tree, import_scan_mode=mode)
     assert module in imports
     assert "dead" not in imports
 

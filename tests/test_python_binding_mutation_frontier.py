@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.python_shape_test_support import has_unknown_shape
+
 import ast
 from itertools import product
 
@@ -20,20 +22,6 @@ from molt.compiler_analysis.static_truth import (
 )
 
 INERT = int(PythonIdentity.INERT_VALUE)
-
-
-def _has_unknown_shape(result: StaticExpressionResult) -> bool:
-    # Provenance is orthogonal to shape; preserve all prior shape/lifetime checks.
-    from dataclasses import replace
-
-    return (
-        replace(
-            result,
-            identities=UNKNOWN_EXPRESSION_RESULT.identities,
-            exposes_module_globals=False,
-        )
-        == UNKNOWN_EXPRESSION_RESULT
-    )
 
 
 def _shapes() -> tuple[StaticExpressionResult, ...]:
@@ -417,7 +405,7 @@ def test_owner_comparison_and_resolution_follow_late_domain_growth() -> None:
     assert not pool._binding_resolution(exposed, 0).clean
     assert pool._binding_resolution(exposed, 0).owner_token == 7
     assert pool.owner_token(exposed, 0) == 0
-    assert _has_unknown_shape(pool.result(exposed, 0))
+    assert has_unknown_shape(pool.result(exposed, 0))
     assert pool.binding(exposed, 4096) == UNBOUND_IDENTITY | OTHER_IDENTITY
     assert not pool.owner_tokens_equal(base, exposed)
     rebound = pool.set_binding(exposed, 0, OTHER_IDENTITY, result=result, owner_token=7)

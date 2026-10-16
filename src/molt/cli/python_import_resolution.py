@@ -44,6 +44,20 @@ from molt.compiler_analysis.python_lexical_scope import python_eager_nodes
 _BYTECODE_CACHE_DIR = "__pycache__"
 
 
+def python_package_child_names(init: Path) -> frozenset[str]:
+    """All names an import can bind on a package, independent of reachability."""
+    names: set[str] = set()
+    try:
+        with os.scandir(init.parent) as entries:
+            for entry in entries:
+                name = entry.name if entry.is_dir() else entry.name.partition(".")[0]
+                if name.isidentifier() and name != "__init__":
+                    names.add(name)
+    except OSError as exc:
+        raise ValueError(f"cannot list Python package {init.parent}: {exc}") from exc
+    return frozenset(names)
+
+
 @dataclass(frozen=True)
 class PythonImportPolicy:
     """Resolution policy for one import-closure consumer.

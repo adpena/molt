@@ -58,22 +58,34 @@ def test_intrinsic_source_cache_reuses_analysis_but_resolves_facade_children_liv
 
     first = classify()
     assert first.statuses["_facade"] == stdlib_intrinsic_policy.STATUS_INTRINSIC_SUPPORT
+    analyzed = []
+    original = stdlib_intrinsic_policy.stdlib_module_intrinsic_facts
+
+    def record(module, *args, **kwargs):
+        analyzed.append(module)
+        return original(module, *args, **kwargs)
+
     monkeypatch.setattr(
-        stdlib_intrinsic_policy,
-        "stdlib_module_intrinsic_facts",
-        lambda *_a, **_kw: pytest.fail("unchanged source was analyzed again"),
+        stdlib_intrinsic_policy, "stdlib_module_intrinsic_facts", record
     )
     assert classify() == first
+    assert not analyzed
     # This real child is a new graph fact; a cached resolved closure would
     # incorrectly keep accepting the facade through its intrinsic owner alone.
     graph["owner.Value"] = tmp_path / "Value.so"
     changed = classify()
+    # Importing a new child writes the parent's namespace. Its changed premise
+    # must invalidate the owning fact even though the source bytes are stable.
+    assert analyzed == ["owner"]
     assert changed.statuses["_facade"] == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     assert changed.import_evidence["_facade"].facade.owners == frozenset(
         {"owner", "owner.Value"}
     )
     del graph["owner.Value"]
     assert classify() == first
+    # Intrinsic metadata retains one current premise; returning to an older
+    # graph must rebuild its projection rather than reuse the changed one.
+    assert analyzed == ["owner", "owner"]
 
 
 def test_intrinsic_source_cache_checks_bytes_with_restored_mtime(
@@ -150,12 +162,11 @@ def test_intrinsic_source_cache_separates_module_target_and_compiler(
     "corruption",
     [
         "status",
-        "modules",
+        "sites",
         "private_imports",
         "used",
         "unread",
         "discarded",
-        "unresolved",
         "facade",
     ],
 )
@@ -167,7 +178,12 @@ def test_intrinsic_source_cache_recomputes_malformed_payload(
     first = provider("owner", path)
     [cache] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
     payload = json.loads(cache.read_text(encoding="utf-8"))
-    payload["facts"][corruption] = {"poison": True}
+    if corruption == "sites":
+        cache = cache.with_name(cache.name.replace(".intrinsic.json", ".json"))
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+        payload["source_sites"] = {"poison": True}
+    else:
+        payload["facts"][corruption] = {"poison": True}
     cache.write_text(json.dumps(payload), encoding="utf-8")
     assert provider("owner", path) == first
 
@@ -565,8 +581,13 @@ def test_intrinsic_status_never_consumes_unsealed_relative_candidates(tmp_path, 
     wrapper = _write_module(
         tmp_path, "wrapper.py", prefix + "from .provider import Value\n"
     )
+    writer = _write_module(
+        tmp_path,
+        "writer.py",
+        "import pkg.wrapper as target\ndef mutate(value): target.__package__ = value\n",
+    )
     classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
-        {"pkg.wrapper": wrapper, "pkg.provider": owner},
+        {"pkg.wrapper": wrapper, "pkg.provider": owner, "writer": writer},
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
     evidence = classification.import_evidence["pkg.wrapper"]
@@ -578,7 +599,7 @@ def test_intrinsic_status_never_consumes_unsealed_relative_candidates(tmp_path, 
     )
 
 
-def test_relative_facade_requires_metadata_proof_for_every_owner(tmp_path):
+def test_relative_import_requires_metadata_proof_at_every_site(tmp_path):
     provider = _write_module(
         tmp_path,
         "provider.py",
@@ -587,17 +608,20 @@ def test_relative_facade_requires_metadata_proof_for_every_owner(tmp_path):
     facade = _write_module(
         tmp_path,
         "facade.py",
-        "from .provider import Value\nfrom .provider import Other\n",
+        "from .provider import Value\n__package__ = choose_package()\nfrom .provider import Other\n",
     )
     classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
         {"pkg.facade": facade, "pkg.provider": provider},
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
     evidence = classification.import_evidence["pkg.facade"]
-    assert evidence.facade is not None
-    assert not evidence.facade.resolved
-    assert evidence.facade.bindings[0].owner_module == "pkg.provider"
-    assert evidence.facade.bindings[1].owner_module is None
+    # The explicit mutation makes this executable Python rather than a pure
+    # facade, but does not erase the earlier proven import owner.
+    assert evidence.facade is None
+    first, second = evidence.sites
+    assert first.owner_plan.modules == ("pkg.provider",)
+    assert not first.unresolved
+    assert second.unresolved and second.owner_plan.requires_runtime
     assert (
         classification.statuses["pkg.facade"]
         == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
@@ -668,8 +692,10 @@ def test_real_tk_widgets_keep_python_ownership_across_callable_providers(
     )
     evidence = classification.import_evidence["tkinter.widgets"]
     assert "tkinter._support" in evidence.proven_modules
-    assert evidence.unresolved_sites  # relative operands still require runtime custody
-    assert "tkinter" not in evidence.proven_modules
+    # The admitted graph has no foreign package-metadata writer. Literal
+    # relative imports therefore retain their proven owners across callbacks.
+    assert not evidence.unresolved_sites
+    assert "tkinter" in evidence.proven_modules
     assert (
         classification.statuses["tkinter.widgets"]
         == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
@@ -730,3 +756,177 @@ def test_warm_intrinsic_source_facts_runs_workers_only_for_a_large_set(
         "intrinsic_source_requests": 2 * per_worker,
         "intrinsic_source_hits": 2 * per_worker,
     }
+
+
+def test_intrinsic_source_cache_roundtrips_owner_plans(
+    tmp_path, intrinsic_source_cache
+):
+    provider, _identity = intrinsic_source_cache
+    path = _write_module(
+        tmp_path,
+        "consumer.py",
+        "try: from pkg import Value\nexcept ImportError: pass\n"
+        "try:\n    __import__(unknown_name)\nexcept ImportError:\n    pass\n",
+    )
+    first = provider("consumer", path)
+    second = provider("consumer", path)
+    assert second == first
+    statement, opaque = second.import_evidence.sites
+    assert statement.line == 1
+    assert statement.owner_plan.modules == ("pkg",)
+    assert statement.plan.modules == ("pkg", "pkg.Value")
+    assert opaque.request is None and opaque.unresolved
+    assert opaque.line == 4
+    [cache] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
+    payload = json.loads(cache.read_text(encoding="utf-8"))
+    assert payload["identity"]["schema"] == "molt.stdlib-intrinsic-source.v8"
+    assert "modules" not in payload["facts"] and "unresolved" not in payload["facts"]
+    assert "blockers" not in payload["facts"]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing-owner-plan",
+        "request-level-bool",
+        "runtime-int",
+        "unknown-error",
+        "retired-handlers",
+        "retired-owner",
+        "ordinary-owner-mismatch",
+        "opaque-no-obligation",
+    ],
+)
+def test_intrinsic_source_cache_rejects_malformed_site_facts(
+    tmp_path, intrinsic_source_cache, corruption
+):
+    provider, _identity = intrinsic_source_cache
+    path = _write_module(
+        tmp_path,
+        "consumer.py",
+        "try:\n    import pkg\nexcept ImportError:\n    pass\n"
+        "__import__(unknown_name)\n",
+    )
+    first = provider("consumer", path)
+    [cache] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
+    cache = cache.with_name(cache.name.replace(".intrinsic.json", ".json"))
+    payload = json.loads(cache.read_text(encoding="utf-8"))
+    site = payload["source_sites"][0]
+    if corruption == "missing-owner-plan":
+        del site["owner_plan"]
+    elif corruption == "request-level-bool":
+        site["request"]["level"] = True
+    elif corruption == "runtime-int":
+        site["plan"]["runtime"] = 0
+    elif corruption == "unknown-error":
+        site["plan"]["errors"] = ["invented"]
+    elif corruption == "retired-handlers":
+        site["handlers"] = []
+    elif corruption == "retired-owner":
+        site["owner"] = None
+    elif corruption == "ordinary-owner-mismatch":
+        site["owner_plan"]["modules"] = ["other"]
+    elif corruption == "opaque-no-obligation":
+        site = payload["source_sites"][1]
+        site["plan"]["runtime"] = False
+    cache.write_text(json.dumps(payload), encoding="utf-8")
+    assert provider("consumer", path) == first
+
+
+def test_intrinsic_source_cache_invalidates_request_after_same_size_edit(
+    tmp_path, intrinsic_source_cache
+):
+    import os
+
+    provider, _identity = intrinsic_source_cache
+    path = _write_module(
+        tmp_path,
+        "consumer.py",
+        "try:\n    import pkg\nexcept ImportError:\n    pass\n",
+    )
+    first = provider("consumer", path)
+    timestamp = path.stat()
+    before = path.read_bytes()
+    replacement = b"try:\n    import new\nexcept ImportError:\n    pass\n"
+    replacement += b" " * (len(before) - len(replacement))
+    assert len(replacement) == len(before)
+    path.write_bytes(replacement)
+    os.utime(path, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
+    second = provider("consumer", path)
+    assert first.import_evidence.sites[0].plan.modules == ("pkg",)
+    assert second.import_evidence.sites[0].plan.modules == ("new",)
+
+
+def test_intrinsic_source_cache_retains_call_request_metadata(
+    tmp_path, intrinsic_source_cache
+):
+    provider, _identity = intrinsic_source_cache
+    path = _write_module(
+        tmp_path,
+        "consumer.py",
+        "__import__('child', {'__package__': 'pkg'}, fromlist=('Value',), level=1)\n",
+    )
+    first = provider("consumer", path)
+    second = provider("consumer", path)
+    assert first == second
+    [site] = second.import_evidence.sites
+    assert site.request.kind == "dunder_import"
+    assert site.request.globals_were_supplied
+    assert site.request.globals_state.package.value == "pkg"
+    assert site.request.level == 1 and site.request.fromlist == ("Value",)
+    assert site.owner_plan.modules == ("pkg.child",)
+    assert site.plan.modules == ("pkg.child", "pkg.child.Value")
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "retired-effects",
+        "demand-phase",
+        "demand-width",
+        "export-status",
+        "absent-with-names",
+        "known-with-reason",
+        "absent-with-reason",
+        "source-span",
+        "missing-source-record",
+    ],
+)
+def test_shared_source_cache_rejects_malformed_execution_and_export_facts(
+    tmp_path, intrinsic_source_cache, corruption
+):
+    provider, _identity = intrinsic_source_cache
+    path = _write_module(
+        tmp_path,
+        "consumer.py",
+        "__all__ = ['value']\ndef f():\n    _MOLT_OP()\ntry:\n    f()\nexcept Exception:\n    pass\n",
+    )
+    first = provider("consumer", path)
+    [metadata] = list((tmp_path / "cache").rglob("*.intrinsic.json"))
+    assert "sites" not in json.loads(metadata.read_text(encoding="utf-8"))["facts"]
+    cache = metadata.with_name(metadata.name.replace(".intrinsic.json", ".json"))
+    payload = json.loads(cache.read_text(encoding="utf-8"))
+    if corruption == "retired-effects":
+        payload["source_effects"] = []
+    elif corruption == "demand-phase":
+        payload["source_demands"][0][1] = "invented"
+    elif corruption == "demand-width":
+        payload["source_demands"][0].append("stale")
+    elif corruption == "export-status":
+        payload["all_exports"]["status"] = "invented"
+    elif corruption == "absent-with-names":
+        payload["all_exports"]["status"] = "absent"
+        payload["all_exports"]["names"] = ["forged"]
+    elif corruption in {"known-with-reason", "absent-with-reason"}:
+        payload["all_exports"] = {
+            "status": corruption.split("-", 1)[0],
+            "names": [],
+            "reason": "not actually proved",
+        }
+    elif corruption == "source-span":
+        payload["source_demands"][0][0][0] = -1
+    if corruption == "missing-source-record":
+        cache.unlink()
+    else:
+        cache.write_text(json.dumps(payload), encoding="utf-8")
+    assert provider("consumer", path) == first

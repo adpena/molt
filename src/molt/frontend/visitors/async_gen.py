@@ -1240,31 +1240,10 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             self._async_local_offset(name)
 
     def _expr_may_yield(self, node: ast.AST) -> bool:
-        return self.is_async() and self._expr_needs_async(node)
-
-    def _expr_needs_async(self, node: ast.AST) -> bool:
-        class AsyncVisitor(ast.NodeVisitor):
-            def __init__(self) -> None:
-                self.needs_async = False
-
-            def visit_Await(self, node: ast.Await) -> None:
-                self.needs_async = True
-
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                return
-
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
-
-        visitor = AsyncVisitor()
-        visitor.visit(node)
-        return visitor.needs_async
+        return (
+            self.is_async()
+            and self._lexical_dependencies().expression_contains_await(node)
+        )
 
     def _spill_async_value(self, value: MoltValue) -> int:
         offset = self._new_async_internal_slot()

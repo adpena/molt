@@ -113,7 +113,7 @@ Failure of any invariant is a hard CI failure.
 5. Materialize stubs for the new union entries:
    - `python3 tools/gen_stdlib_stubs.py --write`
 6. Run gates:
-   - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
+   - `python3 tools/check_stdlib_intrinsics.py`
    - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
 7. Regenerate audit:
    - `python3 tools/check_stdlib_intrinsics.py --update-doc`

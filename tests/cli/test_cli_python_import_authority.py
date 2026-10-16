@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 import inspect
 from pathlib import Path
@@ -219,7 +221,7 @@ def test_package_none_falls_back_to_valid_module_spec_parent() -> None:
         "from .child import name\n"
     )
     assert set(
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
     ) == {
@@ -241,7 +243,7 @@ def test_source_order_uses_state_at_each_import(tmp_path: Path) -> None:
     tree = ast.parse(source)
     assert (
         set(
-            module_import_scanner._collect_imports(
+            _source_import_scan._collect_imports(
                 tree, module_name="pkg.entry", is_package=False
             )
         )
@@ -507,7 +509,7 @@ def test_branch_join_preserves_whole_possible_states() -> None:
         "from .child import value\n"
     )
     assert set(
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
     ) == {"left.child", "left.child.value", "right.child", "right.child.value"}
@@ -533,7 +535,7 @@ def test_mixed_static_and_error_paths_are_not_erased() -> None:
     assert plan.errors == ("invalid_package",)
     assert plan.requires_runtime_execution
     with pytest.raises(UnresolvedStaticImportError, match="invalid_package"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree, module_name="pkg.entry", is_package=False
         )
 
@@ -562,7 +564,7 @@ def test_unresolved_effect_boundary_requires_explicit_runtime_custody() -> None:
         "from .child import value\n"
     )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree, module_name="pkg.entry", is_package=False
         )
 
@@ -575,7 +577,7 @@ def test_class_global_metadata_write_updates_module_import_state() -> None:
         "from .child import value\n"
     )
     assert set(
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
     ) == {"other.pkg.child", "other.pkg.child.value"}
@@ -596,7 +598,7 @@ def test_try_star_handler_participates_in_import_state_flow() -> None:
     # a handler assignment cannot overwrite that uncertainty with a literal.
     assert any(state.package.kind == "unknown" for state in flow.states_for(request))
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+        _source_import_scan._collect_imports(tree, module_name="pkg.entry")
 
 
 def test_known_package_with_unknown_spec_keeps_graph_root_and_runtime_protocol() -> (
@@ -657,7 +659,7 @@ def test_match_mapping_rest_capture_invalidates_import_metadata() -> None:
     )
 
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
 
@@ -681,7 +683,7 @@ def test_indirect_definition_time_execution_invalidates_import_state(
         "from .child import value\n"
     )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
 
@@ -703,7 +705,7 @@ def test_intrinsic_lookup_has_no_implicit_metadata_permission(invocation: str) -
     # Symbol identity is not a capability to preserve an escaped namespace.
     # Dynamic stdlib imports require the same source-bound custody as any caller.
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
 
@@ -716,7 +718,7 @@ def test_rebound_intrinsic_lookup_does_not_retain_metadata_capability() -> None:
         "from .child import value\n"
     )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse(source), module_name="pkg.entry", is_package=False
         )
 
@@ -869,14 +871,14 @@ def test_type_alias_dynamic_imports_are_lazy_full_graph_edges() -> None:
     )
     tree = ast.parse(source)
     full = set(
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree,
             module_name="pkg.entry",
             import_scan_mode="full",
         )
     )
     module_init = set(
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree,
             module_name="pkg.entry",
             import_scan_mode="module_init",
@@ -913,22 +915,20 @@ def test_python_execution_effects_never_leave_a_stale_static_anchor(
 ) -> None:
     tree = ast.parse(source)
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree, module_name="pkg.entry", is_package=False
         )
 
 
 def test_deferred_function_graph_keeps_call_time_states_as_discovery_only() -> None:
     source = "def load():\n    from .child import value\n__package__ = 'other.pkg'\n"
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), module_name="pkg.entry", is_package=False
     )
     assert projection.requires_runtime_package_anchor
     assert not projection.imports
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
-            ast.parse(source), module_name="pkg.entry"
-        )
+        _source_import_scan._collect_imports(ast.parse(source), module_name="pkg.entry")
     assert set(projection.dynamic_relative_import_candidates) == {
         "pkg.child",
         "pkg.child.value",
@@ -946,7 +946,7 @@ def test_deferred_explicit_package_store_keeps_successful_graph_root() -> None:
     )
     # Source-state possibilities remain graph candidates. A deferred activation
     # can replace its globals; no statement may promote them to execution facts.
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), module_name="pkg.entry", is_package=False
     )
     assert projection.requires_runtime_package_anchor
@@ -955,9 +955,7 @@ def test_deferred_explicit_package_store_keeps_successful_graph_root() -> None:
         projection.dynamic_relative_import_candidates
     )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
-            ast.parse(source), module_name="pkg.entry"
-        )
+        _source_import_scan._collect_imports(ast.parse(source), module_name="pkg.entry")
 
 
 def test_modulespec_signature_and_parent_are_cpython_valid() -> None:
@@ -1117,7 +1115,7 @@ def test_invalid_import_call_binding_is_left_for_runtime(
     )
     path = tmp_path / "entry.py"
     path.write_text(source, encoding="utf-8")
-    assert set(module_import_scanner._collect_imports(ast.parse(source))) == expected
+    assert set(_source_import_scan._collect_imports(ast.parse(source))) == expected
     assert (
         local_import_targets(
             path,
@@ -1142,7 +1140,7 @@ def test_invalid_import_call_still_collects_argument_imports(
     )
     path = tmp_path / "entry.py"
     path.write_text(source, encoding="utf-8")
-    assert "argument_dependency" in module_import_scanner._collect_imports(
+    assert "argument_dependency" in _source_import_scan._collect_imports(
         ast.parse(source)
     )
     assert "argument_dependency" in local_import_targets(
@@ -1168,7 +1166,7 @@ def test_unknown_import_argument_expansion_stays_fail_closed(
     with pytest.raises(
         ValueError, match="argument expansion requires runtime import custody"
     ):
-        module_import_scanner._collect_imports(ast.parse(source))
+        _source_import_scan._collect_imports(ast.parse(source))
     with pytest.raises(ValueError, match="argument expansion requires a manifest"):
         local_import_targets(
             path,
@@ -1218,7 +1216,7 @@ def test_absolute_import_module_ignores_dynamic_package(tmp_path: Path) -> None:
     path = tmp_path / "entry.py"
     path.write_text(source, encoding="utf-8")
     expected = {"importlib", "importlib.import_module", "pkg.child"}
-    assert set(module_import_scanner._collect_imports(ast.parse(source))) == expected
+    assert set(_source_import_scan._collect_imports(ast.parse(source))) == expected
     assert (
         local_import_targets(
             path,
@@ -1323,7 +1321,7 @@ def test_import_completion_preserves_header_exceptions_beside_body_raises(
     assert "outer" in _known_completion_packages(flow, request)
     assert any(state.package.kind == "unknown" for state in flow.states_for(request))
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+        _source_import_scan._collect_imports(tree, module_name="pkg.entry")
 
 
 def test_import_completion_exception_before_assignment_keeps_prior_metadata() -> None:
@@ -1361,7 +1359,7 @@ def test_import_completion_revisits_loop_import_sites_on_backedges(
     # backedge adds observations, never a proof for either lexical candidate.
     assert any(state.package.kind == "unknown" for state in flow.states_for(request))
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+        _source_import_scan._collect_imports(tree, module_name="pkg.entry")
 
     package = types.ModuleType("callback_package")
     package.__path__ = []
@@ -1397,7 +1395,7 @@ def test_import_completion_break_does_not_enter_loop_else() -> None:
     tree, _context, flow = _contexts_for(source)
     request = cast(ast.ImportFrom, tree.body[-1])
     assert _known_completion_packages(flow, request) == {"broken"}
-    imports = set(module_import_scanner._collect_imports(tree, module_name="pkg.entry"))
+    imports = set(_source_import_scan._collect_imports(tree, module_name="pkg.entry"))
     assert "broken.child" in imports
     assert "not_exhausted.child" not in imports
 
@@ -1412,7 +1410,7 @@ def test_opaque_metadata_replacement_discards_prior_source_candidate() -> None:
     assert states
     assert all(state.package.kind == "unknown" for state in states)
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+        _source_import_scan._collect_imports(tree, module_name="pkg.entry")
 
 
 def test_import_completion_try_star_keeps_pending_exception_provenance() -> None:
@@ -1436,7 +1434,7 @@ def test_import_completion_try_star_keeps_pending_exception_provenance() -> None
     # No exact package anchor survives that protocol on the normal path.
     assert all(state.package.kind == "unknown" for state in flow.states_for(request))
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+        _source_import_scan._collect_imports(tree, module_name="pkg.entry")
 
 
 @pytest.mark.parametrize("owner", ["function", "class"])
@@ -1450,7 +1448,7 @@ def test_import_completion_local_walrus_does_not_write_module_metadata(
     tree, _context, flow = _contexts_for(source)
     request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
     assert _known_completion_packages(flow, request) == {"pkg"}
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         tree, module_name="pkg.entry"
     )
     if owner == "function":
@@ -1477,7 +1475,7 @@ def test_import_completion_class_explicit_globals_write_needs_no_global_statemen
     tree, _context, flow = _contexts_for(source)
     request = cast(ast.ImportFrom, tree.body[-1])
     assert _known_completion_packages(flow, request) == {"other"}
-    assert "other.child" in module_import_scanner._collect_imports(
+    assert "other.child" in _source_import_scan._collect_imports(
         tree, module_name="pkg.entry"
     )
 
@@ -1495,9 +1493,9 @@ def test_import_completion_records_nested_import_call_after_prior_argument_write
         and node.func.id == "__import__"
     )
     assert _known_completion_packages(flow, request) == {"next"}
-    assert set(
-        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
-    ) == {"next.child"}
+    assert set(_source_import_scan._collect_imports(tree, module_name="pkg.entry")) == {
+        "next.child"
+    }
 
 
 def test_import_completion_distinguishes_unobserved_from_explicitly_unreachable() -> (
@@ -1528,7 +1526,7 @@ def test_import_completion_marks_finally_after_divergence_unreachable() -> None:
     request = next(node for node in ast.walk(tree) if isinstance(node, ast.Import))
     assert python_imports.python_node_source_key(request) in flow.states_by_node
     assert flow.states_for(request) == ()
-    assert "sealed.dead_finally" not in module_import_scanner._collect_imports(
+    assert "sealed.dead_finally" not in _source_import_scan._collect_imports(
         tree, module_name="pkg.entry"
     )
 
@@ -1550,7 +1548,7 @@ def test_import_completion_with_only_suppresses_exception_successors(
     tree, _context, flow = _contexts_for(source)
     request = next(node for node in ast.walk(tree) if isinstance(node, ast.Import))
     assert bool(flow.states_for(request)) is reachable
-    imports = module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+    imports = _source_import_scan._collect_imports(tree, module_name="pkg.entry")
     assert ("sealed.after_with" in imports) is reachable
 
 
@@ -1566,7 +1564,7 @@ def test_import_scanner_excludes_all_direct_import_dead_tails(tail: str) -> None
     source = "raise RuntimeError()\n" + tail
     tree, _context, flow = _contexts_for(source)
     assert flow.states_for(tree.body[-1]) == ()
-    assert module_import_scanner._collect_imports(tree, module_name="pkg.entry") == []
+    assert _source_import_scan._collect_imports(tree, module_name="pkg.entry") == []
 
 
 @pytest.mark.parametrize("dead_location", ["helper_body", "helper_call"])
@@ -1584,7 +1582,7 @@ def test_import_scanner_excludes_unreachable_helper_import_payloads(
         "raise RuntimeError()\n"
         "load('sealed.dead_helper')\n"
     )
-    imports = module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         ast.parse(source), module_name="pkg.entry"
     )
     assert "sealed.dead_helper" not in imports
@@ -1609,7 +1607,7 @@ def test_static_source_scanner_uses_completion_reachability(
         + ("raise RuntimeError()\n" if dead else "")
         + call
     )
-    requests = module_import_scanner._collect_static_source_execution_requests(
+    requests = _source_import_scan._collect_static_source_execution_requests(
         ast.parse(source),
         source_path=tmp_path / "entry.py",
         module_name="pkg.entry",
@@ -1660,7 +1658,7 @@ def test_selected_source_body_scan_does_not_revive_dead_body_imports(
     owner = tree.body[0].body[0]
     from molt.compiler_analysis.python_source_keys import python_node_source_key
 
-    imports = module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         tree,
         module_name="collections",
         import_scan_mode="full" if full else "module_init",
@@ -1674,7 +1672,7 @@ def test_unobserved_deferred_lambda_import_is_not_treated_as_dead() -> None:
     tree, _context, flow = _contexts_for(source)
     request = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
     assert flow.states_for(request)
-    assert "sealed.deferred_lambda" in module_import_scanner._collect_imports(
+    assert "sealed.deferred_lambda" in _source_import_scan._collect_imports(
         tree, module_name="pkg.entry"
     )
 
@@ -1713,7 +1711,7 @@ def test_import_completion_assignment_family_evaluates_target_expressions_in_ord
         )
     )
     assert _known_completion_packages(flow, request) == {expected}
-    imports = module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+    imports = _source_import_scan._collect_imports(tree, module_name="pkg.entry")
     assert f"{expected}.child" in imports
     assert "pkg.child" not in imports
 
@@ -1730,9 +1728,7 @@ def test_augmented_target_getter_requires_runtime_import_metadata(
     # after the target walrus and before either RHS namespace expression.
     source = f"{target} += __import__('child', {namespace}, level=1)\n"
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
-            ast.parse(source), module_name="pkg.entry"
-        )
+        _source_import_scan._collect_imports(ast.parse(source), module_name="pkg.entry")
 
 
 @pytest.mark.parametrize("read", ["items.attribute", "items['index']"])
@@ -1747,7 +1743,7 @@ def test_member_read_callback_metadata_reaches_every_following_operand(
         else f"{read}[{request}] = 0\n"
     )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             ast.parse("__package__ = 'target'\n" + source), module_name="pkg.entry"
         )
 
@@ -1760,7 +1756,7 @@ def test_canonical_callback_free_target_read_preserves_import_metadata(
         "import sys\n__package__ = 'target'\n"
         f"{target} += __import__('child', globals(), level=1)\n"
     )
-    imports = module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         ast.parse(source), module_name="pkg.entry"
     )
     assert "target.child" in imports
@@ -1774,7 +1770,7 @@ def test_augmented_getter_does_not_erase_explicit_foreign_package(
     source = (
         f"{target} += __import__('child', {{'__package__': 'explicit'}}, level=1)\n"
     )
-    imports = module_import_scanner._collect_imports(
+    imports = _source_import_scan._collect_imports(
         ast.parse(source), module_name="pkg.entry"
     )
     assert "explicit.child" in imports
@@ -1931,7 +1927,7 @@ def _metadata_borrowing_consumer(
 
     if consumer == "scanner":
         return set(
-            module_import_scanner._collect_imports(
+            _source_import_scan._collect_imports(
                 ast.parse(source),
                 module_name="pkg.entry",
                 target_python=TargetPythonVersion(*target_python, 0),
@@ -2105,7 +2101,7 @@ def test_cpython_temporary_augassign_import_precedes_operator_failure(
     ],
 )
 def test_unclean_metadata_keeps_lexical_discovery_without_semantic_admission(source):
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source),
         module_name="pkg.entry",
     )
@@ -2442,7 +2438,7 @@ def test_cpython_callback_updates_statement_and_expression_imports_equally(
             owner,
             PythonImportPolicy(True, False, True, purpose="source_dependency"),
         )
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), "pkg.entry"
     )
     assert projection.requires_runtime_package_anchor
@@ -2554,7 +2550,7 @@ def test_lexical_discovery_twin_cannot_fill_unknown_source_package(
     path.parent.mkdir()
     path.write_text("__package__ = choose()\nfrom . import child\n", encoding="utf-8")
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    projection = module_import_scanner._collect_imports_for_graph(tree, "pkg.entry")
+    projection = _source_import_scan._collect_imports_for_graph(tree, "pkg.entry")
     assert "pkg.child" in projection.dynamic_relative_import_candidates
     assert "pkg.child" not in projection.imports
     assert projection.requires_runtime_package_anchor

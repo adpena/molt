@@ -102,7 +102,7 @@ stdlib/version coverage changes, the existing commands are:
 3. Refresh CPython availability matrix:
    - `python3 tools/gen_compat_platform_availability.py --write`
 4. Re-run compatibility gates:
-   - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
+   - `python3 tools/check_stdlib_intrinsics.py`
    - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
    - `python3 tools/check_dynamic_policy.py`
    - `python3 tools/check_differential_suite_layout.py`
