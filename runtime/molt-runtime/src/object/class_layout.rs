@@ -1349,7 +1349,7 @@ mod tests {
                             py,
                             obj_from_bits(error).as_ptr().unwrap(),
                         ),
-                        "class bases are immutable after slot admission"
+                        crate::builtins::types::class_model::BASES_REASSIGNMENT_ERROR
                     );
                     clear_exception(py);
                     dec_ref_bits(py, error);
