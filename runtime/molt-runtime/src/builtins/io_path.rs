@@ -86,7 +86,7 @@ fn descriptor_metadata(
             ));
         }
         Ok(PathMetadata::from_unix_stat(unsafe {
-            &metadata.assume_init()
+            metadata.assume_init_ref()
         }))
     }
     #[cfg(windows)]
@@ -1580,16 +1580,6 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
     })
 }
 
-#[cfg(not(unix))]
-fn unix_seconds_from_system_time(value: std::time::SystemTime) -> i128 {
-    use std::time::UNIX_EPOCH;
-    match value.duration_since(UNIX_EPOCH) {
-        Ok(duration) => i128::from(duration.as_secs()),
-        Err(err) => -i128::from(err.duration().as_secs()),
-    }
-}
-
-#[cfg(not(unix))]
 fn stat_tuple_from_values(_py: &PyToken<'_>, fields: [i128; 10]) -> u64 {
     let tuple_fields = fields.map(|value| int_bits_from_i128(_py, value));
     let tuple_ptr = alloc_tuple(_py, &tuple_fields);
@@ -1746,7 +1736,7 @@ fn metadata_stat_at(
             return super::io::PathIoError::from_native(std::io::Error::last_os_error())
                 .raise(py, "stat");
         }
-        stat_tuple_from_libc_stat(py, unsafe { &metadata.assume_init() })
+        stat_tuple_from_libc_stat(py, unsafe { metadata.assume_init_ref() })
     }
     #[cfg(not(all(not(target_arch = "wasm32"), unix)))]
     {
