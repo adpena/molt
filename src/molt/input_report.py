@@ -90,6 +90,9 @@ class FactSink(Protocol):
 _SINK: FactSink | None = None
 # Data files a reader reports on every use; repeats cost a set lookup.
 _REPORTED: set[str] = set()
+# Owners of immutable captures already reported to this recording, by id. The
+# value keeps each owner alive, so its id cannot name a later object.
+_REPORTED_OWNERS: dict[int, object] = {}
 _REPORTED_LOCK = threading.Lock()
 
 # The audit hook sees every readable file this process opens, every directory
@@ -111,6 +114,7 @@ def install_sink(sink: FactSink, log_dir: str) -> None:
     _install_hook()
     with _REPORTED_LOCK:
         _REPORTED.clear()
+        _REPORTED_OWNERS.clear()
     _WORKER_LOG_DIR = log_dir
     _SINK = sink
 
@@ -224,10 +228,11 @@ def _install_hook() -> None:
 def _after_fork_in_child() -> None:
     """A forked child copies the parent's sink and log handle. It drops both
     and logs its own facts to the same directory."""
-    global _SINK, _WORKER_LOG, _REPORTED, _REPORTED_LOCK
+    global _SINK, _WORKER_LOG, _REPORTED, _REPORTED_OWNERS, _REPORTED_LOCK
     _SINK = None
     _WORKER_LOG = None
     _REPORTED = set()
+    _REPORTED_OWNERS = {}
     # Another thread may have held this lock at fork; that thread does not
     # exist in the child and can never release its inherited lock.
     _REPORTED_LOCK = threading.Lock()
@@ -335,6 +340,26 @@ def report_file(path: Path | str, sha256: str | None = None) -> None:
     """Report a file whose bytes the build used without a captured read token."""
     if active():
         _report_file_fact(path, stat_token(path), sha256)
+
+
+def report_captured_file(path: Path | str, token: StatToken, sha256: str) -> None:
+    """Report a file by the token captured with its digest. The pair stays
+    consistent even if the file changes later; a later change only makes the
+    next build's check fail."""
+    if active():
+        _report_file_fact(path, token, sha256)
+
+
+def first_report(owner: object) -> bool:
+    """True the first time this recording sees ``owner``; an immutable capture
+    reused across a build reports its facts once."""
+    if not active():
+        return False
+    with _REPORTED_LOCK:
+        if id(owner) in _REPORTED_OWNERS:
+            return False
+        _REPORTED_OWNERS[id(owner)] = owner
+        return True
 
 
 def report_data_file(path: Path | str) -> None:

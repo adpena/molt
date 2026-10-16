@@ -67,6 +67,11 @@ class StableRegularFileVersion:
     _stat_identity: tuple[int, int, int, int, int, int]
     _content_change_time_ns: int
 
+    def stat_token(self) -> tuple[int, int, int, int, int, int]:
+        """This observation as a build-record token: (device, inode, mode,
+        size, mtime, content-change time), as `molt.input_report` takes it."""
+        return (*self._stat_identity[:5], self._content_change_time_ns)
+
 
 @dataclass(frozen=True, slots=True)
 class StableRegularFileIdentity(StableRegularFileVersion):

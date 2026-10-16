@@ -106,11 +106,14 @@ unused for a week are deleted, at most once an hour.
 
 ## Measured
 
-- No-change rebuild through `python -m molt.cli`: 0.43-0.46 s, from 32-44 s.
+- No-change rebuild through `python -m molt.cli`: 0.155 s, from 32-44 s.
   Before the dispatcher imported each command lazily it was 0.87-1.02 s, and
-  copying the binary from a store on another volume cost 1.5 s more.
-- The record holds 75,312 files (69,329 under the Xcode SDK, from the C
-  toolchain custody), 17,162 directories and 745 probes: 26.5 MB of JSON.
+  copying the binary from a store on another volume cost 1.5 s more. Keying
+  the C toolchain custody of an Apple SDK by its `SDKSettings.json` took it
+  from 0.43 s to 0.155 s.
+- The record holds 5,985 files, 397 directories and 767 probes: 1.3 MB of
+  JSON. It held 75,312 files and 17,162 directories (26.5 MB) while the C
+  toolchain custody listed all 69,329 files of the Xcode SDK.
 - Edits to a runtime Rust source, a stdlib module, the intrinsics manifest,
   rustup settings, a Molt CLI module and the checkout's `.cargo/config.toml`,
   and a new `.cargo/config.toml` in an ancestor, each make the record miss.
@@ -148,9 +151,13 @@ which removed the artifact store.
 1. `runtime/molt-launcher` (the native `molt`) checks the record in parallel
    before it starts Python, keyed by the invocation; the hit then costs tens of
    milliseconds.
-2. A compact record, and C toolchain custody keyed by the SDK's own identity
-   instead of 69,329 files.
+2. A compact record.
 3. Stage-level cutoff: the runtime and backend identity checks (13 s of a warm
    build) reuse the ledger to prove by stat that nothing changed.
 4. The runtime build stops running Python: checked-in Unicode tables per
    Unicode version and errno constants per target.
+5. A directory the build lists records the projection it used (its module
+   candidates), not its token, so a new log or editor file beside the entry
+   does not invalidate the record; Bazel's `GlobValue` cuts off the same way.
+6. The racy window follows each input's filesystem timestamp granularity
+   instead of a fixed 2 s, so an edit saved just before a build still records.
