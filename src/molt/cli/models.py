@@ -6,6 +6,7 @@ from molt.compiler_analysis.python_imports import (
     _SourceImportBinding,
     _SourceValueDemand,
     _SourceValueSummary,
+    expand_runtime_catalog,
 )
 
 import ast
@@ -1114,6 +1115,23 @@ class _RuntimeImportScanCustody:
                 f"runtime import custody source AST changed: {module_name!r}"
             )
         return True
+
+    def complete_owner_scan(
+        self, module_name: str | None, source_path: Path, scan: _ImportScanRequests
+    ) -> _ImportScanRequests:
+        """Admit an owner's source-pure scan, then append this live catalog.
+
+        The scan names the AST it was made from; only this custody's own owner
+        source is admitted, whether the scan is fresh or persisted.
+        """
+        deferral = scan.runtime_catalog
+        if deferral is None:
+            raise ValueError(
+                f"runtime import owner scan has no catalog deferral: {module_name!r}"
+            )
+        if not self.admits_scan(module_name, source_path, deferral.source_ast_digest):
+            raise ValueError(f"runtime import custody does not own {module_name!r}")
+        return expand_runtime_catalog(scan, self.modules)
 
     def validate_graph(self, graph: Mapping[str, Path]) -> None:
         self._validate_sources()

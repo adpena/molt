@@ -39,7 +39,8 @@ _ImportScanCacheKey = tuple[
     tuple[str, ...],
     str,
     str,
-    _RuntimeImportScanCustody | None,
+    # A runtime-import owner's scan: it defers to the catalog, any generation.
+    bool,
     PythonNamespacePremise | None,
 ]
 
@@ -782,8 +783,9 @@ class _ModuleResolutionCache:
         ast_digest_admission = _PythonAstDigestAdmission.for_tree(
             tree, ast_digest_admission
         )
-        source_path = path.resolve() if runtime_import_custody is not None else path
+        runtime_catalog_owner = False
         if runtime_import_custody is not None:
+            source_path = path.resolve()
             if runtime_import_custody.owns(module_name, source_path):
                 if source_owner is not None:
                     raise ValueError(
@@ -795,8 +797,9 @@ class _ModuleResolutionCache:
                 runtime_import_custody.admits_scan(
                     module_name, source_path, ast_digest_admission.digest
                 )
-            else:
-                runtime_import_custody = None
+                runtime_catalog_owner = True
+        # An owner's scan defers to the catalog, so every custody generation of
+        # one owner source shares it; completion applies each live catalog.
         cache_key = (
             self.resolved_path(path),
             module_name,
@@ -806,20 +809,13 @@ class _ModuleResolutionCache:
             source_arguments,
             target_python.tag,
             ast_digest_admission.digest,
-            runtime_import_custody,
+            runtime_catalog_owner,
             namespace_premise,
         )
         cached = self.graph_import_scan_cache.get(cache_key)
         if cached is not None:
             return cached
-        custody_kwargs = (
-            {
-                "runtime_import_custody": runtime_import_custody,
-                "source_path": source_path,
-            }
-            if runtime_import_custody is not None
-            else {}
-        )
+        owner_kwargs = {"runtime_catalog_owner": True} if runtime_catalog_owner else {}
         result = collector(
             tree,
             module_name,
@@ -830,7 +826,7 @@ class _ModuleResolutionCache:
             target_python=target_python,
             ast_digest_admission=ast_digest_admission,
             namespace_premise=namespace_premise,
-            **custody_kwargs,
+            **owner_kwargs,
         )
         self.graph_import_scan_cache[cache_key] = result
         return result

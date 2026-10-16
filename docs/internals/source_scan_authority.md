@@ -157,8 +157,8 @@ changed facts wake their registered users. Source-value summaries are published
 by the module scan rather than repeated with each deferred body.
 
 The persisted scan contains only source-pure requests: unexpanded imports,
-star-package names, dynamic-relative facts, source values/demands, and
-unevaluated loader/runpy paths. Intrinsic classification metadata references the
+star-package names, dynamic-relative facts, source values/demands,
+unevaluated loader/runpy paths, and an owner's catalog deferral. Intrinsic classification metadata references the
 same source-request cache record; it does not persist another import-site copy.
 The decoder validates every nested collection's declared list/row shape before
 accepting it. An empty object or string cannot erase sites, namespace members,
@@ -321,10 +321,15 @@ published.
 
 Runtime custody remains a separate permission boundary: only verified owner
 sources may use it, every owner scan must be full-depth, and native-only artifacts
-never acquire source custody. A changed catalog creates new custody and rescans
-owners under it. Owners never read or publish strict records; non-owner sources
-may reuse pure requests and complete them live. Strict records never carry
-runtime custody.
+never acquire source custody. An owner's scan is source-pure like any other: at a
+dynamic import the runtime may resolve to any catalog row, it records a typed
+`RuntimeCatalogDeferral` (for its imports, star modules, or one binding's bases)
+and the digest of the AST it scanned, never the catalog itself.
+`_RuntimeImportScanCustody.complete_owner_scan` admits only the custody's own
+owner AST and appends the live catalog, so one owner scan serves every custody
+generation of a build, and it persists under an owner-mode key beside the strict
+record. Strict records carry no deferral and never carry runtime custody; an
+owner never reads or publishes a strict record.
 
 Generated module sources use one content-addressed writer keyed only by canonical
 module name and emitted text; the text never embeds its generated filename.

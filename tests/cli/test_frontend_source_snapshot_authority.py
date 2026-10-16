@@ -686,7 +686,7 @@ def test_malformed_execution_projection_rejects_entire_scan(
     assert not hasattr(scans, "_read_persisted_import_scan_payload")
 
 
-def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
+def test_runtime_custody_persists_only_source_pure_owner_scans(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     owner, target = tmp_path / "entry.py", tmp_path / "target.py"
@@ -715,17 +715,23 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
         full_scan_roots=True,
     )
 
-    def forbidden(*_args: object, **_kwargs: object) -> NoReturn:
-        raise AssertionError(
-            "runtime custody cannot read or publish strict persisted scans"
-        )
+    calls: list[tuple[str, Path, bool, Any]] = []
+    read_record = scans._read_persisted_import_scan_record
+    write_record = scans._write_persisted_import_scan
 
-    for name in (
-        "_read_persisted_import_scan_record",
-        "_write_persisted_import_scan",
-    ):
-        monkeypatch.setattr(scans, name, forbidden)
-    monkeypatch.setattr(fingerprints, "_frontend_semantic_tooling_sources", forbidden)
+    def read(project_root: Path, path: Path, **kwargs: Any) -> Any:
+        record = read_record(project_root, path, **kwargs)
+        owner_mode = kwargs.get("runtime_catalog_owner", False)
+        calls.append(("read", path.resolve(), owner_mode, record))
+        return record
+
+    def write(project_root: Path, path: Path, **kwargs: Any) -> None:
+        owner_mode = kwargs.get("runtime_catalog_owner", False)
+        calls.append(("write", path.resolve(), owner_mode, kwargs["scan"]))
+        write_record(project_root, path, **kwargs)
+
+    monkeypatch.setattr(scans, "_read_persisted_import_scan_record", read)
+    monkeypatch.setattr(scans, "_write_persisted_import_scan", write)
     discovery_result = discovery._discover_module_graph_from_paths(
         (owner,),
         [tmp_path, stdlib],
@@ -740,6 +746,16 @@ def test_runtime_custody_never_enters_persisted_snapshot_scan_lane(
     )
     assert discovery_result.discovery is operation
     assert operation.graph == dict(custody.catalog)
+    owner_calls = [call for call in calls if call[1] == owner.resolve()]
+    assert owner_calls and all(call[2] for call in owner_calls), (
+        "an owner never reads or publishes a strict record"
+    )
+    written = [call[3] for call in owner_calls if call[0] == "write"]
+    assert written
+    for scan in written:
+        # The record defers to the catalog; it never names a catalog row.
+        assert scan.runtime_catalog is not None and scan.runtime_catalog.imports
+        assert "target" not in scan.imports
 
 
 def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction(

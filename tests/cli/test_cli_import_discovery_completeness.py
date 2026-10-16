@@ -14,6 +14,7 @@ from dataclasses import replace
 import pytest
 
 from molt.cli import module_graph_discovery
+from tests.runtime_import_owner_test_support import scan_as_runtime_owner
 from molt.cli import python_import_resolution as resolution
 from molt.cli import python_source_closure as closure
 from molt.compiler_analysis.python_imports import (
@@ -879,21 +880,13 @@ def test_deferred_import_mutation_requires_matching_runtime_catalog(
         _source_import_scan._collect_imports(tree, "pkg.entry", import_scan_mode=mode)
     if mode != "full":
         with pytest.raises(ValueError, match="full-depth owner scans"):
-            _source_import_scan._collect_imports(
-                tree,
-                "pkg.entry",
-                import_scan_mode=mode,
-                source_path=owner,
-                runtime_import_custody=custody,
+            _source_import_scan._collect_imports_for_graph(
+                tree, "pkg.entry", import_scan_mode=mode, runtime_catalog_owner=True
             )
-    admitted = _source_import_scan._collect_imports(
-        tree,
-        "pkg.entry",
-        import_scan_mode="full",
-        source_path=owner,
-        runtime_import_custody=custody,
+    admitted = scan_as_runtime_owner(
+        tree, "pkg.entry", source_path=owner, custody=custody
     )
-    assert set(custody.modules) <= set(admitted)
+    assert set(custody.modules) <= set(admitted.imports)
     resolver = resolution.LocalPythonModuleResolver((tmp_path,))
     for eager in (False, True):
         analysis = resolution.analyze_local_imports(

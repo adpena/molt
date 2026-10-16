@@ -10,7 +10,7 @@ from molt.python_private_names import (
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, NamedTuple, cast
 
 from molt.compiler_analysis.python_lexical_scope import (
     python_execution_regions,
@@ -25,8 +25,9 @@ from molt.compiler_analysis.python_imports import (
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
+    from molt.cli.models import ImportScanMode
 from molt.compiler_analysis.python_imports import (
+    RuntimeCatalogDeferral,
     _ImportDiscoveryProjection,
     _ImportScanRequests,
     _SourceValueDemand,
@@ -177,20 +178,37 @@ class _DynamicRelativeImportDiscovery:
             self.candidates.append(name)
 
 
+class _SealedImports(NamedTuple):
+    modules: tuple[str, ...]
+    # The runtime import catalog completes these modules: owner scans only.
+    runtime_catalog: bool = False
+
+
+@dataclass(slots=True)
+class _RuntimeCatalogUse:
+    """Which collections of a runtime-import owner's scan the catalog completes."""
+
+    imports: bool = False
+    star_modules: bool = False
+
+    def deferral(self, source_ast_digest: str) -> RuntimeCatalogDeferral:
+        return RuntimeCatalogDeferral(
+            source_ast_digest, self.imports, self.star_modules
+        )
+
+
 def _sealed_import_modules(
     request: StaticImportRequest,
     contexts: Sequence[ModuleImportContext],
     *,
-    runtime_import_custody: _RuntimeImportScanCustody | None = None,
-    source_path: Path | None = None,
-    source_ast_digest: str | None = None,
+    runtime_catalog_owner: bool = False,
     dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
     lexical_discovery_request: StaticImportRequest | None = None,
     lexical_discovery_contexts: Sequence[ModuleImportContext] = (),
     source_discovery_requests: Sequence[
         tuple[StaticImportRequest, ModuleImportContext]
     ] = (),
-) -> tuple[str, ...]:
+) -> _SealedImports:
     module_name = contexts[0].module_name if contexts else None
     plan = plan_static_import_request(request, contexts)
     unclassified_errors = tuple(
@@ -231,25 +249,24 @@ def _sealed_import_modules(
         )
     if runtime_resolution_errors and dynamic_relative_import_discovery is not None:
         dynamic_relative_import_discovery.required = True
-    if (
-        needs_runtime_custody
-        and runtime_import_custody is not None
-        and runtime_import_custody.admits_scan(
-            module_name, source_path, source_ast_digest
-        )
-    ):
+    if needs_runtime_custody and runtime_catalog_owner:
         # Do not replace poisoned metadata with the lexical package. The runtime
         # keeps Python's relative-import semantics and may select any retained
-        # catalog row (or fail closed if the requested module is not admitted).
-        return tuple(dict.fromkeys((*plan.modules, *runtime_import_custody.modules)))
+        # catalog row (or fail closed if the requested module is not admitted);
+        # completion appends that live catalog.
+        return _SealedImports(plan.modules, True)
     if needs_runtime_custody and dynamic_relative_import_discovery is not None:
         # Graph discovery retains only statically proven semantic alternatives
         # here. Lexical owner candidates travel in a distinct projection and
         # cannot become a runtime relative-import fallback.
-        return plan.modules
-    return require_static_import_modules(
-        plan,
-        consumer=f"module import scanner ({module_name or '<script>'}: {request.name!r})",
+        return _SealedImports(plan.modules)
+    return _SealedImports(
+        require_static_import_modules(
+            plan,
+            consumer=(
+                f"module import scanner ({module_name or '<script>'}: {request.name!r})"
+            ),
+        )
     )
 
 
@@ -647,9 +664,8 @@ def _collect_imports(
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    runtime_import_custody: _RuntimeImportScanCustody | None = None,
-    source_path: Path | None = None,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
+    _runtime_catalog: _RuntimeCatalogUse | None = None,
     _source_demands: list[_SourceValueDemand] | None = None,
     _source_bindings: list[_SourceImportBinding] | None = None,
     _source_values: list[_SourceValueSummary] | None = None,
@@ -658,12 +674,10 @@ def _collect_imports(
     _star_modules: list[str] | None = None,
     _dynamic_star_modules: list[str] | None = None,
 ) -> list[str]:
-    if runtime_import_custody is not None:
-        if source_owner is not None:
-            raise ValueError("runtime import custody requires full-depth owner scans")
-        runtime_import_custody.validate_scan_mode(
-            module_name, source_path, import_scan_mode
-        )
+    if _runtime_catalog is not None and (
+        source_owner is not None or import_scan_mode != "full"
+    ):
+        raise ValueError("runtime import custody requires full-depth owner scans")
     ast_digest_admission = _PythonAstDigestAdmission.for_tree(
         tree, ast_digest_admission
     )
@@ -1082,23 +1096,19 @@ def _collect_imports(
                     _dynamic_relative_import_discovery.record(
                         request, (context,), lexical_request=lexical_request
                     )
-            if (
-                runtime_import_custody is not None
-                and runtime_import_custody.admits_scan(
-                    module_name, source_path, ast_digest_admission.digest
-                )
-            ):
+            if _runtime_catalog is not None:
+                # The runtime may select any catalog row; completion appends it.
                 if star and _star_modules is not None:
                     assert request is not None and context is not None
                     plan = plan_static_import_request(
                         replace(request, fromlist=()), (context,)
                     )
-                    _star_modules.extend(
-                        runtime_import_custody.modules
-                        if plan.requires_runtime
-                        else plan.modules
-                    )
-                return runtime_import_custody.modules
+                    if plan.requires_runtime:
+                        _runtime_catalog.star_modules = True
+                    else:
+                        _star_modules.extend(plan.modules)
+                _runtime_catalog.imports = True
+                return ()
             if _dynamic_relative_import_discovery is not None:
                 if star and _dynamic_star_modules is not None:
                     assert request is not None and context is not None
@@ -1287,16 +1297,18 @@ def _collect_imports(
                 request = replace(request, fromlist=tuple(fromlist))
                 lexical_request = replace(lexical_request, fromlist=tuple(fromlist))
             record_site(payload.call, request, (context,))
-            for module in _sealed_import_modules(
+            sealed = _sealed_import_modules(
                 request,
                 (context,),
-                runtime_import_custody=runtime_import_custody,
-                source_path=source_path,
-                source_ast_digest=ast_digest_admission.digest,
+                runtime_catalog_owner=_runtime_catalog is not None,
                 dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
                 lexical_discovery_request=lexical_request,
                 source_discovery_requests=source_requests_for(request),
-            ):
+            )
+            if sealed.runtime_catalog:
+                assert _runtime_catalog is not None
+                _runtime_catalog.imports = True
+            for module in sealed.modules:
                 if module not in seen:
                     seen.add(module)
                     modules.append(module)
@@ -1476,31 +1488,34 @@ def _collect_imports(
             for context in _import_contexts(node)
         )
         record_site(node, request, contexts)
-        resolved = _sealed_import_modules(
+        sealed = _sealed_import_modules(
             request,
             contexts,
             lexical_discovery_contexts=lexical_contexts,
-            runtime_import_custody=runtime_import_custody,
-            source_path=source_path,
-            source_ast_digest=ast_digest_admission.digest,
+            runtime_catalog_owner=_runtime_catalog is not None,
             dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
         )
+        resolved = sealed.modules
         imports.extend(resolved)
+        if sealed.runtime_catalog:
+            assert _runtime_catalog is not None
+            _runtime_catalog.imports = True
+            if "*" in names:
+                _runtime_catalog.star_modules = True
         if _source_bindings is not None:
             # Resolve the base with the identical source-ordered context, rather
             # than stripping a member suffix from an ambiguous candidate list.
             base_request = StaticImportRequest.statement(
                 node.module or "", level=node.level, fromlist=()
             )
-            bases = _sealed_import_modules(
+            sealed_bases = _sealed_import_modules(
                 base_request,
                 contexts,
                 lexical_discovery_contexts=lexical_contexts,
-                runtime_import_custody=runtime_import_custody,
-                source_path=source_path,
-                source_ast_digest=ast_digest_admission.digest,
+                runtime_catalog_owner=_runtime_catalog is not None,
                 dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
             )
+            bases = sealed_bases.modules
             if _dynamic_relative_import_discovery is not None:
                 bases = tuple(
                     dict.fromkeys(
@@ -1517,6 +1532,7 @@ def _collect_imports(
                     python_node_source_key(alias),
                     bases,
                     python_source_field(alias, "name"),
+                    sealed_bases.runtime_catalog,
                 )
                 for alias in node.names
             )
@@ -1750,13 +1766,16 @@ def _collect_imports_for_graph(
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    runtime_import_custody: _RuntimeImportScanCustody | None = None,
-    source_path: Path | None = None,
+    runtime_catalog_owner: bool = False,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> _ImportDiscoveryProjection:
+    """Scan one source's graph requests. A runtime-import owner's scan defers
+    its dynamic-import sites to the runtime catalog instead of expanding it, so
+    the result depends on the source alone."""
     ast_digest_admission = _PythonAstDigestAdmission.for_tree(
         tree, ast_digest_admission
     )
+    runtime_catalog = _RuntimeCatalogUse() if runtime_catalog_owner else None
     discovery = _DynamicRelativeImportDiscovery()
     star_modules: list[str] = []
     dynamic_star_modules: list[str] = []
@@ -1771,11 +1790,10 @@ def _collect_imports_for_graph(
         import_scan_mode=import_scan_mode,
         target_python=target_python,
         namespace_premise=namespace_premise,
-        runtime_import_custody=runtime_import_custody,
-        source_path=source_path,
         ast_digest_admission=ast_digest_admission,
         source_owner=source_owner,
         source_arguments=source_arguments,
+        _runtime_catalog=runtime_catalog,
         _source_demands=source_demands,
         _source_bindings=source_bindings,
         _source_values=source_values,
@@ -1803,6 +1821,11 @@ def _collect_imports_for_graph(
             )
             if source_owner is None and isinstance(tree, ast.Module)
             else None
+        ),
+        runtime_catalog=(
+            None
+            if runtime_catalog is None
+            else runtime_catalog.deferral(ast_digest_admission.digest)
         ),
     )
 
@@ -1927,8 +1950,6 @@ def _collect_import_star_modules(
     import_scan_mode: ImportScanMode = "full",
     namespace_premise: PythonNamespacePremise | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    runtime_import_custody: _RuntimeImportScanCustody | None = None,
-    source_path: Path | None = None,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
     _dynamic_star_modules: list[str] | None = None,
@@ -1943,8 +1964,6 @@ def _collect_import_star_modules(
         import_scan_mode=import_scan_mode,
         target_python=target_python,
         namespace_premise=namespace_premise,
-        runtime_import_custody=runtime_import_custody,
-        source_path=source_path,
         ast_digest_admission=ast_digest_admission,
         _dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
         _star_modules=out,
@@ -1995,4 +2014,5 @@ def _collect_import_scan_requests(
         projection.source_sites,
         projection.all_exports,
         projection.namespace_summary,
+        projection.runtime_catalog,
     )

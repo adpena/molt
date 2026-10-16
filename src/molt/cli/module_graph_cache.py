@@ -13,6 +13,7 @@ import os
 import sys
 from dataclasses import asdict
 from molt.compiler_analysis.python_imports import (
+    RuntimeCatalogDeferral,
     SourceImportSite,
     SourceAllExports,
     SourceDemandPhase,
@@ -722,7 +723,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 33
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 34
 
 
 def _import_scan_cache_path(
@@ -737,6 +738,7 @@ def _import_scan_cache_path(
     namespace_premise: PythonNamespacePremise | None = None,
     native_support_function_roots: tuple[str, ...] = (),
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_catalog_owner: bool = False,
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -746,6 +748,7 @@ def _import_scan_cache_path(
         module_name,
         "pkg" if is_package else "mod",
         import_scan_mode,
+        "runtime-owner" if runtime_catalog_owner else "strict",
         repr(source_owner),
         repr(source_arguments),
         repr(native_support_function_roots),
@@ -814,6 +817,7 @@ def _read_persisted_import_scan_record(
     path_stat: os.stat_result | None = None,
     snapshot: _module_source.PythonSourceSnapshot | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_catalog_owner: bool = False,
 ) -> _ImportScanRequests | None:
     cache_path = _import_scan_cache_path(
         project_root,
@@ -826,6 +830,7 @@ def _read_persisted_import_scan_record(
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
         target_python=target_python,
+        runtime_catalog_owner=runtime_catalog_owner,
     )
     payload = _read_cached_json_object(
         cache_path, max_bytes=SOURCE_ANALYSIS_CACHE_MAX_BYTES
@@ -860,7 +865,14 @@ def _read_persisted_import_scan_record(
         "dynamic_relative_import_candidates",
         "requires_runtime_package_anchor",
         "namespace_summary",
+        "runtime_catalog",
     }:
+        return None
+    try:
+        runtime_catalog = _decode_runtime_catalog_deferral(payload["runtime_catalog"])
+    except ValueError:
+        return None
+    if (runtime_catalog is not None) != runtime_catalog_owner:
         return None
     try:
         namespace_summary = (
@@ -960,13 +972,17 @@ def _read_persisted_import_scan_record(
                 decode_python_source_key(source),
                 _source_cache_strings(modules),
                 attribute,
+                deferred,
             )
-            for source, modules, attribute in rows("source_bindings", 3)
+            for source, modules, attribute, deferred in rows("source_bindings", 4)
         )
         if any(
             not all(isinstance(name, str) for name in item.modules)
             or item.attribute is not None
             and not isinstance(item.attribute, str)
+            or type(item.runtime_catalog) is not bool
+            or item.runtime_catalog
+            and runtime_catalog is None
             for item in bindings
         ):
             return None
@@ -1111,6 +1127,37 @@ def _read_persisted_import_scan_record(
         sites,
         exports,
         namespace_summary,
+        runtime_catalog,
+    )
+
+
+def _encode_runtime_catalog_deferral(
+    deferral: RuntimeCatalogDeferral | None,
+) -> dict[str, Any] | None:
+    if deferral is None:
+        return None
+    return {
+        "source_ast_digest": deferral.source_ast_digest,
+        "imports": deferral.imports,
+        "star_modules": deferral.star_modules,
+    }
+
+
+def _decode_runtime_catalog_deferral(value: object) -> RuntimeCatalogDeferral | None:
+    """A closed record; any other shape makes the scan a miss."""
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"source_ast_digest", "imports", "star_modules"}
+        or not isinstance(value["source_ast_digest"], str)
+        or not value["source_ast_digest"]
+        or type(value["imports"]) is not bool
+        or type(value["star_modules"]) is not bool
+    ):
+        raise ValueError("invalid runtime catalog deferral")
+    return RuntimeCatalogDeferral(
+        value["source_ast_digest"], value["imports"], value["star_modules"]
     )
 
 
@@ -1129,10 +1176,16 @@ def _write_persisted_import_scan(
     scan: _ImportScanRequests,
     snapshot: _module_source.PythonSourceSnapshot,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    runtime_catalog_owner: bool = False,
 ) -> None:
     _validate_import_scan_namespace_summary(
         scan.namespace_summary, source_owner=source_owner
     )
+    if (scan.runtime_catalog is not None) != runtime_catalog_owner or (
+        scan.runtime_catalog is None
+        and any(binding.runtime_catalog for binding in scan.source_bindings)
+    ):
+        raise ValueError("a runtime catalog deferral belongs only to an owner scan")
     if snapshot.path != path:
         raise ValueError("source scan snapshot path mismatch")
     identity = {"size": len(snapshot.content), "source_sha256": snapshot.sha256}
@@ -1219,6 +1272,7 @@ def _write_persisted_import_scan(
             scan.dynamic_relative_import_candidates
         ),
         "requires_runtime_package_anchor": scan.requires_runtime_package_anchor,
+        "runtime_catalog": _encode_runtime_catalog_deferral(scan.runtime_catalog),
     }
     cache_path = _import_scan_cache_path(
         project_root,
@@ -1231,6 +1285,7 @@ def _write_persisted_import_scan(
         namespace_premise=namespace_premise,
         native_support_function_roots=native_support_function_roots,
         target_python=target_python,
+        runtime_catalog_owner=runtime_catalog_owner,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_cached_json_object(cache_path, payload)

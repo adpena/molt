@@ -2454,6 +2454,22 @@ class _SourceImportBinding(NamedTuple):
     source: PythonSourceKey
     modules: tuple[str, ...]
     attribute: str | None
+    # The runtime import catalog completes this binding's modules.
+    runtime_catalog: bool = False
+
+
+class RuntimeCatalogDeferral(NamedTuple):
+    """Where a runtime-import owner's scan defers to the runtime catalog.
+
+    An owner's dynamic import may select any catalog row at run time. The
+    catalog is live graph state, so the source-pure scan records which of its
+    collections the catalog completes, and completion appends the catalog.
+    The digest names the scanned AST: custody admits only its own owner source.
+    """
+
+    source_ast_digest: str
+    imports: bool = False
+    star_modules: bool = False
 
 
 class _SourceValueSummary(NamedTuple):
@@ -2494,6 +2510,8 @@ class _ImportScanRequests(NamedTuple):
     source_sites: tuple[SourceImportSite, ...] = ()
     all_exports: SourceAllExports = SourceAllExports("absent")
     namespace_summary: PythonNamespaceSummary | None = None
+    # Set only by a runtime-import owner's scan; completion requires the catalog.
+    runtime_catalog: RuntimeCatalogDeferral | None = None
 
 
 class _ImportDiscoveryProjection(NamedTuple):
@@ -2510,3 +2528,33 @@ class _ImportDiscoveryProjection(NamedTuple):
     source_sites: tuple[SourceImportSite, ...] = ()
     all_exports: SourceAllExports = SourceAllExports("absent")
     namespace_summary: PythonNamespaceSummary | None = None
+    # Set only by a runtime-import owner's scan; completion requires the catalog.
+    runtime_catalog: RuntimeCatalogDeferral | None = None
+
+
+def expand_runtime_catalog(
+    requests: _ImportScanRequests, catalog: Sequence[str]
+) -> _ImportScanRequests:
+    """Complete an owner scan's deferred sites with the live runtime catalog."""
+    deferral = requests.runtime_catalog
+    if deferral is None:
+        raise ValueError("only a runtime-import owner scan defers to the catalog")
+
+    def completed(modules: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((*modules, *catalog)))
+
+    return requests._replace(
+        imports=completed(requests.imports) if deferral.imports else requests.imports,
+        star_modules=(
+            completed(requests.star_modules)
+            if deferral.star_modules
+            else requests.star_modules
+        ),
+        source_bindings=tuple(
+            binding._replace(modules=completed(binding.modules), runtime_catalog=False)
+            if binding.runtime_catalog
+            else binding
+            for binding in requests.source_bindings
+        ),
+        runtime_catalog=None,
+    )
