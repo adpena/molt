@@ -236,6 +236,21 @@ crate::builtins::methods::native_method_table!(memoryview_method_bits, publish_m
             fn_addr!(molt_memoryview_hex),
             3,
         )),
+        "__enter__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).memoryview, "__enter__"),
+            fn_addr!(crate::object::ops_memoryview::memoryview_enter_method),
+            1,
+        )),
+        "__exit__" => {
+            let spec = NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).memoryview, "__exit__");
+            let spec = if runtime_python_at_least(_py, 3, 15) {
+                spec.with_text_signature("($self, /, *exc_info)")
+            } else { spec };
+            Some(crate::builtins::methods::builtin_variadic_func_bits(
+                _py, spec, fn_addr!(crate::object::ops_memoryview::memoryview_exit_method),
+            ))
+        },
         "release" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).memoryview, "release").with_text_signature("($self, /)"),

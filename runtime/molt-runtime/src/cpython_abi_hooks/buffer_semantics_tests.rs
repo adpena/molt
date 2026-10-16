@@ -5,6 +5,67 @@ use std::ffi::{c_char, c_void};
 use std::ptr;
 
 #[test]
+fn memoryview_context_uses_public_hooks_and_releases_once() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let py = &py;
+        use molt_runtime_core::OwnedRuntimeValue;
+        let backing = crate::alloc_bytearray(py, b"view");
+        assert!(!backing.is_null());
+        let backing = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::MoltObject::from_ptr(backing).bits(),
+        );
+        let view = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::molt_memoryview_new(backing.bits()),
+        );
+        assert!(!crate::exception_pending(py));
+        let entered = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::molt_context_enter(view.bits()),
+        );
+        assert!(!crate::exception_pending(py));
+        assert_eq!(entered.bits(), view.bits());
+        drop(entered);
+        // Model nested `with view` entries: the compiler's exit intrinsic
+        // requires a matching active context even though the Python method
+        // itself accepts arbitrary repeated exits.
+        let nested = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::molt_context_enter(view.bits()),
+        );
+        assert!(!crate::exception_pending(py));
+        assert_eq!(nested.bits(), view.bits());
+        drop(nested);
+        let result = OwnedRuntimeValue::from_owned_bits(
+            py.core_token(),
+            crate::molt_context_exit(view.bits(), crate::MoltObject::none().bits()),
+        );
+        assert!(!crate::exception_pending(py));
+        assert!(!crate::is_truthy(py, crate::obj_from_bits(result.bits())));
+        // Exit retires the counted export through the same release authority;
+        // the original view stays an ordinary, now-released Python object.
+        assert!(crate::object::buffer_exports::bytearray_resize(
+            py,
+            backing.bits(),
+            5
+        ));
+        crate::molt_context_enter(view.bits());
+        assert!(crate::exception_pending(py));
+        let error = crate::molt_exception_last();
+        assert_eq!(
+            crate::type_name(py, crate::obj_from_bits(error)),
+            "ValueError"
+        );
+        crate::dec_ref_bits(py, error);
+        crate::clear_exception(py);
+        crate::molt_context_exit(view.bits(), crate::MoltObject::none().bits());
+        assert!(!crate::exception_pending(py));
+    });
+}
+
+#[test]
 fn test_memoryview_from_memory_has_type_and_null_base() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::concurrency::gil::with_gil(|_py| {

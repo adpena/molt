@@ -86,6 +86,14 @@ Native pointers obtained for the callback have that documented call lifetime;
 subsequent descriptor release must remain safe. This contract introduces no
 second storage registry or eager input copy.
 
+Memoryview context entry returns the same unreleased view; exit ignores
+positional exception information and invokes that existing release owner.
+Active native exports refuse release atomically, while derived views retain
+their independent lifetimes. Repeated exit remains safe, and release callbacks
+observe the original view as released before reentry. These native descriptors
+follow pinned [CPython memoryview semantics](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/memoryobject.c)
+and participate in ordinary context-manager dispatch.
+
 Buffered readers and writers share one operation owner, traced raw edge and
 scoped callback-view authority, following pinned
 [CPython buffered I/O](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Modules/_io/bufferedio.c).
