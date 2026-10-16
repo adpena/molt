@@ -1,12 +1,14 @@
 """Verified LLVM SDK tools for real-toolchain object-format proofs.
 
 Tests that compile, archive, read or link real objects take their tools from
-the verified LLVM SDK (`molt.llvm_toolchain`), never from ambient PATH guesses.
+the verified LLVM SDK (`molt.llvm_toolchain`), never from ambient PATH guesses,
+and run them in the environment the product projects for that SDK (PATH, and
+on macOS SDKROOT and DEVELOPER_DIR), never in the ambient shell's (HF-231).
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import functools
 import os
@@ -43,6 +45,7 @@ class VerifiedLlvmTools:
     clang: str
     ar: str
     nm: str
+    environment: Mapping[str, str]
 
     def native_target(self, object_format: str) -> str:
         return f"{self.architecture}-{_OBJECT_FORMAT_TRIPLE_SUFFIXES[object_format]}"
@@ -77,6 +80,7 @@ def _verified_llvm_tools() -> VerifiedLlvmTools | str:
     from molt.llvm_toolchain import (
         llvm_bootstrap_command,
         llvm_host_architecture,
+        project_llvm_toolchain_environment,
         required_llvm_backend_pin,
         verify_available_llvm_toolchain,
     )
@@ -111,7 +115,10 @@ def _verified_llvm_tools() -> VerifiedLlvmTools | str:
         )
         for role in ("cc", "ar", "nm")
     )
-    return VerifiedLlvmTools(bin_dir, architecture, clang, ar, nm)
+    environment = project_llvm_toolchain_environment(
+        root, verification, environ=dict(os.environ)
+    )
+    return VerifiedLlvmTools(bin_dir, architecture, clang, ar, nm, environment)
 
 
 def verified_llvm_tools() -> VerifiedLlvmTools:

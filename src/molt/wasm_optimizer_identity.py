@@ -243,6 +243,17 @@ def find_wasm_opt(*, environment: Mapping[str, str] | None = None) -> str | None
     on_path = shutil.which("wasm-opt", path=environment.get("PATH", os.defpath))
     if on_path is not None:
         return on_path
+    return managed_wasm_opt(environment=environment)
+
+
+def managed_wasm_opt(*, environment: Mapping[str, str] | None = None) -> str | None:
+    """The attested manifest-owned ``wasm-opt`` installation, or ``None``.
+
+    ``tools/toolchain_env.py`` pins ``MOLT_WASM_OPT`` to it, so a shell's
+    ambient ``wasm-opt`` cannot stand in for the pinned release.
+    """
+
+    environment = os.environ if environment is None else environment
     from molt.dx import DxConfigError, canonical_toolchain_root
 
     try:

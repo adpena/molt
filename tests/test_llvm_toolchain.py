@@ -605,6 +605,16 @@ def test_prefix_verifier_preserves_external_llvm_config_identity(
     )
     assert projected["LLVM_SYS_221_PREFIX"] == str(llvm_config.parent.parent)
     assert projected["MLIR_SYS_220_PREFIX"] == str(prefix)
+    # A decoy earlier on PATH (Homebrew's LLD) must not keep precedence over
+    # the verified prefix's bin, even when PATH already lists that bin.
+    decoy = str(tmp_path / "homebrew" / "bin")
+    managed_bin = str(prefix / "bin")
+    reordered = llvm_toolchain.project_llvm_toolchain_environment(
+        ROOT,
+        verification,
+        environ={"PATH": os.pathsep.join([decoy, managed_bin, "/usr/bin"])},
+    )
+    assert reordered["PATH"].split(os.pathsep) == [managed_bin, decoy, "/usr/bin"]
 
 
 def test_debian_packages_cover_manifest_owned_sdk_components() -> None:

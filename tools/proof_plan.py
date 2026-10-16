@@ -10,6 +10,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import fnmatch
+import functools
 import hashlib
 import heapq
 import json
@@ -122,6 +123,17 @@ REQUIRED_TOOLCHAIN_FIELDS = (
     "setup_evidence",
 )
 TARGET_DERIVED_IDENTITY_PROVIDERS = frozenset({"source-extension"})
+# The provider that owns a policy's managed install, which
+# tools/toolchain_env.py projects into a shell (HF-231): the verified LLVM SDK,
+# the provisioned wasi-sdk, a pinned tool release, or the Binaryen release.
+TOOLCHAIN_PROJECTIONS = frozenset({"llvm-sdk", "wasi-sdk", "tool-release", "binaryen"})
+
+
+@functools.cache
+def _tool_release_names(root: Path) -> frozenset[str]:
+    from molt.tool_releases import load_tool_releases
+
+    return frozenset(load_tool_releases(root))
 
 
 def family_matrix_output(family_name: str) -> str:
@@ -254,6 +266,14 @@ class ToolchainPolicy:
         if "members" in self.data:
             return "group"
         return "target-derived" if "identity_provider" in self.data else "executable"
+
+    @property
+    def projection(self) -> str | None:
+        """The provider tools/toolchain_env.py projects, or None (host tool)."""
+        projection = self.data.get("projection")
+        if projection is not None and projection not in TOOLCHAIN_PROJECTIONS:
+            raise ValueError(f"{self.name}: invalid projection {projection!r}")
+        return projection
 
     @property
     def python_identity_role(self) -> Literal["environment", "runtime"] | None:
@@ -925,6 +945,19 @@ class ProofPlan:
             for field in REQUIRED_TOOLCHAIN_FIELDS:
                 if field not in policy.data:
                     errors.append(f"{policy.name}: missing toolchain field {field}")
+            projection = policy.data.get("projection")
+            if projection is not None and projection not in TOOLCHAIN_PROJECTIONS:
+                errors.append(
+                    f"{policy.name}: projection must be one of "
+                    f"{sorted(TOOLCHAIN_PROJECTIONS)!r}"
+                )
+            if projection == "tool-release" and policy.data.get(
+                "executable"
+            ) not in _tool_release_names(policy.root):
+                errors.append(
+                    f"{policy.name}: a tool-release projection needs its executable "
+                    "in config/tool_releases.toml"
+                )
             identity_kind = policy.identity_kind
             if identity_kind == "executable":
                 executable = policy.data.get("executable")
@@ -3153,6 +3186,15 @@ def toolchain_fingerprints(
                 f"{name}"
                 + (f" [{owner}]" if owner else "")
                 + f": {errors[name]}{suffix}"
+            )
+        projectable = [
+            name for name in names if name in errors and policies[name].projection
+        ]
+        if projectable:
+            selection = " ".join(f"--toolchain {name}" for name in projectable)
+            diagnostics.append(
+                "project the pinned toolchains into this shell: "
+                f'eval "$(python3 tools/toolchain_env.py {selection})"'
             )
         raise ValueError("toolchain contract violation: " + "; ".join(diagnostics))
     return fingerprints

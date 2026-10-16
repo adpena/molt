@@ -1505,6 +1505,7 @@ def test_static_nobundle_order_changes_real_archive_resolution(tmp_path: Path) -
                 "-o",
                 str(object_path),
             ],
+            env=dict(tools.environment),
             text=True,
             timeout=30,
             check=True,
@@ -1515,6 +1516,7 @@ def test_static_nobundle_order_changes_real_archive_resolution(tmp_path: Path) -
     for archive, member in ((consumer, "consumer"), (provider, "provider")):
         run_cli_test_process(
             [tools.ar, "rcs", str(archive), str(objects[member])],
+            env=dict(tools.environment),
             text=True,
             timeout=30,
             check=True,
@@ -1534,6 +1536,7 @@ def test_static_nobundle_order_changes_real_archive_resolution(tmp_path: Path) -
                 "-o",
                 str(tmp_path / output),
             ],
+            env=dict(tools.environment),
             text=True,
             timeout=30,
             check=False,

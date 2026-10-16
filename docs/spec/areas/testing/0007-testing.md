@@ -297,6 +297,21 @@ pinned Python) and run
 `python3 tools/proof_plan.py --run-command <command-id> --receipt <file>`. Keep
 the runner temp short: the backend daemon socket path derives from it.
 
+The plan also admits each command's pinned toolchains (LLVM, the wasi-sdk,
+wasm-tools, Binaryen, Node, Lune), which CI's setup actions put first on
+`PATH`; a developer shell often has other versions first, and the preflight
+refuses them. Project the same toolchains, scoped to what the command declares,
+before the hosted state (that state moves the toolchain root, and the
+projection emits absolute paths):
+
+```bash
+eval "$(python3 tools/toolchain_env.py --command <command-id>)"
+```
+
+`--family` and `--toolchain` select by family or by policy name; a refusal
+prints the exact line. The command never downloads: it names the install
+command for a provider that is missing.
+
 A unit test that builds a synthetic project or asserts developer-host roots or
 guard limits must not inherit that state: it uses the shared
 `developer_host_context` and `no_ambient_guard_caps` fixtures from

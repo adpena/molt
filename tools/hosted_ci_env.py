@@ -16,6 +16,10 @@ so such failures reproduce in seconds::
     eval "$(python3 tools/hosted_ci_env.py --runner-temp /tmp/molt-runner)"
     uv run --python 3.12 python -m pytest -q tests/cli
 
+The job's pinned toolchains are a separate projection, made first, because
+this state moves the toolchain root: ``eval "$(python3 tools/toolchain_env.py
+--command <id>)"``.
+
 The resource plan is computed for this host, as the setup action computes it
 for the runner, so caps match CI in kind but not in value. The tool refuses to
 print an environment that ``molt.dx.checkout_custody`` does not accept as
