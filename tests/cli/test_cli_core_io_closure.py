@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli.module_import_scanner import _collect_imports_for_graph
+from molt.compiler_analysis.python_import_scan import _collect_imports_for_graph
 from molt.target_python import (
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
     _parse_target_python_version,

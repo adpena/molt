@@ -74,7 +74,7 @@ def test_package_init_keeps_host_version_lookup_out_of_compiled_guests() -> None
     """
     import ast
 
-    from molt.cli.module_import_scanner import _collect_imports
+    from molt.compiler_analysis.python_import_scan import _collect_imports
 
     path = ROOT / "src" / "molt" / "__init__.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))

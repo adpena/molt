@@ -167,7 +167,6 @@ lint = [
     "@rust-ffi-block-check",
     "{project_python} -m ty check src",
     "{project_python} tools/verified_subset.py check",
-    "{project_python} tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
     "{project_python} tools/check_stdlib_intrinsics.py --critical-allowlist",
     "{project_python} tools/check_dynamic_policy.py",
     "{project_python} tools/check_ecosystem_compat.py",

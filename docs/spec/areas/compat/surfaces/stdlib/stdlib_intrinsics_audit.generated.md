@@ -19,8 +19,8 @@
 - Total audited modules: `949`
 - `intrinsic-backed`: `36`
 - `intrinsic-partial`: `161`
-- `intrinsic-support`: `31`
-- `python-compiled`: `341`
+- `intrinsic-support`: `28`
+- `python-compiled`: `344`
 - `stub`: `380`
 - `policy-gate`: `0`
 
@@ -298,9 +298,6 @@
 - `email._policybase`
 - `multiprocessing._api_surface`
 - `operator`
-- `pathlib._abc`
-- `pathlib._local`
-- `pathlib._os`
 - `xml.etree.cElementTree`
 
 ### Compiled pure-Python modules
@@ -574,6 +571,9 @@
 - `multiprocessing.synchronize`
 - `multiprocessing.util`
 - `numbers`
+- `pathlib._abc`
+- `pathlib._local`
+- `pathlib._os`
 - `pathlib.types`
 - `pickletools`
 - `profile`
@@ -1030,35 +1030,21 @@
 
 ### Fail-closed policy-gate modules
 
-## Core Lane Gate
-- Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).
-- Gate rule: by default the core-lane import closure must be implemented (`intrinsic-backed`, `intrinsic-partial`, `intrinsic-support` or `python-compiled`), with zero `stub` and zero `policy-gate` modules; `--allow-status` narrows or widens the set.
+## Core Lane Source Inventory
+- Source lane: `tests/differential/basic/CORE_TESTS.txt`.
+- The inventory records exact stdlib import candidates and source status; candidate presence, absence and exception handling do not establish runtime success or API parity.
+- Unknown dynamic import custody remains explicit. Actual compiler admission, retained-IR requirements, linking and target execution own runtime qualification.
 - Enforced by: `python3 tools/check_core_lane_lowering.py`.
 
-## Bootstrap Gate
-- Strict roots: `builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`
-- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be implemented (`intrinsic-backed`, `intrinsic-partial`, `intrinsic-support` or `python-compiled`); a `stub` or `policy-gate` module implements nothing.
-- Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`
-- Gate rule: required bootstrap modules that are present must be implemented; a `stub` or `policy-gate` module is not bootstrap support.
+## Bootstrap and Selected Source Roots
+- Bootstrap source roots: `builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`
+- When bootstrap roots are present, all those roots must be present and implemented. Candidate dependency closure does not prove which imports must succeed.
+- Required bootstrap modules that are present must be implemented; a `stub` or `policy-gate` module is not bootstrap support.
+- `--critical-allowlist` and `--allowlist-modules` require implemented source roots, without inferring successful execution of every candidate dependency.
 
-## Critical Strict-Import Gate
-- Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.
-- Critical roots: `re`, `socket`, `threading`, `asyncio`, `pathlib`, `time`, `traceback`, `sys`, `os`
-- Gate rule: each listed root must be implemented, and so must every transitive stdlib import in its closure.
-- Strict root rule: no optional intrinsic loaders and no try/except import fallback paths (applies to all listed roots, including `intrinsic-partial`).
-
-## Intrinsic-Backed Fallback Gate
-- Global rule: every `intrinsic-backed` module must avoid optional intrinsic loaders and try/except import fallback paths.
-- Enforced by: `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`.
-
-## All-Stdlib Fallback Gate
-- Global rule: every stdlib module must avoid optional intrinsic loaders and try/except import fallback paths.
-- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
-
-## Intrinsic Pass-Fallback Gate
-- Rule: selected modules must not swallow intrinsic call failures via try/except pass-only fallback paths.
-- Enforced modules: `json`
-- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+## Standalone Execution and Python Errors
+- Admitted Python implementations may select compiled alternatives or catch Python exceptions. Their semantics and performance require independent qualification.
+- Retained intrinsic symbols must satisfy the compiler's target/profile and link requirements. Source catch syntax is not an availability or error-contract proof.
 
 ## Unread Intrinsic Gate
 - Global rule: every intrinsic a stdlib module requires must be read (see Policy). A discarded requirement or a private binding no module loads fails the gate; delete it.

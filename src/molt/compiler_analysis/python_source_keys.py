@@ -8,12 +8,38 @@ import hashlib
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TypeAlias, cast
 from types import MappingProxyType
 from collections.abc import Mapping
 
 
 PythonSourceKey: TypeAlias = tuple[int, int, int, int, str]
+
+
+def decode_python_source_key(value: object) -> PythonSourceKey:
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 5
+        or not all(type(part) is int for part in value[:4])
+        or not isinstance(value[4], str)
+    ):
+        raise ValueError("invalid source-owner identity")
+    if min(value[:4]) < 0 or tuple(value[:2]) > tuple(value[2:4]) or not value[4]:
+        raise ValueError("invalid source-owner span")
+    return tuple(value)
+
+
+class PythonSourceProjection(StrEnum):
+    YIELD_FROM_ELEMENTS = "YieldFrom.elements"
+
+
+def python_source_projection_key(
+    node: ast.YieldFrom, projection: PythonSourceProjection
+) -> PythonSourceKey:
+    """Keep a delegated element distinct from its expression's completion."""
+    source = python_node_source_key(node)
+    return (*source[:4], projection.value)
 
 
 def python_source_digest(source: str) -> str:
@@ -272,6 +298,7 @@ class _PythonAstDigestAdmission:
                             ast.AsyncFunctionDef,
                             ast.ClassDef,
                             ast.Lambda,
+                            ast.GeneratorExp,
                             *([ast.TypeAlias] if hasattr(ast, "TypeAlias") else []),
                         ),
                     )
@@ -385,6 +412,9 @@ def python_pattern_is_capture_only(pattern: ast.pattern) -> bool:
 
 __all__ = [
     "PythonSourceKey",
+    "PythonSourceProjection",
+    "decode_python_source_key",
+    "python_source_projection_key",
     "python_ast_digest",
     "python_source_digest",
     "python_node_source_key",

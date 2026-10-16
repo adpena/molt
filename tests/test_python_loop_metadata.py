@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 
 import pytest
@@ -155,12 +157,12 @@ def test_completion_and_assignment_siblings_preserve_closed_anchors(
 def test_import_consumers_share_loop_metadata_facts() -> None:
     tree = ast.parse(_SAFE)
     assert set(
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree, module_name="pkg.entry", is_package=False
         )
     ) == {"pkg.child", "pkg.child.value"}
     star = ast.parse(_SAFE.replace("import value", "import *"))
-    assert module_import_scanner._collect_import_star_modules(
+    assert _source_import_scan._collect_import_star_modules(
         star, module_name="pkg.entry", is_package=False
     ) == ("pkg.child",)
     assert not module_import_scanner._tree_uses_runtime_import_protocol(

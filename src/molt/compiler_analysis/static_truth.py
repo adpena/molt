@@ -11,7 +11,7 @@ import ast
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 import math
-from typing import Final, Literal, TypeAlias, TypedDict, cast
+from typing import Final, Literal, TypeAlias, TypedDict, assert_never, cast
 
 from molt.compiler_analysis.literal_identity import (
     literal_identity_key,
@@ -41,10 +41,65 @@ _NON_SYMBOL_IDENTITIES: Final = int(
 )
 
 
+ContextExecutionPhase = Literal[
+    "context_enter",
+    "context_exit",
+    "context_unpack",
+    "async_context_enter",
+    "async_context_exit",
+    "async_context_unpack",
+]
+SourceDemandPhase = Literal[
+    "read",
+    "call",
+    "factory",
+    "class",
+    "resume",
+    "escape",
+    "expose",
+    "release",
+    "protocol",
+    "descriptor",
+    "iterate",
+    "async_iterate",
+    "get_iter",
+    "get_async_iter",
+    "next",
+    "async_next",
+    "await",
+    ContextExecutionPhase,
+]
+
+
+def context_execution_protocol(
+    phase: ContextExecutionPhase,
+) -> tuple[Literal["__enter__", "__exit__", "__aenter__", "__aexit__"], bool, bool]:
+    """Selected special method, await-result, and target-unpack operation.
+
+    Literal matches keep this projection exhaustive without constructing a
+    method table on each source-value activation.
+    """
+    match phase:
+        case "context_enter":
+            return "__enter__", False, False
+        case "context_exit":
+            return "__exit__", False, False
+        case "context_unpack":
+            return "__enter__", False, True
+        case "async_context_enter":
+            return "__aenter__", True, False
+        case "async_context_exit":
+            return "__aexit__", True, False
+        case "async_context_unpack":
+            return "__aenter__", True, True
+        case _:
+            assert_never(phase)
+
+
 @dataclass(frozen=True, slots=True)
 class DeferredExecution:
     source: PythonSourceKey
-    phase: Literal["call", "factory", "class", "resume", "escape"]
+    phase: SourceDemandPhase
 
 
 ScalarValue: TypeAlias = None | bool | int | float | complex | str | bytes

@@ -1,7 +1,7 @@
 # Verified namespace premises
 
-Status: implemented for tooling source closures (2026-10-15); user-program discovery and the frontend
-are next. Owner finding HF-226.
+Status: implemented for tooling source closures and user-program discovery (2026-10-16);
+frontend premise adoption remains open. Owner finding HF-226.
 
 ## Problem
 
@@ -46,8 +46,9 @@ rejects a file reachable under two names.
 
 Under spec 0216 a module's globals change outside its own statements only through:
 
-- **its own code**: deferred code that declares a name `global`, and own-namespace item writes with
-  literal keys (`globals().pop("_require_intrinsic", None)`, 177 molt stdlib sites);
+- **its own deferred code**: `global` declarations and own-namespace item writes with literal keys.
+  Initialization stores such as `globals().pop("_require_intrinsic", None)` affect the current
+  binding state; they do not authorize later callbacks to replace that name;
 - **named writes from other modules**: an attribute store, `setattr`/`delattr`, `__setattr__`, or a
   `__dict__`/`vars()` item write on a module reference (an import binding, its attribute chain, or a
   `sys.modules` entry);
@@ -56,19 +57,45 @@ Under spec 0216 a module's globals change outside its own statements only throug
 Anything else (a module object handed to a generic writer, frame `f_globals` writes, `exec`/`eval` on
 foreign globals, `gc` walks) is unrestricted reflection or monkeypatching, outside the contract. A module
 whose own code reflects its namespace dynamically (an escaping `globals()`, a computed key, `exec`/`eval`
-on its own globals, a star import) keeps the whole-namespace model for itself.
+on its own globals) keeps the whole-namespace model for itself.
+
+A star import writes the importing module during initialization; it does not grant later callbacks
+ownership of every global. [CPython restricts it to module scope](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Python/symtable.c#L2375-L2389)
+and [publishes exported values sequentially into current locals](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Python/intrinsics.c#L34-L117).
+Binding flow invalidates the current module slots directly, including undeclared global/builtin
+fallback reads, independently of the callback domain. Import flow preserves unknown metadata and
+partial-publication effects. A star-exported receiver can name or shadow a module or import-hook
+object: actual attribute, namespace, item and method mutations retain conservative foreign-write
+and hook effects. A plain imported-function call or read does not by itself publish those writes.
 
 Canonical members follow the same rule: a callback changes `typing.TYPE_CHECKING`, `sys.modules`,
 `sys.meta_path` and the other `PythonMember` facts only if some code in the graph writes them by name,
 or mutates an import-hook object (`sys.modules`, `sys.meta_path`, `sys.path_hooks`,
 `sys.path_importer_cache`).
 
+Import-cache entry mutation and replacement of the cache object are distinct facts.
+[CPython consults the cache by module name](https://docs.python.org/3/reference/import.html#the-module-cache).
+An entry write can redirect a canonical acquisition only when its key may name one of the providers
+in the generated identity catalog. Literal keys retain their actual names; formatted keys can prove
+disjointness through fixed prefix, suffix and minimum-length bounds. Other computed keys remain
+unknown. The write stays in the inventory even when disjoint; this fact does not prove callback
+freedom. Operand dispatch transports source origins through the existing protocol/release demands,
+including formatting, hashing, comparisons and contained values. Replacing or escaping a hook object
+retains the broader invalidation contract.
+
+Native list/dict methods use the builtin-shape authority's direct receiver-write facts, including
+slot methods. These follow CPython's [list implementation](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/listobject.c)
+and [dictionary implementation](https://github.com/python/cpython/blob/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/dictobject.c).
+A method that does not directly mutate its receiver can still invoke callbacks. A reached custom
+replacement invalidates the native-hook premise independently; a method name alone proves no custom
+receiver behavior.
+
 ## Design
 
 1. **One summary authority.** `compiler_analysis/python_namespace_writes.py` summarizes a module in one
    AST pass (0.77 ms per file on the 461 tooling sources): the own names its deferred code rebinds
    (`None` on dynamic own reflection) and its named writes to other modules' namespaces, as
-   `(receiver spelling, name, construct, line)`. It is conservative by spelling.
+   `(receiver spelling, name, construct, line, execution owner)`. It is conservative by spelling.
 2. **The binding flow takes a premise.** `PythonBindingFlowPolicy.foreign_namespace_writes` lists the
    names other graph code writes into this module (`None`, the default, means any name);
    `callback_member_writes` lists the canonical members code in the graph writes (default: all). With a
@@ -83,6 +110,14 @@ or mutates an import-hook object (`sys.modules`, `sys.meta_path`, `sys.path_hook
    source-ordered transfer; neither maintains a second acquisition or guard registry. The runtime's
    builtin-specialization guard bits remain their separate `runtime/builtin_binding_guards.toml`
    contract. Catalog generation adds no work to emitted binaries.
+   Class mappings and exposed frame locals retain their own conservative storage taint. That taint
+   does not imply a writer to every module-global name. Dynamic mapping stores preserve actual
+   callable source origins at their existing escape boundary even when storage identity becomes
+   unknown; source-owned metaclass and mapping alternatives use the same value worklist.
+   A supplied graph premise also seeds `entry_invalid_members`: a reached foreign writer may have
+   run before this module's first canonical acquisition. Future callback writes and initial member
+   uncertainty are separate policy facts. Standalone analysis retains its explicit initial premise;
+   an unknown graph owner cannot supply a pristine-entry proof. Policy identity includes both facts.
 3. **The import flow asks the binding flow.** `PythonBindingFacts.callbacks_rewrite_metadata` says
    whether any callback can rebind `__name__`, `__package__`, `__spec__` or `__path__`. Without it,
    every callback summary in the import flow leaves the metadata states unchanged.
@@ -94,6 +129,19 @@ or mutates an import-hook object (`sys.modules`, `sys.meta_path`, `sys.path_hook
    walks again until the premise it assumed is the one it found. Writes only add names, so the premise
    grows monotonically. A package's premise always includes its child module names from the
    filesystem, so it never depends on which children the graph reaches.
+   User-program discovery uses the same summaries and aggregation through
+   `PythonGraphNamespaceIndex`. Each admitted module publishes one writer summary, with foreign
+   writes attached to their source execution owner. Module initialization joins immediate writes;
+   reached deferred bodies join their own writes once, independently of argument contexts. Full
+   inventories retain all owners. Headers and class bodies keep their enclosing execution owner;
+   lazy annotations without a schedulable body remain conservative under that owner. An unused
+   function's namespace escape cannot widen the entire graph before it is reached. A delta
+   wakes only affected module projections and already reached deferred contexts; the existing
+   source-value worklist retains their dependencies. Canonical-member or unknown-target deltas
+   wake all affected sources. Reprojection reuses captured bytes and cached source facts, and
+   identical context/premise pairs do no further scan. Uninspected native/artifact/catalog owners
+   contribute unknown writes rather than an empty proof. The resulting scan authority carries
+   its actual premise to runtime-import policy. Frontend premise adoption remains separate work.
 5. **Dead relative imports are lexical edges.** When the import flow proves a relative import never
    runs (a statically false `TYPE_CHECKING` branch), the full lexical graph resolves it from the
    module's identity, as it keeps a dead absolute import. Before this, such a statement failed the
@@ -114,13 +162,12 @@ An edit outside the 242 files no longer invalidates the persisted lowering cache
 
 ## Remaining consumers
 
-- **User-program discovery** (`cli/module_import_scanner.py`): compute the premise over the discovered
-  program graph, molt stdlib included, so `TYPE_CHECKING` blocks after imports and calls stay out of
-  compiled programs. Two tests pin the old model today:
-  `test_collect_imports_prunes_type_checking_alias_branches` (`re`) and
-  `test_molt_os_module_init_retains_reentrant_type_checking_branch`.
 - **Frontend codegen**: pass the build graph's premise to the per-module lowering analysis, so codegen
   facts and `_module_stable_funcs` share one premise.
+
+Standalone source scans without a closed graph remain conservative; they cannot invent an empty
+foreign-writer premise. Their type-checking and reentrant-import controls continue to test that
+boundary. User discovery now supplies the actual graph premise instead of changing that default.
 
 ## Tests
 
@@ -134,3 +181,8 @@ An edit outside the 242 files no longer invalidates the persisted lowering cache
   nothing; a dead relative import is a lexical edge.
 - `tests/cli/test_cli_lowering_cache_tooling_scope.py`: the real lowering scope needs no whole-tree
   coverage and excludes the backend and command layers.
+- `tests/test_python_namespace_graph.py`: admission-order-independent incremental joins, targeted
+  deltas, unknown absorption and immutable premise snapshots.
+- `tests/cli/test_cli_module_graph_discovery_authority.py`: exact CPython import oracles, late foreign
+  and canonical-member writes, star exports, package children, uninspected owners, deferred-context
+  wakeups and source-generation custody; warm scans reuse target parses.

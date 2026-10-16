@@ -14,8 +14,13 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
-from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
+from molt.compiler_analysis.python_source_keys import (
+    PythonSourceKey,
+    python_node_source_key,
+    python_pattern_capture_names,
+)
 from molt.compiler_analysis.static_truth import (
+    ContextExecutionPhase,
     ExpressionResultLookup,
     static_if_live_branch,
     static_test_truthiness,
@@ -46,15 +51,16 @@ class DefinitionLexicalRegions:
 
 
 def function_parameter_names(arguments: ast.arguments) -> tuple[str, ...]:
-    return tuple(
-        argument.arg
-        for argument in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-            *((arguments.vararg,) if arguments.vararg is not None else ()),
-            *((arguments.kwarg,) if arguments.kwarg is not None else ()),
-        )
+    return tuple(argument.arg for argument in function_parameter_nodes(arguments))
+
+
+def function_parameter_nodes(arguments: ast.arguments) -> tuple[ast.arg, ...]:
+    return (
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+        *((arguments.vararg,) if arguments.vararg is not None else ()),
+        *((arguments.kwarg,) if arguments.kwarg is not None else ()),
     )
 
 
@@ -155,30 +161,100 @@ def definition_lexical_regions(
     )
 
 
-def python_eager_nodes(
-    tree: ast.Module,
-    *,
-    target_python: tuple[int, int],
-    fact_result: ExpressionResultLookup | None = None,
-) -> tuple[ast.AST, ...]:
-    """Source dependency nodes evaluated in the module's eager activation.
-
-    Binding facts still own reachable execution and operand meaning. Regions
-    keep defaults/decorators/class bodies while excluding deferred functions,
-    generator bodies and lazy annotations from the module-only source policy.
-    """
+def module_annotation_execution(
+    tree: ast.Module, *, target_python: tuple[int, int]
+) -> tuple[bool, bool]:
+    """Return the existing future-stringization and eager-execution policies."""
     future = any(
         isinstance(node, ast.ImportFrom)
         and node.module == "__future__"
         and any(alias.name == "annotations" for alias in node.names)
         for node in tree.body
     )
-    eager_annotations = target_python < (3, 14) and not future
-    nodes: list[ast.AST] = []
-    pending: list[ast.AST] = list(reversed(tree.body))
+    return future, target_python < (3, 14) and not future
+
+
+def definition_evaluation_regions(
+    node: LexicalDefinitionNode, *, eager_annotations: bool, future_annotations: bool
+) -> tuple[tuple[ast.AST, ...], tuple[ast.AST, ...]]:
+    """Project lexical regions into immediate and deferred evaluation roots.
+
+    The second result contains executable deferred roots, not stringized
+    annotations. Both consumers retain the same generic-definition rules.
+    """
+    regions = definition_lexical_regions(
+        node, eager_annotations=eager_annotations, future_annotations=future_annotations
+    )
+    immediate: tuple[ast.AST, ...] = regions.enclosing
+    if isinstance(node, ast.ClassDef):
+        # Bases execute in the type-parameter scope; bounds/defaults stay lazy.
+        if regions.type_parameters:
+            immediate += (*node.bases, *(k.value for k in node.keywords))
+        immediate += regions.body
+    elif (
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and regions.type_parameters
+        and eager_annotations
+    ):
+        immediate += function_annotation_expressions(node)
+    elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+        immediate += regions.body
+    immediate_set = set(immediate)
+    deferred = tuple(
+        child
+        for child in (*regions.annotations, *regions.body)
+        if child not in immediate_set
+    )
+    return immediate, deferred
+
+
+@dataclass(frozen=True, slots=True)
+class PythonExecutionRegion:
+    node: ast.AST
+    owner: PythonSourceKey | None
+    phase: Literal["evaluate", ContextExecutionPhase]
+
+
+_ExecutionTraversalStep: TypeAlias = tuple[
+    ast.AST,
+    PythonSourceKey | None,
+    Literal["module", "class", "function"],
+    Literal["evaluate", ContextExecutionPhase],
+]
+
+
+def python_execution_regions(
+    tree: ast.Module,
+    *,
+    target_python: tuple[int, int],
+    fact_result: ExpressionResultLookup | None = None,
+    include_deferred: bool = False,
+    source_owner: PythonSourceKey | None = None,
+    body: Sequence[ast.AST] | None = None,
+) -> tuple[PythonExecutionRegion, ...]:
+    """One execution-phase traversal shared by source imports and eager facts.
+
+    Definitions retain separate source owners for deferred execution. Context
+    protocols are explicit phases in evaluation order, including target unpack
+    before assignment-target evaluation and exits in reverse entry order.
+    """
+    future, eager_annotations = module_annotation_execution(
+        tree, target_python=target_python
+    )
+    roots = tuple(tree.body) if body is None else tuple(body)
+    scope: Literal["module", "class", "function"] = (
+        "module" if source_owner is None else "function"
+    )
+    pending: list[_ExecutionTraversalStep] = [
+        (node, source_owner, scope, "evaluate") for node in reversed(roots)
+    ]
+    scheduled: list[_ExecutionTraversalStep]
+    nodes = []
     while pending:
-        node = pending.pop()
-        nodes.append(node)
+        node, owner, scope, phase = pending.pop()
+        nodes.append(PythonExecutionRegion(node, owner, phase))
+        if phase != "evaluate":
+            continue
         if isinstance(
             node,
             (
@@ -193,26 +269,38 @@ def python_eager_nodes(
                 ast.GeneratorExp,
             ),
         ):
-            regions = definition_lexical_regions(
+            immediate, deferred = definition_evaluation_regions(
                 node, eager_annotations=eager_annotations, future_annotations=future
             )
-            children: tuple[ast.AST, ...] = regions.enclosing
-            if isinstance(node, ast.ClassDef):
-                # Generic class bases execute in the type-parameter scope;
-                # bounds/defaults and deferred annotations remain lazy.
-                if regions.type_parameters:
-                    children += (*node.bases, *(k.value for k in node.keywords))
-                children += regions.body
-            elif (
-                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and regions.type_parameters
-                and eager_annotations
-            ):
-                # Generic function annotations execute at definition time in
-                # their type-parameter scope before 3.14; bounds stay lazy.
-                children += function_annotation_expressions(node)
-            elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
-                children += regions.body
+            lexical = definition_lexical_regions(
+                node, eager_annotations=eager_annotations, future_annotations=future
+            )
+            body_nodes = set(lexical.body)
+            scheduled = [
+                (
+                    child,
+                    owner,
+                    "class"
+                    if isinstance(node, ast.ClassDef) and child in body_nodes
+                    else scope,
+                    "evaluate",
+                )
+                for child in immediate
+            ]
+            if include_deferred:
+                scheduled.extend(
+                    (
+                        child,
+                        python_node_source_key(node)
+                        if child in body_nodes or isinstance(node, ast.TypeAlias)
+                        else python_node_source_key(child),
+                        "function",
+                        "evaluate",
+                    )
+                    for child in deferred
+                )
+            pending.extend(reversed(scheduled))
+            continue
         elif isinstance(node, ast.If):
             live = static_if_live_branch(node, fact_result=fact_result)
             children = (
@@ -237,15 +325,78 @@ def python_eager_nodes(
         elif isinstance(node, ast.BoolOp):
             children = statically_executed_boolop_values(node, fact_result=fact_result)
         elif isinstance(node, ast.AnnAssign):
-            children = (node.target,)
-            if node.value is not None:
-                children += (node.value,)
-            if eager_annotations:
-                children += (node.annotation,)
+            children = (
+                (node.target,) if node.value is None else (node.value, node.target)
+            )
+            if scope in {"module", "class"} and not future:
+                if eager_annotations:
+                    children += (node.annotation,)
+                elif include_deferred:
+                    pending.append(
+                        (
+                            node.annotation,
+                            python_node_source_key(node.annotation),
+                            "function",
+                            "evaluate",
+                        )
+                    )
+        elif isinstance(node, (ast.Assign, ast.NamedExpr)):
+            children = (
+                node.value,
+                *(node.targets if isinstance(node, ast.Assign) else (node.target,)),
+            )
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            enter_phase: ContextExecutionPhase
+            exit_phase: ContextExecutionPhase
+            unpack_phase: ContextExecutionPhase
+            if isinstance(node, ast.AsyncWith):
+                enter_phase, exit_phase, unpack_phase = (
+                    "async_context_enter",
+                    "async_context_exit",
+                    "async_context_unpack",
+                )
+            else:
+                enter_phase, exit_phase, unpack_phase = (
+                    "context_enter",
+                    "context_exit",
+                    "context_unpack",
+                )
+            scheduled = []
+            for item in node.items:
+                scheduled.append((item.context_expr, owner, scope, "evaluate"))
+                scheduled.append((item.context_expr, owner, scope, enter_phase))
+                if item.optional_vars is not None:
+                    if isinstance(item.optional_vars, (ast.Tuple, ast.List)):
+                        scheduled.append(
+                            (item.context_expr, owner, scope, unpack_phase)
+                        )
+                    scheduled.append((item.optional_vars, owner, scope, "evaluate"))
+            scheduled.extend((child, owner, scope, "evaluate") for child in node.body)
+            for item in reversed(node.items):
+                scheduled.append((item.context_expr, owner, scope, exit_phase))
+            pending.extend(reversed(scheduled))
+            continue
         else:
             children = tuple(ast.iter_child_nodes(node))
-        pending.extend(reversed(children))
+        pending.extend(
+            (child, owner, scope, "evaluate") for child in reversed(children)
+        )
     return tuple(nodes)
+
+
+def python_eager_nodes(
+    tree: ast.Module,
+    *,
+    target_python: tuple[int, int],
+    fact_result: ExpressionResultLookup | None = None,
+) -> tuple[ast.AST, ...]:
+    return tuple(
+        region.node
+        for region in python_execution_regions(
+            tree, target_python=target_python, fact_result=fact_result
+        )
+        if region.phase == "evaluate"
+    )
 
 
 class PythonLexicalScopeVisitor(ast.NodeVisitor):
@@ -461,6 +612,7 @@ class PythonDependencyProjection:
     direct: frozenset[str]
     nested: frozenset[str]
     globals: frozenset[str]
+    contains_await: bool
 
     @property
     def lexical(self) -> frozenset[str]:
@@ -787,6 +939,7 @@ class PythonDefinitionDependencies:
     annotations: PythonLexicalDependencies
     class_cell_required: bool = False
     contains_yield: bool = False
+    contains_await: bool = False
 
 
 class _DependencyProjection(PythonLexicalScopeVisitor):
@@ -798,6 +951,7 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
         *,
         variable_annotations: bool,
         deferred_variable_annotations: bool = False,
+        suspension_only: bool = False,
     ) -> None:
         super().__init__(
             eager_annotations=authority.eager_annotations,
@@ -805,16 +959,28 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
         )
         self.authority = authority
         self.deferred_variable_annotations = deferred_variable_annotations
+        self.suspension_only = suspension_only
         self.loads: set[str] = set()
         self.loads_class_cell = False
         self.contains_yield = False
+        self.contains_await = False
         self.loads_class_name = False
         self.nested: set[str] = set()
         self.globals: set[str] = set()
 
     def visit(self, node: ast.AST) -> None:
+        if self.suspension_only:
+            cached = self.authority._await_expressions.get(node)
+            if cached is not None:
+                self.contains_await |= cached
+                return
         self.authority.node_visits += 1
+        enclosing_await = self.contains_await
+        self.contains_await = False
         super().visit(node)
+        if isinstance(node, ast.expr):
+            self.authority._await_expressions[node] = self.contains_await
+        self.contains_await |= enclosing_await
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load) and node.id in {"super", "__class__"}:
@@ -836,6 +1002,10 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
         self.contains_yield = True
         self.generic_visit(node)
 
+    def visit_Await(self, node: ast.Await) -> None:
+        self.contains_await = True
+        self.generic_visit(node)
+
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         super().visit_AnnAssign(node)
         if self.deferred_variable_annotations and node.simple:
@@ -850,6 +1020,10 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
         for expression in regions.enclosing:
             self.visit(expression)
         summary = self.authority.summary(node)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+            self.contains_await |= summary.contains_await or any(
+                generator.is_async for generator in node.generators
+            )
         self.nested.update(
             (summary.body.lexical | summary.annotations.lexical)
             - regions.type_parameters
@@ -893,6 +1067,23 @@ class PythonDependencyAuthority:
         self._declarations: dict[ast.AST, PythonScopeDeclarations] = {}
         self.summaries: dict[ast.AST, PythonDefinitionDependencies] = {}
         self._regions: dict[ast.AST, DefinitionLexicalRegions] = {}
+        self._await_expressions: dict[ast.AST, bool] = {}
+
+    def expression_contains_await(self, node: ast.AST) -> bool:
+        """Whether evaluating this node suspends its enclosing code scope.
+
+        The dependency traversal also publishes descendant expression facts;
+        overlapping frontend queries reuse that work without skipping reads.
+        """
+        cached = self._await_expressions.get(node)
+        if cached is None:
+            visitor = _DependencyProjection(
+                self, variable_annotations=False, suspension_only=True
+            )
+            visitor.visit(node)
+            cached = visitor.contains_await
+            self._await_expressions[node] = cached
+        return cached
 
     def project(
         self,
@@ -910,6 +1101,7 @@ class PythonDependencyAuthority:
             frozenset(visitor.loads),
             frozenset(visitor.nested),
             frozenset(visitor.globals),
+            visitor.contains_await,
         )
 
     def regions(self, node: LexicalDefinitionNode) -> DefinitionLexicalRegions:
@@ -1010,6 +1202,7 @@ class PythonDependencyAuthority:
                 regions.kind == "class" and "__class__" in body.nested
             ),
             contains_yield=body.contains_yield,
+            contains_await=body.contains_await,
         )
         self.summaries[node] = result
         return result

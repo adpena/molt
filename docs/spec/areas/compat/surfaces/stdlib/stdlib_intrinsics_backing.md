@@ -55,13 +55,20 @@ Top-level + submodule name coverage is enforced against the CPython
 - stub generator: `tools/gen_stdlib_stubs.py`
 - workflow doc: `docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md`
 
+## Source and execution obligations
+
+Exception syntax does not prove implementation readiness. Optional imports may
+select an admitted compiled Python algorithm. The audit checks source owners,
+intrinsic reads/contracts, module coverage and ratchets. Required symbols and
+import custody remain compiler/linker admission obligations; semantic and
+performance claims require actual target proof. See the
+[source authority](../../../../../internals/source_scan_authority.md#what-source-inventory-establishes).
+
 ## Daily Commands
-- Audit + lint:
-  - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
-- Critical strict roots:
+- Complete audit + critical source roots (one inventory traversal):
   - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
 - Ratchet budget check (explicit file override lane):
-  - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only --intrinsic-partial-ratchet-file tools/stdlib_intrinsics_ratchet.json`
+  - `python3 tools/check_stdlib_intrinsics.py --intrinsic-partial-ratchet-file tools/stdlib_intrinsics_ratchet.json`
 - Regenerate audit doc:
   - `python3 tools/check_stdlib_intrinsics.py --update-doc`
 

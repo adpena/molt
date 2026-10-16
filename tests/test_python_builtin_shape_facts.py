@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.python_shape_test_support import has_unknown_shape
+
 import ast
 
 import pytest
@@ -42,22 +44,6 @@ from molt.compiler_analysis.static_truth import (
     join_static_expression_results,
     static_comparison_result,
 )
-
-
-def _has_unknown_shape(result: StaticExpressionResult) -> bool:
-    # Provenance is orthogonal to shape; preserve all prior shape/lifetime checks.
-    from dataclasses import replace
-
-    return (
-        replace(
-            result,
-            identities=UNKNOWN_EXPRESSION_RESULT.identities,
-            exposes_module_globals=False,
-            source_origins=UNKNOWN_EXPRESSION_RESULT.source_origins,
-            exposed_source_origins=UNKNOWN_EXPRESSION_RESULT.exposed_source_origins,
-        )
-        == UNKNOWN_EXPRESSION_RESULT
-    )
 
 
 def _expression(source: str) -> ast.expr:
@@ -186,7 +172,7 @@ def test_deferred_activation_keeps_builtin_identity_only_as_possible(
     assert fact.callee_identities & OTHER_IDENTITY
     assert callee.binding_invalidated
     assert callee.effects & EXECUTES_ARBITRARY_PYTHON
-    assert _has_unknown_shape(index.expression_result(call))
+    assert has_unknown_shape(index.expression_result(call))
 
 
 def test_deferred_activation_keeps_lexical_result_transport_precise() -> None:
@@ -220,7 +206,7 @@ def test_deferred_activation_invalidates_global_read_after_explicit_write() -> N
     fact = index.expression_fact(returned.value)
     assert fact is not None
 
-    assert _has_unknown_shape(index.expression_result(returned.value))
+    assert has_unknown_shape(index.expression_result(returned.value))
     assert fact.binding_invalidated
     assert fact.effects & EXECUTES_ARBITRARY_PYTHON
 
@@ -319,7 +305,7 @@ def test_deferred_activation_widens_module_builtin_aliases(source: str) -> None:
 
     assert fact.callee_may_be(PythonIdentity.BUILTIN_INT)
     assert fact.callee_identities & OTHER_IDENTITY
-    assert _has_unknown_shape(index.expression_result(call))
+    assert has_unknown_shape(index.expression_result(call))
 
 
 @pytest.mark.parametrize("name", sorted(BUILTIN_SHAPE_NAMES))
@@ -585,8 +571,8 @@ def test_deferred_loop_does_not_claim_constructor_shape_from_foreign_globals() -
     returned = next(node for node in ast.walk(tree) if isinstance(node, ast.Return))
     assert isinstance(returned.value, ast.Name)
 
-    assert _has_unknown_shape(index.expression_result(call))
-    assert _has_unknown_shape(index.expression_result(returned.value))
+    assert has_unknown_shape(index.expression_result(call))
+    assert has_unknown_shape(index.expression_result(returned.value))
 
 
 def test_callbackful_condition_can_invalidate_builtin_shape_before_join() -> None:
@@ -604,7 +590,7 @@ def test_callbackful_condition_can_invalidate_builtin_shape_before_join() -> Non
     assert isinstance(returned.value, ast.Name)
 
     # flag.__bool__ may replace builtins.tuple before the else call executes.
-    assert _has_unknown_shape(index.expression_result(returned.value))
+    assert has_unknown_shape(index.expression_result(returned.value))
 
 
 @pytest.mark.parametrize(
@@ -638,7 +624,7 @@ def test_deferred_future_widening_clears_stale_result_shape() -> None:
     index = analyze_python_source_bindings(source)
     returned = next(node for node in ast.walk(tree) if isinstance(node, ast.Return))
     assert isinstance(returned.value, ast.Name)
-    assert _has_unknown_shape(index.expression_result(returned.value))
+    assert has_unknown_shape(index.expression_result(returned.value))
 
 
 def test_mutable_publication_strips_alias_sensitive_facts() -> None:
@@ -1204,7 +1190,7 @@ def test_unknown_expansion_invalidates_all_finite_iteration_facts(
     assert iteration.element_result.identities == (
         OTHER_IDENTITY | int(PythonIdentity.INERT_VALUE)
     )
-    assert _has_unknown_shape(iteration.element_result)
+    assert has_unknown_shape(iteration.element_result)
     assert iteration.element_result.release_may_call
     assert not iteration.element_result.fresh_container
     assert (
@@ -1563,7 +1549,7 @@ def test_setdefault_does_not_claim_default_for_unknown_existing_value() -> None:
     )
     assert shape is not None
 
-    assert _has_unknown_shape(shape.result)
+    assert has_unknown_shape(shape.result)
     assert shape.result.identities == OTHER_IDENTITY | int(PythonIdentity.INERT_VALUE)
 
 
@@ -2086,8 +2072,8 @@ def test_hook_returned_strict_subclasses_do_not_publish_exact_builtin_shape(
     assert conversion_fact is not None
     assert chained_fact is not None
     assert conversion_fact.invocation_effects & EXECUTES_ARBITRARY_PYTHON
-    assert _has_unknown_shape(index.expression_result(conversion))
-    assert _has_unknown_shape(index.expression_result(chained_conversion))
+    assert has_unknown_shape(index.expression_result(conversion))
+    assert has_unknown_shape(index.expression_result(chained_conversion))
     assert chained_fact.invocation_effects & EXECUTES_ARBITRARY_PYTHON
     assert not chained_fact.callee_elision_safe
 
@@ -2110,7 +2096,7 @@ def test_codec_forms_do_not_claim_exact_result_shape(name: str) -> None:
     )
 
     assert shape.invocation_effects & EXECUTES_ARBITRARY_PYTHON
-    assert _has_unknown_shape(shape.result)
+    assert has_unknown_shape(shape.result)
 
 
 def test_iteration_unknown_projection_is_canonical_without_owner_identity() -> None:
@@ -2124,7 +2110,7 @@ def test_iteration_unknown_projection_is_canonical_without_owner_identity() -> N
         )
         element = iteration.element_result
         assert element.identities == OTHER_IDENTITY
-        assert _has_unknown_shape(element)
+        assert has_unknown_shape(element)
         assert element.exposes_module_globals is exposes_globals
         assert element.release_may_call and not element.fresh_container
         assert iteration.effects == INVOKES_ITERATION_CALLBACK
@@ -2137,3 +2123,78 @@ def test_iteration_unknown_projection_is_canonical_without_owner_identity() -> N
         PythonIterationFact.from_result(owner, 0).element_result
         is UNKNOWN_EXPRESSION_RESULT
     )
+
+
+@pytest.mark.parametrize("native", [list, dict])
+def test_native_hook_method_catalog_matches_cpython_descriptors(native) -> None:
+    from molt.compiler_analysis.python_builtin_shapes import (
+        _METHODS_BY_KIND,
+        builtin_method_descriptor_known,
+    )
+
+    observed = {
+        name for name, descriptor in native.__dict__.items() if callable(descriptor)
+    }
+    assert set(_METHODS_BY_KIND[native.__name__]) == observed
+    assert all(
+        builtin_method_descriptor_known(native.__name__, name) for name in observed
+    )
+    assert not builtin_method_descriptor_known(native.__name__, "register")
+
+
+@pytest.mark.parametrize(
+    ("kind", "method", "arguments"),
+    [
+        ("list", "append", (7,)),
+        ("list", "clear", ()),
+        ("list", "extend", ([7],)),
+        ("list", "insert", (0, 7)),
+        ("list", "pop", ()),
+        ("list", "remove", (2,)),
+        ("list", "reverse", ()),
+        ("list", "sort", ()),
+        ("list", "__init__", ([7],)),
+        ("list", "__setitem__", (0, 7)),
+        ("list", "__delitem__", (0,)),
+        ("list", "__iadd__", ([7],)),
+        ("list", "__imul__", (2,)),
+        ("dict", "clear", ()),
+        ("dict", "pop", ("a",)),
+        ("dict", "popitem", ()),
+        ("dict", "setdefault", ("new", 7)),
+        ("dict", "update", ({"new": 7},)),
+        ("dict", "__init__", ({"new": 7},)),
+        ("dict", "__setitem__", ("a", 7)),
+        ("dict", "__delitem__", ("a",)),
+        ("dict", "__ior__", ({"new": 7},)),
+    ],
+)
+def test_native_hook_method_receiver_write_matches_cpython(
+    kind, method, arguments
+) -> None:
+    from molt.compiler_analysis.python_builtin_shapes import (
+        builtin_method_writes_receiver,
+    )
+
+    receiver = [2, 1] if kind == "list" else {"a": 1, "b": 2}
+    before = receiver.copy()
+    getattr(receiver, method)(*arguments)
+    assert receiver != before
+    assert builtin_method_writes_receiver(kind, method)
+
+
+def test_native_hook_read_contract_does_not_claim_callback_freedom() -> None:
+    from molt.compiler_analysis.python_builtin_shapes import (
+        builtin_method_writes_receiver,
+    )
+
+    receiver = {}
+
+    class Key:
+        def __hash__(self):
+            receiver["callback"] = True
+            return 0
+
+    assert receiver.get(Key()) is None
+    assert receiver == {"callback": True}
+    assert not builtin_method_writes_receiver("dict", "get")

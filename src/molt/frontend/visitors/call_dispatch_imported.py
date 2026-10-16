@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+
 import ast
 from typing import (
     Any,
@@ -25,7 +27,7 @@ class CallImportedAttributeDispatchMixin(GeneratorMixinBase):
                 module_name = self._imported_module_binding_target(node.func.value.id)
             if module_name:
                 func_id = node.func.attr
-                normalized = self._normalize_allowlist_module(module_name)
+                normalized = normalize_stdlib_module_name(module_name)
                 allowlist_key = normalized or module_name
                 native_call = self._try_emit_published_native_object_call(
                     node, allowlist_key, func_id

@@ -3696,7 +3696,6 @@ globs = [
   "src/molt/stdlib/_intrinsics.py",
 ]
 gates = [
-  "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
   "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
 ]
 

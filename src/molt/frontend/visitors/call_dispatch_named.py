@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+
 import ast
 from typing import (
     Any,
@@ -100,7 +102,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
         ):
             return CALL_NOT_HANDLED
 
-        normalized = self._normalize_allowlist_module(imported_from)
+        normalized = normalize_stdlib_module_name(imported_from)
         visible_module = normalized or imported_from
         original_attr = self._imported_attr_name(func_id)
         native_call = self._try_emit_published_native_object_call(
@@ -168,7 +170,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     )
                 return self._emit_dynamic_call(node, callee)
             if imported_from:
-                normalized = self._normalize_allowlist_module(imported_from)
+                normalized = normalize_stdlib_module_name(imported_from)
                 allowlist_key = normalized or imported_from
                 native_call = self._try_emit_published_native_object_call(
                     node, allowlist_key, self._imported_attr_name(func_id)
@@ -1357,7 +1359,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             if builtin_result is not CALL_NOT_HANDLED:
                 return builtin_result
             if imported_from is not None:
-                normalized = self._normalize_allowlist_module(imported_from)
+                normalized = normalize_stdlib_module_name(imported_from)
             else:
                 normalized = None
             lowered_intrinsic = self._try_lower_intrinsic_lookup_call(

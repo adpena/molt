@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import ast
 import json
 import sys
@@ -11,7 +13,7 @@ from dataclasses import replace
 
 import pytest
 
-from molt.cli import module_graph_discovery, module_import_scanner
+from molt.cli import module_graph_discovery
 from molt.cli import python_import_resolution as resolution
 from molt.cli import python_source_closure as closure
 from molt.compiler_analysis.python_imports import (
@@ -105,7 +107,7 @@ def test_mixed_source_discovery_does_not_grant_runtime_custody(
     scan_mode: str,
 ) -> None:
     tree = ast.parse(_mixed_source())
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         tree, "pkg.entry", import_scan_mode=scan_mode
     )
     assert set(projection.dynamic_relative_import_candidates) == {
@@ -117,7 +119,7 @@ def test_mixed_source_discovery_does_not_grant_runtime_custody(
     assert "pkg.alt.child" not in projection.imports
     assert projection.requires_runtime_package_anchor
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(
+        _source_import_scan._collect_imports(
             tree, "pkg.entry", import_scan_mode=scan_mode
         )
 
@@ -212,14 +214,14 @@ def test_source_store_candidates_do_not_replace_execution_metadata(
     fact = discovery.statement_fact(request_node)
     assert fact is not None
     assert not fact.module_metadata_at_entry.admits_current_namespace
-    projection = module_import_scanner._collect_imports_for_graph(tree, "pkg.entry")
+    projection = _source_import_scan._collect_imports_for_graph(tree, "pkg.entry")
     assert {"pkg.alt", "pkg.alt.child"} <= set(
         projection.dynamic_relative_import_candidates
     )
     assert "pkg.alt.child" not in projection.imports
     assert projection.requires_runtime_package_anchor
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(tree, "pkg.entry")
+        _source_import_scan._collect_imports(tree, "pkg.entry")
 
     path = tmp_path / "entry.py"
     path.write_text(source, encoding="utf-8")
@@ -286,7 +288,7 @@ def test_callback_exposed_branch_candidates_keep_unknown_sibling_obligations(
             ),
             expected_nonliteral_dynamic_imports=0,
         )
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), "pkg.entry"
     )
     assert "pkg.alt.child" in projection.dynamic_relative_import_candidates
@@ -406,7 +408,7 @@ def test_captured_source_alternatives_survive_later_metadata_deletion(
     assert "wrong.child" not in candidates
     assert len(analysis.unresolved_dynamic_imports) == 1
     assert all("pkg.alt.child" not in row.candidates for row in analysis.requests)
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), "pkg.entry"
     )
     assert "pkg.alt.child" in projection.dynamic_relative_import_candidates
@@ -521,7 +523,7 @@ def test_callback_candidates_keep_cpython_unknown_import_obligation(
                 snapshot, owner, replace(policy, module_level_only=eager)
             )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(ast.parse(source), "pkg.entry")
+        _source_import_scan._collect_imports(ast.parse(source), "pkg.entry")
 
 
 @pytest.mark.parametrize(
@@ -609,7 +611,7 @@ def test_possible_globals_operand_keeps_unknown_branch_obligation(
             snapshot, owner, policy, expected_nonliteral_dynamic_imports=0
         )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(ast.parse(source), "pkg.entry")
+        _source_import_scan._collect_imports(ast.parse(source), "pkg.entry")
 
 
 @pytest.mark.parametrize(
@@ -655,8 +657,8 @@ def test_unknown_dictionary_key_keeps_runtime_and_source_obligations(
         name for row in analysis.requests for name in row.candidates
     }
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(ast.parse(source), "pkg.entry")
-    projection = module_import_scanner._collect_imports_for_graph(
+        _source_import_scan._collect_imports(ast.parse(source), "pkg.entry")
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source), "pkg.entry"
     )
     assert projection.requires_runtime_package_anchor
@@ -695,7 +697,7 @@ def test_dictionary_key_facts_and_later_overwrites_preserve_exact_imports(
     namespace = {"__name__": "pkg.entry", "__package__": "pkg", "key": "__package__"}
     exec(compile(source, "<exact-dictionary-key-import>", "exec"), namespace)
     assert namespace["loaded"] is sys.modules[expected]
-    assert expected in module_import_scanner._collect_imports(
+    assert expected in _source_import_scan._collect_imports(
         ast.parse(source), "pkg.entry"
     )
 
@@ -802,7 +804,7 @@ def test_product_scan_keeps_boolean_import_after_index_callback(mode: str) -> No
     namespace = {}
     exec(compile(source, "<boolean-import-oracle>", "exec"), namespace)
     assert namespace["loaded"].__name__ == "fractions"
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         ast.parse(source),
         "entry",
         import_scan_mode=mode,
@@ -866,7 +868,7 @@ def test_deferred_import_mutation_requires_matching_runtime_catalog(
         catalog=tuple(catalog),
         owner_ast_digests=(("pkg.entry", python_ast_digest(tree)),),
     )
-    projection = module_import_scanner._collect_imports_for_graph(
+    projection = _source_import_scan._collect_imports_for_graph(
         tree,
         "pkg.entry",
         import_scan_mode=mode,
@@ -874,17 +876,17 @@ def test_deferred_import_mutation_requires_matching_runtime_catalog(
     assert projection.requires_runtime_package_anchor
     assert "pkg.child" not in projection.imports
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        module_import_scanner._collect_imports(tree, "pkg.entry", import_scan_mode=mode)
+        _source_import_scan._collect_imports(tree, "pkg.entry", import_scan_mode=mode)
     if mode != "full":
         with pytest.raises(ValueError, match="full-depth owner scans"):
-            module_import_scanner._collect_imports(
+            _source_import_scan._collect_imports(
                 tree,
                 "pkg.entry",
                 import_scan_mode=mode,
                 source_path=owner,
                 runtime_import_custody=custody,
             )
-    admitted = module_import_scanner._collect_imports(
+    admitted = _source_import_scan._collect_imports(
         tree,
         "pkg.entry",
         import_scan_mode="full",

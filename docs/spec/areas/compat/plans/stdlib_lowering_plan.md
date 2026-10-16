@@ -16,8 +16,8 @@ Drive Molt to a strict stdlib posture where:
 2. top-level union coverage hard fail.
 3. submodule union coverage hard fail.
 4. module/package collision hard fail.
-5. forbidden fallback patterns hard fail (strict roots + intrinsic-backed + all-stdlib mode).
-6. intrinsic runtime pass-fallback hard fail.
+5. selected/bootstrap roots must have implemented source owners; inventory does not require every optional import to succeed.
+6. required runtime symbols and module custody must be admitted; ordinary Python exception behavior is qualified through API differential tests.
 7. `intrinsic-partial` and `stub` ratchets hard fail (`tools/stdlib_intrinsics_ratchet.json`).
 8. memory regressions in differential runs are blockers (`MOLT_DIFF_MEASURE_RSS=1`, process cap 10GB).
 
@@ -35,14 +35,18 @@ Specialized long-tail plan:
   `docs/spec/areas/compat/plans/tkinter_lowering_plan.md`.
 
 ## Acceptance Template (Required For Each Module Conversion)
-1. Rust intrinsic implementation.
-2. manifest entry in `runtime/molt-runtime/src/intrinsics/manifest.pyi`.
-3. regenerated bindings: `src/molt/_intrinsics.pyi` and `runtime/molt-runtime/src/intrinsics/generated.rs`.
-4. thin Python shim wiring only (argument normalization/error mapping/capability gating).
-5. targeted differential tests for edge semantics.
-6. `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only` green for touched lane.
-7. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist` green for touched lane.
-8. native + wasm parity for touched module(s).
+1. Choose the semantic owner: compiled Python algorithm or runtime primitive.
+2. For a runtime primitive, update its manifest and generated bindings together.
+3. Keep one implementation owner; argument/error/capability handling follows its real API.
+4. Targeted differential tests prove supported semantics, including failure propagation.
+5. Run the complete audit once with `--critical-allowlist`; combine `--allowlist-modules` for additional selected roots.
+6. Qualify native and WASM behavior and the relevant performance/size/compile-cost cells.
+
+Source classification is an inventory, not evidence of runtime parity. Optional
+accelerators may be absent when the admitted compiled algorithm has the correct
+Python behavior. No host interpreter is consulted. The
+[source authority](../../../../internals/source_scan_authority.md#what-source-inventory-establishes)
+owns this distinction; coverage and performance require actual target receipts.
 
 ## Blocker-First Execution Order
 1. Import system blockers and resolver correctness.

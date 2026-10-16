@@ -10,7 +10,7 @@ from molt.cli.extension_manifest import (
     ExtensionSupportFile,
     _manifest_support_file_payloads,
 )
-from molt.cli.module_import_scanner import _module_init_scan_nodes
+from molt.compiler_analysis.python_import_scan import _module_init_scan_nodes
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,

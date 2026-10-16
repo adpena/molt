@@ -36,7 +36,7 @@ class ComprehensionMixin(GeneratorMixinBase):
     _list_int_containers: set[str]
 
     def visit_ListComp(self, node: ast.ListComp) -> Any:
-        if not self._comprehension_requires_async(node.generators, [node.elt]):
+        if not self._lexical_dependencies().expression_contains_await(node):
             simple_range = self._match_simple_range_list_comp(node)
             if simple_range is not None:
                 return self._emit_range_list(*simple_range)
@@ -58,7 +58,9 @@ class ComprehensionMixin(GeneratorMixinBase):
         # An async generator expression is legal in any scope: building it
         # awaits nothing. Its outermost iterable runs in the enclosing scope,
         # where visit_Await enforces placement.
-        async_needed = self._comprehension_requires_async(node.generators, [node.elt])
+        async_needed = self._lexical_dependencies().summary(node).contains_await or any(
+            comp.is_async for comp in node.generators
+        )
         # CPython evaluates AND iterates the outermost iterable at generator
         # construction time; only the loop body and every nested iterable are
         # lazy.  Transport that already-created iterator as the hidden .0
@@ -756,26 +758,6 @@ class ComprehensionMixin(GeneratorMixinBase):
                 ]
         return body
 
-    def _comprehension_requires_async(
-        self,
-        generators: Sequence[ast.comprehension],
-        exprs: Sequence[ast.AST | None],
-    ) -> bool:
-        if any(comp.is_async for comp in generators):
-            return True
-        for comp in generators:
-            if self._expr_needs_async(comp.iter):
-                return True
-            for test in comp.ifs:
-                if self._expr_needs_async(test):
-                    return True
-        for expr in exprs:
-            if expr is None:
-                continue
-            if self._expr_needs_async(expr):
-                return True
-        return False
-
     def _inline_simple_comp_exprs(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp
     ) -> list[ast.expr]:
@@ -881,7 +863,7 @@ class ComprehensionMixin(GeneratorMixinBase):
         none is rewritten into a generator's distinct Python code-object frame.
         """
         exprs = self._inline_simple_comp_exprs(node)
-        async_needed = self._comprehension_requires_async(node.generators, exprs)
+        async_needed = self._lexical_dependencies().expression_contains_await(node)
         if async_needed and not self._in_coroutine_body():
             self._raise_syntax_error(
                 "asynchronous comprehension outside of an asynchronous function",

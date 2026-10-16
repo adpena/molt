@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
 from molt.python_private_names import (
@@ -433,9 +434,7 @@ def _augment_support_modules(
                 scan_authorities[name] = _ModuleSourceScanAuthority(
                     name,
                     path,
-                    _module_import_scanner._module_import_scan_mode(
-                        name, full_scan=False
-                    ),
+                    _source_import_scan._module_import_scan_mode(name, full_scan=False),
                 )
             for name in namespace_modules:
                 _graph_discovery._record_module_reason(
@@ -594,7 +593,17 @@ def _extend_native_support_source_closure(
                     import_scan_mode="full",
                     target_python=target_python,
                 )
-                source_replacements[module_name] = previous[1].scan.authority
+                # The slice proves source/root generation custody. Discovery
+                # may since have widened its namespace premise or reached more
+                # bodies; transfer the current graph authority, not the slice's
+                # earlier projection.
+                previous_authority = scan_authorities.get(module_name)
+                if previous_authority is None:
+                    raise ValueError(
+                        f"native support generation lacks graph custody: {module_name!r}"
+                    )
+                previous_authority.validate(module_name, existing)
+                source_replacements[module_name] = previous_authority
         requested_mode = support_slice.scan.authority.mode
         closure = _graph_discovery._discover_module_graph_from_paths(
             (source_path,),
@@ -663,13 +672,15 @@ def _extend_native_runtime_python_import_closure(
     resolution, admission policy, and stdlib allowlist as every other
     import edge.
     """
-    pending = sorted(
-        name
-        for name in native_artifact_plan.runtime_python_imports()
-        if name not in module_graph
-    )
+    declared = frozenset(native_artifact_plan.runtime_python_imports())
+    for name in declared:
+        if name in module_graph:
+            _graph_discovery._record_module_reason(
+                module_reasons, name, "native_runtime_python_import"
+            )
+    pending = sorted(declared - module_graph.keys())
     if not pending:
-        return frozenset()
+        return declared
     source = "".join(f"import {name}\n" for name in pending)
     entry_path = _write_generated_module_source(
         _NATIVE_RUNTIME_IMPORT_ENTRY_MODULE,
@@ -743,7 +754,7 @@ def _extend_native_runtime_python_import_closure(
             module_name,
             "native_runtime_python_import",
         )
-    return frozenset(closure.explicit_imports)
+    return declared | frozenset(closure.explicit_imports)
 
 
 def _support_source_import_bindings(
@@ -966,7 +977,7 @@ def _native_support_source_slices(
                     path,
                     module_name=module,
                     is_package=path.name == "__init__.py",
-                    import_scan_mode=_module_import_scanner._module_import_scan_mode(
+                    import_scan_mode=_source_import_scan._module_import_scan_mode(
                         module, full_scan=False
                     ),
                     resolution_cache=resolution_cache,
@@ -997,7 +1008,7 @@ def _native_support_source_slices(
                 scan=_graph_discovery._bind_precomputed_module_import_scan(
                     path,
                     module_name=module,
-                    import_scan_mode=_module_import_scanner._module_import_scan_mode(
+                    import_scan_mode=_source_import_scan._module_import_scan_mode(
                         module, full_scan=False
                     ),
                     scan=loaded_scan.scan,

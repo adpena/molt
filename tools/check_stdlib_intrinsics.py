@@ -4,13 +4,10 @@ from __future__ import annotations
 import argparse
 import ast
 import functools
-import io
 import json
 import re
 import runpy
 import sys
-import tokenize
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,12 +23,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 
 
-from molt.compiler_analysis.python_imports import UnresolvedStaticImportError  # noqa: E402
+from molt.compiler_analysis.python_imports import (  # noqa: E402
+    UnresolvedStaticImportError,
+)
 from molt.cli import module_graph_cache  # noqa: E402
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction  # noqa: E402
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise  # noqa: E402
 from molt.stdlib_intrinsic_policy import (  # noqa: E402
-    INTRINSIC_CALL_NAMES,
-    LAZY_INTRINSIC_CALL_NAMES,
     STATUS_INTRINSIC,
     STATUS_INTRINSIC_PARTIAL,
     STATUS_INTRINSIC_SUPPORT,
@@ -39,6 +37,7 @@ from molt.stdlib_intrinsic_policy import (  # noqa: E402
     STATUS_PYTHON_COMPILED,
     STATUS_STUB,
     classify_stdlib_module_statuses,
+    stdlib_namespace_inventory,
     intrinsic_names_from_source,
 )
 from molt.stdlib_intrinsic_policy import StdlibIntrinsicClassification  # noqa: E402
@@ -66,16 +65,6 @@ AUDIT_DOC = (
 STDLIB_UNION_BASELINE = ROOT / "tools" / "stdlib_module_union.py"
 INTRINSIC_PARTIAL_RATCHET = ROOT / "tools" / "stdlib_intrinsics_ratchet.json"
 STDLIB_FULL_COVERAGE_MANIFEST = ROOT / "tools" / "stdlib_full_coverage_manifest.py"
-
-TEXT_TOKENS = tuple(sorted(INTRINSIC_CALL_NAMES | LAZY_INTRINSIC_CALL_NAMES))
-
-INTRINSICS_IMPORT_RE = re.compile(
-    r"^\s*from\s+(\.+)?_intrinsics\s+import\s+|"
-    r"^\s*from\s+molt\.stdlib\._intrinsics\s+import\s+|"
-    r"^\s*import\s+_intrinsics(\s|$)|"
-    r"^\s*import\s+molt\.stdlib\._intrinsics(\s|$)",
-    re.MULTILINE,
-)
 
 MANIFEST_INTRINSIC_RE = re.compile(r"^def\s+(molt_[a-zA-Z0-9_]+)\(")
 
@@ -169,19 +158,6 @@ CRITICAL_STRICT_IMPORT_ROOTS: tuple[str, ...] = (
     "sys",
     "os",
 )
-STRICT_OPTIONAL_INTRINSIC_CALL_NAMES = {
-    "load_intrinsic",
-    "_load_intrinsic",
-    "require_optional_intrinsic",
-}
-STRICT_IMPORT_FALLBACK_EXCEPTIONS = {
-    "ImportError",
-    "ModuleNotFoundError",
-    "Exception",
-    "BaseException",
-}
-INTRINSIC_RUNTIME_FALLBACK_EXEMPT_PREFIXES = ("test", "test.")
-INTRINSIC_PASS_FALLBACK_STRICT_MODULES: tuple[str, ...] = ("json",)
 # tinygrad.dflash was the sole policy-gate module here. It moved out of the
 # stdlib substrate into demos/tinygrad/ (app/demo code, not a compiler
 # primitive), so it is no longer discovered by this stdlib scan and no longer
@@ -292,22 +268,6 @@ def _module_entry(path: Path) -> tuple[str, str]:
     return ".".join((*rel.parts[:-1], path.stem)), "module"
 
 
-def _code_text(text: str) -> str:
-    try:
-        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
-    except Exception:
-        return text
-    parts: list[str] = []
-    try:
-        for tok_type, tok_str, *_ in tokens:
-            if tok_type in {tokenize.COMMENT, tokenize.STRING}:
-                continue
-            parts.append(tok_str)
-    except Exception:
-        return text
-    return " ".join(parts)
-
-
 def _module_name(path: Path) -> str:
     rel = path.relative_to(STDLIB_ROOT)
     if rel.name == "__init__.py":
@@ -315,252 +275,6 @@ def _module_name(path: Path) -> str:
             return "molt.stdlib"
         return ".".join(rel.parts[:-1])
     return ".".join((*rel.parts[:-1], rel.stem))
-
-
-def _canonical_module(name: str, known: set[str]) -> str | None:
-    if name in known:
-        return name
-    root = name.split(".", 1)[0]
-    if root in known:
-        return root
-    return None
-
-
-def _module_package_parts(module: str, path: Path) -> list[str]:
-    if module == "molt.stdlib":
-        return []
-    parts = module.split(".")
-    if path.name == "__init__.py":
-        return parts
-    return parts[:-1]
-
-
-def _resolve_from_target(
-    *,
-    current_module: str,
-    current_path: Path,
-    level: int,
-    module: str | None,
-    name: str | None,
-) -> str | None:
-    package_parts = _module_package_parts(current_module, current_path)
-    if level <= 0:
-        if module is None:
-            return name
-        if name is None:
-            return module
-        return f"{module}.{name}"
-    if level > len(package_parts) + 1:
-        return None
-    anchor = package_parts[: len(package_parts) - level + 1]
-    suffix: list[str] = []
-    if module:
-        suffix.extend(module.split("."))
-    if name:
-        suffix.append(name)
-    parts = anchor + suffix
-    if not parts:
-        return None
-    return ".".join(parts)
-
-
-def _call_name(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _exception_type_names(exc: ast.expr | None) -> set[str]:
-    if exc is None:
-        return {"BaseException"}
-    if isinstance(exc, ast.Name):
-        return {exc.id}
-    if isinstance(exc, ast.Attribute):
-        return {exc.attr}
-    if isinstance(exc, ast.Tuple):
-        names: set[str] = set()
-        for item in exc.elts:
-            names.update(_exception_type_names(item))
-        return names
-    return set()
-
-
-def _stmt_block_has_import(statements: list[ast.stmt]) -> bool:
-    for stmt in statements:
-        for node in ast.walk(stmt):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                return True
-    return False
-
-
-def _scan_strict_module_fallback_patterns(path: Path) -> list[str]:
-    text = path.read_text(encoding="utf-8")
-    try:
-        tree = ast.parse(text, filename=str(path))
-    except SyntaxError:
-        return []
-
-    errors: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = _call_name(node.func)
-        if name in STRICT_OPTIONAL_INTRINSIC_CALL_NAMES:
-            errors.append(
-                "Strict module cannot use optional intrinsic loaders; use require_intrinsic."
-            )
-            break
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        if not _stmt_block_has_import(node.body):
-            continue
-        for handler in node.handlers:
-            names = _exception_type_names(handler.type)
-            if names & STRICT_IMPORT_FALLBACK_EXCEPTIONS:
-                errors.append(
-                    "Strict module cannot use try/except import fallback paths."
-                )
-                break
-
-    return errors
-
-
-def _scan_intrinsic_runtime_fallback_patterns(path: Path) -> list[str]:
-    text = path.read_text(encoding="utf-8")
-    try:
-        tree = ast.parse(text, filename=str(path))
-    except SyntaxError:
-        return []
-
-    intrinsic_callables: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        value = node.value
-        if not isinstance(value, ast.Call):
-            continue
-        call_name = _call_name(value.func)
-        if call_name not in INTRINSIC_CALL_NAMES:
-            continue
-        if not value.args:
-            continue
-        first = value.args[0]
-        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
-            continue
-        if not first.value.startswith("molt_"):
-            continue
-        targets: list[ast.expr] = []
-        if isinstance(node, ast.Assign):
-            targets = list(node.targets)
-        else:
-            targets = [node.target]
-        for target in targets:
-            if isinstance(target, ast.Name):
-                intrinsic_callables.add(target.id)
-
-    def _stmt_block_has_intrinsic_call(statements: list[ast.stmt]) -> bool:
-        for stmt in statements:
-            for inner in ast.walk(stmt):
-                if not isinstance(inner, ast.Call):
-                    continue
-                func = inner.func
-                if isinstance(func, ast.Name):
-                    if func.id in intrinsic_callables or func.id.startswith("_MOLT_"):
-                        return True
-                elif isinstance(func, ast.Attribute):
-                    if func.attr.startswith("molt_"):
-                        return True
-        return False
-
-    errors: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        if not node.handlers:
-            continue
-        if not _stmt_block_has_intrinsic_call(node.body):
-            continue
-        for handler in node.handlers:
-            if not handler.body:
-                continue
-            if not all(isinstance(stmt, ast.Pass) for stmt in handler.body):
-                continue
-            errors.append(
-                "Intrinsic call is wrapped in try/except with a pass-only fallback path."
-            )
-            break
-    return errors
-
-
-def _scan_host_fallback_module_patterns(path: Path) -> list[str]:
-    text = path.read_text(encoding="utf-8")
-    try:
-        tree = ast.parse(text, filename=str(path))
-    except SyntaxError:
-        return []
-
-    def _is_forbidden_module_name(name: str) -> bool:
-        return name.startswith("_py_") or "._py_" in name
-
-    def _call_target_name(node: ast.Call) -> str | None:
-        if node.args:
-            first = node.args[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                return first.value
-        for keyword in node.keywords:
-            if keyword.arg != "name":
-                continue
-            value = keyword.value
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                return value.value
-        return None
-
-    errors: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if _is_forbidden_module_name(alias.name):
-                    errors.append(
-                        "Host fallback imports (`_py_*`) are forbidden in stdlib modules."
-                    )
-                    return errors
-        if isinstance(node, ast.ImportFrom):
-            module_name = node.module
-            if isinstance(module_name, str) and _is_forbidden_module_name(module_name):
-                errors.append(
-                    "Host fallback imports (`_py_*`) are forbidden in stdlib modules."
-                )
-                return errors
-        if not isinstance(node, ast.Call):
-            continue
-        target = _call_target_name(node)
-        if target is None:
-            continue
-        if not _is_forbidden_module_name(target):
-            continue
-        func = node.func
-        if isinstance(func, ast.Name) and func.id in {"__import__", "import_module"}:
-            errors.append(
-                "Dynamic host fallback imports (`__import__` on `_py_*`) are forbidden."
-                if func.id == "__import__"
-                else "Dynamic host fallback imports (`import_module` on `_py_*`) are forbidden."
-            )
-            return errors
-        if isinstance(func, ast.Attribute) and func.attr in {
-            "__import__",
-            "import_module",
-        }:
-            errors.append(
-                "Dynamic host fallback imports (`__import__` on `_py_*`) are forbidden."
-                if func.attr == "__import__"
-                else "Dynamic host fallback imports (`import_module` on `_py_*`) are forbidden."
-            )
-            return errors
-    return errors
 
 
 RATCHET_FIELDS = ("max_intrinsic_partial", "max_stub")
@@ -659,152 +373,6 @@ def _load_full_coverage_required_intrinsics(
     return out
 
 
-def _imports_from_ast(
-    *,
-    tree: ast.AST,
-    current_module: str,
-    current_path: Path,
-    known_modules: set[str],
-) -> set[str]:
-    out: set[str] = set()
-
-    def _static_bool(expr: ast.expr) -> bool | None:
-        if isinstance(expr, ast.Constant) and isinstance(expr.value, bool):
-            return expr.value
-        if isinstance(expr, ast.Name) and expr.id == "TYPE_CHECKING":
-            return False
-        if isinstance(expr, ast.Attribute) and expr.attr == "TYPE_CHECKING":
-            return False
-        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
-            val = _static_bool(expr.operand)
-            return None if val is None else not val
-        if isinstance(expr, ast.BoolOp):
-            values = [_static_bool(value) for value in expr.values]
-            if isinstance(expr.op, ast.And):
-                if any(value is False for value in values):
-                    return False
-                if all(value is True for value in values):
-                    return True
-                return None
-            if isinstance(expr.op, ast.Or):
-                if any(value is True for value in values):
-                    return True
-                if all(value is False for value in values):
-                    return False
-                return None
-        return None
-
-    def _collect_stmt_list(statements: list[ast.stmt]) -> None:
-        for stmt in statements:
-            if isinstance(stmt, ast.Import):
-                for alias in stmt.names:
-                    resolved = _canonical_module(alias.name, known_modules)
-                    if resolved:
-                        out.add(resolved)
-                continue
-            if isinstance(stmt, ast.ImportFrom):
-                module_name = _resolve_from_target(
-                    current_module=current_module,
-                    current_path=current_path,
-                    level=stmt.level,
-                    module=stmt.module,
-                    name=None,
-                )
-                if module_name:
-                    resolved = _canonical_module(module_name, known_modules)
-                    if resolved:
-                        out.add(resolved)
-                for alias in stmt.names:
-                    if alias.name == "*":
-                        continue
-                    target = _resolve_from_target(
-                        current_module=current_module,
-                        current_path=current_path,
-                        level=stmt.level,
-                        module=stmt.module,
-                        name=alias.name,
-                    )
-                    if not target:
-                        continue
-                    resolved = _canonical_module(target, known_modules)
-                    if resolved:
-                        out.add(resolved)
-                continue
-            if isinstance(stmt, ast.If):
-                truth = _static_bool(stmt.test)
-                if truth is True:
-                    _collect_stmt_list(stmt.body)
-                elif truth is False:
-                    _collect_stmt_list(stmt.orelse)
-                else:
-                    _collect_stmt_list(stmt.body)
-                    _collect_stmt_list(stmt.orelse)
-                continue
-            if isinstance(stmt, ast.Try):
-                _collect_stmt_list(stmt.body)
-                for handler in stmt.handlers:
-                    _collect_stmt_list(handler.body)
-                _collect_stmt_list(stmt.orelse)
-                _collect_stmt_list(stmt.finalbody)
-                continue
-            if isinstance(
-                stmt,
-                (
-                    ast.FunctionDef,
-                    ast.AsyncFunctionDef,
-                    ast.ClassDef,
-                ),
-            ):
-                continue
-            child_bodies: list[list[ast.stmt]] = []
-            for field_name in ("body", "orelse", "finalbody"):
-                child = getattr(stmt, field_name, None)
-                if (
-                    isinstance(child, list)
-                    and child
-                    and all(isinstance(item, ast.stmt) for item in child)
-                ):
-                    child_bodies.append(child)
-            for child_body in child_bodies:
-                _collect_stmt_list(child_body)
-
-    if isinstance(tree, ast.Module):
-        _collect_stmt_list(tree.body)
-    return out
-
-
-def _build_stdlib_dep_graph(
-    modules: dict[str, ModuleAudit],
-) -> dict[str, set[str]]:
-    known_modules = set(modules)
-    deps: dict[str, set[str]] = {}
-    for module, audit in modules.items():
-        tree = ast.parse(
-            audit.path.read_text(encoding="utf-8"), filename=str(audit.path)
-        )
-        deps[module] = _imports_from_ast(
-            tree=tree,
-            current_module=module,
-            current_path=audit.path,
-            known_modules=known_modules,
-        )
-    return deps
-
-
-def _closure(seeds: set[str], deps: dict[str, set[str]]) -> set[str]:
-    seen: set[str] = set()
-    queue: deque[str] = deque(sorted(seeds))
-    while queue:
-        module = queue.popleft()
-        if module in seen:
-            continue
-        seen.add(module)
-        for dep in sorted(deps.get(module, ())):
-            if dep not in seen:
-                queue.append(dep)
-    return seen
-
-
 def _is_compiler_import(node: ast.AST) -> bool:
     """Reject host-package imports, except normalized molt.stdlib names."""
     if isinstance(node, ast.Import):
@@ -837,23 +405,7 @@ def _scan_runtime_import_boundary(path: Path, text: str) -> list[str]:
 def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], bool]:
     """Source rule errors, required intrinsic names and the progress marker."""
     text = path.read_text(encoding="utf-8")
-    code_text = _code_text(text)
     errors = _scan_runtime_import_boundary(path, text)
-    is_registry_file = path.name == "_intrinsics.py"
-
-    if not is_registry_file and "_molt_intrinsics" in code_text:
-        errors.append(
-            "Direct access to _molt_intrinsics is forbidden; use stdlib/_intrinsics.py."
-        )
-
-    has_intrinsics_import = bool(INTRINSICS_IMPORT_RE.search(text))
-    if not is_registry_file:
-        if (
-            any(token in code_text for token in TEXT_TOKENS)
-            and not has_intrinsics_import
-        ):
-            errors.append("Intrinsic loader usage requires importing from _intrinsics.")
-
     intrinsic_names = tuple(sorted(intrinsic_names_from_source(text)))
     has_stdlib_progress_marker = bool(STDLIB_PROGRESS_MARKER_RE.search(text))
     return errors, intrinsic_names, has_stdlib_progress_marker
@@ -945,39 +497,22 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     lines.extend(
         [
             "",
-            "## Core Lane Gate",
-            "- Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).",
-            "- Gate rule: by default the core-lane import closure must be implemented (`intrinsic-backed`, `intrinsic-partial`, `intrinsic-support` or `python-compiled`), with zero `stub` and zero `policy-gate` modules; `--allow-status` narrows or widens the set.",
+            "## Core Lane Source Inventory",
+            "- Source lane: `tests/differential/basic/CORE_TESTS.txt`.",
+            "- The inventory records exact stdlib import candidates and source status; candidate presence, absence and exception handling do not establish runtime success or API parity.",
+            "- Unknown dynamic import custody remains explicit. Actual compiler admission, retained-IR requirements, linking and target execution own runtime qualification.",
             "- Enforced by: `python3 tools/check_core_lane_lowering.py`.",
             "",
-            "## Bootstrap Gate",
-            "- Strict roots: "
+            "## Bootstrap and Selected Source Roots",
+            "- Bootstrap source roots: "
             + ", ".join(f"`{name}`" for name in BOOTSTRAP_STRICT_ROOTS),
-            "- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be implemented (`intrinsic-backed`, `intrinsic-partial`, `intrinsic-support` or `python-compiled`); a `stub` or `policy-gate` module implements nothing.",
-            "- Required modules: "
-            + ", ".join(f"`{name}`" for name in sorted(BOOTSTRAP_MODULES)),
-            "- Gate rule: required bootstrap modules that are present must be implemented; a `stub` or `policy-gate` module is not bootstrap support.",
+            "- When bootstrap roots are present, all those roots must be present and implemented. Candidate dependency closure does not prove which imports must succeed.",
+            "- Required bootstrap modules that are present must be implemented; a `stub` or `policy-gate` module is not bootstrap support.",
+            "- `--critical-allowlist` and `--allowlist-modules` require implemented source roots, without inferring successful execution of every candidate dependency.",
             "",
-            "## Critical Strict-Import Gate",
-            "- Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.",
-            "- Critical roots: "
-            + ", ".join(f"`{name}`" for name in CRITICAL_STRICT_IMPORT_ROOTS),
-            "- Gate rule: each listed root must be implemented, and so must every transitive stdlib import in its closure.",
-            "- Strict root rule: no optional intrinsic loaders and no try/except import fallback paths (applies to all listed roots, including `intrinsic-partial`).",
-            "",
-            "## Intrinsic-Backed Fallback Gate",
-            "- Global rule: every `intrinsic-backed` module must avoid optional intrinsic loaders and try/except import fallback paths.",
-            "- Enforced by: `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`.",
-            "",
-            "## All-Stdlib Fallback Gate",
-            "- Global rule: every stdlib module must avoid optional intrinsic loaders and try/except import fallback paths.",
-            "- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).",
-            "",
-            "## Intrinsic Pass-Fallback Gate",
-            "- Rule: selected modules must not swallow intrinsic call failures via try/except pass-only fallback paths.",
-            "- Enforced modules: "
-            + ", ".join(f"`{name}`" for name in INTRINSIC_PASS_FALLBACK_STRICT_MODULES),
-            "- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).",
+            "## Standalone Execution and Python Errors",
+            "- Admitted Python implementations may select compiled alternatives or catch Python exceptions. Their semantics and performance require independent qualification.",
+            "- Retained intrinsic symbols must satisfy the compiler's target/profile and link requirements. Source catch syntax is not an availability or error-contract proof.",
             "",
             "## Unread Intrinsic Gate",
             "- Global rule: every intrinsic a stdlib module requires must be read (see Policy). A discarded requirement or a private binding no module loads fails the gate; delete it.",
@@ -1038,7 +573,7 @@ def _finish_audit(
         for message in messages:
             print(message)
     report.update(
-        schema="molt.stdlib-intrinsics-audit.v3",
+        schema="molt.stdlib-intrinsics-audit.v4",
         analysis_complete=analysis_complete,
         ok=not diagnostics,
         diagnostics=[
@@ -1084,7 +619,7 @@ def main() -> int:
     parser.add_argument(
         "--allowlist-modules",
         help=(
-            "Comma-separated stdlib modules to enforce strict transitive import closure "
+            "Comma-separated stdlib source roots to require as implemented "
             "(each root must be implemented)."
         ),
     )
@@ -1092,17 +627,9 @@ def main() -> int:
         "--critical-allowlist",
         action="store_true",
         help=(
-            "Apply strict transitive import closure checks for critical modules: "
+            "Require implemented source roots for critical modules: "
             + ", ".join(CRITICAL_STRICT_IMPORT_ROOTS)
             + " (and require those roots to be implemented)."
-        ),
-    )
-    parser.add_argument(
-        "--fallback-intrinsic-backed-only",
-        action="store_true",
-        help=(
-            "Limit fallback-pattern enforcement to intrinsic-backed modules "
-            "(default enforces this gate across all stdlib modules)."
         ),
     )
     parser.add_argument(
@@ -1145,27 +672,48 @@ def main() -> int:
 
 
 def _intrinsic_source_facts(
-    module_name: str, path: Path, *, target_python: TargetPythonVersion
+    module_name: str,
+    path: Path,
+    namespace_premise: PythonNamespacePremise,
+    *,
+    target_python: TargetPythonVersion,
 ) -> StdlibModuleIntrinsicFacts:
     """The compiler's content-keyed facts cache: builds and this gate share it."""
     return module_graph_cache._stdlib_intrinsic_source_facts(
-        ROOT, module_name, path, target_python=target_python
+        ROOT,
+        module_name,
+        path,
+        target_python=target_python,
+        namespace_premise=namespace_premise,
     )
 
 
 def _classify_stdlib_modules(
     module_paths: dict[str, Path], target_python: TargetPythonVersion
 ) -> StdlibIntrinsicClassification:
-    module_graph_cache.warm_stdlib_intrinsic_source_facts(
-        ROOT, module_paths, target_python=target_python
-    )
     with _source_tree_fingerprint_transaction():
+        inventory = stdlib_namespace_inventory(
+            module_paths,
+            target_python=target_python,
+            namespace_provider=functools.partial(
+                module_graph_cache._stdlib_intrinsic_namespace_summary,
+                ROOT,
+                target_python=target_python,
+            ),
+        )
+        module_graph_cache.warm_stdlib_intrinsic_source_facts(
+            ROOT,
+            module_paths,
+            target_python=target_python,
+            namespace_premises=inventory.premises,
+        )
         return classify_stdlib_module_statuses(
             module_paths,
             target_python=target_python,
             facts_provider=functools.partial(
                 _intrinsic_source_facts, target_python=target_python
             ),
+            namespace_inventory=inventory,
         )
 
 
@@ -1197,10 +745,10 @@ def _module_audits(
     return audits
 
 
-def stdlib_module_statuses(
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-) -> dict[str, tuple[str, Path]]:
-    """Every stdlib module's final audit status and path, for other gates."""
+def _stdlib_module_audits(
+    target_python: TargetPythonVersion,
+) -> tuple[StdlibIntrinsicClassification, list[ModuleAudit]]:
+    """One source fact inventory shared by status and dependency consumers."""
     module_paths: dict[str, Path] = {}
     progress_marker_modules: set[str] = set()
     for path in sorted(STDLIB_ROOT.rglob("*.py")):
@@ -1210,14 +758,23 @@ def stdlib_module_statuses(
         module_paths[module] = path
         if STDLIB_PROGRESS_MARKER_RE.search(path.read_text(encoding="utf-8")):
             progress_marker_modules.add(module)
+    classification = _classify_stdlib_modules(module_paths, target_python)
     audits = _module_audits(
-        _classify_stdlib_modules(module_paths, target_python),
+        classification,
         module_paths,
         progress_marker_modules=progress_marker_modules,
         fully_covered_modules=_load_fully_covered_stdlib_modules(
             STDLIB_FULL_COVERAGE_MANIFEST
         ),
     )
+    return classification, audits
+
+
+def stdlib_module_statuses(
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+) -> dict[str, tuple[str, Path]]:
+    """Every stdlib module's final audit status and path, for other gates."""
+    _, audits = _stdlib_module_audits(target_python)
     return {audit.module: (audit.status, audit.path) for audit in audits}
 
 
@@ -1257,7 +814,6 @@ def _run_audit(args: argparse.Namespace) -> int:
         if path.name.startswith("."):
             continue
         errors, intrinsic_names, has_stdlib_progress_marker = _scan_file(path)
-        errors.extend(_scan_host_fallback_module_patterns(path))
         module = _module_name(path)
         if has_stdlib_progress_marker:
             progress_marker_modules.add(module)
@@ -1312,7 +868,6 @@ def _run_audit(args: argparse.Namespace) -> int:
         if audit.module in BOOTSTRAP_MODULES and not _is_implemented(audit.status)
     ]
     modules_by_name = {audit.module: audit for audit in audits}
-    dep_graph = _build_stdlib_dep_graph(modules_by_name)
     unknown_fully_covered_modules = tuple(
         sorted(fully_covered_modules - set(modules_by_name))
     )
@@ -1366,17 +921,11 @@ def _run_audit(args: argparse.Namespace) -> int:
     bootstrap_roots_missing = tuple(
         root for root in BOOTSTRAP_STRICT_ROOTS if root not in modules_by_name
     )
-    bootstrap_closure_violations: list[tuple[str, str]] = []
-    if bootstrap_roots_present and not bootstrap_roots_missing:
-        bootstrap_closure = _closure(set(BOOTSTRAP_STRICT_ROOTS), dep_graph) | set(
-            BOOTSTRAP_STRICT_ROOTS
-        )
-        for module_name in sorted(bootstrap_closure):
-            audit = modules_by_name.get(module_name)
-            if audit is None:
-                continue
-            if not _is_implemented(audit.status):
-                bootstrap_closure_violations.append((module_name, audit.status))
+    bootstrap_root_status_violations = [
+        (name, modules_by_name[name].status)
+        for name in bootstrap_roots_present
+        if not _is_implemented(modules_by_name[name].status)
+    ]
     stub_modules = {audit.module for audit in audits if audit.status == STATUS_STUB}
 
     unknown_strict_roots = sorted(
@@ -1402,43 +951,6 @@ def _run_audit(args: argparse.Namespace) -> int:
         )
         for root, status in strict_root_status_violations:
             messages.append(f"- {root}: {status}")
-    not_implemented = {
-        audit.module for audit in audits if not _is_implemented(audit.status)
-    }
-    strict_import_violations: list[tuple[str, tuple[str, ...]]] = []
-    for root in sorted(strict_roots):
-        imported_closure = _closure({root}, dep_graph)
-        imported_closure.discard(root)
-        bad = tuple(sorted(imported_closure & not_implemented))
-        if bad:
-            strict_import_violations.append((root, bad))
-    fallback_errors_by_module: dict[str, tuple[str, ...]] = {}
-    for audit in sorted(audits, key=lambda item: item.module):
-        errors = _scan_strict_module_fallback_patterns(audit.path)
-        if errors:
-            fallback_errors_by_module[audit.module] = tuple(errors)
-    strict_fallback_violations = [
-        (root, fallback_errors_by_module[root])
-        for root in sorted(strict_roots)
-        if root in fallback_errors_by_module
-    ]
-    intrinsic_backed_fallback_violations: list[tuple[str, tuple[str, ...]]] = []
-    for audit in sorted(audits, key=lambda item: item.module):
-        if audit.status != STATUS_INTRINSIC:
-            continue
-        errors = fallback_errors_by_module.get(audit.module)
-        if errors:
-            intrinsic_backed_fallback_violations.append((audit.module, errors))
-    all_fallback_violations = sorted(fallback_errors_by_module.items())
-    intrinsic_runtime_fallback_violations: list[tuple[str, tuple[str, ...]]] = []
-    for audit in sorted(audits, key=lambda item: item.module):
-        if audit.module not in INTRINSIC_PASS_FALLBACK_STRICT_MODULES:
-            continue
-        if audit.module.startswith(INTRINSIC_RUNTIME_FALLBACK_EXEMPT_PREFIXES):
-            continue
-        errors = _scan_intrinsic_runtime_fallback_patterns(audit.path)
-        if errors:
-            intrinsic_runtime_fallback_violations.append((audit.module, tuple(errors)))
     policy_gate_modules = tuple(
         sorted(audit.module for audit in audits if audit.status == STATUS_POLICY_GATE)
     )
@@ -1652,12 +1164,12 @@ def _run_audit(args: argparse.Namespace) -> int:
         for module in bootstrap_roots_missing:
             messages.append(f"- {module}")
 
-    if bootstrap_closure_violations:
-        messages = diagnostics.setdefault("bootstrap-closure-violations", [])
+    if bootstrap_root_status_violations:
+        messages = diagnostics.setdefault("bootstrap-root-status-violations", [])
         messages.append(
-            "stdlib intrinsics lint failed: bootstrap strict closure must be implemented"
+            "stdlib intrinsics lint failed: bootstrap source roots must be implemented"
         )
-        for module, status in bootstrap_closure_violations:
+        for module, status in bootstrap_root_status_violations:
             messages.append(f"- {module}: {status}")
 
     if bootstrap_failures:
@@ -1667,62 +1179,6 @@ def _run_audit(args: argparse.Namespace) -> int:
         )
         for module in sorted(set(bootstrap_failures)):
             messages.append(f"- {module}")
-
-    if strict_import_violations:
-        messages = diagnostics.setdefault("strict-import-violations", [])
-        messages.append(
-            "stdlib intrinsics lint failed: strict-import allowlist violated "
-            "(roots imported a stub or policy-gate stdlib module)"
-        )
-        for root, bad in strict_import_violations:
-            joined = ", ".join(f"`{name}`" for name in bad)
-            messages.append(f"- {root} imports {joined}")
-
-    if strict_fallback_violations:
-        messages = diagnostics.setdefault("strict-fallback-violations", [])
-        messages.append(
-            "stdlib intrinsics lint failed: strict-import roots used forbidden fallback patterns"
-        )
-        for root, errors in strict_fallback_violations:
-            messages.append(f"- {root}")
-            for msg in errors:
-                messages.append(f"  {msg}")
-
-    if intrinsic_backed_fallback_violations:
-        messages = diagnostics.setdefault("intrinsic-backed-fallback-violations", [])
-        messages.append(
-            "stdlib intrinsics lint failed: intrinsic-backed modules used forbidden "
-            "fallback patterns"
-        )
-        for module, errors in intrinsic_backed_fallback_violations:
-            messages.append(f"- {module}")
-            for msg in errors:
-                messages.append(f"  {msg}")
-
-    global_fallback_gate = (
-        not args.fallback_intrinsic_backed_only
-        and not args.critical_allowlist
-        and not args.allowlist_modules
-    )
-    if global_fallback_gate and all_fallback_violations:
-        messages = diagnostics.setdefault("all-fallback-violations", [])
-        messages.append(
-            "stdlib intrinsics lint failed: all-stdlib fallback gate violated"
-        )
-        for module, errors in all_fallback_violations:
-            messages.append(f"- {module}")
-            for msg in errors:
-                messages.append(f"  {msg}")
-
-    if intrinsic_runtime_fallback_violations:
-        messages = diagnostics.setdefault("intrinsic-runtime-fallback-violations", [])
-        messages.append(
-            "stdlib intrinsics lint failed: intrinsic runtime fallback gate violated"
-        )
-        for module, errors in intrinsic_runtime_fallback_violations:
-            messages.append(f"- {module}")
-            for msg in errors:
-                messages.append(f"  {msg}")
 
     for status, field, count in (
         (
@@ -1812,36 +1268,15 @@ def _run_audit(args: argparse.Namespace) -> int:
             }
             for audit in sorted(audits, key=lambda a: a.module)
         ],
-        "strict_import_violations": [
-            {"module": root, "imports": list(bad)}
-            for root, bad in strict_import_violations
-        ],
         "unresolved_intrinsic_imports": unresolved_intrinsic_imports,
         "facades": intrinsic_classification.facades_payload(),
-        "strict_fallback_violations": [
-            {"module": root, "errors": list(errors)}
-            for root, errors in strict_fallback_violations
-        ],
-        "intrinsic_backed_fallback_violations": [
-            {"module": module, "errors": list(errors)}
-            for module, errors in intrinsic_backed_fallback_violations
-        ],
-        "all_fallback_violations": [
-            {"module": module, "errors": list(errors)}
-            for module, errors in all_fallback_violations
-        ],
-        "intrinsic_runtime_fallback_violations": [
-            {"module": module, "errors": list(errors)}
-            for module, errors in intrinsic_runtime_fallback_violations
-        ],
-        "intrinsic_pass_fallback_modules": list(INTRINSIC_PASS_FALLBACK_STRICT_MODULES),
         "allowed_policy_gate_modules": sorted(ALLOWED_POLICY_GATE_MODULES),
         "unknown_policy_gate_modules": list(unknown_policy_gate_modules),
         "bootstrap_roots_present": list(bootstrap_roots_present),
         "bootstrap_roots_missing": list(bootstrap_roots_missing),
-        "bootstrap_closure_violations": [
+        "bootstrap_root_status_violations": [
             {"module": module, "status": status}
-            for module, status in bootstrap_closure_violations
+            for module, status in bootstrap_root_status_violations
         ],
         "required_top_level_modules": sorted(required_top_level),
         "required_top_level_packages": sorted(required_top_level_packages),

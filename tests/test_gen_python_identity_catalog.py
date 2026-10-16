@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -14,7 +15,61 @@ from molt.compiler_analysis.python_binding_flow import (
     analyze_python_source_bindings,
     python_canonical_member_writes,
 )
+from molt.compiler_analysis.python_value_identity import (
+    canonical_import_binding_candidates,
+    canonical_import_binding_write_mask,
+)
 from tools import gen_python_identity_catalog as gen
+
+
+@pytest.mark.parametrize(
+    ("name", "invalidates_imports"),
+    [(None, True), ("typing", True), ("sys", True), ("os.path", False), ("", False)],
+)
+def test_import_cache_entry_mutation_preserves_the_cache_object(
+    name: str | None, invalidates_imports: bool
+) -> None:
+    mask = canonical_import_binding_write_mask(name)
+    assert bool(mask & int(catalog.PythonMember.IMPORT_HOOKS)) is invalidates_imports
+    assert not mask & int(catalog.PythonMember.SYS_MODULES)
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ('"typing"', ("typing",)),
+        ('"os.path"', ("os.path",)),
+        ('f"os.path"', ("os.path",)),
+        ('f""', ("",)),
+        ('f"{name}.path"', ()),
+        ('f"typ{name}ing"', ("typing",)),
+        ('f"sys{name}sys"', ()),
+        ("left + right", (None,)),
+        ("format_key()", (None,)),
+    ],
+)
+def test_import_cache_key_bounds_keep_unknown_expressions_conservative(
+    expression: str, expected: tuple[str | None, ...]
+) -> None:
+    node = ast.parse(expression, mode="eval").body
+    assert canonical_import_binding_candidates(node) == expected
+
+
+def test_disjoint_formatted_key_does_not_prove_callback_freedom() -> None:
+    effects: list[str] = []
+
+    class Key:
+        def __format__(self, spec: str) -> str:
+            effects.append(spec)
+            return "typing"
+
+    expression = 'f"{key:provider}.path"'
+    assert eval(expression, {"key": Key()}) == "typing.path"
+    assert effects == ["provider"]
+    assert (
+        canonical_import_binding_candidates(ast.parse(expression, mode="eval").body)
+        == ()
+    )
 
 
 def test_generated_catalog_is_current() -> None:

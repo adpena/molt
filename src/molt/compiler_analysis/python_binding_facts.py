@@ -7,12 +7,14 @@ hash, and share across compiler consumers.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_function_kind import FunctionKind
+
 import ast
 from dataclasses import dataclass, field, fields
-from enum import IntFlag
+from enum import IntFlag, StrEnum
 from types import MappingProxyType
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Final, Literal, Mapping, TypeAlias
+from typing import TYPE_CHECKING, Final, Literal, Mapping, NamedTuple, TypeAlias
 
 from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -84,6 +86,29 @@ def same_python_static_value(left: PythonStaticValue, right: PythonStaticValue) 
     )
 
 
+class PythonFunctionResult(NamedTuple):
+    """Call completion and yielded values have distinct protocol consumers."""
+
+    owner: PythonSourceKey
+    kind: FunctionKind
+    returned: frozenset[PythonSourceKey]
+    returned_exposed: frozenset[PythonSourceKey]
+    yielded: frozenset[PythonSourceKey]
+    yielded_exposed: frozenset[PythonSourceKey]
+
+
+class PythonElementProtocol(StrEnum):
+    SUBSCRIPT = "subscript"
+    ITERATE = "iterate"
+    ASYNC_ITERATE = "async_iterate"
+
+
+class PythonSourceElement(NamedTuple):
+    owner: PythonSourceKey
+    protocol: PythonElementProtocol
+    origins: frozenset[PythonSourceKey]
+
+
 @dataclass(frozen=True, slots=True)
 class PythonIterationFact:
     """Executed iterator boundary and conservative yielded-value provenance."""
@@ -103,6 +128,8 @@ class PythonIterationFact:
         result: StaticExpressionResult,
         effects: EffectMask,
         release_effects: EffectMask = 0,
+        *,
+        asynchronous: bool = False,
     ) -> PythonIterationFact:
         # Effects are supplied by the existing iterable protocol authority.
         # Contents of an aliased mutable container are not stable value facts.
@@ -159,7 +186,22 @@ class PythonIterationFact:
             },
             release_effects=release_effects,
             deferred_execution=frozenset(
-                ref for ref in result.deferred if ref.phase in {"resume", "escape"}
+                DeferredExecution(
+                    source, "async_iterate" if asynchronous else "iterate"
+                )
+                for source in result.source_origins
+            )
+            | frozenset(
+                DeferredExecution(
+                    ref.source,
+                    "escape"
+                    if ref.source[-1] == "Module"
+                    else "async_iterate"
+                    if asynchronous
+                    else "iterate",
+                )
+                for ref in result.deferred
+                if ref.phase in {"resume", "escape"}
             ),
         )
 
@@ -738,10 +780,18 @@ class PythonBindingFacts:
     source_attributes: tuple[
         tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
     ]
+    source_bases: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
     # Whether a callback can rebind this module's import metadata
     # (``__name__``, ``__package__``, ``__spec__``, ``__path__``). True unless
     # a closed-graph namespace premise bounds the callback domain (HF-226).
     callbacks_rewrite_metadata: bool
+    source_elements: tuple[PythonSourceElement, ...]
+    source_calls: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
+    source_completions: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
+    source_parameters: tuple[
+        tuple[PythonSourceKey, tuple[PythonSourceKey, ...], PythonSourceKey | None], ...
+    ]
+    source_function_results: tuple[PythonFunctionResult, ...]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _statement_lookup: Mapping[PythonNodeKey, PythonStatementFact]
     _iteration_lookup: Mapping[PythonNodeKey, PythonIterationFact]
@@ -774,7 +824,22 @@ class PythonBindingFacts:
         source_attributes: tuple[
             tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...
         ] = (),
+        source_bases: tuple[
+            tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
+        ] = (),
         callbacks_rewrite_metadata: bool = True,
+        source_elements: tuple[PythonSourceElement, ...] = (),
+        source_calls: tuple[
+            tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
+        ] = (),
+        source_completions: tuple[
+            tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
+        ] = (),
+        source_parameters: tuple[
+            tuple[PythonSourceKey, tuple[PythonSourceKey, ...], PythonSourceKey | None],
+            ...,
+        ] = (),
+        source_function_results: tuple[PythonFunctionResult, ...] = (),
     ) -> PythonBindingFacts:
         return cls(
             source_digest=source_digest,
@@ -791,7 +856,13 @@ class PythonBindingFacts:
             slot_names=slot_names,
             source_namespaces=source_namespaces,
             source_attributes=source_attributes,
+            source_bases=source_bases,
             callbacks_rewrite_metadata=callbacks_rewrite_metadata,
+            source_elements=source_elements,
+            source_calls=source_calls,
+            source_completions=source_completions,
+            source_parameters=source_parameters,
+            source_function_results=source_function_results,
             _expression_lookup=MappingProxyType(
                 {fact.node: fact for fact in expressions}
             ),
@@ -912,6 +983,9 @@ __all__ = [
     "PythonStaticValue",
     "PythonStatementFact",
     "PythonIterationFact",
+    "PythonFunctionResult",
+    "PythonElementProtocol",
+    "PythonSourceElement",
     "PythonStringAlternatives",
     "PythonScopeFact",
     "current_globals_dict_is_exact",

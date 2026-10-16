@@ -538,7 +538,7 @@ def test_facade_relative_owner_uses_shared_import_context(
 
 
 @pytest.mark.parametrize(
-    ("source", "owners", "error"),
+    ("source", "owners", "error", "owner_writes_metadata"),
     [
         pytest.param(
             "from .owner import Value\n"
@@ -546,7 +546,17 @@ def test_facade_relative_owner_uses_shared_import_context(
             "__all__ = ['Value', 'Other']\n",
             ("pkg.owner", None),
             "unknown_package",
-            id="prior-import-taints-package",
+            True,
+            id="prior-import-writes-package",
+        ),
+        pytest.param(
+            "from .owner import Value\n"
+            "from ...other import Other\n"
+            "__all__ = ['Value', 'Other']\n",
+            ("pkg.owner", None),
+            "beyond_top",
+            False,
+            id="closed-graph-import-preserves-package",
         ),
         pytest.param(
             "from ...other import Other\n"
@@ -554,22 +564,30 @@ def test_facade_relative_owner_uses_shared_import_context(
             "__all__ = ['Value', 'Other']\n",
             (None, "pkg.owner"),
             "beyond_top",
+            False,
             id="known-package-beyond-top",
         ),
     ],
 )
 def test_unresolved_facade_owner_does_not_fall_through_to_resolved_sibling(
-    tmp_path: Path, source: str, owners: tuple[str | None, ...], error: str
+    tmp_path: Path,
+    source: str,
+    owners: tuple[str | None, ...],
+    error: str,
+    owner_writes_metadata: bool,
 ) -> None:
-    # A prior import can mutate package metadata, so uncertainty precedes the
-    # depth check. With no prior import, the known package proves beyond_top.
-    # The absolute sibling in that case stays resolved despite import effects.
+    # A prior import may change this namespace when graph source writes it.
+    # Without that writer, the same prior import preserves the known package.
+    # An absolute sibling remains resolved even after a relative-owner failure.
+    owner = _INTRINSIC_OWNER
+    if owner_writes_metadata:
+        owner += (
+            "import sys\n"
+            "sys.modules['pkg._facade'].__package__ = 'different.package.root'\n"
+        )
     classification = _classify_sources(
         tmp_path,
-        {
-            "pkg._facade": source,
-            "pkg.owner": _INTRINSIC_OWNER,
-        },
+        {"pkg._facade": source, "pkg.owner": owner},
     )
     assert classification.statuses["pkg._facade"] == STATUS_PYTHON_COMPILED
     facade = classification.import_evidence["pkg._facade"].facade
@@ -686,3 +704,481 @@ def test_star_facade_cannot_prove_a_later_relative_owner(tmp_path: Path) -> None
     assert "pkg.child" not in evidence.proven_modules
     assert evidence.unresolved_sites
     assert evidence.facade is not None and not evidence.facade.resolved
+
+
+def test_import_sites_distinguish_required_owner_from_attribute_candidate(tmp_path):
+    path = tmp_path / "consumer.py"
+    path.write_text(
+        "try:\n    from pkg import Value, child\nexcept ImportError:\n    pass\n"
+        "try:\n    import pkg.missing\nexcept ImportError:\n    pass\n",
+        encoding="utf-8",
+    )
+    evidence = stdlib_module_import_evidence(
+        "consumer", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    first, second = evidence.sites
+    assert first.owner_plan.modules == ("pkg",)
+    assert first.plan.modules == ("pkg", "pkg.Value", "pkg.child")
+    assert second.owner_plan.modules == ("pkg.missing",)
+    assert (first.line, second.line) == (2, 6)
+    assert not first.unresolved and not second.unresolved
+    assert evidence.source_path == path
+    assert [site.source[-1] for site in evidence.source_scan.source_sites] == [
+        "ImportFrom",
+        "Import",
+    ]
+
+
+@pytest.mark.parametrize("except_word", ["except", "except*"])
+def test_import_discovery_retains_eager_and_deferred_regions(tmp_path, except_word):
+    path = tmp_path / "regions.py"
+    path.write_text(
+        "try:\n"
+        "    import immediate\n"
+        "    def deferred():\n"
+        "        import later\n"
+        "    class C:\n"
+        "        import class_body\n"
+        "        def method(self):\n"
+        "            import method_body\n"
+        f"{except_word} ImportError:\n"
+        "    import handler\n"
+        "else:\n"
+        "    import otherwise\n"
+        "finally:\n"
+        "    import cleanup\n",
+        encoding="utf-8",
+    )
+    evidence = stdlib_module_import_evidence(
+        "regions", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    observed = {}
+    for site in evidence.sites:
+        assert site.request is not None
+        observed[site.request.name] = site.line
+    assert observed == {
+        "immediate": 2,
+        "later": 4,
+        "class_body": 6,
+        "method_body": 8,
+        "handler": 10,
+        "otherwise": 12,
+        "cleanup": 14,
+    }
+    assert evidence.proven_modules == {
+        "immediate",
+        "later",
+        "class_body",
+        "method_body",
+        "handler",
+        "otherwise",
+        "cleanup",
+    }
+    assert not evidence.unresolved_sites
+
+
+def test_import_discovery_retains_nested_handler_and_finally_bodies(tmp_path):
+    path = tmp_path / "regions.py"
+    path.write_text(
+        "try:\n"
+        "    try:\n"
+        "        import inner\n"
+        "    except ImportError:\n"
+        "        import recovery\n"
+        "    finally:\n"
+        "        import cleanup\n"
+        "except Exception:\n"
+        "    import outside\n",
+        encoding="utf-8",
+    )
+    evidence = stdlib_module_import_evidence(
+        "regions", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    observed = {}
+    for site in evidence.sites:
+        assert site.request is not None
+        observed[site.request.name] = site.line
+    assert observed == {
+        "inner": 3,
+        "recovery": 5,
+        "cleanup": 7,
+        "outside": 9,
+    }
+    assert evidence.proven_modules == {"inner", "recovery", "cleanup", "outside"}
+    assert not evidence.unresolved_sites
+
+
+def test_alias_normalizer_keeps_bootstrap_and_exact_missing_child_distinct(tmp_path):
+    from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+    from molt.cli.module_dependencies import _module_dependencies_from_imports
+
+    assert normalize_stdlib_module_name("molt.stdlib") is None
+    assert normalize_stdlib_module_name("molt.stdlib.pkg.missing") == "pkg.missing"
+    assert normalize_stdlib_module_name("molt.stdlib_extra") == "molt.stdlib_extra"
+    paths = {name: tmp_path / name for name in ("molt.stdlib", "pkg", "pkg.child")}
+    assert _module_dependencies_from_imports(
+        "consumer", paths, ("molt.stdlib.pkg.child",)
+    ) == {"molt.stdlib", "pkg", "pkg.child"}
+
+
+def test_status_worklist_preserves_unanchored_cycles_and_all_owner_requirement(
+    tmp_path,
+):
+    sources = {
+        "anchor": "from _intrinsics import require_intrinsic\n"
+        "OP = require_intrinsic('molt_time_time')\nvalue = OP\n",
+        "plain": "value = 1\n",
+        "left": "from right import value\n",
+        "right": "from left import value\n",
+        "mixed": "from anchor import value\nfrom plain import value as other\n",
+    }
+    # A reverse-name chain previously forced one full owner rescan per hop.
+    for index in range(80):
+        owner = "anchor" if index == 79 else f"chain_{index + 1:02}"
+        sources[f"chain_{index:02}"] = f"from {owner} import value\n"
+    graph = {}
+    for name, source in sources.items():
+        graph[name] = tmp_path / f"{name}.py"
+        graph[name].write_text(source, encoding="utf-8")
+    statuses = classify_stdlib_module_statuses(
+        dict(sorted(graph.items())), target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    ).statuses
+    assert statuses["anchor"] == STATUS_INTRINSIC
+    assert all(
+        statuses[f"chain_{index:02}"] == STATUS_INTRINSIC_SUPPORT for index in range(80)
+    )
+    assert {statuses[name] for name in ("left", "right", "mixed")} == {
+        STATUS_PYTHON_COMPILED
+    }
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        "except Alias:\n    pass\n",
+        "except choose_handler():\n    pass\n",
+        "except (ImportError, Alias):\n    pass\n",
+        "finally:\n    cleanup()\n",
+    ],
+)
+def test_import_custody_is_independent_of_exception_handler_expression(
+    tmp_path, continuation
+):
+    path = tmp_path / "consumer.py"
+    path.write_text("try:\n    import provider\n" + continuation, encoding="utf-8")
+    evidence = stdlib_module_import_evidence(
+        "consumer", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    [site] = evidence.sites
+    assert site.line == 2
+    assert site.owner_plan.modules == site.plan.modules == ("provider",)
+    assert not site.unresolved
+    assert evidence.source_path == path
+
+
+@pytest.mark.parametrize(
+    "source,kind,owners,candidates",
+    [
+        ("__import__('builtins')\n", "dunder_import", ("builtins",), ("builtins",)),
+        ("__import__(unknown_name)\n", None, (), ()),
+        (
+            "__import__('pkg', fromlist=('child',))\n",
+            "dunder_import",
+            ("pkg",),
+            ("pkg", "pkg.child"),
+        ),
+    ],
+)
+def test_literal_import_calls_use_bound_requests_and_unknown_calls_remain_obligations(
+    tmp_path, source, kind, owners, candidates
+):
+    path = tmp_path / "consumer.py"
+    path.write_text(source, encoding="utf-8")
+    [site] = stdlib_module_import_evidence(
+        "consumer", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    ).sites
+    assert (site.request.kind if site.request is not None else None) == kind
+    assert site.owner_plan.modules == owners
+    assert site.plan.modules == candidates
+    assert site.unresolved is (kind is None)
+
+
+@pytest.mark.parametrize(
+    "target,future",
+    [((3, 12), False), ((3, 13), False), ((3, 14), False), ((3, 12), True)],
+)
+def test_annotation_regions_retain_owners_under_selected_execution_policy(
+    target, future
+):
+    import ast
+    from molt.compiler_analysis.python_lexical_scope import python_execution_regions
+
+    source = ("from __future__ import annotations\n" if future else "") + (
+        "try:\n"
+        "    def f[T: bound()](x: annotation() = default()):\n"
+        "        local: never_executed()\n"
+        "        body()\n"
+        "    class C[T: class_bound()](base()):\n"
+        "        class_body()\n"
+        "    type Alias[T: alias_bound()] = alias_body()\n"
+        "except Exception:\n    pass\n"
+    )
+    calls = {
+        region.node.func.id: region.owner is None
+        for region in python_execution_regions(
+            ast.parse(source), target_python=target, include_deferred=True
+        )
+        if isinstance(region.node, ast.Call) and isinstance(region.node.func, ast.Name)
+    }
+    assert calls["default"] and calls["base"] and calls["class_body"]
+    assert not any(
+        calls[name]
+        for name in ("bound", "body", "class_bound", "alias_bound", "alias_body")
+    )
+    assert "never_executed" not in calls
+    if future:
+        assert "annotation" not in calls
+    else:
+        assert calls["annotation"] is (target < (3, 14))
+
+
+def test_proven_import_owner_retains_runtime_warning_protocol(tmp_path):
+    path = tmp_path / "consumer.py"
+    path.write_text(
+        "__package__ = None\n__spec__ = None\n__name__ = 'pkg.consumer'\n"
+        "try:\n    from . import child\nexcept ImportError:\n    pass\n",
+        encoding="utf-8",
+    )
+    evidence = stdlib_module_import_evidence(
+        "consumer", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    [site] = evidence.sites
+    assert site.owner_plan.modules == ("pkg",)
+    assert site.plan.modules == ("pkg", "pkg.child")
+    assert site.plan.requires_runtime_execution
+    assert not site.unresolved
+    assert stdlib_module_static_imports(
+        "consumer", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    ) == frozenset({"pkg", "pkg.child"})
+
+
+@pytest.fixture
+def premise_source_cache(tmp_path, monkeypatch):
+    from molt.cli import module_graph_cache
+
+    monkeypatch.setattr(
+        module_graph_cache, "_build_state_root", lambda _root: tmp_path / "cache"
+    )
+    monkeypatch.setattr(
+        module_graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "premise"
+    )
+    return module_graph_cache
+
+
+def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
+    tmp_path, monkeypatch, premise_source_cache
+):
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    cache = premise_source_cache
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "from typing import TYPE_CHECKING\ncallback()\n"
+        "if TYPE_CHECKING:\n    import leaf\n"
+        "def mutate():\n    global value\n    value = 1\n"
+    )
+    counts = {}
+    stable = PythonNamespacePremise((), 0)
+    rewritten = PythonNamespacePremise(("TYPE_CHECKING",), 0)
+
+    def facts(premise):
+        return cache._stdlib_intrinsic_source_facts(
+            tmp_path,
+            "entry",
+            path,
+            premise,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+            operation_counts=counts,
+        )
+
+    for premise, expected in ((None, True), (stable, False), (rewritten, True)):
+        cold = facts(premise)
+        assert ("leaf" in cold.import_evidence.proven_modules) is expected
+        assert facts(premise) == cold
+    assert counts == {
+        "intrinsic_source_requests": 6,
+        "intrinsic_source_misses": 3,
+        "intrinsic_source_hits": 3,
+    }
+    assert (
+        len(list((tmp_path / "cache/import_scan_cache").glob("*.intrinsic.json"))) == 1
+    )
+    # A graph premise changes binding facts, never syntax. The warm syntax
+    # projection therefore requires neither a guessed premise nor a new parse.
+    original_parse = cache._parse_source_for_target
+    monkeypatch.setattr(
+        cache,
+        "_parse_source_for_target",
+        lambda *_args, **_kwargs: pytest.fail("warm namespace summary reparsed source"),
+    )
+    summary = cache._stdlib_intrinsic_namespace_summary(
+        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    assert summary.own_names == frozenset({"value"})
+    assert summary == cold.namespace_summary
+    monkeypatch.setattr(cache, "_parse_source_for_target", original_parse)
+    path.write_text("def mutate():\n    global newer\n    newer = 2\n")
+    changed = cache._stdlib_intrinsic_namespace_summary(
+        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    assert changed.own_names == frozenset({"newer"})
+
+
+@pytest.mark.parametrize(
+    "field,invalid",
+    [
+        ("schema", True),
+        ("own_names", {}),
+        ("own_names", ["duplicate", "duplicate"]),
+        ("own_reflection_line", True),
+        ("own_reflection_line", -1),
+        ("own_reflection_line", 1),
+        ("foreign_writes", [[None, "name", "attribute", 0, None]]),
+        ("foreign_writes", [[True, "name", "attribute", 1, None]]),
+        ("foreign_writes", [[None, 1, "attribute", 1, None]]),
+        ("foreign_writes", [[None, "name", "unknown", 1, None]]),
+        ("foreign_writes", [[None, "name", "attribute", 1]]),
+        ("foreign_writes", [[None, "name", "attribute", 1, None]] * 2),
+        ("foreign_writes", [[None, "name", "attribute", 1, []]]),
+        ("foreign_writes", [[None, "name", "attribute", 1, True]]),
+        ("foreign_writes", [[None, "name", "attribute", 1, {}]]),
+        (
+            "foreign_writes",
+            [[None, "name", "attribute", 1, [True, 0, 1, 1, "FunctionDef"]]],
+        ),
+        ("foreign_writes", [[None, "name", "attribute", 1, [1, 0, 2, 1, "Call"]]]),
+    ],
+)
+def test_malformed_cached_namespace_summary_recomputes_canonical_syntax(
+    tmp_path, monkeypatch, premise_source_cache, field, invalid
+):
+    import copy
+
+    cache = premise_source_cache
+    path = tmp_path / "entry.py"
+    path.write_text("def mutate():\n    global retained\n    retained = 1\n")
+    facts = cache._stdlib_intrinsic_source_facts(
+        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    read = cache._read_artifact_sync_state
+    parse = cache._parse_source_for_target
+    parses = []
+
+    def corrupt(path):
+        payload = copy.deepcopy(read(path))
+        payload["facts"]["namespace_summary"][field] = invalid
+        return payload
+
+    def counted(*args, **kwargs):
+        parses.append(1)
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(cache, "_read_artifact_sync_state", corrupt)
+    monkeypatch.setattr(cache, "_parse_source_for_target", counted)
+    summary = cache._stdlib_intrinsic_namespace_summary(
+        tmp_path, "entry", path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    assert summary == facts.namespace_summary
+    assert summary.own_names == frozenset({"retained"})
+    assert parses == [1]
+
+
+def test_intrinsic_warmer_transports_each_modules_namespace_premise(
+    tmp_path, monkeypatch
+):
+    import molt.dx
+    from molt.cli import module_graph_cache as cache
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    # Actual spawned workers prove the frozen premise crosses the process
+    # boundary and populates the same identity the serial reader will admit.
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(molt.dx, "_memory_bounded_worker_count", lambda **_kwargs: 2)
+    monkeypatch.setattr(cache, "_INTRINSIC_FACTS_MODULES_PER_WORKER", 1)
+    paths = {}
+    for module in ("stable", "rewritten"):
+        path = tmp_path / f"{module}.py"
+        path.write_text(
+            "from typing import TYPE_CHECKING\ncallback()\n"
+            "if TYPE_CHECKING:\n    import leaf\n"
+        )
+        paths[module] = path
+    premises = {
+        "stable": PythonNamespacePremise((), 0),
+        "rewritten": PythonNamespacePremise(("TYPE_CHECKING",), 0),
+    }
+    cache.warm_stdlib_intrinsic_source_facts(
+        tmp_path,
+        paths,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+        namespace_premises=premises,
+    )
+    counts = {}
+    for module, path in paths.items():
+        facts = cache._stdlib_intrinsic_source_facts(
+            tmp_path,
+            module,
+            path,
+            premises[module],
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+            operation_counts=counts,
+        )
+        assert ("leaf" in facts.import_evidence.proven_modules) is (
+            module == "rewritten"
+        )
+    assert counts == {"intrinsic_source_requests": 2, "intrinsic_source_hits": 2}
+
+
+def test_intrinsic_metadata_rejects_boolean_namespace_member_mask(
+    tmp_path, monkeypatch, premise_source_cache
+):
+    import copy
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    cache = premise_source_cache
+    path = tmp_path / "entry.py"
+    path.write_text("pass\n")
+    premise = PythonNamespacePremise((), 0)
+    facts = cache._stdlib_intrinsic_source_facts(
+        tmp_path,
+        "entry",
+        path,
+        premise,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    read = cache._read_artifact_sync_state
+
+    def corrupt(path):
+        payload = copy.deepcopy(read(path))
+        if payload is not None and "identity" in payload:
+            payload["identity"]["namespace_premise"]["member_writes"] = False
+        return payload
+
+    monkeypatch.setattr(cache, "_read_artifact_sync_state", corrupt)
+    counts = {}
+    assert (
+        cache._stdlib_intrinsic_source_facts(
+            tmp_path,
+            "entry",
+            path,
+            premise,
+            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+            operation_counts=counts,
+        )
+        == facts
+    )
+    assert counts == {
+        "intrinsic_source_requests": 1,
+        "intrinsic_source_rejected": 1,
+        "intrinsic_source_misses": 1,
+    }

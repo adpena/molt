@@ -14,6 +14,7 @@ from typing import Sequence
 
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
+    normalize_stdlib_module_name,
 )
 from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -30,14 +31,6 @@ _NON_MODULE_PROVENANCE = "<non-module>"
 
 
 class ImportLoweringMixin(GeneratorMixinBase):
-    @staticmethod
-    def _normalize_allowlist_module(module_name: str | None) -> str | None:
-        if not module_name or module_name == "molt.stdlib":
-            return None
-        if module_name.startswith("molt.stdlib."):
-            return module_name[len("molt.stdlib.") :]
-        return module_name
-
     def _module_import_contexts(self, node: ast.AST) -> tuple[ModuleImportContext, ...]:
         base = ModuleImportContext(
             module_name=self.module_name,
@@ -84,7 +77,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         """
         if not module_name:
             return False
-        normalized = self._normalize_allowlist_module(module_name) or module_name
+        normalized = normalize_stdlib_module_name(module_name) or module_name
         if self._is_native_python_export(normalized, func_id):
             return False
         return (
@@ -315,7 +308,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
     def _runtime_qualified_callable_symbol(
         self, module_name: str | None, attr_name: str
     ) -> str | None:
-        normalized = self._normalize_allowlist_module(module_name) or module_name
+        normalized = normalize_stdlib_module_name(module_name) or module_name
         if normalized is None:
             return None
         return SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL.get(
@@ -325,7 +318,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
     def _runtime_qualified_callable_requirement(
         self, module_name: str | None, attr_name: str
     ) -> tuple[str | None, int]:
-        normalized = self._normalize_allowlist_module(module_name) or module_name
+        normalized = normalize_stdlib_module_name(module_name) or module_name
         if normalized is None:
             return None, 0
         qualified = f"{normalized}.{attr_name}"
@@ -364,7 +357,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
             return True
         if module_name in self.stdlib_allowlist:
             return True
-        normalized_name = self._normalize_allowlist_module(module_name)
+        normalized_name = normalize_stdlib_module_name(module_name)
         if normalized_name and (
             normalized_name in self.stdlib_allowlist
             or normalized_name in self.known_modules
@@ -375,7 +368,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         top_level = module_name.split(".", 1)[0]
         if top_level in self.stdlib_allowlist:
             return True
-        normalized_top = self._normalize_allowlist_module(top_level)
+        normalized_top = normalize_stdlib_module_name(top_level)
         return bool(normalized_top and normalized_top in self.stdlib_allowlist)
 
     def _emit_import_transaction(

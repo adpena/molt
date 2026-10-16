@@ -9,11 +9,9 @@ from pathlib import Path
 
 from molt.cli import module_source as _module_source
 from molt.source_root import compiler_source_root
-from molt.cli.models import (
-    ImportScanMode,
-    _ImportDiscoveryProjection,
-    _RuntimeImportScanCustody,
-)
+from molt.cli.models import ImportScanMode, _RuntimeImportScanCustody
+from molt.compiler_analysis.python_imports import _ImportDiscoveryProjection
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     _PythonAstDigestAdmission,
@@ -37,6 +35,7 @@ _ImportScanCacheKey = tuple[
     str,
     str,
     _RuntimeImportScanCustody | None,
+    PythonNamespacePremise | None,
 ]
 
 
@@ -321,6 +320,21 @@ class _ParsedModuleAst:
     def admission(self) -> _PythonAstDigestAdmission:
         return _PythonAstDigestAdmission(self.tree)
 
+    @functools.cached_property
+    def _all_exports_by_target(self):
+        return {}
+
+    def all_exports(self, target_python):
+        from molt.compiler_analysis.python_import_scan import _static_module_all_exports
+
+        if target_python.tag not in self._all_exports_by_target:
+            self._all_exports_by_target[target_python.tag] = _static_module_all_exports(
+                self.tree,
+                target_python=target_python,
+                ast_digest_admission=self.admission,
+            )
+        return self._all_exports_by_target[target_python.tag]
+
 
 @dataclass
 class _ModuleResolutionCache:
@@ -355,6 +369,7 @@ class _ModuleResolutionCache:
             tuple[str, ...],
             str,
             str,
+            PythonNamespacePremise | None,
         ],
         bool,
     ] = field(default_factory=dict)
@@ -619,6 +634,7 @@ class _ModuleResolutionCache:
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
         runtime_import_custody: _RuntimeImportScanCustody | None = None,
         ast_digest_admission: _PythonAstDigestAdmission | None = None,
+        namespace_premise: PythonNamespacePremise | None = None,
     ) -> _ImportDiscoveryProjection:
         """Cache source graph facts, never strict import acceptance or live edges."""
         ast_digest_admission = _PythonAstDigestAdmission.for_tree(
@@ -649,6 +665,7 @@ class _ModuleResolutionCache:
             target_python.tag,
             ast_digest_admission.digest,
             runtime_import_custody,
+            namespace_premise,
         )
         cached = self.graph_import_scan_cache.get(cache_key)
         if cached is not None:
@@ -670,6 +687,7 @@ class _ModuleResolutionCache:
             source_arguments=source_arguments,
             target_python=target_python,
             ast_digest_admission=ast_digest_admission,
+            namespace_premise=namespace_premise,
             **custody_kwargs,
         )
         self.graph_import_scan_cache[cache_key] = result
@@ -686,6 +704,7 @@ class _ModuleResolutionCache:
         source_owner: PythonSourceKey | None = None,
         source_arguments: tuple[str, ...] = (),
         target_python_tag: str,
+        namespace_premise: PythonNamespacePremise | None = None,
     ) -> bool:
         # Cache the complete protocol decision, not just its call-expression
         # projection. Keys bind generated-source replacement and scan promotion.
@@ -704,6 +723,7 @@ class _ModuleResolutionCache:
             source_arguments,
             target_python_tag,
             digest,
+            namespace_premise,
         )
         cached = self.runtime_import_protocol_cache.get(key)
         if cached is not None:

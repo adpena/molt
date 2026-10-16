@@ -12,8 +12,11 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
 )
 from molt.compiler_analysis.python_namespace_graph import (
     NO_GRAPH_NAMESPACE_WRITES,
+    UNKNOWN_GRAPH_NAMESPACE_WRITES,
+    PythonGraphNamespaceIndex,
     PythonNamespacePremise,
     graph_python_namespace_writes,
+    join_python_namespace_premises,
 )
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 
@@ -90,3 +93,81 @@ def test_aggregation_and_empty_premise_are_immutable() -> None:
         graph.by_source[source] = frozenset()  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         graph.premise(source, frozenset()).foreign_writes = ()  # type: ignore[misc]
+
+
+def test_incremental_index_matches_whole_graph_in_any_admission_order() -> None:
+    first, second = Path("first.py"), Path("second.py")
+    topology = {"first": first, "second": second}
+    writes = (
+        PythonNamespaceWrite("first", "flag", "attribute", 1),
+        PythonNamespaceWrite("second", None, "namespace", 2),
+        PythonNamespaceWrite(None, "shared", "attribute", 3),
+        PythonNamespaceWrite("typing", "TYPE_CHECKING", "attribute", 4),
+    )
+    oracle = graph_python_namespace_writes(writes, topology.get)
+    for order in permutations(writes):
+        index = PythonGraphNamespaceIndex()
+        for write in order:
+            batch = graph_python_namespace_writes((write,), topology.get)
+            index.merge(batch)
+            assert index.merge(batch) == frozenset()
+        for source in (first, second, Path("untouched.py")):
+            assert index.premise(source, frozenset({"child"})) == oracle.premise(
+                source, frozenset({"child"})
+            )
+
+
+def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots() -> (
+    None
+):
+    first, second = Path("first.py"), Path("second.py")
+    topology = {"first": first, "second": second}
+    index = PythonGraphNamespaceIndex()
+    old = index.premise(first, frozenset())
+    batch = graph_python_namespace_writes(
+        (PythonNamespaceWrite("first", "flag", "attribute", 1),), topology.get
+    )
+    assert index.merge(batch) == frozenset({first})
+    assert old == PythonNamespacePremise((), 0)
+    assert index.premise(second, frozenset()) == old
+    assert index.merge(NO_GRAPH_NAMESPACE_WRITES) == frozenset()
+    assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) is None
+    assert index.premise(second, frozenset()) == PythonNamespacePremise(
+        None, ALL_INVALID_MEMBERS
+    )
+    assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) == frozenset()
+    assert index.merge(batch) == frozenset()
+    assert (
+        index.merge(
+            graph_python_namespace_writes(
+                (PythonNamespaceWrite("second", "later", "attribute", 2),), topology.get
+            )
+        )
+        == frozenset()
+    )
+    assert not index.by_source
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        (None, PythonNamespacePremise((), 0), None),
+        (
+            PythonNamespacePremise(("a", "shared"), 0),
+            PythonNamespacePremise(("b", "shared"), int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(
+                ("a", "b", "shared"), int(PythonMember.IMPORT_HOOKS)
+            ),
+        ),
+        (
+            PythonNamespacePremise(None, 0),
+            PythonNamespacePremise(("b",), int(PythonMember.IMPORT_HOOKS)),
+            PythonNamespacePremise(None, int(PythonMember.IMPORT_HOOKS)),
+        ),
+    ],
+)
+def test_authority_join_never_grants_unverified_precision(
+    left, right, expected
+) -> None:
+    assert join_python_namespace_premises(left, right) == expected
+    assert join_python_namespace_premises(right, left) == expected

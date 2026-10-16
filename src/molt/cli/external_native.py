@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis import python_import_scan as _source_import_scan
+
 import contextlib
 import json
 import os
@@ -35,7 +37,6 @@ from molt.file_hashing import _sha256_bytes, _sha256_file
 from molt.cli.external_link_providers import (
     wasm_external_link_provider_symbol_classes,
 )
-from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _ExternalPackageNativeArtifact,
@@ -1246,7 +1247,7 @@ def _validate_external_package_native_artifact(
         # This closure captures source files for support custody. Discovery
         # candidates are not sealed execution imports; the product graph still
         # establishes exact source/AST/catalog custody before compiling them.
-        projection = _module_import_scanner._collect_imports_for_graph(
+        projection = _source_import_scan._collect_imports_for_graph(
             tree,
             module_name=module_name,
             is_package=source_path.name == "__init__.py",
