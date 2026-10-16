@@ -644,13 +644,27 @@ def test_malformed_execution_projection_rejects_entire_scan(
     source = tmp_path / "entry.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
     options = _scan_options("entry")
+    snapshot = PythonSourceSnapshot.capture(source)
+    request = discovery._load_module_import_scan(
+        source,
+        **options,
+        resolution_cache=module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+    ).scan.source_requests
     with fingerprints._source_tree_fingerprint_transaction():
         scans._write_persisted_import_scan(
             tmp_path,
             source,
-            snapshot=PythonSourceSnapshot.capture(source),
-            scan=_ImportScanRequests(("helper",), ()),
+            snapshot=snapshot,
+            scan=request,
             **options,
+        )
+        assert (
+            scans._read_persisted_import_scan_record(
+                tmp_path, source, **options, snapshot=snapshot
+            )
+            == request
         )
         path = scans._import_scan_cache_path(tmp_path, source, **options)
         payload = scans._read_cached_json_object(path)
@@ -733,6 +747,14 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
 ) -> None:
     source = tmp_path / "entry.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
+    snapshot = PythonSourceSnapshot.capture(source)
+    request = discovery._load_module_import_scan(
+        source,
+        **_scan_options("entry"),
+        resolution_cache=module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+    ).scan.source_requests
     counts = _count_semantic_work(monkeypatch)
     published_fingerprints: list[str] = []
 
@@ -748,8 +770,8 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
         scans._write_persisted_import_scan(
             tmp_path,
             source,
-            snapshot=PythonSourceSnapshot.capture(source),
-            scan=_ImportScanRequests((), ()),
+            snapshot=snapshot,
+            scan=request,
             **_scan_options("entry"),
         )
 

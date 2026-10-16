@@ -13798,6 +13798,92 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
     assert "pkg" in graph
 
 
+@pytest.mark.parametrize("mode", ["module_init", "full"])
+def test_persisted_module_scan_requires_summary_before_publication(
+    tmp_path: Path, mode: ImportScanMode
+) -> None:
+    module_path = tmp_path / "mod.py"
+    module_path.write_text("import math\n", encoding="utf-8")
+    snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
+    options = dict(module_name="mod", is_package=False, import_scan_mode=mode)
+    scan = cli_module_graph_discovery._load_module_import_scan(
+        module_path,
+        **options,
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+    ).scan.source_requests
+    assert scan.imports == ("math",) and scan.namespace_summary is not None
+    cli_module_graph_cache._write_persisted_import_scan(
+        tmp_path, module_path, **options, scan=scan, snapshot=snapshot
+    )
+    assert (
+        cli_module_graph_cache._read_persisted_import_scan_record(
+            tmp_path, module_path, **options, snapshot=snapshot
+        )
+        == scan
+    )
+    cache_path = cli_module_graph_cache._import_scan_cache_path(
+        tmp_path, module_path, **options
+    )
+    published = cache_path.read_bytes()
+
+    with pytest.raises(ValueError, match="requires a namespace summary"):
+        cli_module_graph_cache._write_persisted_import_scan(
+            tmp_path,
+            module_path,
+            **options,
+            scan=scan._replace(namespace_summary=None),
+            snapshot=snapshot,
+        )
+    assert cache_path.read_bytes() == published
+
+    malformed = json.loads(published)
+    malformed["namespace_summary"] = None
+    cli_json_cache._write_cached_json_object(cache_path, malformed)
+    assert (
+        cli_module_graph_cache._read_persisted_import_scan_record(
+            tmp_path, module_path, **options, snapshot=snapshot
+        )
+        is None
+    )
+
+
+def test_persisted_deferred_scan_keeps_its_owner_without_module_summary(
+    tmp_path: Path,
+) -> None:
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    module_path = tmp_path / "mod.py"
+    module_path.write_text("def f():\n    import math\n", encoding="utf-8")
+    snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
+    owner = python_node_source_key(ast.parse(snapshot.text).body[0])
+    options = dict(module_name="mod", is_package=False, import_scan_mode="module_init")
+    scan = cli_module_graph_discovery._load_module_import_scan(
+        module_path,
+        **options,
+        source_owner=owner,
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+    ).scan.source_requests
+    assert scan.imports == ("math",) and scan.namespace_summary is None
+    cli_module_graph_cache._write_persisted_import_scan(
+        tmp_path,
+        module_path,
+        **options,
+        source_owner=owner,
+        scan=scan,
+        snapshot=snapshot,
+    )
+    assert (
+        cli_module_graph_cache._read_persisted_import_scan_record(
+            tmp_path, module_path, **options, source_owner=owner, snapshot=snapshot
+        )
+        == scan
+    )
+
+
 def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -13810,14 +13896,25 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         "_frontend_semantic_tooling_fingerprint",
         lambda: "tool-a",
     )
+    snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
+    scan = cli_module_graph_discovery._load_module_import_scan(
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        import_scan_mode="module_init",
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+    ).scan.source_requests
+    assert scan.imports == ("json",)
     cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
-        scan=_ImportScanRequests(("json",), ()),
-        snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
+        scan=scan,
+        snapshot=snapshot,
     )
     record = cli_module_graph_cache._read_persisted_import_scan_record(
         tmp_path,
@@ -13826,7 +13923,7 @@ def test_persisted_import_scan_cache_tracks_tooling_fingerprint(
         is_package=False,
         import_scan_mode="module_init",
     )
-    assert record is not None and record.imports == ("json",)
+    assert record == scan
 
     monkeypatch.setattr(
         cli_module_graph_cache,
@@ -13858,14 +13955,35 @@ def test_persisted_import_scan_cache_tracks_source_content(
         "_frontend_semantic_tooling_fingerprint",
         lambda: "tool-a",
     )
+    snapshot = cli_module_source.PythonSourceSnapshot.capture(module_path)
+    scan = cli_module_graph_discovery._load_module_import_scan(
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        import_scan_mode="module_init",
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+    ).scan.source_requests
+    assert scan.imports == ("json",)
     cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
         module_path,
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="module_init",
-        scan=_ImportScanRequests(("json",), ()),
-        snapshot=cli_module_source.PythonSourceSnapshot.capture(module_path),
+        scan=scan,
+        snapshot=snapshot,
+    )
+    assert (
+        cli_module_graph_cache._read_persisted_import_scan_record(
+            tmp_path,
+            module_path,
+            module_name="pkg.mod",
+            is_package=False,
+            import_scan_mode="module_init",
+        )
+        == scan
     )
 
     _rewrite_preserving_mtime(module_path, "import math\n", original)
@@ -14748,7 +14866,14 @@ def test_source_caches_reuse_across_runtime_grants(
     common = dict(module_name="mod", is_package=False, import_scan_mode="full")
     monkeypatch.setenv("MOLT_CAPABILITY_TIER", "none")
     monkeypatch.setenv("MOLT_CAPABILITIES", first_grants)
-    scan = _ImportScanRequests(("os",), ())
+    scan = cli_module_graph_discovery._load_module_import_scan(
+        module_path,
+        **common,
+        resolution_cache=cli_module_resolution._ModuleResolutionCache(),
+        project_root=None,
+        source_snapshot=snapshot,
+    ).scan.source_requests
+    assert scan.imports == ("os",)
     cli_module_graph_cache._write_persisted_import_scan(
         tmp_path,
         module_path,
@@ -14766,12 +14891,15 @@ def test_source_caches_reuse_across_runtime_grants(
     )
 
     monkeypatch.setenv("MOLT_CAPABILITIES", second_grants)
-    assert cli_module_graph_cache._read_persisted_import_scan_record(
-        tmp_path,
-        module_path,
-        **common,
-        snapshot=snapshot,
-    ) == _ImportScanRequests(("os",), ())
+    assert (
+        cli_module_graph_cache._read_persisted_import_scan_record(
+            tmp_path,
+            module_path,
+            **common,
+            snapshot=snapshot,
+        )
+        == scan
+    )
     assert cli_module_cache._read_persisted_module_analysis(
         tmp_path,
         module_path,

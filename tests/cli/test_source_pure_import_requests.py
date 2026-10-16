@@ -1422,20 +1422,28 @@ def test_persisted_source_requests_bind_complete_namespace_premise(
 def test_malformed_persisted_namespace_premise_is_not_an_empty_graph(
     tmp_path, monkeypatch, invalid
 ):
-    from molt.compiler_analysis.python_imports import _ImportScanRequests
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
     path = write(tmp_path / "entry.py")
     premise = PythonNamespacePremise((), 0)
     snapshot = PythonSourceSnapshot.capture(path)
     options = dict(module_name="entry", is_package=False, import_scan_mode="full")
+    request = load(
+        path, project_root=None, namespace_premise=premise, source_snapshot=snapshot
+    ).scan.source_requests
     records._write_persisted_import_scan(
         tmp_path,
         path,
         **options,
         namespace_premise=premise,
-        scan=_ImportScanRequests(("preserved",), ()),
+        scan=request,
         snapshot=snapshot,
+    )
+    assert (
+        records._read_persisted_import_scan_record(
+            tmp_path, path, **options, namespace_premise=premise, snapshot=snapshot
+        )
+        == request
     )
     cache_path = records._import_scan_cache_path(
         tmp_path, path, **options, namespace_premise=premise
