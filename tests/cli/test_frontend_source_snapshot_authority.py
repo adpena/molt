@@ -20,6 +20,7 @@ from molt.cli import module_graph_cache as scans
 from molt.cli import module_cache
 from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_resolution
+from molt.cli import module_source
 from molt.cli import module_graph
 from molt.cli import python_source_closure as source_closure
 from molt.cli.module_source import PythonSourceSnapshot
@@ -33,6 +34,152 @@ from molt.cli.models import (
 )
 from molt.compiler_analysis import python_source_keys
 from molt.compiler_analysis.python_source_keys import python_ast_digest
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.compiler_analysis.python_identity_catalog_generated import ALL_INVALID_MEMBERS
+
+
+def test_discovery_authority_retains_raw_source_generation(
+    tmp_path: Path, compiler_sources: Path
+) -> None:
+    import hashlib
+
+    content = b"# coding: latin-1\r\nVALUE = '\xe9'\r\n"
+    source = tmp_path / "entry.py"
+    source.write_bytes(content)
+    result = discovery._discover_module_graph_from_paths(
+        (source,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        tmp_path,
+        set(),
+        full_scan_roots=True,
+    )
+    captured = result.scan_authority.by_module["entry"]
+    expected = hashlib.sha256(content).hexdigest()
+    assert captured.source_sha256 == expected
+    assert (
+        expected
+        != hashlib.sha256(
+            PythonSourceSnapshot.capture(source).text.encode()
+        ).hexdigest()
+    )
+    result.scan_authority.validate_source_generations()
+    assert result.scan_authority.payload()[0]["source_sha256"] == expected
+    for other in (
+        _ModuleSourceScanAuthority("entry", source, "module_init"),
+        _ModuleSourceScanAuthority("entry", source, "full"),
+    ):
+        joined = result.scan_authority.merged(_ModuleGraphScanAuthority((other,)))
+        assert joined.by_module["entry"].source_sha256 == expected
+        reverse = _ModuleGraphScanAuthority((other,)).merged(result.scan_authority)
+        assert reverse.by_module["entry"].source_sha256 == expected
+    source.write_bytes(content.replace(b"VALUE", b"OTHER"))
+    changed = discovery._discover_module_graph_from_paths(
+        (source,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        tmp_path,
+        set(),
+        full_scan_roots=True,
+    )
+    with pytest.raises(
+        module_source.PythonSourceChangedError, match="generation changed"
+    ):
+        result.scan_authority.merged(changed.scan_authority)
+
+
+@pytest.mark.parametrize("changed_module", ["entry", "writer"])
+@pytest.mark.parametrize("phase", ["before", "during", "generated-importer"])
+def test_runtime_import_policy_fences_complete_source_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    compiler_sources: Path,
+    changed_module: str,
+    phase: str,
+) -> None:
+    import os
+    from molt.cli import module_import_scanner
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    entry, writer = tmp_path / "entry.py", tmp_path / "writer.py"
+    entry.write_text("import writer\nVALUE = 1\n", encoding="utf-8")
+    writer.write_text("VALUE = 1\n", encoding="utf-8")
+    cache = module_resolution._ModuleResolutionCache()
+    graph = discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        tmp_path,
+        set(),
+        resolver_cache=cache,
+        full_scan_roots=True,
+    )
+    options = dict(
+        module_graph=graph.graph,
+        scan_authority=graph.scan_authority,
+        module_resolution_cache=cache,
+        explicit_imports=(),
+        entry_module="entry",
+        entry_path=entry,
+        entry_tree=None,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    tree_queries = []
+    tree_query = module_import_scanner._tree_uses_runtime_import_protocol
+
+    def count_tree(*args, **kwargs):
+        tree_queries.append(kwargs["module_name"])
+        return tree_query(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module_import_scanner, "_tree_uses_runtime_import_protocol", count_tree
+    )
+    baseline = module_import_scanner._module_graph_needs_runtime_import_support(
+        **options
+    )
+    cold_queries = len(tree_queries)
+    assert cold_queries
+    assert (
+        module_import_scanner._module_graph_needs_runtime_import_support(**options)
+        == baseline
+    )
+    assert len(tree_queries) == cold_queries
+    changed = graph.graph[changed_module]
+
+    def mutate() -> None:
+        before = changed.stat()
+        content = changed.read_bytes()
+        changed.write_bytes(content.replace(b"1", b"2"))
+        os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert changed.stat().st_size == before.st_size
+        assert changed.stat().st_mtime_ns == before.st_mtime_ns
+        assert changed.read_bytes() != content
+
+    original = module_import_scanner._module_uses_runtime_import_protocol
+    calls = []
+
+    def observe(**kwargs):
+        result = original(**kwargs)
+        calls.append(kwargs["module_name"])
+        if len(calls) == 1:
+            mutate()
+        return result
+
+    monkeypatch.setattr(
+        module_import_scanner, "_module_uses_runtime_import_protocol", observe
+    )
+    if phase != "during":
+        mutate()
+    if phase == "generated-importer":
+        options["explicit_imports"] = (module_import_scanner.IMPORTER_MODULE_NAME,)
+    with pytest.raises(
+        module_source.PythonSourceChangedError, match="generation changed"
+    ):
+        module_import_scanner._module_graph_needs_runtime_import_support(**options)
+    assert bool(calls) is (phase == "during")
 
 
 @pytest.fixture
@@ -243,7 +390,14 @@ def test_direct_scan_operations_share_identity_but_not_application_bytes(
     scans._write_persisted_import_scan(
         tmp_path,
         source,
-        scan=_ImportScanRequests((), ()),
+        scan=_ImportScanRequests(
+            **_source_import_scan._collect_imports_for_graph(
+                ast.parse(source.read_text(encoding="utf-8")),
+                "entry",
+                import_scan_mode="full",
+            )._asdict(),
+            source_executions=(),
+        ),
         snapshot=PythonSourceSnapshot.capture(source),
         **options,
     )
@@ -367,10 +521,11 @@ def test_imports_only_consumers_warm_complete_scan_before_graph_discovery(
     explicit = discovery_result.explicit_imports
     assert graph["loaded_name"] == target.resolve()
     assert "loaded_name" in explicit
-    # The warmed support source is a complete hit; only the entry and newly
-    # reached source are produced. No repeated miss lookup or partial write.
+    # The imports-only warmup has no closed-graph premise. Discovery projects
+    # it once under its actual premise; it cannot reuse a different policy's
+    # completed record. The next matching discovery rewrites nothing.
     assert reads == [entry, support, target.resolve()]
-    assert writes == [entry, target.resolve()]
+    assert writes == [entry, support, target.resolve()]
     assert counts == {"paths": 1, "bytes": 1}
 
     reads.clear()
@@ -623,6 +778,20 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
     policy = _ImportAdmissionPolicy(
         native_artifact_source_packages=frozenset({"owner"})
     )
+    unknown = PythonNamespacePremise(None, ALL_INVALID_MEMBERS)
+    target_scan = _CompleteImportScan(
+        _ImportScanRequests(
+            **_source_import_scan._collect_imports_for_graph(
+                ast.parse(target.read_text(encoding="utf-8")),
+                "target",
+                import_scan_mode="module_init",
+                namespace_premise=unknown,
+            )._asdict(),
+            source_executions=(),
+        ),
+        (),
+        (),
+    )
 
     def forbidden(*_args: object, **_kwargs: object) -> NoReturn:
         raise AssertionError("explicit artifact-owned execution custody was rescanned")
@@ -677,7 +846,8 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
                 snapshot=PythonSourceSnapshot.capture(target),
                 module_name="target",
                 import_scan_mode="module_init",
-                scan=_CompleteImportScan(_ImportScanRequests((), ()), (), ()),
+                scan=target_scan,
+                namespace_premise=unknown,
                 target_python=_DEFAULT_TARGET_PYTHON_VERSION,
             ),
         },

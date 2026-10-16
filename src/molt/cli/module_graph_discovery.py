@@ -98,8 +98,8 @@ def _bind_precomputed_module_import_scan(
             is_package,
             scan.requires_runtime_package_anchor,
             namespace_premise=namespace_premise,
+            source_sha256=snapshot.sha256,
         ),
-        snapshot.sha256,
         target_python.tag,
         scan,
     )
@@ -122,7 +122,7 @@ def _validate_precomputed_module_import_scan(
         or record.target_python_tag != target_python.tag
     ):
         raise ValueError(f"precomputed source scan lost custody: {module_name!r}")
-    if _module_source._source_content_sha256(path) != record.source_sha256:
+    if _module_source._source_content_sha256(path) != record.authority.source_sha256:
         raise _module_source.PythonSourceChangedError(
             f"precomputed source scan lost custody: {module_name!r}; "
             f"source changed or became unavailable: {path}"
@@ -620,6 +620,10 @@ def _discover_module_graph_from_paths(
                 )
             if prior[1] is None and snapshot is not None:
                 source_generations[module_name] = (generation, snapshot)
+            authority = scan_sources[module_name]
+            authority.validate_generation(generation)
+            if authority.source_sha256 != generation:
+                scan_sources[module_name] = replace(authority, source_sha256=generation)
         if source_owner is None:
             summary = scan.source_requests.namespace_summary
             if summary is None:
@@ -870,7 +874,7 @@ def _discover_module_graph_from_paths(
         ):
             accepted_scan = loaded_scan.scan
         generation = (
-            precomputed_scan.source_sha256
+            precomputed_scan.authority.source_sha256
             if precomputed_scan is not None
             else loaded_scan.snapshot.sha256
             if not import_admission_policy.owns_source_closure_with_native_artifact_plan(
@@ -1041,7 +1045,7 @@ def _load_module_import_scan(
             )
             if snapshot.path != path:
                 raise ValueError("source scan snapshot does not match supplied source")
-            if snapshot.sha256 != precomputed_scan.source_sha256:
+            if snapshot.sha256 != precomputed_scan.authority.source_sha256:
                 raise _module_source.PythonSourceChangedError(
                     f"precomputed source scan lost custody: {module_name!r}; "
                     f"source changed or became unavailable: {path}"
