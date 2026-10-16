@@ -617,8 +617,8 @@ def workspace_runs(queue, tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         execution_environment,
-        "_git_source_paths",
-        lambda root, env, **kw: [root / "main.rs"],
+        "repository_source_paths",
+        lambda root, *, run_git, include_untracked=False: [root / "main.rs"],
     )
     monkeypatch.setattr(
         cargo_cache_custody.disk_capacity,

@@ -58,8 +58,8 @@ def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
     (source / "main.rs").write_text("fn main() {}", encoding="utf-8")
     monkeypatch.setattr(
         execution_environment,
-        "_git_source_paths",
-        lambda root, env, **kw: [source / "main.rs"],
+        "repository_source_paths",
+        lambda root, *, run_git, include_untracked=False: [source / "main.rs"],
     )
     result_root = tmp_path / "runs"
     source_content, _, _ = execution_environment.capture_source_content(

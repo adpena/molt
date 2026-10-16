@@ -48,12 +48,18 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-import os
 import sys
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.git_identity import repository_source_paths  # noqa: E402
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 # The ONE module permitted to divide a time by a time: the source authority.
 # Every other module must route through molt.metric_ratios directly or through
@@ -62,30 +68,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # single-source-in-REACH the audit demands.
 EXEMPT_RELATIVE = {
     "src/molt/metric_ratios.py",
-}
-
-# Directories scanned for executable Python. Perf ratios live in the bench
-# tooling and harness; we scan the whole tree's *.py so a stray time/time
-# division anywhere is caught, but skip vendored / generated trees AND nested
-# git worktrees. ``.claude`` holds sibling-agent worktrees (each a FULL,
-# independent checkout of this repo under .claude/worktrees/, with its own
-# target/ + its own pre-/post-fix copy of the bench lanes) plus session
-# scratch; scanning them is both wrong (they are separate checkouts, not THIS
-# tree's source, so this gate governs THIS working tree only) and catastrophically
-# slow (it would walk every sibling's target/). The gate guards the canonical
-# tree; each worktree's own landing gates guard it.
-SKIP_DIR_PARTS = {
-    ".git",
-    ".claude",
-    "target",
-    "node_modules",
-    "repos",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".uv-cache",
-    ".molt_cache",
-    "tmp",
 }
 
 
@@ -169,24 +151,27 @@ class _TimeRatioFinder(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _read_source_git(cwd: Path, arguments: list[str]) -> bytes:
+    return _COMMANDS.run(
+        ["git", *arguments], cwd=cwd, capture_output=True, timeout=30, check=True
+    ).stdout
+
+
 def _iter_py_files() -> list[Path]:
-    # Walk with os.walk and PRUNE skipped directories in place so the traversal
-    # never descends into target/, .git/, .venv/, etc. (Path.rglob has no
-    # pruning and would stat every file under those huge trees first - a tier-1
-    # gate must stay fast; this is the same prune-during-walk discipline the
-    # other repo scanners use.)
-    out: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_PARTS]
-        for fn in filenames:
-            if fn.endswith(".py"):
-                out.append(Path(dirpath) / fn)
-    return sorted(out)
+    # Git owns ignored and nested-checkout exclusions. Missing admitted files
+    # remain selected so a failed source read cannot silently make the gate pass.
+    return [
+        path
+        for path in repository_source_paths(
+            REPO_ROOT, run_git=_read_source_git, include_untracked=True
+        )
+        if path.suffix == ".py" and not path.is_dir()
+    ]
 
 
 def _rel(path: Path) -> str:
     try:
-        return str(path.resolve().relative_to(REPO_ROOT)).replace("\\", "/")
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
     except ValueError:
         return path.name
 

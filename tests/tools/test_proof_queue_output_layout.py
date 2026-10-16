@@ -899,8 +899,8 @@ def test_cache_payload_capacity_and_roles_follow_root_but_identity_and_metadata_
     metadata = tmp_path / "receipts"
     monkeypatch.setattr(
         execution_environment,
-        "_git_source_paths",
-        lambda *args, **kwargs: [source / "main.rs"],
+        "repository_source_paths",
+        lambda root, *, run_git, include_untracked=False: [source / "main.rs"],
     )
     content, _, _ = execution_environment.capture_source_content(
         source_root=source,

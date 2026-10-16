@@ -1,12 +1,54 @@
-"""Canonical Git object-ID grammar for SHA-1 and SHA-256 repositories."""
+"""Canonical Git identities and source inventories with caller-owned execution."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
+from pathlib import Path
+from typing import TypeGuard
 
 
 _HEX = frozenset("0123456789abcdef")
 GIT_OBJECT_ID_LENGTHS = frozenset({40, 64})
+
+
+def repository_source_paths(
+    cwd: Path,
+    *,
+    run_git: Callable[[Path, list[str]], bytes],
+    include_untracked: bool = False,
+) -> list[Path]:
+    """List Git-admitted source, retaining missing paths for the caller to handle.
+
+    The checked reader owns command admission and environment. Git owns ignored
+    and nested-repository boundaries; NUL framing preserves literal filenames.
+    This inventory does not assert file existence or byte identity.
+    """
+    options = ["--others", "--exclude-standard"] if include_untracked else []
+    output = run_git(cwd, ["ls-files", "--cached", *options, "--full-name", "-z"])
+    root_output = run_git(cwd, ["rev-parse", "--show-toplevel"])
+    if not root_output.endswith(b"\n"):
+        raise ValueError("Git source root is not newline terminated")
+    # Match host text newline translation without stripping legal POSIX names.
+    root_bytes = root_output[:-1]
+    if os.name == "nt" and root_bytes.endswith(b"\r"):
+        root_bytes = root_bytes[:-1]
+    root = Path(os.fsdecode(root_bytes))
+    if not root.is_absolute():
+        raise ValueError("Git source root is not absolute")
+    root = root.resolve(strict=True)
+    if output and not output.endswith(b"\0"):
+        raise ValueError("Git source inventory is not NUL terminated")
+    paths: set[Path] = set()
+    for raw in output.split(b"\0"):
+        if not raw:
+            continue
+        relative = Path(os.fsdecode(raw))
+        candidate = Path(os.path.abspath(root / relative))
+        if relative.is_absolute() or not candidate.is_relative_to(root):
+            raise ValueError("Git source input escaped its root")
+        paths.add(candidate)
+    return sorted(paths, key=lambda path: path.as_posix())
 
 
 def clean_checkout_status_arguments(
@@ -31,7 +73,7 @@ def clean_checkout_status_arguments(
     )
 
 
-def is_git_object_id(value: object) -> bool:
+def is_git_object_id(value: object) -> TypeGuard[str]:
     """Return whether *value* is one canonical lowercase Git object ID."""
 
     return (

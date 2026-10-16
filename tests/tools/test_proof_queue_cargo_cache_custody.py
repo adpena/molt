@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 from tests.test_python_external_custody import standard_finders  # noqa: F401
+from tests.process_guard_common import run_guarded_test_process
+from tools.git_identity import repository_source_paths
 
 from tools.proof_queue_pkg import cargo_cache_custody as cache
 from tools.proof_queue_pkg import (
@@ -32,8 +34,8 @@ pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
 def source_admission(monkeypatch):
     monkeypatch.setattr(
         execution_environment,
-        "_git_source_paths",
-        lambda root, env, **kwargs: [root / "main.rs"],
+        "repository_source_paths",
+        lambda root, *, run_git, include_untracked=False: [root / "main.rs"],
     )
     monkeypatch.setattr(
         cache.disk_capacity,
@@ -52,6 +54,59 @@ def _capture(inputs, overlays=(), *, hash_workers=1):
     )
     inputs["source_content"] = reference
     return telemetry, verify
+
+
+@pytest.mark.parametrize("fault", ["missing-appears", "external-hardlink"])
+def test_git_source_capture_retains_missing_and_alias_custody(
+    tmp_path, monkeypatch, fault
+):
+    # Exercise the real shared Git inventory and the existing capture owner,
+    # rather than the synthetic single-file inventory used by Cargo fixtures.
+    monkeypatch.setattr(
+        execution_environment, "repository_source_paths", repository_source_paths
+    )
+    root = tmp_path / "source with spaces"
+    root.mkdir()
+    for arguments in (
+        ("init", "--quiet"),
+        ("add", "main.rs", "missing.rs", ".gitignore"),
+    ):
+        if arguments[0] == "add":
+            (root / "main.rs").write_bytes(b"fn main() {}\n")
+            (root / "missing.rs").write_bytes(b"missing input\n")
+            (root / ".gitignore").write_text("ignored-cache/\n", encoding="utf-8")
+        run_guarded_test_process(["git", *arguments], cwd=root, check=True, timeout=30)
+    (root / "missing.rs").unlink()
+    ignored = root / "ignored-cache"
+    ignored.mkdir()
+    (ignored / "mutable").write_bytes(b"not source")
+    if fault == "external-hardlink":
+        os.link(root / "main.rs", tmp_path / "unadmitted-alias")
+        with pytest.raises(ValueError, match="aliases outside admitted source"):
+            execution_environment.capture_source_content(
+                source_root=root,
+                env=dict(os.environ),
+                overlays=(),
+                cas_root=tmp_path / "cas",
+                hash_workers=1,
+            )
+        return
+    reference, telemetry, verify = execution_environment.capture_source_content(
+        source_root=root,
+        env=dict(os.environ),
+        overlays=(),
+        cas_root=tmp_path / "cas",
+        hash_workers=1,
+    )
+    payload = custody_cas.read_ref(reference, expected_root=tmp_path / "cas")
+    assert payload["missing"] == ["missing.rs"]
+    assert {row["path"] for row in payload["files"]} == {"main.rs", ".gitignore"}
+    assert telemetry["file_count"] == 2
+    (ignored / "mutable").write_bytes(b"still not source")
+    verify()
+    (root / "missing.rs").write_bytes(b"appeared\n")
+    with pytest.raises(ValueError, match="missing source input appeared"):
+        verify()
 
 
 def _outputs(command: list[str]) -> cargo_output_environment.CargoOutputEnvironment:

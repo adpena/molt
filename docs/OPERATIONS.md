@@ -839,6 +839,12 @@ This follows [CPython's bytecode cache publication](https://github.com/python/cp
 which writes a private file and replaces it atomically without a flush barrier.
 It changes compiler/development I/O only; emitted programs do no cache validation.
 
+The ratio-direction gate and proof source capture share the lightweight Git
+source inventory. Git selects tracked and eligible untracked paths, so ignored
+operational logs and nested checkouts never enter the gate's AST scan. Tracked
+source remains covered even inside an ignored directory. Missing admitted files
+fail closed; the inventory itself makes no claim about current file bytes.
+
 - `MOLT_BUILD_DIAGNOSTICS=1` with `MOLT_BUILD_DIAGNOSTICS_FILE=<path>` writes one
   `molt build`'s phase seconds (`phase_sec`, `ranked_phases`) and its entry as
   JSON. A value ending in `/` names a directory that receives one file per build;
