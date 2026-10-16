@@ -892,6 +892,23 @@ def test_driver_dry_run_reports_gcc_and_clang_helper_commands() -> None:
     ]
 
 
+def test_driver_dry_run_keeps_integrated_frontend_and_ignores_its_annotation() -> None:
+    # WASI SDK 34 clang 23's actual -### output uses a standalone annotation
+    # followed by the executable and -cc1 arguments. The annotation is not a
+    # command, while a quoted program with that spelling still is one.
+    output = (
+        "clang version 23.1.0-wasi-sdk\n"
+        "Target: wasm32-unknown-wasip1\n"
+        " (in-process)\n"
+        ' "/sdk/bin/clang-23" "-cc1" "-triple" "wasm32-unknown-wasip1"\n'
+        ' "(in-process)" "argument"\n'
+    )
+    assert toolchain_capture._driver_command_lines(output) == [
+        ["/sdk/bin/clang-23", "-cc1", "-triple", "wasm32-unknown-wasip1"],
+        ["(in-process)", "argument"],
+    ]
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -2273,7 +2290,10 @@ def _native_build_capture_fixture(
             and "-###" in command
         ):
             return subprocess.CompletedProcess(
-                command, 0, "", " " + json.dumps(str(command[0])) + ' "-cc1"\n'
+                command,
+                0,
+                "",
+                " (in-process)\n " + json.dumps(str(command[0])) + ' "-cc1"\n',
             )
         host_macro = (
             "--manifest-path" in command

@@ -703,10 +703,13 @@ def _driver_command_lines(output: str) -> list[list[str]]:
     """Select the helper commands a compiler driver reports under `-###`.
 
     Command lines are indented by exactly one space; banner lines (`Target:`,
-    `COLLECT_GCC_OPTIONS=`, ...) start at column zero.
+    `COLLECT_GCC_OPTIONS=`, ...) start at column zero. Clang also prints an
+    unquoted `(in-process)` annotation before an integrated frontend command.
     """
     commands: list[list[str]] = []
     for line in output.splitlines():
+        if line == " (in-process)":
+            continue
         if not line.startswith(" ") or line.startswith("  "):
             continue
         try:
