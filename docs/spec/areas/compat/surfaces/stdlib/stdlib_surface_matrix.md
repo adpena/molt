@@ -17,11 +17,11 @@
 - **Status ratchet:** the `intrinsic-partial` and `stub` counts must remain at or below `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`, `max_stub`), enforced by `tools/check_stdlib_intrinsics.py`.
 - **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
 
-## 0.1 Tier-0 Direct-Call Rule
-- **Direct-call allowlist:** Tier 0 compiles module-level calls to a static `CALL` only for allowlisted functions from allowlisted modules (this matrix + frontend allowlist).
-- **No monkey-patching:** rebinding or monkey-patching allowlisted functions is not observed in Tier 0; the call target is fixed at compile time.
-- **Fallbacks:** non-allowlisted module-level calls raise a compiler error unless `--fallback=bridge` is enabled, in which case a bridge warning is emitted.
-- **Warnings control:** set `MOLT_COMPAT_WARNINGS=0` to suppress bridge warnings during compilation.
+## 0.1 Call and execution policy
+- **Binding and effects:** direct-call specialization requires the current compiler's binding, mutation and effect proofs. Otherwise supported calls retain runtime dispatch; this matrix is not an identity proof or a blanket exemption from observable mutation.
+- **Unsupported operations:** the [compatibility diagnostics contract](../../contracts/compatibility_fallback_contract.md) owns compile-time refusal and unavailable-path diagnostics. `--fallback=bridge` supplies no host interpreter.
+- **Standalone execution:** the [Python execution boundary](../../contracts/cpython_bridge_policy.md) applies to every compiled profile and target.
+- **Warnings control:** `MOLT_COMPAT_WARNINGS=0` suppresses compatibility warnings without changing admission or runtime behavior.
 
 ## 0.2 Submodule Policy
 - **Explicit tracking:** submodules are listed explicitly in this matrix (or noted under the parent) before they are considered importable.
@@ -426,7 +426,6 @@ only the required operations from that matrix.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL2, priority:P2, status:partial): expand advanced hashlib/hmac digestmod parity tests.
 - TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:partial): finish `io` parity (codec coverage, Windows isatty).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:missing): full `open`/file object parity (modes/buffering/text/encoding/newline/fileno/seek/tell/iter/context manager) with differential + wasm coverage.
-- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge contract (IPC/ABI, capability gating, deterministic fallback for C extensions).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): capability-gated I/O (`io`, `os`, `sys`, `pathlib`); `os` and `sys` significantly advanced in 2026-02-25 sprint.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): network/process gating (`socket`, `ssl`, `subprocess`, `asyncio`); `subprocess` advanced in 2026-02-25 sprint.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): expand `asyncio` shim to full loop/task APIs (task groups, wait, shields) and I/O adapters.

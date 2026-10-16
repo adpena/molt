@@ -183,9 +183,6 @@ Ten-item parity plan details live in `docs/spec/areas/compat/surfaces/stdlib/std
 - TODO(stdlib-compat, owner:runtime, milestone:SL2, priority:P2, status:planned): `hashlib` deterministic hashing policy.
 - TODO(c-api, owner:runtime, milestone:SL3, priority:P1, status:planned): define the minimal `libmolt` C-API subset (buffer, numerics, sequence/mapping, errors, GIL mapping) as the primary C-extension compatibility path.
 - TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:planned): extension rebuild pipeline (headers, build helpers, audit tooling) for `libmolt`-compiled wheels.
-- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): CPython bridge contract (IPC/ABI, capability gating, deterministic denylist for C extensions) as an explicit, opt-in compatibility layer only.
-- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): Bridge phase 1 (worker-process bridge default when enabled; Arrow IPC/MsgPack/CBOR batching; profiling warnings).
-- TODO(stdlib-compat, owner:runtime, milestone:SL3, priority:P2, status:planned): Bridge phase 2 (embedded CPython feature flag + deterministic denylist + effect contracts; never default).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:planned): capability-gated I/O (`io`, `os`, `sys`, `pathlib`).
 - Implemented: `os.environ` backend is now intrinsic-owned (`molt_env_snapshot`/`molt_env_set`/`molt_env_unset`) and `os.putenv`/`os.unsetenv` are lowered to dedicated runtime intrinsics (`molt_env_putenv`/`molt_env_unsetenv`) with CPython-visible mapping separation.
 - Implemented: `os.mkdir`/`os.makedirs` now lower `mode` through Rust intrinsics (`molt_path_mkdir(path, mode)` and `molt_path_makedirs(path, mode, exist_ok)`), including `__index__` exception-propagation parity.

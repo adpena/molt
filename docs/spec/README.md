@@ -102,7 +102,7 @@ authoritative when a design claim drifts.
 - Tkinter runtime semantics differential probe (`tkinter.ttk:runtime_semantics`): [tests/differential/stdlib/tkinter_phase0_core_semantics.py](../../tests/differential/stdlib/tkinter_phase0_core_semantics.py)
 - 0016 Args/kwargs call binding contract, including ordinary-class `__new__`/`__init__` constructor routing: [docs/spec/areas/compat/contracts/call_argument_binding_contract.md](areas/compat/contracts/call_argument_binding_contract.md)
 - 0018 Package ABI contract: [docs/spec/areas/compat/contracts/package_abi_contract.md](areas/compat/contracts/package_abi_contract.md)
-- 0210 CPython bridge policy: [docs/spec/areas/compat/contracts/cpython_bridge_policy.md](areas/compat/contracts/cpython_bridge_policy.md)
+- 0210 Python execution boundary: [docs/spec/areas/compat/contracts/cpython_bridge_policy.md](areas/compat/contracts/cpython_bridge_policy.md)
 - 0211 Compatibility + fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](areas/compat/contracts/compatibility_fallback_contract.md)
 - 0216 Dynamic execution + reflection policy contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](areas/compat/contracts/dynamic_execution_policy_contract.md)
 - 0213 Import system contract (module-init closure, immutable `ImportPlan`, external-root admission policy, native extension sidecar custody, backend-IR direct-call closure, shared-stdlib cache partitioning, public importlib transaction authority, and remaining package-context/fromlist/frontend-syntax seams): [docs/spec/areas/compat/contracts/import_system_contract.md](areas/compat/contracts/import_system_contract.md)

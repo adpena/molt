@@ -1315,15 +1315,15 @@ This means:
   a small facade set
 - high-value ecosystems such as NumPy may require additional source-compat
   overlays
-- extensions that fundamentally require CPython internals remain out of scope
-  for `libmolt` and belong, if anywhere, in the explicit bridge policy lane
+- extensions that fundamentally require unsupported CPython internals remain
+  explicit compatibility gaps; they cannot be routed to a host interpreter
 
 ---
 
 ## 6. Relationship To Other Specs
 - C-API v0 surface: `docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md`
 - C-API symbol coverage: `docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md`
-- CPython bridge policy: `docs/spec/areas/compat/contracts/cpython_bridge_policy.md`
+- Python execution boundary: [standalone execution contract](cpython_bridge_policy.md)
 
 ## Canonical membership and sequence search
 

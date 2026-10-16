@@ -85,7 +85,9 @@ Every module must expose:
 Modules may be:
 - compiled Molt modules,
 - standard library shims,
-- bridge modules (policy-gated).
+- source-recompiled extension modules under the libmolt ABI and capability contracts.
+
+All execute within Molt under the [Python execution boundary](cpython_bridge_policy.md).
 
 Deleting an admitted C extension from `sys.modules` reenters the same runtime
 initializer transaction. Legacy single-phase definitions (`m_size == -1`)
@@ -742,7 +744,7 @@ Import/bootstrap changes are expected to be covered by the existing in-tree regr
 ## 6. Build-Time Manifest
 Build emits an import manifest:
 - list of resolved modules,
-- module origin (compiled/stdlib/bridge),
+- module origin and admitted source/extension custody,
 - import scan mode and reason/profile impact for each admitted support edge,
 - hash or version for each module.
 

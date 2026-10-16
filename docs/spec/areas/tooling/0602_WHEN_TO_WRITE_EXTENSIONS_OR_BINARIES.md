@@ -87,8 +87,11 @@ C extensions:
 - couple you to CPython ABI
 - reintroduce the exact dependency pain Molt tries to eliminate
 
-If you must build native extensions, prefer recompile against `libmolt` to avoid CPython ABI coupling.
-If you must build CPython extensions (bridge/adoption), treat them as **temporary** and isolate them behind a stable IPC/WASM boundary.
+Build supported native extensions against `libmolt` and qualify their ABI and
+ownership behavior. CPython extension builds may supply development-side
+reference results; they cannot supply an emitted program's fallback execution.
+The [Python execution boundary](../compat/contracts/cpython_bridge_policy.md)
+owns that distinction.
 
 ### 4.3 Go binaries (great for process boundary, not for in-process kernels)
 Go is excellent for:

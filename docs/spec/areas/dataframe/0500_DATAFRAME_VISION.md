@@ -84,7 +84,7 @@ This ensures Molt can:
 Arrow provides:
 - portable columnar memory model
 - easy interchange between engines
-- clean IPC bridge for CPython/pandas fallback
+- explicit application data interchange; no CPython/pandas execution fallback
 - a plausible browser/WASM story for smaller datasets
 
 ## 4. “Super Useful” Use Cases (P0)
@@ -98,9 +98,10 @@ Arrow provides:
 - Molt DataFrame API + Plan IR
 - Polars backend for most operations
 - DuckDB backend for complex joins/SQL-style analytics and query planning
-- Arrow IPC bridge for:
-  - process boundary calls to CPython pandas (migration safety valve)
-  - browser/server data exchange (moderate sized payloads)
+- Arrow IPC for explicit browser/server data exchange (moderate sized payloads).
+  This is not a Python dependency fallback; the [Python execution boundary](../compat/contracts/cpython_bridge_policy.md)
+  requires standalone Molt execution. Package compatibility follows upstream
+  source compilation and supported extension rebuilding.
 
 ## 6. Success Metrics
 - 10× faster than CPython/pandas on at least one representative ETL workload in CPU-bound phases (or strong improvements in throughput/tail latency in services)
