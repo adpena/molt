@@ -5,7 +5,7 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
-description = "Shared atomic artifact publication and durability state for Molt producers"
+description = "Shared atomic artifact publication for Molt's Rust producers"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

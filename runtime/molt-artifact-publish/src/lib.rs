@@ -1,8 +1,19 @@
-//! Same-directory atomic artifact publication shared by Molt producers.
+//! Same-directory atomic artifact publication shared by Molt's Rust producers.
 //!
-//! A successful replacement transfers namespace ownership even if the following
-//! durability barrier fails. Preserve [`PublicationState`] through error chains;
-//! callers must never treat [`PublicationState::Replaced`] as a rollback.
+//! A publication stages a private temporary file beside its destination and
+//! renames it into place, so readers see the old or the new file, never a torn
+//! one. It issues no durability barrier. Every Rust producer writes a compiler
+//! intermediate or a reconstructible cache entry: the CLI stages backend output
+//! to its final path under `molt.file_publication.PublicationDurability.DURABLE`,
+//! and the system linker writes native binaries. Cache readers verify what they
+//! serve. This is the `RECONSTRUCTIBLE` policy of the Python producers and
+//! CPython's bytecode cache (`importlib._bootstrap_external._write_atomic`). On
+//! Apple platforms `File::sync_all` is `F_FULLFSYNC`, which cost 4 ms on an
+//! internal SSD and 23 ms on a disk-image build volume per call (HF-249).
+//!
+//! Multi-file producers report a partial publication with
+//! [`PublicationState::Replaced`]; preserve it through error chains and never
+//! treat it as a rollback.
 
 // rustc records option_env! in Cargo dep-info. A changed source-content digest
 // rebuilds this crate and its dependents without invalidating registry crates.
@@ -141,12 +152,10 @@ fn remove_publication_temporary(temporary: &Path) -> io::Result<()> {
     }
 }
 
-/// A same-directory, crash-consistent file publication.
+/// A same-directory atomic file publication.
 ///
-/// Data and replacement metadata become visible as one commit: the temporary
-/// payload is flushed and synced before replacement, then the containing
-/// directory is synced where the platform exposes that durability primitive.
-/// Dropping an uncommitted publication removes its private temporary file.
+/// The complete payload becomes visible in one rename. Dropping an uncommitted
+/// publication removes its private temporary file.
 pub struct AtomicFilePublication {
     destination: PathBuf,
     temporary: PathBuf,
@@ -174,14 +183,7 @@ impl AtomicFilePublication {
             .expect("atomic publication writer is unavailable after commit")
     }
 
-    pub fn commit(self) -> Result<(), AtomicPublicationError> {
-        self.commit_with_sync(sync_parent_directory)
-    }
-
-    fn commit_with_sync(
-        mut self,
-        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
-    ) -> Result<(), AtomicPublicationError> {
+    pub fn commit(mut self) -> Result<(), AtomicPublicationError> {
         let prepared = (|| -> io::Result<()> {
             let mut writer = self
                 .writer
@@ -195,13 +197,12 @@ impl AtomicFilePublication {
             if let Some(permissions) = self.inherited_permissions.take() {
                 file.set_permissions(permissions)?;
             }
-            file.sync_all()?;
             Ok(())
         })();
         if let Err(error) = prepared {
             return Err(self.abort(error));
         }
-        let result = replace_and_sync(&self.temporary, &self.destination, sync_parent);
+        let result = replace(&self.temporary, &self.destination);
         if let Err(mut error) = result {
             if error.state() == PublicationState::Unchanged {
                 error.remove_temporary(&self.temporary);
@@ -268,20 +269,12 @@ pub fn write_text_atomically(destination: &Path, contents: &str) -> io::Result<(
     write_bytes_atomically(destination, contents.as_bytes())
 }
 
-/// Commit a producer-owned temporary file through the same durability
-/// boundary used by direct artifact output. The producer must place the file on
-/// the destination filesystem so replacement stays atomic.
+/// Commit a producer-owned temporary file through the same rename used by
+/// direct artifact output. The producer must place the file on the destination
+/// filesystem so replacement stays atomic.
 pub fn commit_existing_file_atomically(
     temporary: &Path,
     destination: &Path,
-) -> Result<(), AtomicPublicationError> {
-    commit_existing_file_with_sync(temporary, destination, sync_parent_directory)
-}
-
-fn commit_existing_file_with_sync(
-    temporary: &Path,
-    destination: &Path,
-    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), AtomicPublicationError> {
     let prepare = || -> io::Result<()> {
         let parent = publication_parent(destination);
@@ -300,26 +293,18 @@ fn commit_existing_file_with_sync(
         if let Some(permissions) = destination_permissions(destination)? {
             file.set_permissions(permissions)?;
         }
-        file.sync_all()?;
         drop(file);
         Ok(())
     };
     prepare().map_err(|error| {
         AtomicPublicationError::new(destination, PublicationState::Unchanged, error)
     })?;
-    replace_and_sync(temporary, destination, sync_parent)
+    replace(temporary, destination)
 }
 
-fn replace_and_sync(
-    temporary: &Path,
-    destination: &Path,
-    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
-) -> Result<(), AtomicPublicationError> {
+fn replace(temporary: &Path, destination: &Path) -> Result<(), AtomicPublicationError> {
     replace_file(temporary, destination).map_err(|error| {
         AtomicPublicationError::new(destination, PublicationState::Unchanged, error)
-    })?;
-    sync_parent(destination).map_err(|error| {
-        AtomicPublicationError::new(destination, PublicationState::Replaced, error)
     })
 }
 
@@ -412,9 +397,7 @@ pub fn windows_namespace_path_wide(path: &Path) -> io::Result<Vec<u16>> {
 
 #[cfg(windows)]
 fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
 
     let source = windows_namespace_path_wide(source)?;
     let destination = windows_namespace_path_wide(destination)?;
@@ -422,7 +405,7 @@ fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
         MoveFileExW(
             source.as_ptr(),
             destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            MOVEFILE_REPLACE_EXISTING,
         )
     };
     if replaced == 0 {
@@ -435,18 +418,6 @@ fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(not(windows))]
 fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     std::fs::rename(source, destination)
-}
-
-#[cfg(unix)]
-fn sync_parent_directory(destination: &Path) -> io::Result<()> {
-    File::open(publication_parent(destination))?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_parent_directory(_destination: &Path) -> io::Result<()> {
-    // Windows replacement uses MOVEFILE_WRITE_THROUGH. Other non-Unix targets
-    // do not expose a portable directory-sync primitive through std.
-    Ok(())
 }
 
 #[cfg(test)]
@@ -596,46 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn buffered_publication_reports_post_replacement_sync_failure() {
-        let directory = test_directory("buffered-sync-failure");
-        let output = directory.join("artifact.bin");
-        std::fs::write(&output, b"old").expect("seed old generation");
-        let mut publication = AtomicFilePublication::new(&output).expect("prepare publication");
-        publication
-            .writer()
-            .write_all(b"new")
-            .expect("write new generation");
-        let error = publication
-            .commit_with_sync(|_| Err(io::Error::other("injected directory sync failure")))
-            .expect_err("post-replacement durability failure");
-        assert_eq!(error.state(), PublicationState::Replaced);
-        assert!(
-            error
-                .to_string()
-                .contains("prior generation no longer owns this path")
-        );
-        assert_eq!(
-            std::fs::read(&output).expect("replacement survives"),
-            b"new"
-        );
-        assert_eq!(
-            std::fs::read_dir(&directory).expect("list fixture").count(),
-            1
-        );
-        let error = io::Error::from(error);
-        assert_eq!(
-            error
-                .get_ref()
-                .and_then(|error| error.downcast_ref::<AtomicPublicationError>())
-                .expect("typed state survives io conversion")
-                .state(),
-            PublicationState::Replaced
-        );
-        std::fs::remove_dir_all(directory).expect("remove fixture");
-    }
-
-    #[test]
-    fn existing_file_reports_both_sides_of_replacement_boundary() {
+    fn existing_file_reports_the_replacement_boundary() {
         let directory = test_directory("existing-sync-failure");
         let output = directory.join("artifact.bin");
         let temporary = directory.join("producer.tmp");
@@ -648,11 +580,7 @@ mod tests {
             b"old"
         );
         std::fs::write(&temporary, b"new").expect("write producer output");
-        let after = commit_existing_file_with_sync(&temporary, &output, |_| {
-            Err(io::Error::other("injected directory sync failure"))
-        })
-        .expect_err("replacement committed but directory sync failed");
-        assert_eq!(after.state(), PublicationState::Replaced);
+        commit_existing_file_atomically(&temporary, &output).expect("replace");
         assert_eq!(
             std::fs::read(&output).expect("new generation survives"),
             b"new"

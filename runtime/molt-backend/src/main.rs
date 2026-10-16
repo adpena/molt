@@ -128,7 +128,7 @@ fn publish_wasm_link_facts_atomically(
         publication.writer(),
     );
     // Windows cannot replace a mapped input. End the read lease before the
-    // single durable commit so input == output is a supported, atomic update.
+    // single atomic commit so input == output is a supported, atomic update.
     drop(bytes);
     drop(file);
     let facts = match result {
