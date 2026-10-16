@@ -7,6 +7,7 @@ rust-version.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
+molt-cpython-abi = { package = "molt-lang-cpython-abi", path = "../molt-cpython-abi" }
 molt-runtime-core = { path = "../molt-runtime-core" }
 
 # Compression backends (all optional)

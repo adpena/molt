@@ -23,11 +23,11 @@ THE LAYER SCHEMA (mirrors CPython core / builtins / stdlib / third-party):
   core        -- primitives: the MoltObject value repr + object protocol +
                  compiler intrinsics. Depends on NOTHING above; everything
                  depends on it. (CPython Objects/ + core Python/.)
-  stdlib      -- one crate per stdlib module. Depends on `core` ONLY -- never on
-                 the `runtime` god-crate (that back-edge is the cycle that keeps
-                 the god-crate un-splittable). (CPython Lib/ + Modules/.)
-  third_party -- the CPython C-API/ABI surface + source-recompiled extension
-                 custody. Depends on `core`. (CPython third-party C extensions.)
+  c_api       -- native object/buffer protocol and CPython C-API/ABI custody.
+                 Depends on `core`; core must not depend on this surface.
+  stdlib      -- one crate per stdlib module. Depends on `core` and, when the
+                 implementation consumes native object protocols, `c_api`.
+                 Never depends on the `runtime` fan-in. (CPython Lib/ + Modules/.)
   runtime     -- the builtins namespace + call + object-protocol remainder still
                  inside the `molt-runtime` god-crate (being split down). May
                  depend on all lower layers.
@@ -71,9 +71,9 @@ BASELINE_REL = "tools/canonicalization_contract_baseline.json"
 # `may_depend_on` (plus its own layer). Lower rank = more foundational.
 LAYERS: dict[str, dict] = {
     "core": {"rank": 0, "may_depend_on": set()},
-    "stdlib": {"rank": 2, "may_depend_on": {"core"}},
-    "third_party": {"rank": 2, "may_depend_on": {"core"}},
-    "runtime": {"rank": 3, "may_depend_on": {"core", "stdlib", "third_party"}},
+    "c_api": {"rank": 1, "may_depend_on": {"core"}},
+    "stdlib": {"rank": 2, "may_depend_on": {"core", "c_api"}},
+    "runtime": {"rank": 3, "may_depend_on": {"core", "c_api", "stdlib"}},
 }
 
 # Package assignments and stdlib domains live only in runtime/crate_graph.toml.
@@ -263,7 +263,7 @@ def check_dependency_direction(
             if dL not in allowed:
                 sev = (
                     "high"
-                    if (L in ("stdlib", "third_party") and dL == "runtime")
+                    if (L in ("stdlib", "c_api") and dL == "runtime")
                     else "medium"
                 )
                 out.append(

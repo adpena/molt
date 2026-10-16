@@ -4630,7 +4630,7 @@ globs = [
   "runtime/**/Cargo.toml",
 ]
 gates = [
-  "python tools/run_runtime_test_gate.py --profile release-fast --build-timeout-seconds 6300 --child-timeout-seconds 120",
+  "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
   # Mirror CI (ci.yml:159): lib-scoped clippy. --all-targets pulls in the
   # documented pre-existing TEST-target debt (38+9 errors) — adding it is the
   # clippy-test-debt ratchet arc, not this manifest's job.

@@ -53,7 +53,7 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
             }
 
             if !super::buffer_exports::is_exact_builtin_storage(_py, bits) {
-                let lease = match molt_runtime_core::native_custody::acquire_buffer(
+                let lease = match molt_cpython_abi::native_custody::acquire_buffer(
                     bits,
                     molt_cpython_abi::abi_types::PyBUF_FULL_RO,
                 ) {

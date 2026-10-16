@@ -7,8 +7,9 @@ use digest::{Digest, ExtendableOutput, Update, XofReader};
 #[cfg(feature = "legacy")]
 use md4::Md4;
 use md5::Md5;
-use molt_runtime_core::native_custody::{
-    ByteInput, NativeObjectOwner, cpython_abi as abi, exact_bytes, retire_native_reference,
+use molt_cpython_abi as abi;
+use molt_cpython_abi::native_custody::{
+    ByteInput, NativeObjectOwner, exact_bytes, retire_native_reference,
 };
 use molt_runtime_core::prelude::*;
 #[cfg(feature = "legacy")]

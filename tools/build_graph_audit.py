@@ -14,7 +14,8 @@ This is the machine-checked enforcement, the build-graph dual of
 
   * the DECLARED DAG: `runtime/crate_graph.toml` (each workspace crate's layer +
     the documented same-layer exceptions), and
-  * the MEASURED graph: `cargo metadata --no-deps` over the ROOT workspace.
+  * the MEASURED graph: locked, all-feature `cargo metadata` over the ROOT
+    workspace, including paths through registry and nonmember dependencies.
 
 and computes, per crate, its **recompile blast radius** = the number of
 workspace crates that transitively depend on it (its reverse-dependency cone).
@@ -81,7 +82,7 @@ GRAPH_TOML_REL = "runtime/crate_graph.toml"
 BASELINE_PATH_REL = "tools/build_graph_baseline.json"
 BOARD_PATH_REL = "docs/design/foundation/BUILD_GRAPH_BOARD.md"
 
-# Dependency kinds, as reported per-dependency by `cargo metadata --no-deps`.
+# Dependency kinds, as reported by `cargo metadata` resolve.nodes[].deps.
 # A null kind is a normal (production) dependency; "build" is a build-script
 # dependency. Both put the dependency in the depending crate's LIB recompile
 # cone. "dev" is a dev-dependency: it only rebuilds the dependent's TEST target,
@@ -198,7 +199,14 @@ def _normalize_kind(raw: object) -> str:
 
 
 def run_cargo_metadata(root: Path) -> dict:
-    command = ["cargo", "metadata", "--no-deps", "--format-version", "1"]
+    command = [
+        "cargo",
+        "metadata",
+        "--locked",
+        "--all-features",
+        "--format-version",
+        "1",
+    ]
     try:
         proc = subprocess.run(
             command,
@@ -223,30 +231,87 @@ def run_cargo_metadata(root: Path) -> dict:
 
 
 def parse_measured_graph(metadata: dict) -> MeasuredGraph:
+    """Project Cargo's resolved package identities onto workspace boundaries.
+
+    Registry dependencies can lead back to a maintained workspace provider.
+    Keep those paths instead of guessing edges from package names, versions or
+    rename aliases. A dependency's own dev-dependencies never build its library;
+    only the originating workspace member's dev edge contributes a test edge.
+    Cargo includes all target platforms, and --all-features includes optional
+    edges, making this a conservative cut rather than one host's build claim.
+
+    Schema: https://doc.rust-lang.org/cargo/commands/cargo-metadata.html
+    """
     packages = {pkg["id"]: pkg for pkg in metadata.get("packages", [])}
     member_ids = set(metadata.get("workspace_members", []))
-    ws_names = {packages[pid]["name"] for pid in member_ids if pid in packages}
-    if not ws_names:
+    if not member_ids:
         raise BuildGraphError("cargo metadata reported no workspace members")
+    if not member_ids <= packages.keys():
+        raise BuildGraphError(
+            "cargo metadata workspace member has no package declaration"
+        )
+    names = {pid: packages[pid]["name"] for pid in member_ids}
+    if len(set(names.values())) != len(names):
+        raise BuildGraphError("cargo metadata has duplicate workspace package names")
+    resolve = metadata.get("resolve")
+    if not isinstance(resolve, dict) or not isinstance(resolve.get("nodes"), list):
+        raise BuildGraphError(
+            "cargo metadata requires the complete resolved dependency graph"
+        )
+    adjacency: dict[str, list[tuple[str, str]]] = {}
+    for node in resolve["nodes"]:
+        pid = node["id"]
+        if pid not in packages or pid in adjacency:
+            raise BuildGraphError(
+                f"cargo metadata has an unknown or duplicate resolve node {pid!r}"
+            )
+        deps = node.get("deps")
+        if not isinstance(deps, list):
+            raise BuildGraphError(
+                f"cargo metadata resolve node {pid!r} has no typed deps"
+            )
+        adjacency[pid] = []
+        for dep in deps:
+            destination = dep["pkg"]
+            if destination not in packages:
+                raise BuildGraphError(
+                    f"cargo metadata dependency has no package declaration: {destination!r}"
+                )
+            kinds = dep.get("dep_kinds")
+            if not isinstance(kinds, list) or not kinds:
+                raise BuildGraphError(
+                    f"cargo metadata dependency {destination!r} has no dependency kinds"
+                )
+            adjacency[pid].extend(
+                (destination, _normalize_kind(kind["kind"])) for kind in kinds
+            )
+    if packages.keys() != adjacency.keys():
+        raise BuildGraphError("cargo metadata package has no resolved dependency node")
 
-    edges: list[Edge] = []
-    seen: set[tuple[str, str, str]] = set()
-    for pid in member_ids:
-        pkg = packages.get(pid)
-        if pkg is None:
-            continue
-        src = pkg["name"]
-        for dep in pkg.get("dependencies", []):
-            dst = dep.get("name")
-            if dst not in ws_names or dst == src:
+    edges: set[tuple[str, str, str]] = set()
+    for source in sorted(member_ids):
+        pending = deque(adjacency[source])
+        seen: set[tuple[str, str]] = set()
+        while pending:
+            destination, kind = pending.popleft()
+            if (destination, kind) in seen:
                 continue
-            kind = _normalize_kind(dep.get("kind"))
-            key = (src, dst, kind)
-            if key in seen:
+            seen.add((destination, kind))
+            if destination in member_ids:
+                if destination != source:
+                    edges.add((names[source], names[destination], kind))
                 continue
-            seen.add(key)
-            edges.append(Edge(src=src, dst=dst, kind=kind))
-    return MeasuredGraph(crates=frozenset(ws_names), edges=tuple(edges))
+            pending.extend(
+                (child, kind)
+                for child, dependency_kind in adjacency[destination]
+                if dependency_kind in _LIB_CONE_KINDS
+            )
+    return MeasuredGraph(
+        crates=frozenset(names.values()),
+        edges=tuple(
+            Edge(src=src, dst=dst, kind=kind) for src, dst, kind in sorted(edges)
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

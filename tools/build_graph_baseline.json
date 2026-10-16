@@ -15,7 +15,7 @@
     "molt-gpu-runtime": 2,
     "molt-harness": 0,
     "molt-ir": 7,
-    "molt-lang-cpython-abi": 2,
+    "molt-lang-cpython-abi": 7,
     "molt-lang-obj-model": 24,
     "molt-launcher": 0,
     "molt-passes": 6,
@@ -25,7 +25,7 @@
     "molt-runtime-collections": 2,
     "molt-runtime-compression": 2,
     "molt-runtime-constants": 2,
-    "molt-runtime-core": 22,
+    "molt-runtime-core": 23,
     "molt-runtime-crypto": 2,
     "molt-runtime-diagnostics": 2,
     "molt-runtime-http": 2,
@@ -35,7 +35,7 @@
     "molt-runtime-math": 2,
     "molt-runtime-net": 2,
     "molt-runtime-path": 2,
-    "molt-runtime-platform": 6,
+    "molt-runtime-platform": 10,
     "molt-runtime-protobuf": 0,
     "molt-runtime-regex": 2,
     "molt-runtime-resource": 3,
@@ -50,7 +50,8 @@
     "molt-tir": 5,
     "molt-wasm-facts": 2,
     "molt-wasm-host": 0,
-    "molt-worker": 0
+    "molt-worker": 0,
+    "zlib-rs": 3
   },
   "metrics": {
     "crate_layer_backedges": 0.0,

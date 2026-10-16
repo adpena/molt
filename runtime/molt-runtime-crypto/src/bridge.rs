@@ -18,28 +18,20 @@ unsafe extern "C" {
 
 pub(crate) fn new_hash_owner(value: crate::hashlib::HashHandle) -> u64 {
     let owner = Arc::new(Mutex::new(value));
-    unsafe {
-        molt_runtime_core::native_custody::transfer_native_arc(owner, __molt_crypto_hash_owner_new)
-    }
+    unsafe { molt_runtime_core::transfer_native_arc(owner, __molt_crypto_hash_owner_new) }
 }
 
 pub(crate) fn hash_owner(bits: u64) -> Option<Arc<Mutex<crate::hashlib::HashHandle>>> {
-    unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(bits, __molt_crypto_hash_owner_clone)
-    }
+    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_crypto_hash_owner_clone) }
 }
 
 pub(crate) fn new_hmac_owner(value: crate::hmac::HmacHandle) -> u64 {
     let owner = Arc::new(Mutex::new(value));
-    unsafe {
-        molt_runtime_core::native_custody::transfer_native_arc(owner, __molt_crypto_hmac_owner_new)
-    }
+    unsafe { molt_runtime_core::transfer_native_arc(owner, __molt_crypto_hmac_owner_new) }
 }
 
 pub(crate) fn hmac_owner(bits: u64) -> Option<Arc<Mutex<crate::hmac::HmacHandle>>> {
-    unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(bits, __molt_crypto_hmac_owner_clone)
-    }
+    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_crypto_hmac_owner_clone) }
 }
 
 // ---------------------------------------------------------------------------

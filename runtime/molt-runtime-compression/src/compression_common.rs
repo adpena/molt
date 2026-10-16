@@ -14,7 +14,7 @@ pub extern "C" fn molt_compression_streams_buffer_size() -> u64 {
 /// the existing ABI descriptor; this helper owns only the argument diagnostic.
 pub(crate) fn validate_clinic_buffer(
     py: &molt_runtime_core::PyToken,
-    input: &molt_runtime_core::native_custody::ByteInput<'_>,
+    input: &molt_cpython_abi::native_custody::ByteInput<'_>,
     bits: u64,
     function: &str,
     argument: &str,

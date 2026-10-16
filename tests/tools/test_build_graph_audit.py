@@ -302,29 +302,154 @@ def test_missing_toml_fails_loud(tmp_path):
         bga.load_declared_graph(tmp_path)
 
 
-def test_parse_measured_graph_drops_external_and_self_edges():
-    metadata = {
-        "workspace_members": ["a 0.1.0 (path+file:///a)", "b 0.1.0 (path+file:///b)"],
-        "packages": [
-            {
-                "id": "a 0.1.0 (path+file:///a)",
-                "name": "a",
-                "dependencies": [
-                    {"name": "b", "kind": None},
-                    {"name": "serde", "kind": None},  # external -> dropped
-                    {"name": "a", "kind": "dev"},  # self -> dropped
-                ],
-            },
-            {
-                "id": "b 0.1.0 (path+file:///b)",
-                "name": "b",
-                "dependencies": [],
-            },
-        ],
+def _resolved_metadata(packages, members, edges):
+    """Cargo's documented resolved schema; IDs and aliases remain opaque."""
+    return {
+        "workspace_members": members,
+        "packages": [{"id": pid, "name": name} for pid, name in packages.items()],
+        "resolve": {
+            "nodes": [
+                {
+                    "id": pid,
+                    "deps": [
+                        {
+                            "name": f"renamed_dependency_{index}",
+                            "pkg": destination,
+                            "dep_kinds": [{"kind": kind, "target": None}],
+                        }
+                        for index, (source, destination, kind) in enumerate(edges)
+                        if source == pid
+                    ],
+                }
+                for pid in packages
+            ]
+        },
     }
+
+
+def test_parse_measured_graph_drops_external_leaves_and_self_edges():
+    metadata = _resolved_metadata(
+        {"id-a": "a", "id-b": "b", "registry-serde": "serde"},
+        ["id-a", "id-b"],
+        [
+            ("id-a", "id-b", None),
+            ("id-a", "registry-serde", None),
+            ("id-a", "id-a", "dev"),
+        ],
+    )
     measured = bga.parse_measured_graph(metadata)
     assert measured.crates == frozenset({"a", "b"})
     assert measured.edges == (bga.Edge(src="a", dst="b", kind="normal"),)
+
+
+def test_registry_transit_reaches_workspace_provider_by_id_not_name_or_alias():
+    metadata = _resolved_metadata(
+        {
+            "source": "runtime",
+            "local-codec": "zlib-rs",
+            "registry-codec-v1": "zlib-rs",
+            "registry-flate": "flate2",
+        },
+        ["source", "local-codec"],
+        [
+            ("source", "registry-codec-v1", None),
+            ("source", "registry-flate", None),
+            ("registry-flate", "local-codec", None),
+        ],
+    )
+    measured = bga.parse_measured_graph(metadata)
+    assert measured.edges == (bga.Edge("runtime", "zlib-rs", "normal"),)
+    report = bga.analyze(_declared({"runtime": 1, "zlib-rs": 0}), measured)
+    assert report.downstream["zlib-rs"] == ["runtime"]
+    assert report.blast_radius["zlib-rs"] == 1
+    # A same-name registry release alone must never impersonate the patch.
+    metadata["resolve"]["nodes"][0]["deps"].pop()
+    assert bga.parse_measured_graph(metadata).edges == ()
+
+
+def test_registry_transit_preserves_only_originating_workspace_dev_edges():
+    metadata = _resolved_metadata(
+        {
+            "a": "a",
+            "z": "z",
+            "unused": "unused",
+            "lib": "registry-lib",
+            "tests": "registry-tests",
+        },
+        ["a", "z", "unused"],
+        [
+            ("a", "lib", None),
+            ("a", "tests", "dev"),
+            ("lib", "z", "build"),
+            ("lib", "unused", "dev"),
+            ("tests", "z", None),
+        ],
+    )
+    measured = bga.parse_measured_graph(metadata)
+    assert measured.edges == (bga.Edge("a", "z", "dev"), bga.Edge("a", "z", "normal"))
+    report = bga.analyze(_declared({"a": 1, "z": 0, "unused": 0}), measured)
+    assert report.downstream["z"] == ["a"]
+    assert report.downstream["unused"] == []
+
+
+def test_registry_transit_deduplicates_cycles_and_stops_at_workspace_boundaries():
+    metadata = _resolved_metadata(
+        {"a": "a", "z": "z", "b": "b", "x": "registry-x", "y": "registry-y"},
+        ["a", "z", "b"],
+        [
+            ("a", "x", None),
+            ("x", "y", None),
+            ("y", "x", None),
+            ("y", "z", None),
+            ("z", "b", None),
+        ],
+    )
+    measured = bga.parse_measured_graph(metadata)
+    assert measured.edges == (
+        bga.Edge("a", "z", "normal"),
+        bga.Edge("z", "b", "normal"),
+    )
+
+
+def test_hidden_registry_recoupling_still_fails_layer_and_radius_ratchets():
+    declared = _declared({"low": 0, "high": 1})
+    baseline = bga.baseline_payload(
+        bga.analyze(declared, _measured(["low", "high"], []))
+    )
+    metadata = _resolved_metadata(
+        {"a": "low", "b": "high", "registry": "registry-bridge"},
+        ["a", "b"],
+        [("a", "registry", None), ("registry", "b", None)],
+    )
+    report = bga.analyze(declared, bga.parse_measured_graph(metadata))
+    outcome = bga.check_against_baseline(report, baseline)
+    assert not outcome.ok
+    assert any("low (L0) -> high (L1)" in message for message in outcome.regressions)
+    assert any(
+        "BLAST RADIUS WIDENED: high: 0 -> 1" in message
+        for message in outcome.regressions
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["no_resolve", "missing_node", "foreign_package", "duplicate_node", "unknown_kind"],
+)
+def test_incomplete_or_unknown_resolve_graph_fails_closed(mutation):
+    metadata = _resolved_metadata({"a": "a", "b": "b"}, ["a", "b"], [("a", "b", None)])
+    nodes = metadata["resolve"]["nodes"]
+    if mutation == "no_resolve":
+        metadata["resolve"] = None
+    elif mutation == "missing_node":
+        nodes.pop()
+    elif mutation == "foreign_package":
+        nodes[0]["deps"][0]["pkg"] = "foreign"
+    elif mutation == "duplicate_node":
+        nodes.append(nodes[0])
+    else:
+        nodes[0]["deps"][0]["dep_kinds"][0]["kind"] = "new-unknown-kind"
+    with pytest.raises(bga.BuildGraphError):
+        bga.parse_measured_graph(metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +572,7 @@ def test_metadata_probe_normalizes_workspace_wrapper(
     captured: dict[str, object] = {}
 
     def fake_run(_command: list[str], **kwargs: object):
+        captured["command"] = _command
         captured.update(kwargs)
         return subprocess.CompletedProcess([], 0, '{"packages": []}', "")
 
@@ -457,6 +583,14 @@ def test_metadata_probe_normalizes_workspace_wrapper(
     bga.run_cargo_metadata(tmp_path)
 
     assert captured["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
+    assert captured["command"] == [
+        "cargo",
+        "metadata",
+        "--locked",
+        "--all-features",
+        "--format-version",
+        "1",
+    ]
 
 
 def test_proof_plan_runs_the_build_graph_ratchet() -> None:

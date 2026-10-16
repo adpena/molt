@@ -6,9 +6,10 @@ subsystems move into lower-layer crates that compile independently.
 
 ## Current Contract
 
-- `runtime/crate_graph.toml` is the graph authority. Runtime satellites sit at
-  layer 3 and may depend on `molt-runtime-core` / `molt-obj-model`; the layer-4
-  `molt-runtime` crate fans them in.
+- `runtime/crate_graph.toml` owns the exact dependency depths and semantic roles.
+  Satellites depend on runtime core; the five native-buffer consumers also
+  depend directly on the C-API owner. The runtime crate fans them in. Core never
+  depends on the C API, stdlib consumers, or runtime fan-in.
 - A split is valid only when it moves one real subsystem authority, deletes the
   old in-crate module tree, wires the feature/dependency owner, and adds the
   crate to the graph ratchet.
@@ -17,6 +18,27 @@ subsystems move into lower-layer crates that compile independently.
 - The proof for each split is a focused satellite check plus a real
   `molt-runtime` consumer check. Non-build gates do not prove the compiler can
   still link the runtime.
+
+Native reference and buffer custody belongs to `molt-cpython-abi::native_custody`,
+alongside its existing typed `PyObjectOwner`, `BufferLease`, and acquisition
+errors. The C API depends downward on runtime core for execution-bound value
+owners. Only compression, crypto, HTTP, path, and serial need this native
+protocol dependency; unrelated core consumers remain independent of C-API edits.
+The generic Arc transfer helpers remain in core. There is one owner for each
+protocol, with no forwarding module or second callback registry.
+
+This follows CPython's actual module boundary:
+[`zlibmodule.c`](https://github.com/python/cpython/blob/main/Modules/zlibmodule.c)
+uses the C object API, and its
+[buffer contract](https://docs.python.org/3/c-api/buffer.html) pairs successful
+acquisition with release of the retained exporter. The graph therefore names
+`c_api` explicitly below stdlib, rather than classifying that protocol as a
+third-party package implementation. Its positive dependency rules still reject
+core-to-C-API and C-API-to-stdlib/runtime edges. Exact-byte input retains the
+existing runtime owner without allocating a native view; other inputs use the
+existing one-word buffer lease and native retirement policy. Crate membership
+does not make these entry points live: feature admission and symbol reachability
+continue to determine emitted code.
 
 ## Reserved Surfaces
 

@@ -1,8 +1,7 @@
 use crate::bridge::*;
 use libz_rs_sys as zlib;
-use molt_runtime_core::native_custody::{
-    ByteInput, NativeObjectOwner, cpython_abi as abi, retire_native_reference,
-};
+use molt_cpython_abi as abi;
+use molt_cpython_abi::native_custody::{ByteInput, NativeObjectOwner, retire_native_reference};
 use molt_runtime_core::prelude::*;
 use std::borrow::Cow;
 use std::io::{self, BufRead, Read};
@@ -619,10 +618,7 @@ impl CompressorHandle {
 
 fn compressor_from_bits(bits: u64) -> Option<Arc<Mutex<CompressorHandle>>> {
     unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(
-            bits,
-            __molt_compression_zlib_compressor_owner_clone,
-        )
+        molt_runtime_core::clone_native_arc(bits, __molt_compression_zlib_compressor_owner_clone)
     }
 }
 
@@ -728,7 +724,7 @@ pub extern "C" fn molt_zlib_compressobj_new(
             encoder: Some(encoder),
         }));
         unsafe {
-            molt_runtime_core::native_custody::transfer_native_arc(
+            molt_runtime_core::transfer_native_arc(
                 owner,
                 __molt_compression_zlib_compressor_owner_new,
             )
@@ -1193,10 +1189,7 @@ fn zlib_error_message(code: i32, message: Option<&ZlibMessage>, phase: &str) -> 
 
 fn decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<DecompressorHandle>>> {
     unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(
-            bits,
-            __molt_compression_zlib_decompressor_owner_clone,
-        )
+        molt_runtime_core::clone_native_arc(bits, __molt_compression_zlib_decompressor_owner_clone)
     }
 }
 
@@ -1235,7 +1228,7 @@ pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
             eof: false,
         }));
         unsafe {
-            molt_runtime_core::native_custody::transfer_native_arc(
+            molt_runtime_core::transfer_native_arc(
                 handle,
                 __molt_compression_zlib_decompressor_owner_new,
             )

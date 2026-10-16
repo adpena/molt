@@ -285,7 +285,7 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
         let physical = is_exact_builtin_storage(py, source);
         if !physical {
             unsafe {
-                let lease = match molt_runtime_core::native_custody::acquire_buffer(source, flags) {
+                let lease = match molt_cpython_abi::native_custody::acquire_buffer(source, flags) {
                     Ok(lease) => lease,
                     Err(molt_cpython_abi::api::memory::BufferAcquireError::Preparation) => {
                         return Err(BufferAccessError::Preparation);

@@ -110,6 +110,50 @@ def test_semantics_use_package_identity_not_directory_prefix_or_role(
 
 
 @pytest.mark.parametrize(
+    "consumer_layer,provider_layer,allowed",
+    [
+        ("core", "c_api", False),
+        ("c_api", "core", True),
+        ("stdlib", "c_api", True),
+        ("c_api", "stdlib", False),
+        ("c_api", "runtime", False),
+        ("stdlib", "runtime", False),
+        ("runtime", "c_api", True),
+    ],
+)
+def test_native_protocol_dependency_direction(
+    tmp_path: Path, consumer_layer: str, provider_layer: str, allowed: bool
+) -> None:
+    # Native buffer consumers need the real C object protocol. Its API depends
+    # downward on core; neither core nor the API may depend on those consumers.
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers=["runtime/client", "runtime/provider"]\n',
+        encoding="utf-8",
+    )
+    _write_crate(
+        tmp_path,
+        "client",
+        "client-package",
+        '[dependencies]\nprotocol={package="provider-package",path="../provider"}\n',
+    )
+    _write_crate(tmp_path, "provider", "provider-package")
+    entries = []
+    for name, layer in (
+        ("client-package", consumer_layer),
+        ("provider-package", provider_layer),
+    ):
+        entry = {"name": name, "layer": 0, "runtime_layer": layer, "role": "fixture"}
+        if layer == "stdlib":
+            entry["stdlib_domain"] = "codec"
+        entries.append(entry)
+    _write_graph(tmp_path, entries)
+    violations = canonicalization_contract.check_dependency_direction(
+        canonicalization_contract.discover_crates(tmp_path), root=tmp_path
+    )
+    assert not violations if allowed else len(violations) == 1
+
+
+@pytest.mark.parametrize(
     "dependency_table",
     [
         "dependencies",
@@ -199,6 +243,7 @@ def test_inherited_local_edge_uses_root_workspace_path_once(tmp_path: Path) -> N
         ({"runtime_layer": None}, "invalid runtime_layer"),
         ({"runtime_layer": 3}, "invalid runtime_layer"),
         ({"runtime_layer": "stdlib-ish"}, "invalid runtime_layer"),
+        ({"runtime_layer": "third_party"}, "invalid runtime_layer"),
         ({"runtime_layer": "stdlib"}, "stdlib requires a valid stdlib_domain"),
         (
             {"runtime_layer": "stdlib", "stdlib_domain": "../serial"},
@@ -263,7 +308,7 @@ def test_real_package_aliases_and_all_workspace_crates_have_typed_metadata() -> 
     semantics = contract.load_runtime_semantics(ROOT)
     assert len(semantics) == len(contract.workspace_members(ROOT))
     assert contract.layer_of("molt-obj-model", semantics) == "core"
-    assert contract.layer_of("molt-cpython-abi", semantics) == "third_party"
+    assert contract.layer_of("molt-cpython-abi", semantics) == "c_api"
     assert semantics["molt-cext-discovery"].layer == "outside"
     assert semantics["molt-runtime-platform"].layer == "core"
 

@@ -795,6 +795,7 @@ dependencies = [
  "libc",
  "molt-codegen-abi",
  "molt-lang-obj-model",
+ "molt-runtime-core",
  "molt-runtime-platform",
  "once_cell",
  "parking_lot",
@@ -910,6 +911,7 @@ dependencies = [
  "bzip2",
  "flate2",
  "libz-rs-sys",
+ "molt-lang-cpython-abi",
  "molt-runtime-core",
  "xz2",
  "zip",
@@ -924,7 +926,6 @@ name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
- "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "num-bigint 0.5.1",
  "num-traits",
@@ -940,6 +941,7 @@ dependencies = [
  "hmac",
  "md-5",
  "md4",
+ "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint 0.5.1",
@@ -972,6 +974,7 @@ name = "molt-runtime-http"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint 0.5.1",
@@ -1039,6 +1042,7 @@ version = "0.1.0"
 dependencies = [
  "filetime",
  "libc",
+ "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "molt-runtime-platform",
@@ -1078,6 +1082,7 @@ dependencies = [
  "libc",
  "libm",
  "memchr",
+ "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint 0.5.1",

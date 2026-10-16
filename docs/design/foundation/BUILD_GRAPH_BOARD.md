@@ -23,34 +23,35 @@ None  -  every dependency edge respects the declared layer ordering.
 | ---: | --- | ---: | --- |
 | 29 | `molt-codegen-abi` | L0 | molt-backend, molt-backend-native, molt-backend-wasm, molt-cext-discovery, molt-gpu-runtime, molt-lang-cpython-abi... |
 | 24 | `molt-lang-obj-model` | L1 | molt-cext-discovery, molt-gpu-runtime, molt-lang-cpython-abi, molt-runtime, molt-runtime-asyncio, molt-runtime-collections... |
-| 22 | `molt-runtime-core` | L2 | molt-cext-discovery, molt-gpu-runtime, molt-runtime, molt-runtime-asyncio, molt-runtime-collections, molt-runtime-compression... |
+| 23 | `molt-runtime-core` | L2 | molt-cext-discovery, molt-gpu-runtime, molt-lang-cpython-abi, molt-runtime, molt-runtime-asyncio, molt-runtime-collections... |
+| 10 | `molt-runtime-platform` | L0 | molt-cext-discovery, molt-lang-cpython-abi, molt-runtime, molt-runtime-compression, molt-runtime-crypto, molt-runtime-http... |
 | 7 | `molt-ir` | L0 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-passes... |
+| 7 | `molt-lang-cpython-abi` | L3 | molt-cext-discovery, molt-runtime, molt-runtime-compression, molt-runtime-crypto, molt-runtime-http, molt-runtime-path... |
 | 6 | `molt-passes` | L1 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-tir |
-| 6 | `molt-runtime-platform` | L0 | molt-cext-discovery, molt-lang-cpython-abi, molt-runtime, molt-runtime-path, molt-runtime-tk, molt-wasm-host |
 | 5 | `molt-tir` | L2 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm |
 | 3 | `molt-db` | L0 | molt-cext-discovery, molt-runtime, molt-worker |
 | 3 | `molt-gpu` | L0 | molt-cext-discovery, molt-gpu-runtime, molt-runtime |
 | 3 | `molt-runtime-resource` | L3 | molt-cext-discovery, molt-runtime, molt-wasm-host |
+| 3 | `zlib-rs` | L0 | molt-cext-discovery, molt-runtime, molt-runtime-compression |
 | 2 | `cranelift-object` | L0 | molt-backend, molt-backend-native |
 | 2 | `molt-artifact-publish` | L0 | molt-backend, molt-wasm-host |
 | 2 | `molt-gpu-runtime` | L3 | molt-cext-discovery, molt-runtime |
-| 2 | `molt-lang-cpython-abi` | L2 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-asyncio` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-audit` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-collections` | L3 | molt-cext-discovery, molt-runtime |
-| 2 | `molt-runtime-compression` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-compression` | L4 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-constants` | L3 | molt-cext-discovery, molt-runtime |
-| 2 | `molt-runtime-crypto` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-crypto` | L4 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-diagnostics` | L3 | molt-cext-discovery, molt-runtime |
-| 2 | `molt-runtime-http` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-http` | L4 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-ipaddress` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-itertools` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-logging` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-math` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-net` | L3 | molt-cext-discovery, molt-runtime |
-| 2 | `molt-runtime-path` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-path` | L4 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-regex` | L3 | molt-cext-discovery, molt-runtime |
-| 2 | `molt-runtime-serial` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-serial` | L4 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-stringprep` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-tk` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-runtime-vfs` | L3 | molt-cext-discovery, molt-runtime |
@@ -63,24 +64,25 @@ None  -  every dependency edge respects the declared layer ordering.
 | 1 | `molt-backend-native` | L3 | molt-backend |
 | 1 | `molt-backend-rust` | L3 | molt-backend |
 | 1 | `molt-backend-wasm` | L3 | molt-backend |
-| 1 | `molt-runtime` | L4 | molt-cext-discovery |
+| 1 | `molt-runtime` | L5 | molt-cext-discovery |
 | 0 | `molt-backend` | L4 |  |
-| 0 | `molt-cext-discovery` | L5 |  |
+| 0 | `molt-cext-discovery` | L6 |  |
 | 0 | `molt-embed` | L5 |  |
 | 0 | `molt-harness` | L0 |  |
 | 0 | `molt-launcher` | L0 |  |
 | 0 | `molt-runtime-protobuf` | L0 |  |
-| 0 | `molt-wasm-host` | L5 |  |
+| 0 | `molt-wasm-host` | L6 |  |
 | 0 | `molt-worker` | L1 |  |
 
 ## Declared layer map (`runtime/crate_graph.toml`)
 
-- **Layer 0:** `cranelift-object`, `molt-artifact-publish`, `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-launcher`, `molt-runtime-platform`, `molt-runtime-protobuf`, `molt-wasm-facts`
+- **Layer 0:** `cranelift-object`, `molt-artifact-publish`, `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-launcher`, `molt-runtime-platform`, `molt-runtime-protobuf`, `molt-wasm-facts`, `zlib-rs`
 - **Layer 1:** `molt-lang-obj-model`, `molt-passes`, `molt-worker`
-- **Layer 2:** `molt-lang-cpython-abi`, `molt-runtime-core`, `molt-tir`
-- **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-gpu-runtime`, `molt-runtime-asyncio`, `molt-runtime-audit`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-constants`, `molt-runtime-crypto`, `molt-runtime-diagnostics`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-regex`, `molt-runtime-resource`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`, `molt-stdlib-graphlib`, `molt-stdlib-text`
-- **Layer 4:** `molt-backend`, `molt-runtime`
-- **Layer 5:** `molt-cext-discovery`, `molt-embed`, `molt-wasm-host`
+- **Layer 2:** `molt-runtime-core`, `molt-tir`
+- **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-gpu-runtime`, `molt-lang-cpython-abi`, `molt-runtime-asyncio`, `molt-runtime-audit`, `molt-runtime-collections`, `molt-runtime-constants`, `molt-runtime-diagnostics`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-regex`, `molt-runtime-resource`, `molt-runtime-stringprep`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`, `molt-stdlib-graphlib`, `molt-stdlib-text`
+- **Layer 4:** `molt-backend`, `molt-runtime-compression`, `molt-runtime-crypto`, `molt-runtime-http`, `molt-runtime-path`, `molt-runtime-serial`
+- **Layer 5:** `molt-embed`, `molt-runtime`
+- **Layer 6:** `molt-cext-discovery`, `molt-wasm-host`
 
 **Allowed same-layer edges:** 
 - `molt-backend-native` -> `molt-backend-llvm`

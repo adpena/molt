@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -567,6 +568,11 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
         "--parallel-threads",
         "8",
     )
+    # Local integration consumes the same semantic partition and image profile.
+    # A second local-only profile would build another runtime image without
+    # adding a semantic obligation, and would evade registered queue custody.
+    local = next(rule for rule in PLAN.local_rules if rule["name"] == "runtime-lib")
+    assert shlex.split(local["gates"][0]) == list(shipping.argv[9:])
     for path in (
         "tools/run_runtime_test_gate.py",
         "tests/tools/test_runtime_test_gate.py",
