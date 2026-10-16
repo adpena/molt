@@ -158,7 +158,8 @@ pub(super) fn alloc_file_handle_with_state(
         crate::object::FileAttachment::Uninitialized
     };
     let handle = Box::new(MoltFileHandle {
-        write_operation: None,
+        buffered_operation: None,
+        buffered_raw_position: None,
         dict_bits: 0,
         state,
         readable,

@@ -111,11 +111,11 @@ pub extern "C" fn molt_file_detach(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"write"], true) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[b"write"], true) {
                 return error;
             }
-            if buffered_writer::applies(ptr) {
-                return buffered_writer::detach(_py, handle_bits, ptr);
+            if buffered::is_reader(_py, ptr) || buffered::applies(ptr) {
+                return buffered::detach(_py, handle_bits, ptr);
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -401,7 +401,10 @@ fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits:
         }
         // seek's Clinic whence conversion precedes readiness, including an
         // uninitialized writer whose __index__ callback initializes it.
-        if buffered_writer::is_writer(_py, ptr)
+        if buffered::is_reader(_py, ptr) {
+            return buffered_reader::seek(_py, handle_bits, ptr, offset_bits, whence_bits);
+        }
+        if buffered::is_writer(_py, ptr)
             && (*handle_ptr).attachment != crate::object::FileAttachment::Attached
         {
             return buffered_writer::seek(_py, handle_bits, ptr, offset_bits, whence_bits);
@@ -409,16 +412,14 @@ fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits:
         if crate::builtins::numbers::index_i64_integral_bits(offset_bits).is_none()
             || crate::builtins::numbers::index_i64_integral_bits(whence_bits).is_none()
         {
-            if let Err(error) = buffered_writer::prepare_conversion(_py, ptr) {
+            if let Err(error) = buffered::prepare_conversion(_py, ptr) {
                 return error;
             }
         }
-        if let Err(error) =
-            buffered_writer::prepare(_py, ptr, &[b"seekable", b"write", b"seek"], false)
-        {
+        if let Err(error) = buffered::prepare(_py, ptr, &[b"seekable", b"write", b"seek"], false) {
             return error;
         }
-        if buffered_writer::applies(ptr) {
+        if buffered::applies(ptr) {
             return buffered_writer::seek(_py, handle_bits, ptr, offset_bits, whence_bits);
         }
         let handle = &mut *handle_ptr;
@@ -650,10 +651,13 @@ fn file_tell(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
         if handle_ptr.is_null() {
             return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
         }
-        if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"tell"], false) {
+        if let Err(error) = buffered::prepare(_py, ptr, &[b"tell"], false) {
             return error;
         }
-        if buffered_writer::applies(ptr) {
+        if buffered::is_reader(_py, ptr) {
+            return buffered_reader::tell(_py, handle_bits, ptr);
+        }
+        if buffered::applies(ptr) {
             return buffered_writer::tell(_py, handle_bits, ptr);
         }
         let flush_text = {
@@ -762,11 +766,13 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"fileno"], false) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[b"fileno"], false) {
                 return error;
             }
-            if buffered_writer::is_writer(_py, ptr) {
-                return buffered_writer::query(_py, handle_bits, ptr, b"fileno");
+            if buffered::is_writer(_py, ptr)
+                || (buffered::is_reader(_py, ptr) && buffered::applies(ptr))
+            {
+                return buffered::query(_py, handle_bits, ptr, b"fileno");
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -825,19 +831,22 @@ pub extern "C" fn molt_file_truncate(handle_bits: u64, size_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
+            if buffered::is_reader(_py, ptr) {
+                return raise_exception(_py, "UnsupportedOperation", "truncate");
+            }
             if !obj_from_bits(size_bits).is_none()
                 && crate::builtins::numbers::index_i64_integral_bits(size_bits).is_none()
             {
-                if let Err(error) = buffered_writer::prepare_conversion(_py, ptr) {
+                if let Err(error) = buffered::prepare_conversion(_py, ptr) {
                     return error;
                 }
             }
             if let Err(error) =
-                buffered_writer::prepare(_py, ptr, &[b"write", b"truncate", b"tell"], false)
+                buffered::prepare(_py, ptr, &[b"write", b"truncate", b"tell"], false)
             {
                 return error;
             }
-            if buffered_writer::applies(ptr) {
+            if buffered::applies(ptr) {
                 return buffered_writer::truncate(_py, handle_bits, ptr, size_bits);
             }
             let handle = &mut *handle_ptr;
@@ -942,7 +951,10 @@ pub extern "C" fn molt_file_readable(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            if buffered_writer::is_writer(_py, ptr) {
+            if buffered::is_reader(_py, ptr) {
+                return buffered::query(_py, handle_bits, ptr, b"readable");
+            }
+            if buffered::is_writer(_py, ptr) {
                 // BufferedWriter inherits IOBase.readable; it does not expose
                 // _Buffered.readable's forwarding descriptor.
                 return MoltObject::from_bool(false).bits();
@@ -974,11 +986,14 @@ pub extern "C" fn molt_file_writable(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"writable"], false) {
+            if buffered::is_reader(_py, ptr) {
+                return MoltObject::from_bool(false).bits();
+            }
+            if let Err(error) = buffered::prepare(_py, ptr, &[b"writable"], false) {
                 return error;
             }
-            if buffered_writer::is_writer(_py, ptr) {
-                return buffered_writer::query(_py, handle_bits, ptr, b"writable");
+            if buffered::is_writer(_py, ptr) {
+                return buffered::query(_py, handle_bits, ptr, b"writable");
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -1007,11 +1022,13 @@ pub extern "C" fn molt_file_seekable(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"seekable"], false) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[b"seekable"], false) {
                 return error;
             }
-            if buffered_writer::is_writer(_py, ptr) {
-                return buffered_writer::query(_py, handle_bits, ptr, b"seekable");
+            if buffered::is_writer(_py, ptr)
+                || (buffered::is_reader(_py, ptr) && buffered::applies(ptr))
+            {
+                return buffered::query(_py, handle_bits, ptr, b"seekable");
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -1055,11 +1072,13 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
             if handle_ptr.is_null() {
                 return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
             }
-            if let Err(error) = buffered_writer::prepare(_py, ptr, &[b"isatty"], false) {
+            if let Err(error) = buffered::prepare(_py, ptr, &[b"isatty"], false) {
                 return error;
             }
-            if buffered_writer::is_writer(_py, ptr) {
-                return buffered_writer::query(_py, handle_bits, ptr, b"isatty");
+            if buffered::is_writer(_py, ptr)
+                || (buffered::is_reader(_py, ptr) && buffered::applies(ptr))
+            {
+                return buffered::query(_py, handle_bits, ptr, b"isatty");
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
@@ -1141,11 +1160,37 @@ pub extern "C" fn molt_file_iter(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_next(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let line_bits = molt_file_readline(handle_bits, MoltObject::from_int(-1).bits());
+        let reader = obj_from_bits(handle_bits)
+            .as_ptr()
+            .is_some_and(|pointer| unsafe {
+                object_type_id(pointer) == TYPE_ID_FILE_HANDLE && buffered::is_reader(_py, pointer)
+            });
+        let virtual_reader = reader
+            && unsafe {
+                object_class_bits(obj_from_bits(handle_bits).as_ptr().unwrap())
+                    != builtin_classes(_py).buffered_reader
+            };
+        let line_bits = if virtual_reader {
+            io_call_noargs(_py, handle_bits, b"readline")
+        } else {
+            molt_file_readline(handle_bits, MoltObject::from_int(-1).bits())
+        };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
         let line_obj = obj_from_bits(line_bits);
+        if reader
+            && !line_obj
+                .as_ptr()
+                .is_some_and(|pointer| unsafe { object_type_id(pointer) == TYPE_ID_BYTES })
+        {
+            let message = format!(
+                "readline() should have returned a bytes object, not '{}'",
+                type_name(_py, line_obj)
+            );
+            dec_ref_bits(_py, line_bits);
+            return raise_exception(_py, "OSError", &message);
+        }
         let empty = if let Some(ptr) = line_obj.as_ptr() {
             unsafe {
                 match object_type_id(ptr) {

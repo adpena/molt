@@ -22,6 +22,14 @@ use std::io::{ErrorKind, Read, Seek, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[path = "io/buffered.rs"]
+mod buffered;
+#[path = "io/buffered_reader.rs"]
+mod buffered_reader;
+#[path = "io/raw_base.rs"]
+mod raw_base;
+pub(crate) use raw_base::{raw_io_base_read, raw_io_base_readall, raw_io_base_readinto};
+
 #[path = "io/buffered_writer.rs"]
 mod buffered_writer;
 
@@ -63,7 +71,7 @@ use open::{open_arg_newline, reconfigure_arg_newline, reconfigure_arg_type};
 pub(crate) use open::{windows_crt_fd_from_handle, windows_path_from_handle};
 #[path = "io/construct.rs"]
 mod construct;
-pub(crate) use construct::buffered_writer_new_method;
+pub(crate) use construct::{buffered_reader_new_method, buffered_writer_new_method};
 pub use construct::{
     molt_buffered_init, molt_buffered_new, molt_bytesio_init, molt_bytesio_new, molt_io_class,
     molt_io_default_buffer_size, molt_io_text_encoding, molt_stringio_init, molt_stringio_new,

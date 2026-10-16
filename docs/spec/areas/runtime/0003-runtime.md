@@ -72,11 +72,12 @@ owner. Exporter callbacks complete before consumers borrow storage addresses;
 release happens after consumers finish, with the original error visible. Ordinary
 retained memoryviews own their storage or native export until retirement.
 
-Raw writer callbacks have a different lifetime: the caller may mutate or release
+Raw stream callbacks have a different lifetime: the caller may mutate or release
 the input after `write` returns, as required by
 [RawIOBase.write](https://docs.python.org/3.14/library/io.html#io.RawIOBase.write).
-A temporary readonly view may expose that storage without copying only during the
-callback. Its scope expires before the caller's export is released. Retaining a
+A temporary view exposes that storage without copying only during the callback:
+readonly for `write`, writable for `readinto`. Its scope expires before the
+caller's export is released. Retaining a
 Python view or deriving another view cannot prolong that export; access after
 scope expiry must fail before reading storage. Releasing one view during the
 callback does not expire already-derived views. Scope edges retain only the
@@ -84,6 +85,30 @@ existing scope anchor, while actual buffer exports keep their counted protocol.
 Native pointers obtained for the callback have that documented call lifetime;
 subsequent descriptor release must remain safe. This contract introduces no
 second storage registry or eager input copy.
+
+Buffered readers and writers share one operation owner, traced raw edge and
+scoped callback-view authority, following pinned
+[CPython buffered I/O](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Modules/_io/bufferedio.c).
+Reader construction separates allocation from initialization; arbitrary Python
+raw streams implement the same public protocol as native files. Reader data
+lives in the existing bounded buffer and cursor. Large reads use direct output
+spans, `read1` and `readinto1` limit raw calls, and `peek` preserves the cursor.
+Buffered reads and in-buffer seeks return before locking; actual raw callbacks
+use the shared reentry/concurrency owner without holding a payload borrow or
+mutex across Python. Exact native bindings avoid callback views and operation
+allocation; binding changes enter that same protocol. Position facts stay on
+the handle, avoiding a raw position query for known in-buffer seeks.
+
+`RawIOBase.read/readall` use native defaults over virtual methods, following
+[CPython's base I/O protocol](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Modules/_io/iobase.c).
+Target-version selection governs count validation and the Python 3.15 consumed
+bytearray contract. Unsafe historical out-of-storage reads are rejected.
+Streaming reader working storage is O(buffer size + requested output); callbacks
+add a scoped view per raw call. Byte construction may copy accumulated output
+through the existing inline-bytes allocator; no zero-copy output or throughput
+claim follows from direct ingress. TextIOWrapper's buffer protocol and Python
+raw BufferedRandom support remain separate acceptance obligations. Test,
+oracle and receipt machinery runs only on the development side.
 
 ### 3.2 Memory Management Roadmap
 RC is predictable but adds per-write overhead. We plan to evaluate:

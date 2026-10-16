@@ -1049,15 +1049,15 @@ impl Drop for MoltFileState {
     }
 }
 
-/// Allocated only for a buffered writer whose raw stream may execute Python.
+/// Allocated only for a buffered stream whose raw operation may execute Python.
 /// Python values stay in the handle's traced edges, not in the synchronization owner.
-pub(crate) struct BufferedWriteOperation {
-    pub(crate) owner: std::sync::Mutex<BufferedWriteOwner>,
+pub(crate) struct BufferedOperation {
+    pub(crate) owner: std::sync::Mutex<BufferedOperationOwner>,
     pub(crate) ready: std::sync::Condvar,
 }
 
 #[derive(Default)]
-pub(crate) struct BufferedWriteOwner {
+pub(crate) struct BufferedOperationOwner {
     pub(crate) thread: u64,
     // Observable pending bytes while the operation temporarily owns write_buf.
     pub(crate) pending: Option<usize>,
@@ -1071,7 +1071,9 @@ pub(crate) enum FileAttachment {
 }
 
 pub(crate) struct MoltFileHandle {
-    pub(crate) write_operation: Option<Arc<BufferedWriteOperation>>,
+    pub(crate) buffered_operation: Option<Arc<BufferedOperation>>,
+    // Last proven raw position; readers advance it through actual raw reads.
+    pub(crate) buffered_raw_position: Option<i64>,
     // One Python dictionary owner shared by every native IO handle family.
     pub(crate) dict_bits: u64,
     pub(crate) state: Option<Arc<MoltFileState>>,

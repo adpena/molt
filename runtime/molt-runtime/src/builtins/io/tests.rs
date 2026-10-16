@@ -392,6 +392,8 @@ fn buffered_close_observes_borrowed_backend_child_without_retiring_host_owner() 
                 MoltObject::from_int(8).bits(),
             );
             assert!(!crate::exception_pending(py));
+            super::molt_buffered_init(buffered, raw, MoltObject::from_int(8).bits());
+            assert!(!crate::exception_pending(py));
             super::molt_file_close(if close_child { raw } else { buffered });
             assert!(!crate::exception_pending(py));
             assert!(state.backend.lock().unwrap().is_some());
@@ -437,6 +439,75 @@ fn io_string(py: &crate::PyToken<'_>, text: &str) -> u64 {
     let ptr = crate::alloc_string(py, text.as_bytes());
     assert!(!ptr.is_null());
     crate::MoltObject::from_ptr(ptr).bits()
+}
+
+#[test]
+fn buffered_reader_native_cursor_and_readinto1() {
+    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| unsafe {
+        use crate::*;
+        let source = MoltObject::from_ptr(alloc_bytes(py, b"abc\ndefghij")).bits();
+        let raw = super::molt_bytesio_new(builtin_classes(py).bytes_io, source);
+        dec_ref_bits(py, source);
+        let size = MoltObject::from_int(4).bits();
+        let reader = super::molt_buffered_new(builtin_classes(py).buffered_reader, raw, size);
+        super::molt_buffered_init(reader, raw, size);
+        assert!(!exception_pending(py));
+        let assert_bytes = |value: u64, expected: &[u8]| {
+            assert!(!exception_pending(py));
+            let pointer = obj_from_bits(value).as_ptr().unwrap();
+            assert_eq!(object_type_id(pointer), TYPE_ID_BYTES);
+            assert_eq!(
+                std::slice::from_raw_parts(bytes_data(pointer), bytes_len(pointer)),
+                expected
+            );
+            dec_ref_bits(py, value);
+        };
+        // peek's size is a hint, not a result bound. All operations share this
+        // read-ahead cursor, including a larger direct readinto1 destination.
+        assert_bytes(
+            super::molt_file_peek(reader, MoltObject::from_int(1).bits()),
+            b"abc\n",
+        );
+        assert_bytes(
+            super::molt_file_read1(reader, MoltObject::from_int(2).bits()),
+            b"ab",
+        );
+        assert_eq!(
+            to_i64(obj_from_bits(super::molt_file_tell(reader))),
+            Some(2)
+        );
+        let destination = MoltObject::from_ptr(alloc_bytearray(py, b"--------")).bits();
+        let count = super::molt_file_readinto1(reader, destination);
+        assert!(!exception_pending(py));
+        assert_eq!(to_i64(obj_from_bits(count)), Some(8));
+        dec_ref_bits(py, count);
+        assert_eq!(
+            bytearray_vec_ref(obj_from_bits(destination).as_ptr().unwrap()),
+            b"c\ndefghi"
+        );
+        dec_ref_bits(py, destination);
+        assert_bytes(
+            super::molt_file_read(reader, MoltObject::from_int(2).bits()),
+            b"j",
+        );
+        let position = super::molt_file_seek(
+            reader,
+            MoltObject::from_int(0).bits(),
+            MoltObject::from_int(0).bits(),
+        );
+        assert!(!exception_pending(py));
+        assert_eq!(to_i64(obj_from_bits(position)), Some(0));
+        dec_ref_bits(py, position);
+        assert_bytes(
+            super::molt_file_readline(reader, MoltObject::from_int(-1).bits()),
+            b"abc\n",
+        );
+        assert_bytes(super::molt_file_readall(reader), b"defghij");
+        super::molt_file_close(reader);
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, reader);
+        dec_ref_bits(py, raw);
+    });
 }
 
 fn bytes_output(bits: u64) -> Vec<u8> {

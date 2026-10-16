@@ -13,7 +13,8 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
     if base_only && owner != classes.io_base {
         return Ok(None);
     }
-    let owner = if owners.contains(&owner)
+    let raw_default = owner == classes.raw_io_base && matches!(name, "read" | "readall" | "readinto");
+    let owner = if raw_default || owners.contains(&owner)
         || (owner == classes.io_base && (base_only || matches!(name, "close" | "flush")))
         || (name == "detach" && [classes.buffered_io_base, classes.text_io_base].contains(&owner))
     { owner } else {
@@ -34,7 +35,9 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "read"),
-                fn_addr!(molt_file_read),
+                if owner == builtin_classes(_py).raw_io_base {
+                    fn_addr!(crate::builtins::io::raw_io_base_read)
+                } else { fn_addr!(molt_file_read) },
                 2,
                 &[neg_one],
             ))
@@ -69,11 +72,18 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
                 &[neg_one],
             ))
         },
-        "readall" => Some(builtin_func_bits(
+        "readall" if [builtin_classes(_py).raw_io_base, builtin_classes(_py).file_io].contains(&owner) => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "readall"),
-            fn_addr!(molt_file_readall),
+            if owner == builtin_classes(_py).raw_io_base {
+                fn_addr!(crate::builtins::io::raw_io_base_readall)
+            } else { fn_addr!(molt_file_readall) },
             1,
+        )),
+        "readinto" if owner == builtin_classes(_py).raw_io_base => Some(builtin_variadic_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, "readinto"),
+            fn_addr!(crate::builtins::io::raw_io_base_readinto),
         )),
         "readinto" => Some(builtin_func_bits(
             _py,
