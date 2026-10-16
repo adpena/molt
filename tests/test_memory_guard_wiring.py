@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import sys
-import time
 import tomllib
 
 import pytest
@@ -1952,80 +1951,228 @@ def test_pytest_current_test_xdist_writes_per_worker_sidecar(
     assert payload["nodeid"] == "tests/test_memory_guard_wiring.py::test_xdist_unit"
 
 
-def test_pytest_current_test_writer_ignores_test_monkeypatched_os_replace(
+def test_pytest_current_test_phases_reuse_one_bounded_inode(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
-    # The aggregate record path; an inherited xdist worker id would select
-    # that worker's own record (covered by the per-worker test below).
+    current = tmp_path / "pytest-memory-guard" / "current-test.json"
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
-    monkeypatch.setenv(
-        pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
-        str(current_test_path),
-    )
+    monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
 
-    def forbidden_replace(_src: object, _dst: object) -> None:
-        raise AssertionError("guard custody must not use monkeypatched os.replace")
+    def forbidden_replace(*_args, **_kwargs):
+        raise AssertionError("a volatile phase must not replace a directory entry")
 
     install_module_view(
         monkeypatch, "os", os, pytest_memory_guard_bootstrap, replace=forbidden_replace
     )
 
     class Item:
-        nodeid = "tests/test_memory_guard_wiring.py::test_unit"
+        nodeid = "tests/test_memory_guard_wiring.py::test_unit[unicode-λ]"
 
-    pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
+    phases = (
+        (
+            "start",
+            lambda: pytest_memory_guard_bootstrap.pytest_runtest_logstart(
+                Item.nodeid, ("file", 1, "unit")
+            ),
+        ),
+        ("setup", lambda: pytest_memory_guard_bootstrap.pytest_runtest_setup(Item())),
+        ("call", lambda: pytest_memory_guard_bootstrap.pytest_runtest_call(Item())),
+        (
+            "teardown",
+            lambda: pytest_memory_guard_bootstrap.pytest_runtest_teardown(Item(), None),
+        ),
+        (
+            "finish",
+            lambda: pytest_memory_guard_bootstrap.pytest_runtest_logfinish(
+                Item.nodeid, ("file", 1, "unit")
+            ),
+        ),
+    )
+    inode = None
+    for phase, invoke in phases:
+        invoke()
+        record = memory_guard._read_pytest_current_test_json(current)
+        assert record["payload"]["nodeid"] == Item.nodeid
+        assert record["payload"]["phase"] == phase
+        assert record["payload"]["schema_version"] == 1
+        stat = current.stat()
+        assert stat.st_size == memory_guard._PYTEST_CURRENT_TEST_FILE_MAX_BYTES
+        inode = stat.st_ino if inode is None else inode
+        assert stat.st_ino == inode
+    assert set(current.parent.iterdir()) == {current}
 
-    payload = json.loads(current_test_path.read_text(encoding="utf-8"))
-    assert payload["phase"] == "call"
-    assert payload["nodeid"] == "tests/test_memory_guard_wiring.py::test_unit"
 
-
-def test_pytest_current_test_writer_retries_windows_atomic_replace(
+@pytest.mark.parametrize("failure", ["short", "zero", "body_error", "commit_zero"])
+def test_pytest_current_test_short_writes_never_commit_partial_identity(
     monkeypatch,
     tmp_path: Path,
+    failure: str,
 ) -> None:
-    current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
-    # The aggregate record path; an inherited xdist worker id would select
-    # that worker's own record (covered by the per-worker test below).
+    from molt import file_locks
+
+    current = tmp_path / "pytest-memory-guard" / "current-test.json"
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
-    monkeypatch.setenv(
-        pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
-        str(current_test_path),
-    )
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "_is_windows_process_model",
-        lambda: True,
-    )
-    install_module_view(
-        monkeypatch, "time", time, pytest_memory_guard_bootstrap, sleep=lambda _s: None
+    monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
+    acquire = file_locks._acquire_file_lock
+
+    class Writes:
+        def __init__(self, file):
+            self.file = file
+            self.calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self.file, name)
+
+        def truncate(self, *_args):
+            raise AssertionError("phase publication must not resize its inode")
+
+        def write(self, data):
+            self.calls += 1
+            if self.calls == 1:
+                if failure == "zero":
+                    return 0
+                if failure in {"short", "body_error"}:
+                    return self.file.write(data[: len(data) // 2])
+            elif failure == "body_error":
+                raise OSError(errno.EIO, "injected partial-body failure")
+            elif failure == "commit_zero":
+                return 0
+            return self.file.write(data)
+
+    def inject(path, **kwargs):
+        handle = acquire(path, **kwargs)
+        if path == current:
+            handle.file = Writes(handle.file)
+        return handle
+
+    with monkeypatch.context() as fault:
+        fault.setattr(file_locks, "_acquire_file_lock", inject)
+
+        class Item:
+            nodeid = "tests/test_memory_guard_wiring.py::complete_identity"
+
+        if failure == "short":
+            pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
+            record = memory_guard._read_pytest_current_test_json(current)
+            assert record["payload"]["nodeid"] == Item.nodeid
+        else:
+            with pytest.raises(OSError):
+                pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
+            record = memory_guard._read_pytest_current_test_json(current)
+            assert "payload" not in record
+            assert record["error"] == "current_test_incomplete_or_invalid_json"
+
+
+@pytest.mark.parametrize("crash", [False, True])
+def test_live_current_test_reader_is_nonblocking_and_writer_death_is_unknown(
+    monkeypatch,
+    tmp_path: Path,
+    crash: bool,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from tests.process_guard_common import (
+        start_owned_test_process,
+        close_owned_test_process,
     )
 
-    calls = 0
-    original_replace = pytest_memory_guard_bootstrap._ATOMIC_REPLACE
+    current = tmp_path / "pytest-memory-guard" / "current-test.json"
+    state_root = tmp_path / "memory_guard"
+    # The actual producer holds its OS lock after writing the uncommitted
+    # body. A pipe barrier, rather than timing, controls the independent reader.
+    script = r"""
+import os,sys
+from pathlib import Path
+from molt import file_locks,pytest_memory_guard_bootstrap as bootstrap
+os.environ['MOLT_MEMORY_GUARD_STATE_ROOT']=sys.argv[2]
+os.environ['MOLT_PYTEST_CURRENT_TEST_FILE']=sys.argv[1]
+os.environ.pop('PYTEST_XDIST_WORKER',None)
+acquire=file_locks._acquire_file_lock
+class Writes:
+    def __init__(self,file):self.file=file
+    def __getattr__(self,name):return getattr(self.file,name)
+    def write(self,data):
+        count=self.file.write(data)
+        if bytes(data[:1]) == b'\0':
+            print('prepared',flush=True)
+            if sys.argv[3] == 'crash':os._exit(73)
+            assert sys.stdin.readline().strip() == 'commit'
+        return count
+def intercepted(path,**kwargs):
+    handle=acquire(path,**kwargs)
+    handle.file=Writes(handle.file)
+    return handle
+file_locks._acquire_file_lock=intercepted
+class Item:nodeid='tests/test_status_child.py::independent_current_case'
+bootstrap.pytest_runtest_call(Item())
+print('committed',flush=True)
+"""
+    child = start_owned_test_process(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(current),
+            str(state_root),
+            "crash" if crash else "live",
+        ],
+        cwd=REPO_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        prepared = pool.submit(child.stdout.readline)
+        assert prepared.result(timeout=15).strip() == "prepared"
+        if crash:
+            stdout, stderr = child.communicate(timeout=15)
+            assert child.returncode == 73, stdout + stderr
+            record = memory_guard._read_pytest_current_test_json(current)
+            assert "payload" not in record
+            assert record["error"] == "current_test_incomplete_or_invalid_json"
+        else:
+            assert child.poll() is None
+            record = memory_guard._read_pytest_current_test_json(current)
+            assert record["error"] == "current_test_publication_in_progress"
+            assert "payload" not in record
+            stdout, stderr = child.communicate(input="commit\n", timeout=15)
+            assert child.returncode == 0, stdout + stderr
+            assert stdout.strip() == "committed"
+            record = memory_guard._read_pytest_current_test_json(current)
+            assert (
+                record["payload"]["nodeid"]
+                == "tests/test_status_child.py::independent_current_case"
+            )
+            assert record["payload"]["phase"] == "call"
+    finally:
+        close_owned_test_process(child)
+        pool.shutdown(wait=True)
 
-    def flaky_replace(src: Path, dst: Path) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise PermissionError(errno.EACCES, "Access is denied")
-        original_replace(src, dst)
 
-    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_ATOMIC_REPLACE", flaky_replace)
+@pytest.mark.parametrize("nodeid", ["x" * 4097, "λ" * 4096])
+def test_oversized_current_case_is_explicit_opacity_in_a_bounded_file(
+    monkeypatch,
+    tmp_path: Path,
+    nodeid: str,
+) -> None:
+    current = tmp_path / "pytest-memory-guard" / "current-test.json"
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
+    monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
 
     class Item:
-        nodeid = "tests/test_memory_guard_wiring.py::test_unit"
+        pass
 
+    Item.nodeid = nodeid
     pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
-
-    assert calls == 2
-    payload = json.loads(current_test_path.read_text(encoding="utf-8"))
-    assert payload["phase"] == "call"
-    assert payload["nodeid"] == "tests/test_memory_guard_wiring.py::test_unit"
+    record = memory_guard._read_pytest_current_test_json(current)
+    assert "payload" not in record
+    assert str(record["error"]).startswith("current_test_")
+    assert current.stat().st_size == memory_guard._PYTEST_CURRENT_TEST_FILE_MAX_BYTES
 
 
 def test_pytest_immediate_failures_register_once_and_only_format_failed_reports(
@@ -2231,3 +2378,58 @@ def test_pytest_failure_details_survive_later_abrupt_exit(
         assert finished.read_text(encoding="utf-8") == "1"
         assert "1 failed, 1 passed, 1 skipped, 1 xfailed" in output
         assert "short test summary info" in output
+
+
+def test_current_test_writer_repairs_an_oversized_inode_only_once(
+    monkeypatch, tmp_path
+):
+    from molt import file_locks
+
+    current = tmp_path / "pytest-memory-guard" / "current-test.json"
+    current.parent.mkdir()
+    current.write_bytes(
+        b'{"schema_version":1,"nodeid":"old","phase":"setup"}' + b" " * (16 * 1024)
+    )
+    inode = current.stat().st_ino
+    assert memory_guard._read_pytest_current_test_json(current)["truncated"] is True
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
+    monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
+    acquire = file_locks._acquire_file_lock
+    repairs = []
+
+    class Writes:
+        def __init__(self, file):
+            self.file = file
+
+        def __getattr__(self, name):
+            return getattr(self.file, name)
+
+        def truncate(self, size):
+            # Truncation must occur before the commit, with an invalid marker.
+            position = self.file.tell()
+            self.file.seek(0)
+            assert self.file.read(1) == b"\0"
+            self.file.seek(position)
+            repairs.append(size)
+            return self.file.truncate(size)
+
+    def counted(path, **kwargs):
+        handle = acquire(path, **kwargs)
+        if path == current:
+            handle.file = Writes(handle.file)
+        return handle
+
+    class Item:
+        nodeid = "tests/test_status.py::repaired_current_case"
+
+    with monkeypatch.context() as probe:
+        probe.setattr(file_locks, "_acquire_file_lock", counted)
+        pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
+        pytest_memory_guard_bootstrap.pytest_runtest_teardown(Item(), None)
+    assert repairs == [memory_guard._PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
+    assert current.stat().st_ino == inode
+    assert current.stat().st_size == memory_guard._PYTEST_CURRENT_TEST_FILE_MAX_BYTES
+    record = memory_guard._read_pytest_current_test_json(current)
+    assert record["payload"]["nodeid"] == Item.nodeid
+    assert record["payload"]["phase"] == "teardown"

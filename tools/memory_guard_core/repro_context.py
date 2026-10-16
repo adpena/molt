@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import json
+import heapq
+import stat
 from pathlib import Path
 from molt.memory_guard_paths import (
+    PYTEST_CURRENT_TEST_FILE_MAX_BYTES,
     canonical_pytest_current_test_file_path,
     pytest_custody_path_is_canonical,
     pytest_guard_summary_dir,
@@ -49,7 +52,6 @@ SECRET_ENV_TOKENS = (
     "SECRET",
     "TOKEN",
 )
-PYTEST_CURRENT_TEST_FILE_MAX_BYTES = 16 * 1024
 PYTEST_CURRENT_TEST_WORKER_MAX_FILES = 128
 PYTEST_COMMAND_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
 
@@ -252,27 +254,71 @@ def test_custody_launch_env(
 
 
 def _read_pytest_current_test_json(path: Path) -> dict[str, object]:
+    from molt.file_locks import (
+        _file_lock_owned_operation,
+        _release_file_lock,
+        _try_acquire_file_lock,
+    )
+
     payload: dict[str, object] = {"path": str(path)}
     try:
-        data = path.read_bytes()
+        # Status collection must not wait for a frozen writer, create a path,
+        # or admit a mixture of two phases. The same-file lock owns coherence.
+        handle = _try_acquire_file_lock(path, create=False)
+        if handle is None:
+            payload["error"] = "current_test_publication_in_progress"
+            return payload
+        try:
+            with _file_lock_owned_operation(handle, expected_lock_path=path):
+                data = bytearray()
+                while len(data) <= PYTEST_CURRENT_TEST_FILE_MAX_BYTES:
+                    part = handle.file.read(
+                        PYTEST_CURRENT_TEST_FILE_MAX_BYTES + 1 - len(data)
+                    )
+                    if part is None:
+                        payload["error"] = "current_test_read_incomplete"
+                        return payload
+                    if not part:
+                        break
+                    data.extend(part)
+        finally:
+            _release_file_lock(handle)
     except FileNotFoundError:
         payload["missing"] = True
         return payload
     except OSError as exc:
+        payload["error"] = "current_test_read_failed"
         payload["read_error"] = str(exc)
         return payload
     if len(data) > PYTEST_CURRENT_TEST_FILE_MAX_BYTES:
+        payload["error"] = "current_test_record_exceeds_byte_limit"
         payload["truncated"] = True
-        data = data[:PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
+        return payload
     try:
-        text = data.decode("utf-8", errors="replace")
-    except Exception as exc:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        payload["error"] = "current_test_invalid_encoding"
         payload["decode_error"] = str(exc)
         return payload
     try:
         decoded = json.loads(text)
     except json.JSONDecodeError:
-        payload["raw"] = text[:PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
+        payload["error"] = "current_test_incomplete_or_invalid_json"
+        payload["raw"] = text
+        return payload
+    if not isinstance(decoded, dict):
+        payload["error"] = "current_test_invalid_record"
+    elif "error" in decoded:
+        payload["error"] = decoded["error"]
+    elif (
+        type(decoded.get("schema_version")) is not int
+        or decoded["schema_version"] != 1
+        or not isinstance(decoded.get("nodeid"), str)
+        or not decoded["nodeid"]
+        or not isinstance(decoded.get("phase"), str)
+        or decoded["phase"] not in {"start", "setup", "call", "teardown", "finish"}
+    ):
+        payload["error"] = "current_test_invalid_record"
     else:
         payload["payload"] = decoded
     return payload
@@ -304,23 +350,44 @@ def _pytest_worker_record_payloads(
     *,
     samples: Mapping[int, ProcessSample],
     incident_pid: int | None,
+    root: Path,
+    environ: Mapping[str, str],
 ) -> list[dict[str, object]]:
     worker_dir = aggregate_path.with_name(f"{aggregate_path.name}.d")
+    if not pytest_custody_path_is_canonical(root, worker_dir, environ=environ):
+        return [{"path": str(worker_dir), "rejected": "noncanonical"}]
+    total = 0
+
+    def entries():
+        nonlocal total
+        for path in worker_dir.glob("*.json"):
+            # Inspect the directory entry, never a symlink's target, before
+            # admitting the exact worker path against the canonical root.
+            info = path.lstat()
+            if stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                total += 1
+                yield info.st_mtime_ns, str(path), path
+
     try:
-        paths = sorted(
-            (path for path in worker_dir.glob("*.json") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return []
+        paths = heapq.nlargest(PYTEST_CURRENT_TEST_WORKER_MAX_FILES, entries())
+    except OSError as exc:
+        return [
+            {
+                "path": str(worker_dir),
+                "error": "current_test_worker_records_unavailable",
+                "read_error": str(exc),
+            }
+        ]
     incident_lineage = (
         _lineage_pid_set(samples, pid=incident_pid)
         if incident_pid is not None
         else set()
     )
     records: list[dict[str, object]] = []
-    for path in paths[:PYTEST_CURRENT_TEST_WORKER_MAX_FILES]:
+    for _modified, _name, path in paths:
+        if not pytest_custody_path_is_canonical(root, path, environ=environ):
+            records.append({"path": str(path), "rejected": "noncanonical"})
+            continue
         record = _read_pytest_current_test_json(path)
         decoded = record.get("payload")
         if isinstance(decoded, dict) and incident_lineage:
@@ -328,12 +395,9 @@ def _pytest_worker_record_payloads(
             if type(record_pid) is int and record_pid in incident_lineage:
                 record["incident_match"] = "pid_lineage"
         records.append(record)
-    if len(paths) > PYTEST_CURRENT_TEST_WORKER_MAX_FILES:
+    if total > PYTEST_CURRENT_TEST_WORKER_MAX_FILES:
         records.append(
-            {
-                "truncated_worker_records": len(paths)
-                - PYTEST_CURRENT_TEST_WORKER_MAX_FILES
-            }
+            {"truncated_worker_records": total - PYTEST_CURRENT_TEST_WORKER_MAX_FILES}
         )
     return records
 
@@ -365,6 +429,8 @@ def _pytest_current_test_file_payload(
         path,
         samples=samples,
         incident_pid=incident_pid,
+        root=root,
+        environ=environ,
     )
     if worker_records:
         payload["worker_records"] = worker_records

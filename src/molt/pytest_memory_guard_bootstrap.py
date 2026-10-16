@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import functools
 import json
 import os
@@ -27,6 +26,7 @@ from molt.process_spawn import (
 )
 from molt.memory_guard_paths import (
     ACTIVE_DIRNAME,
+    PYTEST_CURRENT_TEST_FILE_MAX_BYTES,
     canonical_pytest_current_test_file_path,
     pytest_custody_artifact_path as _pytest_custody_artifact_path,
     pytest_custody_path_is_canonical as _pytest_custody_path_is_canonical,
@@ -55,8 +55,6 @@ SAFE_CONF_CUT_DIRS = frozenset({SOURCE_ROOT, SOURCE_ROOT / "tests"})
 SAFE_CONFIG_FILES = frozenset({SOURCE_ROOT / "pyproject.toml"})
 PYTHON_OPTIONS_WITH_ARGUMENT = frozenset({"-W", "-X"})
 MAX_CURRENT_TEST_TEXT = 4096
-_ATOMIC_REPLACE = os.replace
-_ATOMIC_REPLACE_RETRYABLE_WINERRORS = frozenset({5, 32})
 
 
 def _truthy_env(value: str | None) -> bool:
@@ -82,30 +80,6 @@ def _bind_confirmed_test_repository() -> None:
 
 def _is_windows_process_model() -> bool:
     return os.name == "nt"
-
-
-def _is_retryable_atomic_replace_error(exc: OSError) -> bool:
-    if not _is_windows_process_model():
-        return False
-    winerror = getattr(exc, "winerror", None)
-    if winerror in _ATOMIC_REPLACE_RETRYABLE_WINERRORS:
-        return True
-    return isinstance(exc, PermissionError) and exc.errno in {
-        errno.EACCES,
-        errno.EPERM,
-    }
-
-
-def _atomic_replace_with_retry(src: Path, dst: Path) -> None:
-    attempts = 40 if _is_windows_process_model() else 1
-    for attempt in range(attempts):
-        try:
-            _ATOMIC_REPLACE(src, dst)
-            return
-        except OSError as exc:
-            if attempt + 1 >= attempts or not _is_retryable_atomic_replace_error(exc):
-                raise
-            time.sleep(min(0.25, 0.01 * (attempt + 1)))
 
 
 def _flush_standard_streams() -> None:
@@ -1066,7 +1040,6 @@ def _write_pytest_current_test(
 ) -> None:
     root_path = install_pytest_current_test_file_env()
     path = _pytest_current_test_worker_record_path(root_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, object] = {
         "schema_version": 1,
         "recorded_at": time.time(),
@@ -1080,9 +1053,73 @@ def _write_pytest_current_test(
     }
     if location is not None:
         payload["location"] = _bounded_text(location)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-    _atomic_replace_with_retry(tmp_path, path)
+    data = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    if (
+        len(nodeid) > MAX_CURRENT_TEST_TEXT
+        or len(data) > PYTEST_CURRENT_TEST_FILE_MAX_BYTES
+    ):
+        # A byte limit must not turn a shortened identifier into a different
+        # test. Publish explicit opacity, preserving the known process/phase.
+        data = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "recorded_at": payload["recorded_at"],
+                    "pid": payload["pid"],
+                    "phase": payload["phase"],
+                    "error": (
+                        "current_test_identity_exceeds_text_limit"
+                        if len(nodeid) > MAX_CURRENT_TEST_TEXT
+                        else "current_test_record_exceeds_byte_limit"
+                    ),
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+    from molt.file_locks import (
+        _acquire_file_lock,
+        _file_lock_owned_operation,
+        _release_file_lock,
+    )
+
+    # Current status is volatile, not a durable artifact generation. Lock its
+    # existing inode instead of replacing a directory entry on every phase.
+    # Observers use a nonblocking lock, so they never hold up a memory trip.
+    handle = _acquire_file_lock(
+        path,
+        timeout_s=1.0,
+        timeout_message=f"current-test publication lock remained busy: {path}",
+        poll_s=0.001,
+    )
+    try:
+        with _file_lock_owned_operation(handle, expected_lock_path=path):
+            # A fixed slot avoids filesystem resize/journal work per phase.
+            # Until the complete body is written, byte zero is invalid JSON.
+            # Process death before the one-byte commit is explicit opacity;
+            # after commit the record is ordinary schema-1 JSON plus whitespace.
+            previous_size = handle.file.seek(0, os.SEEK_END)
+            image = (
+                b"\0"
+                + data[1:]
+                + b" " * (PYTEST_CURRENT_TEST_FILE_MAX_BYTES - len(data))
+            )
+            handle.file.seek(0)
+            remaining = memoryview(image)
+            while remaining:
+                written = handle.file.write(remaining)
+                if written is None or written <= 0:
+                    raise OSError("current-test publication made no write progress")
+                remaining = remaining[written:]
+            if previous_size > PYTEST_CURRENT_TEST_FILE_MAX_BYTES:
+                # Repair a corrupt/pre-upgrade oversized inode once, while
+                # its NUL marker still prevents admitting an incomplete body.
+                handle.file.truncate(PYTEST_CURRENT_TEST_FILE_MAX_BYTES)
+            handle.file.seek(0)
+            if handle.file.write(b"{") != 1:
+                raise OSError("current-test publication commit failed")
+    finally:
+        _release_file_lock(handle)
 
 
 def pytest_runtest_logstart(nodeid: str, location: object) -> None:
