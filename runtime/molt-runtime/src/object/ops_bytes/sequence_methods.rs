@@ -94,7 +94,7 @@ fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -
                     // Use the canonical simple-buffer protocol, including foreign
                     // exporters and their exact flags/release callback. A generic
                     // memoryview conversion would request a different protocol.
-                    let lease = match molt_runtime_core::native_custody::acquire_buffer(
+                    let lease = match molt_cpython_abi::native_custody::acquire_buffer(
                         bits,
                         PyBUF_SIMPLE,
                     ) {

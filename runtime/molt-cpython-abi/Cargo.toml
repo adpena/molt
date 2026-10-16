@@ -26,6 +26,7 @@ l7-test-probe = ["l7-attestation-core", "dep:molt-cpython-abi-test-support"]
 runtime-test-support = []
 
 [dependencies]
+molt-runtime-core = { path = "../molt-runtime-core" }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 molt-lang-obj-model = { path = "../molt-obj-model" }
 # molt-lang-runtime is NOT listed here to avoid circular dependency.

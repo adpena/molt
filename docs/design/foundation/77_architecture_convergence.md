@@ -118,6 +118,28 @@ profile. Rich Python semantics, standalone AOT execution and co-equal native/WAS
 targets are product constraints. They justify necessary machinery, not duplicate
 semantic authorities, inactive optimization paths or unmeasured release claims.
 
+Optimization work follows the same information and ownership flow: preserve
+types, effects, ranges and alias/ownership facts; use them to remove allocations,
+fuse intermediate collections and traversals, specialize admitted calls and
+eliminate unreachable code. Fusion preserves evaluation order, exceptions,
+callbacks and observable object identity. Reachability includes admitted dynamic
+roots and reflection. Demand-driven analysis and input fingerprints support
+early cutoff and bounded invalidation; deterministic identities and atomic
+publication make those caches reusable. Compact layouts, locality, fewer atomics
+and persistent execution custody address runtime cost. Measure compile/link
+latency, startup, throughput, live memory and linked bytes together. Development
+verification and provenance do not become emitted-program work.
+
+Native buffer custody follows the existing
+[crate extraction contract](70_molt_runtime_crate_extraction.md): its actual
+protocol owner is the C-API crate, which consumes core and is consumed by the
+five satellites that need native buffers. Core does not import the C API.
+Resolved Cargo identities expose dependencies through registry intermediates;
+package spelling alone cannot establish a rebuild cone. This establishes the
+structural dependency boundary. Moving a function between packages can change
+its optimization profile, so source equivalence alone does not establish a
+shipping latency or binary-size result.
+
 ## Target architecture
 
 ### A. One op definition

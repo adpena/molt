@@ -82,6 +82,7 @@ pub mod gil_declarations;
 pub mod hooks;
 #[cfg(feature = "l7-attestation-core")]
 pub mod l7_attestation;
+pub mod native_custody;
 pub(crate) mod platform;
 pub mod type_slots;
 

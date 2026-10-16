@@ -13,7 +13,6 @@ pub mod crc32;
 pub mod float_repr;
 pub mod host_capabilities_generated;
 pub mod integer_decimal;
-pub mod native_custody;
 pub mod numeric_error_policy_generated;
 
 // ---------------------------------------------------------------------------
@@ -411,8 +410,6 @@ pub mod ffi {
     //! in the parent module for the most common operations.
 
     unsafe extern "C" {
-        /// Complete the existing native exception retirement policy.
-        pub fn __molt_native_reference_complete();
         pub fn molt_memoryview_new(bits: u64) -> u64;
         pub fn molt_memoryview_tobytes(bits: u64) -> u64;
 
@@ -1422,3 +1419,32 @@ pub enum HashContextCode {
 // All function pointers are plain `extern "C"` fn pointers (Send + Sync).
 unsafe impl Send for RuntimeVtable {}
 unsafe impl Sync for RuntimeVtable {}
+
+/// Transfer an existing typed Arc through its root native-handle bridge.
+///
+/// # Safety
+/// `new` must be the concrete root bridge declared for this exact `T`; it must
+/// consume the raw Arc on both success and allocation failure.
+#[inline]
+pub unsafe fn transfer_native_arc<T>(
+    owner: std::sync::Arc<std::sync::Mutex<T>>,
+    new: unsafe extern "C" fn(*const std::ffi::c_void) -> u64,
+) -> u64 {
+    unsafe { new(std::sync::Arc::into_raw(owner).cast()) }
+}
+
+/// Reconstruct the one typed Arc reference returned by its root clone bridge.
+///
+/// # Safety
+/// `clone` must be the concrete root bridge declared for this exact `T`.
+#[inline]
+pub unsafe fn clone_native_arc<T>(
+    bits: u64,
+    clone: unsafe extern "C" fn(u64) -> *const std::ffi::c_void,
+) -> Option<std::sync::Arc<std::sync::Mutex<T>>> {
+    let pointer = unsafe { clone(bits) };
+    if pointer.is_null() {
+        return None;
+    }
+    Some(unsafe { std::sync::Arc::from_raw(pointer.cast()) })
+}

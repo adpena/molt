@@ -30,8 +30,8 @@
 #   * `molt-backend` (layer 4) is the thin driver -- the ONE crate allowed to
 #     fan in every backend.
 #   * the runtime satellite stack is a parallel DAG in the same rungs:
-#     obj-model (L1) <- runtime-core (L2) <- stdlib satellites (L3) <-
-#     molt-runtime (L4) <- {embed, ffi, wasm-host} (L5).
+#     obj-model (L1) <- runtime-core (L2) <- native C API (L3 when used) <-
+#     stdlib satellites (L3/L4) <- molt-runtime (L5) <- hosts (L6).
 #
 # tools/build_graph_audit.py reads this file + `cargo metadata` (NO compile) and
 #   1. asserts every normal/build dependency edge respects the layer ordering
@@ -56,7 +56,7 @@
 schema_version = 1
 
 # runtime_layer is the independent semantic organization axis consumed by
-# canonicalization_contract: core, stdlib, third_party, runtime, or outside.
+# canonicalization_contract: core, c_api, stdlib, runtime, or outside.
 # Every crate declares it explicitly. outside means this crate is not governed
 # by the runtime/stdlib dependency-direction contract, not an unknown role.
 # stdlib_domain is required only for stdlib crates and owns their implementation
@@ -74,6 +74,12 @@ name = "cranelift-object"
 runtime_layer = "outside"
 layer = 0
 role = "maintained upstream object emitter; workspace membership supplies upstream test dev-dependencies"
+
+[[crate]]
+name = "zlib-rs"
+runtime_layer = "outside"
+layer = 0
+role = "maintained upstream compression primitive; workspace membership supplies upstream counter-wrap tests"
 
 [[crate]]
 name = "molt-launcher"
@@ -133,6 +139,9 @@ role = "protobuf codec primitive"
 name = "molt-runtime-platform"
 runtime_layer = "core"
 layer = 0
+# Native C-API consumers expose four additional platform dependants (6 -> 10)
+# through the admitted Windows/unknown-WASM ABI edge. All-target graph custody
+# retains these conditional edges; they are not host-only compile dependencies.
 role = "platform and OS ABI primitive shared by CPython ABI and the runtime fan-in"
 # Path consumes the shared access/root predicates; native Tcl consumes the sole
 # process-environment writer and its locale lock. These direct downward edges
@@ -162,7 +171,7 @@ layer = 1
 role = "worker over molt-db"
 
 # ---------------------------------------------------------------------------
-# Layer 2 -- lowering + plan logic, the cpython ABI surface, and runtime core.
+# Layers 2/3 -- lowering + runtime core (L2), and native C API (L3).
 # molt-tir is today's lowering crate (the future molt-lower of 21f S2): it has a
 # hard production dependency on molt-passes (pass execution/orchestration and
 # drop-insertion attrs), so it sits ABOVE passes.
@@ -176,24 +185,29 @@ role = "TIR->{LIR,SimpleIR,WASM-IR} lowering + representation-plan logic"
 
 [[crate]]
 name = "molt-lang-cpython-abi"
-runtime_layer = "third_party"
-layer = 2
+runtime_layer = "c_api"
+layer = 3
+# Native object/buffer custody lives beside its descriptor/reference owners.
+# Five real protocol consumers plus runtime and discovery make radius 7. This
+# replaces the accidental core -> C-API edge (radius 23), not a same-layer waiver.
 role = "CPython ABI surface over the object model"
 
 [[crate]]
 name = "molt-runtime-core"
 runtime_layer = "core"
 layer = 2
+# C-API execution-bound custody is one new direct consumer: radius 22 -> 23.
+# Core has no reverse C-API dependency; unrelated satellites stay independent.
 role = "runtime core consumed by every stdlib satellite (deps obj-model)"
 
 # ---------------------------------------------------------------------------
-# Layer 3 -- leaf codegen backends + the stdlib runtime satellites.
+# Layers 3/4 -- leaf codegen backends + the stdlib runtime satellites.
 # The 5 backend crates are leaf consumers of lowering (molt-tir) + ABI
 # (molt-codegen-abi). They MUST be independent of each other; the single
 # documented exception (native -> llvm, 21b flag #2) is whitelisted below and
 # becomes live when molt-backend-llvm is extracted (21f S4).
-# Each stdlib satellite depends on molt-runtime-core (L2) + molt-lang-obj-model
-# (L1), so they share this rung.
+# Satellites use core (L2); native-buffer consumers also use the C API (L3)
+# and therefore sit at L4. Core never imports the C API or its consumers.
 # ---------------------------------------------------------------------------
 
 [[crate]]
@@ -244,14 +258,14 @@ role = "stdlib satellite"
 name = "molt-runtime-compression"
 runtime_layer = "stdlib"
 stdlib_domain = "compression"
-layer = 3
+layer = 4
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-crypto"
 runtime_layer = "stdlib"
 stdlib_domain = "crypto"
-layer = 3
+layer = 4
 role = "stdlib satellite"
 
 [[crate]]
@@ -265,7 +279,7 @@ role = "stdlib satellite"
 name = "molt-runtime-http"
 runtime_layer = "stdlib"
 stdlib_domain = "http"
-layer = 3
+layer = 4
 role = "stdlib satellite"
 
 [[crate]]
@@ -307,7 +321,7 @@ role = "stdlib satellite"
 name = "molt-runtime-path"
 runtime_layer = "stdlib"
 stdlib_domain = "path"
-layer = 3
+layer = 4
 role = "stdlib satellite"
 
 [[crate]]
@@ -345,7 +359,7 @@ role = "runtime resource policy satellite"
 name = "molt-runtime-serial"
 runtime_layer = "stdlib"
 stdlib_domain = "serial"
-layer = 3
+layer = 4
 role = "stdlib satellite"
 
 [[crate]]
@@ -390,8 +404,7 @@ layer = 3
 role = "stdlib satellite"
 
 # ---------------------------------------------------------------------------
-# Layer 4 -- the thin backend driver (the ONE crate allowed to know every
-# backend) and the runtime fan-in.
+# Layers 4/5 -- the thin backend driver (L4) and runtime fan-in (L5).
 # ---------------------------------------------------------------------------
 
 [[crate]]
@@ -403,11 +416,11 @@ role = "thin backend driver + daemon bin; fans in every backend crate"
 [[crate]]
 name = "molt-runtime"
 runtime_layer = "runtime"
-layer = 4
+layer = 5
 role = "runtime fan-in over every stdlib satellite + obj-model/db/gpu"
 
 # ---------------------------------------------------------------------------
-# Layer 5 -- runtime embedders / host surfaces over molt-runtime.
+# Layer 6 -- runtime embedders / host surfaces over molt-runtime.
 # ---------------------------------------------------------------------------
 
 [[crate]]
@@ -419,13 +432,13 @@ role = "compilation SDK invoking the installed CLI; no runtime dependency"
 [[crate]]
 name = "molt-wasm-host"
 runtime_layer = "outside"
-layer = 5
+layer = 6
 role = "WASM host over molt-runtime + obj-model"
 
 [[crate]]
 name = "molt-cext-discovery"
 runtime_layer = "outside"
-layer = 5
+layer = 6
 # Consolidation enrolls this existing runtime-workspace consumer in the root
 # graph. The baseline's +1 runtime cones reflect that scope correction; removing
 # this observer from the measured cones reproduces every prior radius exactly.

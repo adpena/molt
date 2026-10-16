@@ -507,7 +507,7 @@ tool = "tools/check_runtime_bridge_test_stubs.py"
 outputs = [
   "runtime/molt-runtime-core/src/bridge_test_stubs.rs",
 ]
-source = "runtime/molt-runtime-core/src/lib.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
+source = "runtime/molt-runtime-core/src/lib.rs + runtime/molt-cpython-abi/src/native_custody.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/check_runtime_bridge_test_stubs.py --check"

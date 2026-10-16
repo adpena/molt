@@ -2691,7 +2691,7 @@ fn writable_buffer_preparation_case(deny_lease: bool) {
                 // Warm only projection. The first denied allocation is the stable
                 // lease master, before any Python exporter callback can run.
                 let projected = unsafe {
-                    molt_runtime_core::native_custody::project_buffer_object(instance.bits())
+                    molt_cpython_abi::native_custody::project_buffer_object(instance.bits())
                 }
                 .unwrap();
                 let denied = DenyPreparationCAllocations::enter();

@@ -1229,12 +1229,11 @@ pub extern "C" fn molt_email_address_format(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let input = match unsafe {
-            molt_runtime_core::native_custody::ByteInput::acquire(_py, data_bits)
-        } {
-            Ok(input) => input,
-            Err(_) => return MoltObject::none().bits(),
-        };
+        let input =
+            match unsafe { molt_cpython_abi::native_custody::ByteInput::acquire(_py, data_bits) } {
+                Ok(input) => input,
+                Err(_) => return MoltObject::none().bits(),
+            };
         let quotetabs = is_truthy(_py, obj_from_bits(quotetabs_bits));
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1255,12 +1254,11 @@ pub extern "C" fn molt_quopri_encode(data_bits: u64, quotetabs_bits: u64, header
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_quopri_decode(data_bits: u64, header_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let input = match unsafe {
-            molt_runtime_core::native_custody::ByteInput::acquire(_py, data_bits)
-        } {
-            Ok(input) => input,
-            Err(_) => return MoltObject::none().bits(),
-        };
+        let input =
+            match unsafe { molt_cpython_abi::native_custody::ByteInput::acquire(_py, data_bits) } {
+                Ok(input) => input,
+                Err(_) => return MoltObject::none().bits(),
+            };
         let header = is_truthy(_py, obj_from_bits(header_bits));
         if exception_pending(_py) {
             return MoltObject::none().bits();

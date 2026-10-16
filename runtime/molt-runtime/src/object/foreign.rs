@@ -83,6 +83,6 @@ pub(crate) fn foreign_release(c_ptr: usize) {
     });
 }
 
-pub(crate) use molt_runtime_core::native_custody::{
+pub(crate) use molt_cpython_abi::native_custody::{
     NativeObjectOwner, NativeReferenceRetirement, RuntimeBufferLease, retire_native_reference,
 };

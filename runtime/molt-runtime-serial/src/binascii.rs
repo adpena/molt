@@ -1,5 +1,5 @@
 use crate::bridge::*;
-use molt_runtime_core::native_custody::ByteInput;
+use molt_cpython_abi::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

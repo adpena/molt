@@ -1,5 +1,5 @@
 use crate::bridge::*;
-use molt_runtime_core::native_custody::{ByteInput, PyBUF_FULL_RO, PyBUF_SIMPLE};
+use molt_cpython_abi::native_custody::{ByteInput, PyBUF_FULL_RO, PyBUF_SIMPLE};
 use molt_runtime_core::prelude::*;
 
 // ─── Standard base64 alphabet ───────────────────────────────────────────────

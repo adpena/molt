@@ -26,12 +26,7 @@ pub struct GzipFileHandle {
 }
 
 fn gzip_handle_from_bits(bits: u64) -> Option<Arc<Mutex<GzipFileHandle>>> {
-    unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(
-            bits,
-            __molt_compression_gzip_file_owner_clone,
-        )
-    }
+    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_compression_gzip_file_owner_clone) }
 }
 
 /// `gzip.open(filename, mode, compresslevel) -> handle`
@@ -84,10 +79,7 @@ pub extern "C" fn molt_gzip_open(
         };
         let handle = Arc::new(Mutex::new(GzipFileHandle { inner }));
         unsafe {
-            molt_runtime_core::native_custody::transfer_native_arc(
-                handle,
-                __molt_compression_gzip_file_owner_new,
-            )
+            molt_runtime_core::transfer_native_arc(handle, __molt_compression_gzip_file_owner_new)
         }
     })
 }

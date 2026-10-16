@@ -510,15 +510,15 @@ pub extern "C" fn molt_pathlib_write_bytes(path_bits: u64, data_bits: u64) -> u6
             Err(err) => return raise_os_error::<u64>(_py, err, "write_bytes"),
         };
         let input = match unsafe {
-            molt_runtime_core::native_custody::acquire_buffer(
+            molt_cpython_abi::native_custody::acquire_buffer(
                 data_bits,
-                molt_runtime_core::native_custody::PyBUF_SIMPLE,
+                molt_cpython_abi::native_custody::PyBUF_SIMPLE,
             )
         } {
             Ok(input) => input,
             Err(_) => return MoltObject::none().bits(),
         };
-        let data = unsafe { molt_runtime_core::native_custody::buffer_bytes(&input) };
+        let data = unsafe { molt_cpython_abi::native_custody::buffer_bytes(&input) };
         match std::io::Write::write_all(&mut file, data) {
             Ok(()) => MoltObject::from_int(data.len() as i64).bits(),
             Err(err) => raise_os_error::<u64>(_py, err, "write_bytes"),

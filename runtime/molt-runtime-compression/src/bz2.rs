@@ -2,7 +2,7 @@ use crate::bridge::*;
 use bzip2::Compression as BzCompression;
 use bzip2::read::BzDecoder;
 use bzip2::write::BzEncoder;
-use molt_runtime_core::native_custody::ByteInput;
+use molt_cpython_abi::native_custody::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
@@ -113,10 +113,7 @@ pub struct Bz2CompressorHandle {
 
 fn bz2_compressor_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2CompressorHandle>>> {
     unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(
-            bits,
-            __molt_compression_bz2_compressor_owner_clone,
-        )
+        molt_runtime_core::clone_native_arc(bits, __molt_compression_bz2_compressor_owner_clone)
     }
 }
 
@@ -132,7 +129,7 @@ pub extern "C" fn molt_bz2_compressor_new(compresslevel_bits: u64) -> u64 {
             encoder: Some(BzEncoder::new(Vec::new(), compression)),
         }));
         unsafe {
-            molt_runtime_core::native_custody::transfer_native_arc(
+            molt_runtime_core::transfer_native_arc(
                 handle,
                 __molt_compression_bz2_compressor_owner_new,
             )
@@ -221,10 +218,7 @@ pub struct Bz2DecompressorHandle {
 
 fn bz2_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2DecompressorHandle>>> {
     unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(
-            bits,
-            __molt_compression_bz2_decompressor_owner_clone,
-        )
+        molt_runtime_core::clone_native_arc(bits, __molt_compression_bz2_decompressor_owner_clone)
     }
 }
 
@@ -238,7 +232,7 @@ pub extern "C" fn molt_bz2_decompressor_new() -> u64 {
             needs_input: true,
         }));
         unsafe {
-            molt_runtime_core::native_custody::transfer_native_arc(
+            molt_runtime_core::transfer_native_arc(
                 handle,
                 __molt_compression_bz2_decompressor_owner_new,
             )
@@ -388,12 +382,7 @@ pub struct Bz2FileHandle {
 }
 
 fn bz2_file_handle_from_bits(bits: u64) -> Option<Arc<Mutex<Bz2FileHandle>>> {
-    unsafe {
-        molt_runtime_core::native_custody::clone_native_arc(
-            bits,
-            __molt_compression_bz2_file_owner_clone,
-        )
-    }
+    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_compression_bz2_file_owner_clone) }
 }
 
 /// `bz2.open(filename, mode, compresslevel) -> handle`
@@ -460,10 +449,7 @@ pub extern "C" fn molt_bz2_file_open(
         };
         let handle = Arc::new(Mutex::new(Bz2FileHandle { inner }));
         unsafe {
-            molt_runtime_core::native_custody::transfer_native_arc(
-                handle,
-                __molt_compression_bz2_file_owner_new,
-            )
+            molt_runtime_core::transfer_native_arc(handle, __molt_compression_bz2_file_owner_new)
         }
     })
 }
