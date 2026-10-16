@@ -64,9 +64,8 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
     for (field, value) in changes {
         let mut context = base_context.clone();
         context[field] = value;
-        let mut changed = roundtrip(&original);
-        changed.module_context = serde_json::from_value(context).unwrap();
-        let changed = changed.close_dependencies();
+        let changed = roundtrip(&original)
+            .close_dependencies(&serde_json::from_value(context).unwrap());
         assert_ne!(
             original_key,
             cache.input_key(&changed).unwrap(),
@@ -130,14 +129,11 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
             "missing authority input {field}"
         );
     }
-    let mut unrelated = roundtrip(&original);
     let mut context = base_context;
     context["function_arities"] = serde_json::json!({"unreferenced_guest": 19});
-    unrelated.module_context = serde_json::from_value(context).unwrap();
-    assert_eq!(
-        original_key,
-        cache.input_key(&unrelated.close_dependencies()).unwrap()
-    );
+    let unrelated =
+        roundtrip(&original).close_dependencies(&serde_json::from_value(context).unwrap());
+    assert_eq!(original_key, cache.input_key(&unrelated).unwrap());
 }
 
 fn object_bytes(symbol: &str) -> Vec<u8> {

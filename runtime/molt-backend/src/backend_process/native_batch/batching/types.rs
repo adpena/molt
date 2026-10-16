@@ -44,7 +44,9 @@ pub(crate) struct NativeBatchObjectJob {
 impl NativeBatchObjectJob {
     /// Close the object input contract before serialization. The worker receives
     /// exactly this projection, with no out-of-band whole-program context path.
-    pub(crate) fn close_dependencies(mut self) -> Self {
+    /// Project the whole-program `context` to the rows this job's object can
+    /// consume. The shared context is borrowed, never cloned per job.
+    pub(crate) fn close_dependencies(mut self, context: &NativeBackendModuleContext) -> Self {
         let mut names = NativeBackendModuleContext::object_dependencies(&self.ir.functions);
         if let Some(manifest) = &self.app_callable_manifest {
             names.extend(manifest.iter().cloned());
@@ -53,7 +55,7 @@ impl NativeBatchObjectJob {
             names.extend(registry.init_symbols.iter().cloned());
             names.extend(registry.relocs.iter().map(|(_, name)| name.clone()));
         }
-        self.module_context = self.module_context.project_object_dependencies(&names);
+        self.module_context = context.project_object_dependencies(&names);
         self.external_function_names
             .retain(|name| names.contains(name));
         self

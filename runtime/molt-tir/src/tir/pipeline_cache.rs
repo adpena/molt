@@ -455,18 +455,21 @@ pub fn request_thread_pool() -> std::sync::Arc<rayon::ThreadPool> {
     compile_thread_pool(tir_optimization_cpu_thread_limit())
 }
 
-/// Map `work` over `items` on the request's compiler pool, each item inside
-/// the request's settings scope. Results keep `items` order. Concurrent
-/// compiles share the pool's threads, so a blocking item (a worker process)
-/// holds one slot of the request's CPU limit, as a jobserver token would.
-pub fn request_parallel_map<I: Sync, O: Send>(
-    items: &[I],
-    work: impl Fn(&I) -> O + Sync + Send,
-) -> Vec<O> {
+/// Map `work` over `items` (a slice, by reference, or a `Vec`, by value) on
+/// the request's compiler pool, each item inside the request's settings scope.
+/// Results keep `items` order. Concurrent compiles share the pool's threads,
+/// so a blocking item (a worker process) holds one slot of the request's CPU
+/// limit, as a jobserver token would.
+pub fn request_parallel_map<I, O>(items: I, work: impl Fn(I::Item) -> O + Sync + Send) -> Vec<O>
+where
+    I: rayon::iter::IntoParallelIterator + Send,
+    I::Iter: rayon::iter::IndexedParallelIterator,
+    O: Send,
+{
     let request = molt_ir::backend_environment::carry();
     request_thread_pool().install(|| {
         items
-            .par_iter()
+            .into_par_iter()
             .map(|item| request.enter(|| work(item)))
             .collect()
     })

@@ -2,7 +2,8 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use molt_backend::SimpleIR;
+use molt_backend::{NativeBackendModuleContext, SimpleIR};
+use molt_backend::tir::pipeline_cache::request_parallel_map;
 
 use super::super::super::io_limits::write_json_artifact;
 use super::super::super::native_batch::{
@@ -24,12 +25,16 @@ pub(super) fn compile_batched_stdlib_cache_archive(
     let stdlib_tmp_dir = create_native_batch_temp_dir()?;
     let compile_result = (|| -> io::Result<()> {
         let total = plan.batches.len();
-        let mut specs = Vec::with_capacity(total);
         let mut reused_bytes = 0u64;
         let mut emitted_bytes = 0u64;
         let mut hits = 0usize;
         let started = Instant::now();
-        for (index, batch_funcs) in plan.batches.into_iter().enumerate() {
+        // Batches are independent: admit them (close, hash, persist, restore)
+        // on the request's pool. Specs keep batch order; the lowest-index
+        // failure is reported.
+        let batches: Vec<(usize, Vec<molt_backend::FunctionIR>)> =
+            plan.batches.into_iter().enumerate().collect();
+        let specs = request_parallel_map(batches, |(index, batch_funcs)| {
             log_stdlib_batch(
                 log_prefix,
                 index,
@@ -50,7 +55,7 @@ pub(super) fn compile_batched_stdlib_cache_archive(
             let job = NativeBatchObjectJob {
                 ir,
                 code_slots: None,
-                module_context: plan.module_context.clone(),
+                module_context: NativeBackendModuleContext::default(),
                 codegen_environment:
                     molt_ir::backend_environment::NativeCodegenEnvironment::capture()?,
                 target_triple: target_triple.map(str::to_owned),
@@ -59,7 +64,7 @@ pub(super) fn compile_batched_stdlib_cache_archive(
                 external_function_names,
                 module_registry: None,
             }
-            .close_dependencies();
+            .close_dependencies(&plan.module_context);
             let job_path = stdlib_tmp_dir.join(format!("batch_{index}.json"));
             let object_path = stdlib_tmp_dir.join(format!("batch_{index}.o"));
             let key = cache.map(|cache| cache.input_key(&job)).transpose()?;
@@ -70,11 +75,15 @@ pub(super) fn compile_batched_stdlib_cache_archive(
                 (Some(cache), Some(key)) => cache.restore(key, &object_path)?,
                 _ => None,
             };
+            Ok::<_, io::Error>((job_path, object_path, key, reused))
+        })
+        .into_iter()
+        .collect::<io::Result<Vec<_>>>()?;
+        for (_, _, _, reused) in &specs {
             if let Some(bytes) = reused {
                 hits += 1;
                 reused_bytes += bytes;
             }
-            specs.push((job_path, object_path, key, reused.is_some()));
         }
         // Release whole-program transport before entering the one worker lane.
         drop(plan.module_context);
@@ -88,7 +97,7 @@ pub(super) fn compile_batched_stdlib_cache_archive(
         let works: Vec<NativeBatchWork<'_>> = specs
             .iter()
             .enumerate()
-            .filter(|(_, (_, _, _, hit))| !hit)
+            .filter(|(_, (_, _, _, reused))| reused.is_none())
             .map(|(index, (job, object, _, _))| NativeBatchWork {
                 job_path: job,
                 object_path: object,
@@ -101,16 +110,20 @@ pub(super) fn compile_batched_stdlib_cache_archive(
             .collect();
         run_native_batch_workers("native stdlib batch worker", &works)?;
         release_native_backend_batch_memory_to_os();
-        let mut paths = Vec::with_capacity(total);
-        for (_, object, key, hit) in specs {
-            if !hit {
-                emitted_bytes += match (cache, key) {
-                    (Some(cache), Some(key)) => cache.publish(&key, &object)?,
-                    _ => std::fs::metadata(&object)?.len(),
-                };
+        // Each miss publishes under its own key's lock, so publication runs
+        // on the pool too; the archive keeps batch order.
+        emitted_bytes += request_parallel_map(&specs, |(_, object, key, reused)| {
+            if reused.is_some() {
+                return Ok(0);
             }
-            paths.push(object);
-        }
+            match (cache, key) {
+                (Some(cache), Some(key)) => cache.publish(key, object),
+                _ => Ok(std::fs::metadata(object)?.len()),
+            }
+        })
+        .into_iter()
+        .sum::<io::Result<u64>>()?;
+        let paths: Vec<PathBuf> = specs.into_iter().map(|(_, object, _, _)| object).collect();
         let codegen_elapsed = codegen_started.elapsed();
         let publication_started = Instant::now();
         // Completed objects remain owned until final assembly/publication and
