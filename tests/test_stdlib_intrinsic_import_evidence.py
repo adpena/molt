@@ -1041,6 +1041,7 @@ def test_intrinsic_source_metadata_rebinds_facts_but_reuses_syntax_summary(
     "field,invalid",
     [
         ("schema", True),
+        ("schema", 2),  # Retired summary before lexical star-import custody.
         ("own_names", {}),
         ("own_names", ["duplicate", "duplicate"]),
         ("own_reflection_line", True),

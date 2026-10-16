@@ -29,6 +29,7 @@ from molt.python_private_names import python_import_binding
 from molt.compiler_analysis.python_builtin_shapes import builtin_method_writes_receiver
 from molt.compiler_analysis.python_lexical_scope import (
     LexicalDefinitionNode,
+    PythonDependencyAuthority,
     definition_evaluation_regions,
     definition_lexical_regions,
     module_annotation_execution,
@@ -44,7 +45,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 2
+SUMMARY_SCHEMA: Final = 3
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -264,6 +265,91 @@ class _Site(NamedTuple):
     callback_deferred: bool
 
 
+class _StarLookupScope(NamedTuple):
+    nodes: tuple[ast.AST, ...]
+    bindings: dict[str, bool]
+    class_lookup: bool
+
+
+class _StarLookupRestore(NamedTuple):
+    bindings: tuple[tuple[str, bool | None], ...]
+    class_lookup: bool
+
+
+def _star_local_names(
+    tree: ast.Module, *, eager_annotations: bool, future_annotations: bool
+) -> set[ast.Name]:
+    """Find lexical names that module IMPORT_STAR cannot initialize.
+
+    This proves lookup custody, never a receiver's type or value. Explicit
+    import references keep their separate conservative classification. Class
+    mappings can shadow even a closure cell, so their lookups stay unknown.
+    Canonical declarations are visited once per scope; enter/restore events
+    give constant-time name lookup without copying enclosing environments.
+    """
+    authority = PythonDependencyAuthority(
+        eager_annotations=eager_annotations,
+        future_annotations=future_annotations,
+    )
+    bindings: dict[str, bool] = {}
+    class_lookup = False
+    local_names: set[ast.Name] = set()
+    pending: list[ast.AST | _StarLookupScope | _StarLookupRestore] = [tree]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, _StarLookupRestore):
+            for name, previous in node.bindings:
+                if previous is None:
+                    del bindings[name]
+                else:
+                    bindings[name] = previous
+            class_lookup = node.class_lookup
+            continue
+        if isinstance(node, _StarLookupScope):
+            pending.append(
+                _StarLookupRestore(
+                    tuple((name, bindings.get(name)) for name in node.bindings),
+                    class_lookup,
+                )
+            )
+            bindings.update(node.bindings)
+            class_lookup = node.class_lookup
+            pending.extend(reversed(node.nodes))
+            continue
+        if isinstance(node, _LEXICAL_DEFINITIONS):
+            definition = cast(LexicalDefinitionNode, node)
+            regions = authority.regions(definition)
+            body_bindings = dict.fromkeys(regions.type_parameters, False)
+            if regions.kind != "class":
+                declarations = authority.declarations(definition)
+                body_bindings.update(dict.fromkeys(declarations.bound, False))
+                body_bindings.update(dict.fromkeys(declarations.globals, True))
+            if regions.body:
+                pending.append(
+                    _StarLookupScope(
+                        regions.body, body_bindings, regions.kind == "class"
+                    )
+                )
+            if regions.annotations:
+                pending.append(
+                    _StarLookupScope(
+                        regions.annotations,
+                        dict.fromkeys(regions.type_parameters, False),
+                        class_lookup,
+                    )
+                )
+            pending.extend(reversed(regions.enclosing))
+            continue
+        if isinstance(node, ast.Name):
+            if not class_lookup and bindings.get(node.id) is False:
+                local_names.add(node)
+            continue
+        if isinstance(node, ast.Constant):
+            continue
+        pending.extend(reversed(tuple(ast.iter_child_nodes(node))))
+    return local_names
+
+
 class _NamespaceWriteCollector:
     """One traversal finds candidate sites; classification runs once imports are known."""
 
@@ -280,6 +366,7 @@ class _NamespaceWriteCollector:
         # only add writes.
         self.references: dict[str, str] = {}
         self.has_star_import = False
+        self.star_local_names: set[ast.Name] = set()
         self.own_names: set[str] = set()
         self.own_reflection_line = 0
         self.writes: dict[
@@ -397,6 +484,12 @@ class _NamespaceWriteCollector:
                         site.callback_deferred,
                     )
                 )
+        if self.has_star_import:
+            self.star_local_names = _star_local_names(
+                self.tree,
+                eager_annotations=self.eager_annotations,
+                future_annotations=self.future,
+            )
         for site in sites:
             if isinstance(site[0], ast.Attribute):
                 self._visit_attribute(site)
@@ -421,10 +514,10 @@ class _NamespaceWriteCollector:
                 if isinstance(parent, ast.AugAssign) and parent.target is node:
                     self._record("sys", None, "import_hooks", site)
 
-    def _star_bound_root(self, node: ast.AST) -> bool:
-        """A receiver may come from a star import, including a shadowed alias."""
+    def _star_receiver_root(self, node: ast.AST) -> ast.Name | None:
+        """Unwrap a possible star receiver, including carried lexical values."""
         if not self.has_star_import:
-            return False
+            return None
         while isinstance(node, (ast.Attribute, ast.Subscript)):
             node = node.value
         if (
@@ -432,8 +525,8 @@ class _NamespaceWriteCollector:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "get"
         ):
-            return self._star_bound_root(node.func.value)
-        return isinstance(node, ast.Name)
+            return self._star_receiver_root(node.func.value)
+        return node if isinstance(node, ast.Name) else None
 
     def _visit_star_hook_mutation(self, site: _Site) -> None:
         node, parent = site.node, site.parent
@@ -450,7 +543,7 @@ class _NamespaceWriteCollector:
             )
         else:
             return
-        if mutates and self._star_bound_root(node.value):
+        if mutates and self._star_receiver_root(node.value) is not None:
             # The imported value could be sys.modules or an import-hook list.
             # Its native receiver mutations share the builtin capability
             # authority. Custom callbacks retain their own source execution;
@@ -500,7 +593,8 @@ class _NamespaceWriteCollector:
         A ``sys.modules`` entry is a module whose name the key computes.
         """
 
-        if self._star_bound_root(node):
+        star_root = self._star_receiver_root(node)
+        if star_root is not None and star_root not in self.star_local_names:
             # Star exports can supply module aliases or shadow explicit
             # imports. The receiver's module is unproved, but its written
             # member remains named when the syntax names it.

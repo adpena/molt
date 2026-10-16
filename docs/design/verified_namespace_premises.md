@@ -70,6 +70,32 @@ partial-publication effects. A star-exported receiver can name or shadow a modul
 object: actual attribute, namespace, item and method mutations retain conservative foreign-write
 and hook effects. A plain imported-function call or read does not by itself publish those writes.
 
+Star imports can initialize or shadow module-global lookups. They cannot
+initialize function parameters, optimized locals, comprehension targets or
+resolved closure cells. The syntax summary derives that lookup custody from
+the canonical lexical declaration authority, including `global`, `nonlocal`,
+exception and pattern captures. Definition headers and the first comprehension
+iterable retain their enclosing scope. Class mappings keep conservative lookup
+effects, including their ability to shadow a closure cell. This follows
+CPython's [scope analysis](https://github.com/python/cpython/blob/v3.15.0/Python/symtable.c)
+and [name code generation](https://github.com/python/cpython/blob/v3.15.0/Python/codegen.c).
+The projection visits each lexical scope once and uses enter/restore events
+instead of copying enclosing name environments. Only sources containing a star
+import require it. This is lookup provenance, not a proof that a receiver is
+not a module; explicit import references retain their conservative named-write
+classification. Native hook mutations, including augmented assignment, retain
+conservative effects through parameters and closure cells: a lexical binding
+can still carry an actual hook container. Summary versioning invalidates
+records from the former lookup rule.
+
+An unbounded callback premise also cannot prove that a fresh class mapping
+stays private. An importer receives the active locals and can install a value
+whose release during a later class store changes module metadata. A class-local
+import alias still binds the class namespace; its callback and release effects
+are a separate fact. Closed-inventory tests must supply the premise established
+by their actual sources. Unknown imports and custom preparation mappings retain
+the existing conservative effects, including own writers and exposed globals.
+
 Canonical members follow the same rule: a callback changes `typing.TYPE_CHECKING`, `sys.modules`,
 `sys.meta_path` and the other `PythonMember` facts only if some code in the graph writes them by name,
 or mutates an import-hook object (`sys.modules`, `sys.meta_path`, `sys.path_hooks`,
@@ -94,8 +120,9 @@ receiver behavior.
 
 ## Design
 
-1. **One summary authority.** `compiler_analysis/python_namespace_writes.py` summarizes a module in one
-   AST pass (0.77 ms per file on the 461 tooling sources): the own names its deferred code rebinds
+1. **One summary authority.** `compiler_analysis/python_namespace_writes.py` collects candidate sites
+   in one AST traversal and adds lexical lookup projection only for sources with star imports.
+   It summarizes the own names its deferred code rebinds
    (`None` on dynamic own reflection) and its named writes to other modules' namespaces, as
    `(receiver spelling, name, construct, line, execution owner)`. It is conservative by spelling.
 2. **The binding flow takes a premise.** `PythonBindingFlowPolicy.foreign_namespace_writes` lists the
