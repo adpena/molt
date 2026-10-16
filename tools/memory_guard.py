@@ -2721,19 +2721,6 @@ def _lineage_pid_set(
     )
 
 
-def _pytest_worker_record_payloads(
-    aggregate_path: Path,
-    *,
-    samples: Mapping[int, ProcessSample],
-    incident_pid: int | None,
-) -> list[dict[str, object]]:
-    return _repro_context._pytest_worker_record_payloads(
-        aggregate_path,
-        samples=samples,
-        incident_pid=incident_pid,
-    )
-
-
 def _pytest_current_test_file_payload(
     environ: Mapping[str, str],
     *,

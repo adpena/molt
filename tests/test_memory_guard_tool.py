@@ -9055,3 +9055,141 @@ def test_sigkilled_target_gets_time_to_leave_under_zero_grace(
     assert killed == [202]
     assert report.actions[-1].result == "exited"
     assert report.remaining_pids == ()
+
+
+@pytest.mark.parametrize(
+    "data,error",
+    [
+        (
+            b'{"schema_version":1,"nodeid":"old","phase":"call"}' + b" " * (16 * 1024),
+            "current_test_record_exceeds_byte_limit",
+        ),
+        (
+            b'{"schema_version":1,"nodeid":"partial',
+            "current_test_incomplete_or_invalid_json",
+        ),
+        (
+            b'\0{"nodeid":"uncommitted","phase":"call"}',
+            "current_test_incomplete_or_invalid_json",
+        ),
+        (b"\xff", "current_test_invalid_encoding"),
+        (b"[]", "current_test_invalid_record"),
+        (
+            b'{"schema_version":true,"nodeid":"wrong","phase":"call"}',
+            "current_test_invalid_record",
+        ),
+        (
+            b'{"schema_version":1,"nodeid":"wrong","phase":[]}',
+            "current_test_invalid_record",
+        ),
+    ],
+)
+def test_current_test_reader_refuses_partial_oversized_or_invalid_identity(
+    tmp_path, data, error
+):
+    path = tmp_path / "current-test.json"
+    path.write_bytes(data)
+    record = memory_guard._read_pytest_current_test_json(path)
+    assert record["error"] == error
+    assert "payload" not in record
+
+
+def test_current_test_diagnostic_reader_never_creates_missing_storage(tmp_path):
+    path = tmp_path / "missing" / "current-test.json"
+    assert memory_guard._read_pytest_current_test_json(path)["missing"] is True
+    assert not path.parent.exists()
+
+
+@pytest.mark.parametrize("link_kind", ["directory", "record"])
+def test_xdist_current_records_reject_symlinks_outside_canonical_custody(
+    tmp_path, monkeypatch, link_kind
+):
+    current_root = tmp_path / "pytest-memory-guard"
+    current_root.mkdir()
+    aggregate = current_root / "current-test.json"
+    worker_dir = aggregate.with_name(aggregate.name + ".d")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    escaped = outside / "gw0.json"
+    escaped.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "nodeid": "must-not-read-outside",
+                "phase": "call",
+            }
+        )
+    )
+    try:
+        if link_kind == "directory":
+            worker_dir.symlink_to(outside, target_is_directory=True)
+        else:
+            worker_dir.mkdir()
+            (worker_dir / "gw0.json").symlink_to(escaped)
+    except OSError as error:
+        pytest.skip(f"host lacks symlink capability: {error}")
+    from molt import file_locks
+
+    acquire = file_locks._try_acquire_file_lock
+
+    def admitted_only(candidate, **kwargs):
+        assert candidate == aggregate, "unadmitted worker path reached file open"
+        return acquire(candidate, **kwargs)
+
+    with monkeypatch.context() as probe:
+        probe.setattr(file_locks, "_try_acquire_file_lock", admitted_only)
+        record = memory_guard._pytest_current_test_file_payload(
+            {
+                "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
+                "MOLT_PYTEST_CURRENT_TEST_FILE": str(aggregate),
+            },
+            samples={},
+        )
+    assert record["worker_records"][0]["rejected"] == "noncanonical"
+    assert "payload" not in record["worker_records"][0]
+    assert "must-not-read-outside" not in json.dumps(record)
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_current_test_raw_short_reads_never_admit_an_oversized_valid_prefix(
+    tmp_path, monkeypatch, unavailable
+):
+    from molt import file_locks
+
+    path = tmp_path / "current-test.json"
+    prefix = b'{"schema_version":1,"nodeid":"prefix","phase":"call"}'
+    path.write_bytes(prefix + b" " * (16 * 1024))
+    acquire = file_locks._try_acquire_file_lock
+    bytes_read = []
+
+    class Reads:
+        def __init__(self, file):
+            self.file = file
+
+        def __getattr__(self, name):
+            return getattr(self.file, name)
+
+        def read(self, amount):
+            if unavailable:
+                return None
+            chunk = self.file.read(min(amount, len(prefix)))
+            bytes_read.append(len(chunk))
+            return chunk
+
+    def partial(candidate, **kwargs):
+        handle = acquire(candidate, **kwargs)
+        if handle is not None and candidate == path:
+            handle.file = Reads(handle.file)
+        return handle
+
+    with monkeypatch.context() as fault:
+        fault.setattr(file_locks, "_try_acquire_file_lock", partial)
+        record = memory_guard._read_pytest_current_test_json(path)
+    assert "payload" not in record
+    if unavailable:
+        assert record["error"] == "current_test_read_incomplete"
+    else:
+        assert record["truncated"] is True
+        assert record["error"] == "current_test_record_exceeds_byte_limit"
+        assert bytes_read[0] == len(prefix)
+        assert sum(bytes_read) == memory_guard._PYTEST_CURRENT_TEST_FILE_MAX_BYTES + 1

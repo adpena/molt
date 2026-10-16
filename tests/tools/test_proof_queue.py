@@ -6590,18 +6590,23 @@ def test_proof_queue_status_shows_active_log_phase(
 
 
 def test_proof_queue_status_shows_active_pytest_current_test(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "active.log"
     summary_path = tmp_path / "active.memory_guard.json"
-    current_path = tmp_path / "pytest-current.json"
+    current_path = tmp_path / "pytest-memory-guard" / "pytest-current.json"
     nodeid = "tests/test_molt_dev.py::test_cleanup_force_requires_matching_sha"
     log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
     summary_path.write_text(
         json.dumps(
             {
                 "status": "child_running",
+                "repro": {
+                    "env": {
+                        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")
+                    }
+                },
                 "pytest": {
                     "current_test_file": {
                         "path": str(current_path),
@@ -6612,6 +6617,19 @@ def test_proof_queue_status_shows_active_pytest_current_test(
         ),
         encoding="utf-8",
     )
+    from molt import pytest_memory_guard_bootstrap as bootstrap
+
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
+    monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current_path))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    class Item:
+        nodeid = "tests/test_molt_dev.py::test_cleanup_force_requires_matching_sha"
+
+    bootstrap.pytest_runtest_call(Item())
+    # The guard summary still says setup. The active observer must follow the
+    # producer's current record without mutating the immutable summary.
+    before_summary = summary_path.read_bytes()
     conn = state._connect(db)
     scheduling._insert_run(
         conn,
@@ -6646,7 +6664,8 @@ def test_proof_queue_status_shows_active_pytest_current_test(
     )
 
     out = capsys.readouterr().out
-    assert f"pytest_current={nodeid} phase=setup" in out
+    assert f"pytest_current={nodeid} phase=call" in out
+    assert summary_path.read_bytes() == before_summary
 
 
 def test_proof_queue_status_hides_pytest_current_for_non_pytest_rows(
@@ -6716,7 +6735,7 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "active.log"
     summary_path = tmp_path / "active.memory_guard.json"
-    current_path = tmp_path / "pytest-current.json"
+    current_path = tmp_path / "pytest-memory-guard" / "pytest-current.json"
     log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
     stale = (
         time.time()
@@ -6735,7 +6754,12 @@ def test_proof_queue_diagnoses_running_pytest_missing_current_test_file(
                         str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
-                "repro": {"host": {"platform": "win32"}},
+                "repro": {
+                    "host": {"platform": "win32"},
+                    "env": {
+                        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")
+                    },
+                },
                 "pytest": {
                     "current_test_file": {
                         "missing": True,
@@ -6792,7 +6816,7 @@ def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "active.log"
     summary_path = tmp_path / "active.memory_guard.json"
-    current_path = tmp_path / "pytest-current.json"
+    current_path = tmp_path / "pytest-memory-guard" / "pytest-current.json"
     log_path.write_text("proof_queue run_id=active-run\n", encoding="utf-8")
     stale = (
         time.time()
@@ -6811,7 +6835,12 @@ def test_proof_queue_audit_warns_on_running_pytest_missing_current_test_file(
                         str(state.ROOT / "tools" / "memory_guard.py"),
                     ],
                 },
-                "repro": {"host": {"platform": "win32"}},
+                "repro": {
+                    "host": {"platform": "win32"},
+                    "env": {
+                        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")
+                    },
+                },
                 "pytest": {
                     "current_test_file": {
                         "missing": True,
@@ -6878,7 +6907,7 @@ def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "active.log"
     summary_path = tmp_path / "active.memory_guard.json"
-    current_path = tmp_path / "pytest-current.json"
+    current_path = tmp_path / "pytest-memory-guard" / "pytest-current.json"
     log_path.write_text("proof_queue run_id=active-run\n.\n", encoding="utf-8")
     stale = (
         time.time()
@@ -6890,6 +6919,11 @@ def test_proof_queue_diagnoses_running_pytest_progress_without_current_marker(
         json.dumps(
             {
                 "status": "child_running",
+                "repro": {
+                    "env": {
+                        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")
+                    }
+                },
                 "pytest": {
                     "current_test_file": {
                         "missing": True,
@@ -6947,7 +6981,7 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
     db = tmp_path / "proof_queue.sqlite3"
     log_path = tmp_path / "active.log"
     summary_path = tmp_path / "active.memory_guard.json"
-    current_path = tmp_path / "pytest-current.json"
+    current_path = tmp_path / "pytest-memory-guard" / "pytest-current.json"
     progress = "..FFF.....FF......FF..FF................"
     log_path.write_text(
         f"proof_queue run_id=active-run\n{progress}\n", encoding="utf-8"
@@ -6962,6 +6996,11 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
         json.dumps(
             {
                 "status": "child_running",
+                "repro": {
+                    "env": {
+                        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard")
+                    }
+                },
                 "pytest": {
                     "current_test_file": {
                         "missing": True,
@@ -18427,3 +18466,94 @@ def test_selected_runtime_watch_capture_compact_and_cas_receivers(
     assert not toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)[
         "stable"
     ]
+
+
+def test_terminal_pytest_receipt_retains_its_incident_case(tmp_path):
+    summary = tmp_path / "receipt.json"
+    current = tmp_path / "later-current.json"
+    current.write_text(
+        json.dumps({"schema_version": 1, "nodeid": "later", "phase": "finish"})
+    )
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "pytest": {
+                    "current_test_file": {
+                        "path": str(current),
+                        "payload": {"nodeid": "incident", "phase": "call"},
+                    }
+                },
+            }
+        )
+    )
+    # Timeout diagnostics consume the terminal incident snapshot even if an
+    # incomplete guard summary retained its old running label.
+    assert diagnostic_evidence._pytest_timeout_context(summary) == ("incident", "call")
+
+
+@pytest.mark.parametrize("path", [None, "", 123])
+def test_live_pytest_status_without_a_path_never_uses_cached_identity(tmp_path, path):
+    summary = tmp_path / "running.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "pytest": {
+                    "current_test": "stale env case (setup)",
+                    "current_test_file": {
+                        "path": path,
+                        "payload": {"nodeid": "stale payload case", "phase": "setup"},
+                    },
+                },
+            }
+        )
+    )
+    line = diagnostic_evidence._pytest_current_status_line(summary)
+    assert "current_test_custody_unavailable" in line
+    assert "stale" not in line
+
+
+@pytest.mark.parametrize("aggregate_exists", [False, True])
+def test_live_queue_status_projects_actual_xdist_workers_not_controller(
+    tmp_path, monkeypatch, aggregate_exists
+):
+    from molt import pytest_memory_guard_bootstrap as bootstrap
+
+    current = tmp_path / "pytest-memory-guard" / "current-test.json"
+    root = tmp_path / "memory_guard"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(root))
+    monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
+
+    class Item:
+        nodeid = "tests/test_status.py::active_worker"
+
+    if aggregate_exists:
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+        bootstrap.pytest_runtest_logfinish(
+            "controller_finished_case", ("file", 1, "unit")
+        )
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    bootstrap.pytest_runtest_call(Item())
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    bootstrap.pytest_runtest_setup(Item())
+    summary = tmp_path / "running.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "repro": {"env": {"MOLT_MEMORY_GUARD_STATE_ROOT": str(root)}},
+                "pytest": {
+                    "current_test_file": {"path": str(current), "missing": True}
+                },
+            }
+        )
+    )
+    line = diagnostic_evidence._pytest_current_status_line(summary)
+    assert f"pytest_current={Item.nodeid} phase=call worker=gw1" in line
+    assert f"pytest_current={Item.nodeid} phase=setup worker=gw0" in line
+    assert "missing" not in line
+    assert "controller_finished_case" not in line
+    assert (
+        diagnostic_evidence._pytest_missing_current_test_file_evidence(summary) is None
+    )

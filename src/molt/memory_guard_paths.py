@@ -18,6 +18,8 @@ STATE_DIRNAME = "memory_guard"
 ACTIVE_DIRNAME = "active"
 # Bounded history of resolved markers, beside the active directory.
 RETIRED_DIRNAME = "retired"
+# One bounded current-test record per serial session or xdist worker.
+PYTEST_CURRENT_TEST_FILE_MAX_BYTES = 16 * 1024
 
 
 def memory_guard_state_root(

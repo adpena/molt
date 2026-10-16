@@ -801,7 +801,21 @@ reads derive their paths from the effective command environment at use time,
 never import-time directory constants. Hosted CI custody projection can occur
 after guard modules import; the parent and child must still select the same root.
 The current-test snapshot names the active or last-observed node, not prior
-failures. The pytest controller immediately formats and flushes completed
+failures. Each serial session or xdist worker owns one 16 KiB JSON slot, shared
+with observers through the existing file-lock authority. All five test phases
+update that inode without replacing a directory entry or resizing the normal
+slot. A NUL first byte marks an incomplete publication; the writer commits the
+opening brace only after writing the complete body and whitespace padding.
+Raw I/O can return partial writes or reads, so both sides complete their bounded
+operations explicitly ([Python I/O contract](https://docs.python.org/3/library/io.html#raw-i-o)).
+Observers acquire the lock without waiting and admit only a complete, bounded
+record from the canonical custody root, including each worker sidecar. Busy,
+interrupted, malformed, oversized or noncanonical records remain unknown. Live
+queue views read current records; terminal incident projections remain fixed.
+This is volatile development status with process-crash coherence, not a durable
+power-loss receipt, and adds no work to emitted binaries.
+
+The pytest controller immediately formats and flushes completed
 failures into the existing output stream, preserving details if later termination
 prevents the final summary. Workers forward reports through xdist; they do not
 install another formatter. Native traceback and captured-output options remain

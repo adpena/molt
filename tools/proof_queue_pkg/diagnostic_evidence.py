@@ -14,6 +14,7 @@ from typing import Literal, Mapping
 
 from molt.exact_json import canonical_json_bytes, loads_exact, read_exact
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+from tools.memory_guard_core import repro_context
 from molt.memory_guard_paths import ACTIVE_DIRNAME
 from tools.memory_guard_core.active_custody import MarkerRecord, guard_marker_records
 from tools.proof_queue_pkg import command_admission, command_identity, custody, state
@@ -441,7 +442,9 @@ def _row_command_mentions_pytest(row: sqlite3.Row) -> bool:
     )
 
 
-def _pytest_sections_from_summary(summary_json: object) -> list[dict[str, object]]:
+def _pytest_sections_from_summary(
+    summary_json: object, *, live: bool = False
+) -> list[dict[str, object]]:
     if not summary_json:
         return []
     summary = _read_json_object(Path(str(summary_json)))
@@ -449,40 +452,100 @@ def _pytest_sections_from_summary(summary_json: object) -> list[dict[str, object
     repro = summary.get("repro")
     if isinstance(repro, dict):
         candidates.append(repro.get("pytest"))
-    return [item for item in candidates if isinstance(item, dict)]
+    sections = [item for item in candidates if isinstance(item, dict)]
+    if not live or summary.get("status") not in {"running", "child_running"}:
+        return sections
+    env = repro.get("env") if isinstance(repro, dict) else None
+    for index, section in enumerate(sections):
+        current = section.get("current_test_file")
+        path = current.get("path") if isinstance(current, dict) else None
+        if (
+            not isinstance(path, str)
+            or not path
+            or not isinstance(env, dict)
+            or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in env.items()
+            )
+        ):
+            fresh = {"path": path, "error": "current_test_custody_unavailable"}
+        else:
+            fresh = repro_context._pytest_current_test_file_payload(
+                {**env, "MOLT_PYTEST_CURRENT_TEST_FILE": path},
+                samples={},
+                root=state.ROOT,
+                current_test_file_env="MOLT_PYTEST_CURRENT_TEST_FILE",
+            )
+        # A live observer never treats the launch-time projection as current.
+        # Terminal diagnosis keeps the immutable incident projection above.
+        sections[index] = {**section, "current_test": "", "current_test_file": fresh}
+    return sections
+
+
+def _pytest_current_record_status_line(record: dict[str, object]) -> str | None:
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        nodeid = payload.get("nodeid")
+        if isinstance(nodeid, str) and nodeid.strip():
+            line = f"  pytest_current={nodeid.strip()}"
+            phase = payload.get("phase")
+            if isinstance(phase, str) and phase.strip():
+                line += f" phase={phase.strip()}"
+            worker = payload.get("xdist_worker")
+            if isinstance(worker, str) and worker.strip():
+                line += f" worker={worker.strip()}"
+            pid = payload.get("pid")
+            if type(pid) is int and pid > 0:
+                line += f" pid={pid}"
+            return line
+    path = record.get("path")
+    if record.get("missing") is True and isinstance(path, str):
+        return f"  pytest_current=missing path={path}"
+    error = record.get("error") or record.get("rejected")
+    if isinstance(error, str) and error.strip():
+        return f"  pytest_current=unreadable error={state._shorten(error.strip(), 120)}"
+    truncated = record.get("truncated_worker_records")
+    if type(truncated) is int and truncated > 0:
+        return f"  pytest_current=unknown omitted_worker_records={truncated}"
+    return None
 
 
 def _pytest_current_status_line(summary_json: object) -> str | None:
-    for pytest_section in _pytest_sections_from_summary(summary_json):
-        current_test_file = pytest_section.get("current_test_file")
-        if isinstance(current_test_file, dict):
-            payload = current_test_file.get("payload")
-            if isinstance(payload, dict):
-                nodeid = payload.get("nodeid")
-                if isinstance(nodeid, str) and nodeid.strip():
-                    phase = payload.get("phase")
-                    line = f"  pytest_current={nodeid.strip()}"
-                    if isinstance(phase, str) and phase.strip():
-                        line += f" phase={phase.strip()}"
-                    return line
-            path = current_test_file.get("path")
-            if current_test_file.get("missing") is True and isinstance(path, str):
-                return f"  pytest_current=missing path={path}"
-            error = current_test_file.get("error")
-            if isinstance(error, str) and error.strip():
-                return f"  pytest_current=unreadable error={state._shorten(error.strip(), 120)}"
-        current = pytest_section.get("current_test")
-        if isinstance(current, str) and current.strip():
-            return f"  pytest_current={current.strip()}"
+    for pytest_section in _pytest_sections_from_summary(summary_json, live=True):
+        current = pytest_section.get("current_test_file")
+        if isinstance(current, dict):
+            workers = current.get("worker_records")
+            if isinstance(workers, list) and workers:
+                # The controller's aggregate start/finish event is not a
+                # worker's active setup/call/teardown. Preserve every bounded
+                # worker projection in a stable order without guessing one.
+                rows = [
+                    line
+                    for record in workers
+                    if isinstance(record, dict)
+                    and (line := _pytest_current_record_status_line(record)) is not None
+                ]
+                if rows:
+                    return "\n".join(sorted(rows))
+                return "  pytest_current=unknown worker_status_unavailable"
+            line = _pytest_current_record_status_line(current)
+            if line is not None:
+                return line
+        current_env = pytest_section.get("current_test")
+        if isinstance(current_env, str) and current_env.strip():
+            return f"  pytest_current={current_env.strip()}"
     return None
 
 
 def _pytest_missing_current_test_file_evidence(summary_json: object) -> str | None:
-    for pytest_section in _pytest_sections_from_summary(summary_json):
+    for pytest_section in _pytest_sections_from_summary(summary_json, live=True):
         current_test_file = pytest_section.get("current_test_file")
         if not isinstance(current_test_file, dict):
             continue
         if current_test_file.get("missing") is not True:
+            continue
+        workers = current_test_file.get("worker_records")
+        if isinstance(workers, list) and workers:
             continue
         path = current_test_file.get("path")
         if isinstance(path, str) and path.strip():
