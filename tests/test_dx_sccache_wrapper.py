@@ -430,10 +430,16 @@ def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
 def test_sccache_clients_reach_only_their_cache_private_server(tmp_path, monkeypatch):
     from molt import cargo_execution_policy as policy
 
-    assert policy.sccache_server_endpoint({"SCCACHE_DIR": "/c/.sccache"}) == (
-        "SCCACHE_SERVER_UDS",
-        "/c/.sccache-server.sock",
-    ), "a socket beside the cache when its path fits"
+    endpoint = policy.sccache_server_endpoint({"SCCACHE_DIR": "/c/.sccache"})
+    assert endpoint is not None
+    if os.name == "nt":
+        name, port = endpoint
+        assert name == "SCCACHE_SERVER_PORT" and 49152 <= int(port) < 65535
+    else:
+        assert endpoint == (
+            "SCCACHE_SERVER_UDS",
+            "/c/.sccache-server.sock",
+        ), "a socket beside the cache when its path fits"
     cache = tmp_path / "artifacts" / ".sccache"
     env = {"SCCACHE_DIR": str(cache), "RUSTC_WRAPPER": "/opt/sccache"}
     pinned, _ = policy.sccache_client_environment(env)
