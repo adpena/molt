@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.runtime_build_identity_helper import RuntimeFixtureRoot
+from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
+    clear_wasm_toolchain_selection,
+)
 from molt.cli import wasm_link_inputs
 from molt.cli import runtime_wasm_build_support as rb
 from molt.llvm_toolchain import LlvmToolchainConfigError
@@ -17,14 +20,7 @@ from molt.llvm_toolchain import LlvmToolchainConfigError
 def test_missing_sdk_refuses_c_runtime_instead_of_using_an_isolated_archive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    for key in (
-        "MOLT_WASI_SYSROOT",
-        "WASI_SYSROOT",
-        "WASI_SDK_PATH",
-        "WASI_SDK_PREFIX",
-        "MOLT_WASI_C_ABI_PLAN",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    clear_wasm_toolchain_selection(monkeypatch)
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
     assert wasm_link_inputs.resolve_wasi_sysroot() is None
     with pytest.raises(LlvmToolchainConfigError, match="pinned WASI SDK is missing"):
@@ -47,6 +43,7 @@ def captured_cargo(runtime_fixture_root: RuntimeFixtureRoot, tmp_path: Path):
 @pytest.fixture
 def selected_c_abi(captured_cargo, monkeypatch):
     plan = captured_cargo.wasi_c_abi
+    clear_wasm_toolchain_selection(monkeypatch)
     monkeypatch.setenv("WASI_SDK_PATH", str(plan.sdk))
     monkeypatch.setenv("MOLT_WASI_SYSROOT", str(plan.sysroot))
     monkeypatch.setenv("WASI_SYSROOT", str(plan.sysroot))

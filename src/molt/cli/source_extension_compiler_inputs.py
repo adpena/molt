@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import functools
 import os
 from pathlib import Path
 import re
+import sys
 from typing import Literal
 
 from molt.cli.compiler_target import (
@@ -45,12 +47,45 @@ def source_extension_compiler_environment(
     Applies to configuration, generators, probes and direct object replay. SDK
     INCLUDE/LIB inputs remain available; this is not a hermetic SDK declaration.
     Treat key spelling uniformly so captured Windows environments replay safely.
+
+    On macOS a managed LLVM clang has no implicit SDK: without ``SDKROOT`` it
+    cannot find ``<assert.h>``. When the environment names no SDK, the selected
+    Xcode SDK is projected from the product's own Darwin authority, as the
+    native build does; an explicit ``SDKROOT`` is kept (HF-231).
     """
-    return {
+    selected = {
         key: value
         for key, value in environment.items()
         if key.upper() not in _IMPLICIT_COMPILER_OVERRIDES
     }
+    if sys.platform == "darwin" and not selected.get("SDKROOT"):
+        selected.update(
+            _selected_darwin_sdk(selected.get("DEVELOPER_DIR"), selected.get("PATH"))
+        )
+    return selected
+
+
+@functools.lru_cache(maxsize=8)
+def _selected_darwin_sdk(developer_dir: str | None, path: str | None) -> dict[str, str]:
+    """``DEVELOPER_DIR`` and ``SDKROOT`` of the selected Xcode, or none.
+
+    Selection runs several ``xcrun`` queries, so it is cached per developer
+    directory and PATH. A host with no usable developer directory projects
+    nothing, and the compiler then reports the missing SDK itself.
+    """
+    from molt.platform_toolchain import select_darwin_toolchain
+
+    probe = dict(os.environ)
+    for key, value in (("DEVELOPER_DIR", developer_dir), ("PATH", path)):
+        if value is None:
+            probe.pop(key, None)
+        else:
+            probe[key] = value
+    try:
+        environment = select_darwin_toolchain(probe).environment()
+    except (OSError, ValueError):
+        return {}
+    return {key: environment[key] for key in ("DEVELOPER_DIR", "SDKROOT")}
 
 
 _SYSROOT_POLICY = Literal["forbidden", "optional", "required"]

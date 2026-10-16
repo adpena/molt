@@ -411,6 +411,24 @@ def fingerprint_for_identity(
     return runtime_build_fingerprint(identity, scope=scope)
 
 
+def clear_wasm_toolchain_selection(monkeypatch) -> None:
+    """Drop every WASM selector an ambient projection set, and the SDK pins.
+
+    A test that selects its own SDK must not inherit the real SDK's projection
+    from a DX shell or ``tools/toolchain_env.py``: ``MOLT_LLVM_NM`` alone makes
+    admission refuse the selected SDK (HF-231).
+    """
+    from molt import llvm_toolchain
+
+    for key in (
+        *llvm_toolchain.wasm_toolchain_environment_keys(),
+        "WASI_SDK_PREFIX",
+        "MOLT_WASM_CC",
+        "MOLT_CROSS_CC",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def provisioned_wasi_sdk_fixture(fixture_root: RuntimeFixtureRoot):
     """Create a complete synthetic install using real, never-executed tool images.
 

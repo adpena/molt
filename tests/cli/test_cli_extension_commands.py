@@ -49,6 +49,7 @@ from molt.cli.source_extension_object_closure_schema import (
 from tests.cli.process_guard import run_cli_test_process
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
     runtime_wasi_c_abi_plan,
 )
@@ -490,15 +491,7 @@ def _install_extension_object_symbol_facts(
 def _select_test_wasi_sdk(root: Path, monkeypatch: pytest.MonkeyPatch):
     """Admit a complete synthetic SDK; compiler outputs remain fixture-owned."""
     install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(root))
-    for key in (
-        "MOLT_WASI_SYSROOT",
-        "WASI_SYSROOT",
-        "MOLT_WASI_C_ABI_PLAN",
-        "MOLT_WASM_CC",
-        "MOLT_CROSS_CC",
-        "MOLT_WASM_LD",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    clear_wasm_toolchain_selection(monkeypatch)
     monkeypatch.setenv("WASI_SDK_PATH", str(install.sdk))
     monkeypatch.setattr(
         cli_llvm_wasi_tools,

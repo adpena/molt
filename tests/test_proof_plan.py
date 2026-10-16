@@ -5765,6 +5765,7 @@ def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
 ):
     from tests.runtime_build_identity_helper import (
         RuntimeFixtureRoot,
+        clear_wasm_toolchain_selection,
         provisioned_wasi_sdk_fixture,
     )
 
@@ -5772,6 +5773,7 @@ def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
     fact = installation.tool_fact(role)
     content = installation.sdk / str(fact["content_path"])
     content.write_bytes(content.read_bytes() + b"changed after provisioning")
+    clear_wasm_toolchain_selection(monkeypatch)
     monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
     install_module_view(
         monkeypatch,
