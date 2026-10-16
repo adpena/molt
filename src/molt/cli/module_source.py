@@ -256,6 +256,18 @@ class _ModuleSourceCatalog:
     def read_source(self, module_name: str, module_path: Path) -> str:
         return self.lease_for(module_name, module_path).read()
 
+    def source_paths(self) -> tuple[str, ...]:
+        """The files the program's modules were compiled from, sorted."""
+        return tuple(
+            sorted(
+                {
+                    os.fspath(lease.path)
+                    for lease in self.leases.values()
+                    if lease.inline_source is None
+                }
+            )
+        )
+
     def validate(self) -> None:
         if self.import_topology is not None:
             self.import_topology.validate()

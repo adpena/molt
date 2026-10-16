@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 
-from molt.cli.compiler_target import is_zig_compiler_command
+from molt.cli.native_link_plan import is_zig_compiler_command
 from molt.cli.source_extension_compiler_inputs import (
     validate_source_extension_compiler_command,
 )

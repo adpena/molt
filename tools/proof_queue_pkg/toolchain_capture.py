@@ -1812,7 +1812,7 @@ def capture_native_compiler_process_images(
     captured_images: Sequence[Mapping[str, object]] = (),
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Capture actual source-to-object driver phases in operation-owned storage."""
-    from molt.cli.compiler_target import is_zig_compiler_command
+    from molt.cli.native_link_plan import is_zig_compiler_command
     from molt.llvm_linker_roles import executable_entrypoint_name
 
     if not command or not Path(command[0]).is_absolute():

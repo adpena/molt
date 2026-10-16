@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     )
 
 from molt import file_publication
-from molt.llvm_linker_roles import LlvmLinkerRole
+from molt.llvm_linker_roles import LlvmLinkerRole, executable_entrypoint_name
 from molt.native_artifact_header import (
     NativeArtifactError,
     OBJECT_KINDS,
@@ -71,6 +71,9 @@ class NativeLinkerKind(str, Enum):
     SYSTEM = "system"
     LLD = "lld"
     MOLD = "mold"
+    # `zig cc` links with zig's own linker, which runs no identical-code
+    # folding and rejects the system linkers' flags that disable it.
+    ZIG = "zig"
 
 
 _BOLT_ARCHES = frozenset({"x86_64", "aarch64"})
@@ -299,6 +302,14 @@ def validate_native_object_artifact(path: Path, target: NativeTargetSpec) -> Non
         ) from exc
 
 
+def is_zig_compiler_command(command: Sequence[str]) -> bool:
+    return (
+        len(command) >= 2
+        and executable_entrypoint_name(Path(command[0])) == "zig"
+        and command[1] in {"cc", "c++"}
+    )
+
+
 def native_linker_name_from_driver_command(
     command: Sequence[str],
     *,
@@ -309,6 +320,9 @@ def native_linker_name_from_driver_command(
         if arg.startswith("-fuse-ld="):
             selected = arg.split("=", 1)[1].strip().lower()
             break
+    else:
+        if is_zig_compiler_command(command):
+            return NativeLinkerKind.ZIG.value
     name = Path(selected).name if selected else None
     if name in {
         "ld.lld",
@@ -350,9 +364,9 @@ def native_link_policy_flags(
             return ("/link", *flags)
         return tuple(f"-Wl,{flag}" for flag in flags)
     if target.object_format is NativeObjectFormat.MACHO:
-        flags = ["-Wl,-no_deduplicate"]
-        if dead_strip:
-            flags.insert(0, "-Wl,-dead_strip")
+        flags = ["-Wl,-dead_strip"] if dead_strip else []
+        if capabilities.explicit_no_icf_flag:
+            flags.append(capabilities.explicit_no_icf_flag)
         return tuple(flags)
     flags = ["-Wl,--gc-sections"] if dead_strip else []
     if capabilities.explicit_no_icf_flag:
@@ -446,11 +460,18 @@ def native_link_capabilities(
 ) -> NativeLinkCapabilities:
     linker = (
         NativeLinkerKind(linker_hint)
-        if linker_hint in {NativeLinkerKind.LLD.value, NativeLinkerKind.MOLD.value}
+        if linker_hint
+        in {
+            NativeLinkerKind.LLD.value,
+            NativeLinkerKind.MOLD.value,
+            NativeLinkerKind.ZIG.value,
+        }
         else NativeLinkerKind.SYSTEM
     )
     no_icf: str | None = None
-    if target.link_dialect is LinkDialect.COFF_GNU:
+    if linker is NativeLinkerKind.ZIG:
+        no_icf = None
+    elif target.link_dialect is LinkDialect.COFF_GNU:
         # GNU PE ld has no ICF; LLD's MinGW driver can explicitly disable it.
         no_icf = "-Wl,--icf=none" if linker is NativeLinkerKind.LLD else None
     elif target.object_format is NativeObjectFormat.COFF:

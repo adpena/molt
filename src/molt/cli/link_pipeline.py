@@ -153,6 +153,7 @@ def _prepare_native_link(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
+    compiled_source_paths: tuple[str, ...] = (),
     bolt_requested: bool = False,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     if diagnostics_enabled:
@@ -192,6 +193,7 @@ def _prepare_native_link(
         )
     main_c_content = _render_native_main_stub(
         resolved_capability_policy=resolved_capability_policy,
+        compiled_source_paths=compiled_source_paths,
         runtime_module_roots=tuple(
             dict.fromkeys(
                 artifact.runtime_root for artifact in staged_external_native_artifacts
