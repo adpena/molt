@@ -2,38 +2,22 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
-from tests.process_guard_common import check_output_custody_subject_process
+from tools.dependency_manifests import cargo_workspace_dirs, tracked_manifest_dirs
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / ".github" / "dependabot.yml"
 
-# Fixture projects keep their pins on purpose; automation must not move them.
-FIXTURE_PREFIX = "tests/fixtures/"
 
-
-def _tracked(*patterns: str) -> list[str]:
-    output = check_output_custody_subject_process(
-        ["git", "ls-files", "-z", "--", *patterns],
-        cwd=ROOT,
-        text=True,
-        encoding="utf-8",
-    )
-    assert isinstance(output, str)
-    return [path for path in output.split("\0") if path]
+def _dependabot_dirs(dirs: list[PurePosixPath]) -> set[str]:
+    return {"/" if d == PurePosixPath(".") else f"/{d}" for d in dirs}
 
 
 def _manifest_dirs(*patterns: str) -> set[str]:
-    dirs = set()
-    for path in _tracked(*patterns):
-        if path.startswith(FIXTURE_PREFIX):
-            continue
-        parent = Path(path).parent.as_posix()
-        dirs.add("/" if parent == "." else f"/{parent}")
-    return dirs
+    return _dependabot_dirs(tracked_manifest_dirs(ROOT, *patterns))
 
 
 def _configured() -> dict[str, set[str]]:
@@ -51,7 +35,7 @@ def _configured() -> dict[str, set[str]]:
 
 def test_every_tracked_lockfile_is_watched_and_nothing_else() -> None:
     configured = _configured()
-    assert configured["cargo"] == _manifest_dirs("*Cargo.lock", "Cargo.lock")
+    assert configured["cargo"] == _dependabot_dirs(cargo_workspace_dirs(ROOT))
     assert configured["uv"] == _manifest_dirs("*uv.lock", "uv.lock")
     assert configured["npm"] == _manifest_dirs("*package-lock.json")
 

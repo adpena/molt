@@ -28,7 +28,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "all"
 ignore = [
     { id = "RUSTSEC-2021-0127", reason = "Reviewed: serde_cbor is used for existing CBOR compatibility; replacement is tracked as dependency modernization, not a silent security bypass." },
-    { id = "RUSTSEC-2024-0436", reason = "Reviewed: paste is transitive through Metal/MLX GPU crates; no patched upstream release is available." },
+    { id = "RUSTSEC-2024-0436", reason = "Reviewed: paste (unmaintained, no patched release) reaches only the standalone MLIR backend workspace, through tblgen." },
     { id = "RUSTSEC-2025-0075", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
     { id = "RUSTSEC-2025-0080", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
     { id = "RUSTSEC-2025-0081", reason = "Reviewed: rust-unic transitive parser dependency; parser replacement requires coordinated frontend migration." },
@@ -88,6 +88,8 @@ exceptions = [
     { allow = ["MPL-2.0"], name = "bitmaps" },
     { allow = ["MPL-2.0"], name = "im-rc" },
     { allow = ["MPL-2.0"], name = "sized-chunks" },
+    # libfuzzer-sys bundles LLVM libFuzzer under NCSA; only the fuzz workspaces use it.
+    { allow = ["MIT", "Apache-2.0", "NCSA"], name = "libfuzzer-sys" },
 ]
 
 clarify = [
@@ -123,4 +125,10 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# The standalone MLIR backend workspace patches mlir-sys and tblgen to these
+# repositories at pinned revisions: the two audited Windows build fixes in
+# runtime/molt-backend-mlir/Cargo.toml [patch.crates-io].
+allow-git = [
+    "https://github.com/joa/mlir-sys",
+    "https://github.com/mlir-rs/tblgen-rs",
+]

@@ -379,6 +379,18 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "single typed-argv start boundary for caller-owned and detached tool processes",
     ),
     AllowedRawSubprocessUse(
+        "tools/cargo_lock_audit.py",
+        "_run_cargo",
+        "run",
+        "bounded cargo-deny/cargo-audit child per tracked workspace inside the proof plan's guard",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/dependency_manifests.py",
+        "tracked_manifest_dirs",
+        "run",
+        "bounded git ls-files metadata probe listing tracked dependency manifests",
+    ),
+    AllowedRawSubprocessUse(
         "tools/check_rustfmt.py",
         "_run_git",
         "run",
