@@ -158,5 +158,5 @@ def test_write_mode_rewrites_real_format_drift(monkeypatch, tmp_path) -> None:
 def test_plan_runs_the_rustfmt_gate_without_cargo() -> None:
     # A static check reads sources; it must never wait for a Cargo build slot.
     assert not {"cargo", "rustc"} & _plan_gate_toolchains(
-        "python3 tools/venv_exec.py python tools/check_rustfmt.py --changed"
+        "python tools/check_rustfmt.py --changed"
     )

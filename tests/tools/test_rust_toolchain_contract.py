@@ -547,5 +547,5 @@ def test_dated_nightly_requires_nightly_compiler_and_complete_source(
 def test_plan_runs_the_rust_toolchain_gate_without_cargo() -> None:
     # A static check reads sources; it must never wait for a Cargo build slot.
     assert not {"cargo", "rustc"} & _plan_gate_toolchains(
-        "python3 tools/venv_exec.py python tools/check_rust_toolchain.py"
+        "python tools/check_rust_toolchain.py"
     )

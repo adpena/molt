@@ -463,9 +463,6 @@ def test_proof_plan_runs_the_build_graph_ratchet() -> None:
     from tools import proof_plan
 
     plan = proof_plan.ProofPlan.load()
-    assert (
-        "python3 tools/venv_exec.py python tools/build_graph_audit.py --check"
-        in plan.always
-    )
+    assert "python tools/build_graph_audit.py --check" in plan.always
     command = next(c for c in plan.commands if c.id == "repository.build-graph")
     assert command.data["argv"][-2:] == ["tools/build_graph_audit.py", "--check"]
