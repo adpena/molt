@@ -24,7 +24,7 @@ from molt.cli.runtime_wasm_generation import (
     bind_runtime_wasm_codegen,
     publish_runtime_wasm_generation,
 )
-from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
+from molt.cli.wasm_codegen_layout import WasmCodegenLayout, prepare_wasm_codegen_layout
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.runtime_build_identity_helper import runtime_build_identity
 from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
@@ -121,9 +121,14 @@ def _compile(
     *,
     cache_hit: bool,
     cache_enabled: bool,
+    layout: WasmCodegenLayout | None = None,
 ):
+    if layout is None:
+        layout = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
     contract = BackendArtifactContract(BackendArtifactKind.WASM)
     setup = _BackendCacheSetup(
+        backend_environment=layout.backend_environment(),
+        wasm_layout=layout,
         artifact_contract=contract,
         cache_enabled=cache_enabled,
         cache_key=None,
@@ -231,13 +236,16 @@ def test_warm_cache_rejects_corrupt_bound_generation(
     member: str,
 ) -> None:
     binding = _bind_pair(tmp_path)
+    layout = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
     getattr(binding.generation, member).write_bytes(b"corrupt")
     monkeypatch.setattr(
         backend_compile,
         "_prepare_backend_dispatch",
         lambda **kwargs: pytest.fail("must reject before dispatch"),
     )
-    result, error = _compile(tmp_path, binding, cache_hit=True, cache_enabled=True)
+    result, error = _compile(
+        tmp_path, binding, cache_hit=True, cache_enabled=True, layout=layout
+    )
     assert result is None and error == 2
     assert "bound runtime WASM generation changed" in capsys.readouterr().out
 

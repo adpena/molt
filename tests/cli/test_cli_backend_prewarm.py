@@ -232,6 +232,7 @@ def _build_backend_setup(
     assert error is None and config is not None
     layout = _build_layout(target, tmp_path, roots.project_root)
     return cli_backend_compile._prepare_backend_setup(
+        split_runtime=False,
         is_rust_transpile=layout.is_rust_transpile,
         is_luau_transpile=layout.is_luau_transpile,
         is_wasm=layout.is_wasm,
@@ -338,6 +339,7 @@ def _stub_backend_cache_setup(
 ) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     cache_setup = _BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target=target, emit_mode="bin"
         ),

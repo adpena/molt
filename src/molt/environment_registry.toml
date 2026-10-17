@@ -222,6 +222,14 @@ owner = "runtime/molt-backend/src/backend_process/daemon/server/mod.rs"
 summary = "molt sets it to the admitted config digest when it spawns the backend daemon; the daemon trims it, reports it as spawn_config_digest in health responses, and compares it with request digests."
 
 [[variable]]
+name = "MOLT_BACKEND_DAEMON_IDLE_TIMEOUT"
+audience = "user"
+kind = "int"
+default = "1800"
+owner = "runtime/molt-backend/src/backend_process/io_limits/limits.rs"
+summary = "Seconds the backend daemon waits with no connection before it retires and unlinks its socket; 0 keeps it alive, and non-numeric values use 1800."
+
+[[variable]]
 name = "MOLT_BACKEND_DAEMON_LOG_MAX_BYTES"
 audience = "user"
 kind = "int"
@@ -1867,14 +1875,6 @@ owner = "tests/molt_diff.py"
 summary = "RSS threshold in kilobytes above which tests/molt_diff.py retires a verified backend daemon it owns during its pruning passes on POSIX hosts, once the daemon reports no admitted jobs; retirement unlinks the socket and lets accepted work finish, and a busy daemon keeps running. 0 or a negative value disables RSS-based retirement, non-numeric values fall back to 2500000."
 
 [[variable]]
-name = "MOLT_DIFF_DAEMON_STALE_SEC"
-audience = "developer"
-kind = "int"
-default = "600"
-owner = "tests/molt_diff.py"
-summary = "Minimum process age in seconds before tests/molt_diff.py terminates a backend daemon that no longer answers a socket ping; values below 60 are raised to 60, non-numeric values fall back to 600."
-
-[[variable]]
 name = "MOLT_DIFF_DISABLE_DAEMON_ON_DYLD"
 audience = "developer"
 kind = "bool"
@@ -2154,7 +2154,7 @@ audience = "developer"
 kind = "int"
 default = "32"
 owner = "tests/molt_diff.py"
-summary = "Number of completed differential tests between pruning passes that remove orphan diff workers, orphan build helpers and oversized or unresponsive backend daemons during a parallel run; 0 or a negative value disables the periodic passes, non-numeric values fall back to 32."
+summary = "Number of completed differential tests between maintenance passes that remove orphan diff workers and orphan build helpers and request graceful retirement of verified idle oversized backend daemons; silent or busy daemons are left to their own lifecycle and explicit owner cancellation. 0 or a negative value disables the periodic passes, non-numeric values fall back to 32."
 
 [[variable]]
 name = "MOLT_DIFF_PYTHON"

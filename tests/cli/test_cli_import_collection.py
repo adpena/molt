@@ -3183,6 +3183,7 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         module_deps=frontend_analysis.module_deps,
     )
     backend_setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir={"functions": []},
@@ -21470,8 +21471,8 @@ def test_start_backend_daemon_leaves_warming_process_running(
         Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
-        BACKEND_EXECUTION,
-        "_terminate_backend_daemon_identity",
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
         lambda identity, **kwargs: terminated.append(identity.pid),
     )
     monkeypatch.setattr(
@@ -21592,8 +21593,8 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
         Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
-        BACKEND_EXECUTION,
-        "_terminate_backend_daemon_identity",
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
         lambda identity, **kwargs: terminated.append(identity.pid),
     )
     monkeypatch.setattr(
@@ -21622,26 +21623,22 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
     assert removed == []
 
 
-@pytest.mark.parametrize("retiring", [False, True])
-def test_start_backend_daemon_never_stops_a_retiring_socketless_daemon(
+def test_start_backend_daemon_never_stops_a_socketless_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    retiring: bool,
 ) -> None:
+    # The daemon unlinked its socket when it retired, on request or when idle,
+    # and finishes the connections it accepted.
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_text("backend", encoding="utf-8")
-    # Retirement unlinked the socket; the daemon finishes accepted connections.
     socket_path = tmp_path / "daemon.sock"
     identity_path = tmp_path / "daemon.identity.json"
     log_path = tmp_path / "daemon.log"
-    existing_identity = replace(
-        _test_backend_daemon_identity(
-            1234,
-            socket_path=socket_path,
-            project_root=tmp_path,
-            backend_bin=backend_bin,
-        ),
-        retiring=retiring,
+    existing_identity = _test_backend_daemon_identity(
+        1234,
+        socket_path=socket_path,
+        project_root=tmp_path,
+        backend_bin=backend_bin,
     )
     terminated: list[int] = []
     removed: list[Path] = []
@@ -21665,12 +21662,14 @@ def test_start_backend_daemon_never_stops_a_retiring_socketless_daemon(
         "_backend_daemon_identity_matches_context": lambda identity, **kwargs: True,
         "_backend_daemon_identity_is_verified": lambda identity, **kwargs: True,
         "_backend_daemon_wait_until_ready": lambda *args, **kwargs: (False, None),
-        "_terminate_backend_daemon_identity": (
-            lambda identity, **kwargs: terminated.append(identity.pid)
-        ),
         "_remove_backend_daemon_identity": lambda path: removed.append(path),
     }.items():
         monkeypatch.setattr(BACKEND_EXECUTION, name, value)
+    monkeypatch.setattr(
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
+        lambda identity, **kwargs: terminated.append(identity.pid),
+    )
     install_module_view(
         monkeypatch,
         "subprocess",
@@ -21691,12 +21690,10 @@ def test_start_backend_daemon_never_stops_a_retiring_socketless_daemon(
         warnings=[],
     )
 
-    if retiring:
-        assert terminated == [], "a draining daemon was stopped"
-        assert identity_path not in removed
-    else:
-        assert terminated == [1234]
-        assert identity_path in removed
+    assert terminated == [], "a draining daemon was stopped"
+    assert identity_path not in removed
+    successor = json.loads(identity_path.read_text(encoding="utf-8"))
+    assert successor["pid"] == 4321, "the successor's identity replaces the record"
 
 
 def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
@@ -21850,8 +21847,8 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
         lambda identity, **kwargs: False,
     )
     monkeypatch.setattr(
-        BACKEND_EXECUTION,
-        "_terminate_backend_daemon_identity",
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
         lambda identity, **kwargs: (_ for _ in ()).throw(
             AssertionError("unverified identity must not be killed")
         ),
@@ -21894,7 +21891,8 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
         is True
     )
     assert removed == [identity_path]
-    assert any("not a verified live daemon" in warning for warning in warnings)
+    # The daemon exited and its socket is gone: a clean retirement, not an issue.
+    assert warnings == []
 
 
 def _stub_backend_binary_ensure(
@@ -21985,6 +21983,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         assert backend_bin.exists()
         assert not identify_backend_binary(backend_bin).startswith("missing:")
         return cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -22008,6 +22007,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            split_runtime=False,
             is_rust_transpile=False,
             is_wasm=is_wasm,
             emit_mode="bin",
@@ -22079,6 +22079,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     ) -> cli_models._BackendCacheSetup:
         cache_setup_kwargs.append(dict(kwargs))
         return cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -22137,6 +22138,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
@@ -22208,6 +22210,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
     ) -> cli_models._BackendCacheSetup:
         cache_setup_kwargs.append(dict(kwargs))
         return cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -22266,6 +22269,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
@@ -22333,6 +22337,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     ) -> cli_models._BackendCacheSetup:
         cache_setup_kwargs.append(dict(kwargs))
         return cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -22397,6 +22402,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
@@ -22465,6 +22471,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
         lambda **kwargs: (
             cache_setup_kwargs.append(dict(kwargs))
             or cli_models._BackendCacheSetup(
+                backend_environment={},
                 artifact_contract=resolve_backend_artifact_contract(
                     target="native", emit_mode="obj", target_triple=None
                 ),
@@ -22519,6 +22526,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
 
     prepared_backend_setup, backend_setup_error = (
         cli_backend_compile._prepare_backend_setup(
+            split_runtime=False,
             is_rust_transpile=False,
             is_wasm=False,
             emit_mode="obj",
@@ -22675,6 +22683,7 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -22755,6 +22764,7 @@ def test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest(
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli_models._BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -22816,6 +22826,7 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
         runtime_lib=tmp_path / "libmolt_runtime.a"
     )
     cache_setup = cli_models._BackendCacheSetup(
+        backend_environment={},
         artifact_contract=resolve_backend_artifact_contract(
             target="native", emit_mode="obj", target_triple=None
         ),
@@ -25288,6 +25299,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         call_order.append("backend_setup")
         runtime_state = cli_models._RuntimeArtifactState(runtime_lib=runtime_lib)
         cache_setup = cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -25436,6 +25448,7 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
     )
 
     prepared, err = cli_backend_compile._prepare_backend_dispatch(
+        backend_environment=CodegenSelection().environment(os.environ, profile="dev"),
         native_runtime_codegen_binding=_native_dispatch_binding_fixture(
             tmp_path / "dispatch-runtime"
         ),
@@ -27854,6 +27867,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="bin", target_triple=None
             ),
@@ -27955,6 +27969,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="bin", target_triple=None
             ),
@@ -28055,6 +28070,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -28156,6 +28172,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         cache_key="cache-key",
         function_cache_key="fn-cache-key",
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="wasm", emit_mode="wasm", target_triple=None
             ),
@@ -28287,6 +28304,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         cache_key="cache-key",
         function_cache_key="fn-cache-key",
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="bin", target_triple=None
             ),
@@ -28421,6 +28439,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         cache_key="cache-key",
         function_cache_key="fn-cache-key",
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -28547,6 +28566,7 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -28656,6 +28676,7 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -28763,6 +28784,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         cache_key=None,
         function_cache_key=None,
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -28849,6 +28871,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         cache_key="cache-key",
         function_cache_key=None,
         cache_setup=cli_models._BackendCacheSetup(
+            backend_environment={},
             artifact_contract=resolve_backend_artifact_contract(
                 target="native", emit_mode="obj", target_triple=None
             ),
@@ -29246,21 +29269,15 @@ def test_resolve_wasm_cargo_profile_is_cached(
     assert info.currsize >= 1
 
 
-def test_backend_codegen_env_inputs_is_cached(
+def test_backend_codegen_env_inputs_follow_current_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    BACKEND_EXECUTION._backend_codegen_env_inputs_cached.cache_clear()
-    for name in BACKEND_EXECUTION._NATIVE_CODEGEN_ENV_KNOBS:
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
-
     first = BACKEND_EXECUTION._backend_codegen_env_inputs(is_wasm=False)
+    monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "backtracking")
     second = BACKEND_EXECUTION._backend_codegen_env_inputs(is_wasm=False)
-
-    info = BACKEND_EXECUTION._backend_codegen_env_inputs_cached.cache_info()
-    assert first == second == {"MOLT_BACKEND_REGALLOC_ALGORITHM": "single_pass"}
-    assert info.hits >= 1
-    assert info.currsize >= 1
+    assert first["MOLT_BACKEND_REGALLOC_ALGORITHM"] == "single_pass"
+    assert second["MOLT_BACKEND_REGALLOC_ALGORITHM"] == "backtracking"
 
 
 def test_backend_codegen_env_digest_tracks_codegen_knobs(
@@ -30870,10 +30887,9 @@ def test_orphaned_backend_daemon_sweep_removes_dead_identity_and_legacy_pid(
     assert cleaned == 2
     assert not identity_path.exists()
     assert not legacy_pid_path.exists()
-    assert not socket_path.exists()
 
 
-def test_orphaned_backend_daemon_sweep_keeps_a_retired_daemons_successor_socket(
+def test_orphaned_backend_daemon_sweep_keeps_a_dead_daemons_successor_socket(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -30881,18 +30897,15 @@ def test_orphaned_backend_daemon_sweep_keeps_a_retired_daemons_successor_socket(
     daemon_root = canonical_root / "backend_daemon"
     daemon_root.mkdir(parents=True)
     backend_bin = tmp_path / "target" / "debug" / "molt-backend"
-    # The retired daemon unlinked its socket; a successor bound the same path.
+    # The daemon retired and exited; a successor bound the same path.
     socket_path = tmp_path / "daemon.sock"
     socket_path.write_text("", encoding="utf-8")
     identity_path = daemon_root / "molt-backend.dev-fast.alpha.deadbeef.identity.json"
-    identity = replace(
-        _test_backend_daemon_identity(
-            4321,
-            socket_path=socket_path,
-            project_root=tmp_path,
-            backend_bin=backend_bin,
-        ),
-        retiring=True,
+    identity = _test_backend_daemon_identity(
+        4321,
+        socket_path=socket_path,
+        project_root=tmp_path,
+        backend_bin=backend_bin,
     )
     BACKEND_EXECUTION._write_backend_daemon_identity(identity_path, identity)
     monkeypatch.setattr(
@@ -31013,7 +31026,9 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     assert cleaned == 5
 
     assert not dead_identity_file.exists()
-    assert not dead_socket.exists()
+    # The sweep cannot tell a crashed daemon's socket from a successor's; the
+    # next start at that path probes it before removing it.
+    assert dead_socket.exists()
     assert not sibling_dead.exists()
     assert not unverified_identity_file.exists()
     assert not malformed.exists()
@@ -33091,6 +33106,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     )
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
+        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         emit_mode="bin",
         artifact_contract=resolve_backend_artifact_contract(
@@ -33101,6 +33117,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     )
 
     setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
+        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         emit_mode="obj",
         artifact_contract=resolve_backend_artifact_contract(
@@ -33151,6 +33168,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         stdlib_like_by_module={"sys": True},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
         ir=tiny_ir,
@@ -33228,6 +33246,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         stdlib_like_by_module={"sys": True},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
+        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir=tiny_ir,
@@ -33409,7 +33428,7 @@ def test_backend_compiler_fingerprint_env_is_concurrent_compile_local(
     def prepare(fingerprint: str) -> set[str]:
         barrier.wait(timeout=5.0)
         observed = {
-            cli_backend_compile._backend_environment_with_compiler_fingerprint(
+            BACKEND_EXECUTION._backend_environment_with_compiler_fingerprint(
                 {ambient_name: "stale", "COMPILE_LANE": fingerprint},
                 fingerprint,
             )[ambient_name]
@@ -33477,6 +33496,9 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
 
     def dispatch(fingerprint: str) -> str:
         prepared, error = cli_backend_compile._prepare_backend_dispatch(
+            backend_environment=CodegenSelection().environment(
+                os.environ, profile="release-size"
+            ),
             native_runtime_codegen_binding=_native_dispatch_binding_fixture(
                 tmp_path / "dispatch-runtime"
             ),

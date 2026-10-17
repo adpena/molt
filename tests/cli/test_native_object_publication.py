@@ -179,6 +179,7 @@ def test_native_object_publication_is_one_admitted_transaction(
 
     monkeypatch.setattr(file_publication, "durable_replace", replace)
     cache_setup = _BackendCacheSetup(
+        backend_environment={},
         artifact_contract=contract,
         cache_enabled=True,
         cache_key="module-key",

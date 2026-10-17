@@ -14,15 +14,26 @@ impl DaemonJobRequest {
     /// once before cache admission and does not open an IR lease.
     pub(crate) fn take_artifact_cache_keys(
         &mut self,
-    ) -> (Option<Arc<DaemonCacheKey>>, Option<Arc<DaemonCacheKey>>) {
+    ) -> std::io::Result<(Option<Arc<DaemonCacheKey>>, Option<Arc<DaemonCacheKey>>)> {
         let module = nonempty_key(std::mem::take(&mut self.cache_key));
         let function = self.function_cache_key.take().and_then(nonempty_key);
         if module.is_none() && function.is_none() {
-            return (None, None);
+            return Ok((None, None));
         }
+        use molt_backend::backend_environment::{
+            BackendCodegenTarget, current_semantic_environment,
+        };
+        let target = match &self.target {
+            #[cfg(feature = "native-backend")]
+            DaemonJobTarget::Native(_) => BackendCodegenTarget::Native,
+            #[cfg(feature = "wasm-backend")]
+            DaemonJobTarget::Wasm(_) => BackendCodegenTarget::Wasm,
+        };
+        let environment = current_semantic_environment(target)?;
         let context = Arc::new(DaemonCacheContext {
             config_namespace: self.config_namespace.take(),
             target: self.target.clone(),
+            environment,
         });
         let same = module == function;
         let module = module.map(|source| {
@@ -36,7 +47,7 @@ impl DaemonJobRequest {
         } else {
             function.map(|source| Arc::new(DaemonCacheKey { context, source }))
         };
-        (module, function)
+        Ok((module, function))
     }
 
     pub(crate) fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
@@ -164,10 +175,13 @@ mod tests {
                 output_kind: NativeArtifactKind::Object,
             })
         );
-        let object_key = job.take_artifact_cache_keys().0.unwrap();
+        let object_key = job.take_artifact_cache_keys().unwrap().0.unwrap();
         value["native_output_kind"] = "archive".into();
         let mut job = DaemonJobRequest::from_json_value(&value, "job").expect("archive job");
-        assert_ne!(object_key, job.take_artifact_cache_keys().0.unwrap());
+        assert_ne!(
+            object_key,
+            job.take_artifact_cache_keys().unwrap().0.unwrap()
+        );
         value["is_wasm"] = true.into();
         assert!(DaemonJobRequest::from_json_value(&value, "job").is_err());
         value["is_wasm"] = false.into();

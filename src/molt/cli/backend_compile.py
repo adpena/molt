@@ -33,6 +33,8 @@ from molt.cli.backend_diagnostics import _env_requests_backend_diagnostics
 from molt.cli.backend_execution import (
     _backend_bin_path,
     _backend_daemon_config_digest,
+    _backend_request_environment,
+    _backend_environment_with_compiler_fingerprint,
     _backend_daemon_identity_path,
     _backend_daemon_log_path,
     _backend_daemon_retryable_error,
@@ -47,7 +49,6 @@ from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
-    ENTRY_OVERRIDE_ENV,
 )
 from molt.cli.installed_runtime_contract import InstalledRuntimeError
 from molt.cli.models import (
@@ -94,20 +95,6 @@ from molt.cli.wasm_codegen_layout import (
 )
 from molt.file_locks import _shared_cache_lock
 from molt.target_python import TargetPythonVersion
-
-_BACKEND_COMPILER_FINGERPRINT_ENV = "MOLT_BACKEND_COMPILER_FINGERPRINT"
-
-
-def _backend_environment_with_compiler_fingerprint(
-    base_env: Mapping[str, str],
-    fingerprint: str | None,
-) -> dict[str, str]:
-    backend_env = dict(base_env)
-    if fingerprint:
-        backend_env[_BACKEND_COMPILER_FINGERPRINT_ENV] = fingerprint
-    else:
-        backend_env.pop(_BACKEND_COMPILER_FINGERPRINT_ENV, None)
-    return backend_env
 
 
 def _record_pipeline_stage_ms(
@@ -205,6 +192,7 @@ def _prepare_backend_setup(
     profile: BuildProfile,
     backend_cargo_profile: str,
     linked: bool,
+    split_runtime: bool,
     project_root: Path,
     cache_dir: str | None,
     output_artifact: Path,
@@ -301,6 +289,7 @@ def _prepare_backend_setup(
     if not backend_bin.exists():
         return None, _fail("Backend binary missing", json_output, command="build")
     runtime_wasm_codegen_digest = ""
+    wasm_layout = None
     if is_wasm:
         # Runtime layout is an input to every WASM cache tier, including cache
         # hits that never dispatch the backend. Bind before admitting artifacts.
@@ -329,6 +318,12 @@ def _prepare_backend_setup(
                 command="build",
             )
         runtime_wasm_codegen_digest = binding.semantic_digest
+        try:
+            wasm_layout = prepare_wasm_codegen_layout(
+                binding, linked=linked, split_runtime=split_runtime
+            )
+        except (OSError, ValueError) as exc:
+            return None, _fail(str(exc), json_output, command="build")
     cache_setup_start = time.perf_counter()
     try:
         cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
@@ -343,6 +338,7 @@ def _prepare_backend_setup(
             emit_mode=emit_mode,
             is_wasm=is_wasm,
             linked=linked,
+            wasm_layout=wasm_layout,
             project_root=project_root,
             cache_dir=cache_dir,
             output_artifact=output_artifact,
@@ -541,6 +537,7 @@ def _prepare_backend_dispatch(
     is_luau_transpile: bool = False,
     is_wasm: bool,
     wasm_layout: WasmCodegenLayout | None,
+    backend_environment: Mapping[str, str],
     deterministic: bool,
     profile: BuildProfile,
     cargo_timeout: float | None,
@@ -567,28 +564,20 @@ def _prepare_backend_dispatch(
             raise ValueError(
                 "native backend dispatch requires an admitted runtime binding"
             )
-        # The backend process gets its own mapping: the caller's environment
-        # plus this build's codegen selection. os.environ is never written.
         backend_env = _backend_environment_with_compiler_fingerprint(
             native_runtime_codegen_environment(
-                codegen.environment(os.environ), native_runtime_codegen_binding
+                backend_environment, native_runtime_codegen_binding
             ),
             backend_compiler_fingerprint,
         )
     except (OSError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")
-    if is_wasm:
-        if wasm_layout is None:
-            return None, _fail(
-                "WASM backend dispatch requires a bound runtime layout",
-                json_output,
-                command="build",
-            )
-        backend_env.pop("MOLT_WASM_DATA_BASE", None)
-        backend_env.pop("MOLT_WASM_TABLE_BASE", None)
-        backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", None)
-        backend_env.pop("MOLT_WASM_RELOCATABLE", None)
-        backend_env.update(wasm_layout.backend_environment())
+    if is_wasm and wasm_layout is None:
+        return None, _fail(
+            "WASM backend dispatch requires a bound runtime layout",
+            json_output,
+            command="build",
+        )
     # Single source of truth (shared with setup, the backend prewarm, and the
     # cache-key binary-identity resolver): the 'llvm' feature is folded in by
     # the helper for the llvm codegen backend so the backend binary is compiled
@@ -602,10 +591,6 @@ def _prepare_backend_dispatch(
     )
     if deterministic or profile == "release":
         backend_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
-    # Auto-set Cranelift optimization level based on profile for size-critical
-    # builds.  speed_and_size balances code quality with binary density.
-    if profile in ("release-size", "wasm-release"):
-        backend_env.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
     reloc_requested = is_wasm and wasm_layout is not None and wasm_layout.relocatable
 
     if backend_bin is None:
@@ -726,19 +711,16 @@ def _execute_backend_compile(
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
     target_triple = cache_setup.artifact_contract.target_triple
-    # A daemon resets its request controls from the backend environment
-    # catalog for every request, so each request carries this build's
-    # selection; the daemon's startup environment cannot carry it.
-    daemon_request_environment = codegen.environment(os.environ)
-    # The requested stdlib output belongs to this build. Cache publication is a
-    # separate optional destination, transported per request, never daemon state.
-    daemon_request_environment.pop("MOLT_STDLIB_CACHE_ENTRY", None)
-    backend_env = dict(backend_env)
-    backend_env.pop("MOLT_STDLIB_CACHE_ENTRY", None)
-    if cache_setup.stdlib_cache_entry_path is not None:
-        entry = str(cache_setup.stdlib_cache_entry_path)
-        daemon_request_environment["MOLT_STDLIB_CACHE_ENTRY"] = entry
-        backend_env["MOLT_STDLIB_CACHE_ENTRY"] = entry
+    # Both daemon and one-shot dispatch consume the same effective operation.
+    backend_env = _backend_request_environment(
+        backend_env,
+        entry_module=entry_module if cache_setup.artifact_contract.is_native else None,
+        stdlib_object_path=cache_setup.stdlib_object_path,
+        stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
+        stdlib_object_manifest=cache_setup.stdlib_object_manifest,
+        stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
+        cache_entry=cache_setup.stdlib_cache_entry_path,
+    )
     try:
         if (
             cache_setup.artifact_contract.is_native
@@ -898,7 +880,7 @@ def _execute_backend_compile(
                 stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 timeout=None,
                 daemon_identity=daemon_identity,
-                request_environment=daemon_request_environment,
+                request_environment=backend_env,
             )
             backend_compiled = daemon_compile.ok
             backend_output_written = daemon_compile.output_written
@@ -967,7 +949,7 @@ def _execute_backend_compile(
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                         stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                         timeout=None,
-                        request_environment=daemon_request_environment,
+                        request_environment=backend_env,
                         daemon_identity=(
                             _read_backend_daemon_identity(daemon_identity_path)
                             if daemon_identity_path is not None
@@ -1009,46 +991,14 @@ def _execute_backend_compile(
         if not backend_compiled:
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
-            _is_transpile = is_rust_transpile or is_luau_transpile
-            if not is_wasm and not _is_transpile and backend_env is not None:
-                # Always scrub the partition contract before setting the
-                # current build's values so stale ambient state cannot leak
-                # into a later native compile.
-                backend_env.pop("MOLT_STDLIB_OBJ", None)
-                backend_env.pop("MOLT_STDLIB_CACHE_KEY", None)
-                backend_env.pop("MOLT_STDLIB_CACHE_MANIFEST", None)
-                backend_env.pop("MOLT_STDLIB_MODULE_SYMBOLS", None)
-            stdlib_obj_path = cache_setup.stdlib_object_path
-            if not is_wasm and not _is_transpile and stdlib_obj_path is not None:
-                stdlib_obj_path.parent.mkdir(parents=True, exist_ok=True)
-                if backend_env is not None:
-                    backend_env["MOLT_STDLIB_OBJ"] = str(stdlib_obj_path)
-                    if cache_setup.stdlib_object_cache_key:
-                        backend_env["MOLT_STDLIB_CACHE_KEY"] = (
-                            cache_setup.stdlib_object_cache_key
-                        )
-                    else:
-                        backend_env.pop("MOLT_STDLIB_CACHE_KEY", None)
-                    if cache_setup.stdlib_object_manifest:
-                        backend_env["MOLT_STDLIB_CACHE_MANIFEST"] = (
-                            cache_setup.stdlib_object_manifest
-                        )
-                    else:
-                        backend_env.pop("MOLT_STDLIB_CACHE_MANIFEST", None)
-                    if cache_setup.stdlib_module_symbols_json:
-                        backend_env["MOLT_STDLIB_MODULE_SYMBOLS"] = (
-                            cache_setup.stdlib_module_symbols_json
-                        )
-                    else:
-                        backend_env.pop("MOLT_STDLIB_MODULE_SYMBOLS", None)
-            if not is_wasm and not _is_transpile and backend_env is not None:
-                backend_env[ENTRY_OVERRIDE_ENV] = entry_module
-                # Limit rayon threads to a fraction of available cores.
-                # The batched compilation pipeline may run multiple backend
-                # processes; each process's thread pool must share the CPU
-                # fairly. Default: half of available cores, minimum 2.
-                _default_threads = str(max(2, (os.cpu_count() or 4) // 2))
-                backend_env.setdefault("RAYON_NUM_THREADS", _default_threads)
+            if cache_setup.artifact_contract.is_native:
+                if cache_setup.stdlib_object_path is not None:
+                    cache_setup.stdlib_object_path.parent.mkdir(
+                        parents=True, exist_ok=True
+                    )
+                backend_env.setdefault(
+                    "RAYON_NUM_THREADS", str(max(2, (os.cpu_count() or 4) // 2))
+                )
             cmd = _factgraph.backend_command_prefix(
                 backend_bin=backend_bin,
                 is_luau_transpile=is_luau_transpile,
@@ -1220,16 +1170,21 @@ def _prepare_backend_compile(
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
     target_triple = cache_setup.artifact_contract.target_triple
-    wasm_layout = None
+    wasm_layout = cache_setup.wasm_layout
     if is_wasm:
         try:
-            wasm_layout = prepare_wasm_codegen_layout(
-                runtime_state.runtime_wasm_codegen_binding,
-                linked=linked,
-                split_runtime=split_runtime,
-            )
+            binding = runtime_state.runtime_wasm_codegen_binding
+            if binding is None or wasm_layout is None:
+                raise ValueError(
+                    "WASM compilation requires its cache-bound runtime layout"
+                )
+            binding.verify()
         except (OSError, ValueError) as exc:
-            return None, _fail(str(exc), json_output, command="build")
+            return None, _fail(
+                f"The bound runtime WASM generation changed before code generation: {exc}",
+                json_output,
+                command="build",
+            )
 
     if (verbose or cache_report) and not json_output:
         if not cache_enabled:
@@ -1283,6 +1238,7 @@ def _prepare_backend_compile(
                     is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
                     wasm_layout=wasm_layout,
+                    backend_environment=cache_setup.backend_environment,
                     deterministic=deterministic,
                     profile=profile,
                     cargo_timeout=cargo_timeout,

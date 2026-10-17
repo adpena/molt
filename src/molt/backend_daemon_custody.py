@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 from dataclasses import dataclass
 import json
 import hashlib
@@ -38,9 +37,6 @@ class BackendDaemonIdentity:
     started_at_ns: int | None = None
     backend_sha256: str | None = None
     suite_lease: str | None = None
-    # Retirement was requested: the daemon has unlinked its socket and exits
-    # once its accepted connections finish, so no pruner may stop it.
-    retiring: bool = False
 
 
 @dataclass(frozen=True)
@@ -65,7 +61,6 @@ def backend_daemon_identity_payload(
         "started_at_ns": identity.started_at_ns,
         "backend_sha256": identity.backend_sha256,
         "suite_lease": identity.suite_lease,
-        "retiring": identity.retiring,
     }
 
 
@@ -129,7 +124,6 @@ def read_backend_daemon_identity(identity_path: Path) -> BackendDaemonIdentity |
         suite_lease=payload.get("suite_lease")
         if isinstance(payload.get("suite_lease"), str)
         else None,
-        retiring=payload.get("retiring") is True,
     )
 
 
@@ -150,13 +144,6 @@ def write_backend_daemon_identity(
         with contextlib.suppress(OSError):
             if tmp_path.exists():
                 tmp_path.unlink()
-
-
-def mark_backend_daemon_retiring(record: BackendDaemonIdentityRecord) -> None:
-    """Record that the daemon is draining before asking it to retire."""
-    write_backend_daemon_identity(
-        record.path, dataclasses.replace(record.identity, retiring=True)
-    )
 
 
 def remove_backend_daemon_identity(identity_path: Path) -> None:

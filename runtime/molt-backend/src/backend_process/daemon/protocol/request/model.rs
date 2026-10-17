@@ -48,6 +48,8 @@ pub(crate) struct DaemonRequest {
 pub(super) struct DaemonCacheContext {
     pub(super) config_namespace: Option<String>,
     pub(super) target: DaemonJobTarget,
+    pub(super) environment:
+        std::sync::Arc<molt_backend::backend_environment::SemanticBackendEnvironment>,
 }
 
 /// A cache/flight identity, not a serialized wire key or consumed-IR receipt.

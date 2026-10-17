@@ -123,6 +123,7 @@ def test_effective_cpu_features_separate_all_outer_native_cache_keys(
 
     def setup():
         return backend_cache_setup._prepare_backend_cache_setup(
+            wasm_layout=None,
             backend_bin=backend,
             cache_enabled=True,
             ir={"functions": [], "module": "__main__", "ops": []},

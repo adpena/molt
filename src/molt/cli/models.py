@@ -46,6 +46,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.cli.wasm_codegen_layout import WasmCodegenLayout
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.frontend.lowering.exception_lowering import SyntaxErrorName
     from molt.frontend import ClassId, ClassInfo
@@ -985,6 +986,7 @@ _SharedStdlibCacheValidationToken = tuple[str, tuple[StableRegularFileIdentity, 
 
 @dataclass(frozen=True)
 class _BackendCacheSetup:
+    backend_environment: Mapping[str, str]
     artifact_contract: BackendArtifactContract
     cache_enabled: bool
     cache_key: str | None
@@ -1001,6 +1003,7 @@ class _BackendCacheSetup:
     stdlib_module_symbols: frozenset[str] = field(default_factory=frozenset)
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
     stdlib_cache_entry_path: Path | None = None
+    wasm_layout: WasmCodegenLayout | None = None
 
 
 @dataclass(frozen=True)

@@ -33,7 +33,9 @@ fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]
         "native_output_kind": if kind == "wasm" { None } else { Some(kind) },
     });
     let mut job = DaemonJobRequest::from_json_value(&value, "fixture").unwrap();
-    let (key, _) = job.take_artifact_cache_keys();
+    let (key, _) = job
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
     cache.insert(key.expect("nonempty fixture key"), Arc::from(bytes));
 }
 
@@ -68,6 +70,11 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
             for warm in [false, true] {
                 let cache = DaemonCache::new(None);
                 if warm {
+                    // The warm entry belongs to an earlier valid request. An
+                    // invalid process setting cannot be used to construct it.
+                    let _scope = molt_ir::backend_environment::enter(Arc::new(
+                        molt_ir::backend_environment::BackendEnvironment::default(),
+                    ));
                     seed_daemon_cache(&cache, kind, "same", b"cached");
                 }
                 let output = root.join(format!("{kind}-{probe}-{warm}"));
@@ -326,10 +333,138 @@ fn daemon_compiled_wasm_cache_isolates_every_target_option_and_lookup_tier() {
     );
 }
 
+/// The oracle reads the emitted import, independently of cache key helpers.
+#[cfg(feature = "wasm-backend")]
+#[test]
+fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
+    use wasmparser::{Parser, Payload, TypeRef};
+    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
+    let root = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-env-cache")
+        .expect("unique fixture path");
+    std::fs::create_dir(&root).expect("create fixture");
+    let missing_ir = root.join("absent-ir.json");
+    let ir = serde_json::json!({
+        "functions": [{"return_abi":"void", "name":"molt_main", "params":[],
+            "ops":[{"kind":"ret_void"}]}], "profile":null
+    });
+    let memory_minimum = |bytes: &[u8]| {
+        let mut minimum = None;
+        for payload in Parser::new(0).parse_all(bytes) {
+            if let Payload::ImportSection(imports) = payload.expect("valid emitted WASM") {
+                for import in imports.into_imports() {
+                    let import = import.expect("valid memory import");
+                    if let TypeRef::Memory(memory) = import.ty {
+                        assert!(
+                            minimum.replace(memory.initial).is_none(),
+                            "one linear memory"
+                        );
+                    }
+                }
+            }
+        }
+        minimum.expect("emitted memory import")
+    };
+    for tier in ["module", "function"] {
+        let cache = DaemonCache::new(None);
+        let run = |request: &serde_json::Value| {
+            let parsed = DaemonRequest::from_json_bytes(&serde_json::to_vec(request).unwrap())
+                .expect("admit actual request");
+            let _scope = molt_ir::backend_environment::enter(parsed.environment);
+            let mut job = parsed.jobs.unwrap().pop().unwrap();
+            // Server dispatch carries the caller assertion into each job.
+            job.config_namespace = parsed.config_digest;
+            compile_single_job(job, &cache)
+        };
+        let original = root.join(format!("{tier}-original.wasm"));
+        let mut request = serde_json::json!({
+            "version":BACKEND_DAEMON_PROTOCOL_VERSION, "config_digest":"caller-keeps-this-fixed",
+            "env":{"MOLT_WASM_MIN_PAGES":"1024"},
+            "jobs":[{"id":"same", "is_wasm":true, "output":original.to_str().unwrap(),
+                "cache_key":if tier == "module" {"same"} else {""},
+                "function_cache_key":if tier == "function" {"same"} else {""}, "ir":ir}]
+        });
+        let built = run(&request);
+        assert!(
+            built.ok && !built.cached && built.output_written,
+            "{built:?}"
+        );
+        let expected = std::fs::read(original).unwrap();
+        assert_eq!(memory_minimum(&expected), 1024);
+        request["jobs"][0].as_object_mut().unwrap().remove("ir");
+        request["jobs"][0]["ir_path"] = missing_ir.to_str().unwrap().into();
+        request["jobs"][0]["probe_cache_only"] = true.into();
+
+        let changed_output = root.join(format!("{tier}-changed.wasm"));
+        request["jobs"][0]["output"] = changed_output.to_str().unwrap().into();
+        request["env"]["MOLT_WASM_MIN_PAGES"] = "2048".into();
+        let miss = run(&request);
+        assert!(
+            miss.ok && miss.needs_ir && !miss.cached && !miss.output_written,
+            "{miss:?}"
+        );
+        assert!(!changed_output.exists());
+        // Compile the changed semantics and inspect its literal binary effect.
+        request["jobs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ir_path");
+        request["jobs"][0]["probe_cache_only"] = false.into();
+        request["jobs"][0]["ir"] = ir.clone();
+        let changed = run(&request);
+        assert!(
+            changed.ok && !changed.cached && changed.output_written,
+            "{changed:?}"
+        );
+        assert_eq!(
+            memory_minimum(&std::fs::read(changed_output).unwrap()),
+            2048
+        );
+
+        request["jobs"][0].as_object_mut().unwrap().remove("ir");
+        request["jobs"][0]["ir_path"] = missing_ir.to_str().unwrap().into();
+        request["jobs"][0]["probe_cache_only"] = true.into();
+        request["env"] = serde_json::json!({"MOLT_WASM_MIN_PAGES":"1024"});
+        for (case, additions) in [
+            ("same", serde_json::json!({})),
+            (
+                "observation",
+                serde_json::json!({"MOLT_BACKEND_TIMING":"1", "MOLT_DEBUG_ARTIFACT_DIR":root.join("relocated-debug").to_str().unwrap()}),
+            ),
+            (
+                "resource",
+                serde_json::json!({"RAYON_NUM_THREADS":"7", "MOLT_BACKEND_MEMORY_AVAILABLE_GB":"4"}),
+            ),
+            (
+                "transport",
+                serde_json::json!({"MOLT_RUNTIME_CALLABLE_SYMBOLS":"relocated-input", "MOLT_STDLIB_CACHE_ENTRY":"relocated-cache"}),
+            ),
+        ] {
+            let mut replay = request.clone();
+            replay["env"]
+                .as_object_mut()
+                .unwrap()
+                .extend(additions.as_object().unwrap().clone());
+            let output = root.join(format!("{tier}-{case}.wasm"));
+            replay["jobs"][0]["output"] = output.to_str().unwrap().into();
+            let hit = run(&replay);
+            assert!(
+                hit.ok && hit.cached && !hit.needs_ir && hit.output_written,
+                "{tier}/{case}: {hit:?}"
+            );
+            assert_eq!(std::fs::read(output).unwrap(), expected);
+        }
+        assert_eq!(cache.usage().0, 2, "only real producers insert");
+        assert!(!missing_ir.exists(), "probes never opened their absent IR");
+    }
+    std::fs::remove_dir_all(root).expect("remove fixture");
+}
+
 #[test]
 fn daemon_cache_get_bytes_updates_lru_without_cloning() {
     let mut cache = DaemonLru::new(None);
-    let (key, _) = cache_fixture_job(served_target(), "module").take_artifact_cache_keys();
+    let (key, _) = cache_fixture_job(served_target(), "module")
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
     let key = key.unwrap();
     cache.insert(Arc::clone(&key), Arc::from(vec![1, 2, 3, 4]));
 
@@ -345,9 +480,12 @@ fn daemon_cache_get_bytes_updates_lru_without_cloning() {
 fn daemon_cache_can_share_bytes_across_keys() {
     let mut cache = DaemonLru::new(None);
     let shared = Arc::<[u8]>::from(vec![9, 8, 7, 6]);
-    let (module_key, _) = cache_fixture_job(served_target(), "module").take_artifact_cache_keys();
-    let (function_key, _) =
-        cache_fixture_job(served_target(), "function").take_artifact_cache_keys();
+    let (module_key, _) = cache_fixture_job(served_target(), "module")
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
+    let (function_key, _) = cache_fixture_job(served_target(), "function")
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
     let module_key = module_key.unwrap();
     let function_key = function_key.unwrap();
     cache.insert(Arc::clone(&module_key), Arc::clone(&shared));
@@ -361,9 +499,15 @@ fn daemon_cache_can_share_bytes_across_keys() {
 #[test]
 fn daemon_hit_only_cache_bounds_order_memory_and_preserves_eviction() {
     let mut cache = DaemonLru::new(Some(8));
-    let (first, _) = cache_fixture_job(served_target(), "first").take_artifact_cache_keys();
-    let (second, _) = cache_fixture_job(served_target(), "second").take_artifact_cache_keys();
-    let (third, _) = cache_fixture_job(served_target(), "third").take_artifact_cache_keys();
+    let (first, _) = cache_fixture_job(served_target(), "first")
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
+    let (second, _) = cache_fixture_job(served_target(), "second")
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
+    let (third, _) = cache_fixture_job(served_target(), "third")
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
     let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
     let payload = Arc::<[u8]>::from([1, 2, 3, 4].as_slice());
     cache.insert(Arc::clone(&first), Arc::clone(&payload));
@@ -444,7 +588,9 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 fn daemon_probe_cache_only_hits_without_reading_ir() {
     let _env_guard = TestEnvGuard::clear(SHARED_STDLIB_CACHE_ENV_KEYS);
     let cache = DaemonCache::new(None);
-    let (key, _) = cache_fixture_job(served_target(), "module").take_artifact_cache_keys();
+    let (key, _) = cache_fixture_job(served_target(), "module")
+        .take_artifact_cache_keys()
+        .expect("fixture cache identity");
     cache.insert(key.unwrap(), Arc::from(vec![1_u8, 2, 3]));
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

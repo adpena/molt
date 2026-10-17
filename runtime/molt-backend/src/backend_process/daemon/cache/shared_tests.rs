@@ -10,7 +10,10 @@ fn key(source: &str) -> Arc<DaemonCacheKey> {
         "job",
     )
     .expect("job");
-    job.take_artifact_cache_keys().0.expect("nonempty key")
+    job.take_artifact_cache_keys()
+        .expect("cache identity")
+        .0
+        .expect("nonempty key")
 }
 
 /// Blocks until `count` callers wait on `flight`.
@@ -91,7 +94,11 @@ fn same_source_different_target_has_independent_flight_state() {
         "job",
     )
     .expect("changed target");
-    let changed = changed.take_artifact_cache_keys().0.unwrap();
+    let changed = changed
+        .take_artifact_cache_keys()
+        .expect("cache identity")
+        .0
+        .unwrap();
     let Flight::Leader(first_guard) = cache.begin(&first) else {
         panic!("first target must lead");
     };
@@ -104,5 +111,39 @@ fn same_source_different_target_has_independent_flight_state() {
     drop(first_guard);
     assert!(lock(&cache.in_flight).contains_key(changed.as_ref()));
     drop(changed_guard);
+    assert!(lock(&cache.in_flight).is_empty());
+}
+
+#[test]
+fn same_source_different_actual_semantics_has_independent_flight_state() {
+    use molt_backend::backend_environment::{BackendEnvironment, enter};
+    let scoped_key = |value: &str| {
+        let environment = BackendEnvironment::from_request(
+            serde_json::json!({"MOLT_DISABLE_RC_COALESCE":value})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        let _scope = enter(Arc::new(environment));
+        key("same")
+    };
+    let cache = DaemonCache::new(None);
+    let first = scoped_key("");
+    let second = scoped_key("1");
+    let Flight::Leader(first_guard) = cache.begin(&first) else {
+        panic!("first semantic input must lead");
+    };
+    // A lookup assertion before begin prevents a broken key from deadlocking
+    // this test while the first leader is deliberately retained.
+    assert!(!lock(&cache.in_flight).contains_key(second.as_ref()));
+    let Flight::Leader(second_guard) = cache.begin(&second) else {
+        panic!("different actual semantics must lead independently");
+    };
+    assert_eq!(lock(&cache.in_flight).len(), 2);
+    cache.insert(Arc::clone(&first), Arc::from(b"first".as_slice()));
+    assert!(cache.get_bytes(&second).is_none());
+    drop(first_guard);
+    assert!(lock(&cache.in_flight).contains_key(second.as_ref()));
+    drop(second_guard);
     assert!(lock(&cache.in_flight).is_empty());
 }
