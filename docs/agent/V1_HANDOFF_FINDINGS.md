@@ -70,7 +70,11 @@ expected linear work, and failed as well as successful gates contribute to the
 existing timing summary. These are development costs, with no emitted-program
 work. Targeted selection and actual selected-interpreter/failure controls pass
 on macOS arm64; Windows argument dispatch has modeled boundary controls and
-still requires native qualification under V1-07.
+still requires native qualification under V1-07. Local Clippy selection reuses
+an equivalent declared host cell, preserving its identity and budget instead of
+applying the Linux deadline on macOS. All execution fields must agree; only
+scheduling coordinates may differ. Existing unmatched feature commands retain
+their declared contract.
 
 The V1-01 compiler input migration now has one complete-frame contract: a
 closed format selector, same-reader binary EOF checks, shared NDJSON envelope
