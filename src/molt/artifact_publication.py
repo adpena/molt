@@ -557,8 +557,35 @@ def publication_receipt_path(anchor: Path) -> Path:
     anchor = _canonical_leaf(
         anchor, role="publication family anchor", create_parent=True
     )
-    digest = hashlib.sha256(os.fsencode(os.path.normcase(anchor.name))).hexdigest()
-    return anchor.parent / f".molt-artifact-receipt-{digest}.json"
+    return anchor.parent / _publication_receipt_name(anchor.name)
+
+
+def _publication_receipt_name(anchor_name: str) -> str:
+    digest = hashlib.sha256(os.fsencode(os.path.normcase(anchor_name))).hexdigest()
+    return f".molt-artifact-receipt-{digest}.json"
+
+
+def is_publication_family_member(path: Path, final: Path) -> bool:
+    """Whether ``path`` is ``final`` or custody that publishing it keeps beside it.
+
+    The receipt, the directory's lock and journals, and every stage issued for
+    ``final`` or its receipt are products of the publication, never inputs of
+    the artifact. Reads only names; it touches no file.
+    """
+    path = Path(path)
+    final = Path(final)
+    if path.parent != final.parent:
+        return False
+    receipt = final.parent / _publication_receipt_name(final.name)
+    name = path.name.casefold()
+    return (
+        path.name in {final.name, receipt.name}
+        or name == _PUBLICATION_LOCK_NAME
+        or _PUBLICATION_JOURNAL_NAME_RE.fullmatch(name) is not None
+        or _PUBLICATION_JOURNAL_STAGE_NAME_RE.fullmatch(name) is not None
+        or is_owned_staged_file_path(path, final)
+        or is_owned_staged_file_path(path, receipt)
+    )
 
 
 @contextmanager

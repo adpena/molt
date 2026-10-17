@@ -190,34 +190,36 @@ def _resolve_output_roots(
         bin_root = _default_molt_bin()
         output_root = project_root / "dist"
 
-    def _repair_broken_symlink_parents(path: Path) -> bool:
-        repaired = False
-        chain = list(path.parents)
-        chain.reverse()
-        for parent in chain:
-            try:
-                if parent.is_symlink() and not parent.exists():
-                    parent.unlink()
-                    parent.mkdir(parents=True, exist_ok=True)
-                    repaired = True
-            except OSError:
-                continue
-        return repaired
-
-    def _mkdir_resilient(path: Path) -> None:
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-        except (FileExistsError, NotADirectoryError):
-            if _repair_broken_symlink_parents(path):
-                path.mkdir(parents=True, exist_ok=True)
-            else:
-                raise
-
+    # The default binary and output roots are created only when a default
+    # destination is chosen (`_resolve_output_path`): a build that names its
+    # output leaves no empty `dist/` or binary directory behind.
     _mkdir_resilient(artifacts_root)
-    _mkdir_resilient(bin_root)
-    if output_root != bin_root:
-        _mkdir_resilient(output_root)
     return artifacts_root, bin_root, output_root
+
+
+def _repair_broken_symlink_parents(path: Path) -> bool:
+    repaired = False
+    chain = list(path.parents)
+    chain.reverse()
+    for parent in chain:
+        try:
+            if parent.is_symlink() and not parent.exists():
+                parent.unlink()
+                parent.mkdir(parents=True, exist_ok=True)
+                repaired = True
+        except OSError:
+            continue
+    return repaired
+
+
+def _mkdir_resilient(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        if _repair_broken_symlink_parents(path):
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            raise
 
 
 def _resolve_output_path(
@@ -228,6 +230,7 @@ def _resolve_output_path(
     project_root: Path,
 ) -> Path:
     if not output:
+        _mkdir_resilient(default.parent)
         return default
     path = Path(output).expanduser()
     if not path.is_absolute():

@@ -300,6 +300,29 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
 
     assert output_root == tmp_path / "dist"
     assert bin_root == DEFAULT_PATHS._default_molt_bin()
+    # A default root exists only once a default destination is chosen: a build
+    # that names its output leaves no empty dist/ behind (HF-286).
+    assert not output_root.exists()
+
+
+def test_resolve_output_path_creates_only_a_chosen_default_parent(
+    tmp_path: Path,
+) -> None:
+    default = tmp_path / "dist" / "app"
+    named = cli_build_output_layout._resolve_output_path(
+        str(tmp_path / "elsewhere" / "app"),
+        default,
+        out_dir=None,
+        project_root=tmp_path,
+    )
+    assert named == tmp_path / "elsewhere" / "app"
+    assert not default.parent.exists()
+
+    chosen = cli_build_output_layout._resolve_output_path(
+        None, default, out_dir=None, project_root=tmp_path
+    )
+    assert chosen == default
+    assert default.parent.is_dir()
 
 
 def test_resolve_build_output_layout_defaults_wasm_outputs_to_dist(
@@ -651,6 +674,52 @@ def test_cli_build_json_binary_executes_for_native_profiles(
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == "ok"
+
+
+def test_cli_rebuild_without_changes_finishes_from_its_record(tmp_path: Path) -> None:
+    # HF-250: an unchanged rebuild stats the inputs its record lists and stops.
+    # Guarded children, temporary files, artifact-root checks and publication
+    # once changed directories during every build, and no record was written.
+    # A first build may still rebuild an input such as the backend binary,
+    # which refuses its record; the next one records, and the third hits.
+    from molt.file_hashing import DIGEST_RACY_WINDOW_NS
+
+    source = tmp_path / "project" / "hello.py"
+    out_dir = tmp_path / "out"
+    source.parent.mkdir()
+    out_dir.mkdir()
+    source.write_text("print('ok')\n", encoding="utf-8")
+    # An input written within the racy window of the build's start cannot
+    # prove what the build read.
+    time.sleep(DIGEST_RACY_WINDOW_NS / 1e9 + 0.1)
+    output = out_dir / "hello"
+    command = [
+        "build",
+        "--build-profile",
+        "dev",
+        str(source),
+        "--out-dir",
+        str(out_dir),
+        "--output",
+        str(output),
+        "--verbose",
+    ]
+    builds = [_run_cli(command) for _ in range(3)]
+    for build in builds:
+        assert build.returncode == 0, build.stderr
+    assert "(inputs unchanged)" in builds[2].stderr, "\n---\n".join(
+        build.stderr for build in builds
+    )
+
+    run = run_cli_test_process(
+        [str(output)],
+        cwd=ROOT,
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=_cli_timeout(),
+    )
+    assert run.returncode == 0 and run.stdout == "ok\n", run.stdout + run.stderr
 
 
 def test_cli_compare_json(tmp_path: Path) -> None:

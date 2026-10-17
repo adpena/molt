@@ -70,7 +70,7 @@ def test_each_new_source_marker_invalidates_ancestor_project_selection(
     missing.unlink()
     entry = nested / "app.py"
     entry.write_text("pass\n", encoding="utf-8")
-    with build_record.recording() as ledger:
+    with build_record.recording(tmp_path / "transient") as ledger:
         assert project_roots._find_project_root(entry) == outer
     assert ledger.probes[str(missing)] is None
     output = tmp_path / "app"

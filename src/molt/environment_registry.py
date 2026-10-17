@@ -56,6 +56,8 @@ class EnvironmentVariable:
     values: tuple[str, ...]
     owner: str
     summary: str
+    # Supervises a build (custody, budgets, timeouts); never changes outputs.
+    output_neutral: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +77,7 @@ class EnvironmentFamily:
     values: tuple[str, ...]
     owner: str
     summary: str
+    output_neutral: bool = False
 
     @property
     def display_name(self) -> str:
@@ -206,6 +209,15 @@ class EnvironmentRegistry:
                 )
         return None
 
+    def is_output_neutral(self, name: str) -> bool:
+        """True when ``name`` only supervises a build and never shapes its outputs."""
+
+        variable = self.variable_by_name.get(name)
+        if variable is not None:
+            return variable.output_neutral
+        match = self.lookup_family(name)
+        return match is not None and match.family.output_neutral
+
     def is_registered(self, name: str) -> bool:
         return (
             name in self.variable_by_name
@@ -238,6 +250,13 @@ def _str(row: Mapping[str, object], key: str, *, context: object) -> str:
     return value
 
 
+def _bool(row: Mapping[str, object], key: str, *, context: object) -> bool:
+    value = row.get(key)
+    if not isinstance(value, bool):
+        raise EnvironmentRegistryError(f"{context}: field {key!r} must be a bool")
+    return value
+
+
 def registry_from_payload(
     payload: Mapping[str, object], *, validate: bool = True
 ) -> EnvironmentRegistry:
@@ -259,6 +278,9 @@ def registry_from_payload(
             values=_tuple_of_str(row.get("values", []), context=str(row.get("name"))),
             owner=_str(row, "owner", context=row.get("name", "variable")),
             summary=_str(row, "summary", context=row.get("name", "variable")),
+            output_neutral=_bool(
+                row, "output_neutral", context=row.get("name", "variable")
+            ),
         )
         for row in _rows(payload, "variables")
     )
@@ -280,6 +302,9 @@ def registry_from_payload(
             values=_tuple_of_str(row.get("values", []), context=str(row.get("suffix"))),
             owner=_str(row, "owner", context=row.get("suffix", "family")),
             summary=_str(row, "summary", context=row.get("suffix", "family")),
+            output_neutral=_bool(
+                row, "output_neutral", context=row.get("suffix", "family")
+            ),
         )
         for row in _rows(payload, "families")
     )
@@ -350,6 +375,7 @@ def _trusted_registry(payload: Mapping[str, Any]) -> EnvironmentRegistry:
                 tuple(r["values"]),
                 r["owner"],
                 r["summary"],
+                r["output_neutral"],
             )
             for r in rows
         ),
@@ -367,6 +393,7 @@ def _trusted_registry(payload: Mapping[str, Any]) -> EnvironmentRegistry:
                 tuple(r["values"]),
                 r["owner"],
                 r["summary"],
+                r["output_neutral"],
             )
             for r in payload["families"]
         ),

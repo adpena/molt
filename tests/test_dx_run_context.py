@@ -386,6 +386,34 @@ def test_run_context_skips_unhealthy_windows_external_candidate(
     assert env["TMPDIR"] == str(resolved_external / "tmp")
 
 
+def test_an_artifact_root_proves_child_creation_once(tmp_path: Path) -> None:
+    root = tmp_path / "external" / "Molt"
+    assert dx._artifact_root_accepts_child_dirs(root, create_dirs=True)
+    assert [entry.name for entry in root.iterdir()] == [dx._ARTIFACT_ROOT_MARKER]
+
+    # Later checks read the proof: a build lists the root, and an entry added
+    # and removed there on each check would change it during every build.
+    before = root.stat().st_mtime_ns
+    assert dx._artifact_root_accepts_child_dirs(root, create_dirs=True)
+    assert [entry.name for entry in root.iterdir()] == [dx._ARTIFACT_ROOT_MARKER]
+    assert root.stat().st_mtime_ns == before
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="POSIX permission bits do not bind Windows ACLs or root",
+)
+def test_an_artifact_root_without_proof_must_accept_a_child(tmp_path: Path) -> None:
+    root = tmp_path / "read-only"
+    root.mkdir()
+    root.chmod(0o500)
+    try:
+        assert not dx._artifact_root_accepts_child_dirs(root, create_dirs=True)
+    finally:
+        root.chmod(0o700)
+    assert list(root.iterdir()) == []
+
+
 @pytest.mark.parametrize("suffix", ["", "build"])
 def test_run_context_external_requirement_refuses_checkout_outputs(tmp_path, suffix):
     repo = tmp_path / "repo"
@@ -1847,6 +1875,9 @@ def test_tool_state_and_bundle_keys_use_captured_host_environment_semantics(
 def test_sibling_checkouts_reuse_only_their_own_cargo_intermediates(tmp_path, session):
     artifact = tmp_path / "artifacts"
     first, second = tmp_path / "a", tmp_path / "b"
+    # Each checkout is its own custody root, which must exist.
+    first.mkdir()
+    second.mkdir()
     caller = {"MOLT_EXT_ROOT": str(artifact), "MOLT_PREFER_EXTERNAL_ARTIFACTS": "1"}
     if session:
         caller["MOLT_SESSION_ID"] = session

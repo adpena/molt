@@ -44,6 +44,9 @@ _SESSION_ENVIRONMENT_KEYS = frozenset(
         "ITERM_SESSION_ID",
         "LINES",
         "OLDPWD",
+        # pytest's temporary root, which the memory guard rebinds to each
+        # guarded child's scratch lease; only pytest reads it.
+        "PYTEST_DEBUG_TEMPROOT",
         "SECURITYSESSIONID",
         "SHLVL",
         "SSH_AGENT_PID",
@@ -63,6 +66,8 @@ _SESSION_ENVIRONMENT_KEYS = frozenset(
 _RECORD_UNUSED_LIMIT_NS = 7 * 24 * 3600 * 1_000_000_000
 _RECORD_REFRESH_INTERVAL_NS = 3600 * 1_000_000_000
 _TRIM_MARKER = ".trimmed"
+# Each recorded build's own transient files, beside the records it writes.
+_TRANSIENT_DIRNAME = ".transient"
 
 
 def _file_sha256(path: Path | str) -> str | None:
@@ -152,27 +157,50 @@ def enter_build() -> bool:
         return _BUILDS_ENTERED == 1
 
 
+def transient_root(state_root: Path) -> Path:
+    """Where recorded builds keep their transient files: a product root."""
+    return state_root / "build_records" / _TRANSIENT_DIRNAME
+
+
 @contextmanager
-def recording() -> Generator[InputLedger]:
+def recording(transient_parent: Path) -> Generator[InputLedger]:
     """Activate one ledger for the first build of this process.
 
     The racy bound is the process's start: modules, caches and worker state may
     hold bytes read before the build began.
+
+    The build's temporary files and its workers' read logs live in one
+    directory under ``transient_parent``, as Bazel gives each action a
+    temporary directory in its output base. A file the build creates and
+    removes in an input directory, such as the system temporary directory,
+    changes that directory during the build and refuses the record. Normal
+    scope exit removes only this allocation, fenced by its directory identity.
+    An interrupted build can leave its allocation behind; without process-tree
+    closure evidence, neither its age nor a missing parent authorizes deletion.
     """
     import tempfile
 
     from molt.process_birth import current_process_started_ns
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
 
     started = current_process_started_ns()
     ledger = InputLedger(started if started is not None else time.time_ns())
     if started is None:
         ledger.refuse("process start time unavailable")
-    with tempfile.TemporaryDirectory(prefix="molt-build-reads-") as log_dir:
+    transient_parent.mkdir(parents=True, exist_ok=True)
+    with OwnedTemporaryDirectory(prefix="build-", dir=transient_parent) as transient:
+        log_dir = os.path.join(transient, "reads")
+        temporary = os.path.join(transient, "temporary")
+        os.mkdir(log_dir)
+        os.mkdir(temporary)
+        previous_temporary = tempfile.tempdir
+        tempfile.tempdir = temporary
         input_report.install_sink(ledger, log_dir)
         try:
             yield ledger
         finally:
             input_report.remove_sink()
+            tempfile.tempdir = previous_temporary
             input_report.merge_worker_logs(ledger, log_dir)
 
 
@@ -185,7 +213,18 @@ def request_key(
     interpreter_version: str,
     host: Mapping[str, str],
 ) -> str | None:
-    """Identity of one build request, or None when it is not plain data."""
+    """Identity of one build request, or None when it is not plain data.
+
+    The environment is keyed whole except terminal-session names and the
+    registry's output-neutral names: a guarded build carries a fresh guard
+    token, marker and scratch lease, and memory budgets measured at launch.
+    """
+    from molt.environment_registry import load_registry
+
+    # The registry loads only when a MOLT_* name is set, as at CLI start.
+    registry = (
+        load_registry() if any(key.startswith("MOLT_") for key in environment) else None
+    )
     material = {
         "schema": _SCHEMA,
         "arguments": dict(arguments),
@@ -197,6 +236,11 @@ def request_key(
             key: value
             for key, value in environment.items()
             if key not in _SESSION_ENVIRONMENT_KEYS
+            and not (
+                registry is not None
+                and key.startswith("MOLT_")
+                and registry.is_output_neutral(key)
+            )
         },
     }
     try:
@@ -230,16 +274,30 @@ def resolve_observed(
 ) -> None:
     """Turn the audit hook's observations into inputs.
 
-    Only named product roots and the successfully published output are products.
-    Pre-syscall audit events cannot prove write or directory-creation ownership.
-    Explicit input reports are never excluded, even for the published output.
+    Only named product roots and the successfully published output, with the
+    receipt, journals, lock and stages its publication keeps beside it, are
+    products. The publication lists the output's directory for its own
+    journals, so an observed listing of that directory is custody; a reader
+    that consumes the listing, such as the import topology, reports it
+    explicitly. Pre-syscall audit events cannot prove write or
+    directory-creation ownership. Explicit input reports are never excluded,
+    even for the published output.
     """
-    output = None if published_output is None else os.path.realpath(published_output)
+    from molt.artifact_publication import is_publication_family_member
+
+    output = (
+        None if published_output is None else Path(os.path.realpath(published_output))
+    )
     roots = tuple({os.path.realpath(root) + os.sep for root in excluded_roots})
     for kind, observed in sorted(ledger.observed):
         name = _executed_source(observed)
         real = os.path.realpath(name)
-        if (kind == "file" and real == output) or (real + os.sep).startswith(roots):
+        if output is not None and (
+            (kind == "file" and is_publication_family_member(Path(real), output))
+            or (kind == "directory" and real == os.fspath(output.parent))
+        ):
+            continue
+        if (real + os.sep).startswith(roots):
             continue
         if real.startswith(("/dev/", "/proc/", "/sys/")):
             continue
@@ -402,6 +460,10 @@ def trim_if_due(records_root: Path) -> None:
     except OSError:
         return
     for shard in shards:
+        if shard.name == _TRANSIENT_DIRNAME:
+            # Execution scratch is not a cache record. Age does not prove
+            # that its writers have exited, including after parent death.
+            continue
         if not shard.is_dir(follow_symlinks=False):
             continue
         try:

@@ -31,6 +31,10 @@ programs constantly.
 - [rustc dependency tracking](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)
   distinguishes changed inputs from changed results. Reuse is justified by the
   inputs of the consuming unit, rather than a successful upstream check alone.
+- [Cargo compiler-query caching](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/util/rustc.rs.html)
+  keys the process request plus an additional dependency fingerprint. Molt's
+  declared tool and resource closure must also survive preserved-mtime edits;
+  reuse therefore goes through the existing file-content custody authority.
 - [cc-rs metadata controls](https://docs.rs/cc/1.6.0/cc/struct.Build.html#method.cargo_metadata)
   can suppress environment dependency reporting as well as archive link output.
   Consumers that own archive linking must still invalidate C output inputs.
@@ -41,7 +45,9 @@ programs constantly.
 the working directory, the interpreter and its version, the host (system,
 release, machine, and the CPU model for non-portable builds, which tune for
 the host CPU), and the full environment except terminal and session
-identifiers. The output path and the output directory are keyed: building one
+identifiers and registry entries declared output-neutral. Guard custody and
+memory budgets supervise execution without selecting different optimizations.
+The output path and the output directory are keyed: building one
 program to two names, or under two output directories, produced binaries that
 differed in 49 and 48 bytes (the linker signs the binary under its file name;
 the debug map names object files under the output directory).
@@ -80,12 +86,53 @@ ledger two ways:
   logging its own facts. A bytecode read stands for its source.
   Reads under named product roots (the Molt
   cache, Cargo target and build state roots, the backend daemon's socket
-  directory, the artifact root under the output directory) are not inputs. A
+  directory, the artifact root under the output directory, the memory guard's
+  state root and its scratch generations) are not inputs. A
   source checkout, a user directory, the temporary directory and the shared
-  scratch root are never excluded: projects live there too. The successfully
-  published binary is excluded as one file, preserving explicit input reports
-  and every dependency on its parent directory. A path that no
+  scratch root are never excluded: projects live there too, and so do guard
+  lease targets. The successfully
+  published binary is excluded as one file with the receipt, journals, lock
+  and stages its publication keeps beside it, preserving explicit input
+  reports and every read under its parent directory. A path that no
   longer exists becomes an absence probe plus its parent directory.
+- A recorded build keeps its own transient files in a product root:
+  `tempfile` points at a per-build directory under
+  `<Molt cache>/build_records/.transient`, beside its workers' read logs, as
+  Bazel gives each action a temporary directory in its output base. A file
+  created and removed in an input directory changes that directory during the
+  build, which the racy rule refuses. For the same reason an external artifact
+  root proves it accepts child directories once and keeps the proof as a
+  `.molt-artifact-root` marker. The existing `OwnedTemporaryDirectory` authority removes a
+  completed build's allocation only while its directory identity still matches.
+  Record retention never deletes execution scratch: a clock jump, an old
+  directory or an exited parent cannot prove that descendant writers closed.
+  Allocations left by an interrupted direct build stay preserved until an
+  external owner establishes process-tree closure; no age-based reclaimer or
+  alternate scratch lifecycle is introduced.
+
+**Rust metadata.** One Cargo plan owns its metadata answers in one frozen
+environment. Identical commands share a discovery answer; wrapped and unwrapped
+roles are identical when no wrapper is selected. The existing flag parser and
+resource custody retain provisional cfg inputs as well as the selected final
+inputs, including the named candidate files in declared custom-target search
+directories. [rustc's target lookup](https://doc.rust-lang.org/rustc/targets/custom.html#custom-target-lookup-path)
+looks for `TARGET.json`; unrelated specifications and directory subtrees are not
+inputs, and an implicit host question does not search for a custom target.
+Discovery locates
+the resources; one replay of each distinct question under their captured
+generation must agree before the plan can be used. Compiler, wrapper and
+resource fences surround qualification, and the plan retains those inputs for
+its later verification. This covers declared tool inputs; arbitrary wrapper
+filesystem or network reads are outside that contract.
+
+There is no process-global metadata-answer cache. On the measured macOS Rust
+1.99 toolchain, eight actual metadata queries cost about 117 ms, while a valid
+no-change record bypasses all resolution. A prototype that safely retained
+cross-plan answers added 188 source lines for roughly 0.1 s of miss-only savings.
+Keeping ownership local removes its mutable global state and invalidation
+protocol. Discovery and qualification use the same local memo, with one call
+per distinct command in each phase. These are bounded mechanism measurements,
+not cross-platform build-performance acceptance.
 
 **Refusals.** No record for non-native targets, directory outputs, requests
 that publish more than one binary (JSON results, diagnostics, IR, linked or
@@ -200,6 +247,12 @@ those remain V1-22/V1-23. Bare Cargo retains its documented dependency model.
   the racy rule; git, ninja, make and Cargo share this limit.
 - A process that writes the output while the build that publishes it runs
   can leave a record of the wrong bytes, as with make and ninja.
+- Process-pool workers keep the system temporary directory; no worker code
+  creates temporary files today, and one that does refuses the record.
+- The publication lists the output's directory for its own journals, so the
+  audit hook's listing of that directory is custody. A reader that depends on
+  the entries of the output's directory must report the listing explicitly, as
+  the import topology does; explicit reports are never excluded.
 - Read-back of a fresh product outside the named product roots and the declared
   output remains an input and may conservatively refuse the record. Such a
   producer must use existing product custody; audit events cannot prove it.
