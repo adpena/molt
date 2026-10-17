@@ -74,6 +74,8 @@ pub(crate) fn codec_index(py: &PyToken, bits: u64, role: CodecIndexRole) -> Resu
 }
 
 /// The target-versioned unsigned converter used by CPython's LZMA memlimit.
+/// Only the native LZMA module consumes it; WASM uses `lzma_wasm`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn codec_uint64(py: &PyToken, bits: u64) -> Result<u64, u64> {
     if let Some(value) = obj_from_bits(bits).as_int().filter(|value| *value >= 0) {
         return Ok(value as u64);
