@@ -3264,14 +3264,17 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
 
 
 def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
-    """A literal ``CALL molt_*`` the frontend emits must exist in the WASM ABI.
+    """Direct runtime calls must exist in the WASM ABI.
 
     The WASM backend panics on a direct runtime call without a manifest import
     ("direct runtime call missing WASM ABI manifest import"). Include literal
     calls emitted through the common helper as well as directly constructed IR.
+    Exercise GPU publication too: its symbol is a shared constant, so a literal
+    source census cannot prove that the actual producer has an ABI import.
     """
     import ast
 
+    from molt.frontend import compile_to_tir
     from molt._wasm_abi_generated import WASM_RUNTIME_IMPORT_EXPORT_NAMES
 
     runtime_exports = {
@@ -3310,7 +3313,22 @@ def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
                 and args.elts[0].value.startswith("molt_")
             ):
                 direct_calls.add(args.elts[0].value)
-    assert "molt_gpu_kernel_descriptor_set" in direct_calls
+    ir = compile_to_tir(
+        "import molt.gpu as gpu\n"
+        "@gpu.kernel\n"
+        "def kernel():\n"
+        "    return gpu.thread_id()\n"
+    )
+    emitted_calls = {
+        op["s_value"]
+        for function in ir["functions"]
+        for op in function["ops"]
+        if op.get("kind") == "call"
+        and isinstance(op.get("s_value"), str)
+        and op["s_value"].startswith("molt_")
+    }
+    assert "molt_gpu_kernel_descriptor_set" in emitted_calls
+    direct_calls.update(emitted_calls)
     assert sorted(direct_calls - runtime_exports) == []
 
 
