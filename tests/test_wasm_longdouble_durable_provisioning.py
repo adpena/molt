@@ -361,12 +361,13 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
         encoding="utf-8",
     )
     executable = tmp_path / ("decoder.exe" if os.name == "nt" else "decoder")
+    cold_timeout = 60  # The newly built decoder has not executed yet.
     run_guarded_test_process(
         [rustc, "--edition=2024", str(source), "-o", str(executable)],
         capture_output=True,
         text=True,
         check=True,
-        timeout=60,
+        timeout=cold_timeout,
     )
     # The Rust decoder accepting our spelling is insufficient: the selected
     # stable compiler must accept the production producer's complete mode.
@@ -385,7 +386,7 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
     environment = {
         key: value for key, value in os.environ.items() if key != "RUSTC_BOOTSTRAP"
     }
-    for target in ("wasm32-wasip1", "wasm32-unknown-unknown"):
+    for index, target in enumerate(("wasm32-wasip1", "wasm32-unknown-unknown")):
         cfg = run_guarded_test_process(
             [rustc, "--print", "cfg", "--target", target, *produced],
             env=environment,
@@ -397,7 +398,11 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
         assert 'target_arch="wasm32"' in cfg.stdout.splitlines()
         valid = [str(executable), plan.encode(), str(plan.linker), flags, target]
         run_guarded_test_process(
-            valid, capture_output=True, text=True, check=True, timeout=10
+            valid,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=cold_timeout if index == 0 else 10,
         )
     # The receiver sees raw effective Cargo flags, not necessarily our Python
     # canonical spelling. Exercise both aliases and each conflicting mode there.

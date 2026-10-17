@@ -434,9 +434,16 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
             requested_target=requested_target,
         )
 
+    # This is cold fixture qualification, including the host's first-image
+    # assessment, rather than a warm program latency assertion.
+    cold_timeout = 90
+
     def execute(plan, expected: str, *, fresh: bool) -> Path:
         result = _run_resolved_cargo_plan(
-            plan, timeout=90, json_output=True, label="external-resource-reuse-test"
+            plan,
+            timeout=cold_timeout,
+            json_output=True,
+            label="external-resource-reuse-test",
         )
         assert result.returncode == 0, result.stderr
         artifacts = [
@@ -458,7 +465,7 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
             [str(binary)],
             cwd=str(project),
             env=plan.environment,
-            timeout=10,
+            timeout=cold_timeout,
         )
         assert output.returncode == 0, output.stderr
         assert output.stdout.strip() == expected

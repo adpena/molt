@@ -400,6 +400,16 @@ provides diagnostic observations, not semantic acceptance. Queue audits retain
 product errors from its transcript but must not promote them into the semantic
 frontier; the infrastructure failure remains an actionable audit error.
 
+A newly compiled fixture has not established execution readiness. Its first
+correctness probe uses the cold build/link budget, including operating-system
+image assessment, as the backend feature probe already does. After a successful
+execution, subsequent warm controls may use a narrower budget. This adds no
+warmup execution or retry. An intentional timeout/cleanup test instead proves
+that its identical fixture image can execute before the timed workload begins;
+require and clear its readiness marker so a missing test body cannot pass.
+Preserve live compiler/process observations when those are part of the oracle.
+A startup timeout alone does not prove that the intended workload began.
+
 WASM execution tests distinguish guest-VM deadlines from native child-process
 deadlines. The guest control executes a nonterminating WASM loop in Node and
 requires the VM timeout diagnostic. The process control re-executes the native
