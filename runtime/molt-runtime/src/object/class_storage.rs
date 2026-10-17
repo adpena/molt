@@ -64,7 +64,6 @@ pub(crate) struct ClassSemanticPolicy {
 }
 
 impl ClassSemanticPolicy {
-    #[cfg(test)]
     pub(crate) const fn origin(self) -> ClassOrigin {
         self.origin
     }
@@ -131,7 +130,7 @@ impl ClassSemanticPolicy {
                 }
             }
             let retired_module = if self.origin == ClassOrigin::Static {
-                match class_capture_static_module(py, class) {
+                match class_capture_native_module(py, class, true) {
                     Ok(retired) => retired,
                     Err(()) => return false,
                 }
@@ -438,16 +437,18 @@ pub(crate) enum ClassReferenceSlot {
     InstanceDictionary = 11,
     /// Exact immutable creation-time documentation, independent of __doc__.
     CreationDoc = 12,
-    /// Immutable native declaration, independent of instance descriptors.
-    StaticModule = 13,
+    /// Captured native creation module; zero for ordinary Python heap classes.
+    /// Static classes also use it for their immutable public module metadata.
+    NativeModule = 13,
 }
 
-/// Seal the constructor's static module declaration before instance descriptors
-/// can occupy the same namespace key. A static type's display module is identity,
-/// while an actual descriptor remains ordinary instance namespace content.
-unsafe fn class_capture_static_module<'a, 'py>(
+/// Capture the native constructor module before publication. Static types retire
+/// the declaration so an instance descriptor can occupy its namespace key; native
+/// heap types retain their public module value independently of this identity.
+pub(crate) unsafe fn class_capture_native_module<'a, 'py>(
     py: &'a PyToken<'py>,
     class: *mut u8,
+    remove_declaration: bool,
 ) -> Result<Option<crate::object::ops::DetachedDictReferences<'a, 'py>>, ()> {
     unsafe {
         use crate::object::ops;
@@ -474,7 +475,7 @@ unsafe fn class_capture_static_module<'a, 'py>(
         let text = entry
             .and_then(|(_, value)| crate::obj_from_bits(value).as_ptr())
             .filter(|ptr| crate::object_type_id(*ptr) == crate::TYPE_ID_STRING);
-        if text.is_some() && !ops::dict_require_writable(py, dictionary) {
+        if remove_declaration && text.is_some() && !ops::dict_require_writable(py, dictionary) {
             return Err(());
         }
         let captured = if let Some(text) = text
@@ -506,12 +507,51 @@ unsafe fn class_capture_static_module<'a, 'py>(
         };
         // No fallible work or callbacks after this point. Only a declaration
         // string is retired; actual instance descriptors keep their namespace edge.
-        let retired = text.map(|_| {
+        let retired = text.filter(|_| remove_declaration).map(|_| {
             ops::dict_remove_identity_with_hash_deferred(py, dictionary, entry.unwrap().0, hash)
                 .expect("prepared live module declaration")
         });
-        ClassReferenceSlot::StaticModule.initialize_owned(class, captured);
+        ClassReferenceSlot::NativeModule.initialize_owned(class, captured);
         Ok(retired)
+    }
+}
+
+/// CPython's physical tp_name, distinct from public __name__/__qualname__.
+/// Native constructors capture their module once; ordinary Python heap types
+/// and renamed heap types use their current name without module qualification.
+pub(crate) unsafe fn class_c_name_bits(py: &PyToken<'_>, class: *mut u8) -> Result<u64, ()> {
+    unsafe {
+        let name = crate::class_name_bits(class);
+        let module = ClassReferenceSlot::NativeModule.load(class);
+        if module == 0
+            || (!class_is_heap_type(class)
+                && crate::object::ops_format::string_obj_matches_bytes(
+                    crate::obj_from_bits(module),
+                    b"builtins",
+                ))
+        {
+            inc_ref_bits(py, name);
+            return Ok(name);
+        }
+        let mut bytes =
+            crate::object::ops_format::string_obj_bytes(crate::obj_from_bits(module)).ok_or(())?;
+        let name =
+            crate::object::ops_format::string_obj_bytes(crate::obj_from_bits(name)).ok_or(())?;
+        // Static C declarations may retain a qualified creation spelling.
+        // Their public short component is the part after the final dot.
+        let short = if class_is_heap_type(class) {
+            name.as_slice()
+        } else {
+            name.rsplit(|byte| *byte == b'.').next().unwrap_or(&name)
+        };
+        bytes.push(b'.');
+        bytes.extend_from_slice(short);
+        let result = crate::alloc_string(py, &bytes);
+        if result.is_null() {
+            Err(())
+        } else {
+            Ok(MoltObject::from_ptr(result).bits())
+        }
     }
 }
 
@@ -523,7 +563,7 @@ pub(crate) unsafe fn class_module_bits(
 ) -> Result<Option<u64>, ()> {
     unsafe {
         if !class_is_heap_type(class) {
-            let module = ClassReferenceSlot::StaticModule.load(class);
+            let module = ClassReferenceSlot::NativeModule.load(class);
             assert_ne!(module, 0, "static class module declaration is not sealed");
             return Ok(Some(module));
         }
@@ -596,7 +636,7 @@ impl ClassReferenceSlot {
         Self::FieldLayout,
         Self::InstanceDictionary,
         Self::CreationDoc,
-        Self::StaticModule,
+        Self::NativeModule,
     ];
 
     const DICTIONARIES: [Self; 2] = [Self::Dictionary, Self::InstanceDictionary];
@@ -614,7 +654,7 @@ impl ClassReferenceSlot {
             | Self::SlotDeclaration
             | Self::FieldLayout
             | Self::CreationDoc
-            | Self::StaticModule => {
+            | Self::NativeModule => {
                 matches!(phase, ClassReferenceRelease::Terminal)
             }
         }
@@ -935,7 +975,7 @@ impl RuntimeClassRetirement {
                         ClassReferenceSlot::Name
                         | ClassReferenceSlot::Qualname
                         | ClassReferenceSlot::CreationDoc
-                        | ClassReferenceSlot::StaticModule => {
+                        | ClassReferenceSlot::NativeModule => {
                             self.assert_exact_metadata(py, bits, crate::TYPE_ID_STRING);
                         }
                         ClassReferenceSlot::Dictionary | ClassReferenceSlot::InstanceDictionary => {
@@ -1443,7 +1483,7 @@ mod tests {
                     class,
                     ClassDeclaration::SemanticPolicySealed
                 ));
-                assert_eq!(ClassReferenceSlot::StaticModule.load(class), 0);
+                assert_eq!(ClassReferenceSlot::NativeModule.load(class), 0);
                 assert_eq!(
                     crate::dict_get_in_place(py, dictionary, key),
                     Ok(Some(descriptor))

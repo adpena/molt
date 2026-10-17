@@ -506,7 +506,10 @@ unsafe fn descriptor_class_name(py: &PyToken<'_>, class: u64) -> Result<Vec<u8>,
         let bytes = if let Some(pointer) = obj_from_bits(class).as_ptr()
             && object_type_id(pointer) == TYPE_ID_TYPE
         {
-            crate::object::ops_format::string_obj_bytes(obj_from_bits(class_name_bits(pointer)))
+            let name = crate::object::class_storage::class_c_name_bits(py, pointer)?;
+            let bytes = crate::object::ops_format::string_obj_bytes(obj_from_bits(name));
+            dec_ref_bits(py, name);
+            bytes
         } else {
             let view = crate::object::class_layout::real_class_view(class).map_err(|()| {
                 crate::cpython_abi_hooks::propagate_native_failure(

@@ -29,6 +29,7 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
         "itemgetter",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, false),
+            native_module: Some("operator"),
             layout_size: 16,
             instance_shape: Some(crate::object::ObjectShapeId::OperatorItemGetter),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
@@ -61,6 +62,7 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
         "attrgetter",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, false),
+            native_module: Some("operator"),
             layout_size: 16,
             instance_shape: Some(crate::object::ObjectShapeId::OperatorAttrGetter),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
@@ -93,6 +95,7 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
         "methodcaller",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(true, false),
+            native_module: Some("operator"),
             layout_size: 32,
             instance_shape: Some(crate::object::ObjectShapeId::OperatorMethodCaller),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),

@@ -1134,7 +1134,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
             (list, b"__text_signature__", Some("(iterable=(), /)")),
             (list, b"__hash__", None),
             (tuple, b"__text_signature__", Some("(iterable=(), /)")),
-            (reference_type, b"__module__", Some("_weakref")),
+            (reference_type, b"__module__", Some("weakref")),
+            (generic_alias, b"__module__", Some("types")),
             (
                 reference_type,
                 b"__text_signature__",
@@ -1224,6 +1225,18 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         {
             *policy
         } else if immutable_heap.contains(&bits) {
+            if unsafe {
+                crate::object::class_storage::class_capture_native_module(
+                    _py,
+                    obj_from_bits(bits).as_ptr().unwrap(),
+                    false,
+                )
+            }
+            .is_err()
+            {
+                release_failed_builtin_classes(_py, &all_classes);
+                return None;
+            }
             ClassSemanticPolicy::heap(true, basetype)
         } else {
             ClassSemanticPolicy::static_type(basetype)

@@ -180,6 +180,7 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
         "mappingproxy",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::static_type(false),
+            native_module: None,
             layout_size: 16,
             instance_shape: Some(crate::object::ObjectShapeId::TypesMappingProxy),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
@@ -414,6 +415,7 @@ pub(crate) fn frame_locals_proxy_class(_py: &PyToken<'_>) -> u64 {
         "FrameLocalsProxy",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::static_type(false),
+            native_module: None,
             layout_size: 16,
             instance_shape: Some(crate::object::ObjectShapeId::TypesFrameLocalsProxy),
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
@@ -486,6 +488,7 @@ pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
         "method",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::static_type(false),
+            native_module: None,
             layout_size: 16,
             instance_shape: None,
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::native(
@@ -525,6 +528,7 @@ pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
         "SimpleNamespace",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::static_type(true),
+            native_module: Some("types"),
             layout_size: 8,
             instance_shape: None,
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
@@ -551,6 +555,7 @@ pub(crate) fn capsule_class(_py: &PyToken<'_>) -> u64 {
         "capsule",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::static_type(false),
+            native_module: None,
             layout_size: 8,
             instance_shape: None,
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
@@ -612,6 +617,7 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
         "cell",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::static_type(false),
+            native_module: None,
             layout_size: 8,
             instance_shape: None,
             native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),

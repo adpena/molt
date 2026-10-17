@@ -23,6 +23,7 @@ fn module_spec_class(py: &PyToken<'_>) -> u64 {
         "ModuleSpec",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(false, true),
+            native_module: None,
             layout_size: 8,
             instance_shape: None,
             native_slots: None,

@@ -26,6 +26,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
         "_MoltLoader",
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(false, true),
+            native_module: None,
             layout_size: 8,
             instance_shape: None,
             native_slots: None,
@@ -86,6 +87,7 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
         name,
         crate::builtins::types::RuntimeClassLayout {
             semantics: ClassSemanticPolicy::heap(false, true),
+            native_module: None,
             layout_size: 8,
             instance_shape: None,
             native_slots: None,
