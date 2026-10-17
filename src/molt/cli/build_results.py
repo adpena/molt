@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Generator, Mapping, MutableMapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+import os
 import platform
 import subprocess
 import sys
@@ -31,13 +33,20 @@ from molt.cli.native_binary import (
     _NativeBinaryInvalid,
     _assert_native_binary_valid,
 )
+from molt.cli import atomic_io
 from molt.cli.atomic_io import _staged_copy_file
-from molt.file_publication import canonical_file_leaf
+from molt.file_publication import (
+    canonical_file_leaf,
+    is_owned_staged_file_path,
+    staged_file_path,
+)
 from molt.link_outputs import validate_link_output_paths
 from molt.cli.native_link_plan import (
     native_strip_flags,
     resolve_native_target_spec,
 )
+from molt.native_artifact_header import read_macho_code_signature
+from molt.native_target_shape import NativeObjectFormat
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
 from molt.cli import link_fingerprints, progress
@@ -367,6 +376,59 @@ def _post_link_strip(binary: Path, target_triple: str | None) -> str | None:
     return None
 
 
+def _signed_by_linker_as(stage: Path, destination: Path) -> bool:
+    """Whether the linker signed ``stage`` ad hoc as the published binary."""
+    signature = read_macho_code_signature(stage)
+    return (
+        signature is not None
+        and signature.ad_hoc
+        and signature.covers_image
+        and signature.identifier == destination.name
+    )
+
+
+@contextmanager
+def _native_publication_stage(
+    candidate: Path,
+    output_binary: Path,
+    *,
+    object_format: NativeObjectFormat,
+    rewritten: bool,
+) -> Generator[Path]:
+    """The private stage that publication renames into place.
+
+    The linker writes a private stage of the binary beside it, and that stage
+    is published by rename, so the image is never copied (a copy of a 68 MiB
+    dev binary cost 1.9-2.5 s). A candidate under another name in the same
+    directory, such as BOLT's output, moves into a stage first; one elsewhere
+    is copied.
+
+    Only a Mach-O image carries a code signature, and it must name the
+    published binary. Apple ld signs its stage that way at link time, so the
+    stage keeps that signature unless a tool rewrote the image after the
+    link. Every other Mach-O stage is re-signed (codesign cost 1.4-3.2 s on
+    the same binary).
+    """
+    macho = object_format is NativeObjectFormat.MACHO
+    if is_owned_staged_file_path(candidate, output_binary):
+        if macho and (rewritten or not _signed_by_linker_as(candidate, output_binary)):
+            atomic_io._codesign_atomic_copy_temp(candidate, output_binary)
+        yield candidate
+        return
+    if candidate.parent == output_binary.parent:
+        stage = staged_file_path(output_binary, purpose="native-link")
+        os.rename(candidate, stage)
+        try:
+            if macho:
+                atomic_io._codesign_atomic_copy_temp(stage, output_binary)
+            yield stage
+        finally:
+            discard_staged_output(stage)
+        return
+    with _staged_copy_file(candidate, output_binary, codesign=macho) as stage:
+        yield stage
+
+
 def _finalize_native_link_candidate(
     *,
     candidate: Path,
@@ -402,6 +464,10 @@ def _finalize_native_link_candidate(
     except (OSError, ValueError) as exc:
         return f"native publication requires a private candidate: {exc}"
     try:
+        try:
+            object_format = resolve_native_target_spec(target_triple).object_format
+        except RuntimeError as exc:
+            return f"native publication target policy failed: {exc}"
         strip_started = time.perf_counter_ns() if phase_times is not None else 0
         strip_error: str | None = None
         if strip:
@@ -413,7 +479,12 @@ def _finalize_native_link_candidate(
         publish_started = time.perf_counter_ns() if phase_times is not None else 0
         validate_elapsed = 0
         try:
-            with _staged_copy_file(candidate, output_binary, codesign=True) as signed:
+            with _native_publication_stage(
+                candidate,
+                output_binary,
+                object_format=object_format,
+                rewritten=strip,
+            ) as signed:
                 validate_started = (
                     time.perf_counter_ns() if phase_times is not None else 0
                 )

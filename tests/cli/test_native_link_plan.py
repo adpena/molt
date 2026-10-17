@@ -20,6 +20,7 @@ from molt.cli import link_fingerprints
 from molt import file_publication
 from molt.cli.native_link_plan import NativeArtifactKind, NativeObjectFormat
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
+from tests.native_artifact_fixtures import elf_header, signed_macho_image
 from tests.llvm_sdk_test_support import verified_llvm_tools
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
@@ -866,6 +867,106 @@ def test_cross_target_strip_uses_llvm_strip_and_target_format_flags(
     assert received == [[str(llvm_strip), "--strip-all", str(binary)]]
 
 
+@pytest.mark.parametrize("placement", ["linker-stage", "sibling", "elsewhere"])
+def test_native_candidate_in_the_output_directory_is_published_without_a_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, placement: str
+) -> None:
+    from molt import file_publication
+
+    output = tmp_path / "out" / "app"
+    output.parent.mkdir()
+    if placement == "linker-stage":
+        candidate = file_publication.staged_file_path(output, purpose="native-link")
+    elif placement == "sibling":
+        # BOLT writes `<binary>.bolt` beside its input.
+        candidate = output.parent / "app.bolt"
+    else:
+        candidate = tmp_path / "elsewhere" / "app"
+        candidate.parent.mkdir()
+    program = bytes(elf_header(kind=2))
+    candidate.write_bytes(program)
+    linked_inode = candidate.stat().st_ino
+    signed: list[Path] = []
+    monkeypatch.setattr(
+        atomic_io, "_codesign_atomic_copy_temp", lambda path, _dst: signed.append(path)
+    )
+
+    assert (
+        build_results._finalize_native_link_candidate(
+            candidate=candidate,
+            output_binary=output,
+            target_triple="x86_64-unknown-linux-gnu",
+            strip=False,
+        )
+        is None
+    )
+    assert output.read_bytes() == program
+    assert not candidate.exists() or placement == "elsewhere"
+    # A stage in the output's directory is renamed into place: the published
+    # binary is the inode the linker wrote. A candidate elsewhere is copied.
+    assert (output.stat().st_ino == linked_inode) is (placement != "elsewhere")
+    # Only a Mach-O image carries a code signature, whatever the host.
+    assert signed == []
+
+
+@pytest.mark.parametrize(
+    ("placement", "identifier", "strip", "re_signed"),
+    [
+        # Apple ld signed its stage as the published binary: keep it.
+        ("linker-stage", "app", False, False),
+        # ld64.lld and zig name the signature after the stage.
+        ("linker-stage", "stage", False, True),
+        # x86_64 ld64 without -adhoc_codesign leaves the image unsigned.
+        ("linker-stage", None, False, True),
+        # Strip rewrote the image after the link.
+        ("linker-stage", "app", True, True),
+        # Another tool wrote this image; its signature is not the linker's.
+        ("sibling", "app", False, True),
+    ],
+)
+def test_macho_stage_keeps_only_a_linker_signature_naming_the_published_binary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    placement: str,
+    identifier: str | None,
+    strip: bool,
+    re_signed: bool,
+) -> None:
+    from molt import file_publication
+
+    output = tmp_path / "app"
+    candidate = (
+        file_publication.staged_file_path(output, purpose="native-link")
+        if placement == "linker-stage"
+        else tmp_path / "app.bolt"
+    )
+    if identifier == "stage":
+        identifier = candidate.name
+    program = bytes(signed_macho_image(identifier))
+    candidate.write_bytes(program)
+    signed: list[Path] = []
+
+    def sign(stage: Path, destination: Path) -> None:
+        assert destination == output and stage.parent == output.parent
+        signed.append(stage)
+
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)
+    monkeypatch.setattr(build_results, "_post_link_strip", lambda *_: None)
+
+    assert (
+        build_results._finalize_native_link_candidate(
+            candidate=candidate,
+            output_binary=output,
+            target_triple="aarch64-apple-darwin",
+            strip=strip,
+        )
+        is None
+    )
+    assert output.read_bytes() == program
+    assert not candidate.exists()
+    assert (len(signed) == 1) is re_signed
+
+
 def test_native_candidate_is_finalized_before_atomic_publication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -900,7 +1001,7 @@ def test_native_candidate_is_finalized_before_atomic_publication(
         build_results._finalize_native_link_candidate(
             candidate=candidate,
             output_binary=output,
-            target_triple=None,
+            target_triple="aarch64-apple-darwin",
             strip=True,
             phase_times=phase_times,
         )
