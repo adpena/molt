@@ -389,25 +389,6 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
         },
     ));
 
-    // ----- `getargv`.
-    progs.push((
-        "getargv",
-        SimpleIR {
-            functions: vec![func(
-                "caller_getargv",
-                vec![
-                    OpIR {
-                        kind: "getargv".to_string(),
-                        out: Some("r".to_string()),
-                        ..OpIR::default()
-                    },
-                    ret("r"),
-                ],
-            )],
-            profile: None,
-        },
-    ));
-
     // ----- `getframe`.
     progs.push((
         "getframe",
@@ -419,25 +400,6 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     OpIR {
                         kind: "getframe".to_string(),
                         args: Some(vec!["depth".to_string()]),
-                        out: Some("r".to_string()),
-                        ..OpIR::default()
-                    },
-                    ret("r"),
-                ],
-            )],
-            profile: None,
-        },
-    ));
-
-    // ----- `sys_executable`.
-    progs.push((
-        "sys_executable",
-        SimpleIR {
-            functions: vec![func(
-                "caller_sys_executable",
-                vec![
-                    OpIR {
-                        kind: "sys_executable".to_string(),
                         out: Some("r".to_string()),
                         ..OpIR::default()
                     },

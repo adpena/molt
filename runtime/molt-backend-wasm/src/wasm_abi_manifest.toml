@@ -6424,8 +6424,6 @@ boxed_call = true
 kinds = [
   "not",
   "id",
-  "file_close",
-  "file_flush",
   "is_generator",
   "is_native_awaitable",
   "is_callable",
@@ -6462,9 +6460,6 @@ arg_count = 2
 boxed_call = true
 kinds = [
   "is",
-  "file_open",
-  "file_read",
-  "file_write",
   "del_index",
   "list_append",
   "list_int_new",

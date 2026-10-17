@@ -14,9 +14,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "call_indirect",
     "call_loaded_method",
     "call_method",
-    "getargv",
     "getframe",
-    "sys_executable",
 ];
 
 /// Cranelift codegen handlers for direct calls, guarded calls, Python function
@@ -215,7 +213,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             nbc,
         ),
-        "getargv" => handle_getargv_op(op, &mut *module, &mut *import_ids, &mut *builder, vars),
         "getframe" => handle_getframe_op(
             op,
             &operands,
@@ -224,9 +221,6 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *builder,
             vars,
         ),
-        "sys_executable" => {
-            handle_sys_executable_op(op, &mut *module, &mut *import_ids, &mut *builder, vars)
-        }
         _ => unreachable!("non-call op routed to handle_call_op"),
     }
     operands.finish_operation(
@@ -2356,30 +2350,6 @@ fn handle_call_method_op(
 
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
-fn handle_getargv_op(
-    op: &OpIR,
-    module: &mut ObjectModule,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    builder: &mut FunctionBuilder<'_>,
-    vars: &BTreeMap<String, Variable>,
-) {
-    let callee = SimpleBackend::import_func_id_split(
-        &mut *module,
-        &mut *import_ids,
-        "molt_getargv",
-        &[],
-        &[types::I64],
-    );
-    let local_callee = module.declare_func_in_func(callee, builder.func);
-    let call = builder.ins().call(local_callee, &[]);
-    let res = builder.inst_results(call)[0];
-    if let Some(out__) = op.out.as_ref() {
-        def_var_named(&mut *builder, vars, out__, res);
-    }
-}
-
-#[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_getframe_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
@@ -2399,30 +2369,6 @@ fn handle_getframe_op(
     );
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let call = builder.ins().call(local_callee, &[*depth]);
-    let res = builder.inst_results(call)[0];
-    if let Some(out__) = op.out.as_ref() {
-        def_var_named(&mut *builder, vars, out__, res);
-    }
-}
-
-#[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments, clippy::manual_map)]
-fn handle_sys_executable_op(
-    op: &OpIR,
-    module: &mut ObjectModule,
-    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-    builder: &mut FunctionBuilder<'_>,
-    vars: &BTreeMap<String, Variable>,
-) {
-    let callee = SimpleBackend::import_func_id_split(
-        &mut *module,
-        &mut *import_ids,
-        "molt_sys_executable",
-        &[],
-        &[types::I64],
-    );
-    let local_callee = module.declare_func_in_func(callee, builder.func);
-    let call = builder.ins().call(local_callee, &[]);
     let res = builder.inst_results(call)[0];
     if let Some(out__) = op.out.as_ref() {
         def_var_named(&mut *builder, vars, out__, res);

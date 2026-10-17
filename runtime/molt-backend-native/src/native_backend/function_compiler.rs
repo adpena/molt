@@ -1871,20 +1871,6 @@ impl SimpleBackend {
                         &nbc,
                     );
                 }
-                // handle_file_io_op family — extracted to fc::file_io (M1)
-                _ if op_family == Some(fc::NativeOpFamily::FileIo) => {
-                    fc::file_io::handle_file_io_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
                 // handle_control_flow_op family - extracted to fc::control_flow (M1)
                 _ if op_family == Some(fc::NativeOpFamily::ControlFlow) => {
                     let __flow = fc::control_flow::handle_control_flow_op(

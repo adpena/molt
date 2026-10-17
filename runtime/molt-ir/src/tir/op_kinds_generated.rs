@@ -249,11 +249,6 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "exception_stack_set_depth"
             | "exceptiongroup_combine"
             | "exceptiongroup_match"
-            | "file_close"
-            | "file_flush"
-            | "file_open"
-            | "file_read"
-            | "file_write"
             | "finally_end"
             | "finally_start"
             | "float"
@@ -293,7 +288,6 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "get_attr_special_obj"
             | "get_item"
             | "get_iter"
-            | "getargv"
             | "getframe"
             | "goto"
             | "gpu_barrier"
@@ -545,7 +539,6 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "subscript"
             | "sum"
             | "super_new"
-            | "sys_executable"
             | "task_wait"
             | "trace_enter_slot"
             | "trace_exit"
@@ -1920,8 +1913,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "yield"
         | "yield_from" => Some(SimpleIrRuntimeRequirements(1024)),
         "goto" | "jump" | "label" => Some(SimpleIrRuntimeRequirements(2048)),
-        "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "gpu_barrier"
-        | "gpu_block_dim" | "gpu_block_id" | "gpu_grid_dim" | "gpu_thread_id" => {
+        "gpu_barrier" | "gpu_block_dim" | "gpu_block_id" | "gpu_grid_dim" | "gpu_thread_id" => {
             Some(SimpleIrRuntimeRequirements(4096))
         }
         "invoke_ffi" => Some(SimpleIrRuntimeRequirements(4608)),
@@ -2699,11 +2691,6 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "exception_stack_set_depth"
             | "exceptiongroup_combine"
             | "exceptiongroup_match"
-            | "file_close"
-            | "file_flush"
-            | "file_open"
-            | "file_read"
-            | "file_write"
             | "float_from_obj"
             | "frame_home_take"
             | "frame_locals"
@@ -2717,7 +2704,6 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "gen_throw"
             | "get_attr_name_default"
             | "get_attr_special_obj"
-            | "getargv"
             | "getframe"
             | "has_attr_name"
             | "id"
@@ -2818,7 +2804,6 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "string_strip"
             | "string_upper"
             | "super_new"
-            | "sys_executable"
             | "trunc"
             | "tuple_count"
             | "tuple_from_list"

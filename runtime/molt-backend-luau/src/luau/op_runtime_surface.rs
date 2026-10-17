@@ -20,21 +20,6 @@ impl LuauBackend {
             "context_depth" => {
                 self.emit_unsupported_op(op);
             }
-            "file_open" | "file_read" | "file_write" | "file_close" | "file_flush" => {
-                self.emit_unsupported_op(op);
-            }
-            "getargv" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = {{}}"));
-                }
-            }
-            "sys_executable" => {
-                if let Some(ref out_name) = op.out {
-                    let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = \"\""));
-                }
-            }
             "getframe" => {
                 self.emit_unsupported_op_with_reason(
                     op,

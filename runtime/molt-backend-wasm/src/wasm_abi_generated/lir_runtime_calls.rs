@@ -1136,18 +1136,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::Id],
             discard_result: false,
         }),
-        "file_close" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FileClose,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::FileClose],
-            discard_result: false,
-        }),
-        "file_flush" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FileFlush,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::FileFlush],
-            discard_result: false,
-        }),
         "is_generator" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IsGenerator,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
@@ -1329,33 +1317,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(1),
             ],
             required_imports: &[WasmRuntimeImport::Is],
-            discard_result: false,
-        }),
-        "file_open" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FileOpen,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::FileOpen],
-            discard_result: false,
-        }),
-        "file_read" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FileRead,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::FileRead],
-            discard_result: false,
-        }),
-        "file_write" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::FileWrite,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::FileWrite],
             discard_result: false,
         }),
         "del_index" => Some(OpLoopRuntimeCallSpec {
