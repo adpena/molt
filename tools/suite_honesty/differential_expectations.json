@@ -226,26 +226,6 @@
         }
       }
     },
-    "tests/differential/basic/attr_dunder_access.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "attribute access/__getattribute__/dir/error-context divergence",
-          "status": "fail",
-          "tracking": "attribute-protocol"
-        }
-      }
-    },
-    "tests/differential/basic/attr_security.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "attribute access/__getattribute__/dir/error-context divergence",
-          "status": "fail",
-          "tracking": "attribute-protocol"
-        }
-      }
-    },
     "tests/differential/basic/bool_len_exceptions.py": {
       "dimensions": {
         "native": {
@@ -546,16 +526,6 @@
         }
       }
     },
-    "tests/differential/basic/except_module_attr.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "exception hierarchy/traceback/notes/finally-precedence shape divergence",
-          "status": "fail",
-          "tracking": "exception-shape"
-        }
-      }
-    },
     "tests/differential/basic/exception_hierarchy.py": {
       "dimensions": {
         "native": {
@@ -683,16 +653,6 @@
           "root_cause": "E1 inliner back-conversion emits invalid labels compiling the typing module path (typing___typing_strip_wrapping_parens); dev wasm hits the wasm.rs:2196 debug_assert, release wasm fails structural validation with 'expected i64 but nothing on stack'. Native is byte-identical (wasm-only).",
           "status": "fail",
           "tracking": "#59 (E1 inliner / PEP-695 typing path)"
-        }
-      }
-    },
-    "tests/differential/basic/getattr_calls.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "attribute access/__getattribute__/dir/error-context divergence",
-          "status": "fail",
-          "tracking": "attribute-protocol"
         }
       }
     },
