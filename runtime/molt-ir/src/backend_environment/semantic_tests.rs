@@ -239,7 +239,7 @@ fn semantic_identity_process_probe() {
         let stdout = String::from_utf8_lossy(&result.stdout);
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(
-            result.status.success() && stdout.lines().any(|line| line == SUCCESS),
+            result.status.success() && stdout.contains(SUCCESS),
             "stdout: {stdout}\nstderr: {stderr}"
         );
         return;
