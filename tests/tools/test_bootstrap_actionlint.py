@@ -133,6 +133,54 @@ def test_concurrent_bootstrap_publishes_once(tmp_path: Path, monkeypatch) -> Non
     assert downloads == 1
 
 
+def test_bootstrap_stages_beside_install_root(tmp_path: Path, monkeypatch) -> None:
+    # A rename across filesystems fails with EXDEV, so the download must not
+    # stage in TMPDIR. An unusable temp root makes TMPDIR staging fail on
+    # every host, whether or not TMPDIR shares a volume with the install root.
+    archive = _zip_asset(b"binary")
+    archive_digest = hashlib.sha256(archive).hexdigest()
+    executable_digest = hashlib.sha256(b"binary").hexdigest()
+    monkeypatch.setattr(
+        bootstrap,
+        "_contract",
+        lambda: ("1.7.12", "windows-amd64", archive_digest, executable_digest),
+    )
+    monkeypatch.setattr(bootstrap, "_install_root", lambda *_args: tmp_path / "tool")
+    monkeypatch.setattr(
+        bootstrap.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(archive),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_COMMANDS",
+        SimpleNamespace(
+            run=lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], 0, "v1.7.12\n", ""
+            )
+        ),
+    )
+    monkeypatch.setattr(bootstrap.tempfile, "tempdir", str(tmp_path / "no-tmpdir"))
+
+    executable = bootstrap.ensure_actionlint()
+
+    assert executable == tmp_path / "tool" / "actionlint.exe"
+    assert executable.read_bytes() == b"binary"
+    receipt = tmp_path / "tool" / "actionlint-receipt.json"
+    assert json.loads(receipt.read_text(encoding="utf-8")) == {
+        "schema": "molt.actionlint-install.v1",
+        "version": "1.7.12",
+        "archive_sha256": archive_digest,
+        "executable_sha256": executable_digest,
+    }
+    # The staging directory is gone; only the published tool and its lock stay.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["tool", "tool.lock"]
+    assert sorted(path.name for path in (tmp_path / "tool").iterdir()) == [
+        "actionlint-receipt.json",
+        "actionlint.exe",
+    ]
+
+
 def test_kernel_lock_recovers_after_owner_process_exit(tmp_path: Path) -> None:
     lock = tmp_path / "install.lock"
     code = (
