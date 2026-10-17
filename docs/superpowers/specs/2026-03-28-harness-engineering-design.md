@@ -119,14 +119,14 @@ unless `--no-fail-fast` is passed (which runs all layers and reports all failure
 
 ### 5.2 Feature-Flag Matrix (Layer 3)
 
-Inspired by Monty's triple feature-flag testing. The `unit-rust` layer runs tests
-three ways to catch different bug classes:
+Inspired by Monty's triple feature-flag testing. The plan was to run the
+`unit-rust` layer three ways: default features, `--features refcount_verify`
+(panic on refcount leaks or double-free) and `--features audit` (check audit
+events on capability checks).
 
-1. **Default features** — normal execution
-2. **`--features refcount_verify`** — panics on refcount leaks or double-free
-3. **`--features audit`** — verifies audit events are emitted on capability checks
-
-All three must pass with 0 failures.
+Status 2026-10-17: never built. The `refcount_verify` tracker had no caller in
+the runtime and `audit` gated no code, so HF-281 deleted both features. Audit
+events are always compiled; `molt-runtime-audit` tests them directly.
 
 ### 5.3 Backend Matrix (Layer 6)
 
@@ -204,7 +204,6 @@ installed.
 | Resource enforcement | 100% of scenarios pass | All 6 categories, all sub-checks |
 | Audit schema | 0 violations, 0 missing events | JSON schema validation |
 | Fuzz crashes | 0 crashes | All targets, full duration |
-| Feature-flag matrix | All 3 modes pass | default + refcount_verify + audit |
 | Backend matrix | All 3 backends identical output | native + wasm + wasm-linked |
 | Miri | 0 undefined behavior | `cargo miri test` on boundary code |
 | Compile-fail | All expected rejections verified | `trybuild` |

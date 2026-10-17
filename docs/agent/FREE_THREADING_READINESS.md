@@ -128,8 +128,8 @@ canonicalize.
   CPython's "the GIL costs almost nothing single-threaded".
 - wasm32: all GIL types are zero-cost no-op structs (`gil.rs:75-154`).
 - Every FFI entry (`with_gil_entry!`/`with_gil_entry_nopanic!`) acquires it;
-  `gil_assert()` guards runtime mutation (`debug_assert` unless
-  `molt_debug_gil`).
+  `gil_assert()` guards runtime mutation (a `debug_assert`: debug and test
+  builds check it, release builds do not).
 - The runtime can hold the GIL across calls (`hold_runtime_gil`,
   `state/runtime_state.rs:786,839`) — i.e. in single-threaded programs the
   main thread effectively owns the GIL for the process lifetime and re-enters

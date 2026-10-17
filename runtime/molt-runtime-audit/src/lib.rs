@@ -21,8 +21,6 @@ use std::io::{self, Write};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 
-pub mod refcount_verify;
-
 // ---------------------------------------------------------------------------
 // Core types
 // ---------------------------------------------------------------------------

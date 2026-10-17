@@ -51,6 +51,3 @@ pub use molt_backend_luau::luau;
 pub use molt_backend_rust::rust;
 #[cfg(feature = "wasm-backend")]
 pub use molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
-
-#[cfg(feature = "egraphs")]
-pub mod egraph_simplify;

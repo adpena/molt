@@ -49,10 +49,15 @@ Each kernel returns a `(result, ok)` tuple. `ok == false` triggers fallback.
 
 ## E-graph / Equality Saturation Investigation
 
-### Status: Prototype (behind `egraphs` feature flag)
+### Status: Investigation only (no code)
 
-A proof-of-concept integration of the [egg](https://egraphs-good.github.io/)
-e-graph library exists in `runtime/molt-backend/src/egraph_simplify.rs`.
+Molt has no e-graph code today. From 2026-03-01 to 2026-10-17 a 130-line
+[egg](https://egraphs-good.github.io/) prototype lived in
+`runtime/molt-backend/src/egraph_simplify.rs` behind an `egraphs` Cargo
+feature. It rewrote a toy integer language, not TIR. No pass called it and no
+proof cell enabled the feature, so HF-281 deleted it with the `egg` dependency.
+Git history keeps it. A real integration starts from TIR and must name the
+proof cell that builds it.
 
 ### What are E-graphs?
 
@@ -76,7 +81,8 @@ according to a cost model.
 - **Placement**: After type inference, before lowering to LIR.
 - **Cost model**: AST size (minimize node count) as initial metric, with
   extension to latency-based cost for architecture-specific optimization.
-- **Feature-gated**: `cargo build -p molt-backend --features egraphs`
+- **Gating**: a typed pass-pipeline decision with a proof cell, not an
+  unbuilt Cargo feature.
 
 ### Key Constraint
 
