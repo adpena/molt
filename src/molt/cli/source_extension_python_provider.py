@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
+from molt.cli.source_extension_invocation import SOURCE_EXTENSION_ABI_TIERS
 from molt.cli.source_extension_link_arguments import source_extension_link_arguments
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkCyclicGroup,
@@ -257,7 +258,7 @@ def source_extension_python_provider(
         dependency.get("type") != "system"
         or dependency.get("version") != variant.cpython
         or ".".join(version.split(".")[:2]) != variant.cpython
-        or variant.abi_tier not in {"cpython-abi", "source-compat"}
+        or variant.abi_tier not in SOURCE_EXTENSION_ABI_TIERS
         or runtime["py_debug"]
         or runtime["gil_disabled"]
     ):

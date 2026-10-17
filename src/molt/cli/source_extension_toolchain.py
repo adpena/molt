@@ -18,6 +18,10 @@ from typing import Any
 
 from molt.file_hashing import _sha256_file
 from molt.cli.native_link_plan import is_zig_compiler_command
+from molt.cli.source_extension_invocation import (
+    DEFAULT_SOURCE_EXTENSION_ABI_TIER,
+    parse_source_extension_abi_tier,
+)
 from molt.cli.compiler_target import (
     common_compiler_arguments,
     compiler_target_triple,
@@ -59,7 +63,6 @@ from molt.source_root import compiler_source_root
 from molt.wasi_sdk_identity import WasiCAbiProjection, wasi_c_abi_projection
 from molt.wasi_sysroot import normalize_wasi_sysroot
 
-_SOURCE_EXTENSION_ABI_TIERS = {"source-compat", "cpython-abi"}
 MOLT_PKGCONF_REQUIREMENT = "pkgconf==3.0.1.post0"
 _SOURCE_EXTENSION_INCLUDE_FILE_SUFFIXES = {
     ".c",
@@ -568,23 +571,6 @@ def _resolve_source_extension_wasm_toolchain(
     )
 
 
-def _normalize_source_extension_abi_tier(abi_tier: str | None) -> str:
-    requested = (abi_tier or "source-compat").strip().lower().replace("_", "-")
-    aliases = {
-        "molt": "source-compat",
-        "molt-source": "source-compat",
-        "source": "source-compat",
-        "source-compatible": "source-compat",
-        "cpython": "cpython-abi",
-        "cpython-layout": "cpython-abi",
-        "python-abi": "cpython-abi",
-    }
-    normalized = aliases.get(requested, requested)
-    if normalized in _SOURCE_EXTENSION_ABI_TIERS:
-        return normalized
-    raise ValueError("source-extension ABI tier must be source-compat or cpython-abi")
-
-
 def _normalize_source_extension_python_version(python_version: str | None) -> str:
     if not isinstance(python_version, str) or not python_version:
         raise ValueError(
@@ -608,7 +594,7 @@ def _source_extension_include_dirs_for_abi_tier(
     molt_root: Path,
     abi_tier: str,
 ) -> tuple[Path, ...]:
-    normalized = _normalize_source_extension_abi_tier(abi_tier)
+    normalized = parse_source_extension_abi_tier(abi_tier)
     root = molt_root.resolve()
     if normalized == "cpython-abi":
         # One public header home per tier. Shared scalar/data-model primitives
@@ -626,7 +612,7 @@ def _source_extension_python_header_for_abi_tier(
     molt_root: Path,
     abi_tier: str,
 ) -> Path:
-    normalized = _normalize_source_extension_abi_tier(abi_tier)
+    normalized = parse_source_extension_abi_tier(abi_tier)
     root = molt_root.resolve()
     if normalized == "cpython-abi":
         return root / "runtime" / "molt-cpython-abi" / "include" / "Python.h"
@@ -1026,7 +1012,7 @@ def _python_pc_text(
         molt_root=molt_root,
         abi_tier=abi_tier,
     )
-    if _normalize_source_extension_abi_tier(abi_tier) == "cpython-abi":
+    if parse_source_extension_abi_tier(abi_tier) == "cpython-abi":
         python_header = include_dirs[0] / "Python.h"
         header_text = python_header.read_text(encoding="utf-8")
         major = re.search(
@@ -1151,7 +1137,7 @@ def _materialize_source_extension_target_metadata(
     out_dir: Path,
     target_plan: SourceExtensionTargetPlan,
     python_version: str,
-    abi_tier: str = "source-compat",
+    abi_tier: str = DEFAULT_SOURCE_EXTENSION_ABI_TIER,
 ) -> tuple[_SourceExtensionTargetMetadata | None, list[str]]:
     environment = dict(os.environ)
     try:
@@ -1210,7 +1196,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
     ):
         raise ValueError("source-extension sysroot differs from selected C ABI plan")
     resolved_target = target_plan.target_triple
-    resolved_abi_tier = _normalize_source_extension_abi_tier(abi_tier)
+    resolved_abi_tier = parse_source_extension_abi_tier(abi_tier)
     include_dirs = _source_extension_include_dirs_for_abi_tier(
         molt_root=molt_root,
         abi_tier=resolved_abi_tier,
