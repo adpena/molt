@@ -460,6 +460,99 @@ def test_committed_gate_manifest_is_valid(drv):
 @pytest.mark.parametrize(
     "path",
     [
+        "tools/proof_plan.toml",
+        "tools/proof_plan.py",
+        "tools/proof_receipts.py",
+        "tests/test_proof_plan.py",
+        "tools/proof_queue_pkg/command_admission.py",
+        "tools/proof_queue_pkg/command_identity.py",
+        "tools/proof_queue_pkg/execution_environment.py",
+        "tools/proof_queue_pkg/target_derived_toolchains.py",
+        "tools/proof_queue_pkg/toolchain_capture.py",
+        "tools/proof_queue_pkg/process_image_capture.py",
+        "tools/proof_queue_pkg/python_custody_bootstrap.py",
+        "tools/proof_queue_pkg/cli.py",
+        "tools/proof_queue_pkg/pact.py",
+        "tests/tools/test_source_extension_proof_family.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_python_custody_bootstrap.py",
+    ],
+)
+def test_proof_policy_edits_select_receivers_without_package_production(drv, path):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select([path])
+    names = {rule.name for rule in matched}
+    assert "source-extension-proof-policy" in names
+    assert "source-extension-package-sets" not in names
+    arguments = [shlex.split(gate) for gate in gates]
+    selected = {argument for argv in arguments for argument in argv}
+    # These mixed consumers include real proof-environment and Pact-oracle
+    # reads; dropping all source-extension tests would miss those boundaries.
+    assert {
+        "tests/cli/test_source_extension_link_inputs.py",
+        "tests/tools/test_source_extension_proof_family.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_python_custody_bootstrap.py",
+        "tests/tools/test_scientific_stack_versions.py",
+    } <= selected
+    assert "tests/cli/test_source_extension_producer.py" not in selected
+    assert "tests/cli/test_source_extension_compiler_inputs.py" not in selected
+    queue = next(
+        argv for argv in arguments if "tests/tools/test_proof_queue.py" in argv
+    )
+    assert set(queue[queue.index("-k") + 1].split(" or ")) == {
+        "proof_queue_pact_witness",
+        "proof_queue_rejects_scipy",
+        "proof_queue_requires_explicit_scipy",
+        "rejects_expected_extension_identity_drift",
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "config/source_extension_package_sets.toml",
+        "config/scientific_stack_versions.toml",
+        "src/molt/cli/source_extension_set_registry.py",
+        "src/molt/cli/source_extension_invocation.py",
+        "src/molt/cli/source_extension_producer.py",
+        "src/molt/cli/source_build_environment.py",
+        "src/molt/cli/source_build_environment_schema.py",
+        "src/molt/source_extension_link_inputs.py",
+        "tests/cli/test_source_build_environment_probe.py",
+        "tests/tools/test_scientific_stack_versions.py",
+    ],
+)
+def test_producer_edits_retain_package_and_proof_boundary_checks(drv, path):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select([path])
+    names = {rule.name for rule in matched}
+    assert {"source-extension-package-sets", "source-extension-proof-policy"} <= names
+    selected = {argument for gate in gates for argument in shlex.split(gate)}
+    assert {
+        "tests/cli/test_source_extension_producer.py",
+        "tests/cli/test_source_extension_invocation.py",
+        "tests/cli/test_source_extension_compiler_inputs.py",
+        "tests/cli/test_source_extension_link_inputs.py",
+        "tests/tools/test_source_extension_proof_family.py",
+        "tests/tools/test_proof_queue.py",
+    } <= selected
+    assert len(gates) == len(set(gates))
+
+
+def test_every_producer_trigger_also_selects_its_proof_boundary(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    rules = {rule.name: rule for rule in cfg.rules}
+    # Both actions depend on these inputs. A new producer trigger must not
+    # silently leave its proof-admission consumer behind.
+    assert set(rules["source-extension-package-sets"].globs) <= set(
+        rules["source-extension-proof-policy"].globs
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "runtime/molt-ir/src/tir/ops.rs",
         "runtime/molt-passes/src/tir/passes/effects.rs",
         "runtime/molt-passes/src/tir/lower_to_simple.rs",
@@ -518,6 +611,7 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
             "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
             "runtime/molt-ir/src/tir/op_kinds.toml",
             "tools/proof_plan.toml",
+            "config/source_extension_package_sets.toml",
         ]
     )
     # These independent families must survive reordering, including every
@@ -525,6 +619,7 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
     source_names = {
         "op-kind-registry",
         "source-extension-package-sets",
+        "source-extension-proof-policy",
         "dev-tooling",
         "rust-ffi-blocks",
         "ci-wiring",

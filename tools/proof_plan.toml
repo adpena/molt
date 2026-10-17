@@ -4058,11 +4058,67 @@ gates = [
   "python -m pytest -q tests/test_llvm_runtime_abi_audit.py",
 ]
 
-# --- Source-extension package-set authority -------------------------------
+# --- Source-extension production and proof-policy boundaries ------------
 [[rule]]
 name = "source-extension-package-sets"
 toolchains = ["python", "uv"]
-description = "Versioned source-extension package sets: one typed registry owns variant identity, manifests, toolchain custody, link requirements, seal validation, profiling, and Pact roots; shared codecs and retained-input custody bind eager-import facts across publication and admission."
+description = "Source-extension registry, producer, retained inputs, link and publication contracts; proof-policy consumers are selected separately."
+globs = [
+  "config/source_extension_package_sets.toml",
+  "config/scientific_stack_versions.toml",
+  "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
+  "src/molt/scientific_stack_versions.py",
+  "src/molt/cli/atomic_io.py",
+  "src/molt/file_publication.py",
+  "src/molt/cli/source_package_seal.py",
+  "src/molt/cli/entrypoint_parser.py",
+  "src/molt/cli/entrypoint_dispatch.py",
+  "src/molt/cli/extension_commands.py",
+  "src/molt/cli/extension_manifest.py",
+  "src/molt/cli/extension_seal.py",
+  "src/molt/cli/extension_wheel.py",
+  "src/molt/cli/external_native.py",
+  "src/molt/cli/link_pipeline.py",
+  "src/molt/cli/link_fingerprints.py",
+  "src/molt/link_outputs.py",
+  "src/molt/cli/link_member_selection.py",
+  "src/molt/cli/link_selection_admission.py",
+  "tests/cli/test_link_member_selection.py",
+  "tests/cli/test_link_selection_admission.py",
+  "tests/cli/test_link_fingerprints.py",
+  "src/molt/cli/module_graph.py",
+  "src/molt/cli/native_link_command.py",
+  "src/molt/cli/native_link_plan.py",
+  "src/molt/cli/python_module_names.py",
+  "src/molt/source_extension_link_inputs.py",
+  "src/molt/cli/source_extension_*.py",
+  "src/molt/cli/source_extensions.py",
+  "tools/native_link_benchmark.py",
+  "tools/profile_source_extension_set.py",
+  "tests/cli/test_atomic_io_authority.py",
+  "tests/cli/test_source_package_seal.py",
+  "tests/test_exact_json.py",
+  "tests/cli/test_cli_extension_commands.py",
+  "tests/cli/test_cli_import_collection.py",
+  "tests/cli/test_external_native_scipy_package_seal.py",
+  "tests/cli/test_extension_wheel_retained_inputs.py",
+  "tests/cli/test_python_module_names.py",
+  "tests/cli/test_source_extension_*.py",
+  "tests/tools/test_native_link_benchmark.py",
+  "tests/tools/test_scientific_stack_versions.py",
+  "src/molt/cli/source_build_environment*.py",
+  "tests/cli/test_source_build_environment_probe.py",
+]
+gates = [
+  "python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
+]
+
+# Every production input also selects the proof bridge; policy-only inputs
+# never require unrelated package production. Keep both dependency edges explicit.
+[[rule]]
+name = "source-extension-proof-policy"
+toolchains = ["python", "uv"]
+description = "Source-extension typed invocation, target/toolchain custody and Pact receipt admission. Production inputs preserve this complete shared boundary."
 globs = [
   "config/source_extension_package_sets.toml",
   "config/scientific_stack_versions.toml",
@@ -4118,10 +4174,15 @@ globs = [
   "tests/test_proof_plan.py",
   "tests/tools/test_native_link_benchmark.py",
   "tests/tools/test_scientific_stack_versions.py",
+  "src/molt/cli/source_build_environment*.py",
+  "tests/cli/test_source_build_environment_probe.py",
+  "tools/proof_queue_pkg/command_identity.py",
+  "tools/proof_queue_pkg/toolchain_capture.py",
+  "tools/proof_queue_pkg/process_image_capture.py",
+  "tools/proof_queue_pkg/cli.py",
 ]
 gates = [
-  "python -m pytest -q tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_scientific_stack_versions.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
-  "python -m pytest -q tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py",
+  "python -m pytest -q tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
   "python -m pytest -q tests/tools/test_proof_queue.py -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift'",
 ]
 
