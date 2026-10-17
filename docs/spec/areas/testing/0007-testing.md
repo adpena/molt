@@ -35,6 +35,15 @@ paths so existing proof rosters keep owning the same cases. This follows the
 [rustc test layout](https://rustc-dev-guide.rust-lang.org/tests/intro.html);
 checks and their dependencies remain development-only.
 
+Synthetic tool-custody fixtures retain complete, independent native images.
+An SDK batch copies one fresh image and uses it only within that call to
+provision the remaining images; existing files may contain deliberate mutations
+and cannot supply new copies. On clone-capable macOS, Apple's
+[copyfile operation](https://github.com/apple-oss-distributions/copyfile/blob/main/copyfile.3)
+selects cloning or copying while preserving separate files. Other hosts retain
+the standard copy operation. Returned copy errors propagate. No shared mutable
+template, hardlink or emitted-program check is introduced.
+
 ## Test quality and agent-written tests
 
 This is the shared test-authoring contract for human and agent contributions.
@@ -106,8 +115,11 @@ percentages. Required conformance and release matrix gates still apply.
   dependency closure that preserves the invariant. Profile slow setup/build/run
   stages before optimizing. Reuse immutable fixture inputs without sharing
   mutable state across tests; batch integration builds and keep them out of the
-  fast unit loop. Run required checks, then repeat or widen only for changed
-  inputs, failures, or unresolved claims. Timing assertions belong in controlled
+  fast unit loop. Real Cargo fixtures use actual filesystem measurements with
+  invocation-owned headroom appropriate to their dependency graph; modeled
+  capacity fixtures cannot authorize actual builds. Run required checks, then
+  repeat or widen only for changed inputs, failures, or unresolved claims.
+  Timing assertions belong in controlled
   performance lanes, not noisy functional tests.
 
 During review, ask: which realistic defect would pass unnoticed, is the oracle

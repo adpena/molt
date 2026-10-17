@@ -79,7 +79,10 @@ def assert_supervisor_refusal(
     assert returncode == 2
     assert record["phase"] == "failed"
     assert record["command_started"] is False
-    assert record["error"] == f"SupervisorPrelaunchRefused: {refusal.value}"
+    refusal_type = supervisor_custody.SupervisorPrelaunchRefused
+    assert record["error"] == (
+        f"{refusal_type.__module__}.{refusal_type.__qualname__}: {refusal.value}"
+    )
     assert capability["admission"]["state"] == "ineligible"
     assert capability["admission"]["reason"]
     if queue_terminal:

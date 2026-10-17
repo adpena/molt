@@ -4559,6 +4559,8 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This dependency-free fixture owns its headroom; keep real disk admission.
+    monkeypatch.setenv("MOLT_DISK_GUARD_HIGH_WATER_GB", "1")
     repo = tmp_path / "minimal-cargo-link"
     _initialize_clean_git_repo(repo)
     # Scratch may sit below another Cargo workspace (CI roots it in the

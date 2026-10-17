@@ -393,6 +393,9 @@ fn main() {
         CARGO_TARGET_DIR=str(tmp_path / "target"),
         CARGO_INCREMENTAL="0",
         CARGO_BUILD_JOBS="1",
+        # Two registry-free fixture crates keep real capacity admission with
+        # their own headroom, independently of full-runtime build policy.
+        MOLT_DISK_GUARD_HIGH_WATER_GB="1",
         RUSTC_WRAPPER="",
         RUSTC_WORKSPACE_WRAPPER="",
         PROBE_RUN_LOG=str(runs),

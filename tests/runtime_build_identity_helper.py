@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -46,6 +47,37 @@ from molt.cli.compiler_metadata import _compiler_root
 from molt.wasi_sdk_identity import WasiCAbiProjection
 
 
+def _copy_native_image(source: Path, destination: Path) -> None:
+    """Copy independent fixture bytes using the host's native copy policy."""
+    if sys.platform != "darwin":
+        shutil.copy2(source, destination)
+        return
+
+    import ctypes
+
+    # copyfile(3), unlike fcopyfile(3), supports COPYFILE_CLONE. Apple's
+    # single operation selects CoW or a full copy, including across volumes;
+    # its returned errors are terminal, never retried by this fixture.
+    library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    if not hasattr(library, "clonefile"):
+        # COPYFILE_CLONE and clonefile both arrived in macOS 10.12.
+        shutil.copy2(source, destination)
+        return
+    copyfile = library.copyfile
+    copyfile.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    copyfile.restype = ctypes.c_int
+    # <copyfile.h>: COPYFILE_CLONE implies EXCL, STAT, XATTR and DATA.
+    if copyfile(os.fsencode(source), os.fsencode(destination), None, 1 << 24) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(source), None, str(destination))
+    shutil.copystat(source, destination)
+
+
 @dataclass(frozen=True)
 class RuntimeFixtureRoot:
     """Writable runtime fixtures owned by pytest's temporary-directory lifetime.
@@ -75,18 +107,41 @@ class RuntimeFixtureRoot:
         consumers testing tool behavior must provide real tools instead.
         Existing files are retained so deliberate custody mutations stay visible.
         """
-        relative_path = Path(relative)
-        if relative_path.anchor or ".." in relative_path.parts:
-            raise ValueError(
-                "native executable fixture requires a confined relative path"
-            )
-        path = (self.path / relative_path).resolve()
-        if path == self.path or not path.is_relative_to(self.path):
-            raise ValueError("native executable fixture escaped its pytest-owned root")
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(Path(sys.executable).resolve(strict=True), path)
-        return path
+        return self.native_executables((relative,))[0]
+
+    def native_executables(self, relatives: Sequence[str]) -> tuple[Path, ...]:
+        """Provision a batch before exposing its independent images to tests.
+
+        Only the first image created by this call can supply later copies.
+        Existing images may have deliberate mutations; never use them as a
+        donor. No template or donor survives in state between calls.
+        """
+        paths = []
+        for relative in relatives:
+            relative_path = Path(relative)
+            if relative_path.anchor or ".." in relative_path.parts:
+                raise ValueError(
+                    "native executable fixture requires a confined relative path"
+                )
+            path = (self.path / relative_path).resolve()
+            if path == self.path or not path.is_relative_to(self.path):
+                raise ValueError(
+                    "native executable fixture escaped its pytest-owned root"
+                )
+            paths.append(path)
+        donor = None
+        for path in paths:
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                source = (
+                    Path(sys.executable).resolve(strict=True)
+                    if donor is None
+                    else donor
+                )
+                _copy_native_image(source, path)
+                if donor is None:
+                    donor = path
+        return tuple(paths)
 
 
 def mock_wasm_optimizer_cache_fact(root: RuntimeFixtureRoot) -> dict[str, str]:
@@ -451,19 +506,24 @@ def provisioned_wasi_sdk_fixture(fixture_root: RuntimeFixtureRoot):
     sdk = prefix / "sdk"
     receipt = prefix / ".molt-wasi-sdk.json"
     if not receipt.exists():
-        for name in (
-            "clang",
-            "clang++",
-            "llvm-ar",
-            "llvm-ranlib",
-            "llvm-nm",
-            "wasm-ld",
-            "llvm-strip",
-        ):
-            relative = str(
-                (sdk / "bin" / executable_filename(name, asset.id)).relative_to(root)
+        fixture_root.native_executables(
+            tuple(
+                str(
+                    (sdk / "bin" / executable_filename(name, asset.id)).relative_to(
+                        root
+                    )
+                )
+                for name in (
+                    "clang",
+                    "clang++",
+                    "llvm-ar",
+                    "llvm-ranlib",
+                    "llvm-nm",
+                    "wasm-ld",
+                    "llvm-strip",
+                )
             )
-            fixture_root.native_executable(relative)
+        )
         (sdk / "VERSION").write_text(
             f"{asset.sdk_version}\nwasi-libc: fixture\nllvm-version: {asset.llvm_version}\n",
             encoding="utf-8",

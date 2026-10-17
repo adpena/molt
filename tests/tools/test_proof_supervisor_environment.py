@@ -172,6 +172,11 @@ def test_ineligible_plan_refuses_before_execution(
     case: str,
 ) -> None:
     """Inject a real backend plan, never an execution or receipt."""
+    # No compiler starts in this fixture. Ambient cache/wrapper choices must
+    # not reject its output plan before the native refusal under test.
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
+    for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+        monkeypatch.setenv(name, "")
     refusal = dict(_REAL_REFUSALS[case])
     mode = str(refusal["mode"])
     tmp_path = proof_queue_owned_roots.native_case_path(
@@ -256,7 +261,8 @@ def test_native_capability_owns_platform_launch_environment(
 
 
 @pytest.mark.parametrize(
-    "mutation", ["started", "reason", "context", "stdout", "policy", "eligibility"]
+    "mutation",
+    ["started", "reason", "context", "stdout", "policy", "eligibility", "short-class"],
 )
 def test_refusal_assertions_reject_partial_or_dishonest_execution(
     tmp_path: Path, mutation: str
@@ -273,16 +279,19 @@ def test_refusal_assertions_reject_partial_or_dishonest_execution(
         "pre_entry_process_create_authority": False,
         "recursive_descendant_authority": False,
     }
+    refusal_type = supervisor_custody.SupervisorPrelaunchRefused
     record = {
         "envelope": command_admission.envelope_for_command(command),
         "phase": "failed",
         "command_started": False,
         "supervisor_capability": capability,
-        "error": str(supervisor_custody.SupervisorPrelaunchRefused.__name__)
+        "error": f"{refusal_type.__module__}.{refusal_type.__qualname__}"
         + ": native supervisor prelaunch refused: "
         + capability["admission"]["reason"],
     }
     result_path = tmp_path / "execution.json"
+    result_path.write_text(json.dumps(record), encoding="utf-8")
+    assert assert_supervisor_refusal(2, result_path)
     if mutation == "started":
         record["command_started"] = True
     elif mutation == "reason":
@@ -297,6 +306,11 @@ def test_refusal_assertions_reject_partial_or_dishonest_execution(
         )
     elif mutation == "eligibility":
         capability["admission"] = {"state": "eligible"}
+    elif mutation == "short-class":
+        record["error"] = (
+            f"{refusal_type.__name__}: native supervisor prelaunch refused: "
+            + capability["admission"]["reason"]
+        )
     result_path.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises((AssertionError, ValueError)):
         assert_supervisor_refusal(2, result_path)
