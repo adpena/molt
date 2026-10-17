@@ -444,7 +444,6 @@ def test_registered_python_cargo_driver_places_retained_outputs(tmp_path, comman
         "TMPDIR",
         "PYTHONPYCACHEPREFIX",
         "MOLT_DIFF_CARGO_TARGET_DIR",
-        "MOLT_WASM_TEST_CARGO_TARGET_DIR",
         "MOLT_DIFF_TMPDIR",
         "MOLT_COMPAT_SCRATCH_ROOT",
         "MOLT_PROOF_SCRATCH_ROOT",

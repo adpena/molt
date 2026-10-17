@@ -1383,11 +1383,7 @@ def _protected_paths(
             for target in registered_targets
             if target.name == component and target.parent.name == "sessions"
         )
-    for name in (
-        "CARGO_TARGET_DIR",
-        "MOLT_DIFF_CARGO_TARGET_DIR",
-        "MOLT_WASM_TEST_CARGO_TARGET_DIR",
-    ):
+    for name in ("CARGO_TARGET_DIR", "MOLT_DIFF_CARGO_TARGET_DIR"):
         raw = str(env.get(name, "")).strip()
         if raw:
             protected.append(Path(raw).expanduser().resolve(strict=False))

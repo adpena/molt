@@ -103,7 +103,7 @@ class CargoOutputEnvironment:
         if self.external_placement:
             names += ("PYTHONPYCACHEPREFIX",)
         if self.python_driver:
-            names += ("MOLT_DIFF_CARGO_TARGET_DIR", "MOLT_WASM_TEST_CARGO_TARGET_DIR")
+            names += ("MOLT_DIFF_CARGO_TARGET_DIR",)
         return names
 
     @property
