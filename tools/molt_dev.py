@@ -423,8 +423,13 @@ class GateConfig:
 
     @staticmethod
     def parse(source: str, label: str, *, root: Path | None = None) -> "GateConfig":
-        from tools.proof_plan import local_gate_commands, local_rule_field_error
+        from tools.proof_plan import (
+            local_gate_commands,
+            local_pytest_target_errors,
+            local_rule_field_error,
+        )
 
+        root = root or Path(__file__).resolve().parents[1]
         try:
             data = tomllib.loads(source)
         except tomllib.TOMLDecodeError as exc:
@@ -447,10 +452,8 @@ class GateConfig:
             ):
                 raise DriverError(f"gate rule {name!r} `gates` must be a list of str")
             pytest_targets = entry.get("pytest", [])
-            if not isinstance(pytest_targets, list) or not all(
-                isinstance(t, str) for t in pytest_targets
-            ):
-                raise DriverError(f"gate rule {name!r} `pytest` must be a list of str")
+            if errors := local_pytest_target_errors(name, pytest_targets, root=root):
+                raise DriverError("\n".join(errors))
             rules.append(
                 GateRule(
                     name=name,
@@ -469,7 +472,7 @@ class GateConfig:
             always=list(always),
             prerequisites=commands,
             prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
-            root=root or Path(__file__).resolve().parents[1],
+            root=root,
             pytest_workers=int(data.get("local_pytest_workers", 1)),
         )
 
@@ -515,7 +518,9 @@ class GateConfig:
                 f"selected gate prerequisites failed; executed=0: {exc}"
             ) from exc
 
-    def select(self, touched: list[str]) -> tuple[list[str], list[GateRule]]:
+    def select(
+        self, touched: list[str]
+    ) -> tuple[list[str | tuple[str, ...]], list[GateRule]]:
         """Return (ordered unique gate commands, matched rules) for touched paths.
 
         A rule matches when ANY touched path matches ANY of its globs. The
@@ -525,16 +530,19 @@ class GateConfig:
         Every matched rule's pytest targets run in one pytest invocation, at
         the place of the first rule that has any.
         """
-        from tools.proof_plan import local_pytest_command
+        from tools.proof_plan import local_pytest_argv
 
-        selected: list[str] = []
+        selected: list[str | tuple[str, ...]] = []
+        seen_commands: set[str] = set()
+        seen_pytest: set[str] = set()
         matched_rules: list[GateRule] = []
         pytest_targets: list[str] = []
         pytest_index: int | None = None
 
         def _add(cmds: list[str]) -> None:
             for cmd in cmds:
-                if cmd not in selected:
+                if cmd not in seen_commands:
+                    seen_commands.add(cmd)
                     selected.append(cmd)
 
         if touched:
@@ -545,10 +553,13 @@ class GateConfig:
                 _add(rule.gates)
                 if rule.pytest and pytest_index is None:
                     pytest_index = len(selected)
-                pytest_targets.extend(t for t in rule.pytest if t not in pytest_targets)
+                for target in rule.pytest:
+                    if target not in seen_pytest:
+                        seen_pytest.add(target)
+                        pytest_targets.append(target)
         if pytest_index is not None:
             selected.insert(
-                pytest_index, local_pytest_command(pytest_targets, self.pytest_workers)
+                pytest_index, local_pytest_argv(pytest_targets, self.pytest_workers)
             )
         return selected, matched_rules
 
@@ -681,11 +692,11 @@ def _resolve_repo_venv(repo: Path, env: dict[str, str]) -> Path | None:
     return None
 
 
-def run_gate(cmd: str, repo: Path, env: dict[str, str]) -> int:
-    """Run one gate command string in the repo with the given env.
+def run_gate(cmd: str | tuple[str, ...], repo: Path, env: dict[str, str]) -> int:
+    """Run one shell gate or structured argument vector in the selected environment.
 
     The command is a shell string from the manifest (so it can use
-    pipes/&&); it runs through the platform shell with cwd=repo. Output streams
+    pipes/&&); generated pytest batches execute directly. Output streams
     live to the caller's stdout/stderr (no capture) so a long gate is observable.
 
     Activate the selected project environment once for the complete shell command,
@@ -693,13 +704,16 @@ def run_gate(cmd: str, repo: Path, env: dict[str, str]) -> int:
     without a project environment, but a bare Python gate cannot use host PATH as
     a substitute. Explicit invalid selections always fail before shell launch.
     """
-    _say(f"    gate: {cmd}")
-    try:
-        words = shlex.split(cmd, posix=os.name != "nt")
-    except ValueError:
-        # The shell owns syntax errors; environment admission must not replace
-        # its error status with a parser-specific exception.
-        words = []
+    _say(f"    gate: {cmd if isinstance(cmd, str) else shlex.join(cmd)}")
+    if isinstance(cmd, str):
+        try:
+            words = shlex.split(cmd, posix=os.name != "nt")
+        except ValueError:
+            # The shell owns syntax errors; environment admission must not replace
+            # its error status with a parser-specific exception.
+            words = []
+    else:
+        words = cmd
     head = words[0].lower() if words else ""
     if os.name == "nt" and len(head) >= 2 and head[0] == head[-1] == '"':
         head = head[1:-1]
@@ -976,7 +990,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
             )
 
     # --- step 5: gates (hazard 10) ------------------------------------------
-    gate_cmds: list[str] = []
+    gate_cmds: list[str | tuple[str, ...]] = []
     matched_rules: list[GateRule] = []
     # Policy comes from the same immutable commit whose clean source executes it.
     policy = git._run(["show", f"{selected_commit}:tools/{GATES_CONFIG_NAME}"]).stdout
@@ -1007,21 +1021,23 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
     for cmd in gate_cmds:
+        display = cmd if isinstance(cmd, str) else shlex.join(cmd)
         _assert_integration_source(git, selected_commit)
         if dry:
-            _say(f"    would-run gate: {cmd}")
+            _say(f"    would-run gate: {display}")
             continue
         started = time.monotonic()
         rc = run_gate(cmd, repo, env)
         elapsed = time.monotonic() - started
+        gate_seconds.append((elapsed, display))
         _assert_integration_source(git, selected_commit)
         if rc != 0:
             raise DriverError(
-                f"gate failed (exit {rc}) after {elapsed:.1f} s: {cmd}\n    "
-                "Integration halts before push; fix the gate and re-run."
+                f"gate failed (exit {rc}) after {elapsed:.1f} s: {display}\n"
+                + gate_time_summary(gate_seconds)
+                + "\n    Integration halts before push; fix the gate and re-run."
             )
-        gate_seconds.append((elapsed, cmd))
-        _ok(f"gate passed in {elapsed:.1f} s: {cmd}")
+        _ok(f"gate passed in {elapsed:.1f} s: {display}")
     if gate_seconds:
         _say(gate_time_summary(gate_seconds))
 

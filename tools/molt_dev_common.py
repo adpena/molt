@@ -128,13 +128,17 @@ def _run_fast_captured_command(
         return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
 
 
-def _run_live_gate(cmd: str, *, repo: Path, env: dict[str, str]) -> int:
-    """Run a manifest gate live through memory custody while preserving shell syntax."""
+def _run_live_gate(
+    cmd: str | tuple[str, ...], *, repo: Path, env: dict[str, str]
+) -> int:
+    """Run shell syntax or structured argv live through memory custody."""
     # A compound shell gate can launch Cargo in any arm. Its opaque shell argv
     # cannot trigger direct-Cargo admission, so normalize the inherited wrapper
     # environment before launching it, without parsing shell syntax.
     env, _policies = normalize_cargo_environment(env)
-    if os.name == "nt":
+    if not isinstance(cmd, str):
+        argv = list(cmd)
+    elif os.name == "nt":
         shell = os.environ.get("COMSPEC") or "cmd.exe"
         argv = [shell, "/d", "/c", cmd]
     else:

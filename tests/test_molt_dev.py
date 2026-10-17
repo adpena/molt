@@ -205,7 +205,9 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
 
 
 def _make_gate_venv(path: Path, token: str | None) -> Path:
-    venv.EnvBuilder(with_pip=False).create(path)
+    # POSIX venvs share the immutable interpreter image; prefixes, packages and
+    # marker modules remain private. Windows keeps CPython's copy/redirector path.
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(path)
     # EnvBuilder uses this interpreter's venv scheme. Actual selected-Python
     # execution below proves prefix, imports, encoding and shell activation;
     # fixture setup needs no guarded interpreter just to repeat this path query.
@@ -513,7 +515,7 @@ def test_committed_gate_manifest_is_valid(drv):
     assert "wasm-host" in names
 
 
-def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv):
+def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv, tmp_path):
     source = """
 local_pytest_workers = 3
 always = ["python tools/check_a.py"]
@@ -536,17 +538,101 @@ gates = []
 pytest = ["tests/test_c.py"]
 toolchains = ["python"]
 """
-    cfg = drv.GateConfig.parse(source, "merged pytest fixture")
+    (tmp_path / "tests").mkdir()
+    for name in ("a", "b", "c", "shared"):
+        (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
+    cfg = drv.GateConfig.parse(source, "merged pytest fixture", root=tmp_path)
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
     assert [rule.name for rule in matched] == ["first", "second"]
     # One pytest run at the first contributing rule's place, each target once.
     assert gates == [
         "python tools/check_a.py",
         "python tools/check_first.py",
-        "python -m pytest -q -n 3 tests/test_a.py tests/test_shared.py "
-        "tests/test_b.py::test_one",
+        (
+            "python",
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "3",
+            "tests/test_a.py",
+            "tests/test_shared.py",
+            "tests/test_b.py::test_one",
+        ),
         "cargo test -p b",
     ]
+
+
+@pytest.mark.parametrize(
+    "target,message",
+    [
+        ("-k", "must be a tests/ path"),
+        ("", "must be a list of test paths"),
+        ("src/test_x.py", "must be a tests/ path"),
+        ("tests/../outside.py", "must be a tests/ path"),
+        ("tests/missing.py", "does not exist"),
+    ],
+)
+def test_gate_driver_rejects_invalid_batch_targets(drv, tmp_path, target, message):
+    (tmp_path / "outside.py").write_text("", encoding="utf-8")
+    source = f"""[[rule]]
+name = "invalid"
+globs = ["**"]
+gates = []
+pytest = [{json.dumps(target)}]
+"""
+    with pytest.raises(drv.DriverError, match=message):
+        drv.GateConfig.parse(source, "invalid batch", root=tmp_path)
+
+
+@pytest.mark.parametrize("platform_name", ["posix", "nt"])
+def test_structured_gate_preserves_node_ids_without_a_shell(
+    drv, tmp_path, monkeypatch, platform_name
+):
+    from tools import molt_dev_common
+
+    install_module_os_view(monkeypatch, molt_dev_common, name=platform_name)
+    targets = (
+        "tests/test_x.py::test_one[spaces and & > 'quotes']",
+        'tests/test_x.py::test_one["double quotes"]',
+    )
+    from tools.proof_plan import local_pytest_argv
+
+    command = local_pytest_argv(targets, 3)
+    observed = []
+
+    def guarded(argv, **kwargs):
+        observed.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(
+        molt_dev_common.harness_memory_guard, "guarded_completed_process", guarded
+    )
+    assert molt_dev_common._run_live_gate(command, repo=tmp_path, env={}) == 0
+    assert observed == [["python", "-m", "pytest", "-q", "-n", "3", *targets]]
+
+
+def _gate_args(gate):
+    return shlex.split(gate) if isinstance(gate, str) else gate
+
+
+def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
+    repo = tmp_path / "source"
+    repo.mkdir()
+    selected = repo / ".venv"
+    _make_gate_venv(selected, "selected")
+    observed = repo / "observed.json"
+    literal = "case[spaces & > 'quotes' and \"quotes\"]"
+    script = (
+        "import json,sys; from pathlib import Path; "
+        "from molt_gate_selection_marker import TOKEN; "
+        "Path(sys.argv[1]).write_text(json.dumps([TOKEN,sys.prefix,sys.argv[2]]))"
+    )
+    command = ("python", "-c", script, str(observed), literal)
+    assert drv.run_gate(command, repo, _gate_caller_env(tmp_path / "absent")) == 0
+    assert json.loads(observed.read_text()) == ["selected", str(selected), literal]
+    with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
+        drv.run_gate(command, tmp_path, _gate_caller_env(tmp_path / "absent"))
 
 
 @pytest.mark.parametrize(
@@ -576,7 +662,7 @@ def test_proof_policy_edits_select_receivers_without_package_production(drv, pat
     names = {rule.name for rule in matched}
     assert "source-extension-proof-policy" in names
     assert "source-extension-package-sets" not in names
-    arguments = [shlex.split(gate) for gate in gates]
+    arguments = [_gate_args(gate) for gate in gates]
     selected = {argument for argv in arguments for argument in argv}
     # These mixed consumers include real proof-environment and Pact-oracle
     # reads; dropping all source-extension tests would miss those boundaries.
@@ -620,7 +706,7 @@ def test_producer_edits_retain_package_and_proof_boundary_checks(drv, path):
     gates, matched = cfg.select([path])
     names = {rule.name for rule in matched}
     assert {"source-extension-package-sets", "source-extension-proof-policy"} <= names
-    selected = {argument for gate in gates for argument in shlex.split(gate)}
+    selected = {argument for gate in gates for argument in _gate_args(gate)}
     assert {
         "tests/cli/test_source_extension_producer.py",
         "tests/cli/test_source_extension_invocation.py",
@@ -787,8 +873,8 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
         "rust-clippy-changed",
     ]
     assert "python tools/gen_codecs.py --check" in gates
-    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
-    assert "tests/test_gen_codecs.py" in shlex.split(merged)
+    merged = next(gate for gate in gates if isinstance(gate, tuple))
+    assert "tests/test_gen_codecs.py" in merged
 
     gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
     assert "codec-tables" in {r.name for r in matched}
@@ -815,8 +901,8 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
     gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
     assert "codec-tables" in {r.name for r in matched}
     assert "python tools/gen_codecs.py --check" in gates
-    merged = next(gate for gate in gates if gate.startswith("python -m pytest"))
-    assert "tests/test_gen_codecs.py" in shlex.split(merged)
+    merged = next(gate for gate in gates if isinstance(gate, tuple))
+    assert "tests/test_gen_codecs.py" in merged
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
@@ -1468,6 +1554,8 @@ gates = ["echo build-started > build-started.txt"]
     with pytest.raises(drv.DriverError) as exc:
         drv.cmd_integrate(ns)
     assert re.search(r"gate failed \(exit 3\) after \d+\.\d s: exit 3", str(exc.value))
+    assert re.search(r"gates: 1 in \d+\.\d s; slowest:", str(exc.value))
+    assert str(exc.value).count("exit 3") == 3  # status, failed command, timing row
     assert not (work / "build-started.txt").exists()
     # Nothing was pushed (origin unchanged).
     origin_main = _git(work, "rev-parse", "origin/main").stdout.strip()
