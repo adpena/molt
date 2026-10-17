@@ -135,21 +135,32 @@ def test_runtime_package_calls_use_live_callable(module, binding):
     # Package intrinsics belong inside the package function. The caller must
     # retain the actual callable, including alias/capture/rebinding semantics.
     call_line = len(statements[binding].splitlines())
+    captured_binding = binding in {"from", "captured"}
+    expected_call = "call_func" if captured_binding else "call_loaded_method"
     calls = [
         op
         for op in ops
-        if op["kind"] == "call_func" and op.get("source_line") == call_line
+        if op["kind"] == expected_call and op.get("source_line") == call_line
     ]
     assert len(calls) == 1
     call = calls[0]
-    assert len(call["args"]) == (3 if module == "molt_buffer" else 2)
     function_ops = next(fn["ops"] for fn in ir["functions"] if call in fn["ops"])
-    callee = next(op for op in function_ops if op.get("out") == call["args"][0])
-    assert callee["kind"] == (
-        "module_get_global"
-        if binding in {"from", "captured"}
-        else "get_attr_generic_obj"
-    )
+    if captured_binding:
+        assert len(call["args"]) == (3 if module == "molt_buffer" else 2)
+        callee = next(op for op in function_ops if op.get("out") == call["args"][0])
+        assert callee["kind"] == "module_get_global"
+    else:
+        # Method-form attribute lookup produces the live callable and its
+        # self-or-null word. The source call must consume that exact pair.
+        assert len(call["args"]) == (4 if module == "molt_buffer" else 3)
+        (load,) = (
+            op
+            for op in function_ops
+            if op["kind"] == "load_method" and op.get("var") == call["args"][0]
+        )
+        assert load["s_value"] == member
+        assert call["args"][1] == load["out"]
+        assert function_ops.index(load) < function_ops.index(call)
     assert any(
         op["kind"] in {"module_set_attr", "ret"} and call["out"] in op.get("args", [])
         for op in function_ops
@@ -243,73 +254,57 @@ def test_list_dict_lowering():
     assert "store_index" in kinds
 
 
-def test_list_dict_method_lowering():
-    src = """
-lst = [1]
-lst.append(2)
-lst.extend([3])
-lst.insert(0, 4)
-lst.remove(2)
-lst.count(2)
-lst.index(2)
-lst.pop()
-d = {"a": 1}
-d.get("a")
-d.get("b", 2)
-d.pop("a", 3)
-d.keys()
-d.values()
-d.items()
-t = (1, 2, 3)
-t.count(1)
-t.index(2)
-s = "hello"
-s.find("ell")
-s.split("e")
-s.replace("e", "x")
-s.startswith("he")
-s.endswith("lo")
-s.count("l")
-s.join(["a", "b"])
-b = b"hello"
-b.find(b"lo")
-b.split(b"e")
-b.replace(b"e", b"x")
-ba = bytearray(b"hello")
-ba.find(b"lo")
-ba.split(b"e")
-ba.replace(b"e", b"x")
-"""
-    ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "list_append" in kinds
-    assert "list_extend" in kinds
-    assert "list_insert" in kinds
-    assert "list_remove" in kinds
-    assert "list_count" in kinds
-    assert "list_index" in kinds
-    assert "list_pop" in kinds
-    assert "dict_get" in kinds
-    assert "dict_pop" in kinds
-    assert "dict_keys" in kinds
-    assert "dict_values" in kinds
-    assert "dict_items" in kinds
-    assert "tuple_count" in kinds
-    assert "tuple_index" in kinds
-    assert "string_find" in kinds
-    assert "string_startswith" in kinds
-    assert "string_endswith" in kinds
-    assert "string_count" in kinds
-    assert "string_join" in kinds
-    assert "string_split" in kinds
-    assert "string_replace" in kinds
-    assert "bytes_find" in kinds
-    assert "bytes_split" in kinds
-    assert "bytes_replace" in kinds
-    assert "bytearray_from_obj" in kinds
-    assert "bytearray_find" in kinds
-    assert "bytearray_split" in kinds
-    assert "bytearray_replace" in kinds
+@pytest.mark.parametrize(
+    ("receiver", "method", "expected_kinds"),
+    [
+        ("[1]", "append(2)", ("list_append",)),
+        ("[1]", "extend([3])", ("list_extend",)),
+        ("[1]", "insert(0, 4)", ("list_insert",)),
+        ("[1, 2]", "remove(2)", ("list_remove",)),
+        ("[1, 2]", "count(2)", ("list_count",)),
+        ("[1, 2]", "index(2)", ("list_index",)),
+        ("[1]", "pop()", ("list_pop",)),
+        ('{"a": 1}', 'get("a")', ("dict_get",)),
+        ('{"a": 1}', 'get("b", 2)', ("dict_get",)),
+        ('{"a": 1}', 'pop("a", 3)', ("dict_pop",)),
+        ('{"a": 1}', "keys()", ("dict_keys",)),
+        ('{"a": 1}', "values()", ("dict_values",)),
+        ('{"a": 1}', "items()", ("dict_items",)),
+        ("(1, 2, 3)", "count(1)", ("tuple_count",)),
+        ("(1, 2, 3)", "index(2)", ("tuple_index",)),
+        ('"hello"', 'find("ell")', ("string_find",)),
+        ('"hello"', 'split("e")', ("string_split",)),
+        ('"hello"', 'replace("e", "x")', ("string_replace",)),
+        ('"hello"', 'startswith("he")', ("string_startswith",)),
+        ('"hello"', 'endswith("lo")', ("string_endswith",)),
+        ('"hello"', 'count("l")', ("string_count",)),
+        ('"hello"', 'join(["a", "b"])', ("string_join",)),
+        ('b"hello"', 'find(b"lo")', ("bytes_find",)),
+        ('b"hello"', 'split(b"e")', ("bytes_split",)),
+        ('b"hello"', 'replace(b"e", b"x")', ("bytes_replace",)),
+        (
+            'bytearray(b"hello")',
+            'find(b"lo")',
+            ("bytearray_from_obj", "bytearray_find"),
+        ),
+        (
+            'bytearray(b"hello")',
+            'split(b"e")',
+            ("bytearray_from_obj", "bytearray_split"),
+        ),
+        (
+            'bytearray(b"hello")',
+            'replace(b"e", b"x")',
+            ("bytearray_from_obj", "bytearray_replace"),
+        ),
+    ],
+)
+def test_list_dict_method_lowering(receiver, method, expected_kinds):
+    # Each case establishes an exact receiver at its source point. Earlier
+    # Python callbacks may replace module bindings and invalidate those facts.
+    ir = compile_to_tir(f"value = {receiver}\nresult = value.{method}\n")
+    for kind in expected_kinds:
+        assert len(_ops_by_kind(ir, kind)) == 1, kind
 
 
 def test_for_loop_lowering():
@@ -470,8 +465,10 @@ with open("sample.bin", "rb") as f:
     assert "bytes_split" in kinds
 
 
-def test_string_split_fixed_indexes_scalarize_non_escaping_local():
-    src = """
+@pytest.mark.parametrize(
+    "src",
+    [
+        r"""
 def main() -> None:
     line = "1|NA|2"
     parts = line.split("|")
@@ -479,53 +476,23 @@ def main() -> None:
     second = parts[1]
     print(first, second)
 main()
-"""
-    ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
-    kinds = [op["kind"] for op in ops]
-    assert "string_split" not in kinds
-    assert kinds.count("string_split_validate") == 1
-    assert kinds.count("string_split_field") == 2
-    field_ops = [op for op in ops if op["kind"] == "string_split_field"]
-    assert field_ops[0]["args"][:2] == field_ops[1]["args"][:2]
-
-
-def test_string_split_result_element_hint_enables_nested_split_scalarization():
-    src = """
+""",
+        r"""
 def main() -> None:
-    data = "header,value\\nalpha,beta"
-    lines = data.split("\\n")
+    data = "header,value\nalpha,beta"
+    lines = data.split("\n")
     line = lines[1]
     fields = line.split(",")
     print(fields[0], fields[1])
 main()
-"""
-    ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
-    kinds = [op["kind"] for op in ops]
-    assert "call_indirect" not in kinds
-    assert "string_split" not in kinds
-    assert kinds.count("string_split_validate") == 2
-    assert kinds.count("string_split_field") == 3
-
-
-def test_string_split_duplicate_fixed_index_reuses_materialized_field():
-    src = """
+""",
+        r"""
 def main() -> None:
     parts = "a-b|c-d".split("|")
     print(parts[0] is parts[0])
 main()
-"""
-    ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
-    kinds = [op["kind"] for op in ops]
-    assert kinds.count("string_split_validate") == 1
-    assert kinds.count("string_split_field") == 1
-    assert "copy_var" in kinds
-
-
-def test_string_split_scalarization_ignores_compiler_list_guard():
-    src = """
+""",
+        r"""
 def main() -> None:
     line = "1|NA|2"
     parts: list[str] = line.split("|")
@@ -533,18 +500,8 @@ def main() -> None:
     second = parts[1]
     print(first, second)
 main()
-"""
-    ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
-    kinds = [op["kind"] for op in ops]
-    assert "string_split" not in kinds
-    assert "guard_tag" not in kinds
-    assert kinds.count("string_split_validate") == 1
-    assert kinds.count("string_split_field") == 2
-
-
-def test_string_split_scalarization_keeps_local_across_nested_control():
-    src = """
+""",
+        r"""
 def main(flag: bool) -> None:
     line = "1|NA|2|tail"
     parts = line.split("|")
@@ -555,17 +512,8 @@ def main(flag: bool) -> None:
         print(parts[2])
     print(first, parts[3])
 main(True)
-"""
-    ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
-    kinds = [op["kind"] for op in ops]
-    assert "string_split" not in kinds
-    assert kinds.count("string_split_validate") == 1
-    assert kinds.count("string_split_field") == 4
-
-
-def test_string_split_field_len_and_eq_fuse_without_field_allocation():
-    src = """
+""",
+        r"""
 def main() -> None:
     fields = "alpha|22|eu|tail".split("|")
     total = len(fields[0])
@@ -573,15 +521,48 @@ def main() -> None:
         total += len(fields[3])
     print(total)
 main()
-"""
+""",
+    ],
+    ids=[
+        "fixed-indexes",
+        "nested-split",
+        "repeated-index",
+        "annotated-list",
+        "nested-control",
+        "field-consumers",
+    ],
+)
+def test_string_split_frame_binding_keeps_materialized_list(src):
     ir = compile_to_tir(src)
     ops = _ops_by_func_suffix(ir, "molt_user_main")
+    splits = [op for op in ops if op["kind"] == "string_split"]
+    assert splits
+    # A synchronous frame owns this source binding. Scalarizing through its
+    # home would replace the list observable through f_locals with a sentinel.
+    for split in splits:
+        assert any(
+            op["kind"] == "frame_home_store" and op["args"] == [split["out"]]
+            for op in ops
+        )
+    assert not any(op["kind"].startswith("string_split_field") for op in ops)
+    assert not any(op["kind"] == "string_split_validate" for op in ops)
+
+
+@pytest.mark.parametrize("index", [0, 1, 3])
+def test_string_split_ephemeral_fixed_index_scalarizes(index):
+    ir = compile_to_tir(f'x = "alpha|22|eu|tail".split("|")[{index}]')
+    ops = _all_ops(ir)
     kinds = [op["kind"] for op in ops]
     assert "string_split" not in kinds
     assert kinds.count("string_split_validate") == 1
-    assert kinds.count("string_split_field_len") == 2
-    assert kinds.count("string_split_field_eq") == 1
-    assert kinds.count("string_split_field") == 0
+    fields = [op for op in ops if op["kind"] == "string_split_field"]
+    assert len(fields) == 1
+    definitions = {op["out"]: op for op in ops if "out" in op}
+    assert definitions[fields[0]["args"][2]]["value"] == index
+    assert any(
+        op["kind"] == "module_set_attr" and fields[0]["out"] in op.get("args", [])
+        for op in ops
+    )
 
 
 def test_string_split_scalarization_keeps_escaping_and_dynamic_uses_on_list_path():
@@ -707,7 +688,7 @@ x = ["a" for _ in range(n)]
     assert "list_append" not in kinds
 
 
-def test_fully_positional_dataclass_constructor_skips_init_dispatch():
+def test_dataclass_constructor_after_callback_preserves_live_class_dispatch():
     src = """
 from dataclasses import dataclass
 
@@ -724,21 +705,30 @@ print(order.qty)
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "dataclass_new_values" in kinds
+    assert "dataclass_new_values" not in kinds
     assert "dataclass_new" not in kinds
-    dataclass_ops = _ops_by_kind(ir, "dataclass_new_values")
-    assert len(dataclass_ops) == 1
-    dataclass_args = dataclass_ops[0]["args"]
-    assert len(dataclass_args) == 8
-    tuple_outs = {op["out"] for op in _ops_by_kind(ir, "tuple_new")}
-    assert dataclass_args[1] in tuple_outs
-    assert not any(arg in tuple_outs for arg in dataclass_args[3:])
-    assert "dataclass_get" in kinds
-    assert "bound_method_new" not in kinds
-    assert "dataclass_set" not in kinds
+    assert "dataclass_get" not in kinds
+    # The decorator callback invalidates the binding proof. The constructor
+    # must call the published class, preserving its current construction policy.
+    calls = [
+        op
+        for op in _all_ops(ir)
+        if op["kind"] == "call_func" and op.get("source_line") == 12
+    ]
+    assert len(calls) == 1
+    constructor = calls[0]
+    assert len(constructor["args"]) == 6
+    definitions = {op["out"]: op for op in _all_ops(ir) if "out" in op}
+    callee = definitions[constructor["args"][0]]
+    assert callee["kind"] == "module_get_global"
+    assert definitions[callee["args"][1]]["s_value"] == "Order"
+    assert any(
+        op["kind"] == "get_attr_generic_obj" and op.get("s_value") == "qty"
+        for op in _all_ops(ir)
+    )
 
 
-def test_annotated_dataclass_list_iteration_preserves_field_lowering():
+def test_annotated_dataclass_list_iteration_preserves_dynamic_fields():
     src = """
 from dataclasses import dataclass
 
@@ -761,11 +751,14 @@ if __name__ == "__main__":
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir, "__main____molt_user_main")
-    assert kinds.count("dataclass_get") == 2
-    assert "get_attr_generic_obj" not in kinds
+    assert "dataclass_get" not in kinds
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    fields = [op.get("s_value") for op in ops if op["kind"] == "get_attr_generic_obj"]
+    assert fields.count("status") == 1
+    assert fields.count("qty") == 1
 
 
-def test_dataclass_field_dict_increment_fuses_with_the_statement_as_fallback():
+def test_decorated_dataclass_dict_update_preserves_attribute_reads():
     src = """
 from dataclasses import dataclass
 
@@ -785,13 +778,18 @@ if __name__ == "__main__":
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir, "__main____molt_user_main")
-    assert kinds.count("dict_str_int_inc") == 1
-    fused = kinds.index("dict_str_int_inc")
-    # The kernel admits the statement on the values it reads or declines; the
-    # statement itself is the only fallback, never run before the kernel.
-    assert "dict_get" not in kinds[:fused]
-    assert "dict_get" in kinds[fused:]
-    assert "guard_dict_shape" not in kinds
+    # A decorator's result gives no exact-layout or attribute-purity proof.
+    # Reading region twice must retain both possible descriptor callbacks.
+    assert "dict_str_int_inc" not in kinds
+    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    fields = [
+        op
+        for op in ops
+        if op["kind"] == "get_attr_generic_obj" and op.get("s_value") == "region"
+    ]
+    assert len(fields) == 2
+    assert kinds.count("dict_get") == 1
+    assert "store_index" in kinds
 
 
 def test_generic_attribute_dict_increment_keeps_normal_update_path():
@@ -1006,7 +1004,7 @@ def test_for_split_dict_increment_declines_unsound_shapes(src, func):
     assert "string_split_sep_dict_inc" not in kinds
 
 
-def test_statistics_slice_lowering():
+def test_statistics_slice_preserves_live_imported_callable():
     src = """
 from statistics import mean, stdev
 values = [1.0, 2.0, 3.0, 4.0]
@@ -1015,8 +1013,21 @@ s = stdev(values[1:4])
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir)
-    assert "statistics_mean_slice" in kinds
-    assert "statistics_stdev_slice" in kinds
+    assert "statistics_mean_slice" not in kinds
+    assert "statistics_stdev_slice" not in kinds
+    ops = _all_ops(ir)
+    definitions = {op["out"]: op for op in ops if "out" in op}
+    for line, name in [(4, "mean"), (5, "stdev")]:
+        calls = [
+            op
+            for op in ops
+            if op["kind"] == "call_func" and op.get("source_line") == line
+        ]
+        assert len(calls) == 1
+        callee, argument = (definitions[value] for value in calls[0]["args"])
+        assert callee["kind"] == "module_get_global"
+        assert definitions[callee["args"][1]]["s_value"] == name
+        assert argument["kind"] == "slice"
 
 
 def test_dict_setdefault_empty_list_lowering():
@@ -1107,11 +1118,21 @@ def test_fstring_lowering():
     assert "string_join" in kinds
 
 
-def test_format_spec_lowering():
+def test_format_keyword_call_preserves_method_pair_and_keyword_binding():
     src = 'x = "hi {name:>4}".format(name="a")'
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "string_format" in kinds
+    ops = _all_ops(ir)
+    (method,) = [op for op in ops if op["kind"] == "load_method"]
+    assert method["s_value"] == "format"
+    (call,) = [op for op in ops if op["kind"] == "call_bind"]
+    assert call["args"][0] == method["var"]
+    (receiver,) = [op for op in ops if op["kind"] == "callargs_push_method_receiver"]
+    assert receiver["args"] == [call["args"][1], method["out"]]
+    (keyword,) = [op for op in ops if op["kind"] == "callargs_push_kw"]
+    assert keyword["args"][0] == call["args"][1]
+    definitions = {op["out"]: op for op in ops if "out" in op}
+    assert definitions[keyword["args"][1]]["s_value"] == "name"
+    assert definitions[keyword["args"][2]]["s_value"] == "a"
 
 
 def test_type_hint_check_lowering():
@@ -1255,3 +1276,35 @@ def test_range_lowering():
     kinds = _op_kinds(ir)
     assert "range_new" in kinds
     assert "list_from_range" in kinds
+
+
+@pytest.mark.parametrize("public_fixture", [False, True])
+def test_text_predicate_producers_cover_shared_call_family_and_arity(public_fixture):
+    source = ["s = 'abcabc'", "b = b'abcabc'", "ba = bytearray(b'abcabc')"]
+    expected = {}
+    for receiver, variable, needle in (
+        ("string", "s", "'bc'"),
+        ("bytes", "b", "b'bc'"),
+        ("bytearray", "ba", "b'bc'"),
+    ):
+        for method in ("find", "startswith", "endswith", "count"):
+            for suffix, bounds, arity in (("", "", 2), ("_slice", ", -5, 9", 6)):
+                source.append(f"{variable}.{method}({needle}{bounds})")
+                expected[f"{receiver}_{method}{suffix}"] = arity
+    if public_fixture:
+        path = (
+            Path(__file__).parent / "differential/basic/startswith_endswith_slices.py"
+        )
+        text = path.read_text(encoding="utf-8")
+    else:
+        text = "\n".join(source)
+    ir = compile_to_tir(text)
+    for kind, arity in expected.items():
+        calls = _ops_by_kind(ir, kind)
+        if public_fixture:
+            # The executable oracle must reach each specialized family with
+            # both result-using and resultless source calls, before callbacks.
+            assert len(calls) >= 2, kind
+        else:
+            assert len(calls) == 1, kind
+        assert all(len(call["args"]) == arity for call in calls), kind

@@ -298,14 +298,24 @@ Each step is a complete migration of one contract, measured before and after.
    reconstruction. Qualify this bounded deletion cut, then stop extending its
    source bridge. The next native cut carries typed CFG, ownership, module
    roots, callable metadata and partition ABI into actual codegen and deletes
-   source projection and name-based plans together. First consolidate the 24
-   native text-predicate call handlers through the existing ABI manifest and
-   generator, consuming the same explicit op-to-call mapping in native, LLVM
-   and WASM. Preserve generated argument, machine ABI and result ownership
-   checks and the canonical discarded-result sink; delete the replaced native
-   dispatch family. The larger op-loop table contains heterogeneous guards,
-   immediates, poll results and error protocols and requires separate complete
-   classifications. This precursor does not introduce another call registry.
+   source projection and name-based plans together. The 24 text-predicate
+   calls now consume one explicit op-to-call mapping generated from the existing
+   ABI manifest in native, LLVM and WASM. Their generated argument, machine ABI
+   and result ownership checks share the canonical operand transaction and
+   discarded-result sink; the replaced native dispatch family is deleted.
+   This is the bounded declarative-definition mechanism described by
+   [MLIR ODS](https://mlir.llvm.org/docs/DefiningDialects/Operations/), implemented
+   through Molt's existing generator. The owning audit reads the actual family
+   table and mapper; its closed source bridge remains until generated types
+   enforce the complete dispatch invariant. Public execution fixtures must prove
+   their specialized producers still occur, as well as compare outputs. A
+   parameter annotation or a method spelling alone is no such proof. Frame-visible
+   bindings and callback-invalidated class references keep their actual lifetime
+   and lookup semantics; specialization requires the existing exact-value facts.
+   The larger op-loop table contains heterogeneous guards, immediates, poll
+   results and error protocols and requires separate complete classifications.
+   This precursor introduces no second call registry and does not complete typed
+   CFG or ownership transport.
 
    Measure the post-cache physical splitter on large bodies and post-module
    growth after source/name analyses retire. Retained batch timings without

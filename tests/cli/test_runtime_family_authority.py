@@ -3145,3 +3145,72 @@ def test_metadata_declared_target_search_is_retained_in_plan(
             selected.verify()
     else:
         selected.verify()
+
+
+@pytest.mark.parametrize("final", ["print", "response", "backend"])
+def test_wasi_metadata_combines_admitted_lanes_without_readmitting_them(
+    plan_root: Path, monkeypatch: pytest.MonkeyPatch, final: str
+) -> None:
+    # Restore the real root/metadata walk: the general plan fixture substitutes
+    # it and therefore cannot expose combined-vector admission failures.
+    for target in ("x86_64-unknown-linux-gnu", "wasm32-wasip1"):
+        libdir = plan_root / "lib" / "rustlib" / target / "lib"
+        libdir.mkdir(parents=True)
+        (libdir / "libcore.rlib").write_bytes(b"core")
+    (plan_root / "bin").mkdir()
+    monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
+    _config(plan_root, "[target.'cfg(target_arch=\"wasm32\")']\nrustflags=[]\n")
+    seen = []
+
+    def query(rustc, target, flags, **kwargs):
+        seen.append((target, flags))
+        return _metadata(plan_root, 'target_arch="wasm32"')
+
+    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    resource = None
+    if final == "response":
+        resource = plan_root / "runtime.rsp"
+        resource.write_text("--no-entry\n--import-memory\n", encoding="utf-8")
+        final_args = ("-C", "link-arg=@" + str(resource))
+    elif final == "backend":
+        resource = plan_root / "selected-backend"
+        resource.write_bytes(b"old")
+        final_args = ("-C", "codegen-backend=" + str(resource))
+    else:
+        final_args = ("--print", "native-static-libs")
+    plan = _plan(
+        plan_root,
+        target="wasm32-wasip1",
+        args=("--target", "wasm32-wasip1", "--", *final_args),
+    )
+    passthrough = plan.command[plan.command.index("--") + 1 :]
+    combined = (*plan.rustflags, *passthrough)
+    for option in ("link-self-contained=no", "linker-flavor=wasm-ld"):
+        assert plan.rustflags.count(option) == 1
+        assert passthrough.count(option) == 1
+        assert combined.count(option) == 2
+    assert passthrough[: len(final_args)] == final_args
+    # Each exact question still has one discovery and one fenced qualification.
+    assert seen.count(("wasm32-wasip1", combined)) == 2
+    plan.verify()
+    if resource is not None:
+        custody = plan.link_resources if final == "response" else plan.rust_resources
+        assert resource in {item.identity.path for item in custody.files}
+        resource.write_bytes(b"changed resource")
+        with pytest.raises(ValueError, match="changed"):
+            plan.verify()
+
+
+@pytest.mark.parametrize("final", [False, True])
+@pytest.mark.parametrize("option", ["link-self-contained=no", "linker-flavor=wasm-ld"])
+def test_wasi_duplicate_explicit_modes_inside_one_lane_still_fail(
+    plan_root: Path, final: bool, option: str
+) -> None:
+    duplicate = ("-C", option, "-C", option)
+    with pytest.raises(ValueError, match="WASI external-libc mode conflicts"):
+        _plan(
+            plan_root,
+            target="wasm32-wasip1",
+            args=("--target", "wasm32-wasip1", *(("--", *duplicate) if final else ())),
+            env={} if final else {"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(duplicate)},
+        )

@@ -20,7 +20,8 @@
 //!
 //! ## The fix: derive routing, never mirror it
 //!
-//! Each `fc::*` handler now declares its handled kinds ONCE, in a
+//! Shared boxed calls take their kinds from the generated ABI mapping. Each
+//! specialized `fc::*` handler declares its handled kinds ONCE, in a
 //! `pub(in …) const HANDLED_KINDS: &[&str]` co-located with its `match`. This
 //! module aggregates those authorities into [`FAMILY_DISPATCH_TABLE`] and builds
 //! a kind → [`NativeOpFamily`] map ([`native_op_family`]). The dispatch *consults*
@@ -47,8 +48,8 @@ use std::sync::OnceLock;
 
 /// One extracted `fc::*` family handler the per-op dispatch can route to.
 ///
-/// Each variant corresponds to exactly one `handle_*` entry point in the
-/// `compile_func_inner` dispatch. `Arith` is backed by two kind-slices (the
+/// Specialized variants correspond to a `handle_*` entry point; generated
+/// boxed calls use the existing operand transaction. `Arith` has two kind-slices (the
 /// scalar arith kinds and the delegated `vec_*` reduction kinds) because
 /// `handle_arith_op` forwards the reduction family to `fc::vec_reductions`.
 #[cfg(feature = "native-backend")]
@@ -69,7 +70,7 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     SubscriptGet,
     SubscriptStore,
     SliceOps,
-    TextPredicates,
+    BoxedRuntimeCalls,
     TextTransform,
     RuntimeOps,
     Statistics,
@@ -99,7 +100,7 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
 
 /// The routing authority: `(family, kinds-owned-by-that-family)` rows.
 ///
-/// Every `&[&str]` here is a handler's own `HANDLED_KINDS` const — this table
+/// Every `&[&str]` here is a generated call-family slice or a handler's `HANDLED_KINDS` const — this table
 /// references those authorities, it does not restate any kind string. A family
 /// may appear in more than one row when its handler is backed by several
 /// kind-slices (e.g. `Arith` owns both the scalar arith kinds and the delegated
@@ -152,8 +153,8 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
     ),
     (NativeOpFamily::SliceOps, super::slice_ops::HANDLED_KINDS),
     (
-        NativeOpFamily::TextPredicates,
-        super::text_predicates::HANDLED_KINDS,
+        NativeOpFamily::BoxedRuntimeCalls,
+        molt_ir::runtime_boxed_abi_generated::RUNTIME_BOXED_OP_KINDS,
     ),
     (
         NativeOpFamily::TextTransform,

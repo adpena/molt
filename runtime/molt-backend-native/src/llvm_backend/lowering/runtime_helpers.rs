@@ -8,6 +8,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// raw/mixed-ABI operations are handled before this dispatch; an unclassified
     /// runtime symbol fails closed instead of borrowing operand-zero semantics.
     pub(super) fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: &str) -> bool {
+        if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {
+            self.emit_boxed_runtime_call(op, abi);
+            return true;
+        }
         let symbol = format!("molt_{kind}");
         let Some(abi) = runtime_boxed_abi(&symbol, op.operands.len()) else {
             if !self.backend.runtime_callable_symbols.contains(&symbol) {

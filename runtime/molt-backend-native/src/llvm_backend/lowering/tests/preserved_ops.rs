@@ -2066,3 +2066,58 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
         );
     }
 }
+
+#[test]
+fn shared_boxed_text_calls_use_owned_abi_and_exact_arity() {
+    for receiver in ["string", "bytes", "bytearray"] {
+        for method in ["find", "startswith", "endswith", "count"] {
+            for suffix in ["", "_slice"] {
+                let kind = format!("{receiver}_{method}{suffix}");
+                let symbol = format!("molt_{kind}");
+                let arity = if suffix.is_empty() { 2 } else { 6 };
+                for bound in [false, true] {
+                    let ctx = Context::create();
+                    let mut backend = make_backend(&ctx);
+                    backend.runtime_callable_symbols.insert(symbol.clone());
+                    let func = runtime_call_shape_function(
+                        OpCode::Copy,
+                        &kind,
+                        &symbol,
+                        arity,
+                        bound,
+                        false,
+                    );
+                    let ir = try_lower_tir_to_llvm(&func, &backend)
+                        .expect("shared text ABI")
+                        .print_to_string()
+                        .to_string();
+                    assert_eq!(
+                        ir.matches(&format!("call i64 @{symbol}(")).count(),
+                        1,
+                        "{ir}"
+                    );
+                    assert_eq!(
+                        ir.matches("call void @molt_dec_ref_obj(").count(),
+                        usize::from(!bound),
+                        "{ir}"
+                    );
+                    backend.module.verify().expect("text call LLVM IR");
+                }
+                let ctx = Context::create();
+                let mut backend = make_backend(&ctx);
+                backend.runtime_callable_symbols.insert(symbol.clone());
+                let func = runtime_call_shape_function(
+                    OpCode::Copy,
+                    &kind,
+                    &symbol,
+                    arity + 1,
+                    true,
+                    false,
+                );
+                let error = try_lower_tir_to_llvm(&func, &backend)
+                    .expect_err("extra operand must not be silently ignored");
+                assert_lowering_error_contains(&error, "mismatched arity");
+            }
+        }
+    }
+}

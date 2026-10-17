@@ -1455,10 +1455,16 @@ impl SimpleBackend {
                         &mut block_tracked_ptr,
                     );
                 }
-                // handle_text_predicate family — extracted to fc::text_predicates (M1)
-                _ if op_family == Some(fc::NativeOpFamily::TextPredicates) => {
-                    fc::text_predicates::handle_text_predicate(
+                // The ABI manifest admits this complete positional boxed-call family.
+                _ if op_family == Some(fc::NativeOpFamily::BoxedRuntimeCalls) => {
+                    let abi = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(&op.kind)
+                        .expect("generated boxed-call family must have an ABI");
+                    let args = op.args.as_deref().unwrap_or(&[]);
+                    assert_eq!(args.len(), abi.arity, "{} boxed-call arity", op.kind);
+                    shared::emit_operand_transaction_call(
                         &op,
+                        args,
+                        abi.symbol,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -1467,6 +1473,8 @@ impl SimpleBackend {
                         &vars,
                         representation_plan,
                         &nbc,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
                     );
                 }
                 // handle_text_transform family — extracted to fc::text_transform (M1)

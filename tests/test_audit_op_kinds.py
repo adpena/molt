@@ -2,8 +2,8 @@
 ``native_codegen_gap`` enforcement that closes the dispatch ``handler-arm ⊄
 HANDLED_KINDS`` hole (the ``copy`` P0 instance).
 
-The native dispatch routes op-kinds purely via each ``fc/*`` handler's
-``HANDLED_KINDS`` slice (``op_family::native_op_family``). A result-producing kind
+The native dispatch routes op-kinds through ``FAMILY_DISPATCH_TABLE`` references
+to local handler or generated boxed-call slices (``op_family::native_op_family``). A result-producing kind
 that the frontend emits but that NO slice claims is dead at its handler ``match``
 arm and hits the dispatch's loud catch-all panic at codegen — exactly how
 ``copy`` shipped broken (matched in ``value_transfer.rs`` but absent from
@@ -837,3 +837,253 @@ def test_runtime_return_projection_rejects_conflicting_operation_selectors():
         WasmAbiManifestError, match="conflicting runtime return contracts"
     ):
         runtime_operation_return_specs(data)
+
+
+def _boxed_routing_fixture(tmp_path: Path, monkeypatch):
+    """Independent two-operation source: no production operation-name oracle."""
+    fc = tmp_path / "fc"
+    fc.mkdir()
+    generated = tmp_path / "runtime/molt-ir/src/runtime_boxed_abi_generated.rs"
+    generated.parent.mkdir(parents=True)
+    generated.write_text(
+        """
+pub const RUNTIME_BOXED_OP_KINDS: &[&str] = &["fixture_left", "fixture_right"];
+pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
+    match kind {
+        "fixture_left" => Some(&RUNTIME_BOXED_ABIS[0]),
+        "fixture_right" => Some(&RUNTIME_BOXED_ABIS[1]),
+        _ => None,
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    table = fc / "op_family.rs"
+    table.write_text(
+        """
+const FAMILY_DISPATCH_TABLE: &[(NativeOpFamily, &[&str])] = &[
+    (NativeOpFamily::Independent, molt_ir::runtime_boxed_abi_generated::RUNTIME_BOXED_OP_KINDS),
+];
+const INLINE_DISPATCH_KINDS: &[&str] = &[];
+const NATIVE_NO_CODEGEN_RESULT_KINDS: &[&str] = &[];
+""",
+        encoding="utf-8",
+    )
+    native = tmp_path / "native.rs"
+    native.write_text(
+        """
+fn compile() {
+    match op.kind.as_str() {
+        _ if op_family == Some(fc::NativeOpFamily::Independent) => {
+            let abi = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(&op.kind)
+                .expect("independent fixture ABI");
+            let args = op.args.as_deref().unwrap_or(&[]);
+            assert_eq!(args.len(), abi.arity, "independent arity", op.kind);
+            shared::emit_operand_transaction_call(
+                &op, args, abi.symbol, &mut self.module, &mut self.import_ids,
+                &mut builder, &mut import_refs, &mut sealed_blocks, &vars,
+                representation_plan, &nbc, &mut block_tracked_obj, &mut block_tracked_ptr,
+            );
+        }
+        _ => panic!("unrouted"),
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(AUDIT, "ROOT", tmp_path)
+    monkeypatch.setattr(AUDIT, "NATIVE_FC_DIR", fc)
+    monkeypatch.setattr(AUDIT, "NATIVE_RS", native)
+    return table, generated, native
+
+
+def test_generated_native_routes_and_transaction_share_explicit_domain(
+    tmp_path, monkeypatch
+):
+    _boxed_routing_fixture(tmp_path, monkeypatch)
+    assert AUDIT.extract_native_family_dispatch_slices() == {
+        "Independent": [
+            ("molt_ir::runtime_boxed_abi_generated", "RUNTIME_BOXED_OP_KINDS")
+        ]
+    }
+    assert AUDIT.extract_native_family_handlers() == {
+        "Independent": ("molt_ir::runtime_boxed_abi_generated", "runtime_boxed_op_abi")
+    }
+    assert AUDIT.extract_native_routing_slice_kinds() == {
+        "fixture_left",
+        "fixture_right",
+    }
+    assert AUDIT.extract_native_handler_routing_drifts() == []
+    # A stray local declaration must not hide a missing real family route.
+    (AUDIT.NATIVE_FC_DIR / "orphan.rs").write_text(
+        'const HANDLED_KINDS: &[&str] = &["not_routed"];', encoding="utf-8"
+    )
+    assert "not_routed" not in AUDIT.extract_native_routing_slice_kinds()
+
+
+def test_generated_native_live_cartesian_domain():
+    expected = {
+        f"{receiver}_{method}{suffix}"
+        for receiver in ("string", "bytes", "bytearray")
+        for method in ("find", "startswith", "endswith", "count")
+        for suffix in ("", "_slice")
+    }
+    assert expected <= AUDIT.extract_native_routing_slice_kinds()
+    module, fn_name = AUDIT.extract_native_family_handlers()["BoxedRuntimeCalls"]
+    assert (
+        AUDIT._native_boxed_mapper_kinds(AUDIT._native_routing_source(module), fn_name)
+        == expected
+    )
+    assert AUDIT.extract_native_handler_routing_drifts() == []
+
+
+@pytest.mark.parametrize("missing_from", ["slice", "mapper"])
+def test_generated_native_domain_drift_is_not_hidden(
+    tmp_path, monkeypatch, missing_from
+):
+    _, generated, _ = _boxed_routing_fixture(tmp_path, monkeypatch)
+    text = generated.read_text(encoding="utf-8")
+    if missing_from == "slice":
+        text = text.replace('["fixture_left", "fixture_right"]', '["fixture_left"]')
+        expected = (
+            "arm-not-in-molt_ir::runtime_boxed_abi_generated::RUNTIME_BOXED_OP_KINDS"
+        )
+    else:
+        text = text.replace(
+            '        "fixture_right" => Some(&RUNTIME_BOXED_ABIS[1]),\n', ""
+        )
+        expected = (
+            "molt_ir::runtime_boxed_abi_generated::RUNTIME_BOXED_OP_KINDS-not-in-arm"
+        )
+    generated.write_text(text, encoding="utf-8")
+    drifts = AUDIT.extract_native_handler_routing_drifts()
+    assert len(drifts) == 1
+    assert drifts[0].endswith(f":fixture_right:{expected}")
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("&op.kind", '"fixture_left"'),
+        ("abi.symbol", '"molt_wrong"'),
+        ("&op, args,", "&op, &[],"),
+        ("assert_eq!(args.len(), abi.arity,", "assert_eq!(args.len(), 2,"),
+        ("shared::emit_operand_transaction_call", "shared::wrong_call"),
+        (
+            "shared::emit_operand_transaction_call(",
+            "if false { shared::emit_operand_transaction_call(",
+        ),
+    ],
+)
+def test_generated_native_dispatch_rejects_wrong_or_conditional_projection(
+    tmp_path, monkeypatch, old, new
+):
+    _, _, native = _boxed_routing_fixture(tmp_path, monkeypatch)
+    text = native.read_text(encoding="utf-8").replace(old, new)
+    if new.startswith("if false"):
+        text = text.replace("            );", "            ); }")
+    native.write_text(text, encoding="utf-8")
+    with pytest.raises(
+        AUDIT.RustMatchParseError, match="invalid boxed-call projection"
+    ):
+        AUDIT.extract_native_family_handlers()
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "_ if false && op_family == Some(fc::NativeOpFamily::Independent)",
+        '"fixture_left" if op_family == Some(fc::NativeOpFamily::Independent)',
+    ],
+)
+def test_generated_native_partial_guard_cannot_claim_family_dispatch(
+    tmp_path, monkeypatch, header
+):
+    _, _, native = _boxed_routing_fixture(tmp_path, monkeypatch)
+    canonical = "_ if op_family == Some(fc::NativeOpFamily::Independent)"
+    text = native.read_text(encoding="utf-8")
+    assert text.count(canonical) == 1
+    native.write_text(text.replace(canonical, header), encoding="utf-8")
+    # The table still routes both fixture operations, but neither an unreachable
+    # arm nor a one-operation pattern establishes dispatch for the whole family.
+    assert AUDIT.extract_native_handler_routing_drifts() == [
+        "NativeOpFamily::Independent:FAMILY_DISPATCH_TABLE-has-no-handler"
+    ]
+
+
+def test_generated_native_missing_dispatch_does_not_borrow_next_arm(
+    tmp_path, monkeypatch
+):
+    _, _, native = _boxed_routing_fixture(tmp_path, monkeypatch)
+    native.write_text(
+        """
+fn compile() {
+    match kind {
+        _ if op_family == Some(fc::NativeOpFamily::Independent) => {
+            // fc::fake::handle_fake(); shared::emit_operand_transaction_call();
+        }
+        _ => fc::other::handle_other(),
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(AUDIT.RustMatchParseError, match="does not call"):
+        AUDIT.extract_native_family_handlers()
+    native.write_text("fn compile() {}", encoding="utf-8")
+    assert AUDIT.extract_native_handler_routing_drifts() == [
+        "NativeOpFamily::Independent:FAMILY_DISPATCH_TABLE-has-no-handler"
+    ]
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("RUNTIME_BOXED_OP_KINDS),", "MISSING_KINDS),"),
+        (
+            "molt_ir::runtime_boxed_abi_generated::RUNTIME_BOXED_OP_KINDS",
+            "choose_routes()",
+        ),
+    ],
+)
+def test_generated_native_unreadable_table_reference_fails_closed(
+    tmp_path, monkeypatch, old, new
+):
+    table, _, _ = _boxed_routing_fixture(tmp_path, monkeypatch)
+    table.write_text(
+        table.read_text(encoding="utf-8").replace(old, new), encoding="utf-8"
+    )
+    with pytest.raises(AUDIT.RustMatchParseError):
+        AUDIT.extract_native_routing_slice_kinds()
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ("_ => None", "_ => Some(&RUNTIME_BOXED_ABIS[0])"),
+        ('"fixture_right" =>', '"fixture_left" =>'),
+        ("Some(&RUNTIME_BOXED_ABIS[1])", "other_mapping(kind)"),
+    ],
+)
+def test_generated_native_mapper_rejects_nonprojection(tmp_path, monkeypatch, old, new):
+    _, generated, _ = _boxed_routing_fixture(tmp_path, monkeypatch)
+    generated.write_text(
+        generated.read_text(encoding="utf-8").replace(old, new), encoding="utf-8"
+    )
+    with pytest.raises(AUDIT.RustMatchParseError):
+        AUDIT.extract_native_handler_routing_drifts()
+
+
+def test_generated_native_mapper_cannot_substitute_another_owner(tmp_path, monkeypatch):
+    _, generated, native = _boxed_routing_fixture(tmp_path, monkeypatch)
+    generated.with_name("wrong_mapping.rs").write_text(
+        generated.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    native.write_text(
+        native.read_text(encoding="utf-8").replace(
+            "runtime_boxed_abi_generated::", "wrong_mapping::"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AUDIT.RustMatchParseError, match="different owners"):
+        AUDIT.extract_native_handler_routing_drifts()

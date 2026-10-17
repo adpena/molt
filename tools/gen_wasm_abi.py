@@ -47,6 +47,7 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
     load_manifest,
     reserved_runtime_callable_base,
     runtime_boxed_call_specs,
+    runtime_boxed_op_specs,
     runtime_import_return_specs,
     runtime_export_name,
 )
@@ -1076,10 +1077,41 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             "    kind: &str,\n",
             "    marked: bool,\n",
             ") -> Option<OpLoopRuntimeCallSpec> {\n",
-            "    match kind {\n",
         ]
     )
+    shared = runtime_boxed_op_specs(data)
+    if shared:
+        lines.extend(
+            [
+                "    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {\n",
+                "        return Some(match abi.symbol {\n",
+            ]
+        )
+        by_symbol = {entry["runtime_name"]: entry for entry in shared}
+        for entry in by_symbol.values():
+            token = _rust_runtime_import(import_variants, entry["import_name"])
+            args = ", ".join(_render_op_loop_arg(arg) for arg in entry["args"])
+            lines.extend(
+                [
+                    f'            "{entry["runtime_name"]}" => OpLoopRuntimeCallSpec {{\n',
+                    f"                import: {token},\n",
+                    f"                args: &[{args}],\n",
+                    f"                required_imports: &[{token}],\n",
+                    "                discard_result: false,\n",
+                    "            },\n",
+                ]
+            )
+        lines.extend(
+            [
+                '            _ => unreachable!("shared boxed ABI has no generated WASM projection"),\n',
+                "        });\n",
+                "    }\n",
+            ]
+        )
+    lines.append("    match kind {\n")
     for entry in op_loop_entries:
+        if entry.get("shared_boxed_call", False):
+            continue
         variants = [(None, entry["import_name"], entry["required_imports"])]
         if marked_import_name := entry.get("marked_import_name"):
             marked_required_imports = [
@@ -1423,7 +1455,8 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
         "}\n\n",
         "pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[\n",
     ]
-    for spec in runtime_boxed_call_specs(data):
+    specs = runtime_boxed_call_specs(data)
+    for spec in specs:
         result = (
             "Void"
             if spec["result"] == "void"
@@ -1449,6 +1482,27 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
             "}\n",
         ]
     )
+    shared = runtime_boxed_op_specs(data)
+    index_by_symbol = {spec["runtime_name"]: index for index, spec in enumerate(specs)}
+    lines.append(
+        "\n/// Explicitly admitted positional op calls; every target consumes this mapping.\n"
+    )
+    lines.append("pub const RUNTIME_BOXED_OP_KINDS: &[&str] = &[\n")
+    for entry in shared:
+        lines.append(f'    "{entry["kind"]}",\n')
+    lines.extend(
+        [
+            "];\n\n",
+            "pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {\n",
+            "    match kind {\n",
+        ]
+    )
+    for entry in shared:
+        index = index_by_symbol[entry["runtime_name"]]
+        lines.append(
+            f'        "{entry["kind"]}" => Some(&RUNTIME_BOXED_ABIS[{index}]),\n'
+        )
+    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines)
 
 

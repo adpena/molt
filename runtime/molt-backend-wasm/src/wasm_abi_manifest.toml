@@ -6504,6 +6504,15 @@ kinds = [
   "string_rstrip",
   "bytes_split",
   "bytearray_split",
+]
+
+# One positional boxed call, with an owned result and no marked/alias protocol.
+# This opt-in migrates every target together; it is not inferred from i64 ABI.
+[[op_loop_runtime_call_group]]
+arg_count = 2
+boxed_call = true
+shared_boxed_call = true
+kinds = [
   "bytes_find",
   "bytearray_find",
   "string_find",
@@ -6564,6 +6573,7 @@ kinds = [
 [[op_loop_runtime_call_group]]
 arg_count = 6
 boxed_call = true
+shared_boxed_call = true
 kinds = [
   "bytes_find_slice",
   "bytearray_find_slice",

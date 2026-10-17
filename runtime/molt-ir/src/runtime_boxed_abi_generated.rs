@@ -13032,3 +13032,61 @@ pub fn runtime_boxed_abi(symbol: &str, arity: usize) -> Option<&'static RuntimeB
     let abi = &RUNTIME_BOXED_ABIS[index];
     (abi.arity == arity).then_some(abi)
 }
+
+/// Explicitly admitted positional op calls; every target consumes this mapping.
+pub const RUNTIME_BOXED_OP_KINDS: &[&str] = &[
+    "bytearray_count",
+    "bytearray_count_slice",
+    "bytearray_endswith",
+    "bytearray_endswith_slice",
+    "bytearray_find",
+    "bytearray_find_slice",
+    "bytearray_startswith",
+    "bytearray_startswith_slice",
+    "bytes_count",
+    "bytes_count_slice",
+    "bytes_endswith",
+    "bytes_endswith_slice",
+    "bytes_find",
+    "bytes_find_slice",
+    "bytes_startswith",
+    "bytes_startswith_slice",
+    "string_count",
+    "string_count_slice",
+    "string_endswith",
+    "string_endswith_slice",
+    "string_find",
+    "string_find_slice",
+    "string_startswith",
+    "string_startswith_slice",
+];
+
+pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
+    match kind {
+        "bytearray_count" => Some(&RUNTIME_BOXED_ABIS[221]),
+        "bytearray_count_slice" => Some(&RUNTIME_BOXED_ABIS[222]),
+        "bytearray_endswith" => Some(&RUNTIME_BOXED_ABIS[223]),
+        "bytearray_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[224]),
+        "bytearray_find" => Some(&RUNTIME_BOXED_ABIS[226]),
+        "bytearray_find_slice" => Some(&RUNTIME_BOXED_ABIS[227]),
+        "bytearray_startswith" => Some(&RUNTIME_BOXED_ABIS[233]),
+        "bytearray_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[234]),
+        "bytes_count" => Some(&RUNTIME_BOXED_ABIS[235]),
+        "bytes_count_slice" => Some(&RUNTIME_BOXED_ABIS[236]),
+        "bytes_endswith" => Some(&RUNTIME_BOXED_ABIS[237]),
+        "bytes_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[238]),
+        "bytes_find" => Some(&RUNTIME_BOXED_ABIS[239]),
+        "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[240]),
+        "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[246]),
+        "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[247]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2165]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2166]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2167]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2168]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2170]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2171]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2193]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2194]),
+        _ => None,
+    }
+}

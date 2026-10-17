@@ -416,4 +416,38 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn shared_boxed_text_calls_project_canonical_abi_without_marked_variants() {
+        use crate::wasm_abi_generated::{OpLoopRuntimeArgSpec, WasmRuntimeReturn};
+        use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_op_abi};
+        for receiver in ["string", "bytes", "bytearray"] {
+            for method in ["find", "startswith", "endswith", "count"] {
+                for suffix in ["", "_slice"] {
+                    let kind = format!("{receiver}_{method}{suffix}");
+                    let arity = if suffix.is_empty() { 2 } else { 6 };
+                    let abi = runtime_boxed_op_abi(&kind).unwrap();
+                    assert_eq!(abi.symbol, format!("molt_{kind}"));
+                    assert_eq!(abi.arity, arity);
+                    assert_eq!(abi.result, RuntimeBoxedReturn::OwnedValue);
+                    let plain = op_loop_runtime_call(&kind, false).unwrap();
+                    assert_eq!(plain, op_loop_runtime_call(&kind, true).unwrap());
+                    assert_eq!(plain.import.runtime_export_name(), abi.symbol);
+                    assert_eq!(
+                        plain.import.return_contract(),
+                        WasmRuntimeReturn::OwnedObject
+                    );
+                    super::assert_runtime_i64_call(plain.import, arity);
+                    assert_eq!(
+                        plain.args,
+                        (0..arity)
+                            .map(OpLoopRuntimeArgSpec::Local)
+                            .collect::<Vec<_>>()
+                    );
+                    assert_eq!(plain.required_imports, &[plain.import]);
+                    assert!(!plain.discard_result);
+                }
+            }
+        }
+    }
 }

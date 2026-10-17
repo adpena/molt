@@ -2214,6 +2214,13 @@ def resolve_runtime_cargo_plan(
             env=environment,
             wasi_plan=wasi_plan,
         )
+        # These metadata vectors already have complete resource custody from
+        # their original dependency/final-crate lanes. Their combined vector
+        # may legitimately repeat an SDK mode once per lane; re-admitting it
+        # as one dependency lane would reject our own validated projection.
+        # Provisional cfg vectors still use metadata_for's resource parser.
+        for lane_flags in flag_plan.flag_lanes:
+            metadata_flag_roots[lane_flags] = flag_plan.roots
         return flag_plan.flags
 
     rustflags, matched_cfg = select_cargo_target_flags(
