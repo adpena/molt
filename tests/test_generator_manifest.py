@@ -1079,7 +1079,7 @@ def test_all_missing_selected_unicode_providers_refuse_before_any_generator_impo
     tmp_path, monkeypatch, capsys, action
 ):
     import subprocess
-    from tools import generators, proof_plan
+    from tools import generators, proof_plan, toolchain_probe
     from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
 
     fixture = selected_runtime_fixture(tmp_path, monkeypatch)
@@ -1109,7 +1109,7 @@ python_versions = "supported-targets"
     installed = list(fixture.installations)
     for _library, unicode_file in fixture.installations.values():
         unicode_file.unlink()
-    original_run = proof_plan.subprocess.run
+    original_run = toolchain_probe.subprocess.run
 
     def run(command, **kwargs):
         argv = list(command)
@@ -1121,9 +1121,7 @@ python_versions = "supported-targets"
             return subprocess.CompletedProcess(argv, 0, "uv 0.13.1\n", "")
         return original_run(command, **kwargs)
 
-    install_module_view(
-        monkeypatch, "subprocess", proof_plan.subprocess, proof_plan, run=run
-    )
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     install_module_view(
         monkeypatch,
         "shutil",

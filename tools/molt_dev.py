@@ -29,6 +29,8 @@ The hazard inventory -> countermeasure map (the spec this file implements)
           range, or provably already-upstream by a patch-id match against the
           upstream tip range). A missing patch-id is a LOUD FAIL listing the
           dangling shas; integration never proceeds past a dropped commit.
+          Without replay, exact captured HEAD identity and upstream ancestry
+          prove preservation directly; no patch diffs or patch IDs are computed.
   2. Push exit codes lie (rtk/sandbox swallow; 144-detached pushes can SUCCEED)
        -> `verify-push` (and the push step of `integrate`) FETCHES the upstream
           and confirms origin/<branch> CONTAINS the pushed tip sha via
@@ -892,7 +894,7 @@ def _verify_no_dropped_commits(
     source_shas: list[str],
     pre_patch_ids: dict[str, str | None],
     new_range: str,
-    upstream_ref: str,
+    incoming_range: str,
 ) -> None:
     """Hazard 1: every source commit's patch-id must survive the rebase.
 
@@ -903,11 +905,11 @@ def _verify_no_dropped_commits(
     Any source patch-id present in neither is a DROPPED commit -> LOUD FAIL.
     """
     new_pids = set(git.patch_ids_for_range(new_range))
-    # Upstream range that could legitimately already contain a source change:
-    # the merge-base..upstream span (what the rebase replayed onto).
-    upstream_pids = set(
-        git.patch_ids_for_range(f"{new_range.split('..')[0]}..{upstream_ref}")
-    )
+    # The captured pre-rebase HEAD..upstream span contains precisely the
+    # incoming commits that may independently carry a source patch. Deriving
+    # it from the rebased range would compare upstream with itself and lose
+    # legitimate deduplication evidence.
+    upstream_pids = set(git.patch_ids_for_range(incoming_range))
     dangling: list[str] = []
     empty: list[str] = []
     for sha in source_shas:
@@ -998,9 +1000,11 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     _ok(f"{upstream_ref} = {git.short(upstream_before)}")
 
     # The source commits we are integrating: everything on HEAD not yet on
-    # upstream. Captured with patch-ids BEFORE any rebase (hazard 1).
+    # upstream. Immutable commit identities preserve the entire source graph
+    # when no rebase is needed; patch IDs are required only for actual replay.
     source_range = f"{upstream_before}..{head_before}"
     source_shas = git.commits_in_range(source_range)
+    _assert_integration_source(git, head_before)
     if not source_shas:
         _ok("no commits to integrate (HEAD already on upstream); nothing to do")
         # Still verify tree cleanliness so an idempotent re-run reports state.
@@ -1015,14 +1019,14 @@ def cmd_integrate(args: argparse.Namespace) -> int:
         f"    integrating {len(source_shas)} commit(s):\n"
         + "\n".join(f"      {git.short(s)}  {_subject(git, s)}" for s in source_shas)
     )
-    pre_patch_ids = {sha: git.patch_id(sha) for sha in source_shas}
 
     # --- step 2: rebase onto upstream (only if behind) ----------------------
     _step(f"rebase onto {upstream_ref}")
-    behind = git.commits_in_range(f"{head_before}..{upstream_before}")
+    incoming_range = f"{head_before}..{upstream_before}"
+    behind = git.commits_in_range(incoming_range)
+    selected_commit = head_before
     if not behind:
         _ok("HEAD already contains upstream tip; no rebase needed")
-        new_range = source_range
     elif args.expected_upstream is not None:
         raise DriverError(
             "claim source does not contain expected upstream; re-check ownership without rebasing"
@@ -1032,9 +1036,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             f"    would: git rebase {upstream_ref}  "
             f"(HEAD is behind by {len(behind)} commit(s))"
         )
-        # In dry-run we cannot produce the post-rebase range; we VERIFY the
-        # patch-ids against the current state as a best-effort preview.
-        new_range = source_range
+        # No replay occurred, so there is no post-rebase survival claim.
     else:
         identity = git._run(["var", "GIT_COMMITTER_IDENT"], check=False)
         if identity.returncode:
@@ -1043,6 +1045,8 @@ def cmd_integrate(args: argparse.Namespace) -> int:
                 "Set git config user.name and user.email (or GIT_COMMITTER_NAME/EMAIL).\n"
                 + identity.stderr.strip()
             )
+        pre_patch_ids = {sha: git.patch_id(sha) for sha in source_shas}
+        _assert_integration_source(git, head_before)
         proc = git._run(["rebase", upstream_before], check=False)
         if proc.returncode != 0:
             # Abort a half-applied rebase so the tree is never left mid-conflict.
@@ -1052,25 +1056,31 @@ def cmd_integrate(args: argparse.Namespace) -> int:
                 "rebase to restore the pre-rebase HEAD. Resolve manually, then "
                 f"re-run integrate.\n{proc.stdout.strip()}\n{proc.stderr.strip()}"
             )
-        new_head = git.head_sha()
-        new_range = f"{upstream_before}..{new_head}"
-        _ok(f"rebased; HEAD {git.short(head_before)} -> {git.short(new_head)}")
+        selected_commit = require_git_object_id(
+            git.head_sha(), label="selected integration commit"
+        )
+        new_range = f"{upstream_before}..{selected_commit}"
+        _ok(f"rebased; HEAD {git.short(head_before)} -> {git.short(selected_commit)}")
+        _assert_integration_source(git, selected_commit)
+        _step("verify no dropped commits (patch-id survival)")
+        _verify_no_dropped_commits(
+            git, source_shas, pre_patch_ids, new_range, incoming_range
+        )
 
-    selected_commit = require_git_object_id(
-        git.head_sha(), label="selected integration commit"
-    )
     _assert_integration_source(git, selected_commit)
 
-    # --- step 3: verify no commits dropped (hazard 1) -----------------------
-    _step("verify no dropped commits (patch-id survival)")
-    if dry and behind:
+    # --- step 3: verify source preservation (hazard 1) ----------------------
+    if not behind:
+        _step("verify unchanged source commit and upstream ancestry")
+        if not git.is_ancestor(upstream_before, selected_commit):
+            raise DriverError(
+                "captured upstream is not an ancestor of the unchanged source"
+            )
+        _ok("captured HEAD unchanged; all source commits preserved by exact identity")
+    elif dry:
         _warn(
             "dry-run cannot verify post-rebase patch-ids (no rebase performed); "
             "the live run verifies them"
-        )
-    else:
-        _verify_no_dropped_commits(
-            git, source_shas, pre_patch_ids, new_range, upstream_before
         )
 
     # --- step 4: content markers (hazard 8) ---------------------------------

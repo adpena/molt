@@ -2383,9 +2383,9 @@ def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
         commands.append(command)
         version = "22.1.0" if name == "wasm-ld" else "22.1.8"
         banner = f"LLVM version {version}" if name == "llvm-nm" else f"LLD {version}"
-        return proof_plan.subprocess.CompletedProcess(command, 0, banner, "")
+        return subprocess.CompletedProcess(command, 0, banner, "")
 
-    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     actual = proof_plan._version_fingerprint(policy)
     assert actual is not None
     assert actual["path"] == str(selected)
@@ -2440,7 +2440,7 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
             if command == ("probe-content",)
             else f"Lean (version {_LEAN_PIN})\n"
         )
-        return proof_plan.subprocess.CompletedProcess(argv, 0, output)
+        return subprocess.CompletedProcess(argv, 0, output)
 
     install_module_view(
         monkeypatch,
@@ -2449,7 +2449,9 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         proof_plan,
         which=lambda _requested: sys.executable,
     )
-    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
+    )
 
     fingerprint = proof_plan._version_fingerprint(policy)
     expected_cwd = (proof_plan.ROOT / "formal/lean").resolve()
@@ -2481,13 +2483,13 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
 
     def fake_run(argv, **_kwargs):
         if tuple(argv) == ("probe-content",):
-            return proof_plan.subprocess.CompletedProcess(
+            return subprocess.CompletedProcess(
                 argv,
                 0,
                 f"{content}\n",
                 "info: syncing freshly provisioned toolchain\n",
             )
-        return proof_plan.subprocess.CompletedProcess(argv, 0, "probe 1.0\n", "")
+        return subprocess.CompletedProcess(argv, 0, "probe 1.0\n", "")
 
     install_module_view(
         monkeypatch,
@@ -2496,7 +2498,9 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
         proof_plan,
         which=lambda _requested: sys.executable,
     )
-    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, toolchain_probe, run=fake_run
+    )
 
     fingerprint = proof_plan._version_fingerprint(policy)
     assert fingerprint is not None
@@ -2505,6 +2509,265 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
         fingerprint["executable_sha256"]
         == hashlib.sha256(b"canonical payload").hexdigest()
     )
+
+
+@pytest.mark.parametrize(
+    "failure,expected_cause",
+    [
+        ("exit", "exit status 23"),
+        ("missing-command", "FileNotFoundError"),
+        ("timeout", "timed out after 5s"),
+        ("empty-path", "exactly one non-empty line"),
+        ("multiple-paths", "exactly one non-empty line"),
+        ("missing-path", "invalid resolved path (FileNotFoundError)"),
+    ],
+)
+def test_toolchain_content_probe_failure_preserves_selection_cause(
+    tmp_path: Path, monkeypatch, failure: str, expected_cause: str
+) -> None:
+    scripts = {
+        "exit": "import sys; print('partial-path'); print('selector-denied', file=sys.stderr); sys.exit(23)",
+        "timeout": "pass",
+        "empty-path": "pass",
+        "multiple-paths": "print('first-path'); print('second-path')",
+        "missing-path": f"print({str(tmp_path / 'absent-image')!r})",
+    }
+    command = (
+        [str(tmp_path / "missing-selector")]
+        if failure == "missing-command"
+        else [sys.executable, "-B", "-I", "-S", "-c", scripts[failure]]
+    )
+    policy = proof_plan.ToolchainPolicy(
+        "selected-runtime",
+        {
+            "executable": sys.executable,
+            "version_args": ["--version"],
+            "version_pattern": r"^Python ",
+            "python_identity_role": "runtime",
+            "content_path_command": command,
+        },
+        tmp_path,
+    )
+    calls = []
+    original_run = toolchain_probe.subprocess.run
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        assert list(argv) == command, "failure must not launch a version fallback"
+        assert kwargs["cwd"] == tmp_path and kwargs["timeout"] == 5
+        if failure == "timeout":
+            # TimeoutExpired may carry bytes even when text=True. Preserve its
+            # partial observations without sleeping through the real deadline.
+            raise subprocess.TimeoutExpired(
+                argv, 5, output=b"partial-\xffpath\n", stderr=b"selector-lock\n"
+            )
+        return original_run(argv, **kwargs)
+
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
+    monkeypatch.setattr(
+        proof_plan,
+        "capture_selected_python_runtime",
+        lambda *_args, **_kwargs: pytest.fail("a failed resolver has no runtime image"),
+    )
+    with pytest.raises(ValueError) as caught:
+        proof_plan._version_fingerprint(policy)
+    message = str(caught.value)
+    assert "selected-runtime: content resolver failed" in message
+    assert expected_cause in message
+    assert f"argv={command!r}" in message and f"cwd={str(tmp_path)!r}" in message
+    assert "stdout=" in message and "stderr=" in message
+    if failure == "exit":
+        assert "partial-path" in message and "selector-denied" in message
+    elif failure == "timeout":
+        assert "partial-\ufffdpath" in message and "selector-lock" in message
+    elif failure == "multiple-paths":
+        assert "first-path\\nsecond-path" in message
+    assert "runtime build Python is unavailable" not in message
+    assert calls == [command]
+
+
+def test_toolchain_content_probe_failure_bounds_both_output_excerpts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    command = ["selected-content"]
+    policy = proof_plan.ToolchainPolicy(
+        "large-diagnostic",
+        {
+            "executable": sys.executable,
+            "version_args": ["--version"],
+            "content_path_command": command,
+        },
+        tmp_path,
+    )
+
+    def run(argv, **_kwargs):
+        assert list(argv) == command
+        return subprocess.CompletedProcess(
+            argv,
+            17,
+            "stdout-head:" + "x" * 10_000 + ":stdout-tail",
+            "stderr-head:" + "y" * 10_000 + ":stderr-tail",
+        )
+
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
+    with pytest.raises(ValueError) as caught:
+        proof_plan._version_fingerprint(policy)
+    message = str(caught.value)
+    assert "exit status 17" in message
+    for boundary in ("stdout-head:", ":stdout-tail", "stderr-head:", ":stderr-tail"):
+        assert boundary in message
+    assert "<omitted " in message
+    assert "x" * 3000 not in message
+    assert len(message) < 6000, (
+        "two failed streams must not flood prerequisite diagnostics"
+    )
+
+
+@pytest.mark.parametrize(
+    "failure,expected_cause",
+    [
+        ("exit", "exit status 23"),
+        ("launch", "FileNotFoundError"),
+        ("timeout", "timed out after 5s"),
+    ],
+)
+def test_toolchain_version_probe_failure_preserves_selection_cause(
+    tmp_path: Path, monkeypatch, failure: str, expected_cause: str
+) -> None:
+    version_args = (
+        ["-B", "-I", "-S", "-c", "import sys; print('selected 1.0'); sys.exit(23)"]
+        if failure == "exit"
+        else ["--version"]
+    )
+    policy = proof_plan.ToolchainPolicy(
+        "selected-image",
+        {
+            "executable": sys.executable,
+            "version_args": version_args,
+            "version_pattern": r"^selected 1\.0$",
+        },
+        tmp_path,
+    )
+    command = [sys.executable, *version_args]
+    calls = []
+    original_run = toolchain_probe.subprocess.run
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        assert list(argv) == command
+        assert kwargs["cwd"] == tmp_path and kwargs["timeout"] == 5
+        assert kwargs["stderr"] == subprocess.STDOUT
+        if failure == "launch":
+            raise FileNotFoundError(2, "selected image disappeared", argv[0])
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, 5, output=b"partial-\xffversion\n")
+        return original_run(argv, **kwargs)
+
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
+    with pytest.raises(ValueError) as caught:
+        proof_plan.toolchain_fingerprints((policy,), (policy.name,))
+    message = str(caught.value)
+    assert "selected-image: version query failed" in message
+    assert expected_cause in message
+    assert f"argv={command!r}" in message and f"cwd={str(tmp_path)!r}" in message
+    assert "stdout=" in message and "stderr=None" in message
+    if failure == "exit":
+        # A matching banner cannot admit an image whose probe failed.
+        assert "selected 1.0" in message
+    elif failure == "launch":
+        assert "selected image disappeared" in message
+    else:
+        assert "partial-\ufffdversion" in message
+    assert "unavailable:" not in message
+    assert calls == [command]
+
+
+@pytest.mark.parametrize("stage", ["content resolver", "version query"])
+def test_toolchain_probe_environment_rejection_retains_selected_context(
+    tmp_path, monkeypatch, stage
+):
+    command = ["selected-tool", "--version"]
+    environment = {"SELECTED_POLICY": "refused"}
+
+    def reject(argv, env):
+        assert argv == command and env is environment
+        raise ValueError("selected environment refused")
+
+    monkeypatch.setattr(toolchain_probe, "cargo_subprocess_environment", reject)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        toolchain_probe,
+        run=lambda *_a, **_k: pytest.fail("a rejected environment must not launch"),
+    )
+    with pytest.raises(ValueError) as caught:
+        toolchain_probe.run_toolchain_probe(
+            "selected-image",
+            command,
+            stage=stage,
+            cwd=tmp_path,
+            environment=environment,
+        )
+    message = str(caught.value)
+    assert f"selected-image: {stage} failed" in message
+    assert "ValueError: selected environment refused" in message
+    assert f"argv={command!r}" in message and f"cwd={str(tmp_path)!r}" in message
+
+
+def test_toolchain_probe_sibling_stage_failures_are_aggregated(
+    tmp_path: Path, monkeypatch
+) -> None:
+    barrier = threading.Barrier(3)
+    failures = {"selector-a": (17, "locked-a"), "selector-b": (19, "locked-b")}
+    policies = tuple(
+        proof_plan.ToolchainPolicy(
+            name,
+            {
+                "executable": sys.executable,
+                "version_args": ["--version"],
+                "version_pattern": "unused",
+                "python_identity_role": "runtime",
+                "content_path_command": [name],
+            },
+            tmp_path,
+        )
+        for name in failures
+    ) + (
+        proof_plan.ToolchainPolicy(
+            "version-c",
+            {
+                "executable": sys.executable,
+                "version_args": ["--version"],
+                "version_pattern": r"^selected 1\.0$",
+            },
+            tmp_path,
+        ),
+    )
+
+    def run(argv, **kwargs):
+        assert kwargs["timeout"] == 5 and kwargs["cwd"] == tmp_path
+        barrier.wait(timeout=5)
+        if list(argv) == [sys.executable, "--version"]:
+            return subprocess.CompletedProcess(argv, 21, "selected 1.0\n", None)
+        code, detail = failures[argv[0]]
+        return subprocess.CompletedProcess(argv, code, "", detail)
+
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
+    monkeypatch.setattr(
+        proof_plan,
+        "capture_selected_python_runtime",
+        lambda *_args, **_kwargs: pytest.fail("a failed sibling has no runtime image"),
+    )
+    with pytest.raises(ValueError) as caught:
+        proof_plan.toolchain_fingerprints(policies, (*failures, "version-c"))
+    message = str(caught.value)
+    for name, (code, detail) in failures.items():
+        assert f"{name}: content resolver failed" in message
+        assert f"exit status {code}" in message and detail in message
+    assert "version-c: version query failed" in message
+    assert "exit status 21" in message and "selected 1.0" in message
+    assert "runtime build Python is unavailable" not in message
 
 
 def test_toolchain_path_probe_has_one_shared_exact_decoder(tmp_path: Path) -> None:
@@ -4216,13 +4479,14 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
 
 
 def test_executor_process_custody_is_classified_by_subprocess_guard() -> None:
+    owners = ("tools/proof_plan.py", "tools/toolchain_probe.py")
     allowlist = tuple(
         entry
         for entry in check_subprocess_guard_coverage.ALLOWLIST
-        if entry.path == "tools/proof_plan.py"
+        if entry.path in owners
     )
     audit = check_subprocess_guard_coverage.audit_paths(
-        [proof_plan.ROOT / "tools" / "proof_plan.py"],
+        [proof_plan.ROOT / owner for owner in owners],
         root=proof_plan.ROOT,
         allowlist=allowlist,
         text_paths=(),
@@ -5530,8 +5794,8 @@ def test_wasi_compiler_fingerprint_bypasses_native_path_and_binds_helpers(
         monkeypatch,
         "subprocess",
         subprocess,
-        proof_plan,
-        run=lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+        toolchain_probe,
+        run=lambda argv, **kwargs: subprocess.CompletedProcess(
             argv, 0, "clang version 23.1.0", ""
         ),
     )
@@ -5610,8 +5874,8 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
         monkeypatch,
         "subprocess",
         subprocess,
-        proof_plan,
-        run=lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+        toolchain_probe,
+        run=lambda argv, **kwargs: subprocess.CompletedProcess(
             argv, 0, observed + "\n", ""
         ),
     )
@@ -5693,10 +5957,12 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
     installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
     with monkeypatch.context() as selected:
         selected.setenv("WASI_SDK_PATH", str(installation.sdk))
-        selected.setattr(
-            proof_plan.subprocess,
-            "run",
-            lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+        install_module_view(
+            selected,
+            "subprocess",
+            subprocess,
+            toolchain_probe,
+            run=lambda argv, **kwargs: subprocess.CompletedProcess(
                 argv, 0, "clang version 23.1.0", ""
             ),
         )
@@ -5943,10 +6209,10 @@ def test_rust_fingerprint_keeps_selected_physical_tool_without_rustup(
     def run(command, **kwargs):
         commands.append(command)
         assert command[0] == str(selected)
-        return proof_plan.subprocess.CompletedProcess(command, 0, name + " 1.99.0", "")
+        return subprocess.CompletedProcess(command, 0, name + " 1.99.0", "")
 
     install_module_view(monkeypatch, "shutil", shutil, proof_plan, which=which)
-    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     monkeypatch.setattr(
         process_guard,
         "run_completed_command",
@@ -5981,7 +6247,7 @@ def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
         monkeypatch,
         "subprocess",
         subprocess,
-        proof_plan,
+        toolchain_probe,
         run=lambda *args, **kwargs: pytest.fail(
             "changed SDK helper reached a version probe"
         ),
@@ -6037,7 +6303,7 @@ def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypat
         monkeypatch,
         "subprocess",
         subprocess,
-        proof_plan,
+        toolchain_probe,
         run=lambda *args, **kwargs: pytest.fail("fingerprint probe must remain unused"),
     )
     result = run_custody_subject_process(
@@ -6594,6 +6860,126 @@ def test_locked_node_package_admission_reports_real_node_missing_and_version_mis
     assert Path(identities["missing"]["content_path"]).is_relative_to(root)
 
 
+@pytest.mark.parametrize("spelling", ["relative", "absolute-with-parent"])
+def test_selected_runtime_relative_entrypoint_uses_declared_probe_cwd(
+    tmp_path, monkeypatch, spelling
+):
+    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
+
+    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
+    selected = fixture.selected[0]
+    if os.name != "nt":
+        assert selected.is_symlink(), "the POSIX cell must exercise a real venv symlink"
+    probe_directory = tmp_path / "probe-cwd"
+    probe_directory.mkdir()
+    assert probe_directory != Path.cwd()
+    relative = os.path.relpath(selected, probe_directory)
+    emitted = relative if spelling == "relative" else str(probe_directory / relative)
+    policy = replace(
+        fixture.policy,
+        root=tmp_path,
+        data={**fixture.policy.data, "probe_cwd": "probe-cwd"},
+    )
+    original_run = toolchain_probe.subprocess.run
+    launches = []
+
+    def run(command, **kwargs):
+        assert kwargs["cwd"] == probe_directory
+        if list(command) == policy.data["content_path_command"]:
+            return subprocess.CompletedProcess(command, 0, emitted + "\n", "")
+        launches.append(list(command))
+        return original_run(command, **kwargs)
+
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda _requested: str(fixture.uv),
+    )
+    identity = proof_plan._version_fingerprint(policy)
+    proof_plan.validate_selected_python_fingerprint(policy, identity)
+    assert launches == [[str(selected), "--version"]]
+    assert identity["content_path"] == str(selected)
+    assert identity["python_runtime"]["launch_argv"] == [
+        str(selected),
+        "-B",
+        "-I",
+        "-S",
+    ]
+    assert (
+        identity["executable_sha256"]
+        == hashlib.sha256(selected.read_bytes()).hexdigest()
+    )
+    assert identity["launcher_path"] == str(fixture.uv.resolve())
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX symbolic-directory parent traversal; ordinary aliases run on every host",
+)
+def test_selected_runtime_rejects_alias_normalization_that_changes_physical_image(
+    tmp_path, monkeypatch
+):
+    probe_directory = tmp_path / "probe-cwd"
+    probe_directory.mkdir()
+    physical_directory = tmp_path / "physical"
+    child = physical_directory / "child"
+    child.mkdir(parents=True)
+    physical_image = physical_directory / "python"
+    physical_image.write_bytes(b"resolver-selected image")
+    canonical_alias = probe_directory / "python"
+    canonical_alias.write_bytes(b"different image after lexical normalization")
+    (probe_directory / "linked-directory").symlink_to(child, target_is_directory=True)
+    emitted = "linked-directory/../python"
+    # Ask the filesystem itself which image this spelling selects, independently
+    # of the path decoder or the lexical normalization being tested.
+    assert (probe_directory / emitted).read_bytes() == b"resolver-selected image"
+    assert canonical_alias.read_bytes() != physical_image.read_bytes()
+    assert (
+        toolchain_probe.resolve_single_file_path(emitted, probe_cwd=probe_directory)
+        == physical_image
+    )
+    command = [sys.executable, "-B", "-I", "-S", "-c", f"print({emitted!r})"]
+    policy = proof_plan.ToolchainPolicy(
+        "selected-runtime",
+        {
+            "executable": sys.executable,
+            "version_args": ["--version"],
+            "version_pattern": r"^Python ",
+            "python_identity_role": "runtime",
+            "probe_cwd": "probe-cwd",
+            "content_path_command": command,
+        },
+        tmp_path,
+    )
+    original_run = toolchain_probe.subprocess.run
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        assert list(argv) == command and kwargs["cwd"] == probe_directory
+        return original_run(argv, **kwargs)
+
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
+    monkeypatch.setattr(
+        proof_plan,
+        "capture_selected_python_runtime",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a different image must never be admitted"
+        ),
+    )
+    with pytest.raises(ValueError) as caught:
+        proof_plan._version_fingerprint(policy)
+    message = str(caught.value)
+    assert "selected-runtime: content resolver failed" in message
+    assert "canonical entrypoint alias selects a different physical image" in message
+    assert emitted in message
+    assert f"cwd={str(probe_directory)!r}" in message
+    assert calls == [command]
+
+
 def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
     tmp_path, monkeypatch
 ):
@@ -6601,7 +6987,7 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
     from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
 
     fixture = selected_runtime_fixture(tmp_path, monkeypatch)
-    original_run = proof_plan.subprocess.run
+    original_run = toolchain_probe.subprocess.run
 
     def run(command, **kwargs):
         if list(command) == fixture.policy.data["content_path_command"]:
@@ -6610,7 +6996,7 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
             )
         return original_run(command, **kwargs)
 
-    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
     install_module_view(
         monkeypatch,
         "shutil",
@@ -6620,6 +7006,15 @@ def test_selected_runtime_fingerprint_and_receipt_bind_consumed_unicode(
     )
     before = proof_plan._version_fingerprint(fixture.policy)
     proof_plan.validate_selected_python_fingerprint(fixture.policy, before)
+    assert before["path"] == str(fixture.uv)
+    assert before["launcher_path"] == str(fixture.uv.resolve())
+    # The selected venv entry is a symlink on POSIX. Keep that launch spelling
+    # while binding the selected executable's actual bytes on every platform.
+    assert before["content_path"] == str(fixture.selected[0].absolute())
+    assert (
+        before["executable_sha256"]
+        == hashlib.sha256(fixture.selected[0].read_bytes()).hexdigest()
+    )
     library, unicode_file = fixture.installations[str(fixture.selected[0])]
     with unicode_file.open("ab") as stream:
         stream.write(b"changed database provider with unchanged process images")

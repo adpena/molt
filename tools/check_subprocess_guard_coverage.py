@@ -233,12 +233,11 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git diff/ref metadata used only for fail-closed proof selection",
     ),
     AllowedRawSubprocessUse(
-        "tools/proof_plan.py",
-        "_version_fingerprint",
+        "tools/toolchain_probe.py",
+        "run_toolchain_probe",
         "run",
-        "bounded content-path and version probes enforcing manifest-owned "
+        "five-second content-path and version probes enforcing manifest-owned "
         "toolchain contracts",
-        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "tools/proof_plan.py",
