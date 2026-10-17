@@ -5,20 +5,20 @@ use molt_backend::json_boundary::{
 };
 use serde_json::Value as JsonValue;
 
-use super::model::{DaemonCacheContext, DaemonCacheKey, DaemonJobRequest, DaemonJobTarget};
+use super::model::{
+    DaemonArtifactCacheKeys, DaemonCacheContext, DaemonCacheKey, DaemonJobRequest, DaemonJobTarget,
+};
 use std::sync::Arc;
 
 impl DaemonJobRequest {
     /// Move caller strings into one pair of backend-enforced target identities.
     /// Empty keys disable their tier; equal keys share one allocation. This runs
     /// once before cache admission and does not open an IR lease.
-    pub(crate) fn take_artifact_cache_keys(
-        &mut self,
-    ) -> std::io::Result<(Option<Arc<DaemonCacheKey>>, Option<Arc<DaemonCacheKey>>)> {
+    pub(crate) fn take_artifact_cache_keys(&mut self) -> std::io::Result<DaemonArtifactCacheKeys> {
         let module = nonempty_key(std::mem::take(&mut self.cache_key));
         let function = self.function_cache_key.take().and_then(nonempty_key);
         if module.is_none() && function.is_none() {
-            return Ok((None, None));
+            return Ok(DaemonArtifactCacheKeys::default());
         }
         use molt_backend::backend_environment::{
             BackendCodegenTarget, current_semantic_environment,
@@ -47,7 +47,7 @@ impl DaemonJobRequest {
         } else {
             function.map(|source| Arc::new(DaemonCacheKey { context, source }))
         };
-        Ok((module, function))
+        Ok(DaemonArtifactCacheKeys { module, function })
     }
 
     pub(crate) fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
@@ -175,12 +175,12 @@ mod tests {
                 output_kind: NativeArtifactKind::Object,
             })
         );
-        let object_key = job.take_artifact_cache_keys().unwrap().0.unwrap();
+        let object_key = job.take_artifact_cache_keys().unwrap().module.unwrap();
         value["native_output_kind"] = "archive".into();
         let mut job = DaemonJobRequest::from_json_value(&value, "job").expect("archive job");
         assert_ne!(
             object_key,
-            job.take_artifact_cache_keys().unwrap().0.unwrap()
+            job.take_artifact_cache_keys().unwrap().module.unwrap()
         );
         value["is_wasm"] = true.into();
         assert!(DaemonJobRequest::from_json_value(&value, "job").is_err());

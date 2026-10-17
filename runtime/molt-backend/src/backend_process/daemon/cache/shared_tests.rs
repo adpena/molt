@@ -12,7 +12,7 @@ fn key(source: &str) -> Arc<DaemonCacheKey> {
     .expect("job");
     job.take_artifact_cache_keys()
         .expect("cache identity")
-        .0
+        .module
         .expect("nonempty key")
 }
 
@@ -97,7 +97,7 @@ fn same_source_different_target_has_independent_flight_state() {
     let changed = changed
         .take_artifact_cache_keys()
         .expect("cache identity")
-        .0
+        .module
         .unwrap();
     let Flight::Leader(first_guard) = cache.begin(&first) else {
         panic!("first target must lead");
