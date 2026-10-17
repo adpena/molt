@@ -1,5 +1,5 @@
-from molt.cli import main
+from molt.cli.__main__ import run
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    run()

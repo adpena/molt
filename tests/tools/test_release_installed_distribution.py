@@ -124,13 +124,14 @@ def _pure_wheel(path: Path) -> Path:
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("molt/__init__.py", "")
         archive.writestr("molt/cli/__init__.py", "def main():\n    pass\n")
+        archive.writestr("molt/cli/__main__.py", "def run():\n    pass\n")
         archive.writestr(
             "molt-0.0.1.dist-info/METADATA",
             "Metadata-Version: 2.4\nName: molt\nVersion: 0.0.1\n",
         )
         archive.writestr(
             "molt-0.0.1.dist-info/entry_points.txt",
-            "[console_scripts]\nmolt = molt.cli:main\n",
+            "[console_scripts]\nmolt = molt.cli.__main__:run\n",
         )
         archive.writestr("molt-0.0.1.dist-info/WHEEL", "Root-Is-Purelib: true\n")
         archive.writestr("molt-0.0.1.dist-info/RECORD", "")

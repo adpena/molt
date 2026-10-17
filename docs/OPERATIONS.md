@@ -860,6 +860,10 @@ fail closed; the inventory itself makes no claim about current file bytes.
   builds across a whole differential run.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
+- A `molt` process paces the collector for its large heap and ends without
+  freeing it (`molt.compiler_process`). A profiler or debugger that runs the
+  module, such as `python -m cProfile -o out.prof -m molt.cli build ...`, still
+  gets control back and writes its output.
 - Both reach builds that a harness starts, such as `tests/molt_diff.py`, so a
   differential run measures exactly the builds it makes.
 - Run differential suites with `--jobs` near the core count; builds are mostly
