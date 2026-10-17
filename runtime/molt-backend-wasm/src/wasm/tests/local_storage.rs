@@ -1,5 +1,5 @@
 use super::support::*;
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -148,12 +148,7 @@ fn structured_loop_body() -> Vec<OpIR> {
 
 #[test]
 fn shared_locals_execute_entry_seeds_exception_transfers_and_loops() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "shared local storage execution",
-    )
-    .expect("Node is required to prove emitted shared-local values");
+    let node = PathBuf::from("node");
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let first = (1.25_f64.to_bits() as i64).to_string();
     let second = (2.5_f64.to_bits() as i64).to_string();

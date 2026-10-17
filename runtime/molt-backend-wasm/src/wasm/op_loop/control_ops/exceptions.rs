@@ -244,15 +244,8 @@ mod tests {
 
     #[test]
     fn explicit_cleanup_label_inside_try_executes_before_outer_continuation() {
-        use crate::wasm::test_execution::{
-            real_execution_tool, run_node_test_script, wasm_test_temp_dir,
-        };
-        let node = real_execution_tool(
-            std::path::PathBuf::from("node"),
-            "MOLT_REQUIRE_REAL_NODE_TESTS",
-            "explicit exception cleanup",
-        )
-        .expect("Node is required for exceptional edge execution");
+        use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
+        let node = std::path::PathBuf::from("node");
         let (module, _) = plain_poll_module(false, true);
         Validator::new().validate_all(&module).unwrap();
         let (temp, _cleanup) = wasm_test_temp_dir();

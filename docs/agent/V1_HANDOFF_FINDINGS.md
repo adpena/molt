@@ -711,7 +711,11 @@ Shell-based developer gates now project the existing Cargo wrapper policy
 before opaque compound commands execute. Four actual shell-consumer controls
 cover every Cargo wrapper selector, preserved endpoints, disabled incremental
 compilation and durable temporary directories; all 17 gate-environment controls
-pass. The policy remains development-side.
+pass. The policy remains development-side. Thirteen mandatory WASM test
+sites now execute their actual guarded Node program directly, removing a
+duplicate version-probe process and an ineffective optional-tool selector at
+each site. Their 41 affected Rust controls pass; genuinely optional tool cells
+keep their existing admission policy.
 
 The ten-consumer Linux aarch64 WASM batch retains 885.3 build seconds:
 375.1 seconds (42.4%) in final WASM linking/optimization and 184.5 seconds

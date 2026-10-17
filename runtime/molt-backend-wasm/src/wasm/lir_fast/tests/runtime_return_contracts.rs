@@ -6,7 +6,7 @@ use super::*;
 use crate::tir::blocks::BlockId;
 use crate::tir::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 use crate::wasm::body::WasmBody;
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::{fs, path::PathBuf};
 
@@ -132,12 +132,7 @@ fn lir_import_result_sink_rejects_width_and_lifetime_mismatches() {
 
 #[test]
 fn lir_import_result_contracts_execute_owned_borrowed_raw_and_void_paths() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "LIR runtime return ownership",
-    )
-    .expect("Node is required to prove emitted runtime result ownership");
+    let node = PathBuf::from("node");
     let (directory, _cleanup) = wasm_test_temp_dir();
     let mut modules = serde_json::Map::new();
     for (name, call, args, result, box_args) in [

@@ -1,17 +1,12 @@
 use super::*;
 use crate::ir::ExecutionContextPolicy;
-use crate::wasm::test_execution::{real_execution_tool, run_node_test_script, wasm_test_temp_dir};
+use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::{fs, path::PathBuf};
 
 #[test]
 fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
-    let node = real_execution_tool(
-        PathBuf::from("node"),
-        "MOLT_REQUIRE_REAL_NODE_TESTS",
-        "Python exception ABI",
-    )
-    .expect("Node is required for Python exception ABI execution");
+    let node = PathBuf::from("node");
     let (temp, _cleanup) = wasm_test_temp_dir();
     let mut cases = Vec::new();
     // Named Python handler destinations select dispatch. The plain callee
