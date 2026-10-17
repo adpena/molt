@@ -3793,9 +3793,10 @@ toolchains = ["python"]
 # whose change-class needs them. Integration always runs the selected policy
 # in an exclusive clean checkout; no alternate gate manifest or skip flag exists.
 #
-# require_fresh_toolchain = true on a rule makes `integrate` additionally
-# demand a fresh built binary (hazard 6) when --toolchain-binary is supplied —
-# so a Rust change is never integrated against a stale artifact's gate result.
+# Each Cargo-owning gate admits and exercises its declared graph against the
+# captured integration source. Product compiler reuse follows the existing
+# source/toolchain/executable-content admission; no separate untyped binary or
+# Git timestamp can attest these different test/build graphs.
 
 
 # --- Frontend / stdlib Python (bootstrap-critical) -----------------------
@@ -4598,8 +4599,7 @@ gates = [
 [[rule]]
 name = "backend-native"
 toolchains = ["python", "rustc", "cargo"]
-description = "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests, fresh binary."
-require_fresh_toolchain = true
+description = "Cranelift/native backend and driver Rust: clippy + owning release-fast lib tests."
 globs = [
   "runtime/molt-backend/**/*.rs",
   "runtime/molt-backend/**/Cargo.toml",
@@ -4623,7 +4623,6 @@ gates = [
 name = "native-object-emission"
 toolchains = ["python", "rustc", "cargo"]
 description = "Maintained object emitters: upstream writer tests and actual native objects share one locked graph."
-require_fresh_toolchain = true
 globs = [
   "vendor/rust/object/**",
   "vendor/rust/cranelift-object/**",
@@ -4642,7 +4641,6 @@ gates = [
 name = "maintained-zlib-counters"
 toolchains = ["python", "uv", "rustc", "cargo", "node"]
 description = "Maintained compression provider: complete modular counters and actual source selection."
-require_fresh_toolchain = true
 globs = [
   "vendor/rust/zlib-rs/**",
   "tools/run_runtime_test_gate.py",
@@ -4671,7 +4669,6 @@ gates = [
 name = "backend-llvm"
 toolchains = ["python", "rustc", "cargo", "llvm-sdk"]
 description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
-require_fresh_toolchain = true
 globs = [
   "runtime/molt-backend-native/Cargo.toml",
   "runtime/molt-backend-native/src/llvm_backend/**/*.rs",
@@ -4685,7 +4682,6 @@ gates = [
 name = "tir-midend"
 toolchains = ["python", "rustc", "cargo"]
 description = "TIR midend Rust: all-target clippy + feature-complete tests."
-require_fresh_toolchain = true
 globs = [
   "runtime/molt-ir/**/*.rs",
   "runtime/molt-ir/**/*.toml",
@@ -4709,7 +4705,6 @@ gates = [
 name = "wasm-host"
 toolchains = ["python", "rustc", "cargo"]
 description = "Wasmtime host Rust: warning-free clippy + release-fast link build."
-require_fresh_toolchain = true
 globs = [
   "runtime/molt-wasm-host/**/*.rs",
   "runtime/molt-wasm-host/**/*.toml",
@@ -4756,7 +4751,6 @@ gates = [
 name = "runtime-vfs"
 toolchains = ["python", "rustc", "cargo"]
 description = "Runtime VFS satellite crate: all-target clippy, feature coverage, and browser adapter smoke."
-require_fresh_toolchain = true
 globs = [
   "runtime/molt-runtime-vfs/**/*.rs",
   "runtime/molt-runtime-vfs/Cargo.toml",
@@ -4773,7 +4767,6 @@ gates = [
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
 description = "Runtime/object-model Rust: one default-feature image, ordinary and isolated lifecycle semantics, then backend clippy; performance probes remain unrun."
-require_fresh_toolchain = true
 globs = [
   "runtime/molt-runtime/**/*.rs",
   "runtime/molt-obj-model/**/*.rs",

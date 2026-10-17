@@ -1,8 +1,8 @@
 """Failure-mode tests for the canonical integration driver (tools/molt_dev.py).
 
-EVERY hazard countermeasure is proven by a test that FIRES the countermeasure
-on a synthetic git repo built in tmp (the tests/test_check_suite_honesty.py
-style: green-path test + a failure-mode test per guard direction). The repos
+Driver-owned countermeasures are exercised on synthetic git repositories
+with independent failure controls. Compiler source/content admission belongs
+to the existing CLI artifact-custody tests, not a timestamp predicate here. The repos
 are real git repositories with a bare "origin" remote, so the fetch / rebase /
 push / ancestor / patch-id flows are exercised end-to-end, not mocked.
 
@@ -18,12 +18,9 @@ Hazard -> proving test(s):
   4 partial WIP salvage         test_secure_wip_captures_staged_and_unstaged
                                 test_secure_wip_honors_ignore_set
                                 test_secure_wip_excludes_untracked_by_default
-  5 diff/ls/stat lie            (all verdicts use plumbing/python: implicit in
-                                every test; binaries-identical proven directly)
-                                test_binaries_identical_helper
-  6 stale-binary misattribution test_verify_toolchain_flags_stale_binary
-                                test_verify_toolchain_fresh_binary_with_marker
-                                test_verify_toolchain_missing_marker_fails
+  5 diff/ls/stat lie            (verdicts use plumbing/python throughout)
+  6 stale-binary misattribution CLI compiler content-admission tests; selected
+                                gate failures still prevent integration
   7 .venv interpreter flips     test_python_oracle_pins_current_version
                                 test_python_oracle_refuses_unavailable_version
   8 content-marker verify       test_integrate_marker_mismatch_fails
@@ -524,7 +521,7 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
         ]
     )
     # These independent families must survive reordering, including every
-    # native build owner and its requirement for a fresh toolchain.
+    # native build owner and its complete Cargo test/build requirements.
     source_names = {
         "op-kind-registry",
         "source-extension-package-sets",
@@ -537,11 +534,6 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
     source_rules = [rule for rule in matched if rule.name in source_names]
     build_rules = [rule for rule in matched if rule.name in build_names]
     assert [rule.name for rule in build_rules] == build_names
-    assert {rule.name for rule in matched if rule.require_fresh_toolchain} == {
-        "backend-native",
-        "native-object-emission",
-        "tir-midend",
-    }
     source_gates = {gate for rule in source_rules for gate in rule.gates}
     build_gates = [gate for rule in build_rules for gate in rule.gates]
     assert source_gates <= set(gates)
@@ -1055,106 +1047,6 @@ def test_secure_wip_clean_tree_is_noop(drv, origin_and_clone):
 
 
 # --------------------------------------------------------------------------
-# Hazard 5: comparison verdicts use python/plumbing (binaries-identical)
-# --------------------------------------------------------------------------
-
-
-def test_binaries_identical_helper(drv, tmp_path):
-    a = tmp_path / "a.bin"
-    b = tmp_path / "b.bin"
-    c = tmp_path / "c.bin"
-    a.write_bytes(b"\x00\x01\x02molt")
-    b.write_bytes(b"\x00\x01\x02molt")
-    c.write_bytes(b"\x00\x01\x02MOLT")
-    assert drv._binaries_identical(a, b) is True
-    assert drv._binaries_identical(a, c) is False
-    assert drv._binaries_identical(a, tmp_path / "missing.bin") is False
-
-
-# --------------------------------------------------------------------------
-# Hazard 6: stale-binary misattribution (freshness + behavior marker)
-# --------------------------------------------------------------------------
-
-
-def _fake_binary(path: Path, prints: str) -> None:
-    """A tiny executable python 'binary' that prints a marker, runnable under
-    safe_run.py (which the driver always uses to run a binary)."""
-    if os.name == "nt":
-        path.write_text(f"@echo off\r\necho {prints}\r\n", encoding="utf-8")
-        return
-    path.write_text("#!/usr/bin/env python3\nprint(%r)\n" % prints, encoding="utf-8")
-    path.chmod(0o755)
-
-
-@pytest.mark.parametrize(
-    "source_path",
-    [
-        "runtime/molt-backend/src/x.rs",
-        "vendor/rust/object/src/write/coff/object.rs",
-        "vendor/rust/cranelift-object/Cargo.toml",
-    ],
-)
-def test_verify_toolchain_flags_stale_binary(
-    drv, origin_and_clone, tmp_path, source_path
-):
-    origin, work = origin_and_clone
-    git = drv.Git(work)
-    # Make a binary, then make a NEWER Rust-source commit so the binary is stale.
-    binary = tmp_path / "stale_bin"
-    _fake_binary(binary, "SETATTR marker present")
-    old = binary.stat().st_mtime
-    os.utime(binary, (old - 10_000, old - 10_000))  # backdate the binary
-    _commit_file(work, source_path, "// change\n", "rt: change")
-
-    report = drv.verify_toolchain(
-        git, binary, marker=None, probe_args=[], rss_mb=256, timeout=10
-    )
-    assert report.fresh is False  # mtime < newest rust commit
-
-
-def test_verify_toolchain_fresh_binary_with_marker(drv, origin_and_clone, tmp_path):
-    origin, work = origin_and_clone
-    git = drv.Git(work)
-    _commit_file(work, "runtime/molt-backend/src/y.rs", "// y\n", "rt: y")
-    binary = tmp_path / ("fresh_bin.cmd" if os.name == "nt" else "fresh_bin")
-    _fake_binary(binary, "native=148 ready")  # marker in output
-    # Binary is created AFTER the commit -> fresh.
-    report = drv.verify_toolchain(
-        git, binary, marker="native=148", probe_args=[], rss_mb=256, timeout=10
-    )
-    assert report.fresh is True
-    assert report.marker_found is True
-    assert report.probe_exit == 0
-
-
-def test_verify_toolchain_missing_marker_fails(drv, origin_and_clone, tmp_path):
-    origin, work = origin_and_clone
-    git = drv.Git(work)
-    _commit_file(work, "runtime/molt-backend/src/z.rs", "// z\n", "rt: z")
-    binary = tmp_path / ("nomarker_bin.cmd" if os.name == "nt" else "nomarker_bin")
-    _fake_binary(binary, "some other output")
-    report = drv.verify_toolchain(
-        git, binary, marker="native=148", probe_args=[], rss_mb=256, timeout=10
-    )
-    assert report.marker_found is False
-
-
-def test_verify_toolchain_reference_detects_noop_rebuild(
-    drv, origin_and_clone, tmp_path
-):
-    origin, work = origin_and_clone
-    git = drv.Git(work)
-    a = tmp_path / "bin_a"
-    b = tmp_path / "bin_b"
-    _fake_binary(a, "v1")
-    _fake_binary(b, "v1")  # byte-identical to a (a no-op rebuild)
-    report = drv.verify_toolchain(
-        git, a, marker=None, probe_args=[], rss_mb=256, timeout=10, reference=b
-    )
-    assert report.differs_from_reference is False  # identical -> suspicious
-
-
-# --------------------------------------------------------------------------
 # Hazard 7: python-oracle pins and verifies the interpreter version
 # --------------------------------------------------------------------------
 
@@ -1476,11 +1368,6 @@ def _integrate_ns(drv, **overrides):
         cleanup_worktree=False,
         ignore=None,
         session_id="devtool-test",
-        toolchain_binary=None,
-        toolchain_marker=None,
-        toolchain_probe_arg=None,
-        rss_mb=512,
-        timeout=10,
     )
     base.update(overrides)
     import argparse

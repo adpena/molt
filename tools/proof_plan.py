@@ -522,6 +522,20 @@ def toolchain_closure(
     return tuple(closed)
 
 
+_LOCAL_RULE_FIELDS = frozenset({"name", "description", "globs", "gates", "toolchains"})
+
+
+def local_rule_field_error(rule: Mapping[str, Any]) -> str | None:
+    """Reject policy fields that neither the executor nor its projection consumes."""
+    unknown = sorted(set(rule) - _LOCAL_RULE_FIELDS)
+    if unknown:
+        return (
+            f"{rule.get('name', 'local rule')}: unknown local rule fields: "
+            + ", ".join(unknown)
+        )
+    return None
+
+
 def local_gate_commands(
     data: Mapping[str, Any],
 ) -> dict[str, tuple[str, tuple[str, ...]]]:
@@ -2140,6 +2154,8 @@ class ProofPlan:
         except ValueError as exc:
             errors.append(f"local always: {exc}")
         for rule in self.local_rules:
+            if field_error := local_rule_field_error(rule):
+                errors.append(field_error)
             name = rule.get("name")
             if not isinstance(name, str) or not name:
                 errors.append("local [[rule]] missing non-empty name")
