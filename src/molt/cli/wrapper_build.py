@@ -54,6 +54,7 @@ from molt.cli.json_contract import (
 from molt.cli.models import (
     _ResolvedBuildEntry,
     _WrapperBuildContract,
+    runtime_target,
 )
 from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
 from molt.cli.module_resolution import _stdlib_root_path
@@ -123,11 +124,9 @@ def _wrapper_stdlib_profile(
 def _wrapper_build_target(build_args: Sequence[str]) -> str:
     for index, arg in enumerate(build_args):
         if arg == "--target" and index + 1 < len(build_args):
-            target = build_args[index + 1]
-            return "native" if target == "llvm" else target
+            return runtime_target(build_args[index + 1])
         if arg.startswith("--target="):
-            target = arg.split("=", 1)[1]
-            return "native" if target == "llvm" else target
+            return runtime_target(arg.split("=", 1)[1])
     return "native"
 
 

@@ -56,6 +56,7 @@ from molt.cli.models import (
     RuntimeFeedbackSummary,
     Target,
     _BinaryImageScope,
+    runtime_target,
     _BuildEntrySelector,
     _ModuleRootResolution,
     _PreparedBuildConfig,
@@ -1243,7 +1244,7 @@ def _runtime_policy_flag_environment(
 
 def _target_sys_platform(target: Target) -> str | None:
     """Use the runtime's platform value for the admitted compiler target."""
-    normalized = target.strip().lower()
+    normalized = runtime_target(target.strip().lower())
     # Source backends have no selected runtime OS. Preserve that unknown fact
     # instead of parsing a backend name as a native triple or using the host.
     if normalized in {"rust", "luau", "mlir"}:
