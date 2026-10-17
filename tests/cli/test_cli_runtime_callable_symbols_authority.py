@@ -542,7 +542,9 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
 
     def dispatch(binding):
         result, error = backend_compile._prepare_backend_dispatch(
-            backend_environment=CodegenSelection().environment(os.environ, profile="dev"),
+            backend_environment=CodegenSelection().environment(
+                os.environ, profile="dev"
+            ),
             is_rust_transpile=False,
             is_luau_transpile=False,
             is_wasm=False,

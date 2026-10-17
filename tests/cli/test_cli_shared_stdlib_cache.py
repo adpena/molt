@@ -1109,8 +1109,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     stored["manifest"] = "stale contract"
     paths[0].write_text(json.dumps(stored), encoding="utf-8")
     third = cli_backend_cache_setup._prepare_backend_cache_setup(
-        wasm_layout=None,
-        backend_bin=tmp_path / "molt-backend", **common
+        wasm_layout=None, backend_bin=tmp_path / "molt-backend", **common
     )
     assert third.stdlib_object_cache_key == first.stdlib_object_cache_key
     assert third.stdlib_object_manifest == first.stdlib_object_manifest
@@ -1192,8 +1191,7 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
     # The shared digests leave the stdlib key unchanged.
     monkeypatch.setattr(CACHE_KEYS, "_cache_json_payload_bytes", original_bytes)
     fresh = cli_backend_cache_setup._prepare_backend_cache_setup(
-        wasm_layout=None,
-        backend_bin=tmp_path / "molt-backend", **common
+        wasm_layout=None, backend_bin=tmp_path / "molt-backend", **common
     )
     assert fresh.stdlib_object_cache_key == setup.stdlib_object_cache_key
     assert fresh.stdlib_object_manifest == setup.stdlib_object_manifest
