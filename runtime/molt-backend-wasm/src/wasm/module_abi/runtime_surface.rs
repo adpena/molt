@@ -167,6 +167,12 @@ impl WasmRuntimeSurfacePlan {
             self.required_imports
                 .extend(call.required_imports.iter().copied());
         }
+        if kind == "callargs_push_method_receiver" {
+            self.required_imports.extend([
+                WasmRuntimeImport::CallargsPushPos,
+                WasmRuntimeImport::DecRefObj,
+            ]);
+        }
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {

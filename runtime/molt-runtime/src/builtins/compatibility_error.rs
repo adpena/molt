@@ -10,6 +10,7 @@ pub(crate) enum CompatibilityError<'a> {
     CounterFromkeys,
     WindowsSignalHandler,
     AbstractSignalHandler,
+    RawIoBaseReadinto,
     MemoryviewSubView {
         rank: usize,
         indices: usize,
@@ -36,7 +37,11 @@ pub(crate) enum CompatibilityError<'a> {
 impl CompatibilityError<'_> {
     fn message(self, py: &PyToken<'_>) -> Result<String, &'static str> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
-        if target.major != 3 || !(12..=14).contains(&target.minor) {
+        let supported_minor = match &self {
+            Self::RawIoBaseReadinto => matches!(target.minor, 12 | 13 | 14 | 15),
+            _ => matches!(target.minor, 12 | 13 | 14),
+        };
+        if target.major != 3 || !supported_minor {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
@@ -48,6 +53,7 @@ impl CompatibilityError<'_> {
             }
             Self::WindowsSignalHandler if cfg!(target_os = "windows") => String::new(),
             Self::AbstractSignalHandler => String::new(),
+            Self::RawIoBaseReadinto => String::new(),
             Self::MemoryviewSubView {
                 rank,
                 indices,
@@ -133,6 +139,39 @@ pub extern "C" fn molt_compatibility_error(outcome_bits: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::CompatibilityError;
+
+    #[test]
+    fn raw_readinto_target_support_does_not_widen_older_outcomes() {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for minor in 12..=15 {
+                transaction.with_target_python_minor(py, minor, || {
+                    assert_eq!(
+                        CompatibilityError::RawIoBaseReadinto.message(py).as_deref(),
+                        Ok("")
+                    );
+                });
+            }
+            for minor in [11, 16] {
+                transaction.with_target_python_minor(py, minor, || {
+                    assert_eq!(
+                        CompatibilityError::RawIoBaseReadinto.message(py),
+                        Err("unsupported compatibility-error target"),
+                    );
+                });
+            }
+            transaction.with_target_python_minor(py, 15, || {
+                assert_eq!(
+                    CompatibilityError::MemoryviewLookup { rank: 2 }.message(py),
+                    Err("unsupported compatibility-error target"),
+                );
+                assert_eq!(
+                    CompatibilityError::CounterFromkeys.message(py),
+                    Err("unsupported compatibility-error target"),
+                );
+            });
+        });
+    }
 
     #[test]
     fn glob_outcome_rejects_relative_facts_and_unsupported_targets() {

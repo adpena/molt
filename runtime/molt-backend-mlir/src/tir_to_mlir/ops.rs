@@ -374,7 +374,8 @@ pub(super) fn emit_tir_op<'c, 'a>(
             | OpCode::CallMethod
             | OpCode::LoadMethod
             | OpCode::LoadSuperMethod
-            | OpCode::CallLoadedMethod,
+            | OpCode::CallLoadedMethod
+            | OpCode::CallargsPushMethodReceiver,
         ) => {
             // Python calls are dynamic until a later Molt dialect pass proves a
             // concrete symbol/signature. A func.call with an invented symbol is

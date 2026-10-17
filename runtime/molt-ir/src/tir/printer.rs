@@ -284,6 +284,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::Call => "call",
         OpCode::CallMethod => "call_method",
         OpCode::CallLoadedMethod => "call_loaded_method",
+        OpCode::CallargsPushMethodReceiver => "callargs_push_method_receiver",
         OpCode::CallBuiltin => "call_builtin",
         OpCode::OrdAt => "ord_at",
         OpCode::BoxVal => "box_val",

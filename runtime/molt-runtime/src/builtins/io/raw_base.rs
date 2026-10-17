@@ -3,6 +3,7 @@
 //! backend is required, and no Rust storage borrow spans a Python callback.
 use super::buffered::{call, owned, trap_eintr};
 use super::*;
+use crate::builtins::compatibility_error::CompatibilityError;
 use crate::object::buffer_exports::{bytearray_require_unexported, bytearray_resize};
 use molt_runtime_core::OwnedRuntimeValue;
 use num_traits::ToPrimitive;
@@ -229,6 +230,6 @@ pub(crate) extern "C" fn raw_io_base_readinto(args: u64, kwargs: u64) -> u64 {
                 "_RawIOBase.readinto() takes no keyword arguments",
             );
         }
-        raise_exception(py, "NotImplementedError", "")
+        CompatibilityError::RawIoBaseReadinto.raise(py)
     })
 }

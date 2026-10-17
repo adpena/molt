@@ -1,7 +1,8 @@
 """Purpose: method calls through properties, __getattr__ and __getattribute__ match CPython (HF-216).
 
-Only a plain function found on the type loads without a bound method; every
-other attribute takes the generic lookup and is called as an ordinary callable.
+Plain functions and native method descriptors selected through generic lookup
+load with a separate receiver. Data descriptors, instance values and custom
+attribute hooks retain the actual callable value they return.
 """
 
 
@@ -83,3 +84,62 @@ class WithCallable:
 
 
 print(WithCallable().run(8))
+
+
+
+def report_native(label, call):
+    try:
+        print(label, call())
+    except TypeError as error:
+        print(label, type(error).__name__, str(error))
+
+
+class NativeIntercept(int):
+    def __getattribute__(self, name):
+        print("native_getattribute", name)
+        return object.__getattribute__(self, name)
+
+
+class NativeFallback(int):
+    def __getattr__(self, name):
+        print("native_getattr", name)
+        return lambda: name
+
+
+report_native("native_custom", lambda: NativeIntercept(7).bit_length(1))
+report_native("native_fallback_slot", lambda: NativeFallback(7).bit_length(1))
+print("native_missing", NativeFallback(7).missing())
+
+
+class NativeShadow(int):
+    pass
+
+
+shadow = NativeShadow(7)
+shadow.bit_length = shadow.bit_length
+report_native("native_instance_bound", lambda: shadow.bit_length(1))
+shadow.bit_length = lambda value: ("shadow", value)
+print("native_instance_callable", shadow.bit_length(1))
+del shadow.bit_length
+report_native("native_unshadowed", lambda: shadow.bit_length(1))
+
+# Selection precedes argument evaluation, even when that argument shadows it.
+def change_selected():
+    shadow.bit_length = lambda value: ("replacement", value)
+    return 1
+
+
+report_native("native_selected_before_arg", lambda: shadow.bit_length(change_selected()))
+print("native_replacement_after_arg", shadow.bit_length(2))
+
+
+class WrongNativeReceiver:
+    method = int.bit_length
+
+
+def evaluated_argument():
+    print("native_bad_receiver_arg_evaluated")
+    return 1
+
+
+report_native("native_receiver_admission_at_call", lambda: WrongNativeReceiver().method(evaluated_argument()))

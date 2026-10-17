@@ -310,6 +310,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
+        OpCode::CallargsPushMethodReceiver => Some(OpIR {
+            kind: "callargs_push_method_receiver".to_string(),
+            args: Some(operand_args(op)),
+            ..OpIR::default()
+        }),
         OpCode::CallBuiltin => {
             let call = op
                 .builtin_call()

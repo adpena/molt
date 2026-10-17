@@ -8,6 +8,42 @@ import io
 import sys
 import tempfile
 
+
+# The native abstract default is METH_VARARGS, not an omitted implementation:
+# it never examines positional values, including after the stream is closed.
+class AbstractRaw(io.RawIOBase):
+    pass
+
+
+for abstract_type in (io.RawIOBase, AbstractRaw):
+    abstract_raw = abstract_type()
+    for closed in (False, True):
+        if closed:
+            abstract_raw.close()
+        for arguments in ((), (None,), (b"readonly",), (None, 1, 2, 3)):
+            try:
+                abstract_raw.readinto(*arguments)
+            except NotImplementedError as error:
+                assert error.args == ()
+                assert str(error) == ""
+                print("raw-default-pos", abstract_type.__name__, closed, len(arguments), error.args)
+            else:
+                raise AssertionError("abstract readinto accepted positional arguments")
+        # Direct CALL and explicit descriptor calls reject keywords before the
+        # abstract body, even with extra positional arguments or a closed stream.
+        try:
+            abstract_raw.readinto(None, 1, extra=2)
+        except TypeError as error:
+            print("raw-default-keyword", abstract_type.__name__, closed, str(error))
+        else:
+            raise AssertionError("abstract readinto accepted keyword arguments")
+        try:
+            io.RawIOBase.readinto(abstract_raw, extra=2)
+        except TypeError as error:
+            print("raw-default-descriptor-keyword", abstract_type.__name__, closed, str(error))
+        else:
+            raise AssertionError("abstract descriptor accepted keyword arguments")
+
 with tempfile.NamedTemporaryFile(mode="wb+", delete=True) as handle:
     handle.write(b"abcd")
     handle.flush()

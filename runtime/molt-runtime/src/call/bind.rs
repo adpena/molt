@@ -40,13 +40,12 @@ use crate::{
     molt_bytes_index_slice, molt_bytes_maketrans, molt_bytes_rfind_slice, molt_bytes_rindex_slice,
     molt_bytes_rsplit_max, molt_bytes_split_max, molt_bytes_splitlines,
     molt_bytes_startswith_slice, molt_dict_pop_method, molt_file_reconfigure,
-    molt_frozenset_copy_method, molt_frozenset_difference_multi, molt_frozenset_intersection_multi,
-    molt_frozenset_isdisjoint, molt_frozenset_issubset, molt_frozenset_issuperset,
-    molt_frozenset_symmetric_difference, molt_frozenset_union_multi, molt_int_from_bytes,
-    molt_int_to_bytes, molt_list_append, molt_list_index_range, molt_list_pop, molt_list_sort,
-    molt_memoryview_cast, molt_memoryview_hex, molt_object_init, molt_object_init_subclass,
-    molt_object_new_bound, molt_set_clear, molt_set_copy_method, molt_set_difference_multi,
-    molt_set_difference_update_multi, molt_set_intersection_multi,
+    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
+    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
+    molt_frozenset_union_multi, molt_int_from_bytes, molt_int_to_bytes, molt_list_append,
+    molt_list_index_range, molt_list_pop, molt_list_sort, molt_memoryview_cast,
+    molt_memoryview_hex, molt_object_init, molt_object_init_subclass, molt_object_new_bound,
+    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_intersection_multi,
     molt_set_intersection_update_multi, molt_set_isdisjoint, molt_set_issubset,
     molt_set_issuperset, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
     molt_set_union_multi, molt_set_update_multi, molt_string_count_slice, molt_string_encode,
@@ -70,8 +69,8 @@ mod test_support;
 
 use arguments::{Admission, ArgumentCustody, callee_custody};
 pub(crate) use arguments::{
-    CallArguments, CallBindRuntimeState, CallForm, EntryArguments, callargs_detach_owned,
-    callargs_ptr, callargs_visit_owned, release_stack_arguments,
+    CallArguments, CallBindRuntimeState, CallForm, EntryArguments, ReceiverOrigin,
+    callargs_detach_owned, callargs_ptr, callargs_visit_owned, release_stack_arguments,
 };
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) use arguments::{

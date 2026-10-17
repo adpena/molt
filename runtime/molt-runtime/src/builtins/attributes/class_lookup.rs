@@ -107,10 +107,11 @@ pub(super) unsafe fn attribute_lookup_transaction<F>(
     owner: *mut u8,
     name: u64,
     default: DefaultGetattribute,
+    mode: AttributeLookupMode<'_>,
     default_lookup: F,
 ) -> Result<Option<u64>, ()>
 where
-    F: FnOnce() -> Result<Option<u64>, ()>,
+    F: FnOnce(AttributeLookupMode<'_>) -> Result<Option<u64>, ()>,
 {
     unsafe {
         let receiver = MoltObject::from_ptr(object).bits();
@@ -122,7 +123,7 @@ where
             inc_ref_bits(py, owner_bits);
             inc_ref_bits(py, name);
             exception_stack_push();
-            let result = default_lookup();
+            let result = default_lookup(mode);
             exception_stack_pop(py);
             dec_ref_bits(py, name);
             dec_ref_bits(py, owner_bits);
@@ -159,7 +160,13 @@ where
                 Some(raw) if Some(raw) != default => {
                     descriptor_call1(py, raw, owner, Some(receiver), name)
                 }
-                _ => default_lookup(),
+                _ => default_lookup(if fallback.is_none() {
+                    mode
+                } else {
+                    // __getattr__ installs a hook slot rather than generic
+                    // getattro: LOAD_ATTR must receive the bound value.
+                    AttributeLookupMode::Value
+                }),
             };
             // The selected getattribute callable retires with its own failure
             // still selected, before AttributeError suppression or fallback.
@@ -246,7 +253,8 @@ unsafe fn type_attr_lookup_ptr_inner(
                 meta_ptr,
                 attr_bits,
                 DefaultGetattribute::Type,
-                || type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false),
+                AttributeLookupMode::Value,
+                |_| type_attr_lookup_ptr_inner(_py, obj_ptr, attr_bits, false),
             );
         }
         // Capture one metaclass selection before descriptor classification or

@@ -506,21 +506,6 @@ pub(super) unsafe fn builtin_call_binding(
                 bind_builtin_set_single(_py, args, "issuperset", "frozenset", TYPE_ID_FROZENSET)
             }));
         }
-        if matches_builtin!(molt_set_copy_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_set_noargs(_py, args, "copy", "set", TYPE_ID_SET)
-            }));
-        }
-        if matches_builtin!(molt_frozenset_copy_method) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_set_noargs(_py, args, "copy", "frozenset", TYPE_ID_FROZENSET)
-            }));
-        }
-        if matches_builtin!(molt_set_clear) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_set_noargs(_py, args, "clear", "set", TYPE_ID_SET)
-            }));
-        }
         if matches_builtin!(molt_string_encode) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_text_codec(_py, args, "encode")
@@ -1667,49 +1652,6 @@ unsafe fn bind_builtin_set_single(
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
         Some(vec![args.pos[0], args.pos[1]])
-    }
-}
-
-unsafe fn bind_builtin_set_noargs(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-    method: &str,
-    owner_name: &str,
-    owner_type_id: u32,
-) -> Option<Vec<u64>> {
-    unsafe {
-        if args.pos.is_empty() {
-            return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
-        }
-        let self_obj = obj_from_bits(args.pos[0]);
-        let mut is_owner = false;
-        if let Some(self_ptr) = self_obj.as_ptr() {
-            is_owner = object_type_id(self_ptr) == owner_type_id;
-        }
-        if !is_owner {
-            let msg = format!(
-                "descriptor '{method}' for '{owner_name}' objects doesn't apply to a '{}' object",
-                type_name(_py, self_obj)
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-        if !args.kw_names.is_empty() {
-            let msg = format!(
-                "{}.{method}() takes no keyword arguments",
-                type_name(_py, self_obj)
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-        let positional = args.pos.len().saturating_sub(1);
-        if positional != 0 {
-            let msg = format!(
-                "{}.{method}() takes no arguments ({} given)",
-                type_name(_py, self_obj),
-                positional
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-        Some(vec![args.pos[0]])
     }
 }
 

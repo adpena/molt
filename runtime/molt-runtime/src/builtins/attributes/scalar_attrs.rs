@@ -286,6 +286,7 @@ fn resolve_scalar_method(
     self_bits: u64,
     kind: ScalarKind,
     name: &str,
+    mode: AttributeLookupMode<'_>,
 ) -> Result<Option<u64>, ()> {
     let builtins = builtin_classes(_py);
     let class_bits = scalar_class_bits(_py, kind);
@@ -298,31 +299,34 @@ fn resolve_scalar_method(
     }?;
     if let Some(func_bits) = direct {
         return unsafe {
-            descriptor_bind(
+            mode.bind(
                 _py,
                 func_bits,
                 Some(MoltObject::from_ptr(class_ptr).bits()),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             )
         };
     }
     if let Some(func_bits) = builtin_class_method_bits(_py, class_bits, name)? {
         return unsafe {
-            descriptor_bind(
+            mode.bind(
                 _py,
                 func_bits,
                 Some(MoltObject::from_ptr(class_ptr).bits()),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             )
         };
     }
     if let Some(func_bits) = builtin_class_method_bits(_py, builtins.object, name)? {
         return unsafe {
-            descriptor_bind(
+            mode.bind(
                 _py,
                 func_bits,
                 Some(MoltObject::from_ptr(class_ptr).bits()),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             )
         };
     }
@@ -341,6 +345,15 @@ pub(crate) fn resolve_scalar_attr(
     object: u64,
     name: &str,
 ) -> Result<Option<u64>, ()> {
+    resolve_scalar_attr_with_mode(py, object, name, AttributeLookupMode::Value)
+}
+
+pub(crate) fn resolve_scalar_attr_with_mode(
+    py: &PyToken<'_>,
+    object: u64,
+    name: &str,
+    mode: AttributeLookupMode<'_>,
+) -> Result<Option<u64>, ()> {
     let class = type_of_bits(py, object);
     let key = attr_name_bits_from_bytes(py, name.as_bytes()).ok_or(())?;
     let value = unsafe {
@@ -349,7 +362,13 @@ pub(crate) fn resolve_scalar_attr(
                 return Ok(None);
             };
             match class_attr_lookup_raw_mro(py, class_ptr, key)? {
-                Some(descriptor) => descriptor_bind(py, descriptor, Some(class), Some(object)),
+                Some(descriptor) => mode.bind(
+                    py,
+                    descriptor,
+                    Some(class),
+                    Some(object),
+                    DescriptorCallPolicy::Required,
+                ),
                 None => Ok(None),
             }
         })()
@@ -359,7 +378,7 @@ pub(crate) fn resolve_scalar_attr(
         return Ok(Some(value));
     }
     match numeric_scalar_kind_from_bits(py, object) {
-        Some(kind) => resolve_scalar_method(py, object, kind, name),
+        Some(kind) => resolve_scalar_method(py, object, kind, name, mode),
         None => Ok(None),
     }
 }

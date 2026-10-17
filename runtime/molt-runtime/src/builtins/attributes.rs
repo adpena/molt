@@ -8,7 +8,8 @@ use crate::builtins::annotations::pep649_enabled;
 #[cfg(test)]
 use crate::builtins::attr::exception_is_attribute_error;
 use crate::builtins::attr::{
-    attr_lookup_ptr_allow_missing, class_slots_info, clear_attribute_error_if_pending,
+    AttributeLookupMode, DescriptorCallPolicy, attr_lookup_ptr_allow_missing, class_slots_info,
+    clear_attribute_error_if_pending,
 };
 use crate::builtins::containers::tuple_method_bits;
 #[cfg(test)]
@@ -254,6 +255,15 @@ pub(crate) unsafe fn attr_lookup_ptr(
     obj_ptr: *mut u8,
     attr_bits: u64,
 ) -> Result<Option<u64>, ()> {
+    unsafe { attr_lookup_ptr_with_mode(_py, obj_ptr, attr_bits, AttributeLookupMode::Value) }
+}
+
+pub(crate) unsafe fn attr_lookup_ptr_with_mode(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+    mode: AttributeLookupMode<'_>,
+) -> Result<Option<u64>, ()> {
     unsafe {
         let type_id = object_type_id(obj_ptr);
         if type_id == TYPE_ID_TYPE {
@@ -276,35 +286,46 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 } else {
                     class_lookup::DefaultGetattribute::Object
                 },
-                || {
+                mode,
+                |mode| {
                     if type_id == TYPE_ID_MODULE {
                         module_attr_lookup(_py, obj_ptr, attr_bits)
                     } else {
-                        attr_lookup_ptr_default(_py, obj_ptr, attr_bits)
+                        attr_lookup_ptr_default_with_mode(_py, obj_ptr, attr_bits, false, mode)
                     }
                 },
             );
         }
-        attr_lookup_ptr_default(_py, obj_ptr, attr_bits)
+        attr_lookup_ptr_default_with_mode(_py, obj_ptr, attr_bits, false, mode)
     }
 }
 
 /// Complete builtin/default lookup without user __getattribute__ or
 /// __getattr__. Normal lookup wraps this entire operation in one transaction,
 /// including the trailing builtin members of dictless receiver kinds.
-pub(crate) unsafe fn attr_lookup_ptr_default(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-) -> Result<Option<u64>, ()> {
-    unsafe { attr_lookup_ptr_default_with_suppression(_py, obj_ptr, attr_bits, false) }
-}
-
 pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
     suppress: bool,
+) -> Result<Option<u64>, ()> {
+    unsafe {
+        attr_lookup_ptr_default_with_mode(
+            _py,
+            obj_ptr,
+            attr_bits,
+            suppress,
+            AttributeLookupMode::Value,
+        )
+    }
+}
+
+pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
+    _py: &PyToken<'_>,
+    obj_ptr: *mut u8,
+    attr_bits: u64,
+    suppress: bool,
+    mode: AttributeLookupMode<'_>,
 ) -> Result<Option<u64>, ()> {
     unsafe {
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
@@ -350,8 +371,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
         if matches!(type_id, TYPE_ID_BIGINT | TYPE_ID_FLOAT)
             && !is_numeric_scalar_attr_receiver(_py, obj_bits)
         {
-            return crate::builtins::attr::object_attr_lookup_with_policy(
-                _py, obj_ptr, attr_bits, suppress,
+            return crate::builtins::attr::object_attr_lookup_with_mode(
+                _py, obj_ptr, attr_bits, suppress, mode,
             );
         }
         if matches!(type_id, TYPE_ID_BIGINT | TYPE_ID_FLOAT) {
@@ -359,7 +380,9 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 return Ok(None);
             };
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            if let Some(bits) = resolve_scalar_attr(_py, self_bits, name.as_str())? {
+            if let Some(bits) =
+                scalar_attrs::resolve_scalar_attr_with_mode(_py, self_bits, name.as_str(), mode)?
+            {
                 return Ok(Some(bits));
             }
         }
@@ -374,7 +397,13 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 && let Some(descriptor) = class_attr_lookup_raw_mro(_py, class, attr_bits)?
                 && descriptor_is_data(_py, descriptor)?
             {
-                return descriptor_bind(_py, descriptor, Some(class_bits), Some(obj_bits));
+                return mode.bind(
+                    _py,
+                    descriptor,
+                    Some(class_bits),
+                    Some(obj_bits),
+                    DescriptorCallPolicy::Required,
+                );
             }
         }
         if type_id == TYPE_ID_MODULE {
@@ -409,7 +438,13 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 if let Some(class) = obj_from_bits(class_bits).as_ptr()
                     && let Some(descriptor) = class_attr_lookup_raw_mro(_py, class, attr_bits)?
                 {
-                    return descriptor_bind(_py, descriptor, Some(class_bits), Some(obj_bits));
+                    return mode.bind(
+                        _py,
+                        descriptor,
+                        Some(class_bits),
+                        Some(obj_bits),
+                        DescriptorCallPolicy::Required,
+                    );
                 }
             }
             // C PyMethod_New accepts a noncallable inline function value too.
@@ -420,8 +455,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             };
         }
         if type_id == TYPE_ID_EXCEPTION {
-            return crate::builtins::attr::object_attr_lookup_with_policy(
-                _py, obj_ptr, attr_bits, suppress,
+            return crate::builtins::attr::object_attr_lookup_with_mode(
+                _py, obj_ptr, attr_bits, suppress, mode,
             );
         }
         if type_id == TYPE_ID_GENERATOR
@@ -467,11 +502,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             }
             if let Some(func_bits) = generator_method_bits(_py, name.as_str())? {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
+                return mode.bind(
                     _py,
                     func_bits,
                     Some(type_of_bits(_py, self_bits)),
                     Some(self_bits),
+                    DescriptorCallPolicy::Required,
                 );
             }
         }
@@ -483,8 +519,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 TYPE_ID_DATACLASS | TYPE_ID_EXCEPTION | TYPE_ID_FUNCTION | TYPE_ID_TYPE
             )
         {
-            let result = crate::builtins::attr::object_attr_lookup_with_policy(
-                _py, obj_ptr, attr_bits, suppress,
+            let result = crate::builtins::attr::object_attr_lookup_with_mode(
+                _py, obj_ptr, attr_bits, suppress, mode,
             );
             if let Some(value) = result? {
                 return Ok(Some(value));
@@ -535,11 +571,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             }
             if let Some(func_bits) = asyncgen_method_bits(_py, name.as_str())? {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
+                return mode.bind(
                     _py,
                     func_bits,
                     Some(type_of_bits(_py, self_bits)),
                     Some(self_bits),
+                    DescriptorCallPolicy::Required,
                 );
             }
         }
@@ -650,11 +687,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             }
             if let Some(func_bits) = memoryview_method_bits(_py, name.as_str())? {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
+                return mode.bind(
                     _py,
                     func_bits,
                     Some(type_of_bits(_py, self_bits)),
                     Some(self_bits),
+                    DescriptorCallPolicy::Required,
                 );
             }
         }
@@ -681,11 +719,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             }
             if let Some(func_bits) = range_method_bits(_py, name.as_str())? {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
+                return mode.bind(
                     _py,
                     func_bits,
                     Some(type_of_bits(_py, self_bits)),
                     Some(self_bits),
+                    DescriptorCallPolicy::Required,
                 );
             }
         }
@@ -712,11 +751,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             }
             if let Some(func_bits) = slice_method_bits(_py, name.as_str())? {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
+                return mode.bind(
                     _py,
                     func_bits,
                     Some(type_of_bits(_py, self_bits)),
                     Some(self_bits),
+                    DescriptorCallPolicy::Required,
                 );
             }
         }
@@ -804,11 +844,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 file_method_bits(_py, type_of_bits(_py, obj_bits), name.as_str())?
             {
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
+                return mode.bind(
                     _py,
                     func_bits,
                     Some(type_of_bits(_py, self_bits)),
                     Some(self_bits),
+                    DescriptorCallPolicy::Required,
                 );
             }
         }
@@ -817,11 +858,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             && let Some(func_bits) = set_method_bits(_py, name.as_str())?
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            return descriptor_bind(
+            return mode.bind(
                 _py,
                 func_bits,
                 Some(type_of_bits(_py, self_bits)),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             );
         }
         if type_id == TYPE_ID_FROZENSET
@@ -829,11 +871,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             && let Some(func_bits) = frozenset_method_bits(_py, name.as_str())?
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            return descriptor_bind(
+            return mode.bind(
                 _py,
                 func_bits,
                 Some(type_of_bits(_py, self_bits)),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             );
         }
         if type_id == TYPE_ID_LIST
@@ -853,11 +896,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             && let Some(func_bits) = tuple_method_bits(_py, name.as_str())?
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            return descriptor_bind(
+            return mode.bind(
                 _py,
                 func_bits,
                 Some(type_of_bits(_py, self_bits)),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             );
         }
         if type_id == TYPE_ID_STRING
@@ -865,11 +909,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             && let Some(func_bits) = string_method_bits(_py, name.as_str())?
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            return descriptor_bind(
+            return mode.bind(
                 _py,
                 func_bits,
                 Some(type_of_bits(_py, self_bits)),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             );
         }
         if type_id == TYPE_ID_BYTES
@@ -877,11 +922,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             && let Some(func_bits) = bytes_method_bits(_py, name.as_str())?
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            return descriptor_bind(
+            return mode.bind(
                 _py,
                 func_bits,
                 Some(type_of_bits(_py, self_bits)),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             );
         }
         if type_id == TYPE_ID_BYTEARRAY
@@ -889,11 +935,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             && let Some(func_bits) = bytearray_method_bits(_py, name.as_str())?
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            return descriptor_bind(
+            return mode.bind(
                 _py,
                 func_bits,
                 Some(type_of_bits(_py, self_bits)),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             );
         }
         if type_id == TYPE_ID_COMPLEX
@@ -901,11 +948,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             && let Some(func_bits) = complex_method_bits(_py, name.as_str())?
         {
             let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-            return descriptor_bind(
+            return mode.bind(
                 _py,
                 func_bits,
                 Some(type_of_bits(_py, self_bits)),
                 Some(self_bits),
+                DescriptorCallPolicy::Required,
             );
         }
         if type_id == TYPE_ID_TYPE {
@@ -1035,8 +1083,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             }
             // The shared resolver gives real class data descriptors priority
             // over the user dictionary, then binds ordinary class attributes.
-            return crate::builtins::attr::object_attr_lookup_with_policy(
-                _py, obj_ptr, attr_bits, suppress,
+            return crate::builtins::attr::object_attr_lookup_with_mode(
+                _py, obj_ptr, attr_bits, suppress, mode,
             );
         }
         if type_id == TYPE_ID_CODE {
@@ -1175,13 +1223,13 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             return Ok(None);
         }
         if type_id == TYPE_ID_DATACLASS {
-            return crate::builtins::attr::dataclass_attr_lookup_inner(
-                _py, obj_ptr, attr_bits, None, suppress,
+            return crate::builtins::attr::dataclass_attr_lookup_with_mode(
+                _py, obj_ptr, attr_bits, None, suppress, mode,
             );
         }
         if crate::object::heap_kind_has_class_shape(type_id) {
-            return crate::builtins::attr::object_attr_lookup_with_policy(
-                _py, obj_ptr, attr_bits, suppress,
+            return crate::builtins::attr::object_attr_lookup_with_mode(
+                _py, obj_ptr, attr_bits, suppress, mode,
             );
         }
         Ok(None)
@@ -1335,36 +1383,69 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let Some(site_id) = ic_site_from_bits(site_bits) else {
+            if ic_site_from_bits(site_bits).is_none() {
                 return molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits);
-            };
+            }
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(_py, "OverflowError", "attribute name is too large");
             };
-            if let Some(bits) = field_sites::read_cached_field(_py, site_id, obj_bits) {
-                return bits;
-            }
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
-            let Some(name_bits) = attr_name_bits_for_site(_py, site_id, slice) else {
-                return MoltObject::none().bits();
-            };
-            if field_sites::remember_field_site(
+            get_attr_object_ic_with_mode(
                 _py,
+                obj_bits,
+                slice,
+                site_bits,
+                AttributeLookupMode::Value,
+            )
+            .unwrap_or_else(|()| MoltObject::none().bits())
+        })
+    }
+}
+
+/// Share the field and name caches between value and method loads. A cached
+/// instance field is already the actual attribute value, so it never publishes
+/// a method receiver. Only the generic descriptor transaction can do that.
+pub(crate) unsafe fn get_attr_object_ic_with_mode(
+    py: &PyToken<'_>,
+    obj_bits: u64,
+    name: &[u8],
+    site_bits: u64,
+    mode: AttributeLookupMode<'_>,
+) -> Result<u64, ()> {
+    unsafe {
+        let site_id = ic_site_from_bits(site_bits);
+        if let Some(site_id) = site_id
+            && let Some(bits) = field_sites::read_cached_field(py, site_id, obj_bits)
+        {
+            if exception_pending(py) {
+                dec_ref_bits(py, bits);
+                return Err(());
+            }
+            return Ok(bits);
+        }
+        let name_bits = match site_id {
+            Some(site_id) => attr_name_bits_for_site(py, site_id, name),
+            None => attr_name_bits_from_bytes(py, name),
+        }
+        .ok_or(())?;
+        if let Some(site_id) = site_id {
+            if field_sites::remember_field_site(
+                py,
                 field_sites::FieldAccess::Read,
                 site_id,
                 obj_bits,
                 name_bits,
-                slice,
+                name,
             )
             .is_err()
             {
-                dec_ref_bits(_py, name_bits);
-                return MoltObject::none().bits();
+                dec_ref_bits(py, name_bits);
+                return Err(());
             }
-            let out = molt_get_attr_name(obj_bits, name_bits);
-            dec_ref_bits(_py, name_bits);
-            out
-        })
+        }
+        let out = get_attr_name_with_mode(py, obj_bits, name_bits, mode);
+        dec_ref_bits(py, name_bits);
+        out
     }
 }
 
@@ -1494,6 +1575,15 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
 /// Required named lookup. Missing and failed internal operations remain distinct
 /// until this boundary selects the public AttributeError for an actual miss.
 pub(crate) fn get_attr_name(_py: &PyToken<'_>, obj_bits: u64, name_bits: u64) -> Result<u64, ()> {
+    get_attr_name_with_mode(_py, obj_bits, name_bits, AttributeLookupMode::Value)
+}
+
+pub(crate) fn get_attr_name_with_mode(
+    _py: &PyToken<'_>,
+    obj_bits: u64,
+    name_bits: u64,
+    mode: AttributeLookupMode<'_>,
+) -> Result<u64, ()> {
     let name_obj = obj_from_bits(name_bits);
     let Some(name_ptr) = name_obj.as_ptr() else {
         let _ = raise_attr_name_type_error(_py, name_bits);
@@ -1508,7 +1598,7 @@ pub(crate) fn get_attr_name(_py: &PyToken<'_>, obj_bits: u64, name_bits: u64) ->
             // Foreign (C-extension) objects are handled inside the shared
             // `attr_lookup_ptr` (below) so every getattr entry point routes
             // them uniformly — do NOT special-case here.
-            if let Some(val) = attr_lookup_ptr(_py, obj_ptr, name_bits)? {
+            if let Some(val) = attr_lookup_ptr_with_mode(_py, obj_ptr, name_bits, mode)? {
                 return Ok(val);
             }
             let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
@@ -1556,7 +1646,9 @@ pub(crate) fn get_attr_name(_py: &PyToken<'_>, obj_bits: u64, name_bits: u64) ->
         }
         let attr_name =
             string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "<attr>".to_string());
-        if let Some(val) = resolve_scalar_attr(_py, obj_bits, &attr_name)? {
+        if let Some(val) =
+            scalar_attrs::resolve_scalar_attr_with_mode(_py, obj_bits, &attr_name, mode)?
+        {
             return Ok(val);
         }
         let obj = obj_from_bits(obj_bits);

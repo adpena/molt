@@ -25,6 +25,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 ROOT = bind_repository_imports(__file__)
 
 from tools.generator_io import generated_file_matches, generator_main  # noqa: E402
+from tools.cpython_regrtest import CPYTHON_SOURCES, load_cpython_sources  # noqa: E402
 
 PYTHON_PATH = "src/molt/stdlib/_compatibility_errors.py"
 RUST_PATH = "runtime/molt-runtime/src/builtins/compatibility_error.rs"
@@ -59,6 +60,14 @@ class Outcome:
 
 
 OUTCOMES = {
+    "RawIoBaseReadinto": Outcome(
+        ("io.RawIOBase.readinto",),
+        (*TARGETS, "3.15"),
+        ("all",),
+        "abstract default body is unconditionally undefined after receiver admission and keyword rejection, with unrestricted positional arity",
+        "Modules/_io/iobase.c:rawiobase_readinto,rawiobase_methods",
+        "tests/differential/stdlib/io_bufferedreader_readinto.py",
+    ),
     "PathGlobNonRelative": Outcome(
         ("pathlib.Path.glob", "pathlib.Path.rglob"),
         TARGETS,
@@ -159,7 +168,8 @@ _MOLT_COMPATIBILITY_ERROR = _require_intrinsic("molt_compatibility_error")
     + "\n\ndel _require_intrinsic\n"
 )
 
-RUST_SOURCE = """// CPython compatibility outcomes projected by tools/compatibility_error_protocol.py.
+RUST_SOURCE = (
+    """// CPython compatibility outcomes projected by tools/compatibility_error_protocol.py.
 use crate::{
     ExceptionSentinel, MoltObject, PyToken, obj_from_bits, raise_exception, runtime_state,
 };
@@ -171,6 +181,7 @@ pub(crate) enum CompatibilityError<'a> {
     CounterFromkeys,
     WindowsSignalHandler,
     AbstractSignalHandler,
+    RawIoBaseReadinto,
     MemoryviewSubView {
         rank: usize,
         indices: usize,
@@ -197,7 +208,11 @@ pub(crate) enum CompatibilityError<'a> {
 impl CompatibilityError<'_> {
     fn message(self, py: &PyToken<'_>) -> Result<String, &'static str> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
-        if target.major != 3 || !(12..=14).contains(&target.minor) {
+        let supported_minor = match &self {
+            Self::RawIoBaseReadinto => matches!(target.minor, __RAW_IO_MINORS__),
+            _ => matches!(target.minor, __COMMON_MINORS__),
+        };
+        if target.major != 3 || !supported_minor {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
@@ -209,6 +224,7 @@ impl CompatibilityError<'_> {
             }
             Self::WindowsSignalHandler if cfg!(target_os = "windows") => String::new(),
             Self::AbstractSignalHandler => String::new(),
+            Self::RawIoBaseReadinto => String::new(),
             Self::MemoryviewSubView {
                 rank,
                 indices,
@@ -294,6 +310,39 @@ mod tests {
     use super::CompatibilityError;
 
     #[test]
+    fn raw_readinto_target_support_does_not_widen_older_outcomes() {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for minor in 12..=15 {
+                transaction.with_target_python_minor(py, minor, || {
+                    assert_eq!(
+                        CompatibilityError::RawIoBaseReadinto.message(py).as_deref(),
+                        Ok("")
+                    );
+                });
+            }
+            for minor in [11, 16] {
+                transaction.with_target_python_minor(py, minor, || {
+                    assert_eq!(
+                        CompatibilityError::RawIoBaseReadinto.message(py),
+                        Err("unsupported compatibility-error target"),
+                    );
+                });
+            }
+            transaction.with_target_python_minor(py, 15, || {
+                assert_eq!(
+                    CompatibilityError::MemoryviewLookup { rank: 2 }.message(py),
+                    Err("unsupported compatibility-error target"),
+                );
+                assert_eq!(
+                    CompatibilityError::CounterFromkeys.message(py),
+                    Err("unsupported compatibility-error target"),
+                );
+            });
+        });
+    }
+
+    #[test]
     fn glob_outcome_rejects_relative_facts_and_unsupported_targets() {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -324,11 +373,22 @@ mod tests {
     }
 }
 """.replace(
-    "__ARMS__",
-    "\n".join(
-        f"            Some({tag}) => CompatibilityError::{outcome},"
-        for outcome, (tag, _) in PUBLISHED_OUTCOMES.items()
-    ),
+        "__RAW_IO_MINORS__",
+        " | ".join(
+            version.split(".")[1] for version in OUTCOMES["RawIoBaseReadinto"].versions
+        ),
+    )
+    .replace(
+        "__COMMON_MINORS__",
+        " | ".join(version.split(".")[1] for version in TARGETS),
+    )
+    .replace(
+        "__ARMS__",
+        "\n".join(
+            f"            Some({tag}) => CompatibilityError::{outcome},"
+            for outcome, (tag, _) in PUBLISHED_OUTCOMES.items()
+        ),
+    )
 )
 
 
@@ -366,6 +426,14 @@ def source_errors(root: Path) -> list[str]:
                 "Lib/posixpath.py",
             )
         }
+        pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
+        raw_io_coordinates = {
+            (pins[version].tag.removeprefix("v"), "Modules/_io/iobase.c"): pins[
+                version
+            ].revision
+            for version in OUTCOMES["RawIoBaseReadinto"].versions
+        }
+        expected_coordinates.update(raw_io_coordinates)
         valid = (
             receipt["schema_version"] == 1
             and coordinates == expected_coordinates
@@ -373,7 +441,19 @@ def source_errors(root: Path) -> list[str]:
             and all(
                 re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
                 and row["url"]
-                == f"https://raw.githubusercontent.com/python/cpython/v{row['version']}/{row['path']}"
+                == (
+                    "https://raw.githubusercontent.com/python/cpython/"
+                    + raw_io_coordinates.get(
+                        (row["version"], row["path"]), "v" + row["version"]
+                    )
+                    + "/"
+                    + row["path"]
+                )
+                and (
+                    (row["version"], row["path"]) not in raw_io_coordinates
+                    or row.get("revision")
+                    == raw_io_coordinates[(row["version"], row["path"])]
+                )
                 for row in sources
             )
         )
@@ -538,7 +618,7 @@ def rust_inventory(text: str, code: str, proved: bool) -> list[InventoryHit]:
             proved
             and match.group(1) in aliases
             and outcome in OUTCOMES
-            and (outcome.startswith("Memoryview") or outcome == "PathGlobNonRelative")
+            and outcome not in PUBLISHED_OUTCOMES
         )
         hits.append(
             InventoryHit(

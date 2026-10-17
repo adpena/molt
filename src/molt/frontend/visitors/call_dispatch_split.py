@@ -8,6 +8,7 @@ an inert tag distinguishing them. Arguments are evaluated once after capture.
 from __future__ import annotations
 
 import ast
+from contextlib import nullcontext
 from typing import Any
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -81,12 +82,15 @@ class CallSplitDispatchMixin(GeneratorMixinBase):
             if suspends and tag is not None
             else None
         )
-        values = self._emit_call_args(expressions)
-        if target_cell is not None:
-            target = self._consume_scratch_cell(target_cell)
-        if tag_cell is not None:
-            tag = self._consume_scratch_cell(tag_cell)
-
+        parked = [cell for cell in (target_cell, tag_cell) if cell is not None]
+        with self._scratch_cleanup_on_error(parked) if parked else nullcontext():
+            values = self._emit_call_args(
+                expressions, cleanup=parked if parked else None
+            )
+            if target_cell is not None:
+                target = self._consume_scratch_cell(target_cell)
+            if tag_cell is not None:
+                tag = self._consume_scratch_cell(tag_cell)
         arguments = dict(zip(parameters, values[: len(node.args)]))
         arguments.update(zip(keyword_names, values[len(node.args) :], strict=True))
         separator = arguments.get("sep")

@@ -10,7 +10,8 @@ call, import, annotation, comprehension, and async visitors.
 from __future__ import annotations
 
 import ast
-from typing import Literal, Sequence
+from contextlib import contextmanager
+from typing import Generator, Literal, Sequence
 
 from molt.frontend._types import (
     ActiveException,
@@ -298,6 +299,37 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             if entry.is_handler and live_depth <= entry.handler_try_depth
         ]
         self._emit_active_handler_name_deletes(escaped)
+
+    @contextmanager
+    def _scratch_cleanup_on_error(self, cells: Sequence[ScratchCell]) -> Generator[None]:
+        """Unwind expression-owned frame cells through a plain exception landing.
+
+        Cells can be appended while lowering; unused slots begin as None. This
+        cleanup only forwards the pending exception, so it registers no runtime
+        exception frame or lexical TryScope. Actual lexical scopes still restore
+        normally on resume, and the resumed throw/check targets this landing.
+        """
+        failed = self.next_label()
+        done = self.next_label()
+        prior_suppress = self.try_suppress_depth
+        self.try_suppress_depth = None
+        self.try_end_labels.append(failed)
+        try:
+            yield
+        finally:
+            self.try_end_labels.pop()
+            self.try_suppress_depth = prior_suppress
+        self.emit(MoltOp(kind="JUMP", args=[done], result=MoltValue("none")))
+        self.emit(MoltOp(kind="LABEL", args=[failed], result=MoltValue("none")))
+        for cell in reversed(cells):
+            self._clear_scratch_cell(cell)
+        # A caller's suppressed region must not swallow this forwarding edge.
+        self.try_suppress_depth = None
+        try:
+            self._emit_raise_exit()
+        finally:
+            self.try_suppress_depth = prior_suppress
+        self.emit(MoltOp(kind="LABEL", args=[done], result=MoltValue("none")))
 
     def _emit_guarded_body(
         self,

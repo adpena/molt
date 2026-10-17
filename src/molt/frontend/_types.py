@@ -301,9 +301,15 @@ def loaded_method_self_name(op: MoltOp) -> str:
 
     A method load (CPython's LOAD_ATTR or LOAD_SUPER_ATTR in method form) is one
     frontend value, its callable; the second result exists only on the wire.
-    The load and the CALL_LOADED_METHOD that consumes the pair both record it.
+    The load and its CALL_LOADED_METHOD or CALLARGS_PUSH_METHOD_RECEIVER consumer
+    both record it. The nullable word never becomes a frontend object value.
     """
-    if op.kind not in {"LOAD_METHOD", "LOAD_SUPER_METHOD", "CALL_LOADED_METHOD"}:
+    if op.kind not in {
+        "LOAD_METHOD",
+        "LOAD_SUPER_METHOD",
+        "CALL_LOADED_METHOD",
+        "CALLARGS_PUSH_METHOD_RECEIVER",
+    }:
         raise AssertionError(f"{op.kind} carries no method pair")
     name = (op.metadata or {}).get("self_or_null")
     if not isinstance(name, str) or not name:

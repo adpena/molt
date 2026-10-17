@@ -141,6 +141,15 @@ impl PositionalArguments<'_> {
     }
 }
 
+/// Receiver provenance survives bound-method extraction. Its runtime type cannot
+/// distinguish a stored bound method from `Base.method(sub, ...)`. Direct
+/// method-load pairs also carry an explicit receiver, without a bound object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReceiverOrigin {
+    Explicit,
+    Bound,
+}
+
 /// The consuming call's arguments: CPython's value-stack operands of a CALL,
 /// or the positional tuple and keyword mapping of a CALL_FUNCTION_EX. The
 /// consuming entry moves the heap builder's edges here (T1). A CALL's inlined
@@ -151,6 +160,7 @@ pub(crate) struct CallArguments<'a, 'py> {
     pub(super) form: CallForm,
     /// Decided once, from the call instruction's callee; redispatch keeps it.
     custody: Option<ArgumentCustody>,
+    pub(super) receiver_origin: ReceiverOrigin,
     release: ReleaseOrder,
     positional: PositionalArguments<'a>,
     /// Positional values before this index have moved into a frame.
@@ -300,6 +310,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             py,
             form,
             custody: None,
+            receiver_origin: ReceiverOrigin::Explicit,
             release: ReleaseOrder::instruction(form),
             positional: PositionalArguments::default(),
             positional_start: 0,
@@ -441,6 +452,8 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         arguments.release = ReleaseOrder::Capi;
         if let Some(receiver) = receiver {
             arguments.prepend_positional(receiver)?;
+            // An explicitly supplied C-API receiver is an unbound ABI operand.
+            arguments.receiver_origin = ReceiverOrigin::Explicit;
         }
         Ok(arguments)
     }
@@ -659,6 +672,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
                 std::sync::atomic::Ordering::Relaxed,
             );
             self.positional = PositionalArguments::Owned(owned);
+            self.receiver_origin = ReceiverOrigin::Bound;
             return Ok(());
         }
         if self.positional.owned_mut().try_reserve(1).is_err() {
@@ -670,6 +684,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         }
         inc_ref_bits(self.py, bits);
         self.positional.owned_mut().insert(0, bits);
+        self.receiver_origin = ReceiverOrigin::Bound;
         Ok(())
     }
 

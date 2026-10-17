@@ -7,6 +7,7 @@ from typing import Any
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
+    loaded_method_self_name,
 )
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
@@ -96,6 +97,13 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
             elif form != "stack":
                 raise AssertionError(f"unknown call form {form!r}")
             ctx.json_ops.append(callargs_op)
+        elif op.kind == "CALLARGS_PUSH_METHOD_RECEIVER":
+            ctx.json_ops.append(
+                {
+                    "kind": "callargs_push_method_receiver",
+                    "args": [op.args[0].name, loaded_method_self_name(op)],
+                }
+            )
         elif op.kind == "CALLARGS_PUSH_POS":
             ctx.json_ops.append(
                 {

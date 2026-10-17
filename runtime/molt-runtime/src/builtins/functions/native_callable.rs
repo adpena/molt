@@ -841,6 +841,78 @@ pub(crate) unsafe fn admit_native_call(
     }
 }
 
+/// Fixed native method descriptors whose only ABI slot is the receiver use
+/// CPython's METH_NOARGS contract. Call admission has already validated the
+/// receiver. Preserve boundness separately: a bound subtype reports its own
+/// qualified name, while an explicit descriptor reports its declaring owner.
+/// Only errors read names or allocate; success borrows the existing ABI slots.
+pub(crate) unsafe fn admit_native_noargs(
+    py: &PyToken<'_>,
+    function: *mut u8,
+    receiver_origin: crate::call::bind::ReceiverOrigin,
+    positional: &[u64],
+    keyword_count: usize,
+) -> Option<bool> {
+    unsafe {
+        if function_arity_usize(function) != Some(1)
+            || NativeCallableKind::from_class(py, object_class_bits(function))
+                != Some(NativeCallableKind::MethodDescriptor)
+        {
+            return None;
+        }
+        if keyword_count == 0 && positional.len() == 1 {
+            return Some(true);
+        }
+        let owner = match receiver_origin {
+            crate::call::bind::ReceiverOrigin::Explicit => NativeDescriptorReceiver::borrowed(
+                Field::Owner
+                    .load(function)
+                    .unwrap_or(MoltObject::none().bits()),
+            ),
+            crate::call::bind::ReceiverOrigin::Bound => {
+                let Some(&receiver) = positional.first() else {
+                    raise_exception::<()>(py, "SystemError", "bound native call has no receiver");
+                    return Some(false);
+                };
+                let class = match crate::object::class_layout::real_type_bits(py, receiver) {
+                    Ok(class) => class,
+                    Err(()) => {
+                        crate::cpython_abi_hooks::propagate_native_failure(
+                            py,
+                            "native receiver type",
+                        );
+                        return Some(false);
+                    }
+                };
+                NativeDescriptorReceiver::owned_type(class)
+            }
+        };
+        let mut message = match owner_qualname_bytes(py, owner.bits()) {
+            Ok(name) => name,
+            Err(()) => return Some(false),
+        };
+        let Some(name) = native_callable_name(function) else {
+            raise_exception::<()>(py, "SystemError", "native descriptor has no name");
+            return Some(false);
+        };
+        message.push(b'.');
+        message.extend_from_slice(&name);
+        if keyword_count != 0 {
+            message.extend_from_slice(b"() takes no keyword arguments");
+        } else {
+            message.extend_from_slice(
+                format!(
+                    "() takes no arguments ({} given)",
+                    positional.len().saturating_sub(1)
+                )
+                .as_bytes(),
+            );
+        }
+        crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+        Some(false)
+    }
+}
+
 pub(crate) unsafe fn admit_native_callable(
     py: &PyToken<'_>,
     callable: u64,

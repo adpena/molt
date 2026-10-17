@@ -1335,10 +1335,10 @@ unsafe fn select_class_method(
 
 /// CPython's `LOAD_ATTR` in method form (`_PyObject_GetMethod`). A plain
 /// function on the receiver's type that the instance does not shadow loads as
-/// `[function, receiver]`, with no bound method. Every other attribute — a
-/// data descriptor, a custom `__getattribute__`, an instance attribute, a
-/// builtin receiver's method — takes the generic attribute lookup and loads as
-/// `[attribute, NULL]`.
+/// `[function, receiver]`, with no bound method. A native method descriptor
+/// also loads as `[descriptor, receiver]` through the
+/// shared attribute transaction. Data descriptors, custom attribute hooks and
+/// instance attributes return their actual value as `[attribute, NULL]`.
 ///
 /// # Safety
 /// `name_ptr`/`name_len_bits` describe the attribute name; the GIL is held.
@@ -1370,13 +1370,25 @@ unsafe fn load_method(
                 Err(()) => return LoadedMethod::failed(),
             }
         }
-        let attribute =
-            crate::molt_get_attr_object_ic(recv_bits, name_ptr, name_len_bits, site_bits);
-        if exception_pending(py) {
-            dec_ref_bits(py, attribute);
-            return LoadedMethod::failed();
+        let receiver = std::cell::Cell::new(None);
+        let selected = crate::builtins::attributes::get_attr_object_ic_with_mode(
+            py,
+            recv_bits,
+            name,
+            site_bits,
+            crate::builtins::attr::AttributeLookupMode::Method(&receiver),
+        );
+        match selected {
+            Ok(callable) => match receiver.get() {
+                Some(receiver) => {
+                    let loaded = LoadedMethod::function(py, callable, receiver);
+                    dec_ref_bits(py, callable);
+                    loaded
+                }
+                None => LoadedMethod::attribute(callable),
+            },
+            Err(()) => LoadedMethod::failed(),
         }
-        LoadedMethod::attribute(attribute)
     }
 }
 

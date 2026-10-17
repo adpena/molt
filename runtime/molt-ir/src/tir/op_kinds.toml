@@ -610,7 +610,7 @@ simpleir_object_model_semantics_kinds = [
     # Luau's backend instance validator admits `callargs_expand_kwstar` only
     # when the operand has direct canonical ordered-dict provenance. This role
     # does not claim Luau implements arbitrary Python keys/getitem mappings.
-    "callargs_new", "callargs_push_pos", "callargs_expand_star",
+    "callargs_new", "callargs_push_pos", "callargs_push_method_receiver", "callargs_expand_star",
     "callargs_push_kw", "callargs_expand_kwstar",
     "stack_alloc", "object_new_bound", "build_set", "build_slice", "del_attr", "function_defaults_version",
 ]
@@ -629,7 +629,7 @@ simpleir_comparison_semantics_kinds = [
 simpleir_fallible_protocol_semantics_kinds = [
     "call", "call_func", "call_internal", "call_method", "call_bind", "call_indirect",
     "call_function", "call_guarded", "builtin_func",
-    "callargs_push_kw", "callargs_expand_star", "callargs_expand_kwstar",
+    "callargs_push_kw", "callargs_push_method_receiver", "callargs_expand_star", "callargs_expand_kwstar",
     "len", "builtin_len", "float", "cast_float", "builtin_float", "float_from_obj",
     "str", "cast_str", "builtin_str", "str_from_obj", "repr_from_obj", "ascii_from_obj",
     "chr", "ord", "ord_at", "print", "builtin_print",
@@ -1213,6 +1213,7 @@ opcode_has_local_only_operands_opcodes = [
 ]
 
 alias_rc_barrier_opcodes = [
+    "CallargsPushMethodReceiver",
     "Call",
     "CallBuiltin",
     "CallLoadedMethod",
@@ -1903,6 +1904,7 @@ alias_region_module_dict_opcodes = [
 ]
 
 alias_slot_direct_observer_opcodes = [
+    "CallargsPushMethodReceiver",
     "AllocTask",
     "BuildDict",
     "BuildList",
@@ -1993,6 +1995,12 @@ classifier_no_heap_move = [
 # Mapped fixed-arity shapes must agree with their opcode's operand_arity.
 # Aliases inherit each canonical shape through the existing kind mapping;
 # result cardinality and discarded-result effects remain opcode-owned.
+[[simpleir_op_shape]]
+kind = "callargs_push_method_receiver"
+family = "loaded_method_receiver"
+operands = 2
+value_rule = "unconstrained"
+
 [[simpleir_op_shape]]
 kind = "pos"
 family = "unary_numeric"
@@ -3466,7 +3474,7 @@ result_absorbs_operands = false
 # A plain function found on the receiver's type yields the function and a new
 # reference to the receiver; any other attribute yields the attribute and the
 # null sentinel, a non-object word that reference counting ignores. Only
-# operand 1 of one CallLoadedMethod may consume `self_or_null`.
+# operand 1 of CallLoadedMethod or CallargsPushMethodReceiver may consume it.
 [[opcode]]
 name = "LoadMethod"
 may_call_python = true
@@ -3505,6 +3513,20 @@ side_effecting = true
 purity = "impure"
 result_arity = "variable"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# Prefix the CALL value stack with LOAD_METHOD's actual receiver. A null word
+# is skipped; a real receiver is retained by push_pos and its loaded reference
+# is released on both continuations. No nullable word enters Python frame state.
+[[opcode]]
+name = "CallargsPushMethodReceiver"
+may_call_python = true
+operand_arity = 2
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = ["borrowed", "consumed"]
 result_absorbs_operands = false
 
 [[opcode]]
@@ -4526,6 +4548,11 @@ aliases = []
 mapper_opcode = "CallLoadedMethod"
 
 [[kind]]
+canonical = "callargs_push_method_receiver"
+aliases = []
+mapper_opcode = "CallargsPushMethodReceiver"
+
+[[kind]]
 canonical = "call_builtin"
 aliases = ["builtin_print", "print", "range_new"]
 mapper_opcode = "CallBuiltin"
@@ -4906,6 +4933,12 @@ kind = "call_indirect"
 consumed_operand = "last"
 
 [[consuming_kind]]
+# The prefix borrows its builder but adopts LOAD_METHOD's nullable receiver.
+# Existing push_pos retains the real receiver before the loaded owner retires.
+kind = "callargs_push_method_receiver"
+consumed_operand = 1
+
+[[consuming_kind]]
 # A frame-home store hands its operand's reference to the frame's home, which
 # owns the binding until the next store, a delete, a proxy write or the frame's
 # exit releases it (builtins/frames/bindings.rs). The result is a non-owning
@@ -5265,6 +5298,10 @@ opcode = "LoadSuperMethod"
 [[frontend_raising_kind]]
 kind = "CALL_LOADED_METHOD"
 opcode = "CallLoadedMethod"
+
+[[frontend_raising_kind]]
+kind = "CALLARGS_PUSH_METHOD_RECEIVER"
+opcode = "CallargsPushMethodReceiver"
 
 [[frontend_raising_kind]]
 kind = "CALL_BUILTIN"

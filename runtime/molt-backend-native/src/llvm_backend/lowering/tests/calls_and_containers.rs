@@ -1549,6 +1549,82 @@ fn method_load_runtime_imports_keep_the_no_willreturn_declaration() {
 }
 
 #[test]
+fn method_receiver_prefix_guards_the_null_and_ends_only_the_original_credit() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "method_receiver_prefix".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let nothing = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let receiver = entry.args[1].id;
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::CallargsPushMethodReceiver,
+        operands: vec![entry.args[0].id, receiver],
+        results: vec![],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.ops.push(const_none_def(nothing));
+    entry.terminator = Terminator::Return {
+        values: vec![nothing],
+    };
+    let lowered = lower_tir_to_llvm(&func, &backend);
+    lowered
+        .get_nth_param(1)
+        .unwrap()
+        .into_int_value()
+        .set_name("prefix_receiver");
+    backend
+        .module
+        .verify()
+        .expect("nullable receiver CFG and ABI");
+    let ir = lowered.print_to_string().to_string();
+    assert!(
+        ir.contains(&format!(
+            "icmp ne i64 %prefix_receiver, {}",
+            molt_codegen_abi::loaded_method_null_bits()
+        )),
+        "{ir}"
+    );
+    assert!(ir.contains("br i1 %method_receiver_present, label %method_receiver_push, label %method_receiver_done"), "{ir}");
+    let push_block = ir
+        .split("method_receiver_push:")
+        .nth(1)
+        .unwrap()
+        .split("method_receiver_done:")
+        .next()
+        .unwrap();
+    let push = push_block
+        .find("call i64 @molt_callargs_push_pos(")
+        .unwrap();
+    let releases: Vec<_> = push_block
+        .match_indices("call void @molt_dec_ref_obj(")
+        .collect();
+    assert_eq!(
+        releases.len(),
+        2,
+        "owned push result and original receiver: {ir}"
+    );
+    assert!(
+        releases.iter().all(|(position, _)| *position > push),
+        "retaining push precedes both releases: {ir}"
+    );
+    assert!(
+        push_block.contains("call void @molt_dec_ref_obj(i64 %prefix_receiver)"),
+        "{ir}"
+    );
+    assert!(
+        !ir.contains("molt_inc_ref_obj"),
+        "the builder retains without an extra caller credit: {ir}"
+    );
+}
+
+#[test]
 fn lower_class_def_boxes_raw_i64_attribute_values() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);

@@ -673,3 +673,63 @@ fn check_exception_edge_feeds_handler_phi() {
         assert!(ir.contains(&format!("call i64 @{symbol}()")), "{ir}");
     }
 }
+
+#[test]
+fn check_exception_requires_explicit_target_inside_and_outside_try() {
+    for inside_try in [false, true] {
+        for poll in [false, true] {
+            let ctx = Context::create();
+            let backend = make_backend(&ctx);
+            let mut function = TirFunction::new(
+                "missing_exception_target".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let handler = function.fresh_block();
+            function.label_id_map.insert(handler.0, 17);
+            function.has_exception_handling = inside_try;
+            let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+            if inside_try {
+                entry.ops.push(TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::TryStart,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
+                    source_span: None,
+                });
+            }
+            let mut check = TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CheckException,
+                operands: vec![],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            };
+            if poll {
+                check.mark_async_work_poll();
+            }
+            entry.ops.push(check);
+            entry.terminator = Terminator::Return { values: vec![] };
+            function.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let error = try_lower_tir_to_llvm(&function, &backend)
+                .expect_err("a surrounding handler cannot supply an omitted exceptional edge");
+            assert!(
+                error
+                    .to_string()
+                    .contains("check_exception requires an explicit exceptional successor label"),
+                "inside_try={inside_try}, poll={poll}: {error}"
+            );
+        }
+    }
+}
