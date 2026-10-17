@@ -175,6 +175,7 @@ from molt.file_locks import (  # noqa: E402
     _release_file_lock,
     _try_acquire_file_lock,
 )
+from molt.dx import project_cargo_target_dir  # noqa: E402
 
 from tools.molt_dev_detached import (  # noqa: E402
     DETACHED_STATE_ROOT,
@@ -962,6 +963,10 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     env = immutable_git_environment(os.environ)
     env["MOLT_SESSION_ID"] = args.session_id
     env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
+    # Cargo gates build into the target Molt's own builds of this checkout use.
+    # Bare Cargo would compile cold into the worktree's ./target, which the
+    # worktree cleanup then deletes, so every landing paid a full build.
+    env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
     if not dry:
         _assert_integration_source(git, selected_commit)
         config.admit(touched, matched_rules, list(args.extra_gate or []))

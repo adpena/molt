@@ -1662,6 +1662,41 @@ def test_integrate_lock_covers_fetch_gates_push_confirmation_and_cleanup(
     file_locks._release_file_lock(handle)
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_integrate_gates_build_into_the_checkouts_cargo_target(
+    drv, origin_and_clone, monkeypatch, tmp_path, explicit
+):
+    from molt.dx import project_cargo_target_dir
+
+    _, work = origin_and_clone
+    _commit_file(work, "gate-source.txt", "source\n", "source for gate target")
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
+    if explicit:
+        monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "operator-target"))
+    else:
+        monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    targets = []
+
+    def gate(command, repo, env):
+        targets.append((env["CARGO_TARGET_DIR"], dict(env)))
+        return 0
+
+    monkeypatch.setattr(drv, "run_gate", gate)
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+    assert targets
+    for target, env in targets:
+        if explicit:
+            assert target == str(tmp_path / "operator-target")
+            continue
+        # The target Molt's own builds of this checkout select, which outlives
+        # the worktree: never the worktree's ./target.
+        without = {
+            key: value for key, value in env.items() if key != "CARGO_TARGET_DIR"
+        }
+        assert target == str(project_cargo_target_dir(work.resolve(), without))
+        assert not Path(target).is_relative_to(work.resolve())
+
+
 def test_integrate_dry_run_never_resolves_or_acquires_integration_lock(
     drv, origin_and_clone, monkeypatch
 ):
