@@ -65,11 +65,6 @@ jobs:
       - name: Provision browser asset parser
         run: uv run --no-sync python3 tools/bootstrap_browser_asset_graph.py
 
-      # setup-project placed CARGO_TARGET_DIR under RUNNER_TEMP, outside the
-      # checkout; the WASM parity tests build into the same cached target.
-      - name: Share the Cargo target with the WASM tests
-        run: printf 'MOLT_WASM_TEST_CARGO_TARGET_DIR=%s\n' "$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
-
       - name: Install WASM validator
         run: python3 -m molt.tool_releases provision wasm-tools --github-path "$GITHUB_PATH"
 

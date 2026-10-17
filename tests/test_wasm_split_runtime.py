@@ -27,7 +27,6 @@ from pathlib import Path
 import pytest
 import urllib.error
 import urllib.request
-from molt.dx import artifact_root, cargo_target_dir_for_artifact_root
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
@@ -64,27 +63,6 @@ for i in range(10):
 """
 
 
-def _split_runtime_target_dirs(
-    env: dict[str, str],
-    *,
-    session_id: str = "test-wasm-split-runtime",
-) -> tuple[Path, Path]:
-    raw_target = env.get("CARGO_TARGET_DIR", "").strip()
-    if raw_target:
-        target_dir = Path(raw_target).expanduser()
-    else:
-        target_dir = cargo_target_dir_for_artifact_root(
-            artifact_root(ROOT, env),
-            env.get("MOLT_SESSION_ID") or session_id,
-            source_root=ROOT,
-        )
-    raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
-    diff_target_dir = (
-        Path(raw_diff_target).expanduser() if raw_diff_target else target_dir
-    )
-    return target_dir, diff_target_dir
-
-
 def _split_runtime_build_env(
     *,
     session_id: str = "test-wasm-split-runtime",
@@ -98,28 +76,6 @@ def _split_runtime_build_env(
     if hermetic_module_roots:
         env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     return env
-
-
-def test_split_runtime_target_dir_respects_explicit_env_override() -> None:
-    env = {
-        "CARGO_TARGET_DIR": "/tmp/molt-explicit-target",
-        "MOLT_DIFF_CARGO_TARGET_DIR": "/tmp/molt-explicit-diff-target",
-    }
-
-    target_dir, diff_target_dir = _split_runtime_target_dirs(env)
-
-    assert target_dir == Path("/tmp/molt-explicit-target")
-    assert diff_target_dir == Path("/tmp/molt-explicit-diff-target")
-
-
-def test_split_runtime_target_dir_defaults_to_dx_session_target() -> None:
-    target_dir, diff_target_dir = _split_runtime_target_dirs({})
-
-    # The canonical artifact root (the checkout family root), not the checkout.
-    assert target_dir == cargo_target_dir_for_artifact_root(
-        artifact_root(ROOT, {}), "test-wasm-split-runtime", source_root=ROOT
-    )
-    assert diff_target_dir == target_dir
 
 
 def test_build_split_uses_wasm_test_memory_guard(
