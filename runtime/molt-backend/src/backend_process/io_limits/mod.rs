@@ -8,7 +8,7 @@ mod request;
 pub(crate) use json::{read_json_artifact, write_json_artifact};
 pub(crate) use limits::stdin_request_limit_bytes;
 #[cfg(molt_backend_daemon)]
-pub(crate) use limits::{daemon_max_jobs, daemon_request_limit_bytes};
+pub(crate) use limits::{daemon_idle_timeout, daemon_max_jobs, daemon_request_limit_bytes};
 pub(crate) use output::ensure_output_parent_dir;
 #[cfg(molt_backend_daemon)]
 pub(crate) use output::write_cached_output;

@@ -21470,8 +21470,8 @@ def test_start_backend_daemon_leaves_warming_process_running(
         Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
-        BACKEND_EXECUTION,
-        "_terminate_backend_daemon_identity",
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
         lambda identity, **kwargs: terminated.append(identity.pid),
     )
     monkeypatch.setattr(
@@ -21592,8 +21592,8 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
         Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
-        BACKEND_EXECUTION,
-        "_terminate_backend_daemon_identity",
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
         lambda identity, **kwargs: terminated.append(identity.pid),
     )
     monkeypatch.setattr(
@@ -21622,26 +21622,22 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
     assert removed == []
 
 
-@pytest.mark.parametrize("retiring", [False, True])
-def test_start_backend_daemon_never_stops_a_retiring_socketless_daemon(
+def test_start_backend_daemon_never_stops_a_socketless_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    retiring: bool,
 ) -> None:
+    # The daemon unlinked its socket when it retired, on request or when idle,
+    # and finishes the connections it accepted.
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_text("backend", encoding="utf-8")
-    # Retirement unlinked the socket; the daemon finishes accepted connections.
     socket_path = tmp_path / "daemon.sock"
     identity_path = tmp_path / "daemon.identity.json"
     log_path = tmp_path / "daemon.log"
-    existing_identity = replace(
-        _test_backend_daemon_identity(
-            1234,
-            socket_path=socket_path,
-            project_root=tmp_path,
-            backend_bin=backend_bin,
-        ),
-        retiring=retiring,
+    existing_identity = _test_backend_daemon_identity(
+        1234,
+        socket_path=socket_path,
+        project_root=tmp_path,
+        backend_bin=backend_bin,
     )
     terminated: list[int] = []
     removed: list[Path] = []
@@ -21665,12 +21661,14 @@ def test_start_backend_daemon_never_stops_a_retiring_socketless_daemon(
         "_backend_daemon_identity_matches_context": lambda identity, **kwargs: True,
         "_backend_daemon_identity_is_verified": lambda identity, **kwargs: True,
         "_backend_daemon_wait_until_ready": lambda *args, **kwargs: (False, None),
-        "_terminate_backend_daemon_identity": (
-            lambda identity, **kwargs: terminated.append(identity.pid)
-        ),
         "_remove_backend_daemon_identity": lambda path: removed.append(path),
     }.items():
         monkeypatch.setattr(BACKEND_EXECUTION, name, value)
+    monkeypatch.setattr(
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
+        lambda identity, **kwargs: terminated.append(identity.pid),
+    )
     install_module_view(
         monkeypatch,
         "subprocess",
@@ -21691,12 +21689,10 @@ def test_start_backend_daemon_never_stops_a_retiring_socketless_daemon(
         warnings=[],
     )
 
-    if retiring:
-        assert terminated == [], "a draining daemon was stopped"
-        assert identity_path not in removed
-    else:
-        assert terminated == [1234]
-        assert identity_path in removed
+    assert terminated == [], "a draining daemon was stopped"
+    assert identity_path not in removed
+    successor = json.loads(identity_path.read_text(encoding="utf-8"))
+    assert successor["pid"] == 4321, "the successor's identity replaces the record"
 
 
 def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
@@ -21850,8 +21846,8 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
         lambda identity, **kwargs: False,
     )
     monkeypatch.setattr(
-        BACKEND_EXECUTION,
-        "_terminate_backend_daemon_identity",
+        BACKEND_EXECUTION._daemon_custody,
+        "terminate_backend_daemon_identity",
         lambda identity, **kwargs: (_ for _ in ()).throw(
             AssertionError("unverified identity must not be killed")
         ),
@@ -21894,7 +21890,8 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
         is True
     )
     assert removed == [identity_path]
-    assert any("not a verified live daemon" in warning for warning in warnings)
+    # The daemon exited and its socket is gone: a clean retirement, not an issue.
+    assert warnings == []
 
 
 def _stub_backend_binary_ensure(
@@ -30870,10 +30867,9 @@ def test_orphaned_backend_daemon_sweep_removes_dead_identity_and_legacy_pid(
     assert cleaned == 2
     assert not identity_path.exists()
     assert not legacy_pid_path.exists()
-    assert not socket_path.exists()
 
 
-def test_orphaned_backend_daemon_sweep_keeps_a_retired_daemons_successor_socket(
+def test_orphaned_backend_daemon_sweep_keeps_a_dead_daemons_successor_socket(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -30881,18 +30877,15 @@ def test_orphaned_backend_daemon_sweep_keeps_a_retired_daemons_successor_socket(
     daemon_root = canonical_root / "backend_daemon"
     daemon_root.mkdir(parents=True)
     backend_bin = tmp_path / "target" / "debug" / "molt-backend"
-    # The retired daemon unlinked its socket; a successor bound the same path.
+    # The daemon retired and exited; a successor bound the same path.
     socket_path = tmp_path / "daemon.sock"
     socket_path.write_text("", encoding="utf-8")
     identity_path = daemon_root / "molt-backend.dev-fast.alpha.deadbeef.identity.json"
-    identity = replace(
-        _test_backend_daemon_identity(
-            4321,
-            socket_path=socket_path,
-            project_root=tmp_path,
-            backend_bin=backend_bin,
-        ),
-        retiring=True,
+    identity = _test_backend_daemon_identity(
+        4321,
+        socket_path=socket_path,
+        project_root=tmp_path,
+        backend_bin=backend_bin,
     )
     BACKEND_EXECUTION._write_backend_daemon_identity(identity_path, identity)
     monkeypatch.setattr(
@@ -31013,7 +31006,9 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     assert cleaned == 5
 
     assert not dead_identity_file.exists()
-    assert not dead_socket.exists()
+    # The sweep cannot tell a crashed daemon's socket from a successor's; the
+    # next start at that path probes it before removing it.
+    assert dead_socket.exists()
     assert not sibling_dead.exists()
     assert not unverified_identity_file.exists()
     assert not malformed.exists()
@@ -32977,6 +32972,50 @@ def test_backend_daemon_ping_health_backcompat_without_health(
     )
     assert ready is True
     assert health is None
+
+
+def test_retire_project_backend_daemons_retires_only_that_checkouts_live_daemons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "checkout"
+    other = tmp_path / "other"
+    daemon_root = tmp_path / "state" / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+
+    def record(pid: int, root: Path, *, socket: bool) -> None:
+        socket_path = tmp_path / f"{pid}.sock"
+        if socket:
+            socket_path.write_text("", encoding="utf-8")
+        BACKEND_EXECUTION._write_backend_daemon_identity(
+            daemon_root / f"molt-backend.dev-fast.{pid}.identity.json",
+            _test_backend_daemon_identity(
+                pid, socket_path=socket_path, project_root=root
+            ),
+        )
+
+    record(1, project, socket=True)  # live: retired
+    record(2, other, socket=True)  # another checkout's daemon
+    record(3, project, socket=False)  # already retiring: its socket is gone
+    record(4, project, socket=True)  # its pid now names another process
+    retired: list[Path] = []
+    monkeypatch.setattr(
+        BACKEND_EXECUTION,
+        "_backend_daemon_identity_is_verified",
+        lambda identity, **kwargs: identity.pid != 4,
+    )
+
+    def retire(socket_path: Path, *, timeout: float | None) -> bool:
+        retired.append(socket_path)
+        return True
+
+    monkeypatch.setattr(BACKEND_EXECUTION, "retire_backend_daemon", retire)
+
+    pids = BACKEND_EXECUTION.retire_project_backend_daemons(
+        project, {"MOLT_BUILD_STATE_DIR": str(tmp_path / "state")}
+    )
+
+    assert pids == (1,)
+    assert retired == [tmp_path / "1.sock"]
 
 
 @pytest.mark.parametrize(

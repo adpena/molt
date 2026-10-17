@@ -942,6 +942,28 @@ def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path):
     assert not wt.exists()
 
 
+def test_cleanup_retires_the_checkout_daemons_before_removing_it(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from molt.cli import backend_execution
+
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_daemons")
+    retired: list[tuple[Path, bool]] = []
+
+    def retire(project_root, env, **kwargs):
+        retired.append((project_root, project_root.exists()))
+        return (4321,)
+
+    monkeypatch.setattr(backend_execution, "retire_project_backend_daemons", retire)
+    rc = drv._cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+    assert rc == drv.EXIT_OK
+    assert retired == [(wt, True)], "daemons retire while their checkout still exists"
+    assert not wt.exists()
+
+
 def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_unpushed")
