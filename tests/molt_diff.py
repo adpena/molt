@@ -1163,6 +1163,9 @@ def _backend_execution_context(
     # Diff runs start at the explicit tier; a test that needs capabilities
     # declares them in its metadata, so local runs match CI.
     env["MOLT_CAPABILITY_TIER"] = EXPLICIT_CAPABILITY_TIER
+    # The same import path as the CPython oracle: `src`, unless the test's
+    # MOLT_ENV names its own.
+    env["PYTHONPATH"] = "src"
     env.update(_collect_env_overrides(file_path))
     metadata_error = _apply_metadata_env_overrides(
         file_path,
@@ -3258,7 +3261,6 @@ def _run_molt_owned(
         raise ValueError("backend execution context build profile drifted")
     env = dict(environment)
     layout = _diff_artifact_layout(environment=env)
-    env["PYTHONPATH"] = "src"
     env["PYTHONHASHSEED"] = "0"
     # Keep differential builds hermetic to the configured diff roots so host
     # ~/.molt state and inherited shell paths cannot destabilize runs.
@@ -3312,6 +3314,7 @@ def _run_molt_owned(
     env["CARGO_TARGET_DIR"] = str(layout.cargo_target_root)
     if execution_context is None:
         env["MOLT_CAPABILITY_TIER"] = EXPLICIT_CAPABILITY_TIER
+        env["PYTHONPATH"] = "src"
         env.update(_collect_env_overrides(file_path))
         metadata_error = _apply_metadata_env_overrides(file_path, env)
         if metadata_error is not None:

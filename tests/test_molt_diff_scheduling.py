@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import gc
 import json
+import os
 import sys
 import signal
 import weakref
@@ -1158,3 +1159,64 @@ def test_suite_preflight_consumes_deadline_and_keeps_not_run_summary(
     assert summary["config"]["preflight_timed_out"] is True
     assert summary["config"]["compiler_target_python"] is None
     assert {row["reason"] for row in summary["item_results"]} == {"deadline"}
+
+
+def test_a_test_import_path_reaches_the_native_build_under_an_execution_context(
+    tmp_path, monkeypatch
+):
+    """MOLT_ENV PYTHONPATH must survive into the Molt build, as for CPython."""
+    case = tmp_path / "case.py"
+    case.write_text(
+        "# MOLT_ENV: PYTHONPATH=src:tests/differential/basic/ns_part_a\nprint(1)\n",
+        encoding="utf-8",
+    )
+    plain = tmp_path / "plain.py"
+    plain.write_text("print(1)\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", "host-path")
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    budget = molt_diff.compat_backends.ItemBudget(
+        molt_diff.compat_backends.TimeoutPolicy.from_environment({}), None
+    )
+    root = Path(molt_diff.__file__).resolve().parents[1]
+    expected = os.pathsep.join(
+        str(root / part) for part in ("src", "tests/differential/basic/ns_part_a")
+    )
+    context = molt_diff._backend_execution_context(
+        str(case), sys.executable, "dev", None, budget=budget
+    )
+    assert context.environment["PYTHONPATH"] == expected
+    # Without MOLT_ENV the build sees the oracle's `src`, never the host path.
+    assert (
+        molt_diff._backend_execution_context(
+            str(plain), sys.executable, "dev", None, budget=budget
+        ).environment["PYTHONPATH"]
+        == "src"
+    )
+
+    class BuildStarted(Exception):
+        pass
+
+    seen = {}
+
+    def build(command, *, env, timeout, time_path):
+        seen.update(env)
+        raise BuildStarted
+
+    monkeypatch.setattr(molt_diff, "_diff_batch_compile_server_enabled", lambda: False)
+    monkeypatch.setattr(molt_diff, "_run_with_optional_time", build)
+    with pytest.raises(BuildStarted):
+        molt_diff._run_molt_owned(
+            str(case),
+            build_only=True,
+            build_profile="dev",
+            daemon_enabled=False,
+            no_cache=False,
+            rebuild=False,
+            extra_env=None,
+            execution_context=context,
+            output_root=tmp_path / "out",
+            environment=context.environment,
+            budget=budget,
+        )
+    assert seen["PYTHONPATH"] == expected
