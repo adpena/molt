@@ -21,6 +21,7 @@ from molt.python_environment_identity import (
 )
 from molt.python_runtime_identity import (
     BUILD_PYTHON_IDENTITY_SCHEMA,
+    PYTHON_RUNTIME_SELECTION_SCHEMA,
     startup_selection_difference,
     validate_python_runtime_identity,
 )
@@ -283,7 +284,7 @@ class BuildPythonAdmission:
             selection = payload["startup_selection"]
             if (
                 not isinstance(selection, dict)
-                or selection.get("schema") != "molt-python-startup-selection-v1"
+                or selection.get("schema") != PYTHON_RUNTIME_SELECTION_SCHEMA
             ):
                 raise ValueError("runtime build Python startup selection is invalid")
             self._startup_selection = selection

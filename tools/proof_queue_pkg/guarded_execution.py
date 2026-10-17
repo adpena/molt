@@ -14,6 +14,7 @@ import secrets
 import subprocess
 import sys
 import time
+import traceback
 from typing import Mapping, Sequence, cast
 
 
@@ -59,6 +60,20 @@ from tools.proof_queue_pkg import (  # noqa: E402
     supervisor_generation,
     toolchain_capture,
 )
+
+
+def _exception_detail(error: BaseException) -> str:
+    """Keep exception notes in existing diagnostics, bounded to 16 KiB."""
+    detail = "".join(traceback.format_exception_only(type(error), error)).rstrip()
+    encoded = detail.encode("utf-8", errors="backslashreplace")
+    limit = 16 * 1024
+    if len(encoded) <= limit:
+        return encoded.decode("utf-8")
+    suffix = b"\n[exception diagnostic truncated]"
+    return (
+        encoded[: limit - len(suffix)].decode("utf-8", errors="ignore")
+        + suffix.decode()
+    )
 
 
 def _run_supervisor_with_transcripts(
@@ -1507,7 +1522,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 result["rust_link_capture_failure"] = {
                     "unit": exc.diagnostic["unit"],
                     "phase": exc.diagnostic["phase"],
-                    "publication_error": f"{type(diagnostic_exc).__name__}: {diagnostic_exc}",
+                    "publication_error": _exception_detail(diagnostic_exc),
                 }
                 print(
                     "Rust linker capture diagnostic publication failed: "
@@ -1524,18 +1539,16 @@ def execute_guarded_request(request_path: Path) -> int:
             try:
                 custody_session.__exit__(type(exc), exc, exc.__traceback__)
             except BaseException as cleanup_exc:
-                result["custody_cleanup_error"] = (
-                    f"{type(cleanup_exc).__name__}: {cleanup_exc}"
-                )
+                result["custody_cleanup_error"] = _exception_detail(cleanup_exc)
         result.update(
             {
                 "phase": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": _exception_detail(exc),
             }
         )
         supervisor._atomic_json(result_path, result)
         print(
-            f"proof command envelope failed: {type(exc).__name__}: {exc}",
+            f"proof command envelope failed: {result['error']}",
             file=sys.stderr,
         )
         return 2
@@ -1544,9 +1557,9 @@ def execute_guarded_request(request_path: Path) -> int:
             try:
                 cargo_cache.close()
             except BaseException as exc:
-                result["cargo_cache_lifecycle_error"] = f"{type(exc).__name__}: {exc}"
+                result["cargo_cache_lifecycle_error"] = _exception_detail(exc)
                 print(
-                    f"Cargo generation closure failed: {type(exc).__name__}: {exc}",
+                    f"Cargo generation closure failed: {result['cargo_cache_lifecycle_error']}",
                     file=sys.stderr,
                 )
                 raise

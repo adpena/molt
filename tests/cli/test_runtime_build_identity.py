@@ -41,7 +41,10 @@ from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.cli import runtime_cargo_plan as cargo_plans
 from molt.cli import runtime_identity_schema as schema
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from molt.python_runtime_identity import validate_python_runtime_identity
+from molt.python_runtime_identity import (
+    PYTHON_RUNTIME_SELECTION_SCHEMA,
+    validate_python_runtime_identity,
+)
 from tests.python_environment_test_support import runtime_identity_manifest
 from tests.executable_test_support import (
     build_native_executable,
@@ -1935,7 +1938,7 @@ class _CaptureSession:
 
         self.lines = queue.Queue()
         self.selection = {
-            "schema": "molt-python-startup-selection-v1",
+            "schema": PYTHON_RUNTIME_SELECTION_SCHEMA,
             "native": {"paths": ["original"]},
         }
         self.fresh_selection = self.selection
@@ -2222,7 +2225,7 @@ def test_build_python_admission_observes_fresh_startup_selection(
     if change == "launcher-environment":
         env["MOLT_REAL_PYTHON"] = "different-python"
     session.fresh_selection = {
-        "schema": "molt-python-startup-selection-v1",
+        "schema": PYTHON_RUNTIME_SELECTION_SCHEMA,
         "native": {"paths": ["different-provider"]},
     }
     with pytest.raises(ValueError, match="fresh startup selection changed"):

@@ -284,6 +284,7 @@ def test_runtime_capture_fences_import_and_startup_selection(
     )
     monkeypatch.setattr(runtime, "_base_runtime_paths", lambda: {"stdlib": library})
     monkeypatch.setattr(runtime, "_runtime_library", lambda: None)
+    monkeypatch.setattr(runtime, "_configured_embedding_library_path", lambda: None)
     monkeypatch.setattr(runtime, "_runtime_linkage", lambda _library: "static")
     monkeypatch.setattr(
         runtime,
@@ -1539,6 +1540,7 @@ def test_runtime_startup_projection_preserves_actual_native_selection(
         runtime, "_platform_identity", lambda: {"operating_system": "linux"}
     )
     monkeypatch.setattr(runtime, "_runtime_library", lambda: first_image)
+    monkeypatch.setattr(runtime, "_configured_embedding_library_path", lambda: None)
     monkeypatch.setattr(runtime, "_base_runtime_paths", lambda: {"stdlib": tmp_path})
     monkeypatch.setattr(
         runtime, "_runtime_import_candidates", lambda _base, _platform: ([], [])

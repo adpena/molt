@@ -2752,7 +2752,10 @@ def validate_selected_python_runtime(
         PYTHON_CAPTURE_SCHEMA,
         validate_python_capture,
     )
-    from molt.python_runtime_identity import PYTHON_RUNTIME_IDENTITY_SCHEMA
+    from molt.python_runtime_identity import (
+        PYTHON_RUNTIME_IDENTITY_SCHEMA,
+        PYTHON_RUNTIME_SELECTION_SCHEMA,
+    )
 
     if set(selected) != {
         "launch_argv",
@@ -2782,6 +2785,7 @@ def validate_selected_python_runtime(
             "prefix",
             "base_prefix",
             "runtime_library",
+            "configured_embedding_library",
             "base_paths",
             "import_paths",
             "import_directories",
@@ -2789,7 +2793,7 @@ def validate_selected_python_runtime(
             "startup_configuration",
             "native",
         }
-        or startup.get("schema") != "molt-python-startup-selection-v1"
+        or startup.get("schema") != PYTHON_RUNTIME_SELECTION_SCHEMA
         or not isinstance(startup.get("selected_executable"), dict)
         or startup["selected_executable"].get("lexical") != launch[0]
         or startup["selected_executable"].get("present") is not True
