@@ -57,6 +57,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     ALL_INVALID_MEMBERS,
     PythonIdentity,
 )
+from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_binding_facts,
@@ -654,6 +655,61 @@ def _scan_nodes_for_import_mode(
     )
 
 
+def _uses_runtime_import_protocol(
+    binding_index: PythonBindingIndex,
+    tree: ast.AST,
+    *,
+    import_scan_mode: ImportScanMode,
+    module_name: str | None,
+    source_owner: PythonSourceKey | None,
+    source_arguments: tuple[str, ...],
+    namespace_premise: PythonNamespacePremise | None,
+    target_python: TargetPythonVersion,
+    ast_digest_admission: _PythonAstDigestAdmission,
+) -> bool:
+    """Whether reached code needs the runtime import protocol.
+
+    It does when it reaches an import statement (other than ``__future__`` and
+    the intrinsics module) or a call that may import or find a module spec.
+    The scan answers from its own binding index, so the answer shares the
+    scan's policy and costs no second analysis.
+    """
+    import_flow = binding_index.module_import_flow
+    for node in _scan_nodes_for_import_mode(
+        tree,
+        import_scan_mode,
+        module_name=module_name,
+        source_owner=source_owner,
+        source_arguments=source_arguments,
+        namespace_premise=namespace_premise,
+        target_python=target_python,
+        ast_digest_admission=ast_digest_admission,
+    ):
+        if not import_flow.states_for(node):
+            continue
+        if isinstance(node, ast.Import):
+            if any(alias.name != "_intrinsics" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            if node.level == 0 and (
+                node.module == "_intrinsics"
+                or node.module is not None
+                and node.module.endswith("._intrinsics")
+            ):
+                continue
+            return True
+        if isinstance(node, ast.Call):
+            fact = binding_index.call_fact(node)
+            if fact is not None and (
+                fact.possible_import_call_kinds()
+                or fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC)
+            ):
+                return True
+    return False
+
+
 def _collect_imports(
     tree: ast.AST,
     module_name: str | None = None,
@@ -673,6 +729,7 @@ def _collect_imports(
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
     _star_modules: list[str] | None = None,
     _dynamic_star_modules: list[str] | None = None,
+    _runtime_import_protocol: list[bool] | None = None,
 ) -> list[str]:
     if _runtime_catalog is not None and (
         source_owner is not None or import_scan_mode != "full"
@@ -710,6 +767,20 @@ def _collect_imports(
         ),
     )
     import_flow = binding_index.module_import_flow
+    if _runtime_import_protocol is not None:
+        _runtime_import_protocol.append(
+            _uses_runtime_import_protocol(
+                binding_index,
+                tree,
+                import_scan_mode=import_scan_mode,
+                module_name=module_name,
+                source_owner=source_owner,
+                source_arguments=source_arguments,
+                namespace_premise=namespace_premise,
+                target_python=target_python,
+                ast_digest_admission=ast_digest_admission,
+            )
+        )
     if _source_values is not None and source_owner is None:
         _source_values.append(
             _SourceValueSummary(
@@ -1783,6 +1854,7 @@ def _collect_imports_for_graph(
     source_bindings: list[_SourceImportBinding] = []
     source_values: list[_SourceValueSummary] = []
     source_sites: list[SourceImportSite] = []
+    runtime_import_protocol: list[bool] = []
     imports = _collect_imports(
         tree,
         module_name,
@@ -1801,8 +1873,10 @@ def _collect_imports_for_graph(
         _dynamic_relative_import_discovery=discovery,
         _star_modules=star_modules,
         _dynamic_star_modules=dynamic_star_modules,
+        _runtime_import_protocol=runtime_import_protocol,
     )
     return discovery.projection(imports, star_modules, dynamic_star_modules)._replace(
+        uses_runtime_import_protocol=runtime_import_protocol[0],
         source_demands=tuple(dict.fromkeys(source_demands)),
         source_bindings=tuple(dict.fromkeys(source_bindings)),
         source_values=source_values[0] if source_values else _SourceValueSummary(),
@@ -2015,4 +2089,5 @@ def _collect_import_scan_requests(
         projection.all_exports,
         projection.namespace_summary,
         projection.runtime_catalog,
+        uses_runtime_import_protocol=projection.uses_runtime_import_protocol,
     )

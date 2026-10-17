@@ -92,7 +92,7 @@ def test_discovery_authority_retains_raw_source_generation(
 
 
 @pytest.mark.parametrize("changed_module", ["entry", "writer"])
-@pytest.mark.parametrize("phase", ["before", "during", "generated-importer"])
+@pytest.mark.parametrize("phase", ["before", "generated-importer"])
 def test_runtime_import_policy_fences_complete_source_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -102,7 +102,6 @@ def test_runtime_import_policy_fences_complete_source_generation(
 ) -> None:
     import os
     from molt.cli import module_import_scanner
-    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
     entry, writer = tmp_path / "entry.py", tmp_path / "writer.py"
     entry.write_text("import writer\nVALUE = 1\n", encoding="utf-8")
@@ -121,33 +120,13 @@ def test_runtime_import_policy_fences_complete_source_generation(
     options = dict(
         module_graph=graph.graph,
         scan_authority=graph.scan_authority,
-        module_resolution_cache=cache,
         explicit_imports=(),
-        entry_module="entry",
-        entry_path=entry,
-        entry_tree=None,
-        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
-    tree_queries = []
-    tree_query = module_import_scanner._tree_uses_runtime_import_protocol
-
-    def count_tree(*args, **kwargs):
-        tree_queries.append(kwargs["module_name"])
-        return tree_query(*args, **kwargs)
-
-    monkeypatch.setattr(
-        module_import_scanner, "_tree_uses_runtime_import_protocol", count_tree
-    )
+    # The decision reads the scans' bits: the entry imports the writer.
     baseline = module_import_scanner._module_graph_needs_runtime_import_support(
         **options
     )
-    cold_queries = len(tree_queries)
-    assert cold_queries
-    assert (
-        module_import_scanner._module_graph_needs_runtime_import_support(**options)
-        == baseline
-    )
-    assert len(tree_queries) == cold_queries
+    assert baseline.needs_runtime_import_support
     changed = graph.graph[changed_module]
 
     def mutate() -> None:
@@ -159,28 +138,13 @@ def test_runtime_import_policy_fences_complete_source_generation(
         assert changed.stat().st_mtime_ns == before.st_mtime_ns
         assert changed.read_bytes() != content
 
-    original = module_import_scanner._module_uses_runtime_import_protocol
-    calls = []
-
-    def observe(**kwargs):
-        result = original(**kwargs)
-        calls.append(kwargs["module_name"])
-        if len(calls) == 1:
-            mutate()
-        return result
-
-    monkeypatch.setattr(
-        module_import_scanner, "_module_uses_runtime_import_protocol", observe
-    )
-    if phase != "during":
-        mutate()
+    mutate()
     if phase == "generated-importer":
         options["explicit_imports"] = (module_import_scanner.IMPORTER_MODULE_NAME,)
     with pytest.raises(
         module_source.PythonSourceChangedError, match="generation changed"
     ):
         module_import_scanner._module_graph_needs_runtime_import_support(**options)
-    assert bool(calls) is (phase == "during")
 
 
 @pytest.fixture
