@@ -300,6 +300,29 @@ def test_resolve_output_roots_defaults_final_outputs_to_dist(
 
     assert output_root == tmp_path / "dist"
     assert bin_root == DEFAULT_PATHS._default_molt_bin()
+    # A default root exists only once a default destination is chosen: a build
+    # that names its output leaves no empty dist/ behind (HF-286).
+    assert not output_root.exists()
+
+
+def test_resolve_output_path_creates_only_a_chosen_default_parent(
+    tmp_path: Path,
+) -> None:
+    default = tmp_path / "dist" / "app"
+    named = cli_build_output_layout._resolve_output_path(
+        str(tmp_path / "elsewhere" / "app"),
+        default,
+        out_dir=None,
+        project_root=tmp_path,
+    )
+    assert named == tmp_path / "elsewhere" / "app"
+    assert not default.parent.exists()
+
+    chosen = cli_build_output_layout._resolve_output_path(
+        None, default, out_dir=None, project_root=tmp_path
+    )
+    assert chosen == default
+    assert default.parent.is_dir()
 
 
 def test_resolve_build_output_layout_defaults_wasm_outputs_to_dist(
