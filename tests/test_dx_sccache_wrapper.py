@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import subprocess
 
 import pytest
 
@@ -176,7 +175,6 @@ def test_maybe_enable_sccache_forces_incremental_off(monkeypatch, tmp_path: Path
     import molt.cli.cargo_execution as ce
 
     monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
-    monkeypatch.setattr(ce, "_sccache_server_responsive", lambda _sccache, _env: True)
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
     # Name the cache: a derived default follows the run context, which this
     # minimal environment lacks, and would pin its server temp dir in a CI
@@ -253,20 +251,15 @@ def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(tmp_path):
     assert server_temp.is_dir()
 
 
-def test_cli_sccache_probe_starts_a_server_with_the_durable_temp_dir(
-    tmp_path, monkeypatch
-):
+def test_cli_sccache_selection_does_not_probe_or_start_a_server(tmp_path, monkeypatch):
     import molt.cli.cargo_execution as ce
+    from molt.cargo_execution_policy import sccache_server_temp_dir
 
-    probes: list[dict[str, str]] = []
-
-    def run(command, **kwargs):
-        assert command == ["/opt/sccache", "--show-stats"]
-        probes.append(dict(kwargs["env"]))
-        return subprocess.CompletedProcess(command, 0, "", "")
+    def reject_process(*args, **kwargs):
+        pytest.fail("wrapper selection must not run a readiness process")
 
     monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
-    monkeypatch.setattr(ce, "_run_completed_command", run)
+    monkeypatch.setattr(ce, "_run_completed_command", reject_process)
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
     env = _scratch_cargo_env(
         tmp_path,
@@ -277,16 +270,11 @@ def test_cli_sccache_probe_starts_a_server_with_the_durable_temp_dir(
 
     ce._maybe_enable_sccache(env)
 
-    from molt.cargo_execution_policy import sccache_server_temp_dir
-
-    assert env["SCCACHE_DIR"] == str((tmp_path / "artifacts").resolve() / ".sccache")
-    server_temp = str(sccache_server_temp_dir(env))
-    assert [
-        {name: probe[name] for name in ("TMPDIR", "TMP", "TEMP")} for probe in probes
-    ] == [{"TMPDIR": server_temp, "TMP": server_temp, "TEMP": server_temp}]
-    assert Path(server_temp).is_dir()
     assert env["RUSTC_WRAPPER"] == "/opt/sccache"
-    assert env["TMPDIR"] == server_temp
+    assert env["SCCACHE_DIR"] == str((tmp_path / "artifacts").resolve() / ".sccache")
+    server_temp = sccache_server_temp_dir(env)
+    assert server_temp is not None and server_temp.is_dir()
+    assert {env[name] for name in ("TMPDIR", "TMP", "TEMP")} == {str(server_temp)}
 
 
 def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):

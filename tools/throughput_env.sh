@@ -43,12 +43,6 @@ _apply() {
     "$(molt_shell_path "$MOLT_BACKEND_DAEMON_SOCKET_DIR")" \
     "$(molt_shell_path "$SCCACHE_DIR")"
 
-  if command -v sccache >/dev/null 2>&1; then
-    SCCACHE_DIR="$SCCACHE_DIR" sccache --stop-server >/dev/null 2>&1 || true
-    SCCACHE_DIR="$SCCACHE_DIR" SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
-      sccache --start-server >/dev/null 2>&1 || true
-  fi
-
   if [[ "${MOLT_CACHE_PRUNE:-1}" != "0" ]]; then
     PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" UV_NO_SYNC=1 \
       "$PYTHON" "$ROOT/tools/molt_cache_prune.py" \
