@@ -15,7 +15,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{FunctionIR, OpIR};
 
-use super::cache::{CompilationCache, CompilationCacheKey, CompilationCacheWriteError};
+use molt_ir::content_digest::CompilationCacheKey;
+
+use super::cache::{CompilationCache, CompilationCacheWriteError};
 use super::function::{TirFunction, TirModule};
 use super::target_info::TargetInfo;
 

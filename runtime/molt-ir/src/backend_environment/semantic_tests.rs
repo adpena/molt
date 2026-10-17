@@ -72,7 +72,7 @@ fn request_reuse_values_and_partition_presence_are_not_output_path_identity() {
 }
 
 #[test]
-fn semantic_projection_is_lazy_shared_and_does_not_change_environment_equality() {
+fn semantic_identity_is_lazy_cached_and_does_not_change_environment_equality() {
     let admitted = Arc::new(env(serde_json::json!({"MOLT_ENTRY_MODULE":"app"})));
     let same = (*admitted).clone();
     assert!(admitted.native_semantics.get().is_none());
@@ -80,7 +80,8 @@ fn semantic_projection_is_lazy_shared_and_does_not_change_environment_equality()
     let _scope = enter(Arc::clone(&admitted));
     let first = current_semantic_environment(BackendCodegenTarget::Native).unwrap();
     let second = current_semantic_environment(BackendCodegenTarget::Native).unwrap();
-    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(first, second);
+    assert_eq!(admitted.native_semantics.get(), Some(&first));
     assert_eq!(*admitted, same);
     assert!(admitted.wasm_semantics.get().is_none());
     let carried = carry();
@@ -89,7 +90,7 @@ fn semantic_projection_is_lazy_shared_and_does_not_change_environment_equality()
     })
     .join()
     .unwrap();
-    assert!(Arc::ptr_eq(&first, &thread_identity));
+    assert_eq!(first, thread_identity);
 }
 
 #[test]
@@ -155,4 +156,101 @@ fn worker_replay_rejects_schema_and_membership_drift_against_actual_scope() {
         .remove("MOLT_DISABLE_RC_COALESCE");
     let missing: NativeCodegenEnvironment = serde_json::from_value(missing).unwrap();
     assert!(missing.validate_current().is_err());
+}
+
+#[test]
+fn semantic_identity_has_independent_domain_and_projection_vectors() {
+    use crate::content_digest::bytes_to_lower_hex;
+    let cases = [
+        (
+            BackendCodegenTarget::Native,
+            serde_json::json!({}),
+            "b3c40304f7c8e0ef91d46057f02c5ff81b514f7c15dfaa18680911dc117820a0",
+        ),
+        (
+            BackendCodegenTarget::Wasm,
+            serde_json::json!({}),
+            "5d62e342dce73b5110f7adc4499317274e1fe1a8c350bf4ef66dcdb2ab266897",
+        ),
+        (
+            BackendCodegenTarget::Native,
+            serde_json::json!({"MOLT_STDLIB_OBJ":""}),
+            "accdb136a2d54495b2431d23a1aa762d5a0da6dbd9efbe34d71e2e3bb7ced814",
+        ),
+        (
+            BackendCodegenTarget::Native,
+            serde_json::json!({"MOLT_MAX_FUNCTION_OPS":""}),
+            "a4268b8ae159ad92c82c01bcbd502498643a1e922a2edf4a27ff5d6a089af5b8",
+        ),
+    ];
+    for (target, values, expected) in cases {
+        // Independent hashlib vectors pin domain, target, key and value tags.
+        assert_eq!(
+            bytes_to_lower_hex(&env(values).semantic_identity(target).0),
+            expected
+        );
+    }
+    let first = env(serde_json::from_str(
+        r#"{"MOLT_ENTRY_MODULE":"app","MOLT_MAX_FUNCTION_OPS":"π"}"#,
+    )
+    .unwrap());
+    let reordered = env(serde_json::from_str(
+        r#"{"MOLT_MAX_FUNCTION_OPS":"π","MOLT_ENTRY_MODULE":"app"}"#,
+    )
+    .unwrap());
+    assert_eq!(
+        first.semantic_identity(BackendCodegenTarget::Native),
+        reordered.semantic_identity(BackendCodegenTarget::Native)
+    );
+    assert_ne!(
+        env(serde_json::json!({"MOLT_MAX_FUNCTION_OPS":"a\0bc"}))
+            .semantic_identity(BackendCodegenTarget::Native),
+        env(serde_json::json!({"MOLT_MAX_FUNCTION_OPS":"ab\0c"}))
+            .semantic_identity(BackendCodegenTarget::Native),
+    );
+    assert_eq!(std::mem::size_of::<SemanticBackendIdentity>(), 32);
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "private self-executing test probe marker, not a backend setting"
+)]
+fn semantic_identity_process_probe() {
+    const MARKER: &str = "MOLT_TEST_SEMANTIC_IDENTITY_PROCESS";
+    if std::env::var_os(MARKER).is_none() {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.args([
+            "--exact",
+            "backend_environment::semantic_tests::semantic_identity_process_probe",
+            "--nocapture",
+        ]);
+        for key in daemon_request_env_keys() {
+            child.env_remove(key.name());
+        }
+        let result = child
+            .env(MARKER, "1")
+            .env("MOLT_MAX_FUNCTION_OPS", "π")
+            .env("MOLT_ENTRY_MODULE", "app")
+            .env("MOLT_STDLIB_OBJ", "")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let target = BackendCodegenTarget::Native;
+    let process = current_semantic_environment(target).unwrap();
+    assert_eq!(
+        crate::content_digest::bytes_to_lower_hex(&process.0),
+        "5e846a7edf5f43542310ee005189c602882785566af35c82f1cbcc96ab6d6c6e"
+    );
+    let request = env(
+        serde_json::json!({"MOLT_MAX_FUNCTION_OPS":"π", "MOLT_ENTRY_MODULE":"app", "MOLT_STDLIB_OBJ":""}),
+    );
+    let _scope = enter(Arc::new(request));
+    assert_eq!(process, current_semantic_environment(target).unwrap());
 }

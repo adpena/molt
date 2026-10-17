@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use molt_ir::content_digest::CompilationCacheKey;
 use sha2::{Digest, Sha256};
 
 use crate::resident_cache::ResidentCache;
@@ -149,70 +150,6 @@ impl CacheEnvelopeKind {
             1 => Ok(Self::Poison),
             _ => Err(format!("unknown cache envelope kind {byte}")),
         }
-    }
-}
-
-/// Durable, ambiguity-resistant SHA-256 identity for persistent compiler cache
-/// artifacts. Every field is tagged and length-delimited; large semantic
-/// contracts can be streamed through a nested digest without an O(IR) buffer.
-pub struct CompilationCacheKey {
-    digest: Sha256,
-}
-
-struct Sha256Writer<'a>(&'a mut Sha256);
-
-impl Write for Sha256Writer<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.update(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl CompilationCacheKey {
-    pub fn new(domain: &[u8]) -> Self {
-        let mut key = Self {
-            digest: Sha256::new(),
-        };
-        key.field(b"cache-key-domain", domain);
-        key
-    }
-
-    fn length_delimited(digest: &mut Sha256, bytes: &[u8]) {
-        digest.update((bytes.len() as u64).to_be_bytes());
-        digest.update(bytes);
-    }
-
-    pub fn field(&mut self, label: &[u8], value: &[u8]) {
-        self.digest.update([0]);
-        Self::length_delimited(&mut self.digest, label);
-        Self::length_delimited(&mut self.digest, value);
-    }
-
-    pub fn digest_field(
-        &mut self,
-        label: &[u8],
-        write_value: impl FnOnce(&mut dyn Write) -> Result<(), String>,
-    ) -> Result<(), String> {
-        let mut field_digest = Sha256::new();
-        write_value(&mut Sha256Writer(&mut field_digest))?;
-        self.digest.update([1]);
-        Self::length_delimited(&mut self.digest, label);
-        Self::length_delimited(&mut self.digest, &field_digest.finalize());
-        Ok(())
-    }
-
-    pub fn finish_hex(self) -> String {
-        let bytes = self.digest.finalize();
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            use std::fmt::Write as _;
-            write!(&mut hex, "{byte:02x}").expect("String formatting cannot fail");
-        }
-        hex
     }
 }
 

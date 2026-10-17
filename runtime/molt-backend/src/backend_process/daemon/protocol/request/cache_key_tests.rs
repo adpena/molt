@@ -186,8 +186,5 @@ fn cache_context_binds_the_active_environment_not_the_asserted_namespace() {
     let _scope = enter(one);
     let mut job = job("another", None);
     let third = job.take_artifact_cache_keys().unwrap().module.unwrap();
-    assert!(Arc::ptr_eq(
-        &first.context.environment,
-        &third.context.environment
-    ));
+    assert_eq!(first.context.environment, third.context.environment);
 }

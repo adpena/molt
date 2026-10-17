@@ -98,14 +98,37 @@ Request strings move into the keys; the LRU and single-flight
 retain shared handles rather than formatting and copying composite strings.
 Equal module/function source keys share a handle. A bypassed cache or an empty
 source key creates no key or context. Key preparation allocates one context and up to two keys,
-plus a native triple clone when present. A keyed request lazily projects its
-semantic settings once per selected target, copying only included raw values;
-subsequent jobs share the same Arc. Unkeyed and bypassed jobs need no projection.
-Hashing scales with included semantic bytes (including stdlib manifests), key,
-namespace and triple length; WASM options take fixed work. This performs no serialization,
-cryptographic hash, file read, syscall or guest operation. These costs belong
-to compiler requests, never emitted binaries; no wall-clock improvement is
-claimed without a controlled measurement.
+plus a native triple clone when present. An eligible keyed request lazily computes
+one typed 32-byte SHA-256 identity per selected target; subsequent jobs copy that
+identity. It hashes borrowed admitted values, with no raw projection allocation.
+Unkeyed and bypassed jobs need no digest. Canonical catalog order, explicit
+target/domain and tagged length-delimited names/raw values/presence markers
+preserve target, absence/empty and relocation distinctions. Native worker replay
+continues to carry raw values independently. Process-only consumers stream
+fallible environment reads without an intermediate map.
+
+The existing `molt_ir::content_digest::CompilationCacheKey` owns framing for both
+this identity and persistent TIR keys; its relocation preserves persistent bytes.
+This follows [Go's fixed-width compiler cache hashes](https://go.dev/src/cmd/go/internal/cache/hash.go)
+and [Bazel's declared-input environment identity](https://bazel.build/remote/caching).
+Equality assumes SHA-256 collision resistance, as other content-addressed compiler
+caches do; it does not authenticate a caller's IR claim. Cold preparation pays
+one linear SHA-256 pass over selected bytes plus catalog/setting lookup. Warm
+map hashing compares the fixed identity, rather than traversing or retaining
+raw semantic bytes such as stdlib manifests. Source key, namespace and native
+triple hashing still scale with their lengths. This adds no file read, syscall,
+serialization, process spawn or guest operation. These costs belong to compiler
+requests, never emitted binaries.
+
+A Darwin arm64 development-profile measurement uses the actual process accessor
+and derived identity hashing, with nine rounds per setting size. A 64 KiB raw
+projection costs 15.05 us per hash; the fixed identity costs about 9 ns. Cold
+process capture rises from 6.41 to 29.77 us for 64 KiB and from 2.89 to 3.92 us
+for one byte. This named trade buys bounded residency and amortizes after two
+large-settings hashes in this aperture. It is not a scoped-request or product
+latency result. Optimizing the existing `sha2` dependency at O1 for development
+reduces the initially measured 234.20 us large cold capture to 29.77 us; release
+profiles retain their normal optimization. No end-to-end speedup is claimed.
 
 ### Resident ownership and eviction
 
@@ -115,7 +138,7 @@ with Rust's randomized hasher: one lookup promotes a live node in place, and
 oldest removal drops its key/value owners immediately. Both custom heaps and
 logical clocks are deleted. Warm hits allocate nothing and retain no historical
 generations. Expected lookup/promotion is constant work after key hashing;
-semantic key hashing still scales with the bytes already documented above.
+source/namespace/triple hashing still scales with their lengths.
 An insertion that evicts E entries does O(E) map operations. Sparse storage is
 shrunk only on mutation when table capacity exceeds four times live entries;
 that amortized linear reclamation never runs on a hit.
@@ -123,11 +146,11 @@ that amortized linear reclamation never runs on a hit.
 Limits measure charged retained ownership, rather than payload length alone.
 Each entry charges its inline key/value/charge storage and four pointer words
 for links/table slots. The daemon additionally charges the complete source key,
-namespace, native triple, typed context, immutable semantic projection and raw
-values, output allocation and Arc headers. TIR charges its hash, precomputed
-quarantine path capacity, payload and Arc headers. Immutable semantic projections
-use canonical ordered boxed slices, so their allocation extent is directly
-known. Metadata accounting inspects field lengths/capacities on insertion; it
+namespace, native triple, typed context (including the inline semantic digest),
+output allocation and Arc headers. TIR charges its hash, precomputed quarantine
+path capacity, payload and Arc headers. Raw semantic settings are not retained
+or charged by resident entries. Metadata accounting inspects field
+lengths/capacities on insertion; it
 performs no byte scan, serialization, I/O or process spawn. Equal identities
 with different allocation capacity remain semantically equal. A single oversized
 entry is refused before it can evict unrelated work; replacement retires the old
@@ -147,8 +170,8 @@ units. Full process/resource acceptance remains V1-07.
 
 The ownership weighers destructure the closed key/context/target types without
 `..`; adding a field fails the weigher until its allocation policy is explicit.
-The semantic projection also has one exhaustive ownership definition. Retention
-accounting never participates in structural identity.
+The semantic identity has fixed inline storage and no transitive allocations.
+Retention accounting never participates in structural identity.
 
 A 2026-10-17 Darwin arm64 mechanism comparison compiles the frozen 79b4892ec
 heap owner and this owner into one optimized executable with identical surrogate
