@@ -200,6 +200,7 @@ def test_mlir_publication_closes_source_generation_after_backend_work(
         ir={"functions": []},
         output_artifact=output,
         project_root=tmp_path,
+        molt_root=tmp_path,
         json_output=True,
         verbose=False,
         validate_inputs=catalog.validate,
@@ -209,3 +210,48 @@ def test_mlir_publication_closes_source_generation_after_backend_work(
         b"module {}\n" if mutation is None else b"previous MLIR"
     )
     assert len(stages) == 1 and not stages[0].exists()
+
+
+@pytest.mark.parametrize("output_name", ["out.mlir", "out"])
+def test_mlir_pipeline_takes_backend_and_toolchain_from_the_compiler(
+    tmp_path: Path, monkeypatch, output_name: str
+) -> None:
+    # The project being compiled is not the compiler checkout: the backend's
+    # source manifest, Cargo target and LLVM toolchain belong to the compiler,
+    # as the native backend's do.
+    project = tmp_path / "project"
+    compiler = tmp_path / "compiler"
+    project.mkdir()
+    compiler.mkdir()
+    roots: dict[str, Path] = {}
+
+    def ensure(root: Path) -> tuple[Path | None, str | None]:
+        roots["backend"] = root
+        return tmp_path / "backend", None
+
+    def toolchain(root: Path, **_: object) -> dict[str, str]:
+        roots["toolchain"] = root
+        return {}
+
+    def compile_ir(command, **kwargs):
+        roots["cwd"] = kwargs["cwd"]
+        Path(command[command.index("--output") + 1]).write_bytes(b"module {}\n")
+        return mlir_backend.subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(mlir_backend, "_ensure_mlir_backend_binary", ensure)
+    monkeypatch.setattr(mlir_backend, "mlir_toolchain_environment", toolchain)
+    monkeypatch.setattr(
+        mlir_backend, "_run_subprocess_captured_to_tempfiles", compile_ir
+    )
+    result = mlir_backend._run_mlir_backend_pipeline(
+        ir={"functions": []},
+        output_artifact=project / output_name,
+        project_root=project,
+        molt_root=compiler,
+        json_output=True,
+        verbose=False,
+        validate_inputs=lambda: None,
+    )
+    assert result == 0
+    assert roots == {"backend": compiler, "toolchain": compiler, "cwd": project}
+    assert (project / output_name).read_bytes() == b"module {}\n"
